@@ -53,6 +53,33 @@ export const SetPrinterInputSchema = z.object({
 });
 export type SetPrinterInput = z.infer<typeof SetPrinterInputSchema>;
 
+// Menu DTOs and contracts
+export interface MenuItemDTO {
+  id: number;
+  name: string;
+  sku: string;
+  price: number;
+  vatRate: number;
+  active: boolean;
+  categoryId: number;
+}
+
+export interface MenuCategoryDTO {
+  id: number;
+  name: string;
+  sortOrder: number;
+  active: boolean;
+  items: MenuItemDTO[];
+}
+
+export const SyncMenuFromUrlInputSchema = z.object({ url: z.string().url(), lang: z.string().optional() });
+export type SyncMenuFromUrlInput = z.infer<typeof SyncMenuFromUrlInputSchema>;
+
+export interface ApiMenu {
+  syncFromUrl(input: SyncMenuFromUrlInput): Promise<{ categories: number; items: number }>;
+  listCategoriesWithItems(): Promise<MenuCategoryDTO[]>;
+}
+
 export interface ApiAuth {
   loginWithPin(pin: string): Promise<UserDTO | null>;
   createUser(input: CreateUserInput): Promise<UserDTO>;
@@ -70,6 +97,7 @@ export interface ApiSettings {
 export interface Api {
   auth: ApiAuth;
   settings: ApiSettings;
+  menu: ApiMenu;
 }
 
 

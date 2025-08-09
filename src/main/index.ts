@@ -3,7 +3,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import dotenv from 'dotenv';
-import { LoginWithPinInputSchema, CreateUserInputSchema, UpdateUserInputSchema, SetPrinterInputSchema } from '@shared/ipc';
+import { LoginWithPinInputSchema, CreateUserInputSchema, UpdateUserInputSchema, SetPrinterInputSchema, SyncMenuFromUrlInputSchema } from '@shared/ipc';
 import { setupAutoUpdater } from './updater';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
@@ -179,6 +179,78 @@ ipcMain.handle('settings:testPrint', async () => {
   } catch {
     return false;
   }
+});
+
+// Menu: fetch from remote and persist locally
+ipcMain.handle('menu:syncFromUrl', async (_e, raw) => {
+  const input = SyncMenuFromUrlInputSchema.parse(raw);
+  const url = input.url || process.env.MENU_API_URL || 'https://ullishtja-agroturizem.com/api/pos-menu?lang=en';
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch menu: ${res.status}`);
+  const body = await res.json();
+  // API shape observed: { success, source, language, updatedAt, data: Category[] }
+  const categories = Array.isArray(body?.data)
+    ? body.data
+    : Array.isArray(body?.categories)
+      ? body.categories
+      : Array.isArray(body)
+        ? body
+        : [];
+  let catCount = 0;
+  let itemCount = 0;
+  for (const cat of categories) {
+    const name: string = cat.name ?? 'Uncategorized';
+    const sortOrder: number = typeof cat.sortOrder === 'number' ? cat.sortOrder : 0;
+    const active: boolean = cat.active !== false;
+    const existing = await prisma.category.findFirst({ where: { name } });
+    const category = existing
+      ? await prisma.category.update({ where: { id: existing.id }, data: { sortOrder, active } })
+      : await prisma.category.create({ data: { name, sortOrder, active } });
+    catCount += existing ? 0 : 1;
+    const items = Array.isArray(cat.items) ? cat.items : [];
+    for (const it of items) {
+      const sku: string = it.sku ?? it.id ?? `${name}:${it.name}`;
+      const price: number = Number(it.price ?? 0);
+      const vatRate: number = Number(it.vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2);
+      const itActive: boolean = it.active !== false;
+      const exists = await prisma.menuItem.findUnique({ where: { sku } });
+      if (exists) {
+        await prisma.menuItem.update({
+          where: { sku },
+          data: { name: it.name ?? exists.name, price, vatRate, categoryId: category.id, active: itActive },
+        });
+      } else {
+        await prisma.menuItem.create({
+          data: { name: it.name ?? 'Item', sku, categoryId: category.id, price, vatRate, active: itActive },
+        });
+        itemCount += 1;
+      }
+    }
+  }
+  return { categories: catCount, items: itemCount };
+});
+
+ipcMain.handle('menu:listCategoriesWithItems', async () => {
+  const cats = await prisma.category.findMany({
+    where: { active: true },
+    orderBy: { sortOrder: 'asc' },
+    include: { items: { where: { active: true }, orderBy: { name: 'asc' } } },
+  });
+  return cats.map((c) => ({
+    id: c.id,
+    name: c.name,
+    sortOrder: c.sortOrder,
+    active: c.active,
+    items: c.items.map((i) => ({
+      id: i.id,
+      name: i.name,
+      sku: i.sku,
+      price: Number(i.price),
+      vatRate: Number(i.vatRate),
+      active: i.active,
+      categoryId: i.categoryId,
+    })),
+  }));
 });
 
 

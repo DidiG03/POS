@@ -15,6 +15,10 @@ const api: Api = {
     testPrint: () => ipcRenderer.invoke('settings:testPrint'),
     setPrinter: (input) => ipcRenderer.invoke('settings:setPrinter', input),
   },
+  menu: {
+    syncFromUrl: (input) => ipcRenderer.invoke('menu:syncFromUrl', input),
+    listCategoriesWithItems: () => ipcRenderer.invoke('menu:listCategoriesWithItems'),
+  },
 };
 
 declare global {
