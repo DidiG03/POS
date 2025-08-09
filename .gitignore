@@ -1,0 +1,9 @@
+node_modules
+dist
+.DS_Store
+*.log
+pnpm-debug.log*
+.env
+coverage
+
+node_modules
