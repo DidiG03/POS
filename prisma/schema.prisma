@@ -15,6 +15,7 @@ model User {
   active      Boolean   @default(true)
   createdAt   DateTime  @default(now())
   orders      Order[]
+  externalId  String?   @unique
   shiftsOpened DayShift[] @relation("ShiftOpenedBy")
   shiftsClosed DayShift[] @relation("ShiftClosedBy")
 }
@@ -190,6 +191,29 @@ enum PrintStatus {
   QUEUED
   SENT
   FAILED
+}
+
+
+model SyncState {
+  key       String   @id
+  valueJson Json?
+  updatedAt DateTime @updatedAt
+}
+
+model Area {
+  id           Int     @id @default(autoincrement())
+  name         String  @unique
+  sortOrder    Int     @default(0)
+  active       Boolean @default(true)
+  defaultCount Int     @default(8)
+}
+
+model Covers {
+  id        Int      @id @default(autoincrement())
+  area      String
+  label     String
+  covers    Int
+  createdAt DateTime @default(now())
 }
 
 

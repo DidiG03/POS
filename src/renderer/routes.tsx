@@ -6,6 +6,8 @@ import TablesPage from './app/pages/TablesPage';
 import OrderPage from './app/pages/OrderPage';
 import ReportsPage from './app/pages/ReportsPage';
 import SettingsPage from './app/pages/SettingsPage';
+import AdminPage from './app/pages/AdminPage';
+import AdminLayout from './app/AdminLayout';
 
 export const routes: RouteObject[] = [
   { path: '/', element: <LoginPage /> },
@@ -18,6 +20,15 @@ export const routes: RouteObject[] = [
       { path: 'order', element: <OrderPage /> },
       { path: 'reports', element: <ReportsPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'admin', element: <AdminPage /> },
+    ],
+  },
+  // Standalone admin shell for separate window
+  {
+    path: '/admin',
+    element: <AdminLayout />,
+    children: [
+      { index: true, element: <AdminPage /> },
     ],
   },
 ];
