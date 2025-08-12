@@ -129,6 +129,11 @@ export interface Api {
   menu: ApiMenu;
   shifts: ApiShifts;
   admin: ApiAdmin;
+  layout: ApiLayout;
+  covers: ApiCovers;
+  tickets: ApiTickets;
+  notifications: ApiNotifications;
+  tables: ApiTables;
 }
 
 // Admin overview DTOs
@@ -142,11 +147,69 @@ export interface AdminOverviewDTO {
   lastStaffSync?: string | null;
   printerIp?: string | null;
   appVersion: string;
+  revenueTodayNet?: number; // without VAT
+  revenueTodayVat?: number; // VAT amount
+}
+
+export interface AdminShiftDTO {
+  id: number;
+  userId: number;
+  userName: string;
+  openedAt: string;
+  closedAt: string | null;
+  durationHours: number; // rounded to 2 decimals
+  isOpen: boolean;
 }
 
 export interface ApiAdmin {
   getOverview(): Promise<AdminOverviewDTO>;
   openWindow(): Promise<boolean>;
+  listShifts(): Promise<AdminShiftDTO[]>;
+  listTicketCounts(input?: { startIso?: string; endIso?: string }): Promise<{ id: number; name: string; active: boolean; tickets: number }[]>;
+  listTicketsByUser(userId: number, range?: { startIso?: string; endIso?: string }): Promise<AdminTicketDTO[]>;
+  listNotifications(input?: { onlyUnread?: boolean; limit?: number }): Promise<AdminNotificationDTO[]>;
+  markAllNotificationsRead(): Promise<boolean>;
+  getTopSellingToday(): Promise<TopSellingDTO | null>;
+  getSalesTrends(input: { range: 'daily' | 'weekly' | 'monthly' }): Promise<SalesTrendDTO>;
+}
+
+export interface AdminTicketDTO {
+  id: number;
+  area: string;
+  tableLabel: string;
+  covers: number | null;
+  createdAt: string;
+  items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string; voided?: boolean }[];
+  note?: string | null;
+  subtotal: number;
+  vat: number;
+}
+
+export interface AdminNotificationDTO {
+  id: number;
+  userId: number;
+  userName: string;
+  type: 'SECURITY' | 'OTHER';
+  message: string;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface TopSellingDTO {
+  name: string;
+  qty: number;
+  revenue: number;
+}
+
+export interface SalesPointDTO {
+  label: string; // e.g., 08/12, 2025-W33, 2025-08
+  total: number; // revenue without VAT
+  orders: number; // number of tickets
+}
+
+export interface SalesTrendDTO {
+  range: 'daily' | 'weekly' | 'monthly';
+  points: SalesPointDTO[];
 }
 
 // Table layout
@@ -167,14 +230,34 @@ declare global {
   }
 }
 
-export interface Api {
-  auth: ApiAuth;
-  settings: ApiSettings;
-  menu: ApiMenu;
-  shifts: ApiShifts;
-  admin: ApiAdmin;
-  layout: ApiLayout;
-  covers: ApiCovers;
+export interface ApiTickets {
+  log(input: { userId: number; area: string; tableLabel: string; covers: number | null; items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[]; note?: string | null }): Promise<boolean>;
+  getLatestForTable(area: string, tableLabel: string): Promise<{
+    items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[];
+    note?: string | null;
+    covers?: number | null;
+    createdAt: string;
+  } | null>;
+  voidItem(input: { userId: number; area: string; tableLabel: string; item: { name: string; qty?: number; unitPrice: number; vatRate?: number; note?: string } }): Promise<boolean>;
+  voidTicket(input: { userId: number; area: string; tableLabel: string; reason?: string }): Promise<boolean>;
+}
+
+export interface NotificationDTO {
+  id: number;
+  type: 'SECURITY' | 'OTHER';
+  message: string;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface ApiNotifications {
+  list(userId: number, onlyUnread?: boolean): Promise<NotificationDTO[]>;
+  markAllRead(userId: number): Promise<boolean>;
+}
+
+export interface ApiTables {
+  setOpen(area: string, label: string, open: boolean): Promise<boolean>;
+  listOpen(): Promise<{ area: string; label: string }[]>;
 }
 
 

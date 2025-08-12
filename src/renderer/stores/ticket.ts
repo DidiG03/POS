@@ -16,8 +16,10 @@ interface TicketState {
   addItem: (input: { sku: string; name: string; unitPrice: number; vatRate?: number }) => void;
   increment: (id: string) => void;
   decrement: (id: string) => void;
+  removeLine: (id: string) => void;
   setLineNote: (id: string, note: string) => void;
   setOrderNote: (note: string) => void;
+  hydrate: (payload: { items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[]; note?: string | null }) => void;
   clear: () => void;
 }
 
@@ -44,8 +46,22 @@ export const useTicketStore = create<TicketState>((set, get) => ({
         .map((l) => (l.id === id ? { ...l, qty: Math.max(0, l.qty - 1) } : l))
         .filter((l) => l.qty > 0),
     })),
+  removeLine: (id) => set((s) => ({ lines: s.lines.filter((l) => l.id !== id) })),
   setLineNote: (id, note) => set((s) => ({ lines: s.lines.map((l) => (l.id === id ? { ...l, note } : l)) })),
   setOrderNote: (note) => set({ orderNote: note }),
+  hydrate: ({ items, note }) =>
+    set(() => ({
+      lines: (items || []).map((it) => ({
+        id: `${it.name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        sku: it.name, // fallback if sku not logged; could be improved to store sku in log
+        name: it.name,
+        unitPrice: Number(it.unitPrice),
+        vatRate: Number(it.vatRate ?? 0),
+        qty: Number(it.qty || 1),
+        note: it.note,
+      })),
+      orderNote: note || '',
+    })),
   clear: () => set({ lines: [] }),
 }));
 

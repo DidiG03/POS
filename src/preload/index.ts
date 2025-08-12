@@ -29,6 +29,14 @@ const api: Api = {
   admin: {
     getOverview: () => ipcRenderer.invoke('admin:getOverview'),
     openWindow: () => ipcRenderer.invoke('admin:openWindow'),
+    listShifts: () => ipcRenderer.invoke('admin:listShifts'),
+    listTicketCounts: (input?: { startIso?: string; endIso?: string }) => ipcRenderer.invoke('admin:listTicketCounts', input),
+    listTicketsByUser: (userId: number, range?: { startIso?: string; endIso?: string }) =>
+      ipcRenderer.invoke('admin:listTicketsByUser', { userId, ...(range || {}) }),
+    listNotifications: (input?: { onlyUnread?: boolean; limit?: number }) => ipcRenderer.invoke('admin:listNotifications', input || {}),
+    markAllNotificationsRead: () => ipcRenderer.invoke('admin:markAllNotificationsRead'),
+    getTopSellingToday: () => ipcRenderer.invoke('admin:getTopSellingToday'),
+    getSalesTrends: (input: { range: 'daily' | 'weekly' | 'monthly' }) => ipcRenderer.invoke('admin:getSalesTrends', input),
   },
   layout: {
     get: (userId: number, area: string) => ipcRenderer.invoke('layout:get', { userId, area }),
@@ -37,6 +45,20 @@ const api: Api = {
   covers: {
     save: (area: string, label: string, covers: number) => ipcRenderer.invoke('covers:save', { area, label, covers }),
     getLast: (area: string, label: string) => ipcRenderer.invoke('covers:getLast', { area, label }),
+  },
+  tickets: {
+    log: (payload: any) => ipcRenderer.invoke('tickets:log', payload),
+    getLatestForTable: (area: string, tableLabel: string) => ipcRenderer.invoke('tickets:getLatestForTable', { area, tableLabel }),
+    voidItem: (payload: any) => ipcRenderer.invoke('tickets:voidItem', payload),
+    voidTicket: (payload: any) => ipcRenderer.invoke('tickets:voidTicket', payload),
+  },
+  tables: {
+    setOpen: (area: string, label: string, open: boolean) => ipcRenderer.invoke('tables:setOpen', { area, label, open }),
+    listOpen: () => ipcRenderer.invoke('tables:listOpen'),
+  },
+  notifications: {
+    list: (userId: number, onlyUnread?: boolean) => ipcRenderer.invoke('notifications:list', { userId, onlyUnread }),
+    markAllRead: (userId: number) => ipcRenderer.invoke('notifications:markAllRead', { userId }),
   },
 };
 

@@ -3,6 +3,7 @@ import { useTicketStore } from '../../stores/ticket';
 import { useOrderContext } from '../../stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
+import { useSessionStore } from '../../stores/session';
 
 type MenuItemDTO = {
   id: number;
@@ -26,12 +27,21 @@ export default function OrderPage() {
   const [selectedCatId, setSelectedCatId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [syncing, setSyncing] = useState(false);
-  const { lines, addItem, increment, decrement, setLineNote, orderNote, setOrderNote, clear } = useTicketStore();
+  const { lines, addItem, increment, decrement, setLineNote, orderNote, setOrderNote, clear, removeLine } = useTicketStore();
   const { selectedTable, setPendingAction } = useOrderContext();
   const { setOpen, isOpen } = useTableStatus();
   const [showCovers, setShowCovers] = useState(false);
   const [coversValue, setCoversValue] = useState('');
+  const [voidTarget, setVoidTarget] = useState<{
+    id: string;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate: number;
+    note?: string;
+  } | null>(null);
   const navigate = useNavigate();
+  const { user } = useSessionStore();
 
   const selected = useMemo(
     () => categories.find((c) => c.id === selectedCatId) ?? categories[0],
@@ -60,6 +70,15 @@ export default function OrderPage() {
     loadMenu();
   }, []);
 
+  // If an open table's ticket becomes empty due to voids, free the table (turn green)
+  useEffect(() => {
+    if (!selectedTable) return;
+    if (!isOpen(selectedTable.area, selectedTable.label)) return;
+    if (lines.length === 0) {
+      setOpen(selectedTable.area, selectedTable.label, false);
+    }
+  }, [lines.length, selectedTable]);
+
   const syncMenu = async () => {
     setSyncing(true);
     try {
@@ -81,9 +100,6 @@ export default function OrderPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <button onClick={syncMenu} className="px-3 bg-gray-700 rounded whitespace-nowrap">
-            {syncing ? 'Syncing…' : 'Sync menu'}
-          </button>
         </div>
         <div className="grid grid-cols-3 gap-2 mb-3">
           {categories.map((c) => (
@@ -126,6 +142,26 @@ export default function OrderPage() {
                     <div className="w-6 text-center">{l.qty}</div>
                     <button className="px-2 bg-gray-600 rounded" onClick={() => increment(l.id)}>+</button>
                     <div className="w-20 text-right">{(l.unitPrice * l.qty).toFixed(2)}</div>
+                    {/* When table is open (sent), disable hard remove; show Void instead */}
+                    {selectedTable && isOpen(selectedTable.area, selectedTable.label) ? (
+                      <button
+                        className="px-2 bg-red-700 rounded text-xs"
+                        onClick={() =>
+                          setVoidTarget({
+                            id: l.id,
+                            name: l.name,
+                            qty: l.qty,
+                            unitPrice: l.unitPrice,
+                            vatRate: l.vatRate,
+                            note: l.note,
+                          })
+                        }
+                      >
+                        Void
+                      </button>
+                    ) : (
+                      <button className="px-2 bg-gray-600 rounded text-xs" onClick={() => removeLine(l.id)}>Remove</button>
+                    )}
                   </div>
                 </div>
                 <input
@@ -155,12 +191,23 @@ export default function OrderPage() {
           <button
             className="flex-1 bg-gray-600 hover:bg-gray-700 py-2 rounded disabled:opacity-60"
             disabled={lines.length === 0}
-            onClick={() => {
+            onClick={async () => {
+              if (selectedTable && isOpen(selectedTable.area, selectedTable.label)) {
+                if (!user?.id) return;
+                await window.api.tickets.voidTicket({
+                  userId: user.id,
+                  area: selectedTable.area,
+                  tableLabel: selectedTable.label,
+                  reason: orderNote || undefined,
+                });
+                // Free table when fully voided
+                setOpen(selectedTable.area, selectedTable.label, false);
+              }
               clear();
               setOrderNote('');
             }}
           >
-            Clear
+            {selectedTable && isOpen(selectedTable.area, selectedTable.label) ? 'Void Ticket' : 'Clear'}
           </button>
           <button
             className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded disabled:opacity-60"
@@ -184,11 +231,21 @@ export default function OrderPage() {
                 area: selectedTable.area,
                 covers: lastCovers ?? null,
                 orderNote,
-                lines: lines.map((l) => ({ name: l.name, qty: l.qty, unitPrice: l.unitPrice, note: l.note })),
+                lines: lines.map((l) => ({ name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note })),
               };
               console.log('ticket sent', details);
+              if (!user?.id) return; // require logged-in user to log ticket
+              await window.api.tickets.log({
+                userId: user.id,
+                area: selectedTable.area,
+                tableLabel: selectedTable.label,
+                covers: lastCovers ?? null,
+                items: details.lines,
+                note: orderNote,
+              });
               await window.api.settings.testPrint();
               setOpen(selectedTable.area, selectedTable.label, true);
+              await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
             }}
           >
             Send Items
@@ -204,9 +261,12 @@ export default function OrderPage() {
               }
               console.log(`ticket - ${selectedTable.label} paid`);
               setOpen(selectedTable.area, selectedTable.label, false);
+              window.api.tables.setOpen(selectedTable.area, selectedTable.label, false).catch(() => {});
+              clear();
+              setOrderNote('');
             }}
           >
-            Pay (F9)
+            Pay
           </button>
         </div>
       </div>
@@ -237,13 +297,59 @@ export default function OrderPage() {
                     area: selectedTable.area,
                     covers: num,
                     orderNote,
-                    lines: lines.map((l) => ({ name: l.name, qty: l.qty, unitPrice: l.unitPrice, note: l.note })),
+                    lines: lines.map((l) => ({ name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note })),
                   };
                   console.log('ticket sent', details);
+                  if (!user?.id) return;
+                  await window.api.tickets.log({
+                    userId: user.id,
+                    area: selectedTable.area,
+                    tableLabel: selectedTable.label,
+                    covers: num,
+                    items: details.lines,
+                    note: orderNote,
+                  });
                   await window.api.settings.testPrint();
+                  await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
                 }}
               >
                 Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {voidTarget && selectedTable && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
+          <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
+            <h3 className="text-center mb-2">Void item?</h3>
+            <p className="text-sm opacity-80 text-center mb-4">
+              {voidTarget.name} ×{voidTarget.qty} on {selectedTable.area} • {selectedTable.label}
+            </p>
+            <div className="flex gap-2 mt-2">
+              <button className="flex-1 bg-gray-600 py-2 rounded" onClick={() => setVoidTarget(null)}>Cancel</button>
+              <button
+                className="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded"
+                onClick={async () => {
+                  if (!user?.id) return;
+                  await window.api.tickets.voidItem({
+                    userId: user.id,
+                    area: selectedTable.area,
+                    tableLabel: selectedTable.label,
+                    item: {
+                      name: voidTarget.name,
+                      qty: voidTarget.qty,
+                      unitPrice: voidTarget.unitPrice,
+                      vatRate: voidTarget.vatRate,
+                      note: voidTarget.note,
+                    },
+                  });
+                  removeLine(voidTarget.id);
+                  setVoidTarget(null);
+                }}
+              >
+                Confirm Void
               </button>
             </div>
           </div>

@@ -18,6 +18,8 @@ model User {
   externalId  String?   @unique
   shiftsOpened DayShift[] @relation("ShiftOpenedBy")
   shiftsClosed DayShift[] @relation("ShiftClosedBy")
+  ticketLogs  TicketLog[]
+  notifications Notification[]
 }
 
 enum Role {
@@ -214,6 +216,34 @@ model Covers {
   label     String
   covers    Int
   createdAt DateTime @default(now())
+}
+
+model TicketLog {
+  id         Int      @id @default(autoincrement())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     Int
+  area       String
+  tableLabel String
+  covers     Int?
+  itemsJson  Json
+  note       String?
+  createdAt  DateTime @default(now())
+}
+
+
+enum NotificationType {
+  SECURITY
+  OTHER
+}
+
+model Notification {
+  id         Int               @id @default(autoincrement())
+  user       User              @relation(fields: [userId], references: [id])
+  userId     Int
+  type       NotificationType  @default(SECURITY)
+  message    String
+  readAt     DateTime?
+  createdAt  DateTime          @default(now())
 }
 
 

@@ -3,6 +3,7 @@ import { useSessionStore } from '../../stores/session';
 import { useOrderContext } from '../../stores/orderContext';
 import { useNavigate } from 'react-router-dom';
 import { useTableStatus } from '../../stores/tableStatus';
+import { useTicketStore } from '../../stores/ticket';
 
 type TableStatus = 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED';
 type TableNode = { id: number; label: string; x: number; y: number; status: TableStatus };
@@ -19,6 +20,7 @@ export default function TablesPage() {
   const { setSelectedTable, pendingAction, setPendingAction } = useOrderContext();
   const navigate = useNavigate();
   const { isOpen } = useTableStatus();
+  const { hydrate, clear } = useTicketStore();
 
   useEffect(() => {
     (async () => {
@@ -122,6 +124,17 @@ export default function TablesPage() {
               setSelectedTable({ id: t.id, label: t.label, area });
               const action = pendingAction;
               if (action) setPendingAction(null);
+              // If table is open, hydrate current ticket from last sent ticket and skip covers prompt
+              if (isOpen(area, t.label)) {
+                (async () => {
+                  const data = await window.api.tickets.getLatestForTable(area, t.label);
+                  if (data) hydrate({ items: data.items as any, note: data.note || '' });
+                  navigate('/app/order');
+                })();
+                return;
+              }
+              // If table is free, start with a clean ticket
+              clear();
               navigate('/app/order');
               if (action) {
                 setTimeout(() => {

@@ -90,7 +90,17 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
   const user = await prisma.user.findFirst({ where });
   if (!user) return null;
   const ok = await bcrypt.compare(pin, user.pinHash);
-  if (!ok) return null;
+  if (!ok) {
+    // record a security notification for the targeted user
+    await prisma.notification.create({
+      data: {
+        userId: user.id,
+        type: 'SECURITY' as any,
+        message: 'Wrong PIN attempt on your account',
+      },
+    }).catch(() => {});
+    return null;
+  }
   return {
     id: user.id,
     displayName: user.displayName,
@@ -177,7 +187,7 @@ ipcMain.handle('shifts:clockOut', async (_e, { userId }) => {
 
 ipcMain.handle('shifts:listOpen', async () => {
   const open = await prisma.dayShift.findMany({ where: { closedAt: null } });
-  return open.map((s) => s.openedById);
+  return open.map((s: { openedById: number }) => s.openedById);
 });
 
 // Sync staff from external API and upsert into local users
@@ -314,6 +324,33 @@ ipcMain.handle('settings:testPrint', async () => {
   }
 });
 
+// Persist open tables in SyncState for accurate open order counts
+ipcMain.handle('tables:setOpen', async (_e, input) => {
+  const area = String(input?.area || '');
+  const label = String(input?.label || '');
+  const open = Boolean(input?.open);
+  if (!area || !label) return false;
+  const key = 'tables:open';
+  const row = await prisma.syncState.findUnique({ where: { key } });
+  const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
+  const k = `${area}:${label}`;
+  if (open) map[k] = true; else delete map[k];
+  await prisma.syncState.upsert({ where: { key }, create: { key, valueJson: map }, update: { valueJson: map } });
+  return true;
+});
+
+ipcMain.handle('tables:listOpen', async () => {
+  const key = 'tables:open';
+  const row = await prisma.syncState.findUnique({ where: { key } });
+  const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
+  return Object.entries(map)
+    .filter(([, v]) => Boolean(v))
+    .map(([k]) => {
+      const [area, label] = k.split(':');
+      return { area, label };
+    });
+});
+
 // Menu: fetch from remote and persist locally
 ipcMain.handle('menu:syncFromUrl', async (_e, raw) => {
   const input = SyncMenuFromUrlInputSchema.parse(raw);
@@ -421,25 +458,43 @@ ipcMain.handle('menu:listCategoriesWithItems', async () => {
 
 // Admin overview
 ipcMain.handle('admin:getOverview', async () => {
-  const [users, openShifts, openOrders, lowStock, queued, menuSync, staffSync] = await Promise.all([
+  const [users, openShifts, openTables, lowStock, queued, menuSync, staffSync, revenueRows] = await Promise.all([
     prisma.user.count({ where: { active: true } }),
     prisma.dayShift.count({ where: { closedAt: null } }),
-    prisma.order.count({ where: { status: 'OPEN' } }).catch(() => 0),
+    (async () => {
+      const key = 'tables:open';
+      const row = await prisma.syncState.findUnique({ where: { key } }).catch(() => null);
+      const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
+      return Object.values(map).filter(Boolean).length;
+    })(),
     prisma.inventoryItem.count({ where: { qtyOnHand: { lt: prisma.inventoryItem.fields.lowStockThreshold } } }).catch(() => 0),
     prisma.printJob.count({ where: { status: 'QUEUED' } }).catch(() => 0),
     prisma.syncState.findUnique({ where: { key: 'menu:lastSync' } }).catch(() => null),
     prisma.syncState.findUnique({ where: { key: 'staff:lastSync' } }).catch(() => null),
+    prisma.ticketLog.findMany({
+      where: {
+        createdAt: {
+          gte: new Date(new Date().setHours(0, 0, 0, 0)),
+          lte: new Date(new Date().setHours(23, 59, 59, 999)),
+        },
+      },
+      select: { itemsJson: true },
+    }).catch(() => []),
   ]);
+  const revenueTodayNet = (revenueRows as any[]).reduce((s, r) => s + (r.itemsJson as any[]).reduce((ss: number, it: any) => ss + (Number(it.unitPrice) * Number(it.qty || 1)), 0), 0);
+  const revenueTodayVat = (revenueRows as any[]).reduce((s, r) => s + (r.itemsJson as any[]).reduce((ss: number, it: any) => ss + (Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0)), 0), 0);
   return {
     activeUsers: users,
     openShifts,
-    openOrders,
+    openOrders: openTables,
     lowStockItems: lowStock || 0,
     queuedPrintJobs: queued || 0,
     lastMenuSync: (menuSync as any)?.updatedAt?.toISOString?.() ?? null,
     lastStaffSync: (staffSync as any)?.updatedAt?.toISOString?.() ?? null,
     printerIp: process.env.PRINTER_IP ?? null,
     appVersion: process.env.npm_package_version || '0.1.0',
+    revenueTodayNet,
+    revenueTodayVat,
   };
 });
 
@@ -448,6 +503,278 @@ ipcMain.handle('admin:openWindow', async () => {
   return true;
 });
 
+// Tickets logging
+ipcMain.handle('tickets:log', async (_e, payload) => {
+  const { userId, area, tableLabel, covers, items, note } = payload || {};
+  if (!userId || !area || !tableLabel) return false;
+  await prisma.ticketLog.create({
+    data: {
+      userId: Number(userId),
+      area: String(area),
+      tableLabel: String(tableLabel),
+      covers: covers ? Number(covers) : null,
+      itemsJson: items ?? [],
+      note: note ? String(note) : null,
+    },
+  });
+  return true;
+});
+
+ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
+  const area = String(input?.area || '');
+  const tableLabel = String(input?.tableLabel || '');
+  if (!area || !tableLabel) return null;
+  const last = await prisma.ticketLog.findFirst({
+    where: { area, tableLabel },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!last) return null;
+  return {
+    items: last.itemsJson as any,
+    note: last.note ?? null,
+    covers: last.covers ?? null,
+    createdAt: last.createdAt.toISOString(),
+  };
+});
+
+// Void item: records a notification and returns true
+ipcMain.handle('tickets:voidItem', async (_e, input) => {
+  const userId = Number(input?.userId);
+  const area = String(input?.area || '');
+  const tableLabel = String(input?.tableLabel || '');
+  const item = input?.item as any;
+  if (!userId || !area || !tableLabel || !item?.name) return false;
+  const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}`;
+  await prisma.notification.create({ data: { userId, type: 'OTHER' as any, message } }).catch(() => {});
+  // Also append a void marker in the latest ticket log for this table (if exists)
+  const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } });
+  if (last) {
+    const items = (last.itemsJson as any[]) || [];
+    const idx = items.findIndex((it: any) => it.name === item.name);
+    if (idx !== -1) {
+      items[idx] = { ...items[idx], voided: true };
+      await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: items } });
+    }
+  }
+  return true;
+});
+
+ipcMain.handle('tickets:voidTicket', async (_e, input) => {
+  const userId = Number(input?.userId);
+  const area = String(input?.area || '');
+  const tableLabel = String(input?.tableLabel || '');
+  const reason = String(input?.reason || '');
+  if (!userId || !area || !tableLabel) return false;
+  const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}`;
+  await prisma.notification.create({ data: { userId, type: 'OTHER' as any, message } }).catch(() => {});
+  // Mark all items in the latest ticket as voided for admin view
+  const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } });
+  if (last) {
+    const items = ((last.itemsJson as any[]) || []).map((it: any) => ({ ...it, voided: true }));
+    await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: items, note: last.note ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}` : `VOIDED${reason ? `: ${reason}` : ''}` } });
+  }
+  return true;
+});
+
+ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
+  const userId = Number(input?.userId);
+  if (!userId) return [];
+  const where: any = { userId };
+  if (input?.startIso || input?.endIso) {
+    where.createdAt = {};
+    if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
+    if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
+  }
+  const rows = await prisma.ticketLog.findMany({ where, orderBy: { createdAt: 'desc' } });
+  return rows.map((r: any) => ({
+    id: r.id,
+    area: r.area,
+    tableLabel: r.tableLabel,
+    covers: r.covers,
+    createdAt: r.createdAt.toISOString(),
+    items: r.itemsJson as any,
+    note: r.note,
+    subtotal: (r.itemsJson as any[]).reduce((s: number, it: any) => s + (Number(it.unitPrice) * Number(it.qty || 1)), 0),
+    vat: (r.itemsJson as any[]).reduce((s: number, it: any) => s + (Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0)), 0),
+  }));
+});
+
+// Notifications IPC
+ipcMain.handle('notifications:list', async (_e, input) => {
+  const userId = Number(input?.userId);
+  const onlyUnread = Boolean(input?.onlyUnread);
+  if (!userId) return [];
+  const rows = await prisma.notification.findMany({
+    where: { userId, ...(onlyUnread ? { readAt: null } : {}) },
+    orderBy: { createdAt: 'desc' },
+  } as any);
+  return rows.map((n: any) => ({
+    id: n.id,
+    type: n.type,
+    message: n.message,
+    readAt: n.readAt ? new Date(n.readAt).toISOString() : null,
+    createdAt: new Date(n.createdAt).toISOString(),
+  }));
+});
+
+ipcMain.handle('notifications:markAllRead', async (_e, input) => {
+  const userId = Number(input?.userId);
+  if (!userId) return false;
+  await prisma.notification.updateMany({ where: { userId, readAt: null }, data: { readAt: new Date() } });
+  return true;
+});
+
+ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
+  const where: any = {};
+  if (input?.startIso || input?.endIso) {
+    where.createdAt = {};
+    if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
+    if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
+  }
+  const logs = await prisma.ticketLog.groupBy({ where, by: ['userId'], _count: { userId: true } } as any).catch(() => []);
+  const users = await prisma.user.findMany({ where: { role: { not: 'ADMIN' } } as any });
+  const openShifts = await prisma.dayShift.findMany({ where: { closedAt: null } });
+  const openIds = new Set(openShifts.map((s: any) => s.openedById));
+  const counts: Record<number, number> = {};
+  for (const r of logs as any[]) counts[r.userId] = r._count.userId;
+  return users.map((u: any) => ({ id: u.id, name: u.displayName, active: openIds.has(u.id), tickets: counts[u.id] ?? 0 }));
+});
+
+ipcMain.handle('admin:listShifts', async () => {
+  const rows = await prisma.dayShift.findMany({
+    orderBy: { openedAt: 'desc' },
+    include: { openedBy: true, closedBy: true },
+  } as any).catch(() => []);
+  return rows.map((r: any) => {
+    const end = r.closedAt ? new Date(r.closedAt) : new Date();
+    const start = new Date(r.openedAt);
+    const durationMs = Math.max(0, end.getTime() - start.getTime());
+    const durationHours = Math.round((durationMs / 36e5) * 100) / 100;
+    return {
+      id: r.id,
+      userId: r.openedById,
+      userName: r.openedBy?.displayName ?? `#${r.openedById}`,
+      openedAt: r.openedAt.toISOString(),
+      closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : null,
+      durationHours,
+      isOpen: !r.closedAt,
+    };
+  });
+});
+
+ipcMain.handle('admin:listNotifications', async (_e, input) => {
+  const onlyUnread = Boolean(input?.onlyUnread);
+  const limit = Number(input?.limit || 100);
+  const rows = await prisma.notification.findMany({
+    where: { ...(onlyUnread ? { readAt: null } : {}) },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    include: { user: true },
+  } as any);
+  return rows.map((n: any) => ({
+    id: n.id,
+    userId: n.userId,
+    userName: n.user?.displayName ?? `#${n.userId}`,
+    type: n.type,
+    message: n.message,
+    readAt: n.readAt ? new Date(n.readAt).toISOString() : null,
+    createdAt: new Date(n.createdAt).toISOString(),
+  }));
+});
+
+ipcMain.handle('admin:markAllNotificationsRead', async () => {
+  await prisma.notification.updateMany({ where: { readAt: null }, data: { readAt: new Date() } });
+  return true;
+});
+
+// Top selling item today from TicketLog
+ipcMain.handle('admin:getTopSellingToday', async () => {
+  const start = new Date(new Date().setHours(0, 0, 0, 0));
+  const end = new Date(new Date().setHours(23, 59, 59, 999));
+  const rows = await prisma.ticketLog.findMany({ where: { createdAt: { gte: start, lte: end } }, select: { itemsJson: true } });
+  const map = new Map<string, { qty: number; revenue: number }>();
+  for (const r of rows) {
+    const items = (r.itemsJson as any[]) || [];
+    for (const it of items) {
+      const name = String(it.name || 'Item');
+      const qty = Number(it.qty || 1);
+      const revenue = Number(it.unitPrice || 0) * qty;
+      const entry = map.get(name) || { qty: 0, revenue: 0 };
+      entry.qty += qty;
+      entry.revenue += revenue;
+      map.set(name, entry);
+    }
+  }
+  let best: { name: string; qty: number; revenue: number } | null = null;
+  for (const [name, v] of map.entries()) {
+    if (!best || v.qty > best.qty) best = { name, qty: v.qty, revenue: v.revenue };
+  }
+  return best;
+});
+
+// Sales trends (daily/weekly/monthly)
+ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
+  const range = (input?.range as any) || 'daily';
+  const now = new Date();
+  const today = new Date(new Date().setHours(0, 0, 0, 0));
+  let start: Date;
+  let buckets: { key: string; label: string; from: Date; to: Date }[] = [];
+  if (range === 'daily') {
+    // last 14 days
+    start = new Date(today.getTime() - 13 * 86400000);
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(start.getTime() + i * 86400000);
+      const from = new Date(d.setHours(0, 0, 0, 0));
+      const to = new Date(d.setHours(23, 59, 59, 999));
+      const label = `${String(from.getMonth() + 1).padStart(2, '0')}/${String(from.getDate()).padStart(2, '0')}`;
+      const key = `${from.getFullYear()}-${from.getMonth() + 1}-${from.getDate()}`;
+      buckets.push({ key, label, from, to });
+    }
+  } else if (range === 'weekly') {
+    // last 12 weeks
+    start = new Date(today.getTime() - 7 * 86400000 * 11);
+    for (let i = 0; i < 12; i++) {
+      const from = new Date(start.getTime() + i * 7 * 86400000);
+      const to = new Date(from.getTime() + 6 * 86400000);
+      from.setHours(0, 0, 0, 0);
+      to.setHours(23, 59, 59, 999);
+      const oneJan = new Date(from.getFullYear(), 0, 1);
+      const week = Math.ceil((((from.getTime() - oneJan.getTime()) / 86400000) + oneJan.getDay() + 1) / 7);
+      const label = `${from.getFullYear()}-W${String(week).padStart(2, '0')}`;
+      const key = label;
+      buckets.push({ key, label, from, to });
+    }
+  } else {
+    // monthly, last 12 months
+    const startYear = today.getFullYear();
+    let m = today.getMonth() - 11;
+    for (let i = 0; i < 12; i++, m++) {
+      const year = startYear + Math.floor(m / 12);
+      const month = ((m % 12) + 12) % 12;
+      const from = new Date(year, month, 1, 0, 0, 0, 0);
+      const to = new Date(year, month + 1, 0, 23, 59, 59, 999);
+      const label = `${year}-${String(month + 1).padStart(2, '0')}`;
+      const key = label;
+      buckets.push({ key, label, from, to });
+    }
+  }
+
+  const rows = await prisma.ticketLog.findMany({
+    where: { createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to } },
+    select: { createdAt: true, itemsJson: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
+  for (const r of rows) {
+    const when = new Date(r.createdAt);
+    const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
+    if (idx === -1) continue;
+    const net = (r.itemsJson as any[]).reduce((s: number, it: any) => s + (Number(it.unitPrice) * Number(it.qty || 1)), 0);
+    result[idx].total += net;
+    result[idx].orders += 1;
+  }
+  return { range, points: result } as any;
+});
 // Covers API
 ipcMain.handle('covers:save', async (_e, { area, label, covers }) => {
   const num = Number(covers);
