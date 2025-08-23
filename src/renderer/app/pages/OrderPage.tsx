@@ -4,6 +4,7 @@ import { useOrderContext } from '../../stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
+import { logTicket } from '../../api';
 
 type MenuItemDTO = {
   id: number;
@@ -235,7 +236,7 @@ export default function OrderPage() {
               };
               console.log('ticket sent', details);
               if (!user?.id) return; // require logged-in user to log ticket
-              await window.api.tickets.log({
+              await logTicket({
                 userId: user.id,
                 area: selectedTable.area,
                 tableLabel: selectedTable.label,
@@ -301,7 +302,7 @@ export default function OrderPage() {
                   };
                   console.log('ticket sent', details);
                   if (!user?.id) return;
-                  await window.api.tickets.log({
+                  await logTicket({
                     userId: user.id,
                     area: selectedTable.area,
                     tableLabel: selectedTable.label,

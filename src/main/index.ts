@@ -7,6 +7,7 @@ import { LoginWithPinInputSchema, CreateUserInputSchema, UpdateUserInputSchema, 
 import { setupAutoUpdater } from './updater';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
+import { startApiServer } from './api';
 
 dotenv.config();
 
@@ -73,6 +74,7 @@ function createAdminWindow() {
 app.whenReady().then(() => {
   createWindow();
   setupAutoUpdater();
+  startApiServer();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
