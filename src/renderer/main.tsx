@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider, createHashRouter } from 'react-router-dom';
 import { routes } from './routes';
 import './styles/index.css';
+import { offlineQueue } from './utils/offlineQueue';
 
 const router = createHashRouter(routes);
 
@@ -11,5 +12,7 @@ createRoot(document.getElementById('root')!).render(
     <RouterProvider router={router} />
   </React.StrictMode>,
 );
+
+offlineQueue.sync().catch(() => {});
 
 
