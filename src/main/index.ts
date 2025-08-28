@@ -202,8 +202,17 @@ ipcMain.handle('auth:syncStaffFromApi', async (_e, raw) => {
     const users = await prisma.user.findMany({});
     return users.length;
   }
-  const res = await fetch(url, { headers: { Accept: 'application/json' } as any } as any);
-  if (!res.ok) throw new Error(`Failed to fetch staff: ${res.status}`);
+  let res: any;
+  try {
+    res = await fetch(url, { headers: { Accept: 'application/json' } as any } as any);
+  } catch {
+    return (await prisma.user.count()) || 0; // network failure: silently fallback
+  }
+  if (!res.ok) {
+    // Upstream 5xx: keep existing staff, update lastSync to avoid loops for a short period
+    await prisma.syncState.upsert({ where: { key: 'staff:lastSync' }, create: { key: 'staff:lastSync', valueJson: { ts: Date.now() } }, update: { valueJson: { ts: Date.now() } } });
+    return (await prisma.user.count()) || 0;
+  }
   const body = await res.json();
   const staff = Array.isArray(body?.data) ? body.data : [];
   let count = 0;
@@ -536,6 +545,7 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
     note: last.note ?? null,
     covers: last.covers ?? null,
     createdAt: last.createdAt.toISOString(),
+    userId: last.userId,
   };
 });
 

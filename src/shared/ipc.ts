@@ -237,6 +237,7 @@ export interface ApiTickets {
     note?: string | null;
     covers?: number | null;
     createdAt: string;
+    userId: number;
   } | null>;
   voidItem(input: { userId: number; area: string; tableLabel: string; item: { name: string; qty?: number; unitPrice: number; vatRate?: number; note?: string } }): Promise<boolean>;
   voidTicket(input: { userId: number; area: string; tableLabel: string; reason?: string }): Promise<boolean>;

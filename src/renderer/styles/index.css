@@ -8,4 +8,35 @@
 
 html, body, #root { height: 100%; }
 
+/* Mobile / tablet friendly tweaks */
+:root {
+  /* Safe area insets for Android/iOS cutouts */
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
+}
+
+body {
+  padding-top: var(--safe-top);
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+button, .btn {
+  min-height: 44px; /* comfortable touch target */
+}
+
+input, select {
+  min-height: 40px;
+}
+
+/* Prevent double-tap zoom on buttons/links */
+@supports (-webkit-touch-callout: none) {
+  a, button { touch-action: manipulation; }
+}
+
 

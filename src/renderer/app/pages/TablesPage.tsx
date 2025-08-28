@@ -75,10 +75,6 @@ export default function TablesPage() {
             </button>
           ))}
         </div>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <Legend />
         <div className="flex items-center gap-2">
           <button
             className={`px-3 py-1 rounded ${editable ? 'bg-amber-700' : 'bg-gray-700'}`}
@@ -100,6 +96,7 @@ export default function TablesPage() {
           )}
         </div>
       </div>
+
 
       <div className="relative w-full h-[520px] rounded bg-gray-800 overflow-hidden">
         {/* simple grid background */}
@@ -150,21 +147,6 @@ export default function TablesPage() {
         {area === 'Main Hall' && (
           <div className="absolute bottom-6 left-6 right-6 h-4 rounded bg-gray-700 opacity-70" title="Bar" />
         )}
-      </div>
-    </div>
-  );
-}
-
-function Legend() {
-  return (
-    <div className="flex gap-3 text-sm opacity-80">
-      <div className="flex items-center gap-2">
-        <span className={`inline-block w-3 h-3 rounded-full ${GREEN}`} />
-        <span>Free</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <span className={`inline-block w-3 h-3 rounded-full ${RED}`} />
-        <span>Has ticket</span>
       </div>
     </div>
   );

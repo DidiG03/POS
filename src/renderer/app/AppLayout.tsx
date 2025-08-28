@@ -1,34 +1,56 @@
-import { Link, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useSessionStore } from '../stores/session';
-import { useTableStatus } from '../stores/tableStatus';
+import { useTableStatus } from '@renderer/stores/tableStatus';
 
 export default function AppLayout() {
   const { user, setUser } = useSessionStore();
-  const [hasOpen, setHasOpen] = useState<boolean>(false);
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const navigate = useNavigate();
+  const [hasOpen, setHasOpen] = useState<boolean>(false);
 
   useEffect(() => {
     (async () => {
       if (!user) return;
-      const open = await window.api.shifts.getOpen(user.id);
-      setHasOpen(Boolean(open));
       const notifs = await window.api.notifications.list(user.id, true).catch(() => []);
       setUnreadCount(notifs.length || 0);
     })();
   }, [user]);
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
         <div className="font-semibold">Ullishtja Agrotourizem</div>
+        {user && (
+        <>
+          {hasOpen && (
+            <button
+              className="ml-4 px-3 py-1 rounded bg-red-600 hover:bg-red-700"
+              onClick={async () => {
+                const { openMap } = useTableStatus.getState();
+                const anyOpen = Object.values(openMap).some(Boolean);
+                if (anyOpen) {
+                  alert('Cannot clock out while there are open tables. Please settle all tickets first.');
+                  return;
+                }
+                await window.api.shifts.clockOut(user.id);
+                setHasOpen(false);
+                setUser(null);
+                navigate('/');
+              }}
+            >
+              Clock out
+            </button>
+          )}
+        </>
+      )}
         <nav className="space-x-4 flex items-center">
-          <Link to="/app" className="hover:underline">Home</Link>
-          <Link to="/app/tables" className="hover:underline">Tables</Link>
-          <Link to="/app/order" className="hover:underline">Order</Link>
-          <Link to="/app/reports" className="hover:underline">Reports</Link>
-          <Link to="/app/settings" className="hover:underline">Settings</Link>
+          {/* <Link to="/app" className="hover:underline">Home</Link> */}
+          <NavLink to="/app/tables" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tables</NavLink>
+          {/* <Link to="/app/order" className="hover:underline">Order</Link> */}
+          <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Reports</NavLink>
+          {/* <NavLink to="/app/settings" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Settings</NavLink> */}
 
           {/* Notification bell */}
           <div className="relative inline-block">
@@ -74,25 +96,6 @@ export default function AppLayout() {
           </div>
           {user && (
             <>
-              {hasOpen && (
-                <button
-                  className="ml-4 px-3 py-1 rounded bg-red-600 hover:bg-red-700"
-                  onClick={async () => {
-                    const { openMap } = useTableStatus.getState();
-                    const anyOpen = Object.values(openMap).some(Boolean);
-                    if (anyOpen) {
-                      alert('Cannot clock out while there are open tables. Please settle all tickets first.');
-                      return;
-                    }
-                    await window.api.shifts.clockOut(user.id);
-                    setHasOpen(false);
-                    setUser(null);
-                    navigate('/');
-                  }}
-                >
-                  Clock out
-                </button>
-              )}
               <button
                 className="ml-2 px-3 py-1 rounded bg-gray-600 hover:bg-gray-700"
                 onClick={() => {

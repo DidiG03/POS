@@ -26,7 +26,7 @@ export default function LoginPage() {
           return;
         }
         setUser(user);
-        navigate('/app');
+        navigate('/app/tables');
       }
       else setError('Invalid PIN');
     } catch (e) {
@@ -82,7 +82,7 @@ export default function LoginPage() {
               {staff.filter((s) => !openIds.includes(s.id)).map((s) => (
                 <button
                   key={s.id}
-                  className={`w-full rounded cursor-pointer px-3 py-2 text-left border ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
+                  className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
                   onClick={() => {
                     setSelectedId(s.id);
                     setPin('');
@@ -90,10 +90,18 @@ export default function LoginPage() {
                     setShowPin(true);
                   }}
                 >
-                  {s.displayName}
+                  <span>{s.displayName}</span>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    className="w-4 h-4 opacity-70"
+                  >
+                    <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
+                  </svg>
                 </button>
               ))}
-            </div>
+          </div>
           </div>
           <div>
             <div className="text-sm mb-2 opacity-80">Clocked in</div>
@@ -101,7 +109,7 @@ export default function LoginPage() {
               {staff.filter((s) => openIds.includes(s.id)).map((s) => (
                 <button
                   key={s.id}
-                  className={`w-full rounded cursor-pointer px-3 py-2 text-left border ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
+                  className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
                   onClick={() => {
                     setSelectedId(s.id);
                     setPin('');
@@ -109,7 +117,15 @@ export default function LoginPage() {
                     setShowPin(true);
                   }}
                 >
-                  {s.displayName}
+                  <span>{s.displayName}</span>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    className="w-4 h-4 opacity-70"
+                  >
+                    <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
+                  </svg>
                 </button>
               ))}
             </div>

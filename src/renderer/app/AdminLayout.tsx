@@ -1,4 +1,4 @@
-import { Link, Outlet } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 
 export default function AdminLayout() {
@@ -15,9 +15,9 @@ export default function AdminLayout() {
       <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
         <div className="font-semibold">Ullishtja POS Admin</div>
         <nav className="space-x-3 text-sm flex items-center">
-          <Link to="/admin" className="hover:underline">Overview</Link>
-          <Link to="/admin/tickets" className="hover:underline">Tickets</Link>
-          <Link to="/admin/settings" className="hover:underline">Settings</Link>
+          <NavLink to="/admin" end className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Overview</NavLink>
+          <NavLink to="/admin/tickets" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tickets</NavLink>
+          <NavLink to="/admin/settings" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Settings</NavLink>
 
           <div className="relative inline-block">
             <button

@@ -20,6 +20,8 @@ model User {
   shiftsClosed DayShift[] @relation("ShiftClosedBy")
   ticketLogs  TicketLog[]
   notifications Notification[]
+  twoFactorEnabled Boolean  @default(false)
+  twoFactorSecret  String?
 }
 
 enum Role {
