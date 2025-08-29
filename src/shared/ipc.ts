@@ -100,6 +100,15 @@ export interface ApiAuth {
   syncStaffFromApi(url?: string): Promise<number>;
 }
 
+export interface ApiRequests {
+  create(input: { requesterId: number; ownerId: number; area: string; tableLabel: string; items: any[]; note?: string | null }): Promise<boolean>;
+  listForOwner(ownerId: number): Promise<Array<{ id: number; area: string; tableLabel: string; requesterId: number; items: any[]; note?: string | null; createdAt: string }>>;
+  approve(id: number, ownerId: number): Promise<boolean>;
+  reject(id: number, ownerId: number): Promise<boolean>;
+  pollApprovedForTable(ownerId: number, area: string, tableLabel: string): Promise<Array<{ id: number; items: any[]; note?: string | null }>>;
+  markApplied(ids: number[]): Promise<boolean>;
+}
+
 // Shifts
 export interface ShiftDTO {
   id: number;
@@ -134,6 +143,7 @@ export interface Api {
   tickets: ApiTickets;
   notifications: ApiNotifications;
   tables: ApiTables;
+  requests: ApiRequests;
 }
 
 // Admin overview DTOs
@@ -241,6 +251,7 @@ export interface ApiTickets {
   } | null>;
   voidItem(input: { userId: number; area: string; tableLabel: string; item: { name: string; qty?: number; unitPrice: number; vatRate?: number; note?: string } }): Promise<boolean>;
   voidTicket(input: { userId: number; area: string; tableLabel: string; reason?: string }): Promise<boolean>;
+  getTableTooltip(area: string, tableLabel: string): Promise<{ covers: number | null; firstAt: string | null; total: number } | null>;
 }
 
 export interface NotificationDTO {

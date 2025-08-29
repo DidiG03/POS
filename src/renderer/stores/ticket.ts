@@ -8,6 +8,8 @@ export interface TicketLine {
   vatRate: number; // 0.2 = 20%
   qty: number;
   note?: string;
+  // When true, this line was added locally in the current session (not from last logged ticket)
+  staged?: boolean;
 }
 
 interface TicketState {
@@ -21,6 +23,7 @@ interface TicketState {
   setOrderNote: (note: string) => void;
   hydrate: (payload: { items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[]; note?: string | null }) => void;
   clear: () => void;
+  markAllAsSent: () => void;
 }
 
 export const useTicketStore = create<TicketState>((set, get) => ({
@@ -28,14 +31,14 @@ export const useTicketStore = create<TicketState>((set, get) => ({
   orderNote: '',
   addItem: ({ sku, name, unitPrice, vatRate = 0.2 }) => {
     set((state) => {
-      const existing = state.lines.find((l) => l.sku === sku);
+      const existing = state.lines.find((l) => l.sku === sku && l.staged === true);
       if (existing) {
         return {
           lines: state.lines.map((l) => (l.id === existing.id ? { ...l, qty: l.qty + 1 } : l)),
         };
       }
       const id = `${sku}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const line: TicketLine = { id, sku, name, unitPrice, vatRate, qty: 1 };
+      const line: TicketLine = { id, sku, name, unitPrice, vatRate, qty: 1, staged: true };
       return { lines: [...state.lines, line] };
     });
   },
@@ -59,10 +62,12 @@ export const useTicketStore = create<TicketState>((set, get) => ({
         vatRate: Number(it.vatRate ?? 0),
         qty: Number(it.qty || 1),
         note: it.note,
+        staged: false,
       })),
       orderNote: note || '',
     })),
   clear: () => set({ lines: [] }),
+  markAllAsSent: () => set((s) => ({ lines: s.lines.map((l) => ({ ...l, staged: false })) })),
 }));
 
 

@@ -20,6 +20,8 @@ model User {
   shiftsClosed DayShift[] @relation("ShiftClosedBy")
   ticketLogs  TicketLog[]
   notifications Notification[]
+  ticketRequestsMade TicketRequest[] @relation("TicketRequestRequester")
+  ticketRequestsOwned TicketRequest[] @relation("TicketRequestOwner")
   twoFactorEnabled Boolean  @default(false)
   twoFactorSecret  String?
 }
@@ -195,6 +197,28 @@ enum PrintStatus {
   QUEUED
   SENT
   FAILED
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPLIED
+}
+
+model TicketRequest {
+  id          Int            @id @default(autoincrement())
+  area        String
+  tableLabel  String
+  requester   User           @relation("TicketRequestRequester", fields: [requesterId], references: [id])
+  requesterId Int
+  owner       User           @relation("TicketRequestOwner", fields: [ownerId], references: [id])
+  ownerId     Int
+  itemsJson   Json
+  note        String?
+  status      RequestStatus  @default(PENDING)
+  createdAt   DateTime       @default(now())
+  decidedAt   DateTime?
 }
 
 

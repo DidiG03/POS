@@ -63,13 +63,13 @@ export default function AdminPage() {
       <Stat title="Active Users" value={ov?.activeUsers} />
       <Stat title="Open Shifts" value={ov?.openShifts} />
       <Stat title="Open Orders" value={ov?.openOrders} />
-      <Stat title="Revenue Today (net)" value={ov ? (ov.revenueTodayNet ?? 0).toFixed(2) : '—'} />
-      <Stat title="VAT Today" value={ov ? (ov.revenueTodayVat ?? 0).toFixed(2) : '—'} />
+      <Stat title="Revenue Today (net)" value={ov ? (ov.revenueTodayNet ?? 0) : '—'} />
+      <Stat title="VAT Today" value={ov ? (ov.revenueTodayVat ?? 0) : '—'} />
       <div className="bg-gray-800 rounded p-4">
         <div className="text-sm opacity-70">Top Selling Today</div>
         <div className="mt-1 text-lg font-semibold">{topSelling ? topSelling.name : '—'}</div>
         {topSelling && (
-          <div className="text-sm opacity-80">Qty: {topSelling.qty} • Revenue: {topSelling.revenue.toFixed(2)}</div>
+          <div className="text-sm opacity-80">Qty: {topSelling.qty} • Revenue: {topSelling.revenue}</div>
         )}
       </div>
       <Stat title="Low Stock Items" value={ov?.lowStockItems} />
@@ -140,7 +140,7 @@ export default function AdminPage() {
                   <td className="py-1 pr-2">{s.userName}</td>
                   <td className="py-1 pr-2">{new Date(s.openedAt).toLocaleString()}</td>
                   <td className="py-1 pr-2">{s.closedAt ? new Date(s.closedAt).toLocaleString() : '—'}</td>
-                  <td className="py-1 pr-2">{s.durationHours.toFixed(2)}</td>
+                  <td className="py-1 pr-2">{s.durationHours}</td>
                   <td className="py-1 pr-2">{s.isOpen ? 'Open' : 'Closed'}</td>
                 </tr>
               ))}

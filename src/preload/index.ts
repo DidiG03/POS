@@ -51,6 +51,7 @@ const api: Api = {
     getLatestForTable: (area: string, tableLabel: string) => ipcRenderer.invoke('tickets:getLatestForTable', { area, tableLabel }),
     voidItem: (payload: any) => ipcRenderer.invoke('tickets:voidItem', payload),
     voidTicket: (payload: any) => ipcRenderer.invoke('tickets:voidTicket', payload),
+    getTableTooltip: (area: string, tableLabel: string) => ipcRenderer.invoke('tickets:getTableTooltip', { area, tableLabel }),
   },
   tables: {
     setOpen: (area: string, label: string, open: boolean) => ipcRenderer.invoke('tables:setOpen', { area, label, open }),
@@ -59,6 +60,14 @@ const api: Api = {
   notifications: {
     list: (userId: number, onlyUnread?: boolean) => ipcRenderer.invoke('notifications:list', { userId, onlyUnread }),
     markAllRead: (userId: number) => ipcRenderer.invoke('notifications:markAllRead', { userId }),
+  },
+  requests: {
+    create: (input: { requesterId: number; ownerId: number; area: string; tableLabel: string; items: any[]; note?: string | null }) => ipcRenderer.invoke('requests:create', input),
+    listForOwner: (ownerId: number) => ipcRenderer.invoke('requests:listForOwner', { ownerId }),
+    approve: (id: number, ownerId: number) => ipcRenderer.invoke('requests:approve', { id, ownerId }),
+    reject: (id: number, ownerId: number) => ipcRenderer.invoke('requests:reject', { id, ownerId }),
+    pollApprovedForTable: (ownerId: number, area: string, tableLabel: string) => ipcRenderer.invoke('requests:pollApprovedForTable', { ownerId, area, tableLabel }),
+    markApplied: (ids: number[]) => ipcRenderer.invoke('requests:markApplied', { ids }),
   },
 };
 

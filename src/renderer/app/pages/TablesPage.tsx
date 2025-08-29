@@ -10,6 +10,7 @@ type TableNode = { id: number; label: string; x: number; y: number; status: Tabl
 
 const GREEN = 'bg-emerald-700';
 const RED = 'bg-rose-700';
+const ORANGE = 'bg-amber-700';
 
 export default function TablesPage() {
   const [area, setArea] = useState<string>('Main Hall');
@@ -19,8 +20,23 @@ export default function TablesPage() {
   const [nodes, setNodes] = useState<TableNode[] | null>(null);
   const { setSelectedTable, pendingAction, setPendingAction } = useOrderContext();
   const navigate = useNavigate();
-  const { isOpen } = useTableStatus();
+  const { isOpen, openMap } = useTableStatus();
   const { hydrate, clear } = useTicketStore();
+
+  const [userMap, setUserMap] = useState<Record<number, string>>({});
+  const [initialsByTable, setInitialsByTable] = useState<Record<string, string>>({});
+  const [ownerByTable, setOwnerByTable] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const users = await window.api.auth.listUsers();
+        const map: Record<number, string> = {};
+        for (const u of users) map[u.id] = u.displayName;
+        setUserMap(map);
+      } catch {}
+    })();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -35,7 +51,8 @@ export default function TablesPage() {
 
   function generateDefaultNodes(areaName: string, count: number): TableNode[] {
     const width = 760; const height = 460; const cx = width / 2; const cy = height / 2; const radius = Math.min(cx, cy) - 60;
-    const baseLabel = areaName[0]?.toUpperCase() ?? 'T';
+    // Always use 'T' prefix across all areas so we don't create multiple label schemes
+    const baseLabel = 'T';
     const n = Math.max(0, count);
     return Array.from({ length: n }).map((_, i) => {
       const angle = (i / Math.max(1, n)) * Math.PI * 2;
@@ -53,12 +70,65 @@ export default function TablesPage() {
       const targetCount = cfg?.count ?? 8;
       const saved = await window.api.layout.get(user.id, area);
       if (Array.isArray(saved) && saved.length === targetCount) {
-        setNodes(saved);
+        // Normalize any legacy labels like 'M1' -> 'T1' so only one layout scheme exists
+        const normalized = saved.map((n: any, i: number) => {
+          const match = String(n.label).match(/^(?:[^0-9]*)(\d+)$/);
+          const num = match ? Number(match[1]) : i + 1;
+          return { ...n, label: `T${num}` } as TableNode;
+        });
+        setNodes(normalized);
       } else {
         setNodes(generateDefaultNodes(area, targetCount));
       }
     })();
   }, [user, area, areas]);
+
+  function toInitials(name: string): string {
+    const parts = String(name || '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const first = parts[0]?.[0] || '';
+    const second = parts[1]?.[0] || '';
+    return (first + second).toUpperCase();
+  }
+
+  // Load latest ticket owners for open tables in current area
+  useEffect(() => {
+    (async () => {
+      if (!nodes || !area) return;
+      const badgeUpdates: [string, string][] = [];
+      const ownerUpdates: [string, number][] = [];
+      await Promise.all(
+        nodes.map(async (n) => {
+          if (!isOpen(area, n.label)) return;
+          const k = `${area}:${n.label}`;
+          try {
+            const data = await window.api.tickets.getLatestForTable(area, n.label);
+            if (data?.userId) ownerUpdates.push([k, data.userId]);
+            if (data?.userId && userMap[data.userId]) badgeUpdates.push([k, toInitials(userMap[data.userId])]);
+          } catch {}
+        }),
+      );
+      setInitialsByTable((prev) => {
+        const next: Record<string, string> = {};
+        // keep badges for other areas, replace current area keys
+        for (const [key, val] of Object.entries(prev)) {
+          if (!key.startsWith(`${area}:`)) next[key] = val;
+        }
+        for (const [k, v] of badgeUpdates) next[k] = v;
+        return next;
+      });
+      setOwnerByTable((prev) => {
+        const next: Record<string, number> = {};
+        for (const [key, val] of Object.entries(prev)) {
+          if (!key.startsWith(`${area}:`)) next[key] = val as number;
+        }
+        for (const [k, v] of ownerUpdates) next[k] = v;
+        return next;
+      });
+    })();
+  }, [area, nodes, userMap, openMap]);
 
   return (
     <div className="space-y-3">
@@ -111,6 +181,7 @@ export default function TablesPage() {
             key={t.id}
             node={t}
             editable={editable}
+            area={area}
             onMove={(x, y) =>
               setNodes((prev) =>
                 prev?.map((n, i) => (i === idx ? { ...n, x, y } : n)) ?? prev,
@@ -140,7 +211,16 @@ export default function TablesPage() {
                 }, 0);
               }
             }}
-            colorClass={isOpen(area, t.label) ? RED : GREEN}
+            colorClass={(() => {
+              if (!isOpen(area, t.label)) return GREEN;
+              const ownerId = ownerByTable[`${area}:${t.label}`];
+              const uid = user?.id;
+              if (ownerId != null && uid != null && Number(ownerId) === Number(uid)) return RED;
+              return ORANGE;
+            })()}
+            badge={isOpen(area, t.label) ? initialsByTable[`${area}:${t.label}`] : undefined}
+            ownerName={(ownerByTable[`${area}:${t.label}`] && userMap[ownerByTable[`${area}:${t.label}`]]) || undefined}
+            statusText={isOpen(area, t.label) ? 'OPEN' : 'FREE'}
           />
         ))}
         {/* Sample bar counter/obstacles */}
@@ -152,8 +232,11 @@ export default function TablesPage() {
   );
 }
 
-function DraggableCircle({ node, editable, onMove, onClick, colorClass }: { node: TableNode; editable: boolean; onMove: (x: number, y: number) => void; onClick?: () => void; colorClass?: string }) {
+function DraggableCircle({ node, editable, onMove, onClick, colorClass, badge, ownerName, statusText, area }: { node: TableNode; editable: boolean; onMove: (x: number, y: number) => void; onClick?: () => void; colorClass?: string; badge?: string; ownerName?: string; statusText?: string; area?: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const [tooltip, setTooltip] = useState<{ covers: number | null; firstAt: string | null; total: number } | null>(null);
+  const [showTip, setShowTip] = useState(false);
+  const holdTimer = useRef<any>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el || !editable) return;
@@ -185,15 +268,57 @@ function DraggableCircle({ node, editable, onMove, onClick, colorClass }: { node
     };
   }, [editable, onMove]);
 
+  // Hover / long-press tooltip
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fetchTip = async () => {
+      try {
+        if (!area) return;
+        const t = await (window as any).api.tickets.getTableTooltip(area, node.label);
+        setTooltip(t);
+        setShowTip(true);
+      } catch {}
+    };
+    const onEnter = () => { holdTimer.current = setTimeout(fetchTip, 500); };
+    const onLeave = () => { clearTimeout(holdTimer.current); setShowTip(false); };
+    const onDown = () => { holdTimer.current = setTimeout(fetchTip, 2000); };
+    el.addEventListener('mouseenter', onEnter);
+    el.addEventListener('mouseleave', onLeave);
+    el.addEventListener('touchstart', onDown, { passive: true } as any);
+    el.addEventListener('touchend', onLeave, { passive: true } as any);
+    return () => {
+      el.removeEventListener('mouseenter', onEnter);
+      el.removeEventListener('mouseleave', onLeave);
+      el.removeEventListener('touchstart', onDown as any);
+      el.removeEventListener('touchend', onLeave as any);
+    };
+  }, [node.label]);
+
   return (
     <div
       ref={ref}
       className={`absolute -translate-x-1/2 -translate-y-1/2 w-16 h-16 ${colorClass || GREEN} rounded-full flex items-center justify-center shadow-lg ${editable ? 'cursor-move' : 'cursor-pointer'} select-none`}
       style={{ left: node.x, top: node.y }}
-      title={`${node.label} • ${node.status}`}
+      title={`${node.label} • ${statusText || node.status}`}
       onClick={onClick}
     >
-      <span className="text-sm font-semibold">{node.label}</span>
+      <div className="flex flex-col items-center leading-none">
+        <span className="text-sm font-semibold">{node.label}</span>
+        {badge && (
+          <span className="mt-0.5 text-[10px] font-semibold px-1 rounded bg-black/40">
+            {badge}
+          </span>
+        )}
+      </div>
+      {showTip && tooltip && (
+        <div className="absolute top-18 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-black/80 text-white px-2 py-1 rounded shadow">
+          {ownerName && <div>{ownerName}</div>}
+          <div>Covers: {tooltip.covers ?? '-'}</div>
+          <div>Since: {tooltip.firstAt ? new Date(tooltip.firstAt).toLocaleTimeString() : '-'}</div>
+          <div>Total: {tooltip.total.toFixed ? tooltip.total.toFixed(2) : tooltip.total}</div>
+        </div>
+      )}
     </div>
   );
 }

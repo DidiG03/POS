@@ -73,9 +73,9 @@ export default function AdminUserTicketsPage() {
 
       <div className="bg-gray-800 rounded p-3 flex gap-6 text-sm">
         <div>Tickets: {tickets.length}</div>
-        <div>Subtotal: {totals.subtotal.toFixed(2)}</div>
-        <div>VAT: {totals.vat.toFixed(2)}</div>
-        <div>Total: {totals.grand.toFixed(2)}</div>
+        <div>Subtotal: {totals.subtotal}</div>
+        <div>VAT: {totals.vat}</div>
+        <div>Total: {totals.grand}</div>
       </div>
 
       {loading ? (
@@ -96,15 +96,15 @@ export default function AdminUserTicketsPage() {
                       {it.note && <span className="opacity-70"> • {it.note}</span>}
                       {it.voided && <span className="ml-2 text-[10px] inline-block px-1 rounded bg-red-700">VOID</span>}
                     </div>
-                    <div className="ml-2 shrink-0">{(it.unitPrice * it.qty).toFixed(2)}</div>
+                    <div className="ml-2 shrink-0">{(it.unitPrice * it.qty)}</div>
                   </div>
                 ))}
               </div>
               <div className="mt-2 text-xs flex justify-between">
                 {t.note ? <div className="opacity-70 truncate pr-2">Note: {t.note}</div> : <span />}
                 <div className="flex items-center gap-3">
-                  <div>VAT: {t.vat.toFixed(2)}</div>
-                  <div className="font-semibold">Total: {(t.subtotal + t.vat).toFixed(2)}</div>
+                  <div>VAT: {t.vat}</div>
+                  <div className="font-semibold">Total: {(t.subtotal + t.vat)}</div>
                 </div>
               </div>
             </div>
@@ -124,14 +124,14 @@ export default function AdminUserTicketsPage() {
                       {it.note ? <span className="opacity-70"> • {it.note}</span> : null}
                       {it.voided ? <span className="ml-2 text-[10px] px-1 rounded bg-red-700">VOID</span> : null}
                     </div>
-                    <div>{(it.unitPrice * it.qty).toFixed(2)}</div>
+                    <div>{(it.unitPrice * it.qty)}</div>
                   </div>
                 ))}
               </div>
               {t.note && <div className="text-xs opacity-70 mt-1">Note: {t.note}</div>}
               <div className="mt-2 text-sm flex justify-end gap-4">
-                <div>VAT: {t.vat.toFixed(2)}</div>
-                <div>Total: {(t.subtotal + t.vat).toFixed(2)}</div>
+                <div>VAT: {t.vat}</div>
+                <div>Total: {(t.subtotal + t.vat)}</div>
               </div>
             </div>
           ))}

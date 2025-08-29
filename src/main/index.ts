@@ -8,6 +8,7 @@ import { setupAutoUpdater } from './updater';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
+import { table } from 'node:console';
 
 dotenv.config();
 
@@ -347,6 +348,12 @@ ipcMain.handle('tables:setOpen', async (_e, input) => {
   const k = `${area}:${label}`;
   if (open) map[k] = true; else delete map[k];
   await prisma.syncState.upsert({ where: { key }, create: { key, valueJson: map }, update: { valueJson: map } });
+  // Track open timestamp for current session
+  const keyAt = 'tables:openAt';
+  const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } });
+  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
+  if (open) atMap[k] = new Date().toISOString(); else delete atMap[k];
+  await prisma.syncState.upsert({ where: { key: keyAt }, create: { key: keyAt, valueJson: atMap }, update: { valueJson: atMap } });
   return true;
 });
 
@@ -546,6 +553,36 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
     covers: last.covers ?? null,
     createdAt: last.createdAt.toISOString(),
     userId: last.userId,
+  };
+});
+
+// Tooltip stats for a table: covers, first ticket time, latest total
+ipcMain.handle('tickets:getTableTooltip', async (_e, input) => {
+  const area = String(input?.area || '');
+  const tableLabel = String(input?.tableLabel || '');
+  if (!area || !tableLabel) return null;
+  // Show only for currently open tables
+  const openRow = await prisma.syncState.findUnique({ where: { key: 'tables:open' } });
+  const openMap = ((openRow?.valueJson as any) || {}) as Record<string, boolean>;
+  const k = `${area}:${tableLabel}`;
+  if (!openMap[k]) return null;
+  // Session start time
+  const atRow = await prisma.syncState.findUnique({ where: { key: 'tables:openAt' } });
+  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
+  const sinceIso = atMap[k];
+  const since = sinceIso ? new Date(sinceIso) : null;
+  const where: any = { area, tableLabel };
+  if (since) where.createdAt = { gte: since };
+  const [last, coversRow] = await Promise.all([
+    prisma.ticketLog.findFirst({ where, orderBy: { createdAt: 'desc' } }),
+    prisma.covers.findFirst({ where: { area, label: tableLabel, ...(since ? { createdAt: { gte: since } as any } : {}) }, orderBy: { id: 'desc' } } as any),
+  ]);
+  const items = ((last?.itemsJson as any[]) || []).filter((it: any) => !it.voided);
+  const total = items.reduce((s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1), 0);
+  return {
+    covers: coversRow?.covers ?? null,
+    firstAt: since ? since.toISOString() : last ? new Date(last.createdAt).toISOString() : null,
+    total,
   };
 });
 
@@ -814,6 +851,118 @@ ipcMain.handle('layout:save', async (_e, { userId, area, nodes }) => {
     create: { key, valueJson: { nodes } },
     update: { valueJson: { nodes } },
   });
+  return true;
+});
+
+
+// Create a request from non-owner
+ipcMain.handle('requests:create', async (_e, input) => {
+  const { requesterId, ownerId, area, tableLabel, items, note } = input || {};
+  if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items)) return false;
+
+  const created = await prisma.ticketRequest.create({
+    data: {
+      requesterId: Number(requesterId),
+      ownerId: Number(ownerId),
+      area: String(area),
+      tableLabel: String(tableLabel),
+      itemsJson: items,
+      note: note ? String(note) : null,
+      status: 'PENDING' as any,
+    },
+  });
+
+  // Notify owner
+  const requester = await prisma.user.findUnique({ where: { id: Number(requesterId) } });
+  const msg = `${requester?.displayName || 'Staff'} requested to add items on ${area} ${tableLabel} (Request #${created.id})`;
+  await prisma.notification.create({ data: { userId: Number(ownerId), type: 'OTHER' as any, message: msg } }).catch(() => {});
+  return true;
+});
+
+// List pending requests for owner
+ipcMain.handle('requests:listForOwner', async (_e, input) => {
+  const ownerId = Number(input?.ownerId);
+  if (!ownerId) return [];
+  const rows = await prisma.ticketRequest.findMany({ where: { ownerId, status: 'PENDING' as any }, orderBy: { createdAt: 'desc' } } as any);
+  return rows.map((r: any) => ({ id: r.id, area: r.area, tableLabel: r.tableLabel, requesterId: r.requesterId, items: r.itemsJson, note: r.note, createdAt: r.createdAt.toISOString() }));
+});
+
+// Approve or reject
+ipcMain.handle('requests:approve', async (_e, input) => {
+  const id = Number(input?.id); const ownerId = Number(input?.ownerId);
+  if (!id || !ownerId) return false;
+  const r = await prisma.ticketRequest.findUnique({ where: { id } });
+  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any)) return false;
+  await prisma.ticketRequest.update({ where: { id }, data: { status: 'APPROVED' as any, decidedAt: new Date() } });
+  // Persist the approval by appending items to the latest ticket log snapshot
+  try {
+    const last = await prisma.ticketLog.findFirst({ where: { area: r.area, tableLabel: r.tableLabel }, orderBy: { createdAt: 'desc' } });
+    const baseItems = ((last?.itemsJson as any[]) || []).map((it: any) => ({
+      name: String(it.name || 'Item'),
+      qty: Number(it.qty || 1),
+      unitPrice: Number(it.unitPrice || 0),
+      vatRate: Number(it.vatRate || 0),
+      note: it.note ?? null,
+    }));
+    const incoming = ((r.itemsJson as any[]) || []).map((it: any) => ({
+      name: String(it.name || 'Item'),
+      qty: Number(it.qty || 1),
+      unitPrice: Number(it.unitPrice || 0),
+      vatRate: Number(it.vatRate || 0),
+      note: it.note ?? null,
+    }));
+    const map = new Map<string, any>();
+    for (const it of baseItems) {
+      map.set(it.name, { ...it });
+    }
+    for (const it of incoming) {
+      const existing = map.get(it.name);
+      if (existing) {
+        map.set(it.name, { ...existing, qty: Number(existing.qty || 0) + Number(it.qty || 1) });
+      } else {
+        map.set(it.name, { ...it });
+      }
+    }
+    const merged = Array.from(map.values());
+    await prisma.ticketLog.create({
+      data: {
+        userId: r.ownerId,
+        area: r.area,
+        tableLabel: r.tableLabel,
+        covers: last?.covers ?? null,
+        itemsJson: merged,
+        note: last?.note ?? null,
+      },
+    });
+  } catch {}
+  await prisma.notification.create({ data: { userId: r.requesterId, type: 'OTHER' as any, message: `Your request #${id} on ${r.area} ${r.tableLabel} was approved` } }).catch(() => {});
+  return true;
+});
+
+ipcMain.handle('requests:reject', async (_e, input) => {
+  const id = Number(input?.id); const ownerId = Number(input?.ownerId);
+  if (!id || !ownerId) return false;
+  const r = await prisma.ticketRequest.findUnique({ where: { id } });
+  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any)) return false;
+  await prisma.ticketRequest.update({ where: { id }, data: { status: 'REJECTED' as any, decidedAt: new Date() } });
+  await prisma.notification.create({ data: { userId: r.requesterId, type: 'OTHER' as any, message: `Your request #${id} on ${r.area} ${r.tableLabel} was rejected` } }).catch(() => {});
+  return true;
+});
+
+// Owner's OrderPage polls approved requests for current table
+ipcMain.handle('requests:pollApprovedForTable', async (_e, input) => {
+  const ownerId = Number(input?.ownerId);
+  const area = String(input?.area || ''); const tableLabel = String(input?.tableLabel || '');
+  if (!ownerId || !area || !tableLabel) return [];
+  const rows = await prisma.ticketRequest.findMany({ where: { ownerId, area, tableLabel, status: 'APPROVED' as any }, orderBy: { createdAt: 'asc' } } as any);
+  return rows.map((r: any) => ({ id: r.id, items: r.itemsJson, note: r.note }));
+});
+
+// Mark applied so we don’t re-apply
+ipcMain.handle('requests:markApplied', async (_e, input) => {
+  const ids: number[] = Array.isArray(input?.ids) ? input.ids : [];
+  if (!ids.length) return false;
+  await prisma.ticketRequest.updateMany({ where: { id: { in: ids }, status: 'APPROVED' as any }, data: { status: 'APPLIED' as any, decidedAt: new Date() } } as any);
   return true;
 });
 

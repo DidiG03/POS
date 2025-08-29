@@ -9,6 +9,7 @@ export default function AppLayout() {
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const navigate = useNavigate();
   const [hasOpen, setHasOpen] = useState<boolean>(false);
+  const [confirmModal, setConfirmModal] = useState<boolean>(false);
 
   useEffect(() => {
     (async () => {
@@ -18,44 +19,62 @@ export default function AppLayout() {
     })();
   }, [user]);
 
+  useEffect(() => {
+    (async () => {
+      if (!user) return;
+      const open = await window.api.shifts.getOpen(user.id);
+      setHasOpen(Boolean(open));
+    })();
+  }, [user]);
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
-        <div className="font-semibold">Ullishtja Agrotourizem</div>
-        {user && (
-        <>
-          {hasOpen && (
-            <button
-              className="ml-4 px-3 py-1 rounded bg-red-600 hover:bg-red-700"
-              onClick={async () => {
-                const { openMap } = useTableStatus.getState();
-                const anyOpen = Object.values(openMap).some(Boolean);
-                if (anyOpen) {
-                  alert('Cannot clock out while there are open tables. Please settle all tickets first.');
-                  return;
-                }
-                await window.api.shifts.clockOut(user.id);
-                setHasOpen(false);
-                setUser(null);
-                navigate('/');
-              }}
-            >
-              Clock out
-            </button>
+        <div className="flex items-center gap-2">
+        <div className="font-semibold">Ullishtja Agrotourizem - {user?.displayName} -</div>
+          {user && (
+            <>
+              {hasOpen && (
+                <button
+                  className="cursor-pointer hover:underline"
+                  onClick={async () => {
+                    const { openMap } = useTableStatus.getState();
+                    const anyOpen = Object.values(openMap).some(Boolean);
+                    if (anyOpen) {
+                      alert('Cannot clock out while there are open tables. Please settle all tickets first.');
+                      return;
+                    }else{
+                      setConfirmModal(true);
+                    }
+                  }}
+                >
+                  Clock out
+                </button>
+              )}
+              {confirmModal && (
+                <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-9999">
+                  <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <h2 className="text-center">Are you sure you want to clock out?</h2>
+                      <button onClick={() => setConfirmModal(false)} className="cursor-pointer">x</button>
+                    </div>
+                    <button className='w-full bg-red-600 text-white py-1 px-2 cursor-pointer hover:bg-red-700' onClick={async () => {
+                      await window.api.shifts.clockOut(user.id);
+                      setHasOpen(false);
+                      setUser(null);
+                      navigate('/');
+                    }}>Clock out</button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
-        </>
-      )}
+        </div>
         <nav className="space-x-4 flex items-center">
-          {/* <Link to="/app" className="hover:underline">Home</Link> */}
-          <NavLink to="/app/tables" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tables</NavLink>
-          {/* <Link to="/app/order" className="hover:underline">Order</Link> */}
-          <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Reports</NavLink>
-          {/* <NavLink to="/app/settings" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Settings</NavLink> */}
-
-          {/* Notification bell */}
-          <div className="relative inline-block">
+                    {/* Notification bell */}
+                    <div className="relative inline-block">
             <button
-              className="ml-2 p-2 rounded hover:bg-gray-700"
+              className="ml-2 p-2 rounded hover:bg-gray-700 cursor-pointer"
               aria-label="Notifications"
               onClick={() => setShowNotifications((v) => !v)}
             >
@@ -90,10 +109,16 @@ export default function AppLayout() {
                   ) : (
                     <div className="opacity-70">No notifications</div>
                   )}
+                  {user && <OwnerRequests userId={user.id} />}
                 </div>
               </div>
             )}
           </div>
+          {/* <Link to="/app" className="hover:underline">Home</Link> */}
+          <NavLink to="/app/tables" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tables</NavLink>
+          {/* <Link to="/app/order" className="hover:underline">Order</Link> */}
+          <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Reports</NavLink>
+          {/* <NavLink to="/app/settings" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Settings</NavLink> */}
           {user && (
             <>
               <button
@@ -126,10 +151,11 @@ function NotificationsList({ userId, onCount }: { userId: number; onCount: (n: n
       onCount(unread.length || 0);
     })();
   }, [userId, onCount]);
-  if (!items.length) return <div className="opacity-70">No notifications</div>;
+  const filtered = items.filter((n) => !/requested to add items/i.test(n.message));
+  if (!filtered.length) return <div className="opacity-70">No notifications</div>;
   return (
     <ul className="max-h-72 overflow-auto space-y-2">
-      {items.map((n) => (
+      {filtered.map((n) => (
         <li key={n.id} className="p-2 rounded bg-gray-700/60">
           <div className="flex items-center justify-between">
             <span className="text-xs opacity-70">{formatNotificationTimestamp(n.createdAt)}</span>
@@ -139,6 +165,64 @@ function NotificationsList({ userId, onCount }: { userId: number; onCount: (n: n
         </li>
       ))}
     </ul>
+  );
+}
+
+function OwnerRequests({ userId }: { userId: number }) {
+  const [rows, setRows] = useState<Array<{ id: number; area: string; tableLabel: string; requesterId: number; items: any[]; note?: string | null; createdAt: string }>>([]);
+  useEffect(() => {
+    (async () => {
+      const r = await window.api.requests.listForOwner(userId).catch(() => []);
+      setRows(r);
+    })();
+  }, [userId]);
+  if (!rows.length) return null;
+  return (
+    <div className="mt-3 border-t border-gray-700 pt-2 max-h-64 overflow-auto">
+      <div className="text-xs opacity-70 mb-1">Ticket requests</div>
+      <ul className="space-y-2">
+        {rows.map((r) => (
+          <li key={r.id} className="p-2 rounded bg-gray-700/60">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">{r.area} {r.tableLabel} – Request #{r.id}</div>
+              <span className="text-xs opacity-70">{formatNotificationTimestamp(r.createdAt)}</span>
+            </div>
+            {r.note && <div className="text-xs opacity-70 mt-1">{r.note}</div>}
+            <div className="mt-2 text-xs">
+              {Array.isArray(r.items) && r.items.length ? (
+                <ul className="list-disc ml-4 space-y-0.5">
+                  {r.items.map((it: any, idx: number) => (
+                    <li key={idx}>{String(it.name || 'Item')} ×{Number(it.qty || 1)}</li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="opacity-70">No items</div>
+              )}
+            </div>
+            <div className="mt-2 flex gap-2">
+              <button
+                className="px-2 py-1 bg-emerald-700 rounded"
+                onClick={async () => {
+                  await window.api.requests.approve(r.id, userId).catch(() => {});
+                  setRows((prev) => prev.filter((x) => x.id !== r.id));
+                }}
+              >
+                Accept
+              </button>
+              <button
+                className="px-2 py-1 bg-rose-700 rounded"
+                onClick={async () => {
+                  await window.api.requests.reject(r.id, userId).catch(() => {});
+                  setRows((prev) => prev.filter((x) => x.id !== r.id));
+                }}
+              >
+                Reject
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
