@@ -15,6 +15,7 @@ const api: Api = {
     update: (input) => ipcRenderer.invoke('settings:update', input),
     testPrint: () => ipcRenderer.invoke('settings:testPrint'),
     setPrinter: (input) => ipcRenderer.invoke('settings:setPrinter', input),
+    testPrintVerbose: () => ipcRenderer.invoke('settings:testPrintVerbose'),
   },
   menu: {
     syncFromUrl: (input) => ipcRenderer.invoke('menu:syncFromUrl', input),
@@ -52,6 +53,7 @@ const api: Api = {
     voidItem: (payload: any) => ipcRenderer.invoke('tickets:voidItem', payload),
     voidTicket: (payload: any) => ipcRenderer.invoke('tickets:voidTicket', payload),
     getTableTooltip: (area: string, tableLabel: string) => ipcRenderer.invoke('tickets:getTableTooltip', { area, tableLabel }),
+    print: (payload: any) => ipcRenderer.invoke('tickets:print', payload),
   },
   tables: {
     setOpen: (area: string, label: string, open: boolean) => ipcRenderer.invoke('tables:setOpen', { area, label, open }),

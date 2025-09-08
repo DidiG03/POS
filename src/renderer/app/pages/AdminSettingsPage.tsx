@@ -120,7 +120,7 @@ function SyncSettings() {
       <div className="text-lg font-semibold mb-3">Data Sync</div>
       <div className="space-x-2">
         <button className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600" onClick={() => window.api.auth.syncStaffFromApi()}>Sync Staff</button>
-        <button className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600" onClick={() => window.api.menu.syncFromUrl({ url: 'https://ullishtja-agroturizem.com/api/pos-menu?lang=en' })}>Sync Menu</button>
+        <button className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600" onClick={() => window.api.menu.syncFromUrl({ url: 'https://ullishtja-agroturizem.com/api/pos-menu?lang=sq' })}>Sync Menu</button>
       </div>
     </div>
   );

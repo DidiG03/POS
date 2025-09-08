@@ -6,6 +6,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
+import { buildEscposTicket, sendToPrinter } from './print';
+import { coreServices } from './services/core';
 
 function send(res: http.ServerResponse, code: number, data: any) {
   const body = typeof data === 'string' ? data : JSON.stringify(data);
@@ -57,6 +59,14 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
       const parsed = url.parse(req.url || '', true);
       const pathname = parsed.pathname || '';
 
+      // Helper: resolve printer host/port from env or stored settings
+      async function resolvePrinter() {
+        const s = await coreServices.readSettings();
+        const ip = process.env.PRINTER_IP || s?.printer?.ip;
+        const port = Number(process.env.PRINTER_PORT || s?.printer?.port || 9100);
+        return { ip, port } as { ip?: string; port: number };
+      }
+
       // Static site (serve built renderer or proxy to remote origin)
       if (req.method === 'GET') {
         let filePath = '';
@@ -98,6 +108,23 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
       }
 
+      // SSE events
+      if (req.method === 'GET' && pathname === '/events') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.write('\n');
+        const client = { res } as any;
+        (globalThis as any).__SSE_CLIENTS__ = (globalThis as any).__SSE_CLIENTS__ || new Set();
+        const clients: Set<any> = (globalThis as any).__SSE_CLIENTS__;
+        clients.add(client);
+        req.on('close', () => clients.delete(client));
+        return;
+      }
+
       // Auth
       if (req.method === 'POST' && pathname === '/auth/login') {
         const { pin, userId } = await parseJson(req);
@@ -131,6 +158,12 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const { userId, area, tableLabel, covers, items, note } = await parseJson(req);
         if (!userId || !area || !tableLabel) return send(res, 400, 'invalid payload');
         await prisma.ticketLog.create({ data: { userId: Number(userId), area: String(area), tableLabel: String(tableLabel), covers: covers ? Number(covers) : null, itemsJson: items ?? [], note: note ? String(note) : null } });
+        // broadcast change
+        try {
+          const clients: Set<any> = (globalThis as any).__SSE_CLIENTS__ || new Set();
+          const evt = `event: ticket\ndata: ${JSON.stringify({ area, tableLabel })}\n\n`;
+          clients.forEach((c: any) => c.res.write(evt));
+        } catch {}
         return send(res, 201, 'ok');
       }
       if (req.method === 'GET' && pathname === '/tickets/latest') {
@@ -140,6 +173,34 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } });
         if (!last) return send(res, 200, null);
         return send(res, 200, { items: last.itemsJson as any, note: last.note ?? null, covers: last.covers ?? null, createdAt: last.createdAt.toISOString(), userId: last.userId });
+      }
+
+      // Printing: test and ticket (for browser clients on LAN)
+      if (req.method === 'POST' && pathname === '/print/test') {
+        const { ip, port } = await resolvePrinter();
+        if (!ip) return send(res, 400, { ok: false, error: 'Printer IP not configured' });
+        const data = Buffer.from(['\x1b@', 'Ullishtja POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+        const ok = await sendToPrinter(ip, port, data);
+        return send(res, ok ? 200 : 500, { ok });
+      }
+      if (req.method === 'POST' && pathname === '/print/ticket') {
+        const body = await parseJson(req);
+        const { ip, port } = await resolvePrinter();
+        if (!ip) return send(res, 400, { ok: false, error: 'Printer IP not configured' });
+        const payload = {
+          area: String(body?.area || ''),
+          tableLabel: String(body?.tableLabel || ''),
+          covers: body?.covers ?? null,
+          items: Array.isArray(body?.items) ? body.items : [],
+          note: body?.note ?? null,
+          userName: body?.userName || undefined,
+        } as any;
+        if (!payload.area || !payload.tableLabel || payload.items.length === 0) return send(res, 400, { ok: false, error: 'invalid payload' });
+        const row = await prisma.syncState.findUnique({ where: { key: 'settings' } }).catch(() => null);
+        const settings = (row?.valueJson as any) || { restaurantName: 'Ullishtja Agroturizem', currency: 'EUR', defaultVatRate: 0.2 };
+        const buf = buildEscposTicket(payload, settings);
+        const ok = await sendToPrinter(ip, port, buf);
+        return send(res, ok ? 200 : 500, { ok });
       }
       if (req.method === 'POST' && pathname === '/tickets/void-item') {
         const { userId, area, tableLabel, item } = await parseJson(req);
@@ -167,7 +228,60 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
           const items = ((last.itemsJson as any[]) || []).map((it: any) => ({ ...it, voided: true }));
           await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: items, note: last.note ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}` : `VOIDED${reason ? `: ${reason}` : ''}` } });
         }
+        // Also mark table free
+        try {
+          const key = 'tables:open';
+          const row = await prisma.syncState.findUnique({ where: { key } });
+          const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
+          const k = `${area}:${tableLabel}`;
+          if (map[k]) {
+            delete map[k];
+            await prisma.syncState.upsert({ where: { key }, create: { key, valueJson: map }, update: { valueJson: map } });
+          }
+        } catch {}
         return send(res, 200, 'ok');
+      }
+
+      // Requests (owner flow) for browser clients
+      if (req.method === 'POST' && pathname === '/requests/create') {
+        const input = await parseJson(req);
+        const { requesterId, ownerId, area, tableLabel, items, note } = input || {};
+        if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items)) return send(res, 400, 'invalid');
+        await prisma.ticketRequest.create({ data: { requesterId: Number(requesterId), ownerId: Number(ownerId), area: String(area), tableLabel: String(tableLabel), itemsJson: items, note: note ? String(note) : null, status: 'PENDING' as any } });
+        return send(res, 200, 'ok');
+      }
+      if (req.method === 'GET' && pathname === '/requests/list-for-owner') {
+        const ownerId = Number(parsed.query.ownerId || 0);
+        if (!ownerId) return send(res, 400, 'invalid');
+        const rows = await prisma.ticketRequest.findMany({ where: { ownerId, status: 'PENDING' as any }, orderBy: { createdAt: 'desc' } } as any);
+        return send(res, 200, rows.map((r: any) => ({ id: r.id, area: r.area, tableLabel: r.tableLabel, requesterId: r.requesterId, items: r.itemsJson, note: r.note, createdAt: r.createdAt.toISOString() })));
+      }
+      if (req.method === 'POST' && pathname === '/requests/approve') {
+        const { id, ownerId } = await parseJson(req);
+        if (!id || !ownerId) return send(res, 400, 'invalid');
+        await prisma.ticketRequest.updateMany({ where: { id: Number(id), ownerId: Number(ownerId), status: 'PENDING' as any }, data: { status: 'APPROVED' as any, decidedAt: new Date() } });
+        return send(res, 200, true);
+      }
+      if (req.method === 'POST' && pathname === '/requests/reject') {
+        const { id, ownerId } = await parseJson(req);
+        if (!id || !ownerId) return send(res, 400, 'invalid');
+        await prisma.ticketRequest.updateMany({ where: { id: Number(id), ownerId: Number(ownerId), status: 'PENDING' as any }, data: { status: 'REJECTED' as any, decidedAt: new Date() } });
+        return send(res, 200, true);
+      }
+      if (req.method === 'GET' && pathname === '/requests/poll-approved') {
+        const ownerId = Number(parsed.query.ownerId || 0);
+        const area = String(parsed.query.area || '');
+        const tableLabel = String(parsed.query.tableLabel || '');
+        if (!ownerId || !area || !tableLabel) return send(res, 400, 'invalid');
+        const rows = await prisma.ticketRequest.findMany({ where: { ownerId, area, tableLabel, status: 'APPROVED' as any }, orderBy: { createdAt: 'asc' } } as any);
+        return send(res, 200, rows.map((r: any) => ({ id: r.id, items: r.itemsJson, note: r.note })));
+      }
+      if (req.method === 'POST' && pathname === '/requests/mark-applied') {
+        const body = await parseJson(req);
+        const ids = Array.isArray(body?.ids) ? body.ids.map((x: any) => Number(x)) : [];
+        if (!ids.length) return send(res, 400, 'invalid');
+        await prisma.ticketRequest.updateMany({ where: { id: { in: ids } }, data: { status: 'APPLIED' as any } });
+        return send(res, 200, true);
       }
 
       // Tables open
@@ -180,6 +294,12 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const k = `${area}:${label}`;
         if (open) map[k] = true; else delete map[k];
         await prisma.syncState.upsert({ where: { key }, create: { key, valueJson: map }, update: { valueJson: map } });
+        // broadcast table status
+        try {
+          const clients: Set<any> = (globalThis as any).__SSE_CLIENTS__ || new Set();
+          const evt = `event: tables\ndata: ${JSON.stringify({ area, label, open })}\n\n`;
+          clients.forEach((c: any) => c.res.write(evt));
+        } catch {}
         return send(res, 200, 'ok');
       }
       if (req.method === 'GET' && pathname === '/tables/open') {
@@ -187,6 +307,23 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const row = await prisma.syncState.findUnique({ where: { key } });
         const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
         return send(res, 200, Object.entries(map).filter(([, v]) => Boolean(v)).map(([k]) => { const [area, label] = k.split(':'); return { area, label }; }));
+      }
+
+      // Layout: get/save for browser clients
+      if (req.method === 'GET' && pathname === '/layout/get') {
+        const userId = Number(parsed.query.userId || 0);
+        const area = String(parsed.query.area || '');
+        if (!userId || !area) return send(res, 400, 'invalid');
+        const key = `layout:${userId}:${area}`;
+        const row = await prisma.syncState.findUnique({ where: { key } }).catch(() => null);
+        return send(res, 200, ((row?.valueJson as any)?.nodes ?? null));
+      }
+      if (req.method === 'POST' && pathname === '/layout/save') {
+        const { userId, area, nodes } = await parseJson(req);
+        if (!userId || !area || !Array.isArray(nodes)) return send(res, 400, 'invalid');
+        const key = `layout:${Number(userId)}:${String(area)}`;
+        await prisma.syncState.upsert({ where: { key }, create: { key, valueJson: { nodes } }, update: { valueJson: { nodes } } });
+        return send(res, 200, 'ok');
       }
 
       // Shifts (open userIds)
@@ -221,12 +358,20 @@ export function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, { id: updated.id, openedAt: updated.openedAt.toISOString(), closedAt: updated.closedAt ? new Date(updated.closedAt).toISOString() : null, openedById: updated.openedById, closedById: updated.closedById ?? null });
       }
 
-      // Settings (minimal: only enableAdmin used by login)
+      // Settings: get and update (for browser clients)
       if (req.method === 'GET' && pathname === '/settings') {
-        const row = await prisma.syncState.findUnique({ where: { key: 'settings' } }).catch(() => null);
-        const stored = (row?.valueJson as any) || {};
-        const enableAdmin = Boolean(stored.enableAdmin);
-        return send(res, 200, { enableAdmin });
+        const base = await coreServices.readSettings();
+        const result = { ...base, printer: { ip: base.printer?.ip || null, port: Number(base.printer?.port || 9100) } } as any;
+        return send(res, 200, result);
+      }
+      if (req.method === 'POST' && pathname === '/settings/update') {
+        try {
+          const input = await parseJson(req);
+          const merged = await coreServices.updateSettings(input);
+          return send(res, 200, merged);
+        } catch (e) {
+          return send(res, 500, { error: 'failed to update settings' });
+        }
       }
 
       // Covers

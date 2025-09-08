@@ -20,7 +20,12 @@ export default function TablesPage() {
   const [nodes, setNodes] = useState<TableNode[] | null>(null);
   const { setSelectedTable, pendingAction, setPendingAction } = useOrderContext();
   const navigate = useNavigate();
-  const { isOpen, openMap } = useTableStatus();
+  const { isOpen, openMap, setAll, setOpen } = useTableStatus();
+  useEffect(() => {
+    // Expose setOpen for SSE updates
+    (window as any).__tableStatusStore__ = { setOpen };
+    return () => { (window as any).__tableStatusStore__ = null; };
+  }, [setOpen]);
   const { hydrate, clear } = useTicketStore();
 
   const [userMap, setUserMap] = useState<Record<number, string>>({});
@@ -48,6 +53,21 @@ export default function TablesPage() {
       if (!s.tableAreas && area !== 'Main Hall' && area !== 'Terrace') setArea('Main Hall');
     })();
   }, []);
+
+  // Cross-client sync: poll open tables from server and update local state
+  useEffect(() => {
+    let timer: any;
+    const loop = async () => {
+      try {
+        const open = await window.api.tables.listOpen();
+        if (Array.isArray(open)) setAll(open);
+      } finally {
+        timer = setTimeout(loop, 3000);
+      }
+    };
+    loop();
+    return () => clearTimeout(timer);
+  }, [setAll]);
 
   function generateDefaultNodes(areaName: string, count: number): TableNode[] {
     const width = 760; const height = 460; const cx = width / 2; const cy = height / 2; const radius = Math.min(cx, cy) - 60;
@@ -133,12 +153,12 @@ export default function TablesPage() {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Tables – {area}</h2>
+        <h2 className="text-lg font-semibold">Tavolinat – {area}</h2>
         <div className="flex gap-2">
           {areas.map((a) => (
             <button
               key={a.name}
-              className={`px-3 py-1 rounded ${area === a.name ? 'bg-gray-700' : 'bg-gray-800'}`}
+              className={`px-3 py-1 rounded ${area === a.name ? 'bg-gray-700' : 'bg-gray-800'} cursor-pointer`}
               onClick={() => setArea(a.name)}
             >
               {a.name}
@@ -147,10 +167,10 @@ export default function TablesPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            className={`px-3 py-1 rounded ${editable ? 'bg-amber-700' : 'bg-gray-700'}`}
+            className={`px-3 py-1 rounded ${editable ? 'bg-amber-700' : 'bg-gray-700'} cursor-pointer`}
             onClick={() => setEditable((v) => !v)}
           >
-            {editable ? 'Editing…' : 'Edit layout'}
+            {editable ? 'Edito…' : 'Edito Zonën'}
           </button>
           {editable && (
             <button
@@ -161,7 +181,7 @@ export default function TablesPage() {
                 setEditable(false);
               }}
             >
-              Save
+              Ruaj
             </button>
           )}
         </div>
@@ -206,7 +226,7 @@ export default function TablesPage() {
               navigate('/app/order');
               if (action) {
                 setTimeout(() => {
-                  if (action === 'send') console.log(`ticket - ${t.label} sent`);
+                  if (action === 'send') console.log(`ticket - ${t.label} dërguar`);
                   if (action === 'pay') console.log(`ticket - ${t.label} paid`);
                 }, 0);
               }
@@ -220,7 +240,7 @@ export default function TablesPage() {
             })()}
             badge={isOpen(area, t.label) ? initialsByTable[`${area}:${t.label}`] : undefined}
             ownerName={(ownerByTable[`${area}:${t.label}`] && userMap[ownerByTable[`${area}:${t.label}`]]) || undefined}
-            statusText={isOpen(area, t.label) ? 'OPEN' : 'FREE'}
+            statusText={isOpen(area, t.label) ? 'HAPUR' : 'E LIRË'}
           />
         ))}
         {/* Sample bar counter/obstacles */}
@@ -241,32 +261,40 @@ function DraggableCircle({ node, editable, onMove, onClick, colorClass, badge, o
     const el = ref.current;
     if (!el || !editable) return;
     let dragging = false;
-    let offsetX = 0;
-    let offsetY = 0;
-    const down = (e: MouseEvent) => {
+    let startX = 0;
+    let startY = 0;
+    const onPointerDown = (e: PointerEvent) => {
       dragging = true;
-      const rect = el.getBoundingClientRect();
-      offsetX = e.clientX - rect.left;
-      offsetY = e.clientY - rect.top;
+      startX = e.clientX;
+      startY = e.clientY;
+      (e.target as any).setPointerCapture?.(e.pointerId);
       e.preventDefault();
     };
-    const move = (e: MouseEvent) => {
+    const onPointerMove = (e: PointerEvent) => {
       if (!dragging) return;
       const parent = el.parentElement!.getBoundingClientRect();
-      const x = e.clientX - parent.left - offsetX + el.offsetWidth / 2;
-      const y = e.clientY - parent.top - offsetY + el.offsetHeight / 2;
-      onMove(Math.max(16, Math.min(parent.width - 16, x)), Math.max(16, Math.min(parent.height - 16, y)));
+      // Position relative to parent center-coordinate system (because of translate -50%)
+      const relX = e.clientX - parent.left;
+      const relY = e.clientY - parent.top;
+      const newX = Math.max(16, Math.min(parent.width - 16, relX));
+      const newY = Math.max(16, Math.min(parent.height - 16, relY));
+      onMove(newX, newY);
+      e.preventDefault();
     };
-    const up = () => (dragging = false);
-    el.addEventListener('mousedown', down);
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
+    const onPointerUp = (e: PointerEvent) => {
+      dragging = false;
+      (e.target as any).releasePointerCapture?.(e.pointerId);
+      e.preventDefault();
+    };
+    el.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
     return () => {
-      el.removeEventListener('mousedown', down);
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
+      el.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
     };
-  }, [editable, onMove]);
+  }, [editable, onMove, node.x, node.y]);
 
   // Hover / long-press tooltip
   useEffect(() => {
@@ -299,7 +327,7 @@ function DraggableCircle({ node, editable, onMove, onClick, colorClass, badge, o
     <div
       ref={ref}
       className={`absolute -translate-x-1/2 -translate-y-1/2 w-16 h-16 ${colorClass || GREEN} rounded-full flex items-center justify-center shadow-lg ${editable ? 'cursor-move' : 'cursor-pointer'} select-none`}
-      style={{ left: node.x, top: node.y }}
+      style={{ left: node.x, top: node.y, touchAction: 'none' as any }}
       title={`${node.label} • ${statusText || node.status}`}
       onClick={onClick}
     >
@@ -314,8 +342,8 @@ function DraggableCircle({ node, editable, onMove, onClick, colorClass, badge, o
       {showTip && tooltip && (
         <div className="absolute top-18 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-black/80 text-white px-2 py-1 rounded shadow">
           {ownerName && <div>{ownerName}</div>}
-          <div>Covers: {tooltip.covers ?? '-'}</div>
-          <div>Since: {tooltip.firstAt ? new Date(tooltip.firstAt).toLocaleTimeString() : '-'}</div>
+          <div>Persona: {tooltip.covers ?? '-'}</div>
+          <div>Nga: {tooltip.firstAt ? new Date(tooltip.firstAt).toLocaleTimeString() : '-'}</div>
           <div>Total: {tooltip.total.toFixed ? tooltip.total.toFixed(2) : tooltip.total}</div>
         </div>
       )}

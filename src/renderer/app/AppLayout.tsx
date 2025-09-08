@@ -41,21 +41,21 @@ export default function AppLayout() {
                     const { openMap } = useTableStatus.getState();
                     const anyOpen = Object.values(openMap).some(Boolean);
                     if (anyOpen) {
-                      alert('Cannot clock out while there are open tables. Please settle all tickets first.');
+                      alert('Nuk mund të lësh turnin nëse ka tavolina të hapura. Ju lutemi, përfundoni të gjitha porosinë.');
                       return;
                     }else{
                       setConfirmModal(true);
                     }
                   }}
                 >
-                  Clock out
+                  Lër Turnin
                 </button>
               )}
               {confirmModal && (
                 <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-9999">
                   <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
                     <div className="flex items-center justify-between mb-3">
-                      <h2 className="text-center">Are you sure you want to clock out?</h2>
+                      <h2 className="text-center">Jeni të sigurtë që doni të lëni turnin?</h2>
                       <button onClick={() => setConfirmModal(false)} className="cursor-pointer">x</button>
                     </div>
                     <button className='w-full bg-red-600 text-white py-1 px-2 cursor-pointer hover:bg-red-700' onClick={async () => {
@@ -63,7 +63,7 @@ export default function AppLayout() {
                       setHasOpen(false);
                       setUser(null);
                       navigate('/');
-                    }}>Clock out</button>
+                    }}>Lër Turnin</button>
                   </div>
                 </div>
               )}
@@ -72,7 +72,7 @@ export default function AppLayout() {
         </div>
         <nav className="space-x-4 flex items-center">
                     {/* Notification bell */}
-                    <div className="relative inline-block">
+                    <div className="relative inline-block" tabIndex={-1} onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setShowNotifications(false); }}>
             <button
               className="ml-2 p-2 rounded hover:bg-gray-700 cursor-pointer"
               aria-label="Notifications"
@@ -88,10 +88,10 @@ export default function AppLayout() {
               )}
             </button>
             {showNotifications && (
-              <div className="absolute right-0 mt-2 w-72 bg-gray-800 rounded border border-gray-700 shadow-lg z-50">
+              <div className="absolute right-0 mt-2 w-72 bg-gray-800 rounded border border-gray-700 shadow-lg z-50" tabIndex={-1}>
                 <div className="p-3 text-sm">
                   <div className="flex items-center justify-between mb-2">
-                    <div className="font-semibold">Notifications</div>
+                    <div className="font-semibold">Njoftimet</div>
                     {user && unreadCount > 0 && (
                       <button
                         className="text-xs text-blue-400 hover:underline"
@@ -100,14 +100,14 @@ export default function AppLayout() {
                           setUnreadCount(0);
                         }}
                       >
-                        Mark all as read
+                        Lexo të gjitha njoftimet
                       </button>
                     )}
                   </div>
                   {user ? (
                     <NotificationsList userId={user.id} onCount={(n) => setUnreadCount(n)} />
                   ) : (
-                    <div className="opacity-70">No notifications</div>
+                    <div className="opacity-70">Nuk ka njoftime</div>
                   )}
                   {user && <OwnerRequests userId={user.id} />}
                 </div>
@@ -115,20 +115,20 @@ export default function AppLayout() {
             )}
           </div>
           {/* <Link to="/app" className="hover:underline">Home</Link> */}
-          <NavLink to="/app/tables" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tables</NavLink>
+          <NavLink to="/app/tables" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tavolinat</NavLink>
           {/* <Link to="/app/order" className="hover:underline">Order</Link> */}
-          <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Reports</NavLink>
-          {/* <NavLink to="/app/settings" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Settings</NavLink> */}
+          <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Statistikat</NavLink>
+          <NavLink to="/app/settings" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Settings</NavLink>
           {user && (
             <>
               <button
-                className="ml-2 px-3 py-1 rounded bg-gray-600 hover:bg-gray-700"
+                className="ml-2 px-3 py-1 rounded-full bg-red-700 hover:bg-red-800 cursor-pointer"
                 onClick={() => {
                   setUser(null);
                   navigate('/');
                 }}
               >
-                Log out
+                Dil
               </button>
             </>
           )}
@@ -152,14 +152,14 @@ function NotificationsList({ userId, onCount }: { userId: number; onCount: (n: n
     })();
   }, [userId, onCount]);
   const filtered = items.filter((n) => !/requested to add items/i.test(n.message));
-  if (!filtered.length) return <div className="opacity-70">No notifications</div>;
+  if (!filtered.length) return <div className="opacity-70">Nuk ka njoftime</div>;
   return (
     <ul className="max-h-72 overflow-auto space-y-2">
       {filtered.map((n) => (
         <li key={n.id} className="p-2 rounded bg-gray-700/60">
           <div className="flex items-center justify-between">
             <span className="text-xs opacity-70">{formatNotificationTimestamp(n.createdAt)}</span>
-            {!n.readAt && <span className="text-[10px] bg-blue-600 rounded px-1">NEW</span>}
+            {!n.readAt && <span className="text-[10px] bg-blue-600 rounded px-1">E Re</span>}
           </div>
           <div className="mt-1">{n.message}</div>
         </li>
@@ -179,12 +179,12 @@ function OwnerRequests({ userId }: { userId: number }) {
   if (!rows.length) return null;
   return (
     <div className="mt-3 border-t border-gray-700 pt-2 max-h-64 overflow-auto">
-      <div className="text-xs opacity-70 mb-1">Ticket requests</div>
+      <div className="text-xs opacity-70 mb-1">Kërkesat për porosinë</div>
       <ul className="space-y-2">
         {rows.map((r) => (
           <li key={r.id} className="p-2 rounded bg-gray-700/60">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">{r.area} {r.tableLabel} – Request #{r.id}</div>
+              <div className="text-sm font-medium">{r.area} {r.tableLabel} – Kërkesa #{r.id}</div>
               <span className="text-xs opacity-70">{formatNotificationTimestamp(r.createdAt)}</span>
             </div>
             {r.note && <div className="text-xs opacity-70 mt-1">{r.note}</div>}
@@ -196,7 +196,7 @@ function OwnerRequests({ userId }: { userId: number }) {
                   ))}
                 </ul>
               ) : (
-                <div className="opacity-70">No items</div>
+                <div className="opacity-70">Asnjë element</div>
               )}
             </div>
             <div className="mt-2 flex gap-2">
@@ -207,7 +207,7 @@ function OwnerRequests({ userId }: { userId: number }) {
                   setRows((prev) => prev.filter((x) => x.id !== r.id));
                 }}
               >
-                Accept
+                Prano
               </button>
               <button
                 className="px-2 py-1 bg-rose-700 rounded"
@@ -216,7 +216,7 @@ function OwnerRequests({ userId }: { userId: number }) {
                   setRows((prev) => prev.filter((x) => x.id !== r.id));
                 }}
               >
-                Reject
+                Refuzo
               </button>
             </div>
           </li>
@@ -237,15 +237,15 @@ function formatNotificationTimestamp(iso: string): string {
 
   if (diffMs < hourMs) {
     const minutes = Math.max(1, Math.floor(diffMs / minuteMs));
-    return `${minutes}m ago`;
+    return `${minutes}m më parë`;
   }
   if (diffMs < dayMs) {
     const hours = Math.max(1, Math.floor(diffMs / hourMs));
-    return `${hours}h ago`;
+    return `${hours}h më parë`;
   }
   if (diffMs < weekMs) {
     const days = Math.max(1, Math.floor(diffMs / dayMs));
-    return `${days}d ago`;
+    return `${days}d më parë`;
   }
 
   const d = new Date(iso);

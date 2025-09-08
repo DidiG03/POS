@@ -17,10 +17,15 @@ export default function LoginPage() {
     try {
       const user = await window.api.auth.loginWithPin(pin, selectedId ?? undefined);
       if (user) {
-        // Check for open shift; if none, ask to start
+        // Admin goes straight to admin shell
+        if (user.role === 'ADMIN') {
+          setUser(user);
+          navigate('/admin');
+          return;
+        }
+        // Staff requires open shift
         const open = await window.api.shifts.getOpen(user.id);
         if (!open) {
-          const confirmStart = true; // simple confirm modal below
           setShowShiftConfirm(true);
           setPendingUser(user);
           return;
@@ -47,8 +52,11 @@ export default function LoginPage() {
         await window.api.auth.syncStaffFromApi();
       } catch {}
       const users = await window.api.auth.listUsers();
-      const activeUsers = users.filter((u) => u.active && u.role !== 'ADMIN');
-      setStaff(activeUsers);
+      const isAdminContext = typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/admin');
+      const list = isAdminContext
+        ? users.filter((u) => u.role === 'ADMIN')
+        : users.filter((u) => u.active && u.role !== 'ADMIN');
+      setStaff(list);
       try {
         const ids = await window.api.shifts.listOpen();
         setOpenIds(ids);

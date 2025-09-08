@@ -32,8 +32,7 @@ export default function AdminPage() {
   const [sortKey, setSortKey] = useState<'userName' | 'openedAt' | 'durationHours'>('openedAt');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [topSelling, setTopSelling] = useState<{ name: string; qty: number; revenue: number } | null>(null);
-  const [trendRange, setTrendRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
-  const [trend, setTrend] = useState<{ label: string; total: number; orders: number }[]>([]);
+  // Simplified view: hide sales trends entirely
 
   useEffect(() => {
     (async () => {
@@ -51,15 +50,10 @@ export default function AdminPage() {
     })();
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      const t = await window.api.admin.getSalesTrends({ range: trendRange });
-      setTrend(t.points);
-    })();
-  }, [trendRange]);
+  // Removed sales trends fetch for simplified overview
 
   return (
-    <div className="grid gap-4 grid-cols-3">
+    <div className="grid gap-4 grid-cols-2">
       <Stat title="Active Users" value={ov?.activeUsers} />
       <Stat title="Open Shifts" value={ov?.openShifts} />
       <Stat title="Open Orders" value={ov?.openOrders} />
@@ -72,7 +66,6 @@ export default function AdminPage() {
           <div className="text-sm opacity-80">Qty: {topSelling.qty} • Revenue: {topSelling.revenue}</div>
         )}
       </div>
-      <Stat title="Low Stock Items" value={ov?.lowStockItems} />
       {/* <div className="bg-gray-800 rounded p-4 col-span-3">
         <div className="text-sm opacity-70">System</div>
         <div className="mt-2 grid grid-cols-3 gap-4 text-sm">
@@ -89,77 +82,19 @@ export default function AdminPage() {
             <button className="bg-gray-700 px-3 py-2 rounded" onClick={() => window.api.settings.testPrint()}>Test Printer</button>
           </div>
         </div> */}
-      <div className="bg-gray-800 rounded p-4 col-span-3">
-        <div className="text-sm opacity-70 mb-2">Shifts</div>
-        <div className="overflow-auto max-h-72">
-          <table className="w-full text-sm">
-            <thead className="text-left opacity-70">
-              <tr>
-                <th
-                  className="py-1 pr-2 cursor-pointer select-none"
-                  onClick={() => {
-                    setSortKey('userName');
-                    setSortDir((d) => (sortKey === 'userName' ? (d === 'asc' ? 'desc' : 'asc') : 'asc'));
-                  }}
-                >
-                  User {sortKey === 'userName' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
-                </th>
-                <th
-                  className="py-1 pr-2 cursor-pointer select-none"
-                  onClick={() => {
-                    setSortKey('openedAt');
-                    setSortDir((d) => (sortKey === 'openedAt' ? (d === 'asc' ? 'desc' : 'asc') : 'desc'));
-                  }}
-                >
-                  Opened {sortKey === 'openedAt' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
-                </th>
-                <th className="py-1 pr-2">Closed</th>
-                <th
-                  className="py-1 pr-2 cursor-pointer select-none"
-                  onClick={() => {
-                    setSortKey('durationHours');
-                    setSortDir((d) => (sortKey === 'durationHours' ? (d === 'asc' ? 'desc' : 'asc') : 'desc'));
-                  }}
-                >
-                  Hours {sortKey === 'durationHours' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
-                </th>
-                <th className="py-1 pr-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...shifts]
-                .sort((a, b) => {
-                  const dir = sortDir === 'asc' ? 1 : -1;
-                  if (sortKey === 'userName') return a.userName.localeCompare(b.userName) * dir;
-                  if (sortKey === 'durationHours') return (a.durationHours - b.durationHours) * dir;
-                  // openedAt
-                  return (new Date(a.openedAt).getTime() - new Date(b.openedAt).getTime()) * dir;
-                })
-                .map((s) => (
-                <tr key={s.id} className="border-t border-gray-700">
-                  <td className="py-1 pr-2">{s.userName}</td>
-                  <td className="py-1 pr-2">{new Date(s.openedAt).toLocaleString()}</td>
-                  <td className="py-1 pr-2">{s.closedAt ? new Date(s.closedAt).toLocaleString() : '—'}</td>
-                  <td className="py-1 pr-2">{s.durationHours}</td>
-                  <td className="py-1 pr-2">{s.isOpen ? 'Open' : 'Closed'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div className="bg-gray-800 rounded p-4 col-span-3">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm opacity-70">Sales Trends</div>
-          <div className="bg-gray-700 rounded overflow-hidden text-xs">
-            {(['daily','weekly','monthly'] as const).map((r) => (
-              <button key={r} onClick={() => setTrendRange(r)} className={`px-3 py-1 ${trendRange===r?'bg-gray-600':''}`}>{r}</button>
-            ))}
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-6">
-          <Chart title="Revenue" points={trend.map(p => ({ label: p.label, value: p.total }))} />
-          <Chart title="Orders" points={trend.map(p => ({ label: p.label, value: p.orders }))} />
+      <div className="bg-gray-800 rounded p-4 col-span-2">
+        <div className="text-sm opacity-70 mb-2">Open Shifts</div>
+        <div className="grid grid-cols-2 gap-3">
+          {shifts.filter((s) => s.isOpen).length === 0 && (
+            <div className="opacity-70">No open shifts</div>
+          )}
+          {shifts.filter((s) => s.isOpen).map((s) => (
+            <div key={s.id} className="bg-gray-900 rounded p-3">
+              <div className="text-lg font-semibold">{s.userName}</div>
+              <div className="text-sm opacity-80">Opened: {new Date(s.openedAt).toLocaleTimeString()}</div>
+              <div className="text-sm">Hours: {s.durationHours}</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>

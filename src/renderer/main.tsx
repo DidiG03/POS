@@ -25,14 +25,29 @@ if (!(window as any).api) {
   const { host, httpPort, httpsPort } = pickBackend();
   const HTTPS_BASE = `https://${host}:${httpsPort}`;
   const HTTP_BASE = `http://${host}:${httpPort}`;
+  // Simple SSE client for real-time updates
+  try {
+    const es = new EventSource(HTTP_BASE + '/events');
+    es.addEventListener('tables', (ev: any) => {
+      try {
+        const data = JSON.parse(ev.data || '{}');
+        const { area, label, open } = data || {};
+        if (area && label && typeof open === 'boolean') {
+          const store = (window as any).__tableStatusStore__;
+          if (store && store.setOpen) store.setOpen(area, label, open);
+        }
+      } catch {}
+    });
+  } catch {}
   async function go(path: string, opts?: RequestInit) {
+    // Prefer HTTP first to avoid self-signed cert warnings in browsers, then fallback to HTTPS
     try {
-      const r = await fetch(HTTPS_BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+      const r = await fetch(HTTP_BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
       if (!r.ok) throw new Error(String(r.status));
       const ct = r.headers.get('content-type') || '';
       return ct.includes('application/json') ? r.json() : r.text();
     } catch {
-      const r2 = await fetch(HTTP_BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+      const r2 = await fetch(HTTPS_BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
       if (!r2.ok) throw new Error(String(r2.status));
       const ct2 = r2.headers.get('content-type') || '';
       return ct2.includes('application/json') ? r2.json() : r2.text();
@@ -54,8 +69,8 @@ if (!(window as any).api) {
     },
     settings: {
       async get() { return await go('/settings'); },
-      async update() { throw new Error('not supported in browser'); },
-      async testPrint() { return false; },
+      async update(input: any) { return await go('/settings/update', { method: 'POST', body: JSON.stringify(input) }); },
+      async testPrint() { const r = await go('/print/test', { method: 'POST', body: JSON.stringify({}) }); return !!(r && (r.ok === true)); },
       async setPrinter() { throw new Error('not supported in browser'); },
     },
     shifts: {
@@ -69,6 +84,7 @@ if (!(window as any).api) {
       async getLatestForTable(area: string, tableLabel: string) { return await go(`/tickets/latest?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`); },
       async voidItem(input: any) { await go('/tickets/void-item', { method: 'POST', body: JSON.stringify(input) }); return true; },
       async voidTicket(input: any) { await go('/tickets/void-ticket', { method: 'POST', body: JSON.stringify(input) }); return true; },
+      async print(input: any) { const r = await go('/print/ticket', { method: 'POST', body: JSON.stringify(input) }); return !!(r && (r.ok === true)); },
     },
     tables: {
       async setOpen(area: string, label: string, open: boolean) { await go('/tables/open', { method: 'POST', body: JSON.stringify({ area, label, open }) }); return true; },
@@ -90,14 +106,23 @@ if (!(window as any).api) {
       async getSalesTrends(input: any) { const range = input?.range || 'daily'; return await go(`/admin/sales-trends?range=${encodeURIComponent(range)}`); },
     },
     layout: {
-      async get() { throw new Error('not supported in browser'); },
-      async save() { throw new Error('not supported in browser'); },
+      async get(userId: number, area: string) { return await go(`/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(area)}`); },
+      async save(userId: number, area: string, nodes: any[]) { await go('/layout/save', { method: 'POST', body: JSON.stringify({ userId, area, nodes }) }); return true; },
     },
     notifications: {
       async list() { throw new Error('not supported in browser'); },
       async markAllRead() { throw new Error('not supported in browser'); },
     },
+    requests: {
+      create: async (input: any) => go('/requests/create', { method: 'POST', body: JSON.stringify(input) }).then(() => true),
+      listForOwner: async (ownerId: number) => go(`/requests/list-for-owner?ownerId=${encodeURIComponent(String(ownerId))}`),
+      approve: async (id: number, ownerId: number) => go('/requests/approve', { method: 'POST', body: JSON.stringify({ id, ownerId }) }).then(() => true),
+      reject: async (id: number, ownerId: number) => go('/requests/reject', { method: 'POST', body: JSON.stringify({ id, ownerId }) }).then(() => true),
+      pollApprovedForTable: async (ownerId: number, area: string, tableLabel: string) => go(`/requests/poll-approved?ownerId=${encodeURIComponent(String(ownerId))}&area=${encodeURIComponent(area)}&tableLabel=${encodeURIComponent(tableLabel)}`),
+      markApplied: async (ids: number[]) => go('/requests/mark-applied', { method: 'POST', body: JSON.stringify({ ids }) }).then(() => true),
+    },
   };
+  (window as any).__BROWSER_CLIENT__ = true;
 }
 const router = createHashRouter(routes);
 

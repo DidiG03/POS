@@ -130,7 +130,10 @@ export interface ApiSettings {
   update(input: Partial<SettingsDTO>): Promise<SettingsDTO>;
   testPrint(): Promise<boolean>;
   setPrinter(input: SetPrinterInput): Promise<SettingsDTO>;
+  testPrintVerbose?(): Promise<TestPrintResult>;
 }
+
+export type TestPrintResult = { ok: boolean; error?: string };
 
 export interface Api {
   auth: ApiAuth;
@@ -252,6 +255,16 @@ export interface ApiTickets {
   voidItem(input: { userId: number; area: string; tableLabel: string; item: { name: string; qty?: number; unitPrice: number; vatRate?: number; note?: string } }): Promise<boolean>;
   voidTicket(input: { userId: number; area: string; tableLabel: string; reason?: string }): Promise<boolean>;
   getTableTooltip(area: string, tableLabel: string): Promise<{ covers: number | null; firstAt: string | null; total: number } | null>;
+  print(input: PrintTicketInput): Promise<boolean>;
+}
+
+export interface PrintTicketInput {
+  area: string;
+  tableLabel: string;
+  covers?: number | null;
+  items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[];
+  note?: string | null;
+  userName?: string;
 }
 
 export interface NotificationDTO {

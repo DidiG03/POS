@@ -21,7 +21,8 @@ export default function AdminUserTicketsPage() {
   const name = params.get('name') || '';
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'list' | 'grid4'>('list');
+  const [view, setView] = useState<'list' | 'grid4'>('grid4');
+  const [zoom, setZoom] = useState<number>(1);
 
   useEffect(() => {
     let mounted = true;
@@ -67,48 +68,57 @@ export default function AdminUserTicketsPage() {
               Grid ×4
             </button>
           </div>
+          <div className="bg-gray-800 rounded overflow-hidden text-xs flex items-center">
+            <button className="px-2 py-1" onClick={() => setZoom((z) => Math.max(0.8, Math.round((z - 0.1) * 10) / 10))}>A−</button>
+            <div className="px-2 opacity-80">{Math.round(zoom * 100)}%</div>
+            <button className="px-2 py-1" onClick={() => setZoom((z) => Math.min(1.6, Math.round((z + 0.1) * 10) / 10))}>A+</button>
+          </div>
           <Link to="/admin/tickets" className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-sm">Back</Link>
         </div>
       </div>
 
       <div className="bg-gray-800 rounded p-3 flex gap-6 text-sm">
-        <div>Tickets: {tickets.length}</div>
-        <div>Subtotal: {totals.subtotal}</div>
-        <div>VAT: {totals.vat}</div>
-        <div>Total: {totals.grand}</div>
+        <div>Tickets: {tickets.length.toLocaleString()}</div>
+        <div>Subtotal: {totals.subtotal.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
+        <div>VAT: {totals.vat.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
+        <div>Total: {totals.grand.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
       </div>
 
       {loading ? (
         <div className="opacity-70 text-sm">Loading…</div>
       ) : view === 'grid4' ? (
         <div className="grid grid-cols-4 gap-3">
-          {tickets.map((t) => (
-            <div key={t.id} className="bg-gray-800 rounded p-3 flex flex-col min-h-[180px]">
-              <div className="text-xs opacity-80 mb-2">
-                {new Date(t.createdAt).toLocaleString()} • {t.area} • {t.tableLabel} • Covers: {t.covers ?? '—'}
-              </div>
-              <div className="space-y-1 text-sm flex-1">
-                {t.items.map((it, i) => (
-                  <div key={i} className={`rounded px-2 py-1 flex items-center justify-between ${it.voided ? 'bg-red-900/50' : 'bg-gray-700'}`}>
-                    <div className="min-w-0">
-                      <span className="font-medium truncate" title={it.name}>{it.name}</span>
-                      <span className="opacity-70"> ×{it.qty}</span>
-                      {it.note && <span className="opacity-70"> • {it.note}</span>}
-                      {it.voided && <span className="ml-2 text-[10px] inline-block px-1 rounded bg-red-700">VOID</span>}
+          {tickets.map((t) => {
+            const maxLines = 10;
+            const extra = Math.max(0, t.items.length - maxLines);
+            const items = t.items.slice(0, maxLines);
+            return (
+              <div key={t.id} className="bg-gray-900 rounded border border-gray-700 p-3 flex flex-col shadow-sm" style={{ transform: `scale(${zoom})`, transformOrigin: 'top left' }}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-semibold">{new Date(t.createdAt).toLocaleTimeString()}</div>
+                  <div className="text-xs opacity-80">{t.area} • {t.tableLabel} • C:{t.covers ?? '—'}</div>
+                </div>
+                <div className="font-mono tabular-nums text-[13px] md:text-sm leading-snug flex-1">
+                  {items.map((it, i) => (
+                    <div key={i} className={`px-2 py-0.5 rounded flex items-center justify-between ${it.voided ? 'bg-red-900/50 line-through' : 'bg-gray-800'}`}>
+                      <div className="min-w-0 truncate" title={it.name}>
+                        {it.name} ×{it.qty}{it.note ? ` • ${it.note}` : ''}
+                      </div>
+                      <div className="ml-2 shrink-0">{(it.unitPrice * it.qty)}</div>
                     </div>
-                    <div className="ml-2 shrink-0">{(it.unitPrice * it.qty)}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-2 text-xs flex justify-between">
-                {t.note ? <div className="opacity-70 truncate pr-2">Note: {t.note}</div> : <span />}
-                <div className="flex items-center gap-3">
-                  <div>VAT: {t.vat}</div>
-                  <div className="font-semibold">Total: {(t.subtotal + t.vat)}</div>
+                  ))}
+                  {extra > 0 && (
+                    <div className="mt-1 text-xs opacity-70">+{extra} more…</div>
+                  )}
+                </div>
+                {t.note && <div className="mt-2 text-xs opacity-80">Note: {t.note}</div>}
+                <div className="mt-2 pt-2 border-t border-gray-700 flex items-center justify-between text-sm">
+                  <div className="opacity-80">VAT: {t.vat}</div>
+                  <div className="text-base font-bold">Total {(t.subtotal + t.vat)}</div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="space-y-3">
