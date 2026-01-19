@@ -24,12 +24,24 @@ model User {
   ticketRequestsOwned TicketRequest[] @relation("TicketRequestOwner")
   twoFactorEnabled Boolean  @default(false)
   twoFactorSecret  String?
+  kdsBumpedStations KdsTicketStation[] @relation("KdsBumpedBy")
 }
 
 enum Role {
   ADMIN
   CASHIER
   WAITER
+}
+
+enum PrepStation {
+  KITCHEN
+  BAR
+  DESSERT
+}
+
+enum KdsStationStatus {
+  NEW
+  DONE
 }
 
 model Category {
@@ -49,6 +61,7 @@ model MenuItem {
   price      Decimal
   vatRate    Decimal
   active     Boolean   @default(true)
+  station    PrepStation @default(KITCHEN)
   recipe     RecipeComponent[]
   orderItems OrderItem[]
 }
@@ -254,6 +267,54 @@ model TicketLog {
   itemsJson  Json
   note       String?
   createdAt  DateTime @default(now())
+}
+
+model KdsDayCounter {
+  dayKey String @id
+  lastNo Int    @default(0)
+}
+
+model KdsOrder {
+  id        Int      @id @default(autoincrement())
+  dayKey    String
+  orderNo   Int
+  area      String
+  tableLabel String
+  openedAt  DateTime @default(now())
+  closedAt  DateTime?
+
+  tickets   KdsTicket[]
+
+  @@unique([dayKey, orderNo])
+  @@index([area, tableLabel, closedAt])
+}
+
+model KdsTicket {
+  id        Int      @id @default(autoincrement())
+  order     KdsOrder @relation(fields: [orderId], references: [id])
+  orderId   Int
+  userId    Int?
+  firedAt   DateTime @default(now())
+  itemsJson Json
+  note      String?
+
+  stations  KdsTicketStation[]
+
+  @@index([orderId, firedAt])
+}
+
+model KdsTicketStation {
+  id         Int             @id @default(autoincrement())
+  ticket     KdsTicket       @relation(fields: [ticketId], references: [id])
+  ticketId   Int
+  station    PrepStation
+  status     KdsStationStatus @default(NEW)
+  bumpedAt   DateTime?
+  bumpedBy   User?           @relation("KdsBumpedBy", fields: [bumpedById], references: [id])
+  bumpedById Int?
+
+  @@unique([ticketId, station])
+  @@index([station, status, bumpedAt])
 }
 
 

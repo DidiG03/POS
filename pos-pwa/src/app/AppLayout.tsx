@@ -23,7 +23,7 @@ export default function AppLayout() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
-        <div className="font-semibold">Ullishtja Agrotourizem</div>
+        <div className="font-semibold"> Code Orbit</div>
         <nav className="space-x-4 flex items-center">
           <Link to="/app" className="hover:underline">Home</Link>
           <Link to="/app/tables" className="hover:underline">Tables</Link>

@@ -14,7 +14,7 @@ export default function AdminLayout() {
   return (
     <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
       <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
-        <div className="font-semibold">Ullishtja POS Admin</div>
+        <div className="font-semibold"> Code Orbit POS Admin</div>
         <nav className="space-x-3 text-sm flex items-center">
           <Link to="/admin" className="hover:underline">Overview</Link>
           <Link to="/admin/tickets" className="hover:underline">Tickets</Link>

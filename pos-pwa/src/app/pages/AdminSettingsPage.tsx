@@ -4,13 +4,11 @@ import { api } from '../../api';
 type Section =
   | { key: 'printer'; label: string }
   | { key: 'areas'; label: string }
-  | { key: 'sync'; label: string }
   | { key: 'about'; label: string };
 
 const sections: Section[] = [
   { key: 'printer', label: 'Printer' },
   { key: 'areas', label: 'Table Areas' },
-  { key: 'sync', label: 'Data Sync' },
   { key: 'about', label: 'About' },
 ];
 
@@ -46,7 +44,6 @@ export default function AdminSettingsPage() {
       <div className="bg-gray-800 rounded p-4 overflow-auto">
         {selected === 'printer' && <PrinterSettings />}
         {selected === 'areas' && <AreasSettings />}
-        {selected === 'sync' && <SyncSettings />}
         {selected === 'about' && <AboutSettings />}
       </div>
     </div>
@@ -115,23 +112,11 @@ function AreasSettings() {
   );
 }
 
-function SyncSettings() {
-  return (
-    <div>
-      <div className="text-lg font-semibold mb-3">Data Sync</div>
-      <div className="space-x-2">
-        <button className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600" onClick={() => api.auth.syncStaffFromApi()}>Sync Staff</button>
-        <button className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600" onClick={() => api.menu.syncFromUrl({ url: 'https://ullishtja-agroturizem.com/api/pos-menu?lang=en' })}>Sync Menu</button>
-      </div>
-    </div>
-  );
-}
-
 function AboutSettings() {
   return (
     <div>
       <div className="text-lg font-semibold mb-3">About</div>
-      <div className="opacity-80">Ullishtja POS — Admin Settings</div>
+      <div className="opacity-80"> Code Orbit POS — Admin Settings</div>
     </div>
   );
 }

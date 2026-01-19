@@ -14,6 +14,7 @@ export type TicketPrintPayload = {
   note?: string | null;
   printedAtIso?: string; // optional, defaults to now
   userName?: string; // optional waiter name
+  meta?: any; // optional (payment metadata like discounts)
 };
 
 export function buildEscposTicket(payload: TicketPrintPayload, settings: SettingsDTO): Buffer {
@@ -37,11 +38,13 @@ export function buildEscposTicket(payload: TicketPrintPayload, settings: Setting
   // Items
   let subtotal = 0;
   let vat = 0;
+  const meta: any = payload.meta || {};
+  const vatEnabled = meta?.vatEnabled !== false;
   for (const it of payload.items) {
     const qty = Number(it.qty || 1);
     const linePrice = Number(it.unitPrice || 0) * qty;
     subtotal += linePrice;
-    vat += linePrice * Number(it.vatRate || 0);
+    if (vatEnabled) vat += linePrice * Number(it.vatRate || 0);
     const priceStr = formatMoney(linePrice, currency);
     const nameStr = `${qty} x ${it.name}`;
     lines.push(Buffer.from(`${padRight(nameStr, 24)}${padLeft(priceStr, 8)}\n`));
@@ -51,8 +54,36 @@ export function buildEscposTicket(payload: TicketPrintPayload, settings: Setting
   // Totals
   lines.push(Buffer.from('--------------------------------\n'));
   lines.push(Buffer.from(`${padRight('Subtotal', 24)}${padLeft(formatMoney(subtotal, currency), 8)}\n`));
-  lines.push(Buffer.from(`${padRight('VAT', 24)}${padLeft(formatMoney(vat, currency), 8)}\n`));
-  lines.push(Buffer.from(`${padRight('TOTAL', 24)}${padLeft(formatMoney(subtotal + vat, currency), 8)}\n`));
+  if (vatEnabled) {
+    lines.push(Buffer.from(`${padRight('VAT', 24)}${padLeft(formatMoney(vat, currency), 8)}\n`));
+  } else {
+    lines.push(Buffer.from(`${padRight('VAT', 24)}${padLeft('Disabled', 8)}\n`));
+  }
+  const scAmt = Number(meta?.serviceChargeAmount || 0);
+  const discountAmt = Number(meta?.discountAmount || 0);
+  const baseTotal = subtotal + vat;
+  const totalAfter = Number(meta?.totalAfter);
+  const fallbackTotal = Math.max(0, baseTotal + (Number.isFinite(scAmt) ? scAmt : 0) - (Number.isFinite(discountAmt) ? discountAmt : 0));
+  const totalFinal = Number.isFinite(totalAfter) ? Math.max(0, totalAfter) : fallbackTotal;
+  if (Number.isFinite(scAmt) && scAmt > 0) {
+    const mode = String(meta?.serviceChargeMode || '').toUpperCase();
+    const v = meta?.serviceChargeValue;
+    const label =
+      mode === 'PERCENT' && Number.isFinite(Number(v))
+        ? `Service (${Number(v)}%)`
+        : 'Service charge';
+    lines.push(Buffer.from(`${padRight(label, 24)}${padLeft(formatMoney(scAmt, currency), 8)}\n`));
+  }
+  if (Number.isFinite(discountAmt) && discountAmt > 0) {
+    const dtype = String(meta?.discountType || '').toUpperCase();
+    const dval = meta?.discountValue;
+    const label =
+      dtype === 'PERCENT' && Number.isFinite(Number(dval))
+        ? `Discount (${Number(dval)}%)`
+        : 'Discount';
+    lines.push(Buffer.from(`${padRight(label, 24)}${padLeft('-' + formatMoney(discountAmt, currency), 8)}\n`));
+  }
+  lines.push(Buffer.from(`${padRight('TOTAL', 24)}${padLeft(formatMoney(totalFinal, currency), 8)}\n`));
 
   if (payload.note) {
     lines.push(Buffer.from('\nNote:\n'));
@@ -76,7 +107,7 @@ export async function sendToPrinter(ip: string, port: number, data: Buffer): Pro
       await new Promise<void>((resolve, reject) => {
         const socket = new Socket();
         socket.once('error', (err) => {
-          try { socket.destroy(); } catch {}
+          try { socket.destroy(); } catch (e) { void e; }
           reject(err);
         });
         socket.connect(port, ip, () => {
@@ -112,7 +143,7 @@ async function sendViaLpr(ip: string, port: number, queue: string, data: Buffer)
   return await new Promise<boolean>((resolve, reject) => {
     const s = new Socket();
     const onError = (e: any) => {
-      try { s.destroy(); } catch {}
+      try { s.destroy(); } catch (err) { void err; }
       reject(e);
     };
     s.once('error', onError);
@@ -134,7 +165,7 @@ async function sendViaLpr(ip: string, port: number, queue: string, data: Buffer)
                     write(data, () => {
                       write(Buffer.from([0x00]), () => {
                         readAck(() => {
-                          try { s.end(); } catch {}
+                          try { s.end(); } catch (e) { void e; }
                           resolve(true);
                         });
                       });

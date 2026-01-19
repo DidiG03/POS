@@ -19,6 +19,8 @@ export class OfflineQueue {
       window.addEventListener('online', () => {
         void this.sync();
       });
+      // Best-effort: flush any pending items on startup
+      setTimeout(() => void this.sync(), 800);
     }
   }
 
@@ -60,12 +62,27 @@ export class OfflineQueue {
     const items = await this.getAll();
     for (const item of items) {
       try {
-        const res = await fetch('http://localhost:3333/tickets', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(item.payload),
-        });
-        if (!res.ok) throw new Error('bad response');
+        const payload = { ...(item.payload || {}), idempotencyKey: item.id };
+        // IMPORTANT: set table open first so "openAt" exists before ticket/covers writes.
+        try {
+          if (payload?.area && payload?.tableLabel) {
+            await window.api.tables.setOpen(String(payload.area), String(payload.tableLabel), true);
+          }
+        } catch {
+          // ignore secondary sync ops
+        }
+
+        await window.api.tickets.log(payload);
+
+        // Persist covers if provided (best-effort).
+        try {
+          const c = Number(payload?.covers);
+          if (payload?.area && payload?.tableLabel && Number.isFinite(c) && c > 0) {
+            await window.api.covers.save(String(payload.area), String(payload.tableLabel), c);
+          }
+        } catch {
+          // ignore secondary sync ops
+        }
         await this.remove(item.id);
       } catch {
         // stop on first failure and leave remaining items

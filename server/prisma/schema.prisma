@@ -1,0 +1,507 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Business {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  users              User[]
+  categories         Category[]
+  menuItems          MenuItem[]
+  modifierGroups     ModifierGroup[]
+  modifiers          Modifier[]
+  tables             Table[]
+  orders             Order[]
+  orderItems         OrderItem[]
+  orderItemModifiers OrderItemModifier[]
+  payments           Payment[]
+  inventoryItems     InventoryItem[]
+  recipeComponents   RecipeComponent[]
+  dayShifts          DayShift[]
+  printJobs          PrintJob[]
+  ticketLogs         TicketLog[]
+  notifications      Notification[]
+  ticketRequests     TicketRequest[]
+  syncState          SyncState[]
+  areas              Area[]
+  covers             Covers[]
+  kdsDayCounters     KdsDayCounter[]
+  kdsOrders          KdsOrder[]
+  kdsTickets         KdsTicket[]
+  kdsTicketStations  KdsTicketStation[]
+}
+
+enum Role {
+  ADMIN
+  CASHIER
+  WAITER
+}
+
+enum PrepStation {
+  KITCHEN
+  BAR
+  DESSERT
+}
+
+enum KdsStationStatus {
+  NEW
+  DONE
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  displayName String
+  role        Role
+  pinHash     String
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  email       String?
+  externalId  String?
+
+  orders              Order[]
+  shiftsOpened        DayShift[]      @relation("ShiftOpenedBy")
+  shiftsClosed        DayShift[]      @relation("ShiftClosedBy")
+  ticketLogs          TicketLog[]
+  notifications       Notification[]
+  ticketRequestsMade  TicketRequest[] @relation("TicketRequestRequester")
+  ticketRequestsOwned TicketRequest[] @relation("TicketRequestOwner")
+  kdsBumpedStations   KdsTicketStation[] @relation("KdsBumpedBy")
+
+  @@unique([businessId, email])
+  @@unique([businessId, externalId])
+  @@index([businessId])
+}
+
+model Category {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  name      String
+  sortOrder Int        @default(0)
+  active    Boolean    @default(true)
+  color     String?
+  items     MenuItem[]
+
+  @@index([businessId])
+}
+
+model MenuItem {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  name       String
+  sku        String
+  category   Category          @relation(fields: [categoryId], references: [id])
+  categoryId Int
+  price      Decimal
+  vatRate    Decimal
+  active     Boolean           @default(true)
+  isKg       Boolean           @default(false)
+  station    PrepStation       @default(KITCHEN)
+  recipe     RecipeComponent[]
+  orderItems OrderItem[]
+
+  @@unique([businessId, sku])
+  @@index([businessId])
+}
+
+model ModifierGroup {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  name     String
+  required Boolean    @default(false)
+  min      Int        @default(0)
+  max      Int        @default(1)
+  mods     Modifier[]
+
+  @@index([businessId])
+}
+
+model Modifier {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  group              ModifierGroup       @relation(fields: [groupId], references: [id])
+  groupId            Int
+  name               String
+  priceDelta         Decimal
+  sku                String
+  active             Boolean             @default(true)
+  orderItemModifiers OrderItemModifier[]
+
+  @@unique([businessId, sku])
+  @@index([businessId])
+}
+
+model Table {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  label  String
+  area   String
+  seats  Int     @default(4)
+  active Boolean @default(true)
+  orders Order[]
+
+  @@unique([businessId, area, label])
+  @@index([businessId])
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderStatus {
+  OPEN
+  PAID
+  VOID
+}
+
+model Order {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  type     OrderType
+  table    Table?      @relation(fields: [tableId], references: [id])
+  tableId  Int?
+  status   OrderStatus @default(OPEN)
+  user     User        @relation(fields: [userId], references: [id])
+  userId   Int
+  openedAt DateTime    @default(now())
+  closedAt DateTime?
+  items    OrderItem[]
+  payments Payment[]
+
+  @@index([businessId])
+  @@index([businessId, openedAt])
+}
+
+model OrderItem {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  order      Order               @relation(fields: [orderId], references: [id])
+  orderId    Int
+  menuItem   MenuItem            @relation(fields: [menuItemId], references: [id])
+  menuItemId Int
+  qty        Int
+  unitPrice  Decimal
+  vatRate    Decimal
+  note       String?
+  mods       OrderItemModifier[]
+
+  @@index([businessId])
+}
+
+model OrderItemModifier {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+  orderItemId Int
+  modifier    Modifier  @relation(fields: [modifierId], references: [id])
+  modifierId  Int
+  priceDelta  Decimal
+
+  @@index([businessId])
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  MIXED
+}
+
+model Payment {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  order     Order         @relation(fields: [orderId], references: [id])
+  orderId   Int
+  method    PaymentMethod
+  amount    Decimal
+  tip       Decimal       @default(0)
+  change    Decimal       @default(0)
+  createdAt DateTime      @default(now())
+  metaJson  Json
+
+  @@index([businessId])
+  @@index([businessId, createdAt])
+}
+
+model InventoryItem {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  name              String
+  sku               String
+  qtyOnHand         Decimal
+  lowStockThreshold Decimal           @default(0)
+  unit              String
+  recipeComponents  RecipeComponent[]
+
+  @@unique([businessId, sku])
+  @@index([businessId])
+}
+
+model RecipeComponent {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  menuItem        MenuItem      @relation(fields: [menuItemId], references: [id])
+  menuItemId      Int
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  inventoryItemId Int
+  qtyPerUnit      Decimal
+
+  @@index([businessId])
+}
+
+model DayShift {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  openedAt   DateTime  @default(now())
+  closedAt   DateTime?
+  openedBy   User      @relation("ShiftOpenedBy", fields: [openedById], references: [id])
+  openedById Int
+  closedBy   User?     @relation("ShiftClosedBy", fields: [closedById], references: [id])
+  closedById Int?
+  totalsJson Json
+
+  @@index([businessId])
+  @@index([businessId, openedAt])
+}
+
+enum PrintType {
+  RECEIPT
+  X_REPORT
+  Z_REPORT
+  TEST
+}
+
+enum PrintStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+model PrintJob {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  type        PrintType
+  payloadJson Json
+  idempotencyKey String?
+  createdAt   DateTime    @default(now())
+  status      PrintStatus @default(QUEUED)
+
+  @@unique([businessId, idempotencyKey])
+  @@index([businessId])
+  @@index([businessId, createdAt])
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPLIED
+}
+
+model TicketRequest {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  area        String
+  tableLabel  String
+  requester   User          @relation("TicketRequestRequester", fields: [requesterId], references: [id])
+  requesterId Int
+  owner       User          @relation("TicketRequestOwner", fields: [ownerId], references: [id])
+  ownerId     Int
+  itemsJson   Json
+  note        String?
+  status      RequestStatus @default(PENDING)
+  createdAt   DateTime      @default(now())
+  decidedAt   DateTime?
+
+  @@index([businessId])
+  @@index([businessId, createdAt])
+}
+
+model SyncState {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  key       String
+  valueJson Json?
+  updatedAt DateTime @updatedAt
+
+  @@unique([businessId, key])
+  @@index([businessId])
+}
+
+model Area {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  name         String
+  sortOrder    Int     @default(0)
+  active       Boolean @default(true)
+  defaultCount Int     @default(8)
+
+  @@unique([businessId, name])
+  @@index([businessId])
+}
+
+model Covers {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  area      String
+  label     String
+  covers    Int
+  createdAt DateTime @default(now())
+
+  @@index([businessId])
+  @@index([businessId, createdAt])
+}
+
+model TicketLog {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  user       User     @relation(fields: [userId], references: [id])
+  userId     Int
+  area       String
+  tableLabel String
+  covers     Int?
+  itemsJson  Json
+  note       String?
+  idempotencyKey String?
+  createdAt  DateTime @default(now())
+
+  @@unique([businessId, idempotencyKey])
+  @@index([businessId])
+  @@index([businessId, createdAt])
+}
+
+model KdsDayCounter {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  dayKey String
+  lastNo Int    @default(0)
+
+  @@unique([businessId, dayKey])
+  @@index([businessId])
+}
+
+model KdsOrder {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  dayKey     String
+  orderNo    Int
+  area       String
+  tableLabel String
+  openedAt   DateTime @default(now())
+  closedAt   DateTime?
+
+  tickets    KdsTicket[]
+
+  @@unique([businessId, dayKey, orderNo])
+  @@index([businessId])
+  @@index([businessId, area, tableLabel, closedAt])
+}
+
+model KdsTicket {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  order     KdsOrder @relation(fields: [orderId], references: [id])
+  orderId   Int
+  userId    Int?
+  firedAt   DateTime @default(now())
+  itemsJson Json
+  note      String?
+
+  stations  KdsTicketStation[]
+
+  @@index([businessId])
+  @@index([businessId, orderId, firedAt])
+}
+
+model KdsTicketStation {
+  id          Int      @id @default(autoincrement())
+  business    Business @relation(fields: [businessId], references: [id])
+  businessId  String
+
+  ticket     KdsTicket @relation(fields: [ticketId], references: [id])
+  ticketId   Int
+  station    PrepStation
+  status     KdsStationStatus @default(NEW)
+  bumpedAt   DateTime?
+  bumpedBy   User?    @relation("KdsBumpedBy", fields: [bumpedById], references: [id])
+  bumpedById Int?
+
+  @@unique([businessId, ticketId, station])
+  @@index([businessId])
+  @@index([businessId, station, status, bumpedAt])
+}
+
+enum NotificationType {
+  SECURITY
+  OTHER
+}
+
+model Notification {
+  id         Int      @id @default(autoincrement())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+
+  user      User             @relation(fields: [userId], references: [id])
+  userId    Int
+  type      NotificationType @default(SECURITY)
+  message   String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([businessId])
+  @@index([businessId, createdAt])
+}

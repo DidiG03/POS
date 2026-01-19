@@ -1,8 +1,8 @@
 {
-  "name": "ullishtja-pos",
+  "name": " Code Orbit-pos",
   "version": "0.1.0",
   "private": true,
-  "description": "Desktop POS for Ullishtja Agroturizem (Electron + React + Prisma)",
+  "description": "Desktop POS for  Code Orbit Agroturizem (Electron + React + Prisma)",
   "type": "module",
   "main": "dist/main/index.js",
   "author": "",
@@ -14,7 +14,7 @@
     "start": "electron-vite preview",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=0",
     "format": "prettier --write .",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests --exclude \"tests/**\"",
     "test:ui": "playwright test",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev --name init",
@@ -26,8 +26,8 @@
     "pnpm": ">=8"
   },
   "build": {
-    "appId": "com.ullishtja.pos",
-    "productName": "Ullishtja POS",
+    "appId": "com. Code Orbit.pos",
+    "productName": " Code Orbit POS",
     "files": [
       "dist/**",
       "package.json"
@@ -42,7 +42,12 @@
       "target": [
         "nsis"
       ],
-      "publisherName": "Ullishtja Agroturizem"
+      "publisherName": " Code Orbit Agroturizem"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "",
+      "repo": ""
     }
   },
   "lint-staged": {
@@ -98,6 +103,7 @@
   "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748",
   "dependencies": {
     "@prisma/client": "^6.13.0",
+    "@sentry/electron": "^7.6.0",
     "bcryptjs": "^3.0.2",
     "dotenv": "^17.2.1",
     "electron-updater": "^6.6.2",

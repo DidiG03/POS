@@ -26,7 +26,7 @@ interface TicketState {
   markAllAsSent: () => void;
 }
 
-export const useTicketStore = create<TicketState>((set, get) => ({
+export const useTicketStore = create<TicketState>((set, _get) => ({
   lines: [],
   orderNote: '',
   addItem: ({ sku, name, unitPrice, vatRate = 0.2, qty }) => {

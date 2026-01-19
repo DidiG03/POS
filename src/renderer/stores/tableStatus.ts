@@ -33,7 +33,12 @@ export const useTableStatus = create<TableStatusState>()(
           for (const e of entries || []) incoming[key(e.area, e.label)] = true;
           const merged: Record<string, boolean> = { ...s.openMap };
           // Set true for incoming open tables
-          for (const k in incoming) merged[k] = true;
+          for (const k in incoming) {
+            const last = s.lastSetAt[k] || 0;
+            // If user just CLOSED a table locally, don't let a stale poll re-open it immediately.
+            if (merged[k] === false && now - last <= ttlMs) continue;
+            merged[k] = true;
+          }
           // For keys not present in incoming, allow clearing only if not recently set locally
           for (const k in merged) {
             if (!incoming[k]) {

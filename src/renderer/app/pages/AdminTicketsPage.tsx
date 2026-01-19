@@ -1,15 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAdminSessionStore } from '../../stores/adminSession';
 
 type Row = { id: number; name: string; active: boolean; tickets: number };
-type Ticket = {
-  id: number; area: string; tableLabel: string; covers: number | null; createdAt: string;
-  items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[];
-  note?: string | null; subtotal: number; vat: number;
-};
 
 export default function AdminTicketsPage() {
   const navigate = useNavigate();
+  const me = useAdminSessionStore((s) => s.user);
   const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState('');
   const [range, setRange] = useState<'today' | 'yesterday' | 'last7' | 'last30' | 'custom'>('today');
@@ -17,6 +14,10 @@ export default function AdminTicketsPage() {
   const [customEnd, setCustomEnd] = useState('');
 
   async function load() {
+    if (!me || me.role !== 'ADMIN') {
+      setRows([]);
+      return;
+    }
     let startIso: string | undefined;
     let endIso: string | undefined;
     const now = new Date();
@@ -45,11 +46,8 @@ export default function AdminTicketsPage() {
   }
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
-
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+    void load();
+  }, [me?.id, me?.role, range, customStart, customEnd]);
 
   const filtered = rows
     .filter((r) => r.name.toLowerCase().includes(q.toLowerCase()))

@@ -3,7 +3,7 @@ import { prisma } from '@db/client';
 export const coreServices = {
   async readSettings() {
     const envDefaults = {
-      restaurantName: process.env.RESTAURANT_NAME || 'Ullishtja Agroturizem',
+      restaurantName: process.env.RESTAURANT_NAME || ' Code Orbit Agroturizem',
       currency: process.env.CURRENCY || 'EUR',
       defaultVatRate: Number(process.env.VAT_RATE_DEFAULT || 0.2),
       printer: {
@@ -11,16 +11,44 @@ export const coreServices = {
         port: process.env.PRINTER_PORT ? Number(process.env.PRINTER_PORT) : undefined,
       },
       enableAdmin: process.env.ENABLE_ADMIN === 'true',
+      security: {
+        allowLan: process.env.POS_ALLOW_LAN === 'true',
+        requirePairingCode: process.env.POS_REQUIRE_PAIRING_CODE !== 'false',
+      },
+      cloud: {
+        backendUrl: process.env.POS_CLOUD_URL || undefined,
+        businessCode: process.env.POS_BUSINESS_CODE || undefined,
+      },
+      kds: {
+        enabledStations: ['KITCHEN'],
+      },
     } as any;
     const row = await prisma.syncState.findUnique({ where: { key: 'settings' } }).catch(() => null);
     const stored = (row?.valueJson as any) || {};
-    return { ...envDefaults, ...stored };
+    const merged = { ...envDefaults, ...stored };
+    // IMPORTANT: backendUrl is locked to env and cannot be overridden by UI/settings.
+    // This prevents users from pointing the POS to arbitrary backends.
+    if (envDefaults?.cloud?.backendUrl) {
+      merged.cloud = { ...(merged.cloud || {}), backendUrl: envDefaults.cloud.backendUrl };
+    } else {
+      // If not set in env, disable cloud mode entirely.
+      merged.cloud = { ...(merged.cloud || {}), backendUrl: undefined };
+    }
+    return merged;
   },
 
   async updateSettings(input: any) {
     const current = await this.readSettings();
     const merged = { ...current, ...input };
     if (input?.printer) merged.printer = { ...(current.printer || {}), ...input.printer };
+    if (input?.security) merged.security = { ...(current.security || {}), ...input.security };
+    if (input?.kds) merged.kds = { ...(current.kds || {}), ...input.kds };
+    if (input?.cloud) {
+      // Only businessCode is user-editable; backendUrl remains locked to env.
+      merged.cloud = { ...(current.cloud || {}), ...(input.cloud || {}) };
+      if (merged.cloud) delete (merged.cloud as any).backendUrl;
+      merged.cloud = { ...(merged.cloud || {}), backendUrl: (current as any)?.cloud?.backendUrl };
+    }
     await prisma.syncState.upsert({ where: { key: 'settings' }, create: { key: 'settings', valueJson: merged }, update: { valueJson: merged } });
     return merged;
   },

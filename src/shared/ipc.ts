@@ -14,6 +14,14 @@ export interface SettingsDTO {
   restaurantName: string;
   currency: string;
   defaultVatRate: number;
+  preferences?: {
+    vatEnabled?: boolean;
+    serviceCharge?: {
+      enabled?: boolean;
+      mode?: 'PERCENT' | 'AMOUNT';
+      value?: number; // percent or fixed amount (same currency)
+    };
+  };
   printer?: {
     ip?: string;
     port?: number;
@@ -24,6 +32,15 @@ export interface SettingsDTO {
   tableCountMainHall?: number;
   tableCountTerrace?: number;
   tableAreas?: TableAreaDTO[];
+  security?: {
+    allowLan?: boolean;
+    requirePairingCode?: boolean;
+    pairingCode?: string;
+  };
+  cloud?: {
+    backendUrl?: string; // e.g. https://api.example.com
+    businessCode?: string; // tenant code, e.g.  Code Orbit
+  };
 }
 
 export interface TableAreaDTO {
@@ -34,6 +51,7 @@ export interface TableAreaDTO {
 export const LoginWithPinInputSchema = z.object({
   pin: z.string().min(4).max(6),
   userId: z.number().optional(),
+  pairingCode: z.string().min(4).max(12).optional(),
 });
 export type LoginWithPinInput = z.infer<typeof LoginWithPinInputSchema>;
 
@@ -53,6 +71,12 @@ export const UpdateUserInputSchema = z.object({
   active: z.boolean().optional(),
 });
 export type UpdateUserInput = z.infer<typeof UpdateUserInputSchema>;
+
+export const DeleteUserInputSchema = z.object({
+  id: z.number(),
+  hard: z.boolean().optional().default(false),
+});
+export type DeleteUserInput = z.infer<typeof DeleteUserInputSchema>;
 
 export const SetPrinterInputSchema = z.object({
   ip: z
@@ -74,6 +98,8 @@ export interface MenuItemDTO {
   vatRate: number;
   active: boolean;
   categoryId: number;
+  isKg?: boolean;
+  station?: 'KITCHEN' | 'BAR' | 'DESSERT';
 }
 
 export interface MenuCategoryDTO {
@@ -81,23 +107,74 @@ export interface MenuCategoryDTO {
   name: string;
   sortOrder: number;
   active: boolean;
+  color?: string | null;
   items: MenuItemDTO[];
 }
 
-export const SyncMenuFromUrlInputSchema = z.object({ url: z.string().url(), lang: z.string().optional() });
-export type SyncMenuFromUrlInput = z.infer<typeof SyncMenuFromUrlInputSchema>;
+export const CreateMenuCategoryInputSchema = z.object({
+  name: z.string().min(1),
+  sortOrder: z.number().int().min(0).optional(),
+  color: z.string().optional().nullable(),
+  active: z.boolean().optional(),
+});
+export type CreateMenuCategoryInput = z.infer<typeof CreateMenuCategoryInputSchema>;
+
+export const UpdateMenuCategoryInputSchema = z.object({
+  id: z.number(),
+  name: z.string().min(1).optional(),
+  sortOrder: z.number().int().min(0).optional(),
+  color: z.string().optional().nullable(),
+  active: z.boolean().optional(),
+});
+export type UpdateMenuCategoryInput = z.infer<typeof UpdateMenuCategoryInputSchema>;
+
+export const CreateMenuItemInputSchema = z.object({
+  categoryId: z.number(),
+  name: z.string().min(1),
+  sku: z.string().optional(),
+  price: z.number().nonnegative(),
+  vatRate: z.number().min(0).max(1).optional(),
+  active: z.boolean().optional(),
+  isKg: z.boolean().optional(),
+  station: z.enum(['KITCHEN', 'BAR', 'DESSERT']).optional(),
+});
+export type CreateMenuItemInput = z.infer<typeof CreateMenuItemInputSchema>;
+
+export const UpdateMenuItemInputSchema = z.object({
+  id: z.number(),
+  categoryId: z.number().optional(),
+  name: z.string().min(1).optional(),
+  price: z.number().nonnegative().optional(),
+  vatRate: z.number().min(0).max(1).optional(),
+  active: z.boolean().optional(),
+  isKg: z.boolean().optional(),
+  station: z.enum(['KITCHEN', 'BAR', 'DESSERT']).optional(),
+});
+export type UpdateMenuItemInput = z.infer<typeof UpdateMenuItemInputSchema>;
 
 export interface ApiMenu {
-  syncFromUrl(input: SyncMenuFromUrlInput): Promise<{ categories: number; items: number }>;
   listCategoriesWithItems(): Promise<MenuCategoryDTO[]>;
+  createCategory(input: CreateMenuCategoryInput): Promise<{ id: number }>;
+  updateCategory(input: UpdateMenuCategoryInput): Promise<boolean>;
+  deleteCategory(id: number): Promise<boolean>;
+  createItem(input: CreateMenuItemInput): Promise<{ id: number; sku: string }>;
+  updateItem(input: UpdateMenuItemInput): Promise<boolean>;
+  deleteItem(id: number): Promise<boolean>;
 }
 
 export interface ApiAuth {
-  loginWithPin(pin: string, userId?: number): Promise<UserDTO | null>;
+  loginWithPin(pin: string, userId?: number, pairingCode?: string): Promise<UserDTO | null>;
+  verifyManagerPin(pin: string): Promise<{ ok: boolean; userId?: number; userName?: string }>;
+  logoutAdmin(): Promise<boolean>;
   createUser(input: CreateUserInput): Promise<UserDTO>;
   listUsers(): Promise<UserDTO[]>;
   updateUser(input: UpdateUserInput): Promise<UserDTO>;
   syncStaffFromApi(url?: string): Promise<number>;
+  deleteUser(input: DeleteUserInput): Promise<boolean>;
+}
+
+export interface ApiNetwork {
+  getIps(): Promise<string[]>;
 }
 
 export interface ApiRequests {
@@ -135,18 +212,59 @@ export interface ApiSettings {
 
 export type TestPrintResult = { ok: boolean; error?: string };
 
+export interface ApiOffline {
+  getStatus(): Promise<{ queued: number }>;
+}
+
 export interface Api {
   auth: ApiAuth;
   settings: ApiSettings;
   menu: ApiMenu;
   shifts: ApiShifts;
   admin: ApiAdmin;
+  kds: ApiKds;
+  backups: ApiBackups;
+  reports: ApiReports;
+  offline: ApiOffline;
   layout: ApiLayout;
   covers: ApiCovers;
   tickets: ApiTickets;
   notifications: ApiNotifications;
   tables: ApiTables;
   requests: ApiRequests;
+  network: ApiNetwork;
+  updater: ApiUpdater;
+}
+
+export interface BackupFileDTO {
+  name: string;
+  bytes: number;
+  createdAt: string;
+}
+
+export interface ApiBackups {
+  list(): Promise<BackupFileDTO[]>;
+  create(): Promise<{ ok: boolean; file?: string; error?: string }>;
+  restore(input: { name: string }): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }>;
+}
+
+export interface KdsTicketDTO {
+  ticketId: number;
+  orderNo: number;
+  area: string;
+  tableLabel: string;
+  firedAt: string;
+  bumpedAt?: string | null;
+  note?: string | null;
+  items: any[];
+}
+
+export interface ApiKds {
+  openWindow(): Promise<boolean>;
+  listTickets(input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; status: 'NEW' | 'DONE'; limit?: number }): Promise<KdsTicketDTO[]>;
+  bump(input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; ticketId: number; userId?: number }): Promise<boolean>;
+  bumpItem(input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; ticketId: number; itemIdx: number; userId?: number }): Promise<boolean>;
+  debug(): Promise<any>;
 }
 
 // Admin overview DTOs
@@ -174,6 +292,12 @@ export interface AdminShiftDTO {
   isOpen: boolean;
 }
 
+export interface SecurityLogEntry {
+  timestamp: number;
+  event: string;
+  details: any;
+}
+
 export interface ApiAdmin {
   getOverview(): Promise<AdminOverviewDTO>;
   openWindow(): Promise<boolean>;
@@ -184,6 +308,48 @@ export interface ApiAdmin {
   markAllNotificationsRead(): Promise<boolean>;
   getTopSellingToday(): Promise<TopSellingDTO | null>;
   getSalesTrends(input: { range: 'daily' | 'weekly' | 'monthly' }): Promise<SalesTrendDTO>;
+  getSecurityLog(limit?: number): Promise<SecurityLogEntry[]>;
+}
+
+// Waiter-facing reports (per-user)
+export interface MyReportsOverviewDTO {
+  revenueTodayNet: number;
+  revenueTodayVat: number;
+  openOrders: number;
+}
+
+export interface ApiReports {
+  getMyOverview(userId: number): Promise<MyReportsOverviewDTO>;
+  getMyTopSellingToday(userId: number): Promise<TopSellingDTO | null>;
+  getMySalesTrends(input: { userId: number; range: 'daily' | 'weekly' | 'monthly' }): Promise<SalesTrendDTO>;
+  listMyActiveTickets(userId: number): Promise<ReportTicketDTO[]>;
+  listMyPaidTickets(input: { userId: number; q?: string; limit?: number }): Promise<ReportTicketDTO[]>;
+}
+
+export interface ReportTicketDTO {
+  kind: 'ACTIVE' | 'PAID';
+  area: string;
+  tableLabel: string;
+  createdAt: string;
+  paidAt?: string | null;
+  covers?: number | null;
+  note?: string | null;
+  userName?: string | null;
+  paymentMethod?: 'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE' | 'MIXED' | null;
+  vatEnabled?: boolean | null;
+  serviceChargeEnabled?: boolean | null;
+  serviceChargeApplied?: boolean | null;
+  serviceChargeMode?: 'PERCENT' | 'AMOUNT' | null;
+  serviceChargeValue?: number | null;
+  serviceChargeAmount?: number | null;
+  discountType?: 'NONE' | 'PERCENT' | 'AMOUNT' | null;
+  discountValue?: number | null;
+  discountAmount?: number | null;
+  discountReason?: string | null;
+  items: { sku?: string; name: string; qty: number; unitPrice: number; vatRate?: number; note?: string; voided?: boolean }[];
+  subtotal: number;
+  vat: number;
+  total: number;
 }
 
 export interface AdminTicketDTO {
@@ -226,7 +392,9 @@ export interface SalesTrendDTO {
 }
 
 // Table layout
-export type TableLayoutNode = { id: number; label: string; x: number; y: number; status: 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED' };
+export type TableLayoutNode =
+  | { id: number; kind?: 'TABLE'; label: string; x: number; y: number; status: 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED' }
+  | { id: number; kind: 'AREA'; label: string; x: number; y: number; w: number; h: number };
 export interface ApiLayout {
   get(userId: number, area: string): Promise<TableLayoutNode[] | null>;
   save(userId: number, area: string, nodes: TableLayoutNode[]): Promise<boolean>;
@@ -244,7 +412,7 @@ declare global {
 }
 
 export interface ApiTickets {
-  log(input: { userId: number; area: string; tableLabel: string; covers: number | null; items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[]; note?: string | null }): Promise<boolean>;
+  log(input: { userId: number; area: string; tableLabel: string; covers: number | null; items: { sku?: string; name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[]; note?: string | null }): Promise<boolean>;
   getLatestForTable(area: string, tableLabel: string): Promise<{
     items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[];
     note?: string | null;
@@ -265,6 +433,10 @@ export interface PrintTicketInput {
   items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[];
   note?: string | null;
   userName?: string;
+  // When true, store a receipt snapshot for history but don't actually print.
+  recordOnly?: boolean;
+  // Optional metadata used for reporting/attribution (e.g., payment receipts).
+  meta?: any;
 }
 
 export interface NotificationDTO {
@@ -283,6 +455,24 @@ export interface ApiNotifications {
 export interface ApiTables {
   setOpen(area: string, label: string, open: boolean): Promise<boolean>;
   listOpen(): Promise<{ area: string; label: string }[]>;
+}
+
+export interface UpdateStatusDTO {
+  hasUpdate: boolean;
+  updateInfo: {
+    version: string;
+    releaseDate: string | null;
+    releaseNotes: string;
+  } | null;
+  downloaded: boolean;
+  checking: boolean;
+}
+
+export interface ApiUpdater {
+  getUpdateStatus(): Promise<UpdateStatusDTO>;
+  checkForUpdates(): Promise<{ success?: boolean; error?: string }>;
+  downloadUpdate(): Promise<{ success?: boolean; error?: string }>;
+  installUpdate(): Promise<{ success?: boolean; error?: string }>;
 }
 
 

@@ -43,11 +43,6 @@ export default function LoginPage() {
   const { setUser } = useSessionStore();
   useEffect(() => {
     (async () => {
-      try {
-        await api.auth.syncStaffFromApi();
-      } catch {
-        /* ignore */
-      }
       const users = await api.auth.listUsers();
       const activeUsers = users.filter((u) => u.active && u.role !== 'ADMIN');
       setStaff(activeUsers);

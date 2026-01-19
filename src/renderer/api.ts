@@ -1,6 +1,7 @@
 import { offlineQueue } from './utils/offlineQueue';
 
 export interface TicketLinePayload {
+  sku?: string;
   name: string;
   qty: number;
   unitPrice: number;
@@ -23,12 +24,7 @@ export async function logTicket(payload: TicketPayload) {
     return;
   }
   try {
-    const res = await fetch('http://localhost:3333/tickets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('bad response');
+    await window.api.tickets.log(payload);
   } catch {
     await offlineQueue.enqueue(payload);
   }

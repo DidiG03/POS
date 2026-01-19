@@ -4,11 +4,15 @@ import type { Api } from '@shared/ipc';
 
 const api: Api = {
   auth: {
-    loginWithPin: (pin: string, userId?: number) => ipcRenderer.invoke('auth:loginWithPin', { pin, userId }),
+    loginWithPin: (pin: string, userId?: number, pairingCode?: string) =>
+      ipcRenderer.invoke('auth:loginWithPin', { pin, userId, pairingCode }),
+    verifyManagerPin: (pin: string) => ipcRenderer.invoke('auth:verifyManagerPin', { pin }),
+    logoutAdmin: () => ipcRenderer.invoke('auth:logoutAdmin'),
     createUser: (input) => ipcRenderer.invoke('auth:createUser', input),
     listUsers: () => ipcRenderer.invoke('auth:listUsers'),
     updateUser: (input) => ipcRenderer.invoke('auth:updateUser', input),
     syncStaffFromApi: (url?: string) => ipcRenderer.invoke('auth:syncStaffFromApi', { url }),
+    deleteUser: (input) => ipcRenderer.invoke('auth:deleteUser', input),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
@@ -18,8 +22,13 @@ const api: Api = {
     testPrintVerbose: () => ipcRenderer.invoke('settings:testPrintVerbose'),
   },
   menu: {
-    syncFromUrl: (input) => ipcRenderer.invoke('menu:syncFromUrl', input),
     listCategoriesWithItems: () => ipcRenderer.invoke('menu:listCategoriesWithItems'),
+    createCategory: (input) => ipcRenderer.invoke('menu:createCategory', input),
+    updateCategory: (input) => ipcRenderer.invoke('menu:updateCategory', input),
+    deleteCategory: (id: number) => ipcRenderer.invoke('menu:deleteCategory', { id }),
+    createItem: (input) => ipcRenderer.invoke('menu:createItem', input),
+    updateItem: (input) => ipcRenderer.invoke('menu:updateItem', input),
+    deleteItem: (id: number) => ipcRenderer.invoke('menu:deleteItem', { id }),
   },
   shifts: {
     getOpen: (userId: number) => ipcRenderer.invoke('shifts:getOpen', { userId }),
@@ -38,6 +47,29 @@ const api: Api = {
     markAllNotificationsRead: () => ipcRenderer.invoke('admin:markAllNotificationsRead'),
     getTopSellingToday: () => ipcRenderer.invoke('admin:getTopSellingToday'),
     getSalesTrends: (input: { range: 'daily' | 'weekly' | 'monthly' }) => ipcRenderer.invoke('admin:getSalesTrends', input),
+    getSecurityLog: (limit?: number) => ipcRenderer.invoke('admin:getSecurityLog', { limit }),
+  },
+  kds: {
+    openWindow: () => ipcRenderer.invoke('kds:openWindow'),
+    listTickets: (input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; status: 'NEW' | 'DONE'; limit?: number }) => ipcRenderer.invoke('kds:listTickets', input),
+    bump: (input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; ticketId: number; userId?: number }) => ipcRenderer.invoke('kds:bump', input),
+    bumpItem: (input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; ticketId: number; itemIdx: number; userId?: number }) => ipcRenderer.invoke('kds:bumpItem', input),
+    debug: () => ipcRenderer.invoke('kds:debug'),
+  },
+  backups: {
+    list: () => ipcRenderer.invoke('backups:list'),
+    create: () => ipcRenderer.invoke('backups:create'),
+    restore: (input: { name: string }) => ipcRenderer.invoke('backups:restore', input),
+  },
+  reports: {
+    getMyOverview: (userId: number) => ipcRenderer.invoke('reports:getMyOverview', { userId }),
+    getMyTopSellingToday: (userId: number) => ipcRenderer.invoke('reports:getMyTopSellingToday', { userId }),
+    getMySalesTrends: (input: { userId: number; range: 'daily' | 'weekly' | 'monthly' }) => ipcRenderer.invoke('reports:getMySalesTrends', input),
+    listMyActiveTickets: (userId: number) => ipcRenderer.invoke('reports:listMyActiveTickets', { userId }),
+    listMyPaidTickets: (input: { userId: number; q?: string; limit?: number }) => ipcRenderer.invoke('reports:listMyPaidTickets', input),
+  },
+  offline: {
+    getStatus: () => ipcRenderer.invoke('offline:getStatus'),
   },
   layout: {
     get: (userId: number, area: string) => ipcRenderer.invoke('layout:get', { userId, area }),
@@ -71,6 +103,15 @@ const api: Api = {
     pollApprovedForTable: (ownerId: number, area: string, tableLabel: string) => ipcRenderer.invoke('requests:pollApprovedForTable', { ownerId, area, tableLabel }),
     markApplied: (ids: number[]) => ipcRenderer.invoke('requests:markApplied', { ids }),
   },
+  network: {
+    getIps: () => ipcRenderer.invoke('network:getIps'),
+  },
+  updater: {
+    getUpdateStatus: () => ipcRenderer.invoke('updater:getStatus'),
+    checkForUpdates: () => ipcRenderer.invoke('updater:checkForUpdates'),
+    downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
+    installUpdate: () => ipcRenderer.invoke('updater:installUpdate'),
+  },
 };
 
 declare global {
@@ -81,6 +122,25 @@ declare global {
 
 process.once('loaded', () => {
   contextBridge.exposeInMainWorld('api', api);
+});
+
+// Force staff logout on auth/session expiry (main -> renderer)
+ipcRenderer.on('auth:forceLogout', (_e, payload) => {
+  try {
+    const reason = (payload as any)?.reason;
+    window.dispatchEvent(new CustomEvent('pos:forceLogout', { detail: { reason } }));
+  } catch {
+    // ignore
+  }
+});
+
+// Updater events (main -> renderer)
+ipcRenderer.on('updater:event', (_e, payload) => {
+  try {
+    window.dispatchEvent(new CustomEvent('updater:event', { detail: payload }));
+  } catch {
+    // ignore
+  }
 });
 
 

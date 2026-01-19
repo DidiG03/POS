@@ -1,37 +1,72 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
+import { useAdminSessionStore } from '../../stores/adminSession';
 
 export default function LoginPage() {
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
+  const [pairingCode, setPairingCode] = useState('');
+  const [businessCode, setBusinessCode] = useState<string>(() => {
+    try {
+      return (localStorage.getItem('pos_business_code') || '').trim().toUpperCase();
+    } catch {
+      return '';
+    }
+  });
+  const [adminBusinessCode, setAdminBusinessCode] = useState<string>('');
+  const [adminBusinessCodeMode, setAdminBusinessCodeMode] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [cloudNotice, setCloudNotice] = useState<string | null>(null);
   const navigate = useNavigate();
+  const isBrowserClient = typeof window !== 'undefined' && Boolean((window as any).__BROWSER_CLIENT__);
+  const isCloudBrowserClient = typeof window !== 'undefined' && Boolean((window as any).__CLOUD_CLIENT__);
+  const isAdminContext = typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/admin');
+  const isKdsContext = typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/kds');
 
   const onSubmit = async () => {
     setError(null);
+    if (isBrowserClient && isCloudBrowserClient && businessCode.trim().length < 2) {
+      setError('Enter your Business code');
+      return;
+    }
     if (pin.length < 4) {
       setError('Enter 4-6 digits');
       return;
     }
     try {
-      const user = await window.api.auth.loginWithPin(pin, selectedId ?? undefined);
+      // In browser cloud mode, persist business code locally so auth.listUsers/login can use it.
+      if (isBrowserClient && isCloudBrowserClient) {
+        try {
+          localStorage.setItem('pos_business_code', businessCode.trim().toUpperCase());
+        } catch {
+          // ignore
+        }
+      }
+      const user = await window.api.auth.loginWithPin(pin, selectedId ?? undefined, isBrowserClient ? (pairingCode || undefined) : undefined);
       if (user) {
+        if (isAdminContext && user.role !== 'ADMIN') {
+          setError('Admin access only');
+          return;
+        }
         // Admin goes straight to admin shell
         if (user.role === 'ADMIN') {
-          setUser(user);
+          if (isAdminContext) setAdminUser(user);
+          else setUser(user);
           navigate('/admin');
           return;
         }
-        // Staff requires open shift
+        // Staff requires open shift (but KDS clients should be usable without shift clock-in)
+        if (!isKdsContext) {
         const open = await window.api.shifts.getOpen(user.id);
         if (!open) {
           setShowShiftConfirm(true);
           setPendingUser(user);
           return;
+          }
         }
         setUser(user);
-        navigate('/app/tables');
+        navigate(isKdsContext ? '/kds' : '/app/tables');
       }
       else setError('Invalid PIN');
     } catch (e) {
@@ -46,26 +81,53 @@ export default function LoginPage() {
   const [showShiftConfirm, setShowShiftConfirm] = useState(false);
   const [pendingUser, setPendingUser] = useState<any>(null);
   const { setUser } = useSessionStore();
+  const { setUser: setAdminUser } = useAdminSessionStore();
+  const [reloadNonce, setReloadNonce] = useState(0);
+
+  useEffect(() => {
+    const onCloud = () => setReloadNonce((n) => n + 1);
+    window.addEventListener('pos:cloudConfigChanged', onCloud as any);
+    return () => window.removeEventListener('pos:cloudConfigChanged', onCloud as any);
+  }, []);
+
   useEffect(() => {
     (async () => {
-      try {
-        await window.api.auth.syncStaffFromApi();
-      } catch {}
-      const users = await window.api.auth.listUsers();
-      const isAdminContext = typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/admin');
-      const list = isAdminContext
-        ? users.filter((u) => u.role === 'ADMIN')
-        : users.filter((u) => u.active && u.role !== 'ADMIN');
-      setStaff(list);
-      try {
-        const ids = await window.api.shifts.listOpen();
-        setOpenIds(ids);
-      } catch {}
-      // Read admin flag for showing admin button
       const s = await window.api.settings.get();
       setEnableAdmin(s.enableAdmin ?? false);
+      const backendUrl = String((s as any)?.cloud?.backendUrl || '').trim();
+      const businessCode = String((s as any)?.cloud?.businessCode || '').trim();
+      if (isAdminContext) {
+        setAdminBusinessCode(String(businessCode || '').trim().toUpperCase());
+      }
+      if (backendUrl && !businessCode) {
+        // Cloud is enabled by provider, but tenant not selected → block local fallback.
+        setCloudNotice('Cloud is enabled. Enter your Business code in Admin → Settings → Cloud (Hosted) to continue.');
+        // In admin window, allow entering business code directly from login screen.
+        if (isAdminContext) setAdminBusinessCodeMode(true);
+        setStaff([]);
+        setOpenIds([]);
+        return;
+      }
+      setCloudNotice(null);
+      if (isAdminContext) setAdminBusinessCodeMode(false);
+
+      const users = await window.api.auth.listUsers();
+      const list = isAdminContext
+        ? users.filter((u) => u.role === 'ADMIN' && u.active)
+        : users.filter((u) => u.active && u.role !== 'ADMIN');
+      setStaff(list);
+      if (!isAdminContext) {
+        try {
+          const ids = await window.api.shifts.listOpen();
+          setOpenIds(ids);
+        } catch (e) {
+          void e;
+        }
+      } else {
+        setOpenIds([]);
+      }
     })();
-  }, []);
+  }, [reloadNonce]);
 
   const [enableAdmin, setEnableAdmin] = useState(false);
 
@@ -73,8 +135,8 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-900">
       <div className="bg-gray-800 p-6 rounded-lg w-full max-w-2xl">
         <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl font-semibold">Select Staff</h1>
-          {enableAdmin && (
+          <h1 className="text-xl font-semibold">{isAdminContext ? 'Admin Login' : 'Select Staff'}</h1>
+          {enableAdmin && !isAdminContext && (
             <button
               className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
               onClick={() => window.api.admin.openWindow()}
@@ -83,62 +145,142 @@ export default function LoginPage() {
             </button>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <div className="text-sm mb-2 opacity-80">Not clocked in</div>
-            <div className="space-y-2 max-h-64 overflow-auto pr-2">
-              {staff.filter((s) => !openIds.includes(s.id)).map((s) => (
-                <button
-                  key={s.id}
-                  className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
-                  onClick={() => {
-                    setSelectedId(s.id);
-                    setPin('');
-                    setError(null);
-                    setShowPin(true);
-                  }}
-                >
-                  <span>{s.displayName}</span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    className="w-4 h-4 opacity-70"
-                  >
-                    <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
-                  </svg>
-                </button>
-              ))}
+        {cloudNotice && (
+          <div className="mb-4 p-3 rounded bg-amber-900/30 border border-amber-700 text-amber-200 text-sm">
+            {cloudNotice}
           </div>
-          </div>
-          <div>
-            <div className="text-sm mb-2 opacity-80">Clocked in</div>
-            <div className="space-y-2 max-h-64 overflow-auto pr-2">
-              {staff.filter((s) => openIds.includes(s.id)).map((s) => (
-                <button
-                  key={s.id}
-                  className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
-                  onClick={() => {
-                    setSelectedId(s.id);
-                    setPin('');
-                    setError(null);
-                    setShowPin(true);
-                  }}
-                >
-                  <span>{s.displayName}</span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    className="w-4 h-4 opacity-70"
-                  >
-                    <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
-                  </svg>
-                </button>
-              ))}
+        )}
+        {isAdminContext && adminBusinessCodeMode && (
+          <div className="mb-4 p-3 rounded border border-gray-700 bg-gray-800/40">
+            <div className="text-sm font-medium mb-2">Business code</div>
+            <div className="text-xs opacity-70 mb-2">
+              Enter your business code to load admin users. After it works, this prompt will disappear.
+            </div>
+            <div className="flex gap-2">
+              <input
+                className="bg-gray-700 rounded px-3 py-2 flex-1"
+                placeholder="Business code (e.g.  Code Orbit)"
+                value={adminBusinessCode}
+                onChange={(e) => setAdminBusinessCode(e.target.value.replace(/[^0-9A-Za-z_-]/g, '').toUpperCase().slice(0, 24))}
+              />
+              <button
+                className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
+                disabled={!adminBusinessCode.trim()}
+                onClick={async () => {
+                  setError(null);
+                  try {
+                    await window.api.settings.update({ cloud: { businessCode: adminBusinessCode.trim() } } as any);
+                    const users = await window.api.auth.listUsers();
+                    const admins = (users || []).filter((u: any) => u.role === 'ADMIN' && u.active);
+                    setStaff(admins);
+                    setCloudNotice(null);
+                    if (!admins.length) {
+                      setAdminBusinessCodeMode(true);
+                      setError('No admin users found for that business code.');
+                    } else {
+                      setAdminBusinessCodeMode(false);
+                    }
+                  } catch (e: any) {
+                    setError(e?.message || 'Failed to set business code');
+                    setAdminBusinessCodeMode(true);
+                  }
+                }}
+              >
+                Use code
+              </button>
             </div>
           </div>
-        </div>
+        )}
+        {isAdminContext ? (
+          <div>
+            <div className="text-sm mb-2 opacity-80">Admins</div>
+            <div className="space-y-2 max-h-64 overflow-auto pr-2">
+              {staff.map((s) => (
+                <button
+                  key={s.id}
+                  className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
+                  onClick={() => {
+                    setSelectedId(s.id);
+                    setPin('');
+                    setPairingCode('');
+                    setError(null);
+                    setShowPin(true);
+                  }}
+                >
+                  <span>{s.displayName}</span>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    className="w-4 h-4 opacity-70"
+                  >
+                    <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
+                  </svg>
+                </button>
+              ))}
+              {staff.length === 0 && <div className="opacity-70 text-sm">No admin users</div>}
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-sm mb-2 opacity-80">Not clocked in</div>
+              <div className="space-y-2 max-h-64 overflow-auto pr-2">
+                {staff.filter((s) => !openIds.includes(s.id)).map((s) => (
+                  <button
+                    key={s.id}
+                    className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
+                    onClick={() => {
+                      setSelectedId(s.id);
+                      setPin('');
+                      setPairingCode('');
+                      setError(null);
+                      setShowPin(true);
+                    }}
+                  >
+                    <span>{s.displayName}</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      className="w-4 h-4 opacity-70"
+                    >
+                      <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-sm mb-2 opacity-80">Clocked in</div>
+              <div className="space-y-2 max-h-64 overflow-auto pr-2">
+                {staff.filter((s) => openIds.includes(s.id)).map((s) => (
+                  <button
+                    key={s.id}
+                    className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
+                    onClick={() => {
+                      setSelectedId(s.id);
+                      setPin('');
+                      setPairingCode('');
+                      setError(null);
+                      setShowPin(true);
+                    }}
+                  >
+                    <span>{s.displayName}</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      className="w-4 h-4 opacity-70"
+                    >
+                      <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         {showPin && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
             <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
@@ -155,6 +297,30 @@ export default function LoginPage() {
                 className="w-full p-3 rounded bg-gray-700 focus:outline-none"
                 onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
               />
+              {isBrowserClient && isCloudBrowserClient && (
+                <input
+                  type="text"
+                  inputMode="text"
+                  placeholder="Business code"
+                  maxLength={24}
+                  value={businessCode}
+                  onChange={(e) => setBusinessCode(e.target.value.replace(/[^0-9A-Za-z_-]/g, '').toUpperCase().slice(0, 24))}
+                  className="w-full p-3 rounded bg-gray-700 focus:outline-none mt-2"
+                  onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
+                />
+              )}
+              {isBrowserClient && !isCloudBrowserClient && (
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Pairing code (from Admin)"
+                  maxLength={12}
+                  value={pairingCode}
+                  onChange={(e) => setPairingCode(e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 12))}
+                  className="w-full p-3 rounded bg-gray-700 focus:outline-none mt-2"
+                  onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
+                />
+              )}
               {error && <div className="text-red-400 mt-2 text-sm">{error}</div>}
               <div className="flex gap-2 mt-4">
                 <button onClick={() => setShowPin(false)} className="flex-1 bg-gray-600 py-2 rounded">Cancel</button>
@@ -164,7 +330,7 @@ export default function LoginPage() {
           </div>
         )}
 
-        {showShiftConfirm && pendingUser && (
+        {!isAdminContext && showShiftConfirm && pendingUser && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
             <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
               <h2 className="text-center mb-3">Start shift for {pendingUser.displayName}?</h2>
@@ -185,7 +351,7 @@ export default function LoginPage() {
                     setShowShiftConfirm(false);
                     setPendingUser(null);
                     setUser(pendingUser);
-                    navigate('/app');
+                    navigate(isKdsContext ? '/kds' : '/app/tables');
                   }}
                 >
                   Confirm

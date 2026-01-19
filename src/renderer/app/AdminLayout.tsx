@@ -1,22 +1,31 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
+import { useAdminSessionStore } from '../stores/adminSession';
 
 export default function AdminLayout() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const me = useAdminSessionStore((s) => s.user);
+  const setMe = useAdminSessionStore((s) => s.setUser);
+  const navigate = useNavigate();
   useEffect(() => {
     (async () => {
+      if (!me || me.role !== 'ADMIN') {
+        setUnreadCount(0);
+        return;
+      }
       const unread = await window.api.admin.listNotifications({ onlyUnread: true }).catch(() => []);
       setUnreadCount(unread.length || 0);
     })();
-  }, []);
+  }, [me?.id, me?.role]);
   return (
     <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
       <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
-        <div className="font-semibold">Ullishtja POS Admin</div>
+        <div className="font-semibold"> Code Orbit POS Admin</div>
         <nav className="space-x-3 text-sm flex items-center">
           <NavLink to="/admin" end className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Overview</NavLink>
           <NavLink to="/admin/tickets" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tickets</NavLink>
+          <NavLink to="/admin/menu" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Menu</NavLink>
           <NavLink to="/admin/settings" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Settings</NavLink>
 
           <div className="relative inline-block">
@@ -56,6 +65,20 @@ export default function AdminLayout() {
               </div>
             )}
           </div>
+          <button
+            className="px-3 py-1 rounded bg-red-600 hover:bg-red-700"
+            onClick={async () => {
+              // Clear persisted admin session so reopening /admin requires PIN again.
+              setMe(null as any);
+              // Clear cloud admin token in main process (Electron) and force this window back to login.
+              await window.api.auth.logoutAdmin().catch(() => {});
+              setShowNotifications(false);
+              setUnreadCount(0);
+              navigate('/admin');
+            }}
+          >
+            Logout
+          </button>
           {/* <button
             className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
             onClick={() => window.api.auth.syncStaffFromApi()}

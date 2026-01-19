@@ -126,10 +126,10 @@ export const api = {
       return await request<any[]>('GET', '/admin/shifts');
     },
     async getTopSellingToday() {
-      return await request<any[]>('GET', '/admin/top-selling-today');
+      return await request<any>('GET', '/admin/top-selling-today');
     },
     async getSalesTrends(opts: any) {
-      return await request<any[]>('POST', '/admin/sales-trends', opts);
+      return await request<any>('POST', '/admin/sales-trends', opts);
     },
     async listTicketsByUser(userId: number, range: any) {
       return await request<any[]>('POST', `/admin/tickets/by-user/${userId}`, range);
@@ -144,9 +144,6 @@ export const api = {
   menu: {
     async listCategoriesWithItems() {
       return await request<any[]>('GET', '/menu');
-    },
-    async syncFromUrl(opts: any) {
-      await request('POST', '/menu/sync', opts);
     },
   },
   tickets: {
@@ -181,7 +178,12 @@ export const api = {
       await request('PUT', '/settings', opts);
     },
     async testPrint() {
-      await request('POST', '/settings/test-print');
+      try {
+        await request('POST', '/settings/test-print');
+        return true;
+      } catch {
+        return false;
+      }
     },
   },
   tables: {

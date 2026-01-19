@@ -31,6 +31,9 @@ export default function AdminPage() {
   const [sortKey, setSortKey] = useState<'userName' | 'openedAt' | 'durationHours'>('openedAt');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [topSelling, setTopSelling] = useState<{ name: string; qty: number; revenue: number } | null>(null);
+  const [users, setUsers] = useState<{ id: number; displayName: string; role: string; active: boolean; createdAt: string }[]>([]);
+  const [userQuery, setUserQuery] = useState('');
+  const [showAdmins, setShowAdmins] = useState(false);
   const [trendRange, setTrendRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [trend, setTrend] = useState<{ label: string; total: number; orders: number }[]>([]);
 
@@ -42,16 +45,35 @@ export default function AdminPage() {
       const sh = await api.admin.listShifts();
       setShifts(sh);
       const top = await api.admin.getTopSellingToday();
-      setTopSelling(top);
+      setTopSelling(top as any);
+      const u = await api.auth.listUsers();
+      setUsers(u);
     })();
   }, []);
 
   useEffect(() => {
     (async () => {
       const t = await api.admin.getSalesTrends({ range: trendRange });
-      setTrend(t.points);
+      setTrend(((t as any)?.points || t || []) as any);
     })();
   }, [trendRange]);
+
+  const openUserIds = new Set(shifts.filter((s) => s.isOpen).map((s) => s.userId));
+  const staffList = users
+    .filter((u) => (showAdmins ? true : u.role !== 'ADMIN'))
+    .filter((u) => {
+      const q = userQuery.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        String(u.displayName || '').toLowerCase().includes(q) ||
+        String(u.role || '').toLowerCase().includes(q) ||
+        String(u.id).includes(q)
+      );
+    })
+    .sort((a, b) => {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      return String(a.displayName || '').localeCompare(String(b.displayName || ''));
+    });
 
   return (
     <div className="grid gap-4 grid-cols-3">
@@ -136,6 +158,75 @@ export default function AdminPage() {
           </table>
         </div>
       </div>
+
+      <div className="bg-gray-800 rounded p-4 col-span-3">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <div className="text-sm opacity-70">Staff members</div>
+            <div className="text-xs opacity-70">Loaded from database</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs opacity-80 flex items-center gap-2 select-none">
+              <input type="checkbox" checked={showAdmins} onChange={(e) => setShowAdmins(e.target.checked)} />
+              Show admins
+            </label>
+            <button
+              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+              onClick={async () => setUsers(await api.auth.listUsers())}
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="mb-3">
+          <input
+            className="w-full bg-gray-700 rounded px-3 py-2"
+            placeholder="Search by name, role, or ID…"
+            value={userQuery}
+            onChange={(e) => setUserQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="overflow-auto max-h-96">
+          <table className="w-full text-sm">
+            <thead className="text-left opacity-70">
+              <tr>
+                <th className="py-1 pr-2">ID</th>
+                <th className="py-1 pr-2">Name</th>
+                <th className="py-1 pr-2">Role</th>
+                <th className="py-1 pr-2">Active</th>
+                <th className="py-1 pr-2">On shift</th>
+                <th className="py-1 pr-2">Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {staffList.length === 0 && (
+                <tr className="border-t border-gray-700">
+                  <td className="py-2 opacity-70" colSpan={6}>
+                    No staff found
+                  </td>
+                </tr>
+              )}
+              {staffList.map((u) => (
+                <tr key={u.id} className="border-t border-gray-700">
+                  <td className="py-1 pr-2 opacity-80">{u.id}</td>
+                  <td className="py-1 pr-2">{u.displayName}</td>
+                  <td className="py-1 pr-2">
+                    <span className="px-2 py-0.5 rounded bg-gray-900/70 border border-gray-700">
+                      {u.role}
+                    </span>
+                  </td>
+                  <td className="py-1 pr-2">{u.active ? 'Yes' : 'No'}</td>
+                  <td className="py-1 pr-2">{openUserIds.has(u.id) ? 'Yes' : 'No'}</td>
+                  <td className="py-1 pr-2 opacity-80">{u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="bg-gray-800 rounded p-4 col-span-3">
         <div className="flex items-center justify-between mb-2">
           <div className="text-sm opacity-70">Sales Trends</div>
