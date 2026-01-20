@@ -34,6 +34,7 @@ export default [
       'no-console': 'off',
       'no-undef': 'off',
       'react/react-in-jsx-scope': 'off',
+      'no-control-regex': 'warn', // Allow control characters in regex (needed for sanitization)
     },
   },
 ];

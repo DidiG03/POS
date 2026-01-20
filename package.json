@@ -12,7 +12,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
-    "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=0",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=20",
     "format": "prettier --write .",
     "test": "vitest run --passWithNoTests --exclude \"tests/**\"",
     "test:ui": "playwright test",

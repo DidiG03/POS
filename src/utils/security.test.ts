@@ -4,7 +4,10 @@ import { describe, it, expect } from 'vitest';
  * Unit tests for security utilities
  */
 
-function validatePin(pin: string | null | undefined, rejectWeak = true): { valid: boolean; error?: string } {
+function validatePin(
+  pin: string | null | undefined,
+  rejectWeak = true,
+): { valid: boolean; error?: string } {
   if (!pin) return { valid: false, error: 'PIN is required' };
   const pinStr = String(pin).trim();
 
@@ -15,16 +18,31 @@ function validatePin(pin: string | null | undefined, rejectWeak = true): { valid
 
   // Only reject weak PINs when creating/updating (not during login)
   if (rejectWeak) {
-    const weakPins = ['0000', '1111', '1234', '12345', '123456', '9999', '99999', '999999'];
+    const weakPins = [
+      '0000',
+      '1111',
+      '1234',
+      '12345',
+      '123456',
+      '9999',
+      '99999',
+      '999999',
+    ];
     if (weakPins.includes(pinStr)) {
-      return { valid: false, error: 'PIN is too common. Please choose a different PIN.' };
+      return {
+        valid: false,
+        error: 'PIN is too common. Please choose a different PIN.',
+      };
     }
   }
 
   return { valid: true };
 }
 
-function sanitizeString(input: string | null | undefined, maxLength = 500): string {
+function sanitizeString(
+  input: string | null | undefined,
+  maxLength = 500,
+): string {
   if (!input) return '';
   let sanitized = String(input)
     .trim()
@@ -71,7 +89,16 @@ describe('Security Utilities', () => {
     });
 
     it('should reject weak PINs when rejectWeak is true', () => {
-      const weakPins = ['0000', '1111', '1234', '12345', '123456', '9999', '99999', '999999'];
+      const weakPins = [
+        '0000',
+        '1111',
+        '1234',
+        '12345',
+        '123456',
+        '9999',
+        '99999',
+        '999999',
+      ];
       weakPins.forEach((pin) => {
         const result = validatePin(pin, true);
         expect(result.valid).toBe(false);
@@ -115,8 +142,8 @@ describe('Security Utilities', () => {
     });
 
     it('should remove control characters', () => {
-      // eslint-disable-next-line no-control-regex
-      const result = sanitizeString('Hello\x00World\x1F');
+      const input = 'Hello\x00World\x1F';
+      const result = sanitizeString(input);
       expect(result).toBe('HelloWorld');
     });
 

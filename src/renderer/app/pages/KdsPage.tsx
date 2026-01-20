@@ -12,7 +12,14 @@ type KdsTicket = {
   firedAt: string;
   bumpedAt?: string | null;
   note?: string | null;
-  items: Array<{ name: string; qty?: number; note?: string; station?: Station; _idx?: number; bumped?: boolean }>;
+  items: Array<{
+    name: string;
+    qty?: number;
+    note?: string;
+    station?: Station;
+    _idx?: number;
+    bumped?: boolean;
+  }>;
 };
 
 function nowMs() {
@@ -34,7 +41,9 @@ function fmtAgo(iso: string) {
 export default function KdsPage() {
   const user = useSessionStore((s) => s.user);
   const setUser = useSessionStore((s) => s.setUser);
-  const [enabledStations, setEnabledStations] = useState<Station[]>(['KITCHEN']);
+  const [enabledStations, setEnabledStations] = useState<Station[]>([
+    'KITCHEN',
+  ]);
   const [station, setStation] = useState<Station>('KITCHEN');
   const [tab, setTab] = useState<Tab>('NEW');
   const [tickets, setTickets] = useState<KdsTicket[]>([]);
@@ -42,7 +51,13 @@ export default function KdsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [debug, setDebug] = useState<any>(null);
   const bumping = useRef<Set<number>>(new Set());
-  const [itemMenu, setItemMenu] = useState<null | { x: number; y: number; ticketId: number; itemIdx: number; name: string }>(null);
+  const [itemMenu, setItemMenu] = useState<null | {
+    x: number;
+    y: number;
+    ticketId: number;
+    itemIdx: number;
+    name: string;
+  }>(null);
   const longPressTimer = useRef<any>(null);
 
   useEffect(() => {
@@ -50,8 +65,12 @@ export default function KdsPage() {
       try {
         const s: any = await window.api.settings.get().catch(() => null);
         const raw = (s as any)?.kds?.enabledStations;
-        const arr = (Array.isArray(raw) ? raw : ['KITCHEN']).map((x: any) => String(x).toUpperCase());
-        const uniq = Array.from(new Set(arr)).filter((x) => x === 'KITCHEN' || x === 'BAR' || x === 'DESSERT') as Station[];
+        const arr = (Array.isArray(raw) ? raw : ['KITCHEN']).map((x: any) =>
+          String(x).toUpperCase(),
+        );
+        const uniq = Array.from(new Set(arr)).filter(
+          (x) => x === 'KITCHEN' || x === 'BAR' || x === 'DESSERT',
+        ) as Station[];
         const next = uniq.length ? uniq : (['KITCHEN'] as Station[]);
         setEnabledStations(next);
         if (!next.includes(station)) setStation(next[0]);
@@ -59,11 +78,12 @@ export default function KdsPage() {
         // ignore
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Empty deps array is intentional - only run on mount
   }, []);
 
   const title = useMemo(() => {
-    const s = station === 'KITCHEN' ? 'Kitchen' : station === 'BAR' ? 'Bar' : 'Dessert';
+    const s =
+      station === 'KITCHEN' ? 'Kitchen' : station === 'BAR' ? 'Bar' : 'Dessert';
     return `${s} Display`;
   }, [station]);
 
@@ -74,7 +94,11 @@ export default function KdsPage() {
     async function load() {
       setErr(null);
       try {
-        const rows = (await window.api.kds.listTickets({ station, status: tab, limit: tab === 'NEW' ? 120 : 80 })) as any;
+        const rows = (await window.api.kds.listTickets({
+          station,
+          status: tab,
+          limit: tab === 'NEW' ? 120 : 80,
+        })) as any;
         if (!alive) return;
         setTickets(Array.isArray(rows) ? (rows as KdsTicket[]) : []);
         setLoading(false);
@@ -113,11 +137,16 @@ export default function KdsPage() {
         <div>
           <div className="text-xl font-semibold">{title}</div>
           <div className="text-xs opacity-70">
-            {tab === 'NEW' ? 'Active tickets (tap Bump to mark DONE)' : 'Recently bumped tickets'}
+            {tab === 'NEW'
+              ? 'Active tickets (tap Bump to mark DONE)'
+              : 'Recently bumped tickets'}
           </div>
           {debug && (
             <div className="mt-1 text-[11px] opacity-60">
-              debug: schema={String(debug?.schemaReady)} tickets={String(debug?.counts?.kdsTickets ?? '?')} stations={String(debug?.counts?.kdsStations ?? '?')} ticketLog={String(debug?.counts?.ticketLog ?? '?')}
+              debug: schema={String(debug?.schemaReady)} tickets=
+              {String(debug?.counts?.kdsTickets ?? '?')} stations=
+              {String(debug?.counts?.kdsStations ?? '?')} ticketLog=
+              {String(debug?.counts?.ticketLog ?? '?')}
               {debug?.lastError ? ` · err=${String(debug.lastError)}` : ''}
             </div>
           )}
@@ -160,7 +189,11 @@ export default function KdsPage() {
                 className={`px-3 py-2 text-sm ${station === st ? 'bg-gray-800' : 'bg-gray-900 hover:bg-gray-800'}`}
                 onClick={() => setStation(st)}
               >
-                {st === 'KITCHEN' ? 'Kitchen' : st === 'BAR' ? 'Bar' : 'Dessert'}
+                {st === 'KITCHEN'
+                  ? 'Kitchen'
+                  : st === 'BAR'
+                    ? 'Bar'
+                    : 'Dessert'}
               </button>
             ))}
           </div>
@@ -183,19 +216,31 @@ export default function KdsPage() {
       </div>
 
       {loading && <div className="opacity-70">Loading…</div>}
-      {err && <div className="mb-3 p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">{err}</div>}
+      {err && (
+        <div className="mb-3 p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">
+          {err}
+        </div>
+      )}
 
       {tickets.length === 0 && !loading ? (
         <div className="opacity-70 text-sm">No tickets.</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {tickets.map((t) => (
-            <div key={`${station}-${tab}-${t.ticketId}`} className="bg-gray-900 border border-gray-800 rounded p-3">
+            <div
+              key={`${station}-${tab}-${t.ticketId}`}
+              className="bg-gray-900 border border-gray-800 rounded p-3"
+            >
               <div className="flex items-start justify-between gap-3 mb-2">
                 <div>
                   <div className="text-2xl font-bold">Order #{t.orderNo}</div>
                   <div className="text-xs opacity-70">
-                    {t.area} · {t.tableLabel} · {tab === 'NEW' ? `Age ${fmtAgo(t.firedAt)}` : t.bumpedAt ? `Bumped ${fmtAgo(t.bumpedAt)} ago` : ''}
+                    {t.area} · {t.tableLabel} ·{' '}
+                    {tab === 'NEW'
+                      ? `Age ${fmtAgo(t.firedAt)}`
+                      : t.bumpedAt
+                        ? `Bumped ${fmtAgo(t.bumpedAt)} ago`
+                        : ''}
                   </div>
                 </div>
                 {tab === 'NEW' && (
@@ -206,9 +251,15 @@ export default function KdsPage() {
                       if (bumping.current.has(t.ticketId)) return;
                       bumping.current.add(t.ticketId);
                       // Optimistic remove
-                      setTickets((arr) => arr.filter((x) => x.ticketId !== t.ticketId));
+                      setTickets((arr) =>
+                        arr.filter((x) => x.ticketId !== t.ticketId),
+                      );
                       const ok = await window.api.kds
-                        .bump({ station, ticketId: t.ticketId, ...(user?.id ? { userId: user.id } : {}) })
+                        .bump({
+                          station,
+                          ticketId: t.ticketId,
+                          ...(user?.id ? { userId: user.id } : {}),
+                        })
                         .catch(() => false);
                       bumping.current.delete(t.ticketId);
                       if (!ok) {
@@ -222,7 +273,11 @@ export default function KdsPage() {
                 )}
               </div>
 
-              {t.note && <div className="mb-2 text-sm bg-gray-950 border border-gray-800 rounded p-2">{t.note}</div>}
+              {t.note && (
+                <div className="mb-2 text-sm bg-gray-950 border border-gray-800 rounded p-2">
+                  {t.note}
+                </div>
+              )}
 
               <div className="space-y-1">
                 {t.items.map((it, idx) => (
@@ -234,7 +289,13 @@ export default function KdsPage() {
                       e.preventDefault();
                       const itemIdx = Number((it as any)?._idx ?? -1);
                       if (!Number.isFinite(itemIdx) || itemIdx < 0) return;
-                      setItemMenu({ x: e.clientX, y: e.clientY, ticketId: t.ticketId, itemIdx, name: String(it.name || '') });
+                      setItemMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        ticketId: t.ticketId,
+                        itemIdx,
+                        name: String(it.name || ''),
+                      });
                     }}
                     onPointerDown={(e) => {
                       if (tab !== 'NEW') return;
@@ -243,23 +304,34 @@ export default function KdsPage() {
                       if (pt !== 'touch' && pt !== 'pen') return;
                       const itemIdx = Number((it as any)?._idx ?? -1);
                       if (!Number.isFinite(itemIdx) || itemIdx < 0) return;
-                      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+                      if (longPressTimer.current)
+                        clearTimeout(longPressTimer.current);
                       longPressTimer.current = setTimeout(() => {
-                        setItemMenu({ x: (e as any).clientX || 20, y: (e as any).clientY || 20, ticketId: t.ticketId, itemIdx, name: String(it.name || '') });
+                        setItemMenu({
+                          x: (e as any).clientX || 20,
+                          y: (e as any).clientY || 20,
+                          ticketId: t.ticketId,
+                          itemIdx,
+                          name: String(it.name || ''),
+                        });
                       }, 550);
                     }}
                     onPointerUp={() => {
-                      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+                      if (longPressTimer.current)
+                        clearTimeout(longPressTimer.current);
                       longPressTimer.current = null;
                     }}
                     onPointerLeave={() => {
-                      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+                      if (longPressTimer.current)
+                        clearTimeout(longPressTimer.current);
                       longPressTimer.current = null;
                     }}
                   >
                     <div className="font-medium">
                       {it.name}
-                      {it.note ? <span className="opacity-70"> · {it.note}</span> : null}
+                      {it.note ? (
+                        <span className="opacity-70"> · {it.note}</span>
+                      ) : null}
                     </div>
                     <div className="opacity-80">{Number(it.qty || 1)}x</div>
                   </div>
@@ -278,11 +350,16 @@ export default function KdsPage() {
         >
           <div
             className="absolute bg-gray-900 border border-gray-700 rounded shadow-xl p-2 min-w-[180px]"
-            style={{ left: Math.min(itemMenu.x, window.innerWidth - 220), top: Math.min(itemMenu.y, window.innerHeight - 120) }}
+            style={{
+              left: Math.min(itemMenu.x, window.innerWidth - 220),
+              top: Math.min(itemMenu.y, window.innerHeight - 120),
+            }}
             onMouseDown={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
           >
-            <div className="text-xs opacity-70 px-2 py-1 truncate">{itemMenu.name || 'Item'}</div>
+            <div className="text-xs opacity-70 px-2 py-1 truncate">
+              {itemMenu.name || 'Item'}
+            </div>
             <button
               className="w-full text-left px-2 py-2 rounded hover:bg-gray-800"
               onClick={async () => {
@@ -291,11 +368,26 @@ export default function KdsPage() {
                 // Optimistic: remove item from UI immediately
                 setTickets((arr) =>
                   arr
-                    .map((t) => (t.ticketId !== ticketId ? t : { ...t, items: t.items.filter((x: any) => Number((x as any)?._idx ?? -1) !== itemIdx) }))
+                    .map((t) =>
+                      t.ticketId !== ticketId
+                        ? t
+                        : {
+                            ...t,
+                            items: t.items.filter(
+                              (x: any) =>
+                                Number((x as any)?._idx ?? -1) !== itemIdx,
+                            ),
+                          },
+                    )
                     .filter((t) => (tab === 'NEW' ? t.items.length > 0 : true)),
                 );
                 await window.api.kds
-                  .bumpItem({ station, ticketId, itemIdx, ...(user?.id ? { userId: user.id } : {}) } as any)
+                  .bumpItem({
+                    station,
+                    ticketId,
+                    itemIdx,
+                    ...(user?.id ? { userId: user.id } : {}),
+                  } as any)
                   .catch(() => false);
               }}
             >
@@ -307,4 +399,3 @@ export default function KdsPage() {
     </div>
   );
 }
-
