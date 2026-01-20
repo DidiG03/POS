@@ -115,6 +115,7 @@ describe('Security Utilities', () => {
     });
 
     it('should remove control characters', () => {
+      // eslint-disable-next-line no-control-regex
       const result = sanitizeString('Hello\x00World\x1F');
       expect(result).toBe('HelloWorld');
     });

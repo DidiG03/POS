@@ -143,7 +143,8 @@ export function sanitizeString(input: string | null | undefined, maxLength = 500
     // Remove script tags and event handlers
     .replace(/javascript:/gi, '')
     .replace(/on\w+=/gi, '')
-    // Remove control characters
+    // Remove control characters (allow eslint-disable for this regex)
+    // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x1F\x7F]/g, '');
 
   return sanitized;
