@@ -658,7 +658,7 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
   const ok = await bcrypt.compare(pin, user.pinHash);
   if (!ok) {
     // record a security notification for the targeted user
-    await prisma.notification.create({
+    await prisma.notification.create({ 
       data: {
         userId: user.id,
         type: 'SECURITY' as any,
