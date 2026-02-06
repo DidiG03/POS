@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { requireAuth, type AuthedRequest } from '../auth/middleware.js';
+import bcrypt from 'bcryptjs';
 
 export const shiftsRouter = Router();
 
@@ -12,6 +13,15 @@ shiftsRouter.get('/public-open', async (req, res) => {
   if (!businessCode || businessCode.length < 2) return res.status(400).json({ error: 'businessCode required' });
   const biz = await prisma.business.findUnique({ where: { code: businessCode } }).catch(() => null);
   if (!biz || (biz as any).active === false) return res.status(200).json([]);
+
+  // If tenant has an access password, require it (prevents enumeration by code alone).
+  const hash = String((biz as any).accessPasswordHash || '').trim();
+  if (hash) {
+    const supplied = String(req.header('x-business-password') || '').trim();
+    if (!supplied) return res.status(200).json([]);
+    const ok = await bcrypt.compare(supplied, hash).catch(() => false);
+    if (!ok) return res.status(200).json([]);
+  }
   const rows = await prisma.dayShift.findMany({ where: { businessId: (biz as any).id, closedAt: null } }).catch(() => []);
   return res.status(200).json(rows.map((s: any) => s.openedById));
 });

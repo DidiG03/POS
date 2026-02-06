@@ -27,6 +27,12 @@ export async function getCloudConfig(): Promise<CloudConfig | null> {
   return { backendUrl: normalizeBaseUrl(backendUrl), businessCode };
 }
 
+export async function getCloudAccessPassword(): Promise<string | null> {
+  const settings = await coreServices.readSettings().catch(() => null as any);
+  const pw = String((settings as any)?.cloud?.accessPassword || '').trim();
+  return pw ? pw : null;
+}
+
 async function persistCloudSession(key: string, next: { token: string | null; businessCode: string | null; role: any; userId: any }) {
   try {
     if (!next.token || !next.businessCode) {
@@ -183,18 +189,26 @@ export async function cloudJson<T = any>(
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: any,
-  opts?: { requireAuth?: boolean; businessCodeHint?: string; senderId?: number },
+  opts?: { requireAuth?: boolean; businessCodeHint?: string; senderId?: number; extraHeaders?: Record<string, string> },
 ): Promise<T> {
   const cfg = await getCloudConfig();
   if (!cfg) throw new Error('Cloud backend not configured');
 
   const requireAuth = Boolean(opts?.requireAuth);
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (opts?.extraHeaders && typeof opts.extraHeaders === 'object') {
+    Object.assign(headers, opts.extraHeaders);
+  }
 
   const senderId = Number(opts?.senderId || 0);
   const senderSession = senderId ? perSender.get(senderId) : null;
   const usedSenderToken = Boolean(senderSession && senderSession.businessCode === cfg.businessCode && senderSession.token);
-  const wantsAdmin = String(path || '').startsWith('/admin');
+  // Some endpoints live outside /admin but still require an ADMIN token.
+  // Treat them as "admin endpoints" so we never accidentally fall back to a staff token.
+  const p = String(path || '');
+  const wantsAdmin =
+    p.startsWith('/admin') ||
+    p.startsWith('/auth/users');
   // IMPORTANT:
   // - For admin endpoints, NEVER fall back to a staff token (it will 403 and cause confusing "zeros").
   // - Prefer a per-sender token only if it matches the endpoint (ADMIN for /admin/*).
@@ -226,7 +240,26 @@ export async function cloudJson<T = any>(
     }
   }
   if (!res.ok) {
-    const msg = (data && (data.error || data.message)) || res.statusText || 'request failed';
+    let msg = (data && (data.error || data.message)) || res.statusText || 'request failed';
+    // Preserve validation details from the cloud server (e.g. ZodError issues).
+    try {
+      const issues = (data as any)?.issues;
+      if (Array.isArray(issues) && issues.length) {
+        const preview = issues
+          .slice(0, 5)
+          .map((it: any) => {
+            const path = Array.isArray(it?.path) ? it.path.join('.') : '';
+            const m = String(it?.message || '').trim();
+            const suffix = path ? `${path}: ${m || 'invalid'}` : (m || 'invalid');
+            return suffix;
+          })
+          .filter(Boolean)
+          .join('; ');
+        if (preview) msg = `${String(msg)} (${preview}${issues.length > 5 ? '…' : ''})`;
+      }
+    } catch {
+      // ignore
+    }
     if (res.status === 401 || res.status === 403) {
       // Token expired/invalid → clear session so the app forces re-login.
       if (usedSenderToken && senderId && picked?.token === senderSession?.token) {

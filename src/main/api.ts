@@ -7,8 +7,11 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
-import { buildEscposTicket, sendToPrinter } from './print';
+import { buildEscposTicket, buildHtmlReceipt, printHtmlToSystemPrinter, sendToCupsRawPrinter, sendToPrinter } from './print';
 import { coreServices } from './services/core';
+import { transferTableLocal } from './services/tableTransfer';
+import { cloudJson, getCloudConfig } from './services/cloud';
+import { isClockOnlyRole } from './services/roles';
 
 type CorsPolicy = {
   allowOrigin: (origin: string | undefined, hostHeader: string | undefined) => string | null;
@@ -382,6 +385,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
 
       // Auth
+      // Verify pairing code (used by tablets before cloud login)
+      if (req.method === 'POST' && pathname === '/pairing/verify') {
+        const remoteIp = String((req.socket as any)?.remoteAddress || 'unknown');
+        const { pairingCode } = await parseJson(req);
+        try {
+          const s = await coreServices.readSettings();
+          const requirePairing = Boolean((s as any)?.security?.requirePairingCode);
+          const lanEnabled = Boolean((s as any)?.security?.allowLan) || process.env.POS_ALLOW_LAN === 'true';
+          if (!lanEnabled) return send(res, 403, { ok: false, error: 'lan disabled' }, corsOrigin);
+          if (!requirePairing) return send(res, 200, { ok: true }, corsOrigin);
+          if (isLoopback(remoteIp)) return send(res, 200, { ok: true }, corsOrigin);
+          const code = await getOrCreatePairingCode();
+          if (String(pairingCode || '').trim() !== code) return send(res, 403, { ok: false, error: 'pairing code required' }, corsOrigin);
+          return send(res, 200, { ok: true }, corsOrigin);
+        } catch {
+          if (!isLoopback(remoteIp)) return send(res, 403, { ok: false, error: 'pairing code required' }, corsOrigin);
+          return send(res, 200, { ok: true }, corsOrigin);
+        }
+      }
       if (req.method === 'POST' && pathname === '/auth/login') {
         const remoteIp = String((req.socket as any)?.remoteAddress || 'unknown');
         if (!allowLoginAttempt(remoteIp)) return send(res, 429, { error: 'too many attempts' }, corsOrigin);
@@ -415,6 +437,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, { user: { id: user.id, displayName: user.displayName, role: user.role, active: user.active, createdAt: user.createdAt.toISOString() }, token }, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/auth/users') {
+        // In cloud mode, proxy the cloud public users endpoint so tablets don't need the provider-supplied business password.
+        const cloudCfg = await getCloudConfig().catch(() => null);
+        if (cloudCfg) {
+          try {
+            const s: any = await coreServices.readSettings().catch(() => null);
+            const pw = String(s?.cloud?.accessPassword || '').trim();
+            const url = `${cloudCfg.backendUrl}/auth/public-users?businessCode=${encodeURIComponent(String(cloudCfg.businessCode))}&includeAdmins=1`;
+            const r = await fetch(url, {
+              method: 'GET',
+              headers: {
+                Accept: 'application/json',
+                ...(pw ? { 'x-business-password': pw } : {}),
+              } as any,
+            } as any).catch(() => null as any);
+            if (r && r.ok) {
+              const data = await r.json().catch(() => null);
+              if (Array.isArray(data)) return send(res, 200, data, corsOrigin);
+            }
+          } catch {
+            // fall back to local
+          }
+        }
         const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
         return send(res, 200, users.map((u: any) => ({ id: u.id, displayName: u.displayName, role: u.role, active: u.active, createdAt: u.createdAt.toISOString() })), corsOrigin);
       }
@@ -422,6 +466,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // All non-public endpoints require a valid token when serving LAN clients.
       // (Electron renderer uses IPC and never hits this for privileged operations.)
       const publicPaths = new Set<string>([
+        '/pairing/verify',
         '/auth/login',
         '/auth/users',
         '/menu/categories',
@@ -432,6 +477,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/kds/debug',
         '/shifts/open',
         '/settings',
+        '/offline/status',
       ]);
       const isPublic = publicPaths.has(pathname) || isStaticGet;
       let auth: AuthContext = null;
@@ -439,6 +485,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const token = pickBearerToken(req, parsed);
         auth = token ? await verifyToken(secret, token) : null;
         if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+      }
+
+      // Clock-only roles (KP/CHEF/HEAD_CHEF) are allowed to use ONLY shift endpoints.
+      // This enforces "can only clock in/out" for LAN browser clients.
+      if (auth && isClockOnlyRole((auth as any).role)) {
+        const allowed = new Set<string>([
+          '/shifts/open',
+          '/shifts/get-open',
+          '/shifts/clock-in',
+          '/shifts/clock-out',
+          '/shifts/public-open',
+        ]);
+        if (!allowed.has(pathname)) return send(res, 403, { error: 'forbidden' }, corsOrigin);
       }
 
       // Verify manager/admin PIN for approvals (requires staff to be logged in).
@@ -645,8 +704,50 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, { schemaReady: ok, counts }, corsOrigin);
       }
 
-      // Printing: test and ticket (for browser clients on LAN)
+      // Printing: test and ticket (for browser clients on LAN). Printing happens on the host machine.
       if (req.method === 'POST' && pathname === '/print/test') {
+        const row = await prisma.syncState.findUnique({ where: { key: 'settings' } }).catch(() => null);
+        const settings = (row?.valueJson as any) || { restaurantName: ' Code Orbit Agroturizem', currency: 'EUR', defaultVatRate: 0.2 };
+        const mode = (settings?.printer?.mode || (settings?.printer?.serialPath ? 'SERIAL' : settings?.printer?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+        if (mode === 'SYSTEM') {
+          // Default ON: receipt printers expect raw ESC/POS, not PostScript/PDF
+          const raw = settings?.printer?.systemRawEscpos !== false;
+          if (raw) {
+            const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+            const r = await sendToCupsRawPrinter({ deviceName: settings?.printer?.deviceName, data });
+            return send(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error }, corsOrigin);
+          } else {
+            const html = buildHtmlReceipt(
+              {
+                area: 'TEST',
+                tableLabel: 'USB',
+                covers: null,
+                items: [{ name: 'Test item', qty: 1, unitPrice: 1.0, vatRate: 0 }],
+                note: null,
+                userName: 'POS',
+                meta: { vatEnabled: true },
+              } as any,
+              settings as any
+            );
+            const r = await printHtmlToSystemPrinter({ html, deviceName: settings?.printer?.deviceName, silent: settings?.printer?.silent !== false });
+            return send(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error }, corsOrigin);
+          }
+        }
+        if (mode === 'SERIAL') {
+          const p: any = settings?.printer || {};
+          const cfg = {
+            path: String(p.serialPath || ''),
+            baudRate: Number(p.baudRate || 19200),
+            dataBits: (Number(p.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
+            stopBits: (Number(p.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
+            parity: (String(p.parity || 'none') as any) as 'none' | 'even' | 'odd',
+          };
+          if (!cfg.path) return send(res, 400, { ok: false, error: 'Serial port not configured' }, corsOrigin);
+          const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+          const { sendToSerialPrinter } = await import('./serial');
+          const r = await sendToSerialPrinter(cfg as any, data);
+          return send(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error }, corsOrigin);
+        }
         const { ip, port } = await resolvePrinter();
         if (!ip) return send(res, 400, { ok: false, error: 'Printer IP not configured' }, corsOrigin);
         const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
@@ -655,8 +756,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'POST' && pathname === '/print/ticket') {
         const body = await parseJson(req);
-        const { ip, port } = await resolvePrinter();
-        if (!ip) return send(res, 400, { ok: false, error: 'Printer IP not configured' }, corsOrigin);
         const payload = {
           area: String(body?.area || ''),
           tableLabel: String(body?.tableLabel || ''),
@@ -664,19 +763,66 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           items: Array.isArray(body?.items) ? body.items : [],
           note: body?.note ?? null,
           userName: body?.userName || undefined,
+          meta: body?.meta ?? undefined,
         } as any;
         if (!payload.area || !payload.tableLabel || payload.items.length === 0) return send(res, 400, { ok: false, error: 'invalid payload' }, corsOrigin);
         const row = await prisma.syncState.findUnique({ where: { key: 'settings' } }).catch(() => null);
         const settings = (row?.valueJson as any) || { restaurantName: ' Code Orbit Agroturizem', currency: 'EUR', defaultVatRate: 0.2 };
+        const mode = (settings?.printer?.mode || (settings?.printer?.serialPath ? 'SERIAL' : settings?.printer?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+        if (mode === 'SYSTEM') {
+          // Default ON: receipt printers expect raw ESC/POS, not PostScript/PDF
+          const raw = settings?.printer?.systemRawEscpos !== false;
+          if (raw) {
+            const buf = buildEscposTicket(payload, settings);
+            const r = await sendToCupsRawPrinter({ deviceName: settings?.printer?.deviceName, data: buf });
+            return send(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error }, corsOrigin);
+          } else {
+            const html = buildHtmlReceipt(payload, settings as any);
+            const r = await printHtmlToSystemPrinter({ html, deviceName: settings?.printer?.deviceName, silent: settings?.printer?.silent !== false });
+            return send(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error }, corsOrigin);
+          }
+        }
+        if (mode === 'SERIAL') {
+          const p: any = settings?.printer || {};
+          const cfg = {
+            path: String(p.serialPath || ''),
+            baudRate: Number(p.baudRate || 19200),
+            dataBits: (Number(p.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
+            stopBits: (Number(p.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
+            parity: (String(p.parity || 'none') as any) as 'none' | 'even' | 'odd',
+          };
+          if (!cfg.path) return send(res, 400, { ok: false, error: 'Serial port not configured' }, corsOrigin);
+          const buf = buildEscposTicket(payload, settings);
+          const { sendToSerialPrinter } = await import('./serial');
+          const r = await sendToSerialPrinter(cfg as any, buf);
+          return send(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error }, corsOrigin);
+        }
+        const { ip, port } = await resolvePrinter();
+        if (!ip) return send(res, 400, { ok: false, error: 'Printer IP not configured' }, corsOrigin);
         const buf = buildEscposTicket(payload, settings);
         const ok = await sendToPrinter(ip, port, buf);
         return send(res, ok ? 200 : 500, { ok }, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/tickets/void-item') {
-        const { userId, area, tableLabel, item } = await parseJson(req);
+        const { userId, area, tableLabel, item, approvedByAdminId, approvedByAdminName } = await parseJson(req);
         if (!userId || !area || !tableLabel || !item?.name) return send(res, 400, 'invalid', corsOrigin);
         if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN') return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}`;
+        // Enforce admin approval for voids if enabled.
+        try {
+          const settings: any = await coreServices.readSettings().catch(() => null);
+          const requireApproval = (settings?.security?.approvals?.requireManagerPinForVoid !== false);
+          if (requireApproval && auth && auth.role !== 'ADMIN') {
+            const aid = approvedByAdminId != null ? Number(approvedByAdminId) : 0;
+            if (!aid) return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+            const approver = await prisma.user.findUnique({ where: { id: aid } }).catch(() => null);
+            const ok = approver && (approver as any).active !== false && String((approver as any).role || '').toUpperCase() === 'ADMIN';
+            if (!ok) return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+          }
+        } catch {
+          return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+        }
+
+        const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
         await prisma.notification.create({ data: { userId: Number(userId), type: 'OTHER' as any, message } }).catch(() => {});
         const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } });
         if (last) {
@@ -690,10 +836,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/tickets/void-ticket') {
-        const { userId, area, tableLabel, reason } = await parseJson(req);
+        const { userId, area, tableLabel, reason, approvedByAdminId, approvedByAdminName } = await parseJson(req);
         if (!userId || !area || !tableLabel) return send(res, 400, 'invalid', corsOrigin);
         if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN') return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}`;
+        // Enforce admin approval for voids if enabled.
+        try {
+          const settings: any = await coreServices.readSettings().catch(() => null);
+          const requireApproval = (settings?.security?.approvals?.requireManagerPinForVoid !== false);
+          if (requireApproval && auth && auth.role !== 'ADMIN') {
+            const aid = approvedByAdminId != null ? Number(approvedByAdminId) : 0;
+            if (!aid) return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+            const approver = await prisma.user.findUnique({ where: { id: aid } }).catch(() => null);
+            const ok = approver && (approver as any).active !== false && String((approver as any).role || '').toUpperCase() === 'ADMIN';
+            if (!ok) return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+          }
+        } catch {
+          return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+        }
+
+        const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
         await prisma.notification.create({ data: { userId: Number(userId), type: 'OTHER' as any, message } }).catch(() => {});
         const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } });
         if (last) {
@@ -790,6 +951,31 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, Object.entries(map).filter(([, v]) => Boolean(v)).map(([k]) => { const [area, label] = k.split(':'); return { area, label }; }), corsOrigin);
       }
 
+      // Table transfer (move table and/or ownership transfer)
+      if (req.method === 'POST' && pathname === '/tables/transfer') {
+        const body = await parseJson(req);
+        const fromArea = String(body?.fromArea || '');
+        const fromLabel = String(body?.fromLabel || '');
+        const toArea = body?.toArea != null ? String(body.toArea) : null;
+        const toLabel = body?.toLabel != null ? String(body.toLabel) : null;
+        const toUserId = body?.toUserId != null ? Number(body.toUserId) : null;
+
+        // Auth: if present, use it; otherwise fall back to explicit actorUserId (local setups).
+        const actorUserId = auth?.userId ? Number(auth.userId) : Number(body?.actorUserId || 0);
+        if (!fromArea || !fromLabel || !actorUserId) return send(res, 400, { ok: false, error: 'invalid' }, corsOrigin);
+
+        // If auth exists and caller is not admin, actor is always the auth user.
+        if (auth && auth.role !== 'ADMIN' && Number(actorUserId) !== Number(auth.userId)) {
+          return send(res, 403, { ok: false, error: 'forbidden' }, corsOrigin);
+        }
+
+        const r = await transferTableLocal({ fromArea, fromLabel, toArea, toLabel, toUserId, actorUserId } as any).catch((e: any) => ({
+          ok: false as const,
+          error: String(e?.message || e || 'Transfer failed'),
+        }));
+        return send(res, 200, r, corsOrigin);
+      }
+
       // Layout: get/save for browser clients
       if (req.method === 'GET' && pathname === '/layout/get') {
         const userId = Number(parsed.query.userId || 0);
@@ -825,9 +1011,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
             // Token invalid/expired → use public endpoint as fallback (prevents false "clocked out" UI).
             if (r.status === 401 || r.status === 403) {
+              const s: any = await coreServices.readSettings().catch(() => null);
+              const pw = String(s?.cloud?.accessPassword || '').trim();
               const pr = await fetch(`${cloud.backendUrl}/shifts/public-open?businessCode=${encodeURIComponent(cloud.businessCode)}`, {
                 method: 'GET',
-                headers: { Accept: 'application/json' } as any,
+                headers: { Accept: 'application/json', ...(pw ? { 'x-business-password': pw } : {}) } as any,
               } as any).catch(() => null as any);
               if (pr && pr.ok) {
                 const pdata = await pr.json().catch(() => null);
@@ -878,6 +1066,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (result?.security && typeof result.security === 'object') {
           result.security = { ...result.security };
           delete result.security.apiSecret;
+        }
+        // Never expose provider-supplied business password to tablets/LAN clients.
+        if (result?.cloud && typeof result.cloud === 'object') {
+          result.cloud = { ...result.cloud };
+          delete result.cloud.accessPassword;
         }
         return send(res, 200, result, corsOrigin);
       }

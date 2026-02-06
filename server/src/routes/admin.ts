@@ -1,7 +1,9 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
+import Stripe from 'stripe';
+import { env } from '../env.js';
 import { prisma } from '../db.js';
 import { requireAuth, type AuthedRequest } from '../auth/middleware.js';
-import crypto from 'node:crypto';
 
 export const adminRouter = Router();
 
@@ -20,6 +22,57 @@ adminRouter.get('/business', requireAuth, async (req: AuthedRequest, res) => {
   const biz = await prisma.business.findUnique({ where: { id: auth.businessId } });
   if (!biz) return res.status(404).json({ error: 'not found' });
   return res.status(200).json({ id: biz.id, name: biz.name, code: biz.code, active: (biz as any).active !== false, createdAt: biz.createdAt.toISOString() });
+});
+
+// Billing endpoints (admin-only) live under /admin/billing/* so Electron/cloudJson reliably uses an ADMIN token.
+function stripeClient() {
+  if (!env.stripeSecretKey) throw new Error('Stripe not configured');
+  return new Stripe(env.stripeSecretKey, { apiVersion: '2025-01-27.acacia' } as any);
+}
+
+adminRouter.post('/billing/create-checkout', requireAuth, async (req: AuthedRequest, res) => {
+  if (!env.billingEnabled) return res.status(400).json({ error: 'billing not enabled' });
+  const auth = requireAdmin(req);
+  const biz = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null);
+  if (!biz) return res.status(404).json({ error: 'not found' });
+
+  const stripe = stripeClient();
+  let customerId = String((biz as any).stripeCustomerId || '').trim();
+  if (!customerId) {
+    const customer = await stripe.customers.create({
+      name: biz.name,
+      metadata: { businessId: biz.id, businessCode: biz.code },
+    });
+    customerId = customer.id;
+    await prisma.business.update({ where: { id: biz.id }, data: { stripeCustomerId: customerId } as any }).catch(() => null);
+  }
+
+  const session = await stripe.checkout.sessions.create({
+    mode: 'subscription',
+    customer: customerId,
+    line_items: [{ price: env.stripePriceId, quantity: 1 }],
+    allow_promotion_codes: true,
+    success_url: `${env.appBaseUrl}/billing/return?ok=1&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${env.appBaseUrl}/billing/return?ok=0`,
+    metadata: { businessId: biz.id },
+  });
+
+  return res.status(200).json({ url: session.url });
+});
+
+adminRouter.post('/billing/create-portal', requireAuth, async (req: AuthedRequest, res) => {
+  if (!env.billingEnabled) return res.status(400).json({ error: 'billing not enabled' });
+  const auth = requireAdmin(req);
+  const biz = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null);
+  if (!biz) return res.status(404).json({ error: 'not found' });
+  const customerId = String((biz as any).stripeCustomerId || '').trim();
+  if (!customerId) return res.status(400).json({ error: 'no stripe customer yet' });
+  const stripe = stripeClient();
+  const portal = await stripe.billingPortal.sessions.create({
+    customer: customerId,
+    return_url: `${env.appBaseUrl}/billing/return`,
+  });
+  return res.status(200).json({ url: portal.url });
 });
 
 adminRouter.post('/business/rotate-code', requireAuth, async (req: AuthedRequest, res) => {
@@ -91,9 +144,17 @@ adminRouter.get('/overview', requireAuth, async (req: AuthedRequest, res) => {
 
 adminRouter.get('/shifts', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
+  const startIso = typeof req.query.startIso === 'string' ? req.query.startIso : '';
+  const endIso = typeof req.query.endIso === 'string' ? req.query.endIso : '';
+  const where: any = { businessId: auth.businessId };
+  if (startIso || endIso) {
+    where.openedAt = {};
+    if (startIso) where.openedAt.gte = new Date(startIso);
+    if (endIso) where.openedAt.lte = new Date(endIso);
+  }
   const rows = await prisma.dayShift
     .findMany({
-      where: { businessId: auth.businessId },
+      where,
       orderBy: { openedAt: 'desc' },
       include: { openedBy: true, closedBy: true },
     })

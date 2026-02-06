@@ -1,3 +1,6 @@
+import { readJsonOrText, responseErrorMessage } from '@shared/api/http';
+import { toQueryString } from '@shared/api/query';
+
 const API_URL = (import.meta.env?.VITE_API_URL as string) || '';
 
 let token: string | null = null;
@@ -32,17 +35,9 @@ async function request<T = any>(method: string, path: string, body?: unknown): P
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    const text = await res.text();
-    let data: any = null;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = text;
-      }
-    }
+    const data = await readJsonOrText(res);
     if (!res.ok) {
-      const message = (data && (data.message || data.error)) || res.statusText;
+      const message = responseErrorMessage(res, data);
       throw new Error(message);
     }
     return data as T;
@@ -100,9 +95,11 @@ export const api = {
   },
   notifications: {
     async list(userId: number, onlyUnread?: boolean) {
-      const query = new URLSearchParams({ userId: String(userId) });
-      if (onlyUnread) query.set('onlyUnread', '1');
-      return await request<any[]>('GET', `/notifications?${query.toString()}`);
+      const query = toQueryString([
+        ['userId', userId],
+        ['onlyUnread', Boolean(onlyUnread)],
+      ]);
+      return await request<any[]>('GET', `/notifications?${query}`);
     },
     async markAllRead(userId: number) {
       await request('POST', '/notifications/mark-all-read', { userId });
@@ -110,11 +107,12 @@ export const api = {
   },
   admin: {
     async listNotifications(opts: any) {
-      const query = new URLSearchParams();
-      if (opts?.onlyUnread) query.set('onlyUnread', '1');
-      if (opts?.limit) query.set('limit', String(opts.limit));
-      if (opts?.offset) query.set('offset', String(opts.offset));
-      return await request<any[]>('GET', `/admin/notifications?${query.toString()}`);
+      const query = toQueryString([
+        ['onlyUnread', Boolean(opts?.onlyUnread)],
+        ['limit', opts?.limit],
+        ['offset', opts?.offset],
+      ]);
+      return await request<any[]>('GET', `/admin/notifications?${query}`);
     },
     async markAllNotificationsRead() {
       await request('POST', '/admin/notifications/mark-all-read');
@@ -154,8 +152,11 @@ export const api = {
       await request('POST', '/tickets', opts);
     },
     async getLatestForTable(area: string, label: string) {
-      const query = new URLSearchParams({ area, label });
-      return await request<any | null>('GET', `/tickets/latest?${query.toString()}`);
+      const query = toQueryString([
+        ['area', area],
+        ['label', label],
+      ]);
+      return await request<any | null>('GET', `/tickets/latest?${query}`);
     },
     async voidItem(opts: any) {
       await request('POST', '/tickets/item/void', opts);
@@ -163,8 +164,11 @@ export const api = {
   },
   covers: {
     async getLast(area: string, label: string) {
-      const query = new URLSearchParams({ area, label });
-      return await request<number>('GET', `/covers?${query.toString()}`);
+      const query = toQueryString([
+        ['area', area],
+        ['label', label],
+      ]);
+      return await request<number>('GET', `/covers?${query}`);
     },
     async save(area: string, label: string, num: number) {
       await request('POST', '/covers', { area, label, num });
@@ -193,8 +197,11 @@ export const api = {
   },
   layout: {
     async get(userId: number, area: string) {
-      const query = new URLSearchParams({ userId: String(userId), area });
-      return await request<any | null>('GET', `/layout?${query.toString()}`);
+      const query = toQueryString([
+        ['userId', userId],
+        ['area', area],
+      ]);
+      return await request<any | null>('GET', `/layout?${query}`);
     },
     async save(userId: number, area: string, nodes: any) {
       await request('POST', '/layout', { userId, area, nodes });

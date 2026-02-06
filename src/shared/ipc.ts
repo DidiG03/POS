@@ -1,6 +1,18 @@
 import { z } from 'zod';
 
-export type UserRole = 'ADMIN' | 'CASHIER' | 'WAITER';
+export type UserRole =
+  | 'ADMIN'
+  | 'CASHIER'
+  | 'WAITER'
+  | 'KP'
+  | 'CHEF'
+  | 'HEAD_CHEF'
+  | 'FOOD_RUNNER'
+  | 'HOST'
+  | 'BUSSER'
+  | 'BARTENDER'
+  | 'BARBACK'
+  | 'CLEANER';
 
 export interface UserDTO {
   id: number;
@@ -22,9 +34,32 @@ export interface SettingsDTO {
       value?: number; // percent or fixed amount (same currency)
     };
   };
+  // Multi-printer support (recommended). Backward compatible with legacy `printer`.
+  printers?: PrinterProfileDTO[];
+  printerRouting?: {
+    enabled?: boolean;
+    // Which printer prints customer receipts (PAYMENT)
+    receiptPrinterId?: string;
+    // For ORDER slips: route by station (KITCHEN/BAR/DESSERT) and/or a fallback.
+    station?: Partial<Record<'KITCHEN' | 'BAR' | 'DESSERT' | 'ALL', string>>;
+    // Optional: route by categoryId (takes precedence over station if present).
+    categories?: Record<string, string>;
+  };
   printer?: {
+    mode?: 'NETWORK' | 'SYSTEM' | 'SERIAL';
     ip?: string;
     port?: number;
+    // System/USB printing via OS printer queue (recommended for USB-connected printers)
+    deviceName?: string;
+    silent?: boolean; // default true
+    // macOS/Linux: send raw ESC/POS bytes via CUPS (bypasses PostScript drivers)
+    systemRawEscpos?: boolean;
+    // Serial ESC/POS printing (RS-232/USB-serial adapters)
+    serialPath?: string; // e.g. COM3 (Windows) or /dev/tty.usbserial-XXXX (macOS)
+    baudRate?: number; // e.g. 19200
+    dataBits?: 7 | 8;
+    stopBits?: 1 | 2;
+    parity?: 'none' | 'even' | 'odd';
     usbVendorId?: number;
     usbProductId?: number;
   };
@@ -40,7 +75,27 @@ export interface SettingsDTO {
   cloud?: {
     backendUrl?: string; // e.g. https://api.example.com
     businessCode?: string; // tenant code, e.g.  Code Orbit
+    // Provider-supplied shared secret used to access certain public cloud endpoints.
+    // NOTE: this should remain stored only on the POS host; do not expose to tablets via /settings.
+    accessPassword?: string;
   };
+}
+
+export interface PrinterProfileDTO {
+  id: string; // stable id used by routing
+  name: string;
+  enabled?: boolean;
+  mode?: 'NETWORK' | 'SYSTEM' | 'SERIAL';
+  ip?: string;
+  port?: number;
+  deviceName?: string;
+  silent?: boolean;
+  systemRawEscpos?: boolean;
+  serialPath?: string;
+  baudRate?: number;
+  dataBits?: 7 | 8;
+  stopBits?: 1 | 2;
+  parity?: 'none' | 'even' | 'odd';
 }
 
 export interface TableAreaDTO {
@@ -57,7 +112,7 @@ export type LoginWithPinInput = z.infer<typeof LoginWithPinInputSchema>;
 
 export const CreateUserInputSchema = z.object({
   displayName: z.string().min(1),
-  role: z.enum(['ADMIN', 'CASHIER', 'WAITER']),
+  role: z.enum(['ADMIN', 'CASHIER', 'WAITER', 'KP', 'CHEF', 'HEAD_CHEF', 'FOOD_RUNNER', 'HOST', 'BUSSER', 'BARTENDER', 'BARBACK', 'CLEANER']),
   pin: z.string().min(4).max(6),
   active: z.boolean().optional().default(true),
 });
@@ -66,7 +121,7 @@ export type CreateUserInput = z.infer<typeof CreateUserInputSchema>;
 export const UpdateUserInputSchema = z.object({
   id: z.number(),
   displayName: z.string().min(1).optional(),
-  role: z.enum(['ADMIN', 'CASHIER', 'WAITER']).optional(),
+  role: z.enum(['ADMIN', 'CASHIER', 'WAITER', 'KP', 'CHEF', 'HEAD_CHEF', 'FOOD_RUNNER', 'HOST', 'BUSSER', 'BARTENDER', 'BARBACK', 'CLEANER']).optional(),
   pin: z.string().min(4).max(6).optional(),
   active: z.boolean().optional(),
 });
@@ -79,15 +134,31 @@ export const DeleteUserInputSchema = z.object({
 export type DeleteUserInput = z.infer<typeof DeleteUserInputSchema>;
 
 export const SetPrinterInputSchema = z.object({
+  mode: z.enum(['NETWORK', 'SYSTEM', 'SERIAL']).optional(),
   ip: z
     .string()
     .regex(/^\d{1,3}(?:\.\d{1,3}){3}$/u, 'Invalid IPv4 address')
     .optional(),
   port: z.number().int().positive().optional(),
+  deviceName: z.string().min(1).optional(),
+  silent: z.boolean().optional(),
+  systemRawEscpos: z.boolean().optional(),
+  serialPath: z.string().min(1).optional(),
+  baudRate: z.number().int().positive().optional(),
+  dataBits: z.union([z.literal(7), z.literal(8)]).optional(),
+  stopBits: z.union([z.literal(1), z.literal(2)]).optional(),
+  parity: z.enum(['none', 'even', 'odd']).optional(),
   usbVendorId: z.number().int().optional(),
   usbProductId: z.number().int().optional(),
 });
 export type SetPrinterInput = z.infer<typeof SetPrinterInputSchema>;
+
+export interface SystemPrinterDTO {
+  name: string;
+  isDefault?: boolean;
+  status?: number;
+  description?: string;
+}
 
 // Menu DTOs and contracts
 export interface MenuItemDTO {
@@ -167,7 +238,7 @@ export interface ApiAuth {
   verifyManagerPin(pin: string): Promise<{ ok: boolean; userId?: number; userName?: string }>;
   logoutAdmin(): Promise<boolean>;
   createUser(input: CreateUserInput): Promise<UserDTO>;
-  listUsers(): Promise<UserDTO[]>;
+  listUsers(input?: { includeAdmins?: boolean }): Promise<UserDTO[]>;
   updateUser(input: UpdateUserInput): Promise<UserDTO>;
   syncStaffFromApi(url?: string): Promise<number>;
   deleteUser(input: DeleteUserInput): Promise<boolean>;
@@ -208,12 +279,33 @@ export interface ApiSettings {
   testPrint(): Promise<boolean>;
   setPrinter(input: SetPrinterInput): Promise<SettingsDTO>;
   testPrintVerbose?(): Promise<TestPrintResult>;
+  listPrinters?(): Promise<SystemPrinterDTO[]>;
+  listSerialPorts?(): Promise<{ path: string; manufacturer?: string; serialNumber?: string; vendorId?: string; productId?: string }[]>;
 }
 
 export type TestPrintResult = { ok: boolean; error?: string };
 
 export interface ApiOffline {
   getStatus(): Promise<{ queued: number }>;
+}
+
+export type BillingState = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
+
+export interface BillingStatusDTO {
+  status: BillingState;
+  currentPeriodEnd?: string | null;
+  message?: string | null;
+  billingEnabled?: boolean;
+}
+
+export interface ApiBilling {
+  getStatus(): Promise<BillingStatusDTO>;
+  createCheckoutSession(): Promise<{ url?: string; error?: string }>;
+  createPortalSession?(): Promise<{ url?: string; error?: string }>;
+}
+
+export interface ApiSystem {
+  openExternal(url: string): Promise<boolean>;
 }
 
 export interface Api {
@@ -226,6 +318,8 @@ export interface Api {
   backups: ApiBackups;
   reports: ApiReports;
   offline: ApiOffline;
+  billing: ApiBilling;
+  system: ApiSystem;
   layout: ApiLayout;
   covers: ApiCovers;
   tickets: ApiTickets;
@@ -298,10 +392,18 @@ export interface SecurityLogEntry {
   details: any;
 }
 
+export interface MemoryStats {
+  current: { heapUsed: number; rss: number; timestamp: number };
+  average: { heapUsed: number; rss: number };
+  peak: { heapUsed: number; rss: number; timestamp: number };
+  trend: 'increasing' | 'decreasing' | 'stable';
+  formatted: { heapUsed: string; heapTotal: string; rss: string; external: string };
+}
+
 export interface ApiAdmin {
   getOverview(): Promise<AdminOverviewDTO>;
   openWindow(): Promise<boolean>;
-  listShifts(): Promise<AdminShiftDTO[]>;
+  listShifts(input?: { startIso?: string; endIso?: string }): Promise<AdminShiftDTO[]>;
   listTicketCounts(input?: { startIso?: string; endIso?: string }): Promise<{ id: number; name: string; active: boolean; tickets: number }[]>;
   listTicketsByUser(userId: number, range?: { startIso?: string; endIso?: string }): Promise<AdminTicketDTO[]>;
   listNotifications(input?: { onlyUnread?: boolean; limit?: number }): Promise<AdminNotificationDTO[]>;
@@ -309,6 +411,8 @@ export interface ApiAdmin {
   getTopSellingToday(): Promise<TopSellingDTO | null>;
   getSalesTrends(input: { range: 'daily' | 'weekly' | 'monthly' }): Promise<SalesTrendDTO>;
   getSecurityLog(limit?: number): Promise<SecurityLogEntry[]>;
+  getMemoryStats(): Promise<MemoryStats>;
+  exportMemorySnapshot(): Promise<string>;
 }
 
 // Waiter-facing reports (per-user)
@@ -430,7 +534,7 @@ export interface PrintTicketInput {
   area: string;
   tableLabel: string;
   covers?: number | null;
-  items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[];
+  items: { sku?: string; name: string; qty: number; unitPrice: number; vatRate?: number; note?: string; station?: 'KITCHEN' | 'BAR' | 'DESSERT'; categoryId?: number; categoryName?: string }[];
   note?: string | null;
   userName?: string;
   // When true, store a receipt snapshot for history but don't actually print.
@@ -455,7 +559,19 @@ export interface ApiNotifications {
 export interface ApiTables {
   setOpen(area: string, label: string, open: boolean): Promise<boolean>;
   listOpen(): Promise<{ area: string; label: string }[]>;
+  transfer(input: TransferTableInput): Promise<TransferTableResult>;
 }
+
+export const TransferTableInputSchema = z.object({
+  fromArea: z.string().min(1),
+  fromLabel: z.string().min(1),
+  toArea: z.string().min(1).optional().nullable(),
+  toLabel: z.string().min(1).optional().nullable(),
+  toUserId: z.number().int().positive().optional().nullable(),
+  actorUserId: z.number().int().positive(),
+});
+export type TransferTableInput = z.infer<typeof TransferTableInputSchema>;
+export type TransferTableResult = { ok: true } | { ok: false; error: string };
 
 export interface UpdateStatusDTO {
   hasUpdate: boolean;

@@ -219,7 +219,8 @@ if (!(window as any).api) {
     try {
       const r = await fetchWithRetry(HTTP_BASE + path, { ...opts, headers });
       if (!r.ok) {
-        if (r.status === 401 || r.status === 403) forceLogout('Session expired');
+        // Only treat 401/403 as "session expired" if we actually have a token.
+        if (token && (r.status === 401 || r.status === 403)) forceLogout('Session expired');
         throw new HttpError(r.status);
       }
       const ct = r.headers.get('content-type') || '';
@@ -228,7 +229,7 @@ if (!(window as any).api) {
       if (!isRetryableNetworkError(e)) throw e;
       const r2 = await fetchWithRetry(HTTPS_BASE + path, { ...opts, headers });
       if (!r2.ok) {
-        if (r2.status === 401 || r2.status === 403) forceLogout('Session expired');
+        if (token && (r2.status === 401 || r2.status === 403)) forceLogout('Session expired');
         throw new HttpError(r2.status);
       }
       const ct2 = r2.headers.get('content-type') || '';
@@ -274,6 +275,12 @@ if (!(window as any).api) {
   (window as any).api = {
     auth: {
       async loginWithPin(pin: string, userId?: number, pairingCode?: string) {
+        // Tablets are served from the host LAN API. Enforce host pairing code before any login (even in cloud mode).
+        try {
+          await goLan('/pairing/verify', { method: 'POST', body: JSON.stringify({ pairingCode }) });
+        } catch (e: any) {
+          throw new Error('Pairing code required');
+        }
         const body = IS_CLOUD
           ? { businessCode: getBusinessCode(), pin, userId }
           : { pin, userId, pairingCode };
@@ -292,13 +299,10 @@ if (!(window as any).api) {
       },
       async createUser() { throw new Error('not supported in browser'); },
       async logoutAdmin() { return true; },
-      async listUsers() {
-        if (IS_CLOUD) {
-          const bc = getBusinessCode();
-          if (!bc) return [];
-          return await go(`/auth/public-users?businessCode=${encodeURIComponent(bc)}&includeAdmins=1`);
-        }
-        return await go('/auth/users');
+      async listUsers(_input?: { includeAdmins?: boolean }) {
+        // Always go through the LAN host for user listing so tablets never need the provider-supplied business password.
+        // Host will proxy cloud /auth/public-users if cloud is enabled.
+        return await goLan('/auth/users');
       },
       async updateUser() { throw new Error('not supported in browser'); },
       async syncStaffFromApi() { throw new Error('not supported in browser'); },
@@ -339,6 +343,43 @@ if (!(window as any).api) {
       },
       async testPrint() { const r = await go('/print/test', { method: 'POST', body: JSON.stringify({}) }); return !!(r && (r.ok === true)); },
       async setPrinter() { throw new Error('not supported in browser'); },
+      async listPrinters() { throw new Error('not supported in browser'); },
+      async listSerialPorts() { throw new Error('not supported in browser'); },
+    },
+    billing: {
+      async getStatus() {
+        try {
+          return await go('/billing/status');
+        } catch (e: any) {
+          return { billingEnabled: false, status: 'ACTIVE', message: String(e?.message || e || '') };
+        }
+      },
+      async createCheckoutSession() {
+        try {
+          return await go('/admin/billing/create-checkout', { method: 'POST', body: JSON.stringify({}) });
+        } catch (e: any) {
+          return { error: String(e?.message || 'Could not create checkout session') };
+        }
+      },
+      async createPortalSession() {
+        try {
+          return await go('/admin/billing/create-portal', { method: 'POST', body: JSON.stringify({}) });
+        } catch (e: any) {
+          return { error: String(e?.message || 'Could not create portal session') };
+        }
+      },
+    },
+    system: {
+      async openExternal(url: string) {
+        try {
+          const u = String(url || '').trim();
+          if (!u) return false;
+          window.open(u, '_blank', 'noopener,noreferrer');
+          return true;
+        } catch {
+          return false;
+        }
+      },
     },
     shifts: {
       async getOpen(userId: number) { return await go(`/shifts/get-open?userId=${encodeURIComponent(String(userId))}`); },
@@ -365,6 +406,7 @@ if (!(window as any).api) {
     tables: {
       async setOpen(area: string, label: string, open: boolean) { await go('/tables/open', { method: 'POST', body: JSON.stringify({ area, label, open }) }); return true; },
       async listOpen() { return await go('/tables/open'); },
+      async transfer(input: any) { return await go('/tables/transfer', { method: 'POST', body: JSON.stringify(input) }); },
     },
     covers: {
       async save(area: string, label: string, covers: number) { await go('/covers/save', { method: 'POST', body: JSON.stringify({ area, label, covers }) }); return true; },
@@ -537,9 +579,12 @@ function Root() {
       } catch {
         // ignore
       }
-      // Navigate to staff login (/#/)
+      // Navigate to the appropriate login screen based on current context.
+      // This prevents "Admin logout" from dumping the user into the staff login.
       try {
-        window.location.hash = '#/';
+        const h = String(window.location.hash || '');
+        const isAdmin = h.startsWith('#/admin');
+        window.location.hash = isAdmin ? '#/admin' : '#/';
       } catch {
         // ignore
       }

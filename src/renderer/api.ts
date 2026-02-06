@@ -19,13 +19,14 @@ export interface TicketPayload {
 }
 
 export async function logTicket(payload: TicketPayload) {
+  const normalized: TicketPayload & { covers: number | null } = { ...payload, covers: payload.covers ?? null };
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    await offlineQueue.enqueue(payload);
+    await offlineQueue.enqueue(normalized);
     return;
   }
   try {
-    await window.api.tickets.log(payload);
+    await window.api.tickets.log(normalized);
   } catch {
-    await offlineQueue.enqueue(payload);
+    await offlineQueue.enqueue(normalized);
   }
 }

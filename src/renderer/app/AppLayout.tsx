@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react';
 import { useSessionStore } from '../stores/session';
 import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
+import { PrinterNotification } from '../components/PrinterNotification';
+import { isClockOnlyRole } from '../utils/roles';
 
 export default function AppLayout() {
   const { user, setUser } = useSessionStore();
@@ -16,6 +18,8 @@ export default function AppLayout() {
   const [backendOk, setBackendOk] = useState(true);
   const [queued, setQueued] = useState<number>(0);
   const [syncOk, setSyncOk] = useState<boolean>(true);
+  const [billing, setBilling] = useState<{ billingEnabled?: boolean; status?: string } | null>(null);
+  const [billingCheckedAt, setBillingCheckedAt] = useState<number>(0);
 
   useEffect(() => {
     // Expose a simple global flag other pages can read to disable risky actions during network issues
@@ -38,10 +42,13 @@ export default function AppLayout() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
+    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
     const tick = async () => {
+      if (isHidden()) return;
       try {
         const st = await (window.api as any).offline?.getStatus?.();
         const q = Number((st as any)?.queued || 0);
+        // Only show sync indicator if there are items ready to sync (not waiting for retry)
         if (!cancelled) {
           setQueued(Number.isFinite(q) ? q : 0);
           setSyncOk(true);
@@ -51,7 +58,7 @@ export default function AppLayout() {
       }
     };
     tick();
-    const t = window.setInterval(tick, 5000);
+    const t = window.setInterval(tick, 10000);
     return () => {
       cancelled = true;
       window.clearInterval(t);
@@ -61,7 +68,9 @@ export default function AppLayout() {
   useEffect(() => {
     if (!isBrowserClient) return;
     let cancelled = false;
+    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
     const tick = async () => {
+      if (isHidden()) return;
       try {
         // Lightweight backend heartbeat. main.tsx includes timeouts/retries.
         await window.api.settings.get();
@@ -71,20 +80,58 @@ export default function AppLayout() {
       }
     };
     tick();
-    const t = window.setInterval(tick, 8000);
+    const t = window.setInterval(tick, 15000);
     return () => {
       cancelled = true;
       window.clearInterval(t);
     };
   }, [isBrowserClient]);
 
+  // Billing gate (cloud mode): if unpaid, pause POS until payment is completed.
   useEffect(() => {
-    (async () => {
-      if (!user) return;
+    if (!user) return;
+    let cancelled = false;
+    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
+    const tick = async () => {
+      if (isHidden()) return;
+      try {
+        const s = await (window.api as any).billing?.getStatus?.();
+        if (!cancelled) {
+          setBilling(s || null);
+          setBillingCheckedAt(Date.now());
+        }
+      } catch {
+        // If billing status can't be checked (offline), don't lock the POS.
+        if (!cancelled) {
+          setBilling({ billingEnabled: false, status: 'ACTIVE' });
+          setBillingCheckedAt(Date.now());
+        }
+      }
+    };
+    void tick();
+    const t = window.setInterval(() => void tick(), 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
+    const tick = async () => {
+      if (isHidden()) return;
       const notifs = await window.api.notifications.list(user.id, true).catch(() => []);
-      setUnreadCount(notifs.length || 0);
-    })();
-  }, [user]);
+      if (!cancelled) setUnreadCount(notifs.length || 0);
+    };
+    void tick();
+    const t = window.setInterval(tick, 20000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     (async () => {
@@ -94,30 +141,67 @@ export default function AppLayout() {
     })();
   }, [user]);
 
+  const clockOnly = Boolean(user && isClockOnlyRole((user as any).role));
+  const billingEnabled = Boolean(billing?.billingEnabled);
+  const billingStatus = String(billing?.status || 'ACTIVE').toUpperCase();
+  const billingPaused = billingEnabled && (billingStatus === 'PAST_DUE' || billingStatus === 'PAUSED');
+
   return (
     <div className="h-full flex flex-col min-h-0">
+      {user && billingPaused && !clockOnly && (
+        <div className="fixed inset-0 bg-black/70 z-[9999] flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded bg-gray-900 border border-gray-700 p-5">
+            <div className="font-semibold text-lg">POS paused — payment required</div>
+            <div className="mt-2 text-sm opacity-80">
+              Your subscription payment is overdue or inactive. The POS is locked until an admin completes payment.
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                className="px-3 py-2 rounded bg-blue-700 hover:bg-blue-600 text-sm"
+                onClick={async () => {
+                  // Electron: open admin window (will prompt for admin PIN/login)
+                  await (window.api as any).admin?.openWindow?.().catch(() => false);
+                }}
+                type="button"
+              >
+                Open Admin Billing
+              </button>
+              <button className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm" onClick={() => window.location.reload()} type="button">
+                Retry
+              </button>
+            </div>
+            {billingCheckedAt > 0 && (
+              <div className="mt-3 text-xs opacity-60">Last checked: {new Date(billingCheckedAt).toLocaleTimeString()}</div>
+            )}
+          </div>
+        </div>
+      )}
       {isBrowserClient && (!netOk || !backendOk) && (
         <div className="bg-amber-600 text-black text-xs px-4 py-2">
           Network is slow/offline. Please wait — actions like Send/Pay may be disabled to prevent mistakes.
         </div>
       )}
-      <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-        <div className="font-semibold"> Code Orbit - {user?.displayName} -</div>
+      <header className="bg-gray-800 px-3 sm:px-4 py-2 sm:py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
+            <span className="hidden sm:inline">Code Orbit - {user?.displayName} -</span>
+            <span className="sm:hidden">CO - {user?.displayName}</span>
+          </div>
           {user && (
             <>
               {hasOpen && (
                 <button
-                  className="cursor-pointer hover:underline"
+                  className="cursor-pointer hover:underline text-sm whitespace-nowrap"
                   onClick={async () => {
-                    const { openMap } = useTableStatus.getState();
-                    const anyOpen = Object.values(openMap).some(Boolean);
-                    if (anyOpen) {
-                      alert("You can't clock out while you still have open tables. Please close all open orders first.");
-                      return;
-                    }else{
-                      setConfirmModal(true);
+                    if (!clockOnly) {
+                      const { openMap } = useTableStatus.getState();
+                      const anyOpen = Object.values(openMap).some(Boolean);
+                      if (anyOpen) {
+                        alert("You can't clock out while you still have open tables. Please close all open orders first.");
+                        return;
+                      }
                     }
+                    setConfirmModal(true);
                   }}
                 >
                   Clock out
@@ -142,7 +226,7 @@ export default function AppLayout() {
             </>
           )}
         </div>
-        <nav className="space-x-4 flex items-center">
+        <nav className="flex items-center gap-2 sm:gap-4 min-w-0">
           {user && (
             <div
               className={`text-xs px-2 py-1 rounded border ${
@@ -157,12 +241,20 @@ export default function AppLayout() {
               {!syncOk ? 'Offline' : queued > 0 ? `Syncing (${queued})` : 'Online'}
             </div>
           )}
-                    {/* Notification bell */}
-                    <div className="relative inline-block" tabIndex={-1} onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setShowNotifications(false); }}>
+
+          {/* Notification bell (kept OUTSIDE the horizontal scroller so the dropdown isn't clipped) */}
+          <div
+            className="relative inline-block"
+            tabIndex={-1}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) setShowNotifications(false);
+            }}
+          >
             <button
-              className="ml-2 p-2 rounded hover:bg-gray-700 cursor-pointer"
+              className="p-2 rounded hover:bg-gray-700 cursor-pointer"
               aria-label="Notifications"
               onClick={() => setShowNotifications((v) => !v)}
+              type="button"
             >
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
                 <path d="M12 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 006 14h12a1 1 0 00.707-1.707L18 11.586V8a6 6 0 00-6-6zm0 20a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
@@ -185,6 +277,7 @@ export default function AppLayout() {
                           await window.api.notifications.markAllRead(user.id).catch(() => {});
                           setUnreadCount(0);
                         }}
+                        type="button"
                       >
                         Mark all as read
                       </button>
@@ -200,29 +293,42 @@ export default function AppLayout() {
               </div>
             )}
           </div>
-          {/* <Link to="/app" className="hover:underline">Home</Link> */}
-          <NavLink to="/app/tables" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Tables</NavLink>
-          {/* <Link to="/app/order" className="hover:underline">Order</Link> */}
-          <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>Reports</NavLink>
-          {user && (
-            <>
+
+          {/* Scrollable links (only the links scroll, not the popovers) */}
+          <div className="flex items-center gap-2 sm:gap-4 overflow-x-auto whitespace-nowrap min-w-0">
+            <NavLink to="/app/clock" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>
+              Clock
+            </NavLink>
+            {!clockOnly && (
+              <>
+                <NavLink to="/app/tables" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>
+                  Tables
+                </NavLink>
+                <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'underline' : 'hover:underline')}>
+                  Reports
+                </NavLink>
+              </>
+            )}
+            {user && (
               <button
-                className="ml-2 px-3 py-1 rounded-full bg-red-700 hover:bg-red-800 cursor-pointer"
+                className="ml-1 px-3 py-1 rounded-full bg-red-700 hover:bg-red-800 cursor-pointer text-sm"
                 onClick={() => {
                   setUser(null);
                   navigate('/');
                 }}
+                type="button"
               >
                 Logout
               </button>
-            </>
-          )}
+            )}
+          </div>
         </nav>
       </header>
-      <main className="flex-1 p-4 min-h-0 overflow-hidden">
+      <main className="flex-1 p-2 sm:p-4 min-h-0 overflow-hidden">
         <Outlet />
       </main>
       <UpdateNotification />
+      <PrinterNotification />
     </div>
   );
 }
@@ -233,8 +339,8 @@ function NotificationsList({ userId, onCount }: { userId: number; onCount: (n: n
     (async () => {
       const all = await window.api.notifications.list(userId).catch(() => []);
       setItems(all);
-      const unread = await window.api.notifications.list(userId, true).catch(() => []);
-      onCount(unread.length || 0);
+      const unreadCount = Array.isArray(all) ? all.filter((n: any) => !n?.readAt).length : 0;
+      onCount(unreadCount);
     })();
   }, [userId, onCount]);
   const filtered = items.filter((n) => !/requested to add items/i.test(n.message));

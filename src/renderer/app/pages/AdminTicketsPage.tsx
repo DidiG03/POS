@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import { computeDateRange, type DateRangePreset } from '@shared/dateRange';
 
 type Row = { id: number; name: string; active: boolean; tickets: number };
 
@@ -9,7 +10,7 @@ export default function AdminTicketsPage() {
   const me = useAdminSessionStore((s) => s.user);
   const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState('');
-  const [range, setRange] = useState<'today' | 'yesterday' | 'last7' | 'last30' | 'custom'>('today');
+  const [range, setRange] = useState<DateRangePreset>('today');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
 
@@ -18,29 +19,7 @@ export default function AdminTicketsPage() {
       setRows([]);
       return;
     }
-    let startIso: string | undefined;
-    let endIso: string | undefined;
-    const now = new Date();
-    const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    if (range === 'today') {
-      startIso = startOfDay(now).toISOString();
-      endIso = new Date().toISOString();
-    } else if (range === 'yesterday') {
-      const y = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      startIso = startOfDay(y).toISOString();
-      endIso = startOfDay(now).toISOString();
-    } else if (range === 'last7') {
-      const d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      startIso = d.toISOString();
-      endIso = now.toISOString();
-    } else if (range === 'last30') {
-      const d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      startIso = d.toISOString();
-      endIso = now.toISOString();
-    } else if (range === 'custom') {
-      startIso = customStart ? new Date(customStart).toISOString() : undefined;
-      endIso = customEnd ? new Date(customEnd).toISOString() : undefined;
-    }
+    const { startIso, endIso } = computeDateRange(range, customStart, customEnd);
     const data = await window.api.admin.listTicketCounts({ startIso, endIso });
     setRows(data);
   }
@@ -89,7 +68,7 @@ export default function AdminTicketsPage() {
               key={r.id}
               className="w-full bg-gray-700 rounded px-3 py-2 flex items-center justify-between"
               onClick={async () => {
-                const { startIso, endIso } = await computeRange(range, customStart, customEnd);
+                const { startIso, endIso } = computeDateRange(range, customStart, customEnd);
                 navigate(`/admin/tickets/${r.id}?start=${encodeURIComponent(startIso || '')}&end=${encodeURIComponent(endIso || '')}&name=${encodeURIComponent(r.name)}`);
               }}
             >
@@ -107,37 +86,6 @@ export default function AdminTicketsPage() {
       </div>
     </div>
   );
-}
-
-async function computeRange(
-  range: 'today' | 'yesterday' | 'last7' | 'last30' | 'custom',
-  customStart: string,
-  customEnd: string,
-) {
-  let startIso: string | undefined;
-  let endIso: string | undefined;
-  const now = new Date();
-  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  if (range === 'today') {
-    startIso = startOfDay(now).toISOString();
-    endIso = new Date().toISOString();
-  } else if (range === 'yesterday') {
-    const y = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    startIso = startOfDay(y).toISOString();
-    endIso = startOfDay(now).toISOString();
-  } else if (range === 'last7') {
-    const d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    startIso = d.toISOString();
-    endIso = now.toISOString();
-  } else if (range === 'last30') {
-    const d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    startIso = d.toISOString();
-    endIso = now.toISOString();
-  } else if (range === 'custom') {
-    startIso = customStart ? new Date(customStart).toISOString() : undefined;
-    endIso = customEnd ? new Date(customEnd).toISOString() : undefined;
-  }
-  return { startIso, endIso };
 }
 
 

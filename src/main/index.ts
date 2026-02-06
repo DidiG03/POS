@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { join, dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -18,16 +18,19 @@ import {
   UpdateMenuCategoryInputSchema,
   CreateMenuItemInputSchema,
   UpdateMenuItemInputSchema,
+  TransferTableInputSchema,
 } from '@shared/ipc';
-import { clearCloudAdminSession, clearCloudSessionForSender, cloudJson, getCloudConfig, getCloudSessionUserId, hasCloudSession, hasCloudSessionForSender, isCloudAdmin, isCloudAdminForSender, setCloudSession, setCloudSessionForSender, setCloudToken } from './services/cloud';
+import { clearCloudAdminSession, clearCloudSessionForSender, cloudJson, getCloudAccessPassword, getCloudConfig, getCloudSessionUserId, hasCloudSession, hasCloudSessionForSender, isCloudAdmin, isCloudAdminForSender, setCloudSession, setCloudSessionForSender, setCloudToken } from './services/cloud';
 import { enqueueOutbox, getOutboxStatus, isLikelyOfflineError, startOutboxLoop } from './services/offlineOutbox';
 import { setupAutoUpdater, updaterHandlers, registerUpdateListener, cleanup as cleanupUpdater } from './updater';
-import { checkRateLimit, cleanupSenderRateLimits, logSecurityEvent, sanitizeString, validatePin, sanitizeNumber } from './services/security';
-import { buildEscposTicket, sendToPrinter } from './print';
+import { checkRateLimit, cleanupSenderRateLimits, logSecurityEvent, sanitizeString, validatePin, sanitizeNumber, getSecurityLog } from './services/security';
+import { startMemoryMonitoring, stopMemoryMonitoring, getMemoryStats, exportMemorySnapshot, getMemoryUsage, formatMemoryUsage } from './services/memoryMonitor';
+import { buildEscposTicket, buildHtmlReceipt, classifyPrinterError, printHtmlToSystemPrinter, sendToCupsRawPrinter, sendToPrinterVerbose } from './print';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import { startPrinterStationLoop } from './services/printerStation';
+import { transferTableLocal } from './services/tableTransfer';
 
 dotenv.config();
 
@@ -48,6 +51,20 @@ const MAIN_DIR = dirname(MAIN_FILE);
 let mainWindow: BrowserWindow | null = null;
 let adminWindow: BrowserWindow | null = null;
 let kdsWindow: BrowserWindow | null = null;
+
+function broadcastPrinterEvent(payload: any) {
+  try {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        if (!w.isDestroyed()) w.webContents.send('printer:event', payload);
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
 
 async function getSqliteDbFilePath(): Promise<string | null> {
   try {
@@ -291,7 +308,7 @@ function createAdminWindow() {
   if (url) adminWindow.loadURL(url + '#/admin');
   else adminWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'), { hash: '/admin' });
   adminWindow.on('closed', () => {
-    cleanupSenderRateLimits(adminWindow.id);
+    cleanupSenderRateLimits(adminWindow?.id || 0);
     adminWindow = null;
   });
 
@@ -554,6 +571,10 @@ app.whenReady().then(async () => {
   startKdsAutoBumpLoop();
   // Tickets: auto-void stale open tables after 12 hours + notify.
   startAutoVoidStaleTicketsLoop();
+  // Memory monitoring: track memory usage to detect leaks (runs every minute)
+  if (process.env.NODE_ENV !== 'production' || process.env.MEMORY_MONITORING === 'true') {
+    startMemoryMonitoring(60000); // Check every minute
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -566,6 +587,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cleanupUpdater();
+  stopMemoryMonitoring();
 });
 
 // Updater IPC handlers
@@ -766,7 +788,7 @@ ipcMain.handle('auth:createUser', async (_e, payload) => {
   };
 });
 
-ipcMain.handle('auth:listUsers', async () => {
+ipcMain.handle('auth:listUsers', async (_e, payload) => {
   // Cloud-only behavior: if provider backend is configured but businessCode is missing,
   // do NOT fall back to local users (prevents cross-tenant/local leakage).
   const settings = await coreServices.readSettings().catch(() => null as any);
@@ -777,13 +799,14 @@ ipcMain.handle('auth:listUsers', async () => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     // Login screen needs users before auth → use public endpoint
-    const includeAdmins = true;
+    const includeAdmins = (payload as any)?.includeAdmins !== false;
+    const pw = await getCloudAccessPassword().catch(() => null);
     return await cloudJson(
       'GET',
       `/auth/public-users?businessCode=${encodeURIComponent(cloud.businessCode)}&includeAdmins=${includeAdmins ? '1' : '0'}`,
       undefined,
-      { requireAuth: false },
-    );
+      { requireAuth: false, extraHeaders: pw ? { 'x-business-password': pw } : undefined },
+    ).catch(() => []);
   }
   const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
   return users.map((u: any) => ({
@@ -941,7 +964,8 @@ ipcMain.handle('shifts:listOpen', async (_e) => {
     // Login screen may call this before auth. Use a public endpoint so "clocked in" is accurate on fresh boot.
     if (!hasCloudSession(cloud.businessCode)) {
       const q = new URLSearchParams({ businessCode: cloud.businessCode });
-      return await cloudJson('GET', `/shifts/public-open?${q.toString()}`, undefined, { requireAuth: false }).catch(() => []);
+      const pw = await getCloudAccessPassword().catch(() => null);
+      return await cloudJson('GET', `/shifts/public-open?${q.toString()}`, undefined, { requireAuth: false, extraHeaders: pw ? { 'x-business-password': pw } : undefined }).catch(() => []);
     }
     return await cloudJson('GET', '/shifts/open', undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => []);
   }
@@ -1014,6 +1038,11 @@ async function readSettings() {
     result.security = { ...result.security };
     delete result.security.apiSecret;
   }
+  // Never expose cloud access password to renderer. Admin can re-enter it if needed.
+  if (result?.cloud && typeof result.cloud === 'object') {
+    result.cloud = { ...result.cloud };
+    delete result.cloud.accessPassword;
+  }
   return result;
 }
 
@@ -1022,6 +1051,29 @@ ipcMain.handle('settings:get', async () => {
 });
 
 ipcMain.handle('settings:update', async (_e, input) => {
+  // If cloud is enabled, validate business code + access password before persisting.
+  // This prevents saving wrong values and then having a confusing "no users" login screen.
+  try {
+    const envCloudUrl = String(process.env.POS_CLOUD_URL || '').trim();
+    const nextCodeRaw = String((input as any)?.cloud?.businessCode || '').trim();
+    const nextPwRaw = String((input as any)?.cloud?.accessPassword || '').trim();
+    if (envCloudUrl && (nextCodeRaw || nextPwRaw)) {
+      const businessCode = nextCodeRaw.replace(/[^0-9A-Za-z_-]/g, '').toUpperCase().slice(0, 24);
+      if (!businessCode) throw new Error('Business code is required.');
+      if (nextPwRaw.length < 6) throw new Error('Business password is required (min 6 chars).');
+      // Verify against cloud by attempting to list users (admin must always exist for a tenant).
+      const url = `${envCloudUrl.replace(/\/+$/g, '')}/auth/public-users?businessCode=${encodeURIComponent(businessCode)}&includeAdmins=1`;
+      const r = await fetch(url, { method: 'GET', headers: { Accept: 'application/json', 'x-business-password': nextPwRaw } as any } as any);
+      const data = await r.json().catch(() => null);
+      if (!r.ok || !Array.isArray(data) || data.length === 0) {
+        throw new Error('Invalid Business code or Business password.');
+      }
+      // Normalize the code back into the input so it is stored consistently.
+      (input as any).cloud = { ...((input as any).cloud || {}), businessCode };
+    }
+  } catch (e: any) {
+    throw new Error(String(e?.message || e || 'Invalid cloud settings'));
+  }
   // Merge and persist in SyncState, so admin changes survive restarts
   const merged = await coreServices.updateSettings(input);
   // Also reflect table areas into Area table if provided
@@ -1069,14 +1121,56 @@ ipcMain.handle('settings:setPrinter', async (_e, payload) => {
 ipcMain.handle('settings:testPrint', async () => {
   try {
     const settings = await readSettings();
+    const mode = (settings.printer?.mode || (settings.printer?.serialPath ? 'SERIAL' : settings.printer?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+    if (mode === 'SYSTEM') {
+      // Default ON: most receipt printers should receive raw ESC/POS (HTML/PostScript prints as "code")
+      const raw = (settings.printer as any)?.systemRawEscpos !== false;
+      if (raw) {
+        const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+        const r = await sendToCupsRawPrinter({ deviceName: settings.printer?.deviceName, data });
+        return r.ok;
+      } else {
+        const html = buildHtmlReceipt(
+          {
+            area: 'TEST',
+            tableLabel: 'USB',
+            covers: null,
+            items: [{ name: 'Test item', qty: 1, unitPrice: 1.0, vatRate: 0 }],
+            note: null,
+            userName: 'POS',
+            meta: { vatEnabled: true },
+          },
+          settings as any
+        );
+        const r = await printHtmlToSystemPrinter({ html, deviceName: settings.printer?.deviceName, silent: settings.printer?.silent !== false });
+        return r.ok;
+      }
+    }
+    if (mode === 'SERIAL') {
+      const p = settings.printer || {};
+      const cfg = {
+        path: String((p as any).serialPath || ''),
+        baudRate: Number((p as any).baudRate || 19200),
+        dataBits: (Number((p as any).dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
+        stopBits: (Number((p as any).stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
+        parity: (String((p as any).parity || 'none') as any) as 'none' | 'even' | 'odd',
+      };
+      if (!cfg.path) throw new Error('Serial port not configured');
+      const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+      const { sendToSerialPrinter } = await import('./serial');
+      const r = await sendToSerialPrinter(cfg as any, data);
+      return r.ok;
+    }
     const ip = process.env.PRINTER_IP || settings.printer?.ip;
     const port = Number(process.env.PRINTER_PORT || settings.printer?.port || 9100);
     if (!ip) throw new Error('Printer IP not configured');
-    const data = Buffer.from(
-      ['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''),
-      'binary'
-    );
-    return await sendToPrinter(ip, port, data);
+    const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+    const r = await sendToPrinterVerbose(ip, port, data);
+    if (!r.ok) {
+      const c = classifyPrinterError(r.error);
+      broadcastPrinterEvent({ level: 'error', kind: c.kind, message: c.userMessage, detail: r.error, at: Date.now() });
+    }
+    return r.ok;
   } catch {
     return false;
   }
@@ -1085,23 +1179,129 @@ ipcMain.handle('settings:testPrint', async () => {
 ipcMain.handle('settings:testPrintVerbose', async () => {
   try {
     const settings = await readSettings();
+    const mode = (settings.printer?.mode || (settings.printer?.serialPath ? 'SERIAL' : settings.printer?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+    if (mode === 'SYSTEM') {
+      // Default ON: most receipt printers should receive raw ESC/POS (HTML/PostScript prints as "code")
+      const raw = (settings.printer as any)?.systemRawEscpos !== false;
+      if (raw) {
+        const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+        const r = await sendToCupsRawPrinter({ deviceName: settings.printer?.deviceName, data });
+        return r.ok ? { ok: true } : { ok: false, error: r.error || 'CUPS raw print failed' };
+      } else {
+        const html = buildHtmlReceipt(
+          {
+            area: 'TEST',
+            tableLabel: 'USB',
+            covers: null,
+            items: [{ name: 'Test item', qty: 1, unitPrice: 1.0, vatRate: 0 }],
+            note: null,
+            userName: 'POS',
+            meta: { vatEnabled: true },
+          },
+          settings as any
+        );
+        const r = await printHtmlToSystemPrinter({ html, deviceName: settings.printer?.deviceName, silent: settings.printer?.silent !== false });
+        return r.ok ? { ok: true } : { ok: false, error: r.error || 'System print failed' };
+      }
+    }
+    if (mode === 'SERIAL') {
+      const p = settings.printer || {};
+      const cfg = {
+        path: String((p as any).serialPath || ''),
+        baudRate: Number((p as any).baudRate || 19200),
+        dataBits: (Number((p as any).dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
+        stopBits: (Number((p as any).stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
+        parity: (String((p as any).parity || 'none') as any) as 'none' | 'even' | 'odd',
+      };
+      if (!cfg.path) return { ok: false, error: 'Serial port not configured' };
+      const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+      const { sendToSerialPrinter } = await import('./serial');
+      const r = await sendToSerialPrinter(cfg as any, data);
+      return r.ok ? { ok: true } : { ok: false, error: r.error || 'Serial print failed' };
+    }
     const ip = process.env.PRINTER_IP || settings.printer?.ip;
     const port = Number(process.env.PRINTER_PORT || settings.printer?.port || 9100);
     if (!ip) return { ok: false, error: 'Printer IP not configured' };
-    const data = Buffer.from(
-      ['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''),
-      'binary'
-    );
-    const ok = await sendToPrinter(ip, port, data);
-    return ok ? { ok: true } : { ok: false, error: `Send failed (protocol ${process.env.PRINTER_PROTOCOL || (port === 515 ? 'LPR' : 'RAW')} to ${ip}:${port})` };
+    const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+    const r = await sendToPrinterVerbose(ip, port, data);
+    if (!r.ok) {
+      const c = classifyPrinterError(r.error);
+      broadcastPrinterEvent({ level: 'error', kind: c.kind, message: c.userMessage, detail: r.error, at: Date.now() });
+    }
+    return r.ok ? { ok: true } : { ok: false, error: r.error || `Send failed (protocol ${process.env.PRINTER_PROTOCOL || (port === 515 ? 'LPR' : 'RAW')} to ${ip}:${port})` };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Unknown error') };
   }
 });
 
+ipcMain.handle('printer:list', async (e) => {
+  const list = await e.sender.getPrintersAsync();
+  return (list || []).map((p: any) => ({
+    name: p.name,
+    isDefault: Boolean(p.isDefault),
+    status: typeof p.status === 'number' ? p.status : undefined,
+    description: p.description ? String(p.description) : undefined,
+  }));
+});
+
+ipcMain.handle('printer:listSerialPorts', async () => {
+  try {
+    const { listSerialPorts } = await import('./serial');
+    return await listSerialPorts();
+  } catch (e: any) {
+    // Most common: serialport native bindings not rebuilt for Electron yet.
+    console.warn('[Printer] listSerialPorts failed:', e?.message || e);
+    return [];
+  }
+});
+
 ipcMain.handle('offline:getStatus', async () => {
-  // Return outbox status for the UI indicator
+  // Return outbox status for the UI indicator (only count items ready to sync, not waiting for retry)
   return await getOutboxStatus();
+});
+
+ipcMain.handle('system:openExternal', async (_e, payload) => {
+  try {
+    const url = String((payload as any)?.url || '').trim();
+    if (!url) return false;
+    await shell.openExternal(url);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('billing:getStatus', async (_e) => {
+  const cloud = await getCloudConfig().catch(() => null);
+  if (!cloud) {
+    return { status: 'ACTIVE', billingEnabled: false };
+  }
+  try {
+    return await cloudJson('GET', '/billing/status', undefined, { requireAuth: true, senderId: _e.sender.id });
+  } catch (e: any) {
+    // If the cloud is unreachable, don't hard-lock the POS; treat as active but surface message.
+    return { status: 'ACTIVE', billingEnabled: true, message: String(e?.message || 'Could not check billing status') };
+  }
+});
+
+ipcMain.handle('billing:createCheckoutSession', async (_e) => {
+  const cloud = await getCloudConfig().catch(() => null);
+  if (!cloud) return { error: 'Cloud billing is not configured on this device' };
+  try {
+    return await cloudJson('POST', '/admin/billing/create-checkout', {}, { requireAuth: true, senderId: _e.sender.id });
+  } catch (e: any) {
+    return { error: String(e?.message || 'Could not create checkout session') };
+  }
+});
+
+ipcMain.handle('billing:createPortalSession', async (_e) => {
+  const cloud = await getCloudConfig().catch(() => null);
+  if (!cloud) return { error: 'Cloud billing is not configured on this device' };
+  try {
+    return await cloudJson('POST', '/admin/billing/create-portal', {}, { requireAuth: true, senderId: _e.sender.id });
+  } catch (e: any) {
+    return { error: String(e?.message || 'Could not create portal session') };
+  }
 });
 
 // Print ticket over ESC/POS
@@ -1207,18 +1407,149 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   }
 
   const settings = await readSettings();
-  const ip = process.env.PRINTER_IP || settings.printer?.ip;
-  const port = Number(process.env.PRINTER_PORT || settings.printer?.port || 9100);
-  if (!ip) {
+  const normalizeProfiles = (s: any) => {
+    const arr = Array.isArray(s?.printers) ? s.printers : [];
+    if (arr.length) return arr;
+    const legacy = s?.printer;
+    if (legacy && Object.keys(legacy).length) return [{ id: 'default', name: 'Default printer', enabled: true, ...(legacy || {}) }];
+    return [];
+  };
+  const pickProfile = (s: any, printerId?: string | null) => {
+    const profiles = normalizeProfiles(s).filter((p: any) => p && p.enabled !== false);
+    if (!profiles.length) return null;
+    if (printerId) {
+      const hit = profiles.find((p: any) => String(p.id) === String(printerId));
+      if (hit) return hit;
+    }
+    return profiles[0] || null;
+  };
+  const printWithProfile = async (printerProfile: any, pld: any) => {
+    const mode = (printerProfile?.mode || (printerProfile?.serialPath ? 'SERIAL' : printerProfile?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+    if (mode === 'SYSTEM') {
+      const raw = printerProfile?.systemRawEscpos !== false;
+      if (raw) {
+        const data = buildEscposTicket(pld, settings as any);
+        return await sendToCupsRawPrinter({ deviceName: printerProfile?.deviceName, data });
+      } else {
+        const html = buildHtmlReceipt(pld, settings as any);
+        return await printHtmlToSystemPrinter({ html, deviceName: printerProfile?.deviceName, silent: printerProfile?.silent !== false });
+      }
+    }
+    if (mode === 'SERIAL') {
+      const cfg = {
+        path: String(printerProfile?.serialPath || ''),
+        baudRate: Number(printerProfile?.baudRate || 19200),
+        dataBits: (Number(printerProfile?.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
+        stopBits: (Number(printerProfile?.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
+        parity: (String(printerProfile?.parity || 'none') as any) as 'none' | 'even' | 'odd',
+      };
+      if (!cfg.path) return { ok: false, error: 'Serial port not configured' };
+      const data = buildEscposTicket(pld, settings as any);
+      const { sendToSerialPrinter } = await import('./serial');
+      return await sendToSerialPrinter(cfg as any, data);
+    }
+    const ip = process.env.PRINTER_IP || printerProfile?.ip;
+    const port = Number(process.env.PRINTER_PORT || printerProfile?.port || 9100);
+    if (!ip) return { ok: false, error: 'Printer IP not configured' };
+    const data = buildEscposTicket(pld, settings as any);
+    const r = await sendToPrinterVerbose(ip, port, data);
+    return r.ok ? { ok: true } : { ok: false, error: r.error || `Send failed (to ${ip}:${port})` };
+  };
+
+  const routingEnabled = Boolean((settings as any)?.printerRouting?.enabled);
+  const receiptPrinterId = (settings as any)?.printerRouting?.receiptPrinterId || 'default';
+  const receiptProfile = pickProfile(settings, receiptPrinterId) || pickProfile(settings, 'default');
+  if (!receiptProfile) return false;
+
+  const kind = String((payload as any)?.meta?.kind || '').toUpperCase();
+  let ok = false;
+  let firstErr: string | null = null;
+  let failCount = 0;
+  if (routingEnabled && kind === 'ORDER') {
+    const routing = (settings as any)?.printerRouting || {};
+    const stationRouting = (routing?.station || {}) as any;
+    const categoryRouting = (routing?.categories || {}) as Record<string, string>;
+    const normKey = (s: any) =>
+      String(s ?? '')
+        .trim()
+        .toLowerCase();
+    const skus = Array.from(new Set(items.map((it) => String(it?.sku || '')).filter(Boolean)));
+    const menu = skus.length
+      ? await prisma.menuItem.findMany({ where: { sku: { in: skus } }, select: { sku: true, station: true, categoryId: true } } as any).catch(() => [])
+      : [];
+    const bySku = new Map<string, { station?: string; categoryId?: number }>();
+    for (const m of menu as any[]) bySku.set(String(m.sku), { station: String(m.station || ''), categoryId: Number(m.categoryId) });
+
+    const buckets = new Map<string, any[]>();
+    for (const it of items) {
+      const sku = String(it?.sku || '');
+      const info = sku ? bySku.get(sku) : undefined;
+      const categoryId = Number.isFinite(Number((it as any)?.categoryId)) ? Number((it as any).categoryId) : info?.categoryId;
+      const categoryKey = categoryId != null && Number.isFinite(categoryId) ? String(categoryId) : '';
+      const categoryNameKey = normKey((it as any)?.categoryName);
+      const printerIdByCategoryName = categoryNameKey && categoryRouting[categoryNameKey] ? categoryRouting[categoryNameKey] : '';
+      const printerIdByCategoryId = categoryKey && categoryRouting[categoryKey] ? categoryRouting[categoryKey] : '';
+      const printerIdByCategory = printerIdByCategoryName || printerIdByCategoryId;
+      const station = (String((it as any)?.station || info?.station || 'KITCHEN').toUpperCase() as any) || 'KITCHEN';
+      const printerIdByStation = stationRouting?.[station] || stationRouting?.ALL || '';
+      const printerId = printerIdByCategory || printerIdByStation || '';
+      const groupKey = printerIdByCategory
+        ? `CAT:${categoryNameKey || categoryKey || 'unknown'}`
+        : `ST:${station}`;
+      const key = `${printerId || ''}|${groupKey}`;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key)!.push({ ...(it as any), station, categoryId });
+    }
+
+    let okAll = true;
+    for (const [key, groupItems] of buckets.entries()) {
+      const [printerId, group] = key.split('|');
+      const prof = pickProfile(settings, printerId) || receiptProfile;
+      const routeLabel = String(group || '').startsWith('CAT:') ? String(group).slice(4) : String(group || '').startsWith('ST:') ? String(group).slice(3) : '';
+      const st = String(group || '').startsWith('ST:') ? String(group).slice(3) : 'ALL';
+      const pld = {
+        ...payload,
+        items: groupItems,
+        meta: { ...((payload as any)?.meta || {}), kind: 'ORDER', station: st, hidePrices: true, routeLabel },
+      };
+      const r = await printWithProfile(prof, pld);
+      if (!r.ok) {
+        okAll = false;
+        failCount++;
+        if (!firstErr) firstErr = String((r as any)?.error || 'Print failed');
+      }
+    }
+    ok = okAll;
+  } else {
+    const r = await printWithProfile(receiptProfile, payload);
+    ok = r.ok;
+    if (!ok) {
+      failCount = 1;
+      firstErr = String((r as any)?.error || 'Print failed');
+    }
+  }
+
+  if (!ok) {
+    const c = classifyPrinterError(firstErr);
+    broadcastPrinterEvent({
+      level: 'error',
+      kind: c.kind,
+      message: c.userMessage,
+      detail: firstErr,
+      at: Date.now(),
+      context: { area, tableLabel, kind, failures: failCount },
+    });
+    // Persist as an in-app notification (works for Electron + browser clients)
     try {
-      await prisma.printJob.create({ data: { type: 'RECEIPT' as any, payloadJson: payload, status: 'FAILED' as any } });
+      const uid = Number((payload as any)?.meta?.userId || 0);
+      if (uid) {
+        const msg = failCount > 1 ? `${c.userMessage} (${failCount} print jobs failed)` : c.userMessage;
+        await prisma.notification.create({ data: { userId: uid, type: 'OTHER' as any, message: msg } as any });
+      }
     } catch {
       // ignore
     }
-    return false;
   }
-  const data = buildEscposTicket(payload, settings as any);
-  const ok = await sendToPrinter(ip, port, data);
   // Also store a PrintJob record (useful for receipt history)
   try {
     await prisma.printJob.create({ data: { type: 'RECEIPT' as any, payloadJson: payload, status: ok ? ('SENT' as any) : ('FAILED' as any) } });
@@ -1548,6 +1879,18 @@ ipcMain.handle('tables:listOpen', async (_e) => {
       const [area, label] = k.split(':');
       return { area, label };
     });
+});
+
+ipcMain.handle('tables:transfer', async (_e, payload) => {
+  try {
+    if (await cloudEnabledButMissingBusinessCode()) return { ok: false, error: 'Cloud config incomplete' };
+    const input = TransferTableInputSchema.parse(payload);
+    // NOTE: In cloud mode, table/ticket ownership is still mirrored locally for offline and LAN UI.
+    // We implement transfer locally; cloud sync can be added later if needed.
+    return await transferTableLocal(input as any);
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e || 'Transfer failed') };
+  }
 });
 
 // Menu syncing from remote URL removed: business admins manage menu directly.
@@ -1969,6 +2312,16 @@ async function createKdsTicketFromLog(input: {
   const dayKey = dayKeyLocal(now);
 
   const created = await (prisma as any).$transaction(async (tx: any) => {
+    // In cloud mode, `input.userId` can be a cloud user id that doesn't exist in the local SQLite `User` table.
+    // Our self-healing schema may add a FK on KdsTicket.userId, so only set it if the local user exists.
+    let safeUserId: number | null = null;
+    try {
+      const u = await tx.user.findUnique({ where: { id: Number(input.userId) } });
+      safeUserId = u ? Number(input.userId) : null;
+    } catch {
+      safeUserId = null;
+    }
+
     let order = await tx.kdsOrder.findFirst({
       where: { area: input.area, tableLabel: input.tableLabel, closedAt: null },
       orderBy: { openedAt: 'desc' },
@@ -1995,7 +2348,7 @@ async function createKdsTicketFromLog(input: {
     const ticket = await tx.kdsTicket.create({
       data: {
         orderId: order.id,
-        userId: input.userId,
+        userId: safeUserId,
         firedAt: now,
         itemsJson: decorated,
         note: input.note ?? null,
@@ -2033,6 +2386,15 @@ async function applyKdsVoidTicket(input: { userId: number; area: string; tableLa
       });
       if (!order) return;
 
+      // Only set bumpedById if the user exists locally (cloud user ids may not).
+      let safeBumpedById: number | null = null;
+      try {
+        const u = await tx.user.findUnique({ where: { id: Number(input.userId) } });
+        safeBumpedById = u ? Number(input.userId) : null;
+      } catch {
+        safeBumpedById = null;
+      }
+
       const tickets = await tx.kdsTicket.findMany({ where: { orderId: order.id }, orderBy: { id: 'asc' } });
       const now = new Date();
       for (const t of tickets) {
@@ -2044,7 +2406,7 @@ async function applyKdsVoidTicket(input: { userId: number; area: string; tableLa
         // Mark all stations NEW->DONE so they disappear from the kitchen queue
         await tx.kdsTicketStation.updateMany({
           where: { ticketId: t.id, status: 'NEW' },
-          data: { status: 'DONE', bumpedAt: now, ...(input.userId ? { bumpedById: input.userId } : {}) },
+          data: { status: 'DONE', bumpedAt: now, ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}) },
         });
       }
       await tx.kdsOrder.update({ where: { id: order.id }, data: { closedAt: now } });
@@ -2072,6 +2434,15 @@ async function applyKdsVoidItem(input: { userId: number; area: string; tableLabe
       });
       if (!order) return;
 
+      // Only set bumpedById if the user exists locally (cloud user ids may not).
+      let safeBumpedById: number | null = null;
+      try {
+        const u = await tx.user.findUnique({ where: { id: Number(input.userId) } });
+        safeBumpedById = u ? Number(input.userId) : null;
+      } catch {
+        safeBumpedById = null;
+      }
+
       const tickets = await tx.kdsTicket.findMany({ where: { orderId: order.id }, orderBy: { id: 'asc' } });
       const now = new Date();
       for (const t of tickets) {
@@ -2098,7 +2469,7 @@ async function applyKdsVoidItem(input: { userId: number; area: string; tableLabe
             if (remaining.length === 0) {
               await tx.kdsTicketStation.updateMany({
                 where: { ticketId: t.id, station, status: 'NEW' },
-                data: { status: 'DONE', bumpedAt: now, ...(input.userId ? { bumpedById: input.userId } : {}) },
+                data: { status: 'DONE', bumpedAt: now, ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}) },
               });
             }
           }
@@ -2428,18 +2799,39 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   const item = input?.item as any;
+  const approvedByAdminId = input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
+  const approvedByAdminName = input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
   if (!userId || !area || !tableLabel || !item?.name) return false;
+
+  // Enforce admin PIN approval for voids if enabled in settings.
+  try {
+    const settings: any = await readSettings();
+    const requireApproval = (settings?.security?.approvals?.requireManagerPinForVoid !== false);
+    if (requireApproval) {
+      const actor = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
+      const actorIsAdmin = String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
+      if (!actorIsAdmin) {
+        if (!approvedByAdminId) return false;
+        const approver = await prisma.user.findUnique({ where: { id: approvedByAdminId } }).catch(() => null);
+        const approverIsAdmin = approver && (approver as any).active !== false && String((approver as any).role || '').toUpperCase() === 'ADMIN';
+        if (!approverIsAdmin) return false;
+      }
+    }
+  } catch {
+    // Fail closed when approvals are on by default.
+    return false;
+  }
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     try {
-    await cloudJson('POST', '/tickets/void-item', { userId, area, tableLabel, item }, { requireAuth: true, senderId: _e.sender.id });
+    await cloudJson('POST', '/tickets/void-item', { userId, area, tableLabel, item, approvedByAdminId, approvedByAdminName }, { requireAuth: true, senderId: _e.sender.id });
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         await enqueueOutbox({
           id: `tickets:void-item:${area}:${tableLabel}:${Date.now()}`,
           method: 'POST',
           path: '/tickets/void-item',
-          body: { userId, area, tableLabel, item },
+          body: { userId, area, tableLabel, item, approvedByAdminId, approvedByAdminName },
           requireAuth: true,
         });
       } else {
@@ -2464,7 +2856,7 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
     await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(() => false);
     return true;
   }
-  const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}`;
+  const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification.create({ data: { userId, type: 'OTHER' as any, message } }).catch(() => {});
   try {
@@ -2495,18 +2887,38 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   const reason = String(input?.reason || '');
+  const approvedByAdminId = input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
+  const approvedByAdminName = input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
   if (!userId || !area || !tableLabel) return false;
+
+  // Enforce admin PIN approval for voids if enabled in settings.
+  try {
+    const settings: any = await readSettings();
+    const requireApproval = (settings?.security?.approvals?.requireManagerPinForVoid !== false);
+    if (requireApproval) {
+      const actor = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
+      const actorIsAdmin = String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
+      if (!actorIsAdmin) {
+        if (!approvedByAdminId) return false;
+        const approver = await prisma.user.findUnique({ where: { id: approvedByAdminId } }).catch(() => null);
+        const approverIsAdmin = approver && (approver as any).active !== false && String((approver as any).role || '').toUpperCase() === 'ADMIN';
+        if (!approverIsAdmin) return false;
+      }
+    }
+  } catch {
+    return false;
+  }
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     try {
-    await cloudJson('POST', '/tickets/void-ticket', { userId, area, tableLabel, reason }, { requireAuth: true, senderId: _e.sender.id });
+    await cloudJson('POST', '/tickets/void-ticket', { userId, area, tableLabel, reason, approvedByAdminId, approvedByAdminName }, { requireAuth: true, senderId: _e.sender.id });
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         await enqueueOutbox({
           id: `tickets:void-ticket:${area}:${tableLabel}:${Date.now()}`,
           method: 'POST',
           path: '/tickets/void-ticket',
-          body: { userId, area, tableLabel, reason },
+          body: { userId, area, tableLabel, reason, approvedByAdminId, approvedByAdminName },
           requireAuth: true,
         });
       } else {
@@ -2550,7 +2962,7 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
     await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(() => false);
     return true;
   }
-  const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}`;
+  const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification.create({ data: { userId, type: 'OTHER' as any, message } }).catch(() => {});
   try {
@@ -2694,12 +3106,16 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
   return users.map((u: any) => ({ id: u.id, name: u.displayName, active: openIds.has(u.id), tickets: counts[u.id] ?? 0 }));
 });
 
-ipcMain.handle('admin:listShifts', async (_e) => {
+ipcMain.handle('admin:listShifts', async (_e, input) => {
   if (await cloudEnabledButMissingBusinessCode()) return [];
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     try {
-      return await cloudJson('GET', '/admin/shifts', undefined, { requireAuth: true, senderId: _e.sender.id });
+      const q = new URLSearchParams();
+      if (input?.startIso) q.set('startIso', String(input.startIso));
+      if (input?.endIso) q.set('endIso', String(input.endIso));
+      const path = q.toString() ? `/admin/shifts?${q.toString()}` : '/admin/shifts';
+      return await cloudJson('GET', path, undefined, { requireAuth: true, senderId: _e.sender.id });
     } catch (e: any) {
       const msg = String(e?.message || e || '').toLowerCase();
       if (msg.includes('forbidden') || msg.includes('unauthorized') || msg.includes('not logged in') || msg.includes('admin login required')) {
@@ -2708,10 +3124,19 @@ ipcMain.handle('admin:listShifts', async (_e) => {
       return [];
     }
   }
-  const rows = await prisma.dayShift.findMany({
-    orderBy: { openedAt: 'desc' },
-    include: { openedBy: true, closedBy: true },
-  } as any).catch(() => []);
+  const where: any = {};
+  if (input?.startIso || input?.endIso) {
+    where.openedAt = {};
+    if (input?.startIso) where.openedAt.gte = new Date(input.startIso);
+    if (input?.endIso) where.openedAt.lte = new Date(input.endIso);
+  }
+  const rows = await prisma.dayShift
+    .findMany({
+      where,
+      orderBy: { openedAt: 'desc' },
+      include: { openedBy: true, closedBy: true },
+    } as any)
+    .catch(() => []);
   return rows.map((r: any) => {
     const end = r.closedAt ? new Date(r.closedAt) : new Date();
     const start = new Date(r.openedAt);
@@ -2886,6 +3311,29 @@ ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
 });
 
 // Waiter-facing reports (per-user)
+// Security log (admin only)
+ipcMain.handle('admin:getSecurityLog', async (_e, input) => {
+  const limit = sanitizeNumber(input?.limit, 1, 1000, 100);
+  return getSecurityLog(limit);
+});
+
+// Memory monitoring (admin only)
+ipcMain.handle('admin:getMemoryStats', async () => {
+  const stats = getMemoryStats();
+  const currentUsage = getMemoryUsage();
+  return {
+    current: stats.current,
+    average: stats.average,
+    peak: stats.peak,
+    trend: stats.trend,
+    formatted: formatMemoryUsage(currentUsage),
+  };
+});
+
+ipcMain.handle('admin:exportMemorySnapshot', async () => {
+  return await exportMemorySnapshot();
+});
+
 ipcMain.handle('reports:getMyOverview', async (_e, input) => {
   if (await cloudEnabledButMissingBusinessCode()) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
   const userId = Number(input?.userId || 0);

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { tableKey } from '@shared/utils/tableKey';
 
 interface TableStatusState {
   openMap: Record<string, boolean>; // key = `${area}:${label}`
@@ -10,27 +11,23 @@ interface TableStatusState {
   reset: () => void;
 }
 
-function key(area: string, label: string) {
-  return `${area}:${label}`;
-}
-
 export const useTableStatus = create<TableStatusState>()(
   persist(
     (set, get) => ({
       openMap: {},
       lastSetAt: {},
-      isOpen: (area, label) => Boolean(get().openMap[key(area, label)]),
+      isOpen: (area, label) => Boolean(get().openMap[tableKey(area, label)]),
       setOpen: (area, label, open) =>
         set((s) => ({
-          openMap: { ...s.openMap, [key(area, label)]: open },
-          lastSetAt: { ...s.lastSetAt, [key(area, label)]: Date.now() },
+          openMap: { ...s.openMap, [tableKey(area, label)]: open },
+          lastSetAt: { ...s.lastSetAt, [tableKey(area, label)]: Date.now() },
         })),
       setAll: (entries) =>
         set((s) => {
           const now = Date.now();
           const ttlMs = 4000; // protect optimistic updates for 4s
           const incoming: Record<string, boolean> = {};
-          for (const e of entries || []) incoming[key(e.area, e.label)] = true;
+          for (const e of entries || []) incoming[tableKey(e.area, e.label)] = true;
           const merged: Record<string, boolean> = { ...s.openMap };
           // Set true for incoming open tables
           for (const k in incoming) {

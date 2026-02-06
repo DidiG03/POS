@@ -62,11 +62,16 @@ Body example:
 {
   "businessName": "My Restaurant",
   "businessCode": "MYRESTAURANT",
+  "businessPassword": "SOME_STRONG_PASSWORD",
   "adminName": "Owner",
   "adminPin": "1234",
   "adminEmail": "owner@example.com"
 }
 ```
+
+Notes:
+- `businessPassword` is a provider-supplied shared secret used to access certain public endpoints (e.g. staff list / open shifts) so the tenant cannot be enumerated by Business code alone.
+- The backend stores only a hash; you must store this password securely and provide it to the restaurant owner/admin.
 
 Login (PIN-based):
 

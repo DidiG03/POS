@@ -1,5 +1,5 @@
 {
-  "name": " Code Orbit-pos",
+  "name": "code-orbit-pos",
   "version": "0.1.0",
   "private": true,
   "description": "Desktop POS for  Code Orbit Agroturizem (Electron + React + Prisma)",
@@ -10,6 +10,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "dist": "pnpm build && electron-builder",
+    "dist:dir": "pnpm build && electron-builder --dir",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=20",
@@ -19,6 +21,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev --name init",
     "db:seed": "tsx scripts/seed.ts",
+    "db:wipe": "tsx scripts/wipeLocalDb.ts",
+    "serial:rebuild": "node scripts/rebuildSerialport.mjs",
     "prepare": "husky"
   },
   "engines": {
@@ -26,10 +30,11 @@
     "pnpm": ">=8"
   },
   "build": {
-    "appId": "com. Code Orbit.pos",
-    "productName": " Code Orbit POS",
+    "appId": "com.codeorbit.pos",
+    "productName": "Code Orbit POS",
     "files": [
       "dist/**",
+      "node_modules/**",
       "package.json"
     ],
     "mac": {
@@ -41,8 +46,7 @@
     "win": {
       "target": [
         "nsis"
-      ],
-      "publisherName": " Code Orbit Agroturizem"
+      ]
     },
     "publish": {
       "provider": "github",
@@ -61,12 +65,14 @@
       "@prisma/engines",
       "@prisma/client",
       "prisma",
+      "@serialport/bindings-cpp",
       "electron",
       "esbuild"
     ],
     "onlyBuiltDependencies": [
       "@prisma/engines",
       "@tailwindcss/oxide",
+      "@serialport/bindings-cpp",
       "electron",
       "esbuild",
       "prisma"
@@ -84,6 +90,7 @@
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.21",
     "electron": "^37.2.6",
+    "electron-builder": "^26.7.0",
     "electron-vite": "^4.0.0",
     "eslint": "^9.33.0",
     "eslint-config-prettier": "^10.1.8",
@@ -110,6 +117,7 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.0",
+    "serialport": "^13.0.0",
     "zod": "^4.0.16",
     "zustand": "^5.0.7"
   }

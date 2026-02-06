@@ -13,6 +13,16 @@ model Business {
   code      String   @unique
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
+  // Provider-supplied shared secret used to access public endpoints (staff list, public open shifts) for this tenant.
+  // This prevents enumeration by knowing only the business code.
+  accessPasswordHash String?
+
+  billingStatus      BillingStatus @default(ACTIVE)
+  billingUpdatedAt   DateTime?
+  billingPeriodEnd   DateTime?
+  billingPausedAt    DateTime?
+  stripeCustomerId   String? @unique
+  stripeSubscriptionId String? @unique
 
   users              User[]
   categories         Category[]
@@ -40,10 +50,25 @@ model Business {
   kdsTicketStations  KdsTicketStation[]
 }
 
+enum BillingStatus {
+  ACTIVE
+  PAST_DUE
+  PAUSED
+}
+
 enum Role {
   ADMIN
   CASHIER
   WAITER
+  KP
+  CHEF
+  HEAD_CHEF
+  FOOD_RUNNER
+  HOST
+  BUSSER
+  BARTENDER
+  BARBACK
+  CLEANER
 }
 
 enum PrepStation {

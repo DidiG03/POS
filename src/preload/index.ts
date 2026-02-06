@@ -9,7 +9,7 @@ const api: Api = {
     verifyManagerPin: (pin: string) => ipcRenderer.invoke('auth:verifyManagerPin', { pin }),
     logoutAdmin: () => ipcRenderer.invoke('auth:logoutAdmin'),
     createUser: (input) => ipcRenderer.invoke('auth:createUser', input),
-    listUsers: () => ipcRenderer.invoke('auth:listUsers'),
+    listUsers: (input?: { includeAdmins?: boolean }) => ipcRenderer.invoke('auth:listUsers', input || {}),
     updateUser: (input) => ipcRenderer.invoke('auth:updateUser', input),
     syncStaffFromApi: (url?: string) => ipcRenderer.invoke('auth:syncStaffFromApi', { url }),
     deleteUser: (input) => ipcRenderer.invoke('auth:deleteUser', input),
@@ -20,6 +20,8 @@ const api: Api = {
     testPrint: () => ipcRenderer.invoke('settings:testPrint'),
     setPrinter: (input) => ipcRenderer.invoke('settings:setPrinter', input),
     testPrintVerbose: () => ipcRenderer.invoke('settings:testPrintVerbose'),
+    listPrinters: () => ipcRenderer.invoke('printer:list'),
+    listSerialPorts: () => ipcRenderer.invoke('printer:listSerialPorts'),
   },
   menu: {
     listCategoriesWithItems: () => ipcRenderer.invoke('menu:listCategoriesWithItems'),
@@ -39,7 +41,7 @@ const api: Api = {
   admin: {
     getOverview: () => ipcRenderer.invoke('admin:getOverview'),
     openWindow: () => ipcRenderer.invoke('admin:openWindow'),
-    listShifts: () => ipcRenderer.invoke('admin:listShifts'),
+    listShifts: (input?: { startIso?: string; endIso?: string }) => ipcRenderer.invoke('admin:listShifts', input || {}),
     listTicketCounts: (input?: { startIso?: string; endIso?: string }) => ipcRenderer.invoke('admin:listTicketCounts', input),
     listTicketsByUser: (userId: number, range?: { startIso?: string; endIso?: string }) =>
       ipcRenderer.invoke('admin:listTicketsByUser', { userId, ...(range || {}) }),
@@ -48,6 +50,8 @@ const api: Api = {
     getTopSellingToday: () => ipcRenderer.invoke('admin:getTopSellingToday'),
     getSalesTrends: (input: { range: 'daily' | 'weekly' | 'monthly' }) => ipcRenderer.invoke('admin:getSalesTrends', input),
     getSecurityLog: (limit?: number) => ipcRenderer.invoke('admin:getSecurityLog', { limit }),
+    getMemoryStats: () => ipcRenderer.invoke('admin:getMemoryStats'),
+    exportMemorySnapshot: () => ipcRenderer.invoke('admin:exportMemorySnapshot'),
   },
   kds: {
     openWindow: () => ipcRenderer.invoke('kds:openWindow'),
@@ -71,6 +75,14 @@ const api: Api = {
   offline: {
     getStatus: () => ipcRenderer.invoke('offline:getStatus'),
   },
+  billing: {
+    getStatus: () => ipcRenderer.invoke('billing:getStatus'),
+    createCheckoutSession: () => ipcRenderer.invoke('billing:createCheckoutSession'),
+    createPortalSession: () => ipcRenderer.invoke('billing:createPortalSession'),
+  },
+  system: {
+    openExternal: (url: string) => ipcRenderer.invoke('system:openExternal', { url }),
+  },
   layout: {
     get: (userId: number, area: string) => ipcRenderer.invoke('layout:get', { userId, area }),
     save: (userId: number, area: string, nodes: any[]) => ipcRenderer.invoke('layout:save', { userId, area, nodes }),
@@ -90,6 +102,7 @@ const api: Api = {
   tables: {
     setOpen: (area: string, label: string, open: boolean) => ipcRenderer.invoke('tables:setOpen', { area, label, open }),
     listOpen: () => ipcRenderer.invoke('tables:listOpen'),
+    transfer: (input) => ipcRenderer.invoke('tables:transfer', input),
   },
   notifications: {
     list: (userId: number, onlyUnread?: boolean) => ipcRenderer.invoke('notifications:list', { userId, onlyUnread }),
@@ -138,6 +151,15 @@ ipcRenderer.on('auth:forceLogout', (_e, payload) => {
 ipcRenderer.on('updater:event', (_e, payload) => {
   try {
     window.dispatchEvent(new CustomEvent('updater:event', { detail: payload }));
+  } catch {
+    // ignore
+  }
+});
+
+// Printer events (main -> renderer)
+ipcRenderer.on('printer:event', (_e, payload) => {
+  try {
+    window.dispatchEvent(new CustomEvent('printer:event', { detail: payload }));
   } catch {
     // ignore
   }

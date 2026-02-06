@@ -59,6 +59,10 @@ export default function KdsPage() {
     name: string;
   }>(null);
   const longPressTimer = useRef<any>(null);
+  const errRef = useRef<string | null>(null);
+  useEffect(() => {
+    errRef.current = err;
+  }, [err]);
 
   useEffect(() => {
     (async () => {
@@ -89,10 +93,16 @@ export default function KdsPage() {
 
   useEffect(() => {
     let alive = true;
-    let t: any = null;
+    let pollTimer: any = null;
+    let debugTimer: any = null;
 
-    async function load() {
-      setErr(null);
+    const POLL_MS = 3000; // reduce churn vs 2s
+    const DEBUG_MS = 30000; // debug is expensive; don't fetch every poll
+
+    const loadTickets = async () => {
+      if (!alive) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (errRef.current) setErr(null);
       try {
         const rows = (await window.api.kds.listTickets({
           station,
@@ -102,24 +112,56 @@ export default function KdsPage() {
         if (!alive) return;
         setTickets(Array.isArray(rows) ? (rows as KdsTicket[]) : []);
         setLoading(false);
-        const dbg = await window.api.kds.debug().catch(() => null);
-        if (!alive) return;
-        setDebug(dbg);
       } catch (e: any) {
         if (!alive) return;
         setErr(e?.message || 'Failed to load KDS tickets');
         setLoading(false);
-        const dbg = await window.api.kds.debug().catch(() => null);
-        if (!alive) return;
-        setDebug(dbg);
       }
+    };
+
+    const loadDebug = async () => {
+      if (!alive) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const dbg = await window.api.kds.debug().catch(() => null);
+      if (!alive) return;
+      setDebug(dbg);
+    };
+
+    const start = () => {
+      if (pollTimer) return;
+      void loadTickets();
+      void loadDebug();
+      pollTimer = setInterval(loadTickets, POLL_MS);
+      debugTimer = setInterval(loadDebug, DEBUG_MS);
+    };
+
+    const stop = () => {
+      if (pollTimer) clearInterval(pollTimer);
+      if (debugTimer) clearInterval(debugTimer);
+      pollTimer = null;
+      debugTimer = null;
+    };
+
+    const onVis = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') stop();
+      else start();
+    };
+
+    start();
+    try {
+      document.addEventListener('visibilitychange', onVis);
+    } catch {
+      // ignore
     }
 
-    void load();
-    t = setInterval(load, 2000);
     return () => {
       alive = false;
-      if (t) clearInterval(t);
+      stop();
+      try {
+        document.removeEventListener('visibilitychange', onVis);
+      } catch {
+        // ignore
+      }
     };
   }, [station, tab]);
 

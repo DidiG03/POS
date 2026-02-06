@@ -31,6 +31,15 @@ enum Role {
   ADMIN
   CASHIER
   WAITER
+  KP
+  CHEF
+  HEAD_CHEF
+  FOOD_RUNNER
+  HOST
+  BUSSER
+  BARTENDER
+  BARBACK
+  CLEANER
 }
 
 enum PrepStation {

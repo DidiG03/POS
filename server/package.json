@@ -19,6 +19,7 @@
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
+    "stripe": "^18.5.0",
     "zod": "^4.0.16"
   },
   "devDependencies": {
@@ -32,4 +33,3 @@
     "typescript": "^5.9.2"
   }
 }
-

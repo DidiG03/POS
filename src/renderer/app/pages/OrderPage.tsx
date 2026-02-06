@@ -16,6 +16,7 @@ type MenuItemDTO = {
   vatRate: number;
   active: boolean;
   categoryId: number;
+  station?: 'KITCHEN' | 'BAR' | 'DESSERT';
 };
 type MenuCategoryDTO = {
   id: number;
@@ -32,7 +33,7 @@ export default function OrderPage() {
   const { lines, addItem, increment, decrement, setLineNote, orderNote, setOrderNote, clear, removeLine } = useTicketStore();
   const [weightModal, setWeightModal] = useState<{ sku: string; name: string; unitPrice: number; vatRate: number } | null>(null);
   const [weightInput, setWeightInput] = useState<string>('');
-  const { selectedTable, setPendingAction } = useOrderContext();
+  const { selectedTable, setPendingAction, setSelectedTable } = useOrderContext();
   const { setOpen, isOpen } = useTableStatus();
   const [showCovers, setShowCovers] = useState(false);
   const [coversValue, setCoversValue] = useState('');
@@ -73,9 +74,26 @@ export default function OrderPage() {
   const backendOk = typeof window !== 'undefined' ? (window as any).__BACKEND_OK__ !== false : true;
   const netOk = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
   const connectionOk = !isBrowserClient || (netOk && backendOk);
+  const [mobilePane, setMobilePane] = useState<'menu' | 'ticket'>('menu');
+
+  // Transfer table (move table and/or change owner)
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [transferMode, setTransferMode] = useState<'WAITER' | 'TABLE'>('WAITER');
+  const [transferUsers, setTransferUsers] = useState<Array<{ id: number; displayName: string; role: string; active: boolean }>>([]);
+  const [transferToUserId, setTransferToUserId] = useState<number | null>(null);
+  const [transferToArea, setTransferToArea] = useState<string>('');
+  const [transferToLabel, setTransferToLabel] = useState<string>('');
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferError, setTransferError] = useState<string | null>(null);
 
   const isTableOpen = selectedTable ? isOpen(selectedTable.area, selectedTable.label) : false;
   const hasUnsentItems = lines.some((l) => l.staged);
+  const canTransfer = Boolean(
+    selectedTable &&
+      isOpen(selectedTable.area, selectedTable.label) &&
+      user?.id &&
+      (user.role === 'ADMIN' || (ownerId != null && Number(ownerId) === Number(user.id))),
+  );
 
   function formatElapsed(ms: number) {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -155,13 +173,21 @@ export default function OrderPage() {
   const [approvalModal, setApprovalModal] = useState<{
     open: boolean;
     action: string;
+    kind: 'MANAGER' | 'ADMIN';
     pin: string;
     error: string | null;
-  }>({ open: false, action: '', pin: '', error: null });
+  }>({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
   const approvalResolveRef = useRef<((v: { userId: number; userName: string } | null) => void) | null>(null);
 
   function requestManagerApproval(action: string) {
-    setApprovalModal({ open: true, action, pin: '', error: null });
+    setApprovalModal({ open: true, action, kind: 'MANAGER', pin: '', error: null });
+    return new Promise<{ userId: number; userName: string } | null>((resolve) => {
+      approvalResolveRef.current = resolve;
+    });
+  }
+
+  function requestAdminApproval(action: string) {
+    setApprovalModal({ open: true, action, kind: 'ADMIN', pin: '', error: null });
     return new Promise<{ userId: number; userName: string } | null>((resolve) => {
       approvalResolveRef.current = resolve;
     });
@@ -258,9 +284,29 @@ export default function OrderPage() {
     if (data.length && !selectedCatId) setSelectedCatId(data[0].id);
   };
 
+  const categoryNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const c of categories as any[]) m.set(Number(c.id), String(c.name || ''));
+    return m;
+  }, [categories]);
+
   useEffect(() => {
     loadMenu();
   }, []);
+
+  // Prefill transfer UI when opened
+  useEffect(() => {
+    if (!showTransfer) return;
+    if (!selectedTable) return;
+    setTransferError(null);
+    setTransferToArea(selectedTable.area);
+    setTransferToLabel(selectedTable.label);
+    setTransferToUserId(null);
+    (async () => {
+      const users = await window.api.auth.listUsers().catch(() => [] as any[]);
+      setTransferUsers((Array.isArray(users) ? users : []).filter((u: any) => u && u.active));
+    })();
+  }, [showTransfer, selectedTable?.area, selectedTable?.label]);
 
   // Determine owner of the currently selected open table
   useEffect(() => {
@@ -367,8 +413,26 @@ export default function OrderPage() {
   }, [user?.id, selectedTable?.area, selectedTable?.label, ownerId]);
 
   return (
-    <div style={{ height: 'calc(100vh - 100px)' }} className="grid grid-cols-3 gap-4 min-h-0">
-      <div className="col-span-2 min-h-full overflow-auto">
+    <div className="h-full min-h-0 flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3">
+      {/* Mobile: switch between Menu and Ticket to avoid cramped 3-column layout */}
+      <div className="md:hidden bg-gray-800/70 border border-gray-700 rounded-lg p-2 flex items-center gap-2">
+        <button
+          className={`flex-1 py-2 rounded ${mobilePane === 'menu' ? 'bg-emerald-700' : 'bg-gray-700'}`}
+          onClick={() => setMobilePane('menu')}
+          type="button"
+        >
+          Menu
+        </button>
+        <button
+          className={`flex-1 py-2 rounded ${mobilePane === 'ticket' ? 'bg-emerald-700' : 'bg-gray-700'}`}
+          onClick={() => setMobilePane('ticket')}
+          type="button"
+        >
+          Ticket{lines.length ? ` (${lines.length})` : ''}
+        </button>
+      </div>
+
+      <div className={`md:col-span-2 min-h-0 overflow-auto ${mobilePane === 'menu' ? 'flex-1' : 'hidden'} md:block`}>
         <div className="flex gap-2 mb-3">
           <input
             placeholder="Search menu..."
@@ -377,12 +441,12 @@ export default function OrderPage() {
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <div className="grid grid-cols-3 gap-2 mb-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
           {/* Favourites tab */}
           <button
             key={-1}
             onClick={() => setSelectedCatId(-1)}
-            className={`py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === -1 ? 'bg-gray-800' : 'bg-gray-900'}`}
+            className={`py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === -1 ? 'bg-gray-800' : 'bg-gray-900'}`}
           >
             Favourites
           </button>
@@ -390,13 +454,13 @@ export default function OrderPage() {
             <button
               key={c.id}
               onClick={() => setSelectedCatId(c.id)}
-              className={`py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === c.id ? 'bg-gray-800' : 'bg-gray-900'}`}
+              className={`py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === c.id ? 'bg-gray-800' : 'bg-gray-900'}`}
             >
               {c.name}
             </button>
           ))}
         </div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {filteredItems.map((i: MenuItemDTO) => {
             const isFav = fav.isFav(user?.id || null, i.sku);
             const isDisabled = (i as any)?.active === false;
@@ -413,10 +477,10 @@ export default function OrderPage() {
                     // If isKg, open weight keypad; otherwise add normally
                     const isKg = Boolean((i as any)?.isKg) || Boolean((i as any)?.tags?.isKg);
                     if (isKg) {
-                      setWeightModal({ sku: i.sku, name: i.name, unitPrice: i.price, vatRate: i.vatRate });
+                      setWeightModal({ sku: i.sku, name: i.name, unitPrice: i.price, vatRate: i.vatRate, station: i.station, categoryId: i.categoryId, categoryName: categoryNameById.get(Number(i.categoryId)) || undefined } as any);
                       setWeightInput('');
                     } else {
-                      addItem({ sku: i.sku, name: i.name, unitPrice: i.price, vatRate: i.vatRate });
+                      addItem({ sku: i.sku, name: i.name, unitPrice: i.price, vatRate: i.vatRate, station: i.station, categoryId: i.categoryId, categoryName: categoryNameById.get(Number(i.categoryId)) || undefined } as any);
                     }
                   }}
                 >
@@ -435,7 +499,8 @@ export default function OrderPage() {
           })}
         </div>
       </div>
-      <div className="bg-gray-800 p-3 rounded flex flex-col h-full min-h-0">
+
+      <div className={`bg-gray-800 p-3 rounded flex flex-col min-h-0 h-full relative ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:block`}>
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold flex items-center gap-2">
             <span>Ticket {selectedTable ? `- ${selectedTable.label}` : ''}</span>
@@ -445,27 +510,40 @@ export default function OrderPage() {
               </span>
             )}
           </div>
-          {selectedTable && isOpen(selectedTable.area, selectedTable.label) && (
-            <button
-              type="button"
-              className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded border border-gray-600"
-              onClick={() => {
-                setCoversMode('editOnly');
-                setCoversValue(typeof coversKnown === 'number' ? String(coversKnown) : '');
-                setShowCovers(true);
-              }}
-              title="Edit guests (covers)"
-            >
-              <ForkKnifeIcon />
-              <span className="text-sm font-semibold">{typeof coversKnown === 'number' ? coversKnown : '—'}</span>
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {canTransfer && (
+              <button
+                type="button"
+                className="bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded border border-indigo-500 text-sm"
+                onClick={() => setShowTransfer(true)}
+                title="Transfer this table to another waiter or table number"
+              >
+                Transfer
+              </button>
+            )}
+            {selectedTable && isOpen(selectedTable.area, selectedTable.label) && (
+              <button
+                type="button"
+                className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded border border-gray-600"
+                onClick={() => {
+                  setCoversMode('editOnly');
+                  setCoversValue(typeof coversKnown === 'number' ? String(coversKnown) : '');
+                  setShowCovers(true);
+                }}
+                title="Edit guests (covers)"
+              >
+                <ForkKnifeIcon />
+                <span className="text-sm font-semibold">{typeof coversKnown === 'number' ? coversKnown : '—'}</span>
+              </button>
+            )}
+          </div>
         </div>
-          <div className="flex-1 overflow-auto space-y-2">
-          {lines.length === 0 ? (
-            <div className="text-sm opacity-60">Select items to add…</div>
-          ) : (
-            lines.map((l) => {
+        <div className="flex-1 min-h-0 overflow-auto pb-80">
+          <div className="space-y-2">
+            {lines.length === 0 ? (
+              <div className="text-sm opacity-60">Select items to add…</div>
+            ) : (
+              lines.map((l) => {
               const showRequestOnly = Boolean(
                 selectedTable &&
                 isOpen(selectedTable.area, selectedTable.label) &&
@@ -556,261 +634,296 @@ export default function OrderPage() {
             );
           })
         )}
-        </div>
-        <div className="border-t border-gray-700 mt-3 pt-3 space-y-1 text-sm">
-          <div className="mb-3">
-            <label className="block text-xs mb-1 opacity-70">Order notes</label>
-            {(() => {
-              const requestOnly = Boolean(
-                selectedTable &&
-                isOpen(selectedTable.area, selectedTable.label) &&
-                ownerId &&
-                user?.id != null && Number(ownerId) !== Number(user.id)
-              );
-              const ticketOpen = Boolean(selectedTable && isOpen(selectedTable.area, selectedTable.label));
-              // Disable order note both when ticket is open and in request-only mode; notes should only be on staged items
-              const disabled = ticketOpen || requestOnly;
-              return (
-                <textarea
-                  className={`w-full rounded px-2 py-2 text-sm ${disabled ? 'bg-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-700'}`}
-                  rows={2}
-                  placeholder="e.g., allergies, special instructions, table notes"
-                  value={orderNote}
-                  disabled={disabled}
-                  onChange={(e) => setOrderNote(e.target.value)}
-                />
-              );
-            })()}
           </div>
-        <TicketTotals
-          totals={totals}
-          vatEnabled={vatEnabled}
-          serviceChargeCfg={serviceChargeCfg}
-          applyServiceCharge={applyServiceCharge}
-          serviceChargeAmount={serviceChargeAmount}
-        />
         </div>
-        <div className="mt-3 flex gap-2">
-          {(() => {
-            const showRequestOnly = Boolean(
-              selectedTable &&
-              isOpen(selectedTable.area, selectedTable.label) &&
-              ownerId &&
-              user?.id != null && Number(ownerId) !== Number(user.id)
-            );
-            if (showRequestOnly) {
-              const stagedCount = lines.filter((l) => l.staged).length;
-              return (
-                <button
-                  className="flex-1 bg-amber-700 hover:bg-amber-600 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                  disabled={stagedCount === 0 || requestLocked || busyAction != null || !connectionOk}
-                  onClick={async () => {
-                    if (busyAction != null) return;
-                    if (!selectedTable || !user?.id || !ownerId) return;
-                    const staged = lines.filter((l) => l.staged);
-                    if (staged.length === 0) {
-                      alert('Add items (new lines) before sending a request');
-                      return;
-                    }
-                    if (!connectionOk) {
-                      alert('Network is slow/offline. Please wait and try again.');
-                      return;
-                    }
-                    setBusyAction('request');
-                    // IMPORTANT: only request staged items (newly added), not the whole existing ticket.
-                    const items = staged.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note }));
-                    try {
-                      await window.api.requests.create({
-                        requesterId: user.id,
-                        ownerId,
-                        area: selectedTable.area,
-                        tableLabel: selectedTable.label,
-                        items,
-                        note: null,
-                      });
-                      setRequestLocked(true);
-                      alert('Request sent to the owner');
-                    } catch {
-                      alert('Request failed (network slow). Please try again.');
-                    } finally {
-                      setBusyAction(null);
-                    }
-                  }}
-                >
-                  {busyAction === 'request' ? 'Sending…' : 'Request to add items'}
-                </button>
-              );
-            }
-            return (
-              <>
-                <button
-                  className="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                  disabled={lines.length === 0 || busyAction != null || !connectionOk}
-                  onClick={async () => {
-                    if (busyAction != null) return;
-                    if (!connectionOk) {
-                      alert('Network is slow/offline. Please wait and try again.');
-                      return;
-                    }
-                    setBusyAction('void');
-                    try {
-                      if (selectedTable && isOpen(selectedTable.area, selectedTable.label)) {
-                        if (!user?.id) return;
-                        if (approvalsCfg.requireManagerPinForVoid) {
-                          const approved = await requestManagerApproval('Void ticket');
-                          if (!approved) return;
-                        }
-                        // Optimistic UI: immediately clear and mark table as free locally.
-                        setOpen(selectedTable.area, selectedTable.label, false);
-                        clear();
-                        setOrderNote('');
 
-                        await window.api.tickets.voidTicket({
-                          userId: user.id,
-                          area: selectedTable.area,
-                          tableLabel: selectedTable.label,
-                          reason: orderNote || undefined,
-                        });
-                        // Persist free table server-side too (otherwise TablesPage refresh will re-mark it open).
-                        await window.api.tables.setOpen(selectedTable.area, selectedTable.label, false).catch(() => {});
+        {/* Sticky footer: order notes + totals + actions pinned to bottom */}
+        <div className="absolute left-0 right-0 bottom-0 bg-gray-800 border-t border-gray-700 p-3">
+          <div className="space-y-3 text-sm">
+            <div>
+              <label className="block text-xs mb-1 opacity-70">Order notes</label>
+              {(() => {
+                const requestOnly = Boolean(
+                  selectedTable &&
+                  isOpen(selectedTable.area, selectedTable.label) &&
+                  ownerId &&
+                  user?.id != null && Number(ownerId) !== Number(user.id)
+                );
+                const ticketOpen = Boolean(selectedTable && isOpen(selectedTable.area, selectedTable.label));
+                // Disable order note both when ticket is open and in request-only mode; notes should only be on staged items
+                const disabled = ticketOpen || requestOnly;
+                return (
+                  <textarea
+                    className={`w-full rounded px-2 py-2 text-sm ${disabled ? 'bg-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-700'}`}
+                    rows={2}
+                    placeholder="e.g., allergies, special instructions, table notes"
+                    value={orderNote}
+                    disabled={disabled}
+                    onChange={(e) => setOrderNote(e.target.value)}
+                  />
+                );
+              })()}
+            </div>
+
+            <TicketTotals
+              totals={totals}
+              vatEnabled={vatEnabled}
+              serviceChargeCfg={serviceChargeCfg}
+              applyServiceCharge={applyServiceCharge}
+              serviceChargeAmount={serviceChargeAmount}
+            />
+
+            <div className="flex gap-2">
+              {(() => {
+                const showRequestOnly = Boolean(
+                  selectedTable &&
+                  isOpen(selectedTable.area, selectedTable.label) &&
+                  ownerId &&
+                  user?.id != null && Number(ownerId) !== Number(user.id)
+                );
+                if (showRequestOnly) {
+                  const stagedCount = lines.filter((l) => l.staged).length;
+                  return (
+                    <button
+                      className="flex-1 bg-amber-700 hover:bg-amber-600 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      disabled={stagedCount === 0 || requestLocked || busyAction != null || !connectionOk}
+                      onClick={async () => {
+                        if (busyAction != null) return;
+                        if (!selectedTable || !user?.id || !ownerId) return;
+                        const staged = lines.filter((l) => l.staged);
+                        if (staged.length === 0) {
+                          alert('Add items (new lines) before sending a request');
+                          return;
+                        }
+                        if (!connectionOk) {
+                          alert('Network is slow/offline. Please wait and try again.');
+                          return;
+                        }
+                        setBusyAction('request');
+                        // IMPORTANT: only request staged items (newly added), not the whole existing ticket.
+                        const items = staged.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note }));
+                        try {
+                          await window.api.requests.create({
+                            requesterId: user.id,
+                            ownerId,
+                            area: selectedTable.area,
+                            tableLabel: selectedTable.label,
+                            items,
+                            note: null,
+                          });
+                          setRequestLocked(true);
+                          alert('Request sent to the owner');
+                        } catch {
+                          alert('Request failed (network slow). Please try again.');
+                        } finally {
+                          setBusyAction(null);
+                        }
+                      }}
+                      type="button"
+                    >
+                      {busyAction === 'request' ? 'Sending…' : 'Request to add items'}
+                    </button>
+                  );
+                }
+                return (
+                  <>
+                    <button
+                      className="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      disabled={lines.length === 0 || busyAction != null || !connectionOk}
+                      onClick={async () => {
+                        if (busyAction != null) return;
+                        if (!connectionOk) {
+                          alert('Network is slow/offline. Please wait and try again.');
+                          return;
+                        }
+                        setBusyAction('void');
+                        try {
+                          if (selectedTable && isOpen(selectedTable.area, selectedTable.label)) {
+                            if (!user?.id) return;
+                            let approvedByAdmin: { userId: number; userName: string } | null = null;
+                            if (approvalsCfg.requireManagerPinForVoid) {
+                              const approved = await requestAdminApproval('Admin PIN required to void ticket');
+                              if (!approved) return;
+                              approvedByAdmin = approved;
+                            }
+                            // Optimistic UI: immediately clear and mark table as free locally.
+                            setOpen(selectedTable.area, selectedTable.label, false);
+                            clear();
+                            setOrderNote('');
+
+                            await window.api.tickets.voidTicket({
+                              userId: user.id,
+                              area: selectedTable.area,
+                              tableLabel: selectedTable.label,
+                              reason: orderNote || undefined,
+                              ...(approvedByAdmin ? { approvedByAdminId: approvedByAdmin.userId, approvedByAdminName: approvedByAdmin.userName } : {}),
+                            });
+                            // Persist free table server-side too (otherwise TablesPage refresh will re-mark it open).
+                            await window.api.tables.setOpen(selectedTable.area, selectedTable.label, false).catch(() => {});
+                          }
+                          // When table isn't open, void button acts as "clear"
+                          if (!selectedTable || !isOpen(selectedTable.area, selectedTable.label)) {
+                            clear();
+                            setOrderNote('');
+                          }
+                        } catch {
+                          alert('Failed to void/clear. Please try again.');
+                        } finally {
+                          setBusyAction(null);
+                        }
+                      }}
+                      type="button"
+                    >
+                      {busyAction === 'void'
+                        ? 'Voiding…'
+                        : selectedTable && isOpen(selectedTable.area, selectedTable.label)
+                          ? 'Void Ticket'
+                          : 'Clear'}
+                    </button>
+                    <button
+                      className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      disabled={lines.length === 0 || busyAction != null || !connectionOk}
+                      onClick={async () => {
+                        if (busyAction != null) return;
+                        if (!selectedTable) {
+                          setPendingAction('send');
+                          navigate('/app/tables');
+                          return;
+                        }
+                        // Ask for covers only if table is not marked as open (green)
+                        if (!isOpen(selectedTable.area, selectedTable.label)) {
+                          setCoversMode('openAndSend');
+                          setCoversValue('');
+                          setShowCovers(true);
+                          return;
+                        }
+                        if (!connectionOk) {
+                          alert('Network is slow/offline. Please wait and try again.');
+                          return;
+                        }
+                        // Enrich log with details (table, order lines, notes, covers)
+                        setBusyAction('send');
+                        try {
+                          const lastCovers = await window.api.covers.getLast(selectedTable.area, selectedTable.label);
+                          const stagedOnly = lines.filter((l) => l.staged);
+                          const isFireOrder = stagedOnly.length > 0;
+                          const details = {
+                            table: selectedTable.label,
+                            area: selectedTable.area,
+                            covers: lastCovers ?? null,
+                            orderNote,
+                            lines: lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName })),
+                          };
+                          const printLines = isFireOrder
+                            ? stagedOnly.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName }))
+                            : details.lines;
+                          // (optional) send log
+                          if (!user?.id) return; // require logged-in user to log ticket
+                          await logTicket({
+                            userId: user.id,
+                            area: selectedTable.area,
+                            tableLabel: selectedTable.label,
+                            covers: lastCovers ?? null,
+                            items: details.lines,
+                            note: orderNote,
+                          });
+                          // Immediately dim and lock qty by marking all as sent (optimistic)
+                          useTicketStore.getState().markAllAsSent();
+                          await window.api.tickets.print({
+                            area: selectedTable.area,
+                            tableLabel: selectedTable.label,
+                            covers: lastCovers ?? null,
+                            items: printLines,
+                            note: orderNote,
+                            userName: user.displayName,
+                            meta: {
+                              userId: user.id,
+                              // Only routed/split prints should be kind=ORDER. The blue "Print Ticket" (no staged items)
+                              // should print the full order as one ticket.
+                              kind: isFireOrder ? 'ORDER' : 'TICKET',
+                              vatEnabled,
+                              serviceChargeEnabled: serviceChargeCfg.enabled,
+                              serviceChargeApplied: serviceChargeCfg.enabled,
+                              serviceChargeMode: serviceChargeCfg.mode,
+                              serviceChargeValue: serviceChargeCfg.value,
+                              serviceChargeAmount: serviceChargeCfg.enabled
+                                ? (serviceChargeCfg.mode === 'PERCENT'
+                                    ? Math.max(0, (Number(totals.total || 0) * Number(serviceChargeCfg.value || 0)) / 100)
+                                    : Math.max(0, Number(serviceChargeCfg.value || 0)))
+                                : 0,
+                            },
+                          });
+                          // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
+                          setOpen(selectedTable.area, selectedTable.label, true);
+                          await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
+                        } catch {
+                          alert('Send failed (network slow). Please try again.');
+                        } finally {
+                          setBusyAction(null);
+                        }
+                      }}
+                      type="button"
+                    >
+                      {busyAction === 'send'
+                        ? 'Sending…'
+                        : lines.some((l) => l.staged)
+                          ? 'Send Order'
+                          : 'Print Ticket'}
+                    </button>
+                    <button
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      disabled={!canPay || busyAction != null || !connectionOk}
+                      title={
+                        !selectedTable
+                          ? 'Select table'
+                          : lines.length === 0
+                            ? 'Add items'
+                            : !isTableOpen
+                              ? 'Send the order and set guests before payment'
+                              : hasUnsentItems
+                                ? 'Send the order before payment'
+                                : typeof coversKnown !== 'number' || coversKnown <= 0
+                                  ? 'Set guests before payment'
+                                  : !connectionOk
+                                    ? 'Network is slow/offline — wait before paying'
+                                    : 'Pay'
                       }
-                      // When table isn't open, void button acts as "clear"
-                      if (!selectedTable || !isOpen(selectedTable.area, selectedTable.label)) {
-                      clear();
-                      setOrderNote('');
-                      }
-                    } catch {
-                      alert('Failed to void/clear. Please try again.');
-                    } finally {
-                      setBusyAction(null);
-                    }
-                  }}
-                >
-                  {busyAction === 'void'
-                    ? 'Voiding…'
-                    : selectedTable && isOpen(selectedTable.area, selectedTable.label)
-                      ? 'Void Ticket'
-                      : 'Clear'}
-                </button>
-                <button
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                  disabled={lines.length === 0 || busyAction != null || !connectionOk}
-                  onClick={async () => {
-                    if (busyAction != null) return;
-                    if (!selectedTable) {
-                      setPendingAction('send');
-                      navigate('/app/tables');
-                      return;
-                    }
-                    // Ask for covers only if table is not marked as open (green)
-                    if (!isOpen(selectedTable.area, selectedTable.label)) {
-                      setCoversMode('openAndSend');
-                      setCoversValue('');
-                      setShowCovers(true);
-                      return;
-                    }
-                    if (!connectionOk) {
-                      alert('Network is slow/offline. Please wait and try again.');
-                      return;
-                    }
-                    // Enrich log with details (table, order lines, notes, covers)
-                    setBusyAction('send');
-                    try {
-                      const lastCovers = await window.api.covers.getLast(selectedTable.area, selectedTable.label);
-                      const details = {
-                        table: selectedTable.label,
-                        area: selectedTable.area,
-                        covers: lastCovers ?? null,
-                        orderNote,
-                        lines: lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note })),
-                      };
-                      // (optional) send log
-                      if (!user?.id) return; // require logged-in user to log ticket
-                      await logTicket({
-                        userId: user.id,
-                        area: selectedTable.area,
-                        tableLabel: selectedTable.label,
-                        covers: lastCovers ?? null,
-                        items: details.lines,
-                        note: orderNote,
-                      });
-                      // Immediately dim and lock qty by marking all as sent (optimistic)
-                      useTicketStore.getState().markAllAsSent();
-                      await window.api.tickets.print({
-                        area: selectedTable.area,
-                        tableLabel: selectedTable.label,
-                        covers: lastCovers ?? null,
-                        items: details.lines,
-                        note: orderNote,
-                        userName: user.displayName,
-                      });
-                      // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
-                      setOpen(selectedTable.area, selectedTable.label, true);
-                      await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
-                    } catch {
-                      alert('Send failed (network slow). Please try again.');
-                    } finally {
-                      setBusyAction(null);
-                    }
-                  }}
-                >
-                  {busyAction === 'send'
-                    ? 'Sending…'
-                    : lines.some((l) => l.staged)
-                      ? 'Send Order'
-                      : 'Print Ticket'}
-                </button>
-                <button
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                  disabled={!canPay || busyAction != null || !connectionOk}
-                  title={
-                    !selectedTable
-                      ? 'Select table'
-                      : lines.length === 0
-                        ? 'Add items'
-                        : !isTableOpen
-                          ? 'Send the order and set guests before payment'
-                          : hasUnsentItems
-                            ? 'Send the order before payment'
-                            : typeof coversKnown !== 'number' || coversKnown <= 0
-                              ? 'Set guests before payment'
-                              : !connectionOk
-                                ? 'Network is slow/offline — wait before paying'
-                              : 'Pay'
-                  }
-                  onClick={async () => {
-                    if (busyAction != null) return;
-                    if (!selectedTable) {
-                      setPendingAction('pay');
-                      navigate('/app/tables');
-                      return;
-                    }
-                    if (!connectionOk) {
-                      alert('Network is slow/offline. Please wait and try again.');
-                      return;
-                    }
-                    // Open payment modal (choose method + amount + print)
-                    setPaymentMethod('CASH');
-                    setDiscountType('NONE');
-                    setDiscountValue('');
-                    setDiscountReason('');
-                    const scEnabled = serviceChargeCfg.enabled;
-                    setApplyServiceCharge(scEnabled);
-                    const base = Number(totals.total || 0);
-                    const v = Number(serviceChargeCfg.value || 0);
-                    const scAmt = scEnabled
-                      ? (serviceChargeCfg.mode === 'PERCENT' ? (base * v) / 100 : v)
-                      : 0;
-                    setAmountPaid(String(Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0)).toFixed(2)));
-                    setPrintReceipt(true);
-                    setShowPayment(true);
-                  }}
-                >
-                  {busyAction === 'pay' ? 'Paying…' : 'Pay'}
-                </button>
-              </>
-            );
-          })()}
+                      onClick={async () => {
+                        if (busyAction != null) return;
+                        if (!selectedTable) {
+                          setPendingAction('pay');
+                          navigate('/app/tables');
+                          return;
+                        }
+                        if (!connectionOk) {
+                          alert('Network is slow/offline. Please wait and try again.');
+                          return;
+                        }
+                        // Open payment modal (choose method + amount + print)
+                        setPaymentMethod('CASH');
+                        setDiscountType('NONE');
+                        setDiscountValue('');
+                        setDiscountReason('');
+                        const scEnabled = serviceChargeCfg.enabled;
+                        setApplyServiceCharge(scEnabled);
+                        const base = Number(totals.total || 0);
+                        const v = Number(serviceChargeCfg.value || 0);
+                        const scAmt = scEnabled
+                          ? (serviceChargeCfg.mode === 'PERCENT' ? (base * v) / 100 : v)
+                          : 0;
+                        setAmountPaid(String(Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0)).toFixed(2)));
+                        setPrintReceipt(true);
+                        setShowPayment(true);
+                      }}
+                      type="button"
+                    >
+                      {busyAction === 'pay' ? 'Paying…' : 'Pay'}
+                    </button>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1025,7 +1138,7 @@ export default function OrderPage() {
                         }
                         // Payment receipt snapshot (printed or record-only for reports/history)
                           const lastCovers = await window.api.covers.getLast(selectedTable.area, selectedTable.label).catch(() => null);
-                        const items = lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note }));
+                        const items = lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName }));
                           await window.api.tickets.print({
                             area: selectedTable.area,
                             tableLabel: selectedTable.label,
@@ -1077,6 +1190,157 @@ export default function OrderPage() {
           </div>
         </div>
       )}
+
+      {showTransfer && selectedTable && user?.id && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-lg font-semibold">Transfer table</div>
+              <button
+                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                onClick={() => setShowTransfer(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="text-sm opacity-80 mb-3">
+              From: <b>{selectedTable.area} {selectedTable.label}</b>
+            </div>
+
+            <div className="flex gap-2 mb-4">
+              <button
+                className={`flex-1 py-2 rounded ${transferMode === 'WAITER' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
+                onClick={() => { setTransferMode('WAITER'); setTransferError(null); }}
+                type="button"
+              >
+                To waiter
+              </button>
+              <button
+                className={`flex-1 py-2 rounded ${transferMode === 'TABLE' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
+                onClick={() => { setTransferMode('TABLE'); setTransferError(null); }}
+                type="button"
+              >
+                To table
+              </button>
+            </div>
+
+            {transferMode === 'WAITER' ? (
+              <div className="space-y-2">
+                <div className="text-sm opacity-80">Select waiter</div>
+                <select
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                  value={transferToUserId ?? ''}
+                  onChange={(e) => setTransferToUserId(e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">(choose waiter)</option>
+                  {transferUsers
+                    .filter((u) => u && u.active)
+                    .filter((u) => Number(u.id) !== Number(user.id))
+                    .filter((u) => String(u.role).toUpperCase() !== 'ADMIN')
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.displayName}
+                      </option>
+                    ))}
+                </select>
+                <div className="text-xs opacity-70">
+                  The other waiter will receive a notification.
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="text-sm opacity-80">Destination</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                    value={transferToArea}
+                    onChange={(e) => setTransferToArea(e.target.value)}
+                    placeholder={selectedTable.area}
+                  />
+                  <input
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                    value={transferToLabel}
+                    onChange={(e) => setTransferToLabel(e.target.value)}
+                    placeholder="e.g. T12"
+                  />
+                </div>
+                <div className="text-xs opacity-70">
+                  Tip: your layout uses labels like <b>T1</b>, <b>T2</b>, etc.
+                </div>
+              </div>
+            )}
+
+            {transferError && (
+              <div className="mt-3 text-sm bg-rose-900/30 border border-rose-800 rounded p-2">
+                {transferError}
+              </div>
+            )}
+
+            <div className="mt-4 flex gap-2">
+              <button
+                className="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded"
+                onClick={() => setShowTransfer(false)}
+                disabled={transferBusy}
+              >
+                Cancel
+              </button>
+              <button
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60"
+                disabled={
+                  transferBusy ||
+                  !canTransfer ||
+                  (transferMode === 'WAITER' ? !transferToUserId : !transferToArea.trim() || !transferToLabel.trim())
+                }
+                onClick={async () => {
+                  if (!selectedTable || !user?.id) return;
+                  setTransferBusy(true);
+                  setTransferError(null);
+                  try {
+                    const payload: any = {
+                      fromArea: selectedTable.area,
+                      fromLabel: selectedTable.label,
+                      actorUserId: user.id,
+                    };
+                    if (transferMode === 'WAITER') {
+                      payload.toUserId = transferToUserId;
+                    } else {
+                      payload.toArea = transferToArea.trim();
+                      payload.toLabel = transferToLabel.trim();
+                    }
+                    const r: any = await (window.api.tables as any).transfer(payload);
+                    if (!r || r.ok !== true) {
+                      setTransferError(String(r?.error || 'Transfer failed'));
+                      return;
+                    }
+
+                    if (transferMode === 'TABLE') {
+                      const toA = transferToArea.trim();
+                      const toL = transferToLabel.trim();
+                      setOpen(selectedTable.area, selectedTable.label, false);
+                      setOpen(toA, toL, true);
+                      setSelectedTable({ ...selectedTable, area: toA, label: toL });
+                      const latest = await window.api.tickets.getLatestForTable(toA, toL).catch(() => null as any);
+                      if (latest?.items) {
+                        useTicketStore.getState().hydrate({ items: latest.items as any, note: latest.note || '' });
+                      }
+                    }
+
+                    setShowTransfer(false);
+                  } catch (e: any) {
+                    setTransferError(String(e?.message || e || 'Transfer failed'));
+                  } finally {
+                    setTransferBusy(false);
+                  }
+                }}
+              >
+                {transferBusy ? 'Transferring…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCovers && selectedTable && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
           <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
@@ -1114,13 +1378,18 @@ export default function OrderPage() {
                   // cloud "openAt" timestamp exists BEFORE we write covers/tickets (tooltip uses openAt as the session start).
                   await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
                   await window.api.covers.save(selectedTable.area, selectedTable.label, num);
+                  const stagedOnly = lines.filter((l) => l.staged);
+                  const isFireOrder = stagedOnly.length > 0;
                   const details = {
                     table: selectedTable.label,
                     area: selectedTable.area,
                     covers: num,
                     orderNote,
-                    lines: lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note })),
+                    lines: lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName })),
                   };
+                  const printLines = isFireOrder
+                    ? stagedOnly.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName }))
+                    : details.lines;
                   // (optional) send log
                   if (!user?.id) return;
                   await logTicket({
@@ -1137,9 +1406,23 @@ export default function OrderPage() {
                     area: selectedTable.area,
                     tableLabel: selectedTable.label,
                     covers: num,
-                    items: details.lines,
+                    items: printLines,
                     note: orderNote,
                     userName: user.displayName,
+                    meta: {
+                      userId: user.id,
+                      kind: isFireOrder ? 'ORDER' : 'TICKET',
+                      vatEnabled,
+                      serviceChargeEnabled: serviceChargeCfg.enabled,
+                      serviceChargeApplied: serviceChargeCfg.enabled,
+                      serviceChargeMode: serviceChargeCfg.mode,
+                      serviceChargeValue: serviceChargeCfg.value,
+                      serviceChargeAmount: serviceChargeCfg.enabled
+                        ? (serviceChargeCfg.mode === 'PERCENT'
+                            ? Math.max(0, (Number(totals.total || 0) * Number(serviceChargeCfg.value || 0)) / 100)
+                            : Math.max(0, Number(serviceChargeCfg.value || 0)))
+                        : 0,
+                    },
                   });
                   // Keep this as a best-effort "ensure open" after printing.
                   await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
@@ -1165,9 +1448,11 @@ export default function OrderPage() {
                 className="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded"
                 onClick={async () => {
                   if (!user?.id) return;
+                  let approvedByAdmin: { userId: number; userName: string } | null = null;
                   if (approvalsCfg.requireManagerPinForVoid) {
-                    const approved = await requestManagerApproval('Void item');
+                    const approved = await requestAdminApproval('Admin PIN required to void item');
                     if (!approved) return;
+                    approvedByAdmin = approved;
                   }
                   await window.api.tickets.voidItem({
                     userId: user.id,
@@ -1180,6 +1465,7 @@ export default function OrderPage() {
                       vatRate: voidTarget.vatRate,
                       note: voidTarget.note,
                     },
+                    ...(approvedByAdmin ? { approvedByAdminId: approvedByAdmin.userId, approvedByAdminName: approvedByAdmin.userName } : {}),
                   });
                   removeLine(voidTarget.id);
                   setVoidTarget(null);
@@ -1221,7 +1507,7 @@ export default function OrderPage() {
                 else if (raw.endsWith('g')) qty = Number(raw.replace('g','').trim()) / 1000;
                 else qty = Number(raw);
                 if (!Number.isFinite(qty) || qty <= 0) return;
-                addItem({ sku: weightModal.sku, name: weightModal.name, unitPrice: weightModal.unitPrice, vatRate: weightModal.vatRate, qty });
+                addItem({ sku: weightModal.sku, name: weightModal.name, unitPrice: weightModal.unitPrice, vatRate: weightModal.vatRate, qty, station: (weightModal as any).station, categoryId: (weightModal as any).categoryId, categoryName: (weightModal as any).categoryName } as any);
                 setWeightModal(null);
                 setWeightInput('');
               }}>Konfirmo</button>
@@ -1233,27 +1519,36 @@ export default function OrderPage() {
       {approvalModal.open && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-sm p-5">
-            <div className="text-lg font-semibold mb-1">Manager approval</div>
+            <div className="text-lg font-semibold mb-1">{approvalModal.kind === 'ADMIN' ? 'Admin approval' : 'Manager approval'}</div>
             <div className="text-sm opacity-70 mb-3">{approvalModal.action}</div>
             <input
               autoFocus
               type="password"
               inputMode="numeric"
               className="w-full bg-gray-700 rounded px-3 py-2"
-              placeholder="Enter manager PIN"
+              placeholder={approvalModal.kind === 'ADMIN' ? 'Enter admin PIN' : 'Enter manager PIN'}
               value={approvalModal.pin}
               onChange={(e) => setApprovalModal((s) => ({ ...s, pin: e.target.value.replace(/[^0-9]/g, '').slice(0, 6), error: null }))}
               onKeyDown={async (e) => {
                 if (e.key !== 'Enter') return;
                 const pin = approvalModal.pin;
-                const r = await window.api.auth.verifyManagerPin(pin).catch(() => ({ ok: false } as any));
-                if (!r?.ok) {
-                  setApprovalModal((s) => ({ ...s, error: 'Invalid manager PIN.' }));
-                  return;
+                try {
+                  const r = await window.api.auth.verifyManagerPin(pin);
+                  if (!r?.ok) {
+                    setApprovalModal((s) => ({ ...s, error: approvalModal.kind === 'ADMIN' ? 'Invalid admin PIN.' : 'Invalid manager PIN.' }));
+                    return;
+                  }
+                  setApprovalModal({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
+                  approvalResolveRef.current?.({ userId: Number((r as any).userId || 0), userName: String((r as any).userName || (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager')) });
+                  approvalResolveRef.current = null;
+                } catch (err: any) {
+                  const status = Number(err?.status || 0);
+                  const msg =
+                    status === 401 || status === 403
+                      ? 'Session expired. Please log in again.'
+                      : 'Could not verify PIN (offline/host unreachable). Please try again.';
+                  setApprovalModal((s) => ({ ...s, error: msg }));
                 }
-                setApprovalModal({ open: false, action: '', pin: '', error: null });
-                approvalResolveRef.current?.({ userId: Number(r.userId || 0), userName: String(r.userName || 'Manager') });
-                approvalResolveRef.current = null;
               }}
             />
             {approvalModal.error && <div className="text-sm text-rose-300 mt-2">{approvalModal.error}</div>}
@@ -1261,7 +1556,7 @@ export default function OrderPage() {
               <button
                 className="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded"
                 onClick={() => {
-                  setApprovalModal({ open: false, action: '', pin: '', error: null });
+                  setApprovalModal({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
                   approvalResolveRef.current?.(null);
                   approvalResolveRef.current = null;
                 }}
@@ -1272,14 +1567,23 @@ export default function OrderPage() {
                 className="flex-1 bg-emerald-700 hover:bg-emerald-800 py-2 rounded"
                 onClick={async () => {
                   const pin = approvalModal.pin;
-                  const r = await window.api.auth.verifyManagerPin(pin).catch(() => ({ ok: false } as any));
-                  if (!r?.ok) {
-                    setApprovalModal((s) => ({ ...s, error: 'Invalid manager PIN.' }));
-                    return;
+                  try {
+                    const r = await window.api.auth.verifyManagerPin(pin);
+                    if (!r?.ok) {
+                      setApprovalModal((s) => ({ ...s, error: approvalModal.kind === 'ADMIN' ? 'Invalid admin PIN.' : 'Invalid manager PIN.' }));
+                      return;
+                    }
+                    setApprovalModal({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
+                    approvalResolveRef.current?.({ userId: Number((r as any).userId || 0), userName: String((r as any).userName || (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager')) });
+                    approvalResolveRef.current = null;
+                  } catch (err: any) {
+                    const status = Number(err?.status || 0);
+                    const msg =
+                      status === 401 || status === 403
+                        ? 'Session expired. Please log in again.'
+                        : 'Could not verify PIN (offline/host unreachable). Please try again.';
+                    setApprovalModal((s) => ({ ...s, error: msg }));
                   }
-                  setApprovalModal({ open: false, action: '', pin: '', error: null });
-                  approvalResolveRef.current?.({ userId: Number(r.userId || 0), userName: String(r.userName || 'Manager') });
-                  approvalResolveRef.current = null;
                 }}
               >
                 Approve

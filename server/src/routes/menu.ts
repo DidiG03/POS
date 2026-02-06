@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { requireAuth, type AuthedRequest } from '../auth/middleware.js';
+import { env } from '../env.js';
 
 export const menuRouter = Router();
 
@@ -9,6 +10,23 @@ function requireAdmin(req: AuthedRequest) {
   const auth = req.auth!;
   if (auth.role !== 'ADMIN') return null;
   return auth;
+}
+
+async function ensureBillingActiveOr402(auth: any, res: any): Promise<boolean> {
+  if (!env.billingEnabled) return true;
+  try {
+    const biz: any = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null);
+    const statusRaw = String(biz?.billingStatus || 'ACTIVE').toUpperCase();
+    const hasSub = Boolean(String(biz?.stripeSubscriptionId || '').trim());
+    const paused = !hasSub || statusRaw === 'PAST_DUE' || statusRaw === 'PAUSED';
+    if (paused) {
+      res.status(402).json({ error: 'billing_required' });
+      return false;
+    }
+  } catch {
+    // ignore
+  }
+  return true;
 }
 
 menuRouter.get('/categories', requireAuth, async (req: AuthedRequest, res) => {
@@ -50,6 +68,7 @@ const CreateCategorySchema = z.object({
 menuRouter.post('/categories', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
+  if (!(await ensureBillingActiveOr402(auth, res))) return;
   const input = CreateCategorySchema.parse(req.body || {});
   const created = await prisma.category.create({
     data: {
@@ -73,6 +92,7 @@ const UpdateCategorySchema = z.object({
 menuRouter.put('/categories/:id', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
+  if (!(await ensureBillingActiveOr402(auth, res))) return;
   const id = Number(req.params.id || 0);
   if (!id) return res.status(400).json({ error: 'invalid id' });
   const input = UpdateCategorySchema.parse(req.body || {});
@@ -92,6 +112,7 @@ menuRouter.put('/categories/:id', requireAuth, async (req: AuthedRequest, res) =
 menuRouter.delete('/categories/:id', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
+  if (!(await ensureBillingActiveOr402(auth, res))) return;
   const id = Number(req.params.id || 0);
   if (!id) return res.status(400).json({ error: 'invalid id' });
   await prisma.category.updateMany({ where: { businessId: auth.businessId, id }, data: { active: false } as any });
@@ -121,6 +142,7 @@ function slugSku(name: string) {
 menuRouter.post('/items', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
+  if (!(await ensureBillingActiveOr402(auth, res))) return;
   const input = CreateItemSchema.parse(req.body || {});
   const category = await prisma.category.findFirst({ where: { businessId: auth.businessId, id: input.categoryId } });
   if (!category) return res.status(400).json({ error: 'invalid categoryId' });
@@ -156,6 +178,7 @@ const UpdateItemSchema = z.object({
 menuRouter.put('/items/:id', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
+  if (!(await ensureBillingActiveOr402(auth, res))) return;
   const id = Number(req.params.id || 0);
   if (!id) return res.status(400).json({ error: 'invalid id' });
   const input = UpdateItemSchema.parse(req.body || {});
@@ -181,6 +204,7 @@ menuRouter.put('/items/:id', requireAuth, async (req: AuthedRequest, res) => {
 menuRouter.delete('/items/:id', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
+  if (!(await ensureBillingActiveOr402(auth, res))) return;
   const id = Number(req.params.id || 0);
   if (!id) return res.status(400).json({ error: 'invalid id' });
   const updated = await prisma.menuItem.updateMany({ where: { businessId: auth.businessId, id }, data: { active: false } as any });

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { ticketLineId } from '@shared/utils/ticketLineId';
 
 export interface TicketLine {
   id: string;
@@ -34,7 +35,7 @@ export const useTicketStore = create<TicketState>((set, _get) => ({
           lines: state.lines.map((l) => (l.id === existing.id ? { ...l, qty: l.qty + 1 } : l)),
         };
       }
-      const id = `${sku}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const id = ticketLineId(sku);
       const line: TicketLine = { id, sku, name, unitPrice, vatRate, qty: 1 };
       return { lines: [...state.lines, line] };
     });
@@ -52,7 +53,7 @@ export const useTicketStore = create<TicketState>((set, _get) => ({
   hydrate: ({ items, note }) =>
     set(() => ({
       lines: (items || []).map((it) => ({
-        id: `${it.name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        id: ticketLineId(it.name),
         sku: it.name, // fallback if sku not logged; could be improved to store sku in log
         name: it.name,
         unitPrice: Number(it.unitPrice),

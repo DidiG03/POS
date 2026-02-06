@@ -4,11 +4,22 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { issueToken } from '../auth/jwt.js';
 import { requireAuth, type AuthedRequest } from '../auth/middleware.js';
+import crypto from 'node:crypto';
+import { env } from '../env.js';
 
 export const authRouter = Router();
 
 function normalizeBusinessCode(input: string) {
   return input.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 24);
+}
+
+function billingPausedForBusiness(biz: any): boolean {
+  if (!env.billingEnabled) return false;
+  const statusRaw = String(biz?.billingStatus || 'ACTIVE').toUpperCase();
+  const hasSub = Boolean(String(biz?.stripeSubscriptionId || '').trim());
+  // Billing enabled but no subscription yet => paused.
+  if (!hasSub) return true;
+  return statusRaw === 'PAST_DUE' || statusRaw === 'PAUSED';
 }
 
 // Basic in-memory rate limit for login attempts (per IP)
@@ -29,12 +40,22 @@ function allowLoginAttempt(remoteIp: string, maxPerWindow = 30, windowMs = 10 * 
 const RegisterBusinessSchema = z.object({
   businessName: z.string().min(2).max(80),
   businessCode: z.string().min(2).max(24).optional(),
+  // Provider-supplied shared secret for this tenant. Used for public endpoints (staff list / open shifts).
+  // If omitted, the server generates one and returns it to the caller.
+  businessPassword: z.string().min(6).max(64).optional(),
   adminName: z.string().min(1).max(80),
   adminPin: z.string().min(4).max(6).regex(/^\d+$/),
   adminEmail: z.string().email().optional(),
 });
 
 authRouter.post('/register-business', async (req, res) => {
+  // Optional provider protection: if PROVIDER_KEY is set, require it to register new businesses.
+  const providerKey = String(process.env.PROVIDER_KEY || '').trim();
+  if (providerKey) {
+    const supplied = String(req.header('x-provider-key') || '').trim();
+    if (!supplied || supplied !== providerKey) return res.status(403).json({ error: 'forbidden' });
+  }
+
   const input = RegisterBusinessSchema.parse(req.body || {});
   const businessCode = normalizeBusinessCode(input.businessCode || input.businessName);
   if (businessCode.length < 2) return res.status(400).json({ error: 'invalid businessCode' });
@@ -43,11 +64,15 @@ authRouter.post('/register-business', async (req, res) => {
   if (existing) return res.status(409).json({ error: 'businessCode already exists' });
 
   const pinHash = await bcrypt.hash(input.adminPin, 10);
+  const pwPlain = String(input.businessPassword || '').trim() || crypto.randomBytes(12).toString('base64').replace(/[^A-Z0-9]/gi, '').slice(0, 12);
+  const accessPasswordHash = await bcrypt.hash(pwPlain, 10);
   const created = await prisma.business.create({
     data: {
       name: input.businessName.trim(),
       code: businessCode,
       active: true,
+      accessPasswordHash,
+      ...(env.billingEnabled ? ({ billingStatus: 'PAUSED' } as any) : null),
       users: {
         create: {
           displayName: input.adminName.trim(),
@@ -67,6 +92,8 @@ authRouter.post('/register-business', async (req, res) => {
     business: { id: created.id, name: created.name, code: created.code, createdAt: created.createdAt.toISOString() },
     user: { id: admin.id, displayName: admin.displayName, role: admin.role, active: admin.active, createdAt: admin.createdAt.toISOString() },
     token,
+    // Provider should display/store this and give it to the restaurant owner. It is NOT recoverable later (hash only).
+    businessPassword: pwPlain,
   });
 });
 
@@ -137,8 +164,25 @@ authRouter.get('/public-users', async (req, res) => {
   const includeAdmins = String(req.query.includeAdmins || '') === '1';
   const biz = await prisma.business.findUnique({ where: { code: businessCode } });
   if (!biz || (biz as any).active === false) return res.status(200).json([]);
+
+  // If tenant has an access password, require it to prevent enumeration by business code alone.
+  const hash = String((biz as any).accessPasswordHash || '').trim();
+  if (hash) {
+    const supplied = String(req.header('x-business-password') || '').trim();
+    if (!supplied) return res.status(200).json([]);
+    const ok = await bcrypt.compare(supplied, hash).catch(() => false);
+    if (!ok) return res.status(200).json([]);
+  }
+
   const where: any = { businessId: biz.id, active: true };
-  if (!includeAdmins) where.role = { not: 'ADMIN' };
+  // If billing is paused, hide staff users from the staff login screen until payment is completed.
+  // Admins must still be visible so they can log in and pay.
+  const paused = billingPausedForBusiness(biz as any);
+  if (paused) {
+    where.role = 'ADMIN';
+  } else if (!includeAdmins) {
+    where.role = { not: 'ADMIN' };
+  }
   const users = await prisma.user.findMany({ where, orderBy: { id: 'asc' } });
   return res.status(200).json(users.map((u) => ({ id: u.id, displayName: u.displayName, role: u.role, active: u.active, createdAt: u.createdAt.toISOString() })));
 });
@@ -159,7 +203,7 @@ authRouter.get('/me', requireAuth, async (req: AuthedRequest, res) => {
 // Staff management (admin only)
 const CreateUserSchema = z.object({
   displayName: z.string().min(1).max(80),
-  role: z.enum(['ADMIN', 'CASHIER', 'WAITER']),
+  role: z.enum(['ADMIN', 'CASHIER', 'WAITER', 'KP', 'CHEF', 'HEAD_CHEF', 'FOOD_RUNNER', 'HOST', 'BUSSER', 'BARTENDER', 'BARBACK', 'CLEANER']),
   pin: z.string().min(4).max(6).regex(/^\d+$/),
   active: z.boolean().optional().default(true),
   email: z.string().email().optional(),
@@ -175,6 +219,12 @@ authRouter.get('/users', requireAuth, async (req: AuthedRequest, res) => {
 authRouter.post('/users', requireAuth, async (req: AuthedRequest, res) => {
   const auth = req.auth!;
   if (auth.role !== 'ADMIN') return res.status(403).json({ error: 'forbidden' });
+  try {
+    const biz = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null as any);
+    if (billingPausedForBusiness(biz)) return res.status(402).json({ error: 'billing_required' });
+  } catch {
+    // ignore
+  }
   const input = CreateUserSchema.parse(req.body || {});
   const pinHash = await bcrypt.hash(input.pin, 10);
   const created = await prisma.user.create({
@@ -192,7 +242,7 @@ authRouter.post('/users', requireAuth, async (req: AuthedRequest, res) => {
 
 const UpdateUserSchema = z.object({
   displayName: z.string().min(1).max(80).optional(),
-  role: z.enum(['ADMIN', 'CASHIER', 'WAITER']).optional(),
+  role: z.enum(['ADMIN', 'CASHIER', 'WAITER', 'KP', 'CHEF', 'HEAD_CHEF', 'FOOD_RUNNER', 'HOST', 'BUSSER', 'BARTENDER', 'BARBACK', 'CLEANER']).optional(),
   pin: z.string().min(4).max(6).regex(/^\d+$/).optional(),
   active: z.boolean().optional(),
   email: z.string().email().optional(),
@@ -201,6 +251,12 @@ const UpdateUserSchema = z.object({
 authRouter.put('/users/:id', requireAuth, async (req: AuthedRequest, res) => {
   const auth = req.auth!;
   if (auth.role !== 'ADMIN') return res.status(403).json({ error: 'forbidden' });
+  try {
+    const biz = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null as any);
+    if (billingPausedForBusiness(biz)) return res.status(402).json({ error: 'billing_required' });
+  } catch {
+    // ignore
+  }
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
   const input = UpdateUserSchema.parse(req.body || {});
@@ -225,6 +281,12 @@ authRouter.put('/users/:id', requireAuth, async (req: AuthedRequest, res) => {
 authRouter.delete('/users/:id', requireAuth, async (req: AuthedRequest, res) => {
   const auth = req.auth!;
   if (auth.role !== 'ADMIN') return res.status(403).json({ error: 'forbidden' });
+  try {
+    const biz = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null as any);
+    if (billingPausedForBusiness(biz)) return res.status(402).json({ error: 'billing_required' });
+  } catch {
+    // ignore
+  }
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
   if (id === auth.userId) return res.status(400).json({ error: 'cannot delete yourself' });

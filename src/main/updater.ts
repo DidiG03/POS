@@ -27,6 +27,19 @@ let updateInfo: UpdateInfo | null = null;
 let updateDownloaded = false;
 let updateCheckListeners: Set<BrowserWindow> = new Set();
 
+function releaseDateIso(releaseDate: unknown): string | undefined {
+  if (!releaseDate) return undefined;
+  if (typeof releaseDate === 'string') return releaseDate;
+  if (releaseDate instanceof Date) return releaseDate.toISOString();
+  try {
+    // Some providers may give a Date-like object
+    const d = new Date(releaseDate as any);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // IPC handlers will be registered in main/index.ts
 export const updaterHandlers = {
   getUpdateStatus: () => {
@@ -34,7 +47,7 @@ export const updaterHandlers = {
       hasUpdate: updateInfo !== null,
       updateInfo: updateInfo ? {
         version: updateInfo.version,
-        releaseDate: updateInfo.releaseDate?.toISOString(),
+        releaseDate: releaseDateIso((updateInfo as any).releaseDate),
         releaseNotes: updateInfo.releaseNotes || '',
       } : null,
       downloaded: updateDownloaded,
@@ -128,7 +141,7 @@ export function setupAutoUpdater(): void {
       updateDownloaded = false;
       notifyListeners('update-available', {
         version: info.version,
-        releaseDate: info.releaseDate?.toISOString(),
+        releaseDate: releaseDateIso((info as any).releaseDate),
         releaseNotes: info.releaseNotes || '',
       });
       addBreadcrumb(`Update available: ${info.version}`, 'updater', 'info');
@@ -162,7 +175,7 @@ export function setupAutoUpdater(): void {
       updateDownloaded = true;
       notifyListeners('update-downloaded', {
         version: info.version,
-        releaseDate: info.releaseDate?.toISOString(),
+        releaseDate: releaseDateIso((info as any).releaseDate),
         releaseNotes: info.releaseNotes || '',
       });
       addBreadcrumb(`Update downloaded: ${info.version}`, 'updater', 'info');

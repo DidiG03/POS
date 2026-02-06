@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import { isClockOnlyRole } from '../../utils/roles';
 
 export default function LoginPage() {
   const [pin, setPin] = useState('');
@@ -19,10 +20,16 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [cloudNotice, setCloudNotice] = useState<string | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
   const isBrowserClient = typeof window !== 'undefined' && Boolean((window as any).__BROWSER_CLIENT__);
   const isCloudBrowserClient = typeof window !== 'undefined' && Boolean((window as any).__CLOUD_CLIENT__);
-  const isAdminContext = typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/admin');
-  const isKdsContext = typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/kds');
+  // Admin window/routing can be hash-based (#/admin) or path-based (/admin). Detect both.
+  const isAdminContext =
+    (location?.pathname || '').startsWith('/admin') ||
+    (typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/admin'));
+  const isKdsContext =
+    (location?.pathname || '').startsWith('/kds') ||
+    (typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/kds'));
 
   const onSubmit = async () => {
     setError(null);
@@ -45,6 +52,7 @@ export default function LoginPage() {
       }
       const user = await window.api.auth.loginWithPin(pin, selectedId ?? undefined, isBrowserClient ? (pairingCode || undefined) : undefined);
       if (user) {
+        const clockOnly = isClockOnlyRole((user as any).role);
         if (isAdminContext && user.role !== 'ADMIN') {
           setError('Admin access only');
           return;
@@ -66,11 +74,16 @@ export default function LoginPage() {
           }
         }
         setUser(user);
-        navigate(isKdsContext ? '/kds' : '/app/tables');
+        navigate(isKdsContext ? '/kds' : clockOnly ? '/app/clock' : '/app/tables');
       }
       else setError('Invalid PIN');
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      const msg = String(e?.message || e || '');
+      if (msg.toLowerCase().includes('pairing code')) {
+        setError('Pairing code required (ask the manager / Admin → Settings → LAN / Tablets).');
+        return;
+      }
       setError('Login failed');
     }
   };
@@ -83,6 +96,7 @@ export default function LoginPage() {
   const { setUser } = useSessionStore();
   const { setUser: setAdminUser } = useAdminSessionStore();
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [adminBusinessPassword, setAdminBusinessPassword] = useState('');
 
   useEffect(() => {
     const onCloud = () => setReloadNonce((n) => n + 1);
@@ -101,7 +115,7 @@ export default function LoginPage() {
       }
       if (backendUrl && !businessCode) {
         // Cloud is enabled by provider, but tenant not selected → block local fallback.
-        setCloudNotice('Cloud is enabled. Enter your Business code in Admin → Settings → Cloud (Hosted) to continue.');
+        setCloudNotice('Cloud is enabled. Enter your Business code + Business password to continue.');
         // In admin window, allow entering business code directly from login screen.
         if (isAdminContext) setAdminBusinessCodeMode(true);
         setStaff([]);
@@ -111,11 +125,60 @@ export default function LoginPage() {
       setCloudNotice(null);
       if (isAdminContext) setAdminBusinessCodeMode(false);
 
-      const users = await window.api.auth.listUsers();
+      let users: any[] = [];
+      try {
+        users = await window.api.auth.listUsers({ includeAdmins: isAdminContext });
+      } catch (e: any) {
+        // Most common: wrong business code/password or cloud temporarily unavailable.
+        if (backendUrl && isAdminContext) setAdminBusinessCodeMode(true);
+        if (backendUrl) {
+          setCloudNotice(e?.message || 'Invalid Business code or Business password.');
+          setStaff([]);
+          setOpenIds([]);
+          return;
+        }
+        throw e;
+      }
+      // In cloud mode, auth.listUsers may return [] when businessCode/password is wrong.
+      // Since every tenant must have at least one admin user, treat empty list as invalid credentials.
+      if (backendUrl && businessCode && Array.isArray(users) && users.length === 0) {
+        if (isAdminContext) {
+          setAdminBusinessCodeMode(true);
+          // Show a clear hint: server returns [] for wrong/missing business password (enumeration protection),
+          // which otherwise looks like the restaurant "disappeared".
+          setCloudNotice('Invalid Business code or Business password.');
+          setStaff([]);
+          setOpenIds([]);
+          return;
+        }
+        // Staff login: empty staff list can also mean "no staff created yet".
+        // If we can fetch admins (includeAdmins=1), then credentials are valid and the tenant exists.
+        try {
+          const all = await window.api.auth.listUsers({ includeAdmins: true });
+          const hasAdmins = Array.isArray(all) && all.some((u: any) => String(u?.role || '').toUpperCase() === 'ADMIN');
+          setCloudNotice(
+            hasAdmins
+              ? 'No staff users yet. Ask an Admin to add staff members in the Admin panel.'
+              : 'Cloud is enabled but staff list is locked. Ask an Admin to enter the Business code + Business password in the Admin login screen.',
+          );
+        } catch {
+          setCloudNotice('Cloud is enabled but staff list is locked. Ask an Admin to enter the Business code + Business password in the Admin login screen.');
+        }
+        setStaff([]);
+        setOpenIds([]);
+        return;
+      }
       const list = isAdminContext
         ? users.filter((u) => u.role === 'ADMIN' && u.active)
         : users.filter((u) => u.active && u.role !== 'ADMIN');
       setStaff(list);
+      // If cloud returned only admins (common when billing is paused), explain why staff list is empty.
+      if (!isAdminContext && backendUrl) {
+        const hasAdmins = Array.isArray(users) && users.some((u: any) => String(u?.role || '').toUpperCase() === 'ADMIN');
+        if (hasAdmins && list.length === 0) {
+          setCloudNotice('POS is paused (payment required). Only admins can log in until billing is completed.');
+        }
+      }
       if (!isAdminContext) {
         try {
           const ids = await window.api.shifts.listOpen();
@@ -163,20 +226,31 @@ export default function LoginPage() {
                 value={adminBusinessCode}
                 onChange={(e) => setAdminBusinessCode(e.target.value.replace(/[^0-9A-Za-z_-]/g, '').toUpperCase().slice(0, 24))}
               />
+            </div>
+            <div className="text-xs opacity-70 mt-3 mb-2">Business password (provided by provider)</div>
+            <div className="flex gap-2">
+              <input
+                className="bg-gray-700 rounded px-3 py-2 flex-1"
+                placeholder="Business password"
+                value={adminBusinessPassword}
+                onChange={(e) => setAdminBusinessPassword(e.target.value)}
+                type="password"
+                autoComplete="off"
+              />
               <button
                 className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-                disabled={!adminBusinessCode.trim()}
+                disabled={!adminBusinessCode.trim() || adminBusinessPassword.trim().length < 6}
                 onClick={async () => {
                   setError(null);
                   try {
-                    await window.api.settings.update({ cloud: { businessCode: adminBusinessCode.trim() } } as any);
-                    const users = await window.api.auth.listUsers();
+                    await window.api.settings.update({ cloud: { businessCode: adminBusinessCode.trim(), accessPassword: adminBusinessPassword } } as any);
+                    const users = await window.api.auth.listUsers({ includeAdmins: true });
                     const admins = (users || []).filter((u: any) => u.role === 'ADMIN' && u.active);
                     setStaff(admins);
                     setCloudNotice(null);
                     if (!admins.length) {
                       setAdminBusinessCodeMode(true);
-                      setError('No admin users found for that business code.');
+                      setError('Invalid Business code or Business password.');
                     } else {
                       setAdminBusinessCodeMode(false);
                     }
@@ -301,7 +375,7 @@ export default function LoginPage() {
                 <input
                   type="text"
                   inputMode="text"
-                  placeholder="Business code"
+                  placeholder="Business code (e.g. MYRESTAURANT)"
                   maxLength={24}
                   value={businessCode}
                   onChange={(e) => setBusinessCode(e.target.value.replace(/[^0-9A-Za-z_-]/g, '').toUpperCase().slice(0, 24))}
@@ -309,7 +383,7 @@ export default function LoginPage() {
                   onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
                 />
               )}
-              {isBrowserClient && !isCloudBrowserClient && (
+              {isBrowserClient && (
                 <input
                   type="text"
                   inputMode="numeric"

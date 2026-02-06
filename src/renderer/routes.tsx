@@ -1,21 +1,32 @@
 import type { RouteObject } from 'react-router-dom';
 import { Navigate } from 'react-router-dom';
 import AppLayout from './app/AppLayout';
-import LoginPage from './app/pages/LoginPage';
-import TablesPage from './app/pages/TablesPage';
-import OrderPage from './app/pages/OrderPage';
-import ReportsPage from './app/pages/ReportsPage';
-import AdminPage from './app/pages/AdminPage';
 import AdminLayout from './app/AdminLayout';
-import AdminTicketsPage from './app/pages/AdminTicketsPage';
-import AdminUserTicketsPage from './app/pages/AdminUserTicketsPage';
-import AdminSettingsPage from './app/pages/AdminSettingsPage';
-import AdminMenuPage from './app/pages/AdminMenuPage';
-import KdsPage from './app/pages/KdsPage';
 import React from 'react';
 import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { useEffect } from 'react';
+import { isClockOnlyRole } from './utils/roles';
+
+const LoginPage = React.lazy(() => import('./app/pages/LoginPage'));
+const TablesPage = React.lazy(() => import('./app/pages/TablesPage'));
+const OrderPage = React.lazy(() => import('./app/pages/OrderPage'));
+const ReportsPage = React.lazy(() => import('./app/pages/ReportsPage'));
+const ClockPage = React.lazy(() => import('./app/pages/ClockPage'));
+const AdminPage = React.lazy(() => import('./app/pages/AdminPage'));
+const AdminTicketsPage = React.lazy(() => import('./app/pages/AdminTicketsPage'));
+const AdminUserTicketsPage = React.lazy(() => import('./app/pages/AdminUserTicketsPage'));
+const AdminSettingsPage = React.lazy(() => import('./app/pages/AdminSettingsPage'));
+const AdminMenuPage = React.lazy(() => import('./app/pages/AdminMenuPage'));
+const KdsPage = React.lazy(() => import('./app/pages/KdsPage'));
+
+function withSuspense(el: React.ReactElement) {
+  return (
+    <React.Suspense fallback={<div className="p-4 opacity-70">Loading…</div>}>
+      {el}
+    </React.Suspense>
+  );
+}
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   const user = useSessionStore((s) => s.user);
@@ -35,8 +46,8 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
       }
     })();
   }, [isBrowser, isKdsContext, user?.id]);
-  if (!user) return <LoginPage />;
-  if (isBrowser && !ok) return <LoginPage />;
+  if (!user) return withSuspense(<LoginPage />);
+  if (isBrowser && !ok) return withSuspense(<LoginPage />);
   return children;
 }
 
@@ -44,13 +55,26 @@ function RequireAdmin({ children }: { children: React.ReactElement }) {
   // Admin window uses its own persisted session so it doesn't get overwritten by waiter login.
   const isAdminContext = typeof window !== 'undefined' && (window.location.hash || '').startsWith('#/admin');
   const user = isAdminContext ? useAdminSessionStore((s) => s.user) : useSessionStore((s) => s.user);
-  if (!user) return <LoginPage />;
-  if (user.role !== 'ADMIN') return <LoginPage />;
+  if (!user) return withSuspense(<LoginPage />);
+  if (user.role !== 'ADMIN') return withSuspense(<LoginPage />);
+  return children;
+}
+
+function AppIndexRedirect() {
+  const user = useSessionStore((s) => s.user);
+  if (!user) return <Navigate to="/" replace />;
+  return <Navigate to={isClockOnlyRole((user as any).role) ? 'clock' : 'tables'} replace />;
+}
+
+function RequirePosAccess({ children }: { children: React.ReactElement }) {
+  const user = useSessionStore((s) => s.user);
+  if (!user) return <Navigate to="/" replace />;
+  if (isClockOnlyRole((user as any).role)) return <Navigate to="/app/clock" replace />;
   return children;
 }
 
 export const routes: RouteObject[] = [
-  { path: '/', element: <LoginPage /> },
+  { path: '/', element: withSuspense(<LoginPage />) },
   {
     path: '/app',
     element: (
@@ -60,11 +84,12 @@ export const routes: RouteObject[] = [
     ),
     children: [
       // No home screen: send staff straight to Tables.
-      { index: true, element: <Navigate to="tables" replace /> },
-      { path: 'tables', element: <TablesPage /> },
-      { path: 'order', element: <OrderPage /> },
-      { path: 'reports', element: <ReportsPage /> },
-      { path: 'admin', element: <RequireAdmin><AdminPage /></RequireAdmin> },
+      { index: true, element: <AppIndexRedirect /> },
+      { path: 'clock', element: withSuspense(<ClockPage />) },
+      { path: 'tables', element: <RequirePosAccess>{withSuspense(<TablesPage />)}</RequirePosAccess> },
+      { path: 'order', element: <RequirePosAccess>{withSuspense(<OrderPage />)}</RequirePosAccess> },
+      { path: 'reports', element: <RequirePosAccess>{withSuspense(<ReportsPage />)}</RequirePosAccess> },
+      { path: 'admin', element: <RequireAdmin>{withSuspense(<AdminPage />)}</RequireAdmin> },
     ],
   },
   // Standalone admin shell for separate window
@@ -76,17 +101,17 @@ export const routes: RouteObject[] = [
       </RequireAdmin>
     ),
     children: [
-      { index: true, element: <AdminPage /> },
-      { path: 'tickets', element: <AdminTicketsPage /> },
-      { path: 'tickets/:userId', element: <AdminUserTicketsPage /> },
-      { path: 'menu', element: <AdminMenuPage /> },
-      { path: 'settings', element: <AdminSettingsPage /> },
+      { index: true, element: withSuspense(<AdminPage />) },
+      { path: 'tickets', element: withSuspense(<AdminTicketsPage />) },
+      { path: 'tickets/:userId', element: withSuspense(<AdminUserTicketsPage />) },
+      { path: 'menu', element: withSuspense(<AdminMenuPage />) },
+      { path: 'settings', element: withSuspense(<AdminSettingsPage />) },
     ],
   },
   // Standalone kitchen display window
   {
     path: '/kds',
-    element: <KdsPage />,
+    element: withSuspense(<KdsPage />),
   },
 ];
 

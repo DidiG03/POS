@@ -59,7 +59,9 @@ export default function ReportsPage() {
     }
     if (ticketsApiMissing) return;
     let alive = true;
+    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
     const load = async () => {
+      if (isHidden()) return;
       setTicketLoading(true);
       try {
         setActiveTicketsError(null);
@@ -86,7 +88,7 @@ export default function ReportsPage() {
       }
     };
     void load();
-    const t = setInterval(load, 15000);
+    const t = setInterval(load, 20000);
     return () => {
       alive = false;
       clearInterval(t);

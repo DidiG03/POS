@@ -25,6 +25,7 @@ export default function TablesPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('occupied');
   const [currency, setCurrency] = useState<string>('EUR');
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const { setSelectedTable, pendingAction, setPendingAction } = useOrderContext();
   const navigate = useNavigate();
   const { isOpen, openMap, setAll, setOpen } = useTableStatus();
@@ -83,7 +84,9 @@ export default function TablesPage() {
     let timer: any;
     let cancelled = false;
     const loop = async () => {
+      const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
       try {
+        if (hidden) return;
         const open = await window.api.tables.listOpen();
         if (Array.isArray(open)) setAll(open);
         if (!cancelled) {
@@ -96,7 +99,8 @@ export default function TablesPage() {
           setOpenLoadError('Loading occupied tables… (slow/offline network). Retrying…');
         }
       } finally {
-        timer = setTimeout(loop, 3000);
+        // Slow down while hidden to reduce background work.
+        timer = setTimeout(loop, hidden ? 12000 : 4000);
       }
     };
     loop();
@@ -227,8 +231,10 @@ export default function TablesPage() {
     if (!nodes || !area) return;
     if (viewMode === 'occupied' || viewMode === 'time') return;
     let cancelled = false;
+    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
 
     const load = async () => {
+      if (isHidden()) return;
       const labels = openLabelsInArea;
       if (!labels.length) {
         setMetricsByTable((prev) => {
@@ -279,7 +285,7 @@ export default function TablesPage() {
     };
 
     void load();
-    const t = window.setInterval(load, 5000);
+    const t = window.setInterval(load, 12000);
     return () => {
       cancelled = true;
       window.clearInterval(t);
@@ -292,8 +298,10 @@ export default function TablesPage() {
     if (!nodes || !area) return;
     if (viewMode !== 'time') return;
     let cancelled = false;
+    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
 
     const load = async () => {
+      if (isHidden()) return;
       const labels = openLabelsInArea;
       if (!labels.length) {
         setOpenedAtByTable((prev) => {
@@ -336,7 +344,7 @@ export default function TablesPage() {
     };
 
     void load();
-    const t = window.setInterval(load, 10000);
+    const t = window.setInterval(load, 15000);
     return () => {
       cancelled = true;
       window.clearInterval(t);
@@ -345,13 +353,117 @@ export default function TablesPage() {
 
   useEffect(() => {
     if (viewMode !== 'time') return;
-    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+    const t = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      setNowMs(Date.now());
+    }, 1000);
     return () => window.clearInterval(t);
   }, [viewMode]);
 
   function formatMoney(n: number) {
     return formatMoneyCompact(currency, n);
   }
+
+  // Track canvas size so we can auto-fit/center the layout on large screens.
+  useEffect(() => {
+    let ro: ResizeObserver | null = null;
+    let cancelled = false;
+    const setup = () => {
+      if (cancelled) return;
+      const el = canvasRef.current;
+      if (!el) {
+        window.requestAnimationFrame(setup);
+        return;
+      }
+      const update = () => {
+        const r = el.getBoundingClientRect();
+        setCanvasSize({ w: Math.max(0, Math.floor(r.width)), h: Math.max(0, Math.floor(r.height)) });
+      };
+      update();
+      ro = new ResizeObserver(() => update());
+      ro.observe(el);
+    };
+    setup();
+    return () => {
+      cancelled = true;
+      try { ro?.disconnect(); } catch { /* ignore */ }
+    };
+  }, []);
+
+  // Compute a "world" size so the canvas can scroll to reach off-screen tables on small screens.
+  const worldSize = useMemo(() => {
+    const cur = nodes || [];
+    // Table circles are ~64x64; add generous padding so scrolling feels natural.
+    const TABLE_R = 40;
+    let maxX = 760;
+    let maxY = 520;
+    for (const n of cur as any[]) {
+      if (!n) continue;
+      if (String(n.kind || 'TABLE') === 'AREA') {
+        const x = Number(n.x || 0);
+        const y = Number(n.y || 0);
+        const w = Number(n.w || 0);
+        const h = Number(n.h || 0);
+        maxX = Math.max(maxX, x + Math.max(0, w) + 80);
+        maxY = Math.max(maxY, y + Math.max(0, h) + 80);
+      } else {
+        const x = Number(n.x || 0);
+        const y = Number(n.y || 0);
+        maxX = Math.max(maxX, x + TABLE_R + 80);
+        maxY = Math.max(maxY, y + TABLE_R + 80);
+      }
+    }
+    // Clamp to minimums so empty layouts still look good.
+    return {
+      // In view mode, ensure the "plan" fills the viewport even if tables are clustered.
+      w: Math.max(760, Math.floor(maxX), editable ? 0 : canvasSize.w),
+      h: Math.max(520, Math.floor(maxY), editable ? 0 : canvasSize.h),
+    };
+  }, [nodes, editable, canvasSize.w, canvasSize.h]);
+
+  // Auto-fit/center layout in view mode (non-edit). This makes the restaurant plan fill the screen.
+  const viewTransform = useMemo(() => {
+    if (editable) return { scale: 1, tx: 0, ty: 0 };
+    const cur = nodes || [];
+    if (!cur.length) return { scale: 1, tx: 0, ty: 0 };
+    const pad = 48;
+    const cw = Math.max(0, canvasSize.w);
+    const ch = Math.max(0, canvasSize.h);
+    if (cw < 200 || ch < 200) return { scale: 1, tx: 0, ty: 0 };
+
+    const tableHalf = 32; // circle is 64x64, positioned at center
+    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+    for (const n of cur as any[]) {
+      if (!n) continue;
+      if (String(n.kind || 'TABLE') === 'AREA') {
+        const x = Number(n.x || 0);
+        const y = Number(n.y || 0);
+        const w = Number(n.w || 0);
+        const h = Number(n.h || 0);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + Math.max(0, w));
+        maxY = Math.max(maxY, y + Math.max(0, h));
+      } else {
+        const x = Number(n.x || 0);
+        const y = Number(n.y || 0);
+        minX = Math.min(minX, x - tableHalf);
+        minY = Math.min(minY, y - tableHalf);
+        maxX = Math.max(maxX, x + tableHalf);
+        maxY = Math.max(maxY, y + tableHalf);
+      }
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return { scale: 1, tx: 0, ty: 0 };
+    const bw = Math.max(1, maxX - minX);
+    const bh = Math.max(1, maxY - minY);
+
+    const maxScale = 1.6;
+    const scale = Math.max(1, Math.min(maxScale, (cw - pad * 2) / bw, (ch - pad * 2) / bh));
+
+    const tx = (cw - bw * scale) / 2 - minX * scale;
+    const ty = (ch - bh * scale) / 2 - minY * scale;
+    return { scale, tx, ty };
+  }, [editable, nodes, canvasSize.w, canvasSize.h]);
 
   return (
     <div className="h-full flex flex-col gap-3 min-h-0 overflow-hidden">
@@ -409,106 +521,132 @@ export default function TablesPage() {
       </div>
 
 
-      <div ref={canvasRef} className="relative w-full flex-1 min-h-0 rounded bg-gray-800 overflow-hidden">
-        {/* simple grid background */}
-        <div className="absolute inset-0 opacity-20" style={{
-          backgroundSize: '40px 40px',
-          backgroundImage:
-            'linear-gradient(to right, rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.08) 1px, transparent 1px)'
-        }} />
+      <div
+        ref={canvasRef}
+        className={`w-full flex-1 min-h-0 rounded bg-gray-800 ${editable ? 'overflow-hidden' : 'overflow-auto'}`}
+        style={{
+          WebkitOverflowScrolling: 'touch',
+          // Allow finger panning on mobile when NOT editing.
+          touchAction: editable ? ('none' as any) : ('pan-x pan-y' as any),
+        }}
+      >
+        <div className="relative" style={{ width: worldSize.w, height: worldSize.h }}>
+          {/* NOTE: In view mode we transform the whole plan (grid + nodes) so it fills the screen */}
+          <div
+            className="absolute inset-0"
+            style={
+              editable
+                ? undefined
+                : {
+                    transform: `translate(${viewTransform.tx}px, ${viewTransform.ty}px) scale(${viewTransform.scale})`,
+                    transformOrigin: 'top left',
+                  }
+            }
+          >
+            {/* simple grid background */}
+            <div
+              className="absolute inset-0 opacity-20"
+              style={{
+                backgroundSize: '40px 40px',
+                backgroundImage:
+                  'linear-gradient(to right, rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.08) 1px, transparent 1px)',
+              }}
+            />
 
-        {!openLoaded && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-900/60">
-            <div className="bg-gray-800 border border-gray-700 rounded p-4 w-full max-w-sm">
-              <div className="text-sm font-semibold mb-1">Loading tables…</div>
-              <div className="text-xs opacity-80">
-                {openLoadError || 'Fetching occupied tables from the host PC.'}
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <div className="text-xs opacity-70">Please wait</div>
+            {/* Area boxes (for kitchen/bar/toilets etc) */}
+            {nodes?.filter(isAreaNode).map((a) => (
+              <AreaRect
+                key={a.id}
+                node={a}
+                editable={editable}
+                onMove={(x, y) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), x, y } : n)) ?? prev)}
+                onResize={(w, h) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), w, h } : n)) ?? prev)}
+                onRename={(label) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), label } : n)) ?? prev)}
+                onDelete={() => setNodes((prev) => prev?.filter((n) => n.id !== a.id) ?? prev)}
+              />
+            ))}
+
+            {openLoaded && nodes?.filter(isTableNode).map((t, idx) => (
+              <DraggableCircle
+                key={t.id}
+                node={t}
+                editable={editable}
+                area={area}
+                onMove={(x, y) =>
+                  setNodes((prev) =>
+                    prev?.map((n) => (n.id === t.id ? { ...(n as any), x, y } : n)) ?? prev,
+                  )
+                }
+                onClick={() => {
+                  if (editable) return;
+                  setSelectedTable({ id: t.id, label: t.label, area });
+                  const action = pendingAction;
+                  if (action) setPendingAction(null);
+                  // If table is open, hydrate current ticket from last sent ticket and skip covers prompt
+                  if (isOpen(area, t.label)) {
+                    (async () => {
+                      const data = await window.api.tickets.getLatestForTable(area, t.label);
+                      if (data) hydrate({ items: data.items as any, note: data.note || '' });
+                      navigate('/app/order');
+                    })();
+                    return;
+                  }
+                  // If table is free, start with a clean ticket
+                  clear();
+                  navigate('/app/order');
+                  if (action) {
+                    setTimeout(() => {
+                      // no-op: could show a toast here if desired
+                    }, 0);
+                  }
+                }}
+                colorClass={(() => {
+                  if (!isOpen(area, t.label)) return GREEN;
+                  const ownerId = ownerByTable[`${area}:${t.label}`];
+                  const uid = user?.id;
+                  if (ownerId != null && uid != null && Number(ownerId) === Number(uid)) return RED;
+                  return ORANGE;
+                })()}
+                badge={isOpen(area, t.label) ? initialsByTable[`${area}:${t.label}`] : undefined}
+                ownerName={(ownerByTable[`${area}:${t.label}`] && userMap[ownerByTable[`${area}:${t.label}`]]) || undefined}
+                statusText={isOpen(area, t.label) ? 'OPEN' : 'FREE'}
+                viewMode={viewMode}
+                metricText={(() => {
+                  const k = `${area}:${t.label}`;
+                  const m = metricsByTable[k];
+                  if (!isOpen(area, t.label)) return null;
+                  if (viewMode === 'covers') return m ? String(m.covers ?? '—') : '…';
+                  if (viewMode === 'revenue') return m ? formatMoney(m.total) : '…';
+                  if (viewMode === 'time') {
+                    const iso = openedAtByTable[k];
+                    const ms = iso ? new Date(iso).getTime() : NaN;
+                    return Number.isFinite(ms) ? formatElapsed(nowMs - ms) : '…';
+                  }
+                  return null;
+                })()}
+              />
+            ))}
+          </div>
+
+          {!openLoaded && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-900/60">
+              <div className="bg-gray-800 border border-gray-700 rounded p-4 w-full max-w-sm">
+                <div className="text-sm font-semibold mb-1">Loading tables…</div>
+                <div className="text-xs opacity-80">
+                  {openLoadError || 'Fetching occupied tables from the host PC.'}
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <div className="text-xs opacity-70">Please wait</div>
+                </div>
               </div>
             </div>
-          </div>
-        )}
-
-        {/* Area boxes (for kitchen/bar/toilets etc) */}
-        {nodes?.filter(isAreaNode).map((a) => (
-          <AreaRect
-            key={a.id}
-            node={a}
-            editable={editable}
-            onMove={(x, y) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), x, y } : n)) ?? prev)}
-            onResize={(w, h) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), w, h } : n)) ?? prev)}
-            onRename={(label) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), label } : n)) ?? prev)}
-            onDelete={() => setNodes((prev) => prev?.filter((n) => n.id !== a.id) ?? prev)}
-          />
-        ))}
-
-        {openLoaded && nodes?.filter(isTableNode).map((t, idx) => (
-          <DraggableCircle
-            key={t.id}
-            node={t}
-            editable={editable}
-            area={area}
-            onMove={(x, y) =>
-              setNodes((prev) =>
-                prev?.map((n) => (n.id === t.id ? { ...(n as any), x, y } : n)) ?? prev,
-              )
-            }
-            onClick={() => {
-              if (editable) return;
-              setSelectedTable({ id: t.id, label: t.label, area });
-              const action = pendingAction;
-              if (action) setPendingAction(null);
-              // If table is open, hydrate current ticket from last sent ticket and skip covers prompt
-              if (isOpen(area, t.label)) {
-                (async () => {
-                  const data = await window.api.tickets.getLatestForTable(area, t.label);
-                  if (data) hydrate({ items: data.items as any, note: data.note || '' });
-                  navigate('/app/order');
-                })();
-                return;
-              }
-              // If table is free, start with a clean ticket
-              clear();
-              navigate('/app/order');
-              if (action) {
-                setTimeout(() => {
-                  // no-op: could show a toast here if desired
-                }, 0);
-              }
-            }}
-            colorClass={(() => {
-              if (!isOpen(area, t.label)) return GREEN;
-              const ownerId = ownerByTable[`${area}:${t.label}`];
-              const uid = user?.id;
-              if (ownerId != null && uid != null && Number(ownerId) === Number(uid)) return RED;
-              return ORANGE;
-            })()}
-            badge={isOpen(area, t.label) ? initialsByTable[`${area}:${t.label}`] : undefined}
-            ownerName={(ownerByTable[`${area}:${t.label}`] && userMap[ownerByTable[`${area}:${t.label}`]]) || undefined}
-            statusText={isOpen(area, t.label) ? 'OPEN' : 'FREE'}
-            viewMode={viewMode}
-            metricText={(() => {
-              const k = `${area}:${t.label}`;
-              const m = metricsByTable[k];
-              if (!isOpen(area, t.label)) return null;
-              if (viewMode === 'covers') return m ? String(m.covers ?? '—') : '…';
-              if (viewMode === 'revenue') return m ? formatMoney(m.total) : '…';
-              if (viewMode === 'time') {
-                const iso = openedAtByTable[k];
-                const ms = iso ? new Date(iso).getTime() : NaN;
-                return Number.isFinite(ms) ? formatElapsed(nowMs - ms) : '…';
-              }
-              return null;
-            })()}
-          />
-        ))}
+          )}
         {/* Sample bar counter/obstacles */}
         {area === 'Main Hall' && (
           <div className="absolute bottom-6 left-6 right-6 h-4 rounded bg-gray-700 opacity-70" title="Bar" />
         )}
+        </div>
       </div>
 
       <div className="flex items-center justify-center gap-2 bg-gray-800 rounded p-2">

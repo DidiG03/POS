@@ -109,7 +109,14 @@ export async function enqueueOutbox(input: Omit<OutboxItem, 'attempts' | 'create
 
 export async function getOutboxStatus() {
   const cur = await readOutbox();
-  return { queued: cur.items.length };
+  const now = Date.now();
+  // Filter out items that are waiting for their next attempt time
+  const readyItems = cur.items.filter((it) => {
+    if (!it.nextAttemptAt) return true;
+    const dueAt = new Date(it.nextAttemptAt).getTime();
+    return Number.isFinite(dueAt) && dueAt <= now;
+  });
+  return { queued: readyItems.length, total: cur.items.length };
 }
 
 export async function flushOutboxOnce(): Promise<{ sent: number; remaining: number; paused?: boolean; lastError?: string }> {

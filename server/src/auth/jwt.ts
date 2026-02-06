@@ -4,7 +4,19 @@ import { env } from '../env.js';
 export type AuthContext = {
   businessId: string;
   userId: number;
-  role: 'ADMIN' | 'CASHIER' | 'WAITER';
+  role:
+    | 'ADMIN'
+    | 'CASHIER'
+    | 'WAITER'
+    | 'KP'
+    | 'CHEF'
+    | 'HEAD_CHEF'
+    | 'FOOD_RUNNER'
+    | 'HOST'
+    | 'BUSSER'
+    | 'BARTENDER'
+    | 'BARBACK'
+    | 'CLEANER';
 };
 
 export function issueToken(ctx: AuthContext, ttlSeconds = 12 * 60 * 60): string {
@@ -22,7 +34,20 @@ export function verifyToken(token: string): AuthContext | null {
     const role = decoded?.role as AuthContext['role'];
     const userId = Number(decoded?.sub);
     if (!businessId || !Number.isFinite(userId) || userId <= 0) return null;
-    if (role !== 'ADMIN' && role !== 'CASHIER' && role !== 'WAITER') return null;
+    if (
+      role !== 'ADMIN' &&
+      role !== 'CASHIER' &&
+      role !== 'WAITER' &&
+      role !== 'KP' &&
+      role !== 'CHEF' &&
+      role !== 'HEAD_CHEF' &&
+      role !== 'FOOD_RUNNER' &&
+      role !== 'HOST' &&
+      role !== 'BUSSER' &&
+      role !== 'BARTENDER' &&
+      role !== 'BARBACK' &&
+      role !== 'CLEANER'
+    ) return null;
     return { businessId, userId, role };
   } catch {
     return null;

@@ -21,12 +21,27 @@ type MenuCategory = {
   items: MenuItem[];
 };
 
+const CATEGORY_PRESETS = [
+  'Drinks',
+  'Food',
+  'Desserts',
+  'Starters',
+  'Mains',
+  'Sides',
+  'Salads',
+  'Breakfast',
+  'Hot Drinks',
+  'Soft Drinks',
+  'Alcohol',
+] as const;
+
 export default function AdminMenuPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [cats, setCats] = useState<MenuCategory[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [billingPaused, setBillingPaused] = useState(false);
 
   const selected = useMemo(() => cats.find((c) => c.id === selectedId) || null, [cats, selectedId]);
 
@@ -49,7 +64,20 @@ export default function AdminMenuPage() {
     void reload();
   }, []);
 
-  const [newCatName, setNewCatName] = useState('');
+  useEffect(() => {
+    (async () => {
+      try {
+        const b = await (window.api as any).billing?.getStatus?.();
+        const enabled = Boolean((b as any)?.billingEnabled);
+        const st = String((b as any)?.status || 'ACTIVE').toUpperCase();
+        setBillingPaused(enabled && (st === 'PAST_DUE' || st === 'PAUSED'));
+      } catch {
+        setBillingPaused(false);
+      }
+    })();
+  }, []);
+
+  const [newCatName, setNewCatName] = useState<(typeof CATEGORY_PRESETS)[number] | ''>('');
   const [newCatColor, setNewCatColor] = useState<string>('#22c55e');
 
   const [newItemName, setNewItemName] = useState('');
@@ -84,12 +112,22 @@ export default function AdminMenuPage() {
         </div>
         <div className="p-3 space-y-2">
           <div className="flex gap-2">
-            <input
+            <select
               className="bg-gray-700 rounded px-2 py-1 flex-1"
-              placeholder="New category name"
               value={newCatName}
-              onChange={(e) => setNewCatName(e.target.value)}
-            />
+              onChange={(e) => setNewCatName(e.target.value as any)}
+              title="Category preset"
+            >
+              <option value="">Select category…</option>
+              {CATEGORY_PRESETS.map((n) => {
+                const taken = cats.some((c) => c.name.trim().toLowerCase() === n.toLowerCase());
+                return (
+                  <option key={n} value={n} disabled={taken}>
+                    {n}{taken ? ' (already exists)' : ''}
+                  </option>
+                );
+              })}
+            </select>
             <input
               type="color"
               className="w-10 h-9 rounded bg-gray-700"
@@ -99,10 +137,10 @@ export default function AdminMenuPage() {
             />
             <button
               className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-              disabled={!newCatName.trim() || saving != null}
+              disabled={!newCatName || saving != null || billingPaused}
               onClick={() =>
                 void withSaving('create-category', async () => {
-                  const resp = await window.api.menu.createCategory({ name: newCatName.trim(), color: newCatColor } as any);
+                  const resp = await window.api.menu.createCategory({ name: String(newCatName), color: newCatColor } as any);
                   setNewCatName('');
                   await reload();
                   const createdId = Number((resp as any)?.id || 0);
@@ -143,6 +181,11 @@ export default function AdminMenuPage() {
 
         <div className="p-4 space-y-4">
           {err && <div className="p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">{err}</div>}
+          {billingPaused && (
+            <div className="p-3 rounded bg-amber-900/20 border border-amber-800 text-amber-200 text-sm">
+              Billing is paused. You can view your menu, but adding or editing menu items is disabled until payment is completed.
+            </div>
+          )}
 
           {!selected ? (
             <div className="opacity-70">Pick a category on the left.</div>
@@ -150,7 +193,8 @@ export default function AdminMenuPage() {
             <>
               <CategoryEditor
                 category={selected}
-                disabled={saving != null}
+                allCategories={cats}
+                disabled={saving != null || billingPaused}
                 onSave={(patch) =>
                   withSaving('update-category', async () => {
                     await window.api.menu.updateCategory({ id: selected.id, ...patch } as any);
@@ -205,7 +249,7 @@ export default function AdminMenuPage() {
                   </label>
                   <button
                     className="col-span-1 bg-emerald-700 hover:bg-emerald-800 rounded px-2 py-2 disabled:opacity-60"
-                    disabled={!newItemName.trim() || !newItemPrice || saving != null}
+                    disabled={!newItemName.trim() || !newItemPrice || saving != null || billingPaused}
                     onClick={() =>
                       void withSaving('create-item', async () => {
                         const price = Number(newItemPrice);
@@ -267,11 +311,13 @@ export default function AdminMenuPage() {
 
 function CategoryEditor({
   category,
+  allCategories,
   disabled,
   onSave,
   onDelete,
 }: {
   category: MenuCategory;
+  allCategories: MenuCategory[];
   disabled: boolean;
   onSave: (patch: { name?: string; sortOrder?: number; color?: string | null; active?: boolean }) => Promise<any>;
   onDelete: () => Promise<any>;
@@ -302,7 +348,17 @@ function CategoryEditor({
       <div className="grid grid-cols-12 gap-2 items-center">
         <div className="col-span-6">
           <div className="text-xs opacity-70 mb-1">Name</div>
-          <input className="bg-gray-700 rounded px-2 py-2 w-full" value={name} onChange={(e) => setName(e.target.value)} />
+          <select className="bg-gray-700 rounded px-2 py-2 w-full" value={name} onChange={(e) => setName(e.target.value)}>
+            {/* If this category is legacy/custom, keep it selectable so we don't break existing data */}
+            {!CATEGORY_PRESETS.some((p) => p.toLowerCase() === String(category.name || '').toLowerCase()) && (
+              <option value={category.name}>{`Legacy: ${category.name}`}</option>
+            )}
+            {CATEGORY_PRESETS.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="col-span-3">
           <div className="text-xs opacity-70 mb-1">Color</div>
@@ -358,6 +414,14 @@ function CategoryEditor({
             disabled={disabled}
             onClick={() => {
               const norm = normalizeColorInput(colorText) ?? (color ? String(color) : null);
+              const nextName = name.trim();
+              const preset = CATEGORY_PRESETS.find((p) => p.toLowerCase() === nextName.toLowerCase());
+              if (preset) {
+                const takenByOther = allCategories.some(
+                  (c) => Number(c.id) !== Number(category.id) && String(c.name || '').toLowerCase() === preset.toLowerCase()
+                );
+                if (takenByOther) return;
+              }
               onSave({ name: name.trim(), color: norm, sortOrder: Number(sortOrder || 0) });
             }}
           >

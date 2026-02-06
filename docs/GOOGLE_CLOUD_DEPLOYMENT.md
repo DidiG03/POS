@@ -69,8 +69,12 @@ CONN_NAME="$(gcloud sql instances describe pos-sql --format='value(connectionNam
 gcloud run services update pos-api \
   --region YOUR_REGION \
   --add-cloudsql-instances "$CONN_NAME" \
-  --set-env-vars DATABASE_URL="postgresql://pos:CHOOSE_A_STRONG_PASSWORD@/pos?host=/cloudsql/$CONN_NAME"
+  --set-env-vars JWT_SECRET='CHOOSE_A_LONG_RANDOM_SECRET_32PLUS_CHARS' \
+  --set-env-vars DATABASE_URL="postgresql://pos:CHOOSE_A_STRONG_PASSWORD@localhost/pos?host=/cloudsql/$CONN_NAME"
 ```
+
+> Note: Prisma requires a non-empty host in the URL. Use `@localhost/pos?host=/cloudsql/...` (Cloud Run still connects over the unix socket).
+> If your password contains special characters (like `?`), URL-encode them (e.g. `?` → `%3F`).
 
 ### 4) Run Prisma migrations in production
 
@@ -100,6 +104,8 @@ gcloud run services describe pos-api --region YOUR_REGION --format='value(status
 ### 6) First business onboarding
 
 Call `POST /auth/register-business` against your Cloud Run URL to create the first business + admin.
+
+Recommended: set a provider-supplied `businessPassword` so a restaurant must enter both Business code + password on the POS host.
 
 Then in the POS app:
 - Admin → Settings → Cloud (Hosted) → enter that `Business code`.

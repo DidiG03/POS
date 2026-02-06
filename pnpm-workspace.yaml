@@ -1,2 +1,9 @@
 ignoredBuiltDependencies:
   - '@prisma/client'
+onlyBuiltDependencies:
+  - '@prisma/engines'
+  - '@tailwindcss/oxide'
+  - '@serialport/bindings-cpp'
+  - 'electron'
+  - 'esbuild'
+  - 'prisma'

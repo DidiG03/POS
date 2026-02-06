@@ -34,6 +34,27 @@ export const coreServices = {
       // If not set in env, disable cloud mode entirely.
       merged.cloud = { ...(merged.cloud || {}), backendUrl: undefined };
     }
+
+    // Backward compat: if only legacy `printer` exists, create a default profile + routing.
+    if (!Array.isArray((merged as any).printers) || (merged as any).printers.length === 0) {
+      const legacy = (merged as any).printer;
+      if (legacy && Object.keys(legacy).length) {
+        (merged as any).printers = [
+          {
+            id: 'default',
+            name: 'Default printer',
+            enabled: true,
+            ...(legacy || {}),
+          },
+        ];
+        (merged as any).printerRouting = {
+          enabled: false,
+          receiptPrinterId: 'default',
+          station: { ALL: 'default' },
+          ...(merged as any).printerRouting,
+        };
+      }
+    }
     return merged;
   },
 
@@ -41,6 +62,8 @@ export const coreServices = {
     const current = await this.readSettings();
     const merged = { ...current, ...input };
     if (input?.printer) merged.printer = { ...(current.printer || {}), ...input.printer };
+    if (input?.printers) merged.printers = Array.isArray(input.printers) ? input.printers : current.printers;
+    if (input?.printerRouting) merged.printerRouting = { ...(current.printerRouting || {}), ...(input.printerRouting || {}) };
     if (input?.security) merged.security = { ...(current.security || {}), ...input.security };
     if (input?.kds) merged.kds = { ...(current.kds || {}), ...input.kds };
     if (input?.cloud) {
