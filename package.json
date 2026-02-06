@@ -10,8 +10,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "dist": "pnpm build && electron-builder",
-    "dist:dir": "pnpm build && electron-builder --dir",
+    "prisma:prepare-electron": "node scripts/preparePrismaForElectron.mjs",
+    "dist": "pnpm build && pnpm db:generate && pnpm prisma:prepare-electron && electron-builder",
+    "dist:dir": "pnpm build && pnpm db:generate && pnpm prisma:prepare-electron && electron-builder --dir",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=20",
@@ -32,6 +33,10 @@
   "build": {
     "appId": "com.codeorbit.pos",
     "productName": "Code Orbit POS",
+    "asarUnpack": [
+      "**/.prisma/**",
+      "**/@prisma/**"
+    ],
     "files": [
       "dist/**",
       "node_modules/**",
