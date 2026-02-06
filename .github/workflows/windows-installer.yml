@@ -48,8 +48,13 @@ jobs:
       - name: Run unit tests
         run: pnpm test
 
+      # IMPORTANT:
+      # electron-builder will try to publish in CI when `build.publish` is configured.
+      # For VMware/customer testing we only want the installer artifact, so force publish=never.
       - name: Build Windows installer (NSIS)
-        run: pnpm dist
+        run: |
+          pnpm build
+          pnpm exec electron-builder --win nsis --publish never
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
