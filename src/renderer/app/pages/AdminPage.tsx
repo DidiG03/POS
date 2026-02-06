@@ -29,18 +29,45 @@ export default function AdminPage() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [shifts, setShifts] = useState<AdminShift[]>([]);
   const [showShiftsModal, setShowShiftsModal] = useState(false);
-  const [shiftFilter, setShiftFilter] = useState<'OPEN' | 'CLOSED' | 'ALL'>('OPEN');
+  const [shiftFilter, setShiftFilter] = useState<'OPEN' | 'CLOSED' | 'ALL'>(
+    'OPEN',
+  );
   const [shiftQuery, setShiftQuery] = useState('');
   const [shiftView, setShiftView] = useState<'SHIFTS' | 'STAFF'>('SHIFTS');
-  const [shiftRange, setShiftRange] = useState<'TODAY' | 'YESTERDAY' | 'WEEK' | 'MONTH' | 'ALL'>('TODAY');
-  const [topSelling, setTopSelling] = useState<{ name: string; qty: number; revenue: number } | null>(null);
-  const [users, setUsers] = useState<{ id: number; displayName: string; role: string; active: boolean; createdAt: string }[]>([]);
+  const [shiftRange, setShiftRange] = useState<
+    'TODAY' | 'YESTERDAY' | 'WEEK' | 'MONTH' | 'ALL'
+  >('TODAY');
+  const [topSelling, setTopSelling] = useState<{
+    name: string;
+    qty: number;
+    revenue: number;
+  } | null>(null);
+  const [users, setUsers] = useState<
+    {
+      id: number;
+      displayName: string;
+      role: string;
+      active: boolean;
+      createdAt: string;
+    }[]
+  >([]);
   const [userQuery, setUserQuery] = useState('');
   const [showAdmins, setShowAdmins] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [createName, setCreateName] = useState('');
   const [createRole, setCreateRole] = useState<
-    'WAITER' | 'CASHIER' | 'ADMIN' | 'KP' | 'CHEF' | 'HEAD_CHEF' | 'FOOD_RUNNER' | 'HOST' | 'BUSSER' | 'BARTENDER' | 'BARBACK' | 'CLEANER'
+    | 'WAITER'
+    | 'CASHIER'
+    | 'ADMIN'
+    | 'KP'
+    | 'CHEF'
+    | 'HEAD_CHEF'
+    | 'FOOD_RUNNER'
+    | 'HOST'
+    | 'BUSSER'
+    | 'BARTENDER'
+    | 'BARBACK'
+    | 'CLEANER'
   >('WAITER');
   const [createPin, setCreatePin] = useState('');
   const [createActive, setCreateActive] = useState(true);
@@ -59,10 +86,14 @@ export default function AdminPage() {
       try {
         const s = await window.api.settings.get().catch(() => null as any);
         const backendUrl = String((s as any)?.cloud?.backendUrl || '').trim();
-        const businessCode = String((s as any)?.cloud?.businessCode || '').trim();
+        const businessCode = String(
+          (s as any)?.cloud?.businessCode || '',
+        ).trim();
         setDataSource(backendUrl && businessCode ? 'cloud' : 'local');
         if (backendUrl && !businessCode) {
-          setAdminNotice('Cloud is enabled but Business code is missing. Set it in Settings → Cloud (Hosted).');
+          setAdminNotice(
+            'Cloud is enabled but Business code is missing. Set it in Settings → Cloud (Hosted).',
+          );
           setOv(null);
           setShifts([]);
           setTopSelling(null);
@@ -75,7 +106,9 @@ export default function AdminPage() {
 
       // When cloud is enabled, require an ADMIN session before loading admin data.
       if (dataSource === 'cloud' && (!me || me.role !== 'ADMIN')) {
-        setAdminNotice('Admin login required. Please login with an ADMIN account from the main login screen.');
+        setAdminNotice(
+          'Admin login required. Please login with an ADMIN account from the main login screen.',
+        );
         setOv(null);
         setShifts([]);
         setTopSelling(null);
@@ -121,7 +154,10 @@ export default function AdminPage() {
   }, [dataSource, me?.id, me?.role]);
 
   // Removed sales trends fetch for simplified overview
-  const openUserIds = useMemo(() => new Set(shifts.filter((s) => s.isOpen).map((s) => s.userId)), [shifts]);
+  const openUserIds = useMemo(
+    () => new Set(shifts.filter((s) => s.isOpen).map((s) => s.userId)),
+    [shifts],
+  );
   const staffList = useMemo(() => {
     return users
       .filter((u) => (showAdmins ? true : u.role !== 'ADMIN'))
@@ -130,15 +166,21 @@ export default function AdminPage() {
         const q = userQuery.trim().toLowerCase();
         if (!q) return true;
         return (
-          String(u.displayName || '').toLowerCase().includes(q) ||
-          String(u.role || '').toLowerCase().includes(q) ||
+          String(u.displayName || '')
+            .toLowerCase()
+            .includes(q) ||
+          String(u.role || '')
+            .toLowerCase()
+            .includes(q) ||
           String(u.id).includes(q)
         );
       })
       .sort((a, b) => {
         // Keep active first, then by name
         if (a.active !== b.active) return a.active ? -1 : 1;
-        return String(a.displayName || '').localeCompare(String(b.displayName || ''));
+        return String(a.displayName || '').localeCompare(
+          String(b.displayName || ''),
+        );
       });
   }, [showAdmins, showInactive, userQuery, users]);
 
@@ -153,7 +195,11 @@ export default function AdminPage() {
     const endOfToday = new Date(now);
     endOfToday.setHours(23, 59, 59, 999);
 
-    if (shiftRange === 'TODAY') return { startIso: startOfToday.toISOString(), endIso: endOfToday.toISOString() };
+    if (shiftRange === 'TODAY')
+      return {
+        startIso: startOfToday.toISOString(),
+        endIso: endOfToday.toISOString(),
+      };
     if (shiftRange === 'YESTERDAY') {
       const s = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
       const e = new Date(endOfToday.getTime() - 24 * 60 * 60 * 1000);
@@ -194,19 +240,32 @@ export default function AdminPage() {
       cancelled = true;
       window.clearInterval(t);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showShiftsModal, shiftRange]);
 
-  const openShiftCount = useMemo(() => shifts.filter((s) => s.isOpen).length, [shifts]);
-  const closedShiftCount = useMemo(() => shifts.filter((s) => !s.isOpen).length, [shifts]);
+  const openShiftCount = useMemo(
+    () => shifts.filter((s) => s.isOpen).length,
+    [shifts],
+  );
+  const closedShiftCount = useMemo(
+    () => shifts.filter((s) => !s.isOpen).length,
+    [shifts],
+  );
   const filteredShifts = useMemo(() => {
     const q = shiftQuery.trim().toLowerCase();
     return shifts
-      .filter((s) => (shiftFilter === 'ALL' ? true : shiftFilter === 'OPEN' ? s.isOpen : !s.isOpen))
+      .filter((s) =>
+        shiftFilter === 'ALL'
+          ? true
+          : shiftFilter === 'OPEN'
+            ? s.isOpen
+            : !s.isOpen,
+      )
       .filter((s) => {
         if (!q) return true;
         return (
-          String(s.userName || '').toLowerCase().includes(q) ||
+          String(s.userName || '')
+            .toLowerCase()
+            .includes(q) ||
           String(s.userId).includes(q) ||
           String(s.id).includes(q)
         );
@@ -215,28 +274,46 @@ export default function AdminPage() {
   }, [shiftFilter, shiftQuery, shifts]);
 
   const staffShiftSummary = useMemo(() => {
-    const byUser = new Map<number, { userId: number; userName: string; openCount: number; closedCount: number; totalHours: number; lastOpenedAt: string | null; lastClosedAt: string | null }>();
+    const byUser = new Map<
+      number,
+      {
+        userId: number;
+        userName: string;
+        openCount: number;
+        closedCount: number;
+        totalHours: number;
+        lastOpenedAt: string | null;
+        lastClosedAt: string | null;
+      }
+    >();
     for (const s of shifts) {
-      const row =
-        byUser.get(s.userId) ??
-        {
-          userId: s.userId,
-          userName: s.userName,
-          openCount: 0,
-          closedCount: 0,
-          totalHours: 0,
-          lastOpenedAt: null,
-          lastClosedAt: null,
-        };
+      const row = byUser.get(s.userId) ?? {
+        userId: s.userId,
+        userName: s.userName,
+        openCount: 0,
+        closedCount: 0,
+        totalHours: 0,
+        lastOpenedAt: null,
+        lastClosedAt: null,
+      };
       if (s.isOpen) row.openCount += 1;
       else row.closedCount += 1;
       const h = Number(s.durationHours || 0);
       row.totalHours += Number.isFinite(h) ? h : 0;
-      if (!row.lastOpenedAt || String(s.openedAt) > String(row.lastOpenedAt)) row.lastOpenedAt = s.openedAt;
-      if (s.closedAt && (!row.lastClosedAt || String(s.closedAt) > String(row.lastClosedAt))) row.lastClosedAt = s.closedAt;
+      if (!row.lastOpenedAt || String(s.openedAt) > String(row.lastOpenedAt))
+        row.lastOpenedAt = s.openedAt;
+      if (
+        s.closedAt &&
+        (!row.lastClosedAt || String(s.closedAt) > String(row.lastClosedAt))
+      )
+        row.lastClosedAt = s.closedAt;
       byUser.set(s.userId, row);
     }
-    return Array.from(byUser.values()).sort((a, b) => b.totalHours - a.totalHours || String(a.userName).localeCompare(String(b.userName)));
+    return Array.from(byUser.values()).sort(
+      (a, b) =>
+        b.totalHours - a.totalHours ||
+        String(a.userName).localeCompare(String(b.userName)),
+    );
   }, [shifts]);
 
   return (
@@ -246,17 +323,24 @@ export default function AdminPage() {
           {adminNotice}
         </div>
       )}
-      <div className="grid gap-4 grid-cols-3">        
+      <div className="grid gap-4 grid-cols-3">
         <Stat title="Active Users" value={ov?.activeUsers} />
         <Stat title="Open Shifts" value={ov?.openShifts} />
         <Stat title="Open Orders" value={ov?.openOrders} />
-        <Stat title="Revenue Today (net)" value={ov ? (ov.revenueTodayNet ?? 0) : '—'} />
+        <Stat
+          title="Revenue Today (net)"
+          value={ov ? (ov.revenueTodayNet ?? 0) : '—'}
+        />
         <Stat title="VAT Today" value={ov ? (ov.revenueTodayVat ?? 0) : '—'} />
         <div className="bg-gray-800 rounded p-4">
           <div className="text-sm opacity-70">Top Selling Today</div>
-          <div className="mt-1 text-lg font-semibold">{topSelling ? topSelling.name : '—'}</div>
+          <div className="mt-1 text-lg font-semibold">
+            {topSelling ? topSelling.name : '—'}
+          </div>
           {topSelling && (
-            <div className="text-sm opacity-80">Qty: {topSelling.qty} • Revenue: {topSelling.revenue}</div>
+            <div className="text-sm opacity-80">
+              Qty: {topSelling.qty} • Revenue: {topSelling.revenue}
+            </div>
           )}
         </div>
       </div>
@@ -281,13 +365,17 @@ export default function AdminPage() {
           {shifts.filter((s) => s.isOpen).length === 0 && (
             <div className="opacity-70">No open shifts</div>
           )}
-          {shifts.filter((s) => s.isOpen).map((s) => (
-            <div key={s.id} className="bg-gray-900 rounded p-3">
-              <div className="text-lg font-semibold">{s.userName}</div>
-              <div className="text-sm opacity-80">Opened: {new Date(s.openedAt).toLocaleTimeString()}</div>
-              <div className="text-sm">Hours: {s.durationHours}</div>
-            </div>
-          ))}
+          {shifts
+            .filter((s) => s.isOpen)
+            .map((s) => (
+              <div key={s.id} className="bg-gray-900 rounded p-3">
+                <div className="text-lg font-semibold">{s.userName}</div>
+                <div className="text-sm opacity-80">
+                  Opened: {new Date(s.openedAt).toLocaleTimeString()}
+                </div>
+                <div className="text-sm">Hours: {s.durationHours}</div>
+              </div>
+            ))}
         </div>
       </div>
 
@@ -298,7 +386,8 @@ export default function AdminPage() {
               <div>
                 <div className="text-lg font-semibold">Shift history</div>
                 <div className="text-xs opacity-70">
-                  Total: {shifts.length} • Open: {openShiftCount} • Closed: {closedShiftCount}
+                  Total: {shifts.length} • Open: {openShiftCount} • Closed:{' '}
+                  {closedShiftCount}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -428,7 +517,9 @@ export default function AdminPage() {
                         <td className="py-2 px-3">
                           <span
                             className={`px-2 py-0.5 rounded border text-xs ${
-                              s.isOpen ? 'bg-emerald-900/30 border-emerald-700 text-emerald-100' : 'bg-gray-800 border-gray-700 text-gray-200'
+                              s.isOpen
+                                ? 'bg-emerald-900/30 border-emerald-700 text-emerald-100'
+                                : 'bg-gray-800 border-gray-700 text-gray-200'
                             }`}
                           >
                             {s.isOpen ? 'OPEN' : 'CLOSED'}
@@ -436,12 +527,26 @@ export default function AdminPage() {
                         </td>
                         <td className="py-2 px-3">
                           <div className="font-medium">{s.userName}</div>
-                          <div className="text-xs opacity-70">User #{s.userId}</div>
+                          <div className="text-xs opacity-70">
+                            User #{s.userId}
+                          </div>
                         </td>
-                        <td className="py-2 px-3 opacity-90">{new Date(s.openedAt).toLocaleString()}</td>
-                        <td className="py-2 px-3 opacity-90">{s.closedAt ? new Date(s.closedAt).toLocaleString() : '—'}</td>
-                        <td className="py-2 px-3 text-right font-mono">{Number.isFinite(s.durationHours) ? s.durationHours.toFixed(2) : '—'}</td>
-                        <td className="py-2 px-3 text-right font-mono opacity-80">{s.id}</td>
+                        <td className="py-2 px-3 opacity-90">
+                          {new Date(s.openedAt).toLocaleString()}
+                        </td>
+                        <td className="py-2 px-3 opacity-90">
+                          {s.closedAt
+                            ? new Date(s.closedAt).toLocaleString()
+                            : '—'}
+                        </td>
+                        <td className="py-2 px-3 text-right font-mono">
+                          {Number.isFinite(s.durationHours)
+                            ? s.durationHours.toFixed(2)
+                            : '—'}
+                        </td>
+                        <td className="py-2 px-3 text-right font-mono opacity-80">
+                          {s.id}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -472,7 +577,11 @@ export default function AdminPage() {
                       .filter((r) => {
                         const q = shiftQuery.trim().toLowerCase();
                         if (!q) return true;
-                        return String(r.userName || '').toLowerCase().includes(q) || String(r.userId).includes(q);
+                        return (
+                          String(r.userName || '')
+                            .toLowerCase()
+                            .includes(q) || String(r.userId).includes(q)
+                        );
                       })
                       .map((r) => (
                         <tr
@@ -486,13 +595,31 @@ export default function AdminPage() {
                         >
                           <td className="py-2 px-3">
                             <div className="font-medium">{r.userName}</div>
-                            <div className="text-xs opacity-70">User #{r.userId}</div>
+                            <div className="text-xs opacity-70">
+                              User #{r.userId}
+                            </div>
                           </td>
-                          <td className="py-2 px-3 text-right font-mono">{r.openCount}</td>
-                          <td className="py-2 px-3 text-right font-mono">{r.closedCount}</td>
-                          <td className="py-2 px-3 opacity-90">{r.lastOpenedAt ? new Date(r.lastOpenedAt).toLocaleString() : '—'}</td>
-                          <td className="py-2 px-3 opacity-90">{r.lastClosedAt ? new Date(r.lastClosedAt).toLocaleString() : '—'}</td>
-                          <td className="py-2 px-3 text-right font-mono">{Number.isFinite(r.totalHours) ? r.totalHours.toFixed(2) : '—'}</td>
+                          <td className="py-2 px-3 text-right font-mono">
+                            {r.openCount}
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono">
+                            {r.closedCount}
+                          </td>
+                          <td className="py-2 px-3 opacity-90">
+                            {r.lastOpenedAt
+                              ? new Date(r.lastOpenedAt).toLocaleString()
+                              : '—'}
+                          </td>
+                          <td className="py-2 px-3 opacity-90">
+                            {r.lastClosedAt
+                              ? new Date(r.lastClosedAt).toLocaleString()
+                              : '—'}
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono">
+                            {Number.isFinite(r.totalHours)
+                              ? r.totalHours.toFixed(2)
+                              : '—'}
+                          </td>
                         </tr>
                       ))}
                   </tbody>
@@ -510,15 +637,26 @@ export default function AdminPage() {
         <div className="flex items-center justify-between gap-3 mb-3">
           <div>
             <div className="text-sm opacity-70">Staff members</div>
-            <div className="text-xs opacity-70">Loaded from {dataSource === 'cloud' ? 'cloud database' : 'local database'}</div>
+            <div className="text-xs opacity-70">
+              Loaded from{' '}
+              {dataSource === 'cloud' ? 'cloud database' : 'local database'}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <label className="text-xs opacity-80 flex items-center gap-2 select-none">
-              <input type="checkbox" checked={showAdmins} onChange={(e) => setShowAdmins(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={showAdmins}
+                onChange={(e) => setShowAdmins(e.target.checked)}
+              />
               Show admins
             </label>
             <label className="text-xs opacity-80 flex items-center gap-2 select-none">
-              <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+              />
               Show inactive
             </label>
             <button
@@ -534,7 +672,8 @@ export default function AdminPage() {
           <div className="text-sm font-semibold mb-2">Add staff member</div>
           {billingPaused && (
             <div className="mb-2 text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
-              Billing is paused. You can access the admin panel, but adding staff is disabled until payment is completed.
+              Billing is paused. You can access the admin panel, but adding
+              staff is disabled until payment is completed.
             </div>
           )}
           <div className="grid grid-cols-4 gap-2">
@@ -567,12 +706,18 @@ export default function AdminPage() {
               placeholder="PIN (4-6 digits)"
               inputMode="numeric"
               value={createPin}
-              onChange={(e) => setCreatePin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+              onChange={(e) =>
+                setCreatePin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
+              }
             />
           </div>
           <div className="flex items-center justify-between mt-2">
             <label className="text-xs opacity-80 flex items-center gap-2 select-none">
-              <input type="checkbox" checked={createActive} onChange={(e) => setCreateActive(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={createActive}
+                onChange={(e) => setCreateActive(e.target.checked)}
+              />
               Active
             </label>
             <button
@@ -583,8 +728,14 @@ export default function AdminPage() {
                 try {
                   const name = createName.trim();
                   if (!name) throw new Error('name is required');
-                  if (createPin.length < 4) throw new Error('PIN must be 4-6 digits');
-                  await window.api.auth.createUser({ displayName: name, role: createRole, pin: createPin, active: createActive } as any);
+                  if (createPin.length < 4)
+                    throw new Error('PIN must be 4-6 digits');
+                  await window.api.auth.createUser({
+                    displayName: name,
+                    role: createRole,
+                    pin: createPin,
+                    active: createActive,
+                  } as any);
                   setCreateName('');
                   setCreatePin('');
                   setCreateRole('WAITER');
@@ -599,7 +750,9 @@ export default function AdminPage() {
               Add
             </button>
           </div>
-          {staffStatus && <div className="text-xs opacity-80 mt-2">{staffStatus}</div>}
+          {staffStatus && (
+            <div className="text-xs opacity-80 mt-2">{staffStatus}</div>
+          )}
         </div>
 
         <div className="mb-3">
@@ -642,22 +795,37 @@ export default function AdminPage() {
                     </span>
                   </td>
                   <td className="py-1 pr-2">{u.active ? 'Yes' : 'No'}</td>
-                  <td className="py-1 pr-2">{openUserIds.has(u.id) ? 'Yes' : 'No'}</td>
-                  <td className="py-1 pr-2 opacity-80">{u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—'}</td>
+                  <td className="py-1 pr-2">
+                    {openUserIds.has(u.id) ? 'Yes' : 'No'}
+                  </td>
+                  <td className="py-1 pr-2 opacity-80">
+                    {u.createdAt
+                      ? new Date(u.createdAt).toLocaleDateString()
+                      : '—'}
+                  </td>
                   <td className="py-1 pr-2">
                     <div className="flex items-center gap-2">
                       {u.active ? (
                         <button
                           className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-40"
                           disabled={myId === u.id}
-                          title={myId === u.id ? 'You cannot disable your own account' : 'Disable user'}
+                          title={
+                            myId === u.id
+                              ? 'You cannot disable your own account'
+                              : 'Disable user'
+                          }
                           onClick={async () => {
                             setStaffStatus(null);
                             try {
-                              await window.api.auth.updateUser({ id: u.id, active: false } as any);
+                              await window.api.auth.updateUser({
+                                id: u.id,
+                                active: false,
+                              } as any);
                               await refreshUsers();
                             } catch (e: any) {
-                              setStaffStatus(e?.message || 'Failed to disable user');
+                              setStaffStatus(
+                                e?.message || 'Failed to disable user',
+                              );
                             }
                           }}
                         >
@@ -669,10 +837,15 @@ export default function AdminPage() {
                           onClick={async () => {
                             setStaffStatus(null);
                             try {
-                              await window.api.auth.updateUser({ id: u.id, active: true } as any);
+                              await window.api.auth.updateUser({
+                                id: u.id,
+                                active: true,
+                              } as any);
                               await refreshUsers();
                             } catch (e: any) {
-                              setStaffStatus(e?.message || 'Failed to enable user');
+                              setStaffStatus(
+                                e?.message || 'Failed to enable user',
+                              );
                             }
                           }}
                         >
@@ -683,18 +856,29 @@ export default function AdminPage() {
                       <button
                         className="px-2 py-1 rounded bg-red-700 hover:bg-red-600 text-xs disabled:opacity-40"
                         disabled={myId === u.id}
-                        title={myId === u.id ? 'You cannot delete your own account' : 'Permanently delete user (only if no history)'}
+                        title={
+                          myId === u.id
+                            ? 'You cannot delete your own account'
+                            : 'Permanently delete user (only if no history)'
+                        }
                         onClick={async () => {
                           if (myId === u.id) return;
-                          const ok = window.confirm(`Permanently delete "${u.displayName}" (ID ${u.id})? This only works if they have no history.`);
+                          const ok = window.confirm(
+                            `Permanently delete "${u.displayName}" (ID ${u.id})? This only works if they have no history.`,
+                          );
                           if (!ok) return;
                           setStaffStatus(null);
                           try {
-                            await window.api.auth.deleteUser({ id: u.id, hard: true } as any);
+                            await window.api.auth.deleteUser({
+                              id: u.id,
+                              hard: true,
+                            } as any);
                             setStaffStatus('Deleted.');
                             await refreshUsers();
                           } catch (e: any) {
-                            setStaffStatus(e?.message || 'Failed to delete user');
+                            setStaffStatus(
+                              e?.message || 'Failed to delete user',
+                            );
                           }
                         }}
                       >
@@ -720,5 +904,3 @@ function Stat({ title, value }: { title: string; value: any }) {
     </div>
   );
 }
-
-

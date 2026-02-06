@@ -18,7 +18,6 @@ export default function ClockPage() {
 
   useEffect(() => {
     void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   if (!user) return null;
@@ -33,8 +32,11 @@ export default function ClockPage() {
           <div>
             <div className="text-lg font-semibold">Clock in / out</div>
             <div className="text-sm opacity-80">
-              Staff: <span className="font-semibold">{user.displayName}</span> • Role:{' '}
-              <span className="font-mono">{String((user as any).role || '').toUpperCase()}</span>
+              Staff: <span className="font-semibold">{user.displayName}</span> •
+              Role:{' '}
+              <span className="font-mono">
+                {String((user as any).role || '').toUpperCase()}
+              </span>
             </div>
           </div>
           <button
@@ -50,8 +52,12 @@ export default function ClockPage() {
           <div className="flex items-center justify-between">
             <div>
               <div className="text-xs opacity-70 mb-1">Shift status</div>
-              <div className="text-base font-semibold">{isOpen ? 'OPEN' : 'CLOSED'}</div>
-              <div className="text-sm opacity-80 mt-1">Opened at: {openedAt}</div>
+              <div className="text-base font-semibold">
+                {isOpen ? 'OPEN' : 'CLOSED'}
+              </div>
+              <div className="text-sm opacity-80 mt-1">
+                Opened at: {openedAt}
+              </div>
             </div>
             <button
               className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
@@ -117,10 +123,10 @@ export default function ClockPage() {
         </div>
 
         <div className="mt-4 text-xs opacity-70">
-          Note: kitchen staff accounts are clock-only and cannot access Tables/Orders/Reports.
+          Note: kitchen staff accounts are clock-only and cannot access
+          Tables/Orders/Reports.
         </div>
       </div>
     </div>
   );
 }
-
