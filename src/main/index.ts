@@ -1485,13 +1485,16 @@ ipcMain.handle('settings:update', async (_e, input) => {
         throw new Error('Business password is required (min 6 chars).');
       // Verify against cloud by attempting to list users (admin must always exist for a tenant).
       const url = `${envCloudUrl.replace(/\/+$/g, '')}/auth/public-users?businessCode=${encodeURIComponent(businessCode)}&includeAdmins=1`;
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 10_000);
       const r = await fetch(url, {
         method: 'GET',
         headers: {
           Accept: 'application/json',
           'x-business-password': nextPwRaw,
         } as any,
-      } as any);
+        signal: ac.signal,
+      } as any).finally(() => clearTimeout(t));
       const data = await r.json().catch(() => null);
       if (!r.ok || !Array.isArray(data) || data.length === 0) {
         throw new Error('Invalid Business code or Business password.');
@@ -1500,7 +1503,12 @@ ipcMain.handle('settings:update', async (_e, input) => {
       (input as any).cloud = { ...((input as any).cloud || {}), businessCode };
     }
   } catch (e: any) {
-    throw new Error(String(e?.message || e || 'Invalid cloud settings'));
+    const msg = String(e?.name || '')
+      .toLowerCase()
+      .includes('abort')
+      ? 'Cloud backend timed out. Check your internet connection and try again.'
+      : String(e?.message || e || 'Invalid cloud settings');
+    throw new Error(msg);
   }
   // Merge and persist in SyncState, so admin changes survive restarts
   const merged = await coreServices.updateSettings(input);

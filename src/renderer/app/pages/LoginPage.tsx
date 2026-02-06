@@ -119,6 +119,7 @@ export default function LoginPage() {
   const { setUser: setAdminUser } = useAdminSessionStore();
   const [reloadNonce, setReloadNonce] = useState(0);
   const [adminBusinessPassword, setAdminBusinessPassword] = useState('');
+  const [usingCode, setUsingCode] = useState(false);
 
   useEffect(() => {
     const onCloud = () => setReloadNonce((n) => n + 1);
@@ -303,10 +304,13 @@ export default function LoginPage() {
                 className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
                 disabled={
                   !adminBusinessCode.trim() ||
-                  adminBusinessPassword.trim().length < 6
+                  adminBusinessPassword.trim().length < 6 ||
+                  usingCode
                 }
                 onClick={async () => {
                   setError(null);
+                  setCloudNotice('Checking Business code…');
+                  setUsingCode(true);
                   try {
                     await window.api.settings.update({
                       cloud: {
@@ -321,20 +325,29 @@ export default function LoginPage() {
                       (u: any) => u.role === 'ADMIN' && u.active,
                     );
                     setStaff(admins);
-                    setCloudNotice(null);
                     if (!admins.length) {
                       setAdminBusinessCodeMode(true);
                       setError('Invalid Business code or Business password.');
+                      setCloudNotice(
+                        'Invalid Business code or Business password.',
+                      );
                     } else {
                       setAdminBusinessCodeMode(false);
+                      setCloudNotice(null);
                     }
                   } catch (e: any) {
-                    setError(e?.message || 'Failed to set business code');
+                    const msg = String(
+                      e?.message || 'Failed to set business code',
+                    );
+                    setError(msg);
+                    setCloudNotice(msg);
                     setAdminBusinessCodeMode(true);
+                  } finally {
+                    setUsingCode(false);
                   }
                 }}
               >
-                Use code
+                {usingCode ? 'Checking…' : 'Use code'}
               </button>
             </div>
           </div>
