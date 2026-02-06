@@ -1014,6 +1014,22 @@ ipcMain.handle('auth:createUser', async (_e, payload) => {
       senderId: _e.sender.id,
     });
   }
+
+  // Local (SQLite) guard:
+  // - Allow creating the very first user only if it's an ADMIN (initial setup).
+  // - After that, only allow user creation from the admin window.
+  const userCount = await prisma.user.count().catch(() => 0);
+  if (userCount === 0) {
+    if (String(input.role || '').toUpperCase() !== 'ADMIN') {
+      throw new Error('forbidden');
+    }
+  } else {
+    const adminSenderId = adminWindow?.webContents?.id;
+    if (!adminSenderId || _e.sender.id !== adminSenderId) {
+      throw new Error('forbidden');
+    }
+  }
+
   const pinHash = await bcrypt.hash(input.pin, 10);
   const created = await prisma.user.create({
     data: {

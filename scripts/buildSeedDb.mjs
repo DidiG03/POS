@@ -37,8 +37,9 @@ console.log(`[seed-db] Creating seeded SQLite DB at ${outFile}`);
 // Apply migrations into the seed file.
 run('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], { env });
 
-// Seed with a minimal default dataset (Admin 1234 + sample menu).
-run('pnpm', ['db:seed'], { env });
+// IMPORTANT:
+// For a fresh customer install, the POS must start EMPTY (no users/menu).
+// We ship only the migrated schema here. The app will prompt to create the first Admin.
 
 console.log('[seed-db] Done.');
 
