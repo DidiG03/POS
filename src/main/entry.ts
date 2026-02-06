@@ -81,6 +81,19 @@ function ensureSqliteDbFile() {
   }
 }
 
+function ensurePackagedDefaults() {
+  try {
+    if (!app.isPackaged) return;
+    // Packaged builds do not ship `.env`, so default important toggles here.
+    if (!String(process.env.ENABLE_ADMIN || '').trim()) {
+      process.env.ENABLE_ADMIN = 'true';
+    }
+  } catch {
+    // ignore
+  }
+}
+
+ensurePackagedDefaults();
 ensureSqliteDbFile();
 ensurePrismaModulePath();
 
