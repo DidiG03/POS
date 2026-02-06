@@ -68,6 +68,9 @@
         "nsis"
       ]
     },
+    "nsis": {
+      "include": "build/installer.nsh"
+    },
     "publish": {
       "provider": "github",
       "owner": "",

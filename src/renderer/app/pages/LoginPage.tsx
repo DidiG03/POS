@@ -119,10 +119,6 @@ export default function LoginPage() {
   const { setUser: setAdminUser } = useAdminSessionStore();
   const [reloadNonce, setReloadNonce] = useState(0);
   const [adminBusinessPassword, setAdminBusinessPassword] = useState('');
-  const [showFirstAdminSetup, setShowFirstAdminSetup] = useState(false);
-  const [firstAdminName, setFirstAdminName] = useState('Admin');
-  const [firstAdminPin, setFirstAdminPin] = useState('');
-  const [firstAdminPin2, setFirstAdminPin2] = useState('');
 
   useEffect(() => {
     const onCloud = () => setReloadNonce((n) => n + 1);
@@ -220,56 +216,6 @@ export default function LoginPage() {
         ? users.filter((u) => u.role === 'ADMIN' && u.active)
         : users.filter((u) => u.active && u.role !== 'ADMIN');
       setStaff(list);
-      // Local first-run setup: if there are no admins, allow creating the first Admin.
-      if (
-        !backendUrl &&
-        isAdminContext &&
-        Array.isArray(users) &&
-        users.filter(
-          (u: any) =>
-            String(u?.role || '').toUpperCase() === 'ADMIN' && u.active,
-        ).length === 0
-      ) {
-        setShowFirstAdminSetup(true);
-      } else {
-        setShowFirstAdminSetup(false);
-      }
-      // Local empty-state warning banner (fresh install).
-      // In local mode, staff login hides admins, so an empty list can mean:
-      // - no users at all (needs first Admin), or
-      // - admins exist but no staff yet.
-      if (!backendUrl && !isAdminContext) {
-        if (Array.isArray(list) && list.length === 0) {
-          try {
-            const all = await window.api.auth.listUsers({
-              includeAdmins: true,
-            });
-            const hasAdmins =
-              Array.isArray(all) &&
-              all.some(
-                (u: any) =>
-                  String(u?.role || '').toUpperCase() === 'ADMIN' &&
-                  Boolean(u?.active),
-              );
-            setCloudNotice(
-              hasAdmins
-                ? 'No staff users yet. Ask an Admin to add staff members in the Admin panel.'
-                : enableAdmin
-                  ? 'No users yet. Click Admin to create the first Admin.'
-                  : 'No users yet. Ask a manager to enable Admin access.',
-            );
-          } catch {
-            setCloudNotice(
-              enableAdmin
-                ? 'No staff users yet. Click Admin to continue setup.'
-                : 'No users yet.',
-            );
-          }
-        } else {
-          // Clear local warning once staff exists
-          setCloudNotice(null);
-        }
-      }
       // If cloud returned only admins (common when billing is paused), explain why staff list is empty.
       if (!isAdminContext && backendUrl) {
         const hasAdmins =
@@ -424,88 +370,6 @@ export default function LoginPage() {
                 <div className="opacity-70 text-sm">No admin users</div>
               )}
             </div>
-            {showFirstAdminSetup && (
-              <div className="mt-5 p-4 rounded border border-gray-700 bg-gray-800/40">
-                <div className="text-sm font-medium mb-1">First-time setup</div>
-                <div className="text-xs opacity-70 mb-3">
-                  No Admin exists yet. Create the first Admin to start using the
-                  POS.
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <input
-                    className="bg-gray-700 rounded px-3 py-2"
-                    placeholder="Admin name"
-                    value={firstAdminName}
-                    onChange={(e) => setFirstAdminName(e.target.value)}
-                  />
-                  <input
-                    className="bg-gray-700 rounded px-3 py-2"
-                    placeholder="PIN (4-6 digits)"
-                    value={firstAdminPin}
-                    onChange={(e) =>
-                      setFirstAdminPin(
-                        e.target.value.replace(/[^0-9]/g, '').slice(0, 6),
-                      )
-                    }
-                    inputMode="numeric"
-                    type="password"
-                    autoComplete="off"
-                  />
-                  <input
-                    className="bg-gray-700 rounded px-3 py-2"
-                    placeholder="Confirm PIN"
-                    value={firstAdminPin2}
-                    onChange={(e) =>
-                      setFirstAdminPin2(
-                        e.target.value.replace(/[^0-9]/g, '').slice(0, 6),
-                      )
-                    }
-                    inputMode="numeric"
-                    type="password"
-                    autoComplete="off"
-                  />
-                  <button
-                    className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-                    disabled={
-                      firstAdminName.trim().length < 1 ||
-                      firstAdminPin.length < 4 ||
-                      firstAdminPin !== firstAdminPin2
-                    }
-                    onClick={async () => {
-                      setError(null);
-                      try {
-                        await window.api.auth.createUser({
-                          displayName: firstAdminName.trim(),
-                          role: 'ADMIN',
-                          pin: firstAdminPin,
-                          active: true,
-                        } as any);
-                        // Reload admin list
-                        setReloadNonce((n) => n + 1);
-                        setFirstAdminPin('');
-                        setFirstAdminPin2('');
-                      } catch (e: any) {
-                        const msg = String(e?.message || e || 'Failed');
-                        setError(
-                          msg.toLowerCase().includes('forbidden')
-                            ? 'Not allowed'
-                            : msg,
-                        );
-                      }
-                    }}
-                  >
-                    Create Admin
-                  </button>
-                </div>
-                {firstAdminPin &&
-                  firstAdminPin2 &&
-                  firstAdminPin !== firstAdminPin2 && (
-                    <div className="text-xs text-rose-300 mt-2">
-                      PINs do not match.
-                    </div>
-                  )}
-              </div>
-            )}
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">

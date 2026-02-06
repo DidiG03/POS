@@ -88,6 +88,12 @@ function ensurePackagedDefaults() {
     if (!String(process.env.ENABLE_ADMIN || '').trim()) {
       process.env.ENABLE_ADMIN = 'true';
     }
+    // Force cloud onboarding even when env isn't configured.
+    // The backend URL itself is not sensitive; secrets remain the Business password + tokens.
+    if (!String(process.env.POS_CLOUD_URL || '').trim()) {
+      process.env.POS_CLOUD_URL =
+        'https://pos-api-1075917751068.europe-west1.run.app';
+    }
   } catch {
     // ignore
   }
