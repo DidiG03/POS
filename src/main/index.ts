@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
-import { join, dirname, resolve as resolvePath } from 'node:path';
+import { join, dirname, resolve as resolvePath, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -99,6 +99,12 @@ async function cloudEnabledButMissingBusinessCode(): Promise<boolean> {
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
+// When bundled, most main code runs from `dist/main/chunks/*`.
+// We want paths relative to `dist/main` so preload + renderer resolve correctly.
+const MAIN_RUNTIME_DIR =
+  basename(MAIN_DIR) === 'chunks' ? resolvePath(MAIN_DIR, '..') : MAIN_DIR;
+const PRELOAD_PATH = join(MAIN_RUNTIME_DIR, '../preload/index.cjs');
+const RENDERER_INDEX_HTML = join(MAIN_RUNTIME_DIR, '../renderer/index.html');
 
 let mainWindow: BrowserWindow | null = null;
 let adminWindow: BrowserWindow | null = null;
@@ -358,7 +364,7 @@ function createWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      preload: join(MAIN_DIR, '../preload/index.cjs'),
+      preload: PRELOAD_PATH,
     },
   });
 
@@ -366,7 +372,7 @@ function createWindow() {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'));
+    mainWindow.loadFile(RENDERER_INDEX_HTML);
   }
 
   mainWindow.webContents.on('did-fail-load', (_e, ec, ed, vu) => {
@@ -395,13 +401,13 @@ function createAdminWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      preload: join(MAIN_DIR, '../preload/index.cjs'),
+      preload: PRELOAD_PATH,
     },
   });
   const url = process.env.ELECTRON_RENDERER_URL;
   if (url) adminWindow.loadURL(url + '#/admin');
   else
-    adminWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'), {
+    adminWindow.loadFile(RENDERER_INDEX_HTML, {
       hash: '/admin',
     });
   adminWindow.on('closed', () => {
@@ -427,13 +433,13 @@ function createKdsWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      preload: join(MAIN_DIR, '../preload/index.cjs'),
+      preload: PRELOAD_PATH,
     },
   });
   const url = process.env.ELECTRON_RENDERER_URL;
   if (url) kdsWindow.loadURL(url + '#/kds');
   else
-    kdsWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'), {
+    kdsWindow.loadFile(RENDERER_INDEX_HTML, {
       hash: '/kds',
     });
   kdsWindow.on('closed', () => {
