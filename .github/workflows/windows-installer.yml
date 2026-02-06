@@ -45,6 +45,9 @@ jobs:
       - name: Prepare Prisma runtime files for Electron packaging
         run: pnpm prisma:prepare-electron
 
+      - name: Build seeded SQLite DB for packaged app
+        run: pnpm db:seedfile
+
       - name: Rebuild native modules for Electron (serialport)
         run: pnpm serial:rebuild
 

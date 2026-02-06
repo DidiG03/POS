@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import path from 'node:path';
 import Module from 'node:module';
+import fs from 'node:fs';
 
 /**
  * Electron + Prisma + pnpm packaging fix.
@@ -32,6 +33,55 @@ function ensurePrismaModulePath() {
   }
 }
 
+/**
+ * Ensure the packaged app always has a writable SQLite database.
+ *
+ * In dev, `.env` provides DATABASE_URL (usually `file:./dev.db`).
+ * In packaged builds, `.env` is not shipped, and relative `file:./...` paths are unreliable.
+ *
+ * Strategy:
+ * - Set DATABASE_URL to `<userData>/db/pos.db` when packaged
+ * - On first run, copy a pre-migrated `seed.db` from `resources/seed.db`
+ */
+function ensureSqliteDbFile() {
+  try {
+    if (!app.isPackaged) return;
+
+    const current = String(process.env.DATABASE_URL || '').trim();
+    const looksRelative =
+      current.startsWith('file:./') ||
+      current.startsWith('file:../') ||
+      current === 'file:./dev.db';
+
+    if (current && !looksRelative) return;
+
+    const userData = app.getPath('userData');
+    const dbDir = path.join(userData, 'db');
+    fs.mkdirSync(dbDir, { recursive: true });
+    const targetFile = path.join(dbDir, 'pos.db');
+
+    if (!fs.existsSync(targetFile)) {
+      const seedFile = path.join(process.resourcesPath, 'seed.db');
+      if (fs.existsSync(seedFile)) {
+        try {
+          fs.copyFileSync(seedFile, targetFile);
+        } catch {
+          // fallback: create an empty file
+          fs.writeFileSync(targetFile, '');
+        }
+      } else {
+        fs.writeFileSync(targetFile, '');
+      }
+    }
+
+    // Prisma prefers forward slashes in file URLs (esp. on Windows).
+    process.env.DATABASE_URL = `file:${targetFile.split(path.sep).join('/')}`;
+  } catch {
+    // ignore (best-effort)
+  }
+}
+
+ensureSqliteDbFile();
 ensurePrismaModulePath();
 
 // Load the actual app after path fix.

@@ -11,6 +11,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "prisma:prepare-electron": "node scripts/preparePrismaForElectron.mjs",
+    "db:seedfile": "node scripts/buildSeedDb.mjs",
     "dist": "pnpm build && pnpm db:generate && pnpm prisma:prepare-electron && electron-builder",
     "dist:dir": "pnpm build && pnpm db:generate && pnpm prisma:prepare-electron && electron-builder --dir",
     "preview": "electron-vite preview",
@@ -43,12 +44,17 @@
       "dist/**",
       "node_modules/**",
       "node_modules/.prisma/**",
+      "build-resources/**",
       "package.json"
     ],
     "extraResources": [
       {
         "from": "node_modules/.prisma",
         "to": "app.asar.unpacked/node_modules/.prisma"
+      },
+      {
+        "from": "build-resources/seed.db",
+        "to": "seed.db"
       }
     ],
     "mac": {
