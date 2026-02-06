@@ -66,8 +66,15 @@ app.use(async (req, res, next) => {
   try {
     const biz = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null as any);
     const st = String((biz as any)?.billingStatus || 'ACTIVE').toUpperCase();
-    if (st === 'PAST_DUE' || st === 'PAUSED') {
-      return res.status(402).json({ error: 'billing_required', status: st });
+    // Critical: require an actual subscription per business.
+    // Otherwise new tenants (default billingStatus=ACTIVE) would incorrectly be treated as "paid".
+    const hasSub = Boolean(String((biz as any)?.stripeSubscriptionId || '').trim());
+    const paused = !hasSub || st === 'PAST_DUE' || st === 'PAUSED';
+    if (paused) {
+      return res.status(402).json({
+        error: 'billing_required',
+        status: !hasSub ? 'PAUSED' : (st === 'PAST_DUE' ? 'PAST_DUE' : 'PAUSED'),
+      });
     }
   } catch {
     // If billing check fails (DB), don't hard-lock everything; allow request through.
@@ -93,7 +100,6 @@ app.use('/reports', reportsRouter);
 
 // Error handler (keeps Cloud Run logs useful)
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  // eslint-disable-next-line no-console
   console.error('API error', err);
   if (err instanceof ZodError) {
     return res.status(400).json({ error: 'invalid request', issues: err.issues });
@@ -106,7 +112,6 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 });
 
 app.listen(env.port, () => {
-  // eslint-disable-next-line no-console
   console.log(`POS server listening on :${env.port}`);
 });
 

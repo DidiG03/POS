@@ -24,6 +24,12 @@ export interface UserDTO {
 
 export interface SettingsDTO {
   restaurantName: string;
+  businessInfo?: {
+    address?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+  };
   currency: string;
   defaultVatRate: number;
   preferences?: {
@@ -112,7 +118,20 @@ export type LoginWithPinInput = z.infer<typeof LoginWithPinInputSchema>;
 
 export const CreateUserInputSchema = z.object({
   displayName: z.string().min(1),
-  role: z.enum(['ADMIN', 'CASHIER', 'WAITER', 'KP', 'CHEF', 'HEAD_CHEF', 'FOOD_RUNNER', 'HOST', 'BUSSER', 'BARTENDER', 'BARBACK', 'CLEANER']),
+  role: z.enum([
+    'ADMIN',
+    'CASHIER',
+    'WAITER',
+    'KP',
+    'CHEF',
+    'HEAD_CHEF',
+    'FOOD_RUNNER',
+    'HOST',
+    'BUSSER',
+    'BARTENDER',
+    'BARBACK',
+    'CLEANER',
+  ]),
   pin: z.string().min(4).max(6),
   active: z.boolean().optional().default(true),
 });
@@ -121,7 +140,22 @@ export type CreateUserInput = z.infer<typeof CreateUserInputSchema>;
 export const UpdateUserInputSchema = z.object({
   id: z.number(),
   displayName: z.string().min(1).optional(),
-  role: z.enum(['ADMIN', 'CASHIER', 'WAITER', 'KP', 'CHEF', 'HEAD_CHEF', 'FOOD_RUNNER', 'HOST', 'BUSSER', 'BARTENDER', 'BARBACK', 'CLEANER']).optional(),
+  role: z
+    .enum([
+      'ADMIN',
+      'CASHIER',
+      'WAITER',
+      'KP',
+      'CHEF',
+      'HEAD_CHEF',
+      'FOOD_RUNNER',
+      'HOST',
+      'BUSSER',
+      'BARTENDER',
+      'BARBACK',
+      'CLEANER',
+    ])
+    .optional(),
   pin: z.string().min(4).max(6).optional(),
   active: z.boolean().optional(),
 });
@@ -188,7 +222,9 @@ export const CreateMenuCategoryInputSchema = z.object({
   color: z.string().optional().nullable(),
   active: z.boolean().optional(),
 });
-export type CreateMenuCategoryInput = z.infer<typeof CreateMenuCategoryInputSchema>;
+export type CreateMenuCategoryInput = z.infer<
+  typeof CreateMenuCategoryInputSchema
+>;
 
 export const UpdateMenuCategoryInputSchema = z.object({
   id: z.number(),
@@ -197,7 +233,9 @@ export const UpdateMenuCategoryInputSchema = z.object({
   color: z.string().optional().nullable(),
   active: z.boolean().optional(),
 });
-export type UpdateMenuCategoryInput = z.infer<typeof UpdateMenuCategoryInputSchema>;
+export type UpdateMenuCategoryInput = z.infer<
+  typeof UpdateMenuCategoryInputSchema
+>;
 
 export const CreateMenuItemInputSchema = z.object({
   categoryId: z.number(),
@@ -234,8 +272,14 @@ export interface ApiMenu {
 }
 
 export interface ApiAuth {
-  loginWithPin(pin: string, userId?: number, pairingCode?: string): Promise<UserDTO | null>;
-  verifyManagerPin(pin: string): Promise<{ ok: boolean; userId?: number; userName?: string }>;
+  loginWithPin(
+    pin: string,
+    userId?: number,
+    pairingCode?: string,
+  ): Promise<UserDTO | null>;
+  verifyManagerPin(
+    pin: string,
+  ): Promise<{ ok: boolean; userId?: number; userName?: string }>;
   logoutAdmin(): Promise<boolean>;
   createUser(input: CreateUserInput): Promise<UserDTO>;
   listUsers(input?: { includeAdmins?: boolean }): Promise<UserDTO[]>;
@@ -249,11 +293,34 @@ export interface ApiNetwork {
 }
 
 export interface ApiRequests {
-  create(input: { requesterId: number; ownerId: number; area: string; tableLabel: string; items: any[]; note?: string | null }): Promise<boolean>;
-  listForOwner(ownerId: number): Promise<Array<{ id: number; area: string; tableLabel: string; requesterId: number; items: any[]; note?: string | null; createdAt: string }>>;
+  create(input: {
+    requesterId: number;
+    ownerId: number;
+    area: string;
+    tableLabel: string;
+    items: any[];
+    note?: string | null;
+  }): Promise<boolean>;
+  listForOwner(
+    ownerId: number,
+  ): Promise<
+    Array<{
+      id: number;
+      area: string;
+      tableLabel: string;
+      requesterId: number;
+      items: any[];
+      note?: string | null;
+      createdAt: string;
+    }>
+  >;
   approve(id: number, ownerId: number): Promise<boolean>;
   reject(id: number, ownerId: number): Promise<boolean>;
-  pollApprovedForTable(ownerId: number, area: string, tableLabel: string): Promise<Array<{ id: number; items: any[]; note?: string | null }>>;
+  pollApprovedForTable(
+    ownerId: number,
+    area: string,
+    tableLabel: string,
+  ): Promise<Array<{ id: number; items: any[]; note?: string | null }>>;
   markApplied(ids: number[]): Promise<boolean>;
 }
 
@@ -280,7 +347,15 @@ export interface ApiSettings {
   setPrinter(input: SetPrinterInput): Promise<SettingsDTO>;
   testPrintVerbose?(): Promise<TestPrintResult>;
   listPrinters?(): Promise<SystemPrinterDTO[]>;
-  listSerialPorts?(): Promise<{ path: string; manufacturer?: string; serialNumber?: string; vendorId?: string; productId?: string }[]>;
+  listSerialPorts?(): Promise<
+    {
+      path: string;
+      manufacturer?: string;
+      serialNumber?: string;
+      vendorId?: string;
+      productId?: string;
+    }[]
+  >;
 }
 
 export type TestPrintResult = { ok: boolean; error?: string };
@@ -294,12 +369,17 @@ export type BillingState = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
 export interface BillingStatusDTO {
   status: BillingState;
   currentPeriodEnd?: string | null;
+  cancelAt?: string | null;
+  cancelRequestedAt?: string | null;
+  pausedAt?: string | null;
   message?: string | null;
   billingEnabled?: boolean;
 }
 
 export interface ApiBilling {
   getStatus(): Promise<BillingStatusDTO>;
+  // Admin-only: refresh from Stripe (best-effort) so cancellations show immediately.
+  getStatusLive?(): Promise<BillingStatusDTO>;
   createCheckoutSession(): Promise<{ url?: string; error?: string }>;
   createPortalSession?(): Promise<{ url?: string; error?: string }>;
 }
@@ -339,7 +419,9 @@ export interface BackupFileDTO {
 export interface ApiBackups {
   list(): Promise<BackupFileDTO[]>;
   create(): Promise<{ ok: boolean; file?: string; error?: string }>;
-  restore(input: { name: string }): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }>;
+  restore(input: {
+    name: string;
+  }): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }>;
 }
 
 export interface KdsTicketDTO {
@@ -355,9 +437,22 @@ export interface KdsTicketDTO {
 
 export interface ApiKds {
   openWindow(): Promise<boolean>;
-  listTickets(input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; status: 'NEW' | 'DONE'; limit?: number }): Promise<KdsTicketDTO[]>;
-  bump(input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; ticketId: number; userId?: number }): Promise<boolean>;
-  bumpItem(input: { station: 'KITCHEN' | 'BAR' | 'DESSERT'; ticketId: number; itemIdx: number; userId?: number }): Promise<boolean>;
+  listTickets(input: {
+    station: 'KITCHEN' | 'BAR' | 'DESSERT';
+    status: 'NEW' | 'DONE';
+    limit?: number;
+  }): Promise<KdsTicketDTO[]>;
+  bump(input: {
+    station: 'KITCHEN' | 'BAR' | 'DESSERT';
+    ticketId: number;
+    userId?: number;
+  }): Promise<boolean>;
+  bumpItem(input: {
+    station: 'KITCHEN' | 'BAR' | 'DESSERT';
+    ticketId: number;
+    itemIdx: number;
+    userId?: number;
+  }): Promise<boolean>;
   debug(): Promise<any>;
 }
 
@@ -397,19 +492,38 @@ export interface MemoryStats {
   average: { heapUsed: number; rss: number };
   peak: { heapUsed: number; rss: number; timestamp: number };
   trend: 'increasing' | 'decreasing' | 'stable';
-  formatted: { heapUsed: string; heapTotal: string; rss: string; external: string };
+  formatted: {
+    heapUsed: string;
+    heapTotal: string;
+    rss: string;
+    external: string;
+  };
 }
 
 export interface ApiAdmin {
   getOverview(): Promise<AdminOverviewDTO>;
   openWindow(): Promise<boolean>;
-  listShifts(input?: { startIso?: string; endIso?: string }): Promise<AdminShiftDTO[]>;
-  listTicketCounts(input?: { startIso?: string; endIso?: string }): Promise<{ id: number; name: string; active: boolean; tickets: number }[]>;
-  listTicketsByUser(userId: number, range?: { startIso?: string; endIso?: string }): Promise<AdminTicketDTO[]>;
-  listNotifications(input?: { onlyUnread?: boolean; limit?: number }): Promise<AdminNotificationDTO[]>;
+  listShifts(input?: {
+    startIso?: string;
+    endIso?: string;
+  }): Promise<AdminShiftDTO[]>;
+  listTicketCounts(input?: {
+    startIso?: string;
+    endIso?: string;
+  }): Promise<{ id: number; name: string; active: boolean; tickets: number }[]>;
+  listTicketsByUser(
+    userId: number,
+    range?: { startIso?: string; endIso?: string },
+  ): Promise<AdminTicketDTO[]>;
+  listNotifications(input?: {
+    onlyUnread?: boolean;
+    limit?: number;
+  }): Promise<AdminNotificationDTO[]>;
   markAllNotificationsRead(): Promise<boolean>;
   getTopSellingToday(): Promise<TopSellingDTO | null>;
-  getSalesTrends(input: { range: 'daily' | 'weekly' | 'monthly' }): Promise<SalesTrendDTO>;
+  getSalesTrends(input: {
+    range: 'daily' | 'weekly' | 'monthly';
+  }): Promise<SalesTrendDTO>;
   getSecurityLog(limit?: number): Promise<SecurityLogEntry[]>;
   getMemoryStats(): Promise<MemoryStats>;
   exportMemorySnapshot(): Promise<string>;
@@ -425,9 +539,16 @@ export interface MyReportsOverviewDTO {
 export interface ApiReports {
   getMyOverview(userId: number): Promise<MyReportsOverviewDTO>;
   getMyTopSellingToday(userId: number): Promise<TopSellingDTO | null>;
-  getMySalesTrends(input: { userId: number; range: 'daily' | 'weekly' | 'monthly' }): Promise<SalesTrendDTO>;
+  getMySalesTrends(input: {
+    userId: number;
+    range: 'daily' | 'weekly' | 'monthly';
+  }): Promise<SalesTrendDTO>;
   listMyActiveTickets(userId: number): Promise<ReportTicketDTO[]>;
-  listMyPaidTickets(input: { userId: number; q?: string; limit?: number }): Promise<ReportTicketDTO[]>;
+  listMyPaidTickets(input: {
+    userId: number;
+    q?: string;
+    limit?: number;
+  }): Promise<ReportTicketDTO[]>;
 }
 
 export interface ReportTicketDTO {
@@ -439,7 +560,13 @@ export interface ReportTicketDTO {
   covers?: number | null;
   note?: string | null;
   userName?: string | null;
-  paymentMethod?: 'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE' | 'MIXED' | null;
+  paymentMethod?:
+    | 'CASH'
+    | 'CARD'
+    | 'GIFT_CARD'
+    | 'ROOM_CHARGE'
+    | 'MIXED'
+    | null;
   vatEnabled?: boolean | null;
   serviceChargeEnabled?: boolean | null;
   serviceChargeApplied?: boolean | null;
@@ -450,7 +577,15 @@ export interface ReportTicketDTO {
   discountValue?: number | null;
   discountAmount?: number | null;
   discountReason?: string | null;
-  items: { sku?: string; name: string; qty: number; unitPrice: number; vatRate?: number; note?: string; voided?: boolean }[];
+  items: {
+    sku?: string;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate?: number;
+    note?: string;
+    voided?: boolean;
+  }[];
   subtotal: number;
   vat: number;
   total: number;
@@ -462,7 +597,14 @@ export interface AdminTicketDTO {
   tableLabel: string;
   covers: number | null;
   createdAt: string;
-  items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string; voided?: boolean }[];
+  items: {
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate?: number;
+    note?: string;
+    voided?: boolean;
+  }[];
   note?: string | null;
   subtotal: number;
   vat: number;
@@ -497,11 +639,30 @@ export interface SalesTrendDTO {
 
 // Table layout
 export type TableLayoutNode =
-  | { id: number; kind?: 'TABLE'; label: string; x: number; y: number; status: 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED' }
-  | { id: number; kind: 'AREA'; label: string; x: number; y: number; w: number; h: number };
+  | {
+      id: number;
+      kind?: 'TABLE';
+      label: string;
+      x: number;
+      y: number;
+      status: 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED';
+    }
+  | {
+      id: number;
+      kind: 'AREA';
+      label: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    };
 export interface ApiLayout {
   get(userId: number, area: string): Promise<TableLayoutNode[] | null>;
-  save(userId: number, area: string, nodes: TableLayoutNode[]): Promise<boolean>;
+  save(
+    userId: number,
+    area: string,
+    nodes: TableLayoutNode[],
+  ): Promise<boolean>;
 }
 
 export interface ApiCovers {
@@ -516,17 +677,63 @@ declare global {
 }
 
 export interface ApiTickets {
-  log(input: { userId: number; area: string; tableLabel: string; covers: number | null; items: { sku?: string; name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[]; note?: string | null }): Promise<boolean>;
-  getLatestForTable(area: string, tableLabel: string): Promise<{
-    items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[];
+  log(input: {
+    userId: number;
+    area: string;
+    tableLabel: string;
+    covers: number | null;
+    items: {
+      sku?: string;
+      name: string;
+      qty: number;
+      unitPrice: number;
+      vatRate?: number;
+      note?: string;
+    }[];
+    note?: string | null;
+  }): Promise<boolean>;
+  getLatestForTable(
+    area: string,
+    tableLabel: string,
+  ): Promise<{
+    items: {
+      name: string;
+      qty: number;
+      unitPrice: number;
+      vatRate?: number;
+      note?: string;
+    }[];
     note?: string | null;
     covers?: number | null;
     createdAt: string;
     userId: number;
   } | null>;
-  voidItem(input: { userId: number; area: string; tableLabel: string; item: { name: string; qty?: number; unitPrice: number; vatRate?: number; note?: string } }): Promise<boolean>;
-  voidTicket(input: { userId: number; area: string; tableLabel: string; reason?: string }): Promise<boolean>;
-  getTableTooltip(area: string, tableLabel: string): Promise<{ covers: number | null; firstAt: string | null; total: number } | null>;
+  voidItem(input: {
+    userId: number;
+    area: string;
+    tableLabel: string;
+    item: {
+      name: string;
+      qty?: number;
+      unitPrice: number;
+      vatRate?: number;
+      note?: string;
+    };
+  }): Promise<boolean>;
+  voidTicket(input: {
+    userId: number;
+    area: string;
+    tableLabel: string;
+    reason?: string;
+  }): Promise<boolean>;
+  getTableTooltip(
+    area: string,
+    tableLabel: string,
+  ): Promise<{
+    covers: number | null;
+    firstAt: string | null;
+    total: number;
+  } | null>;
   print(input: PrintTicketInput): Promise<boolean>;
 }
 
@@ -534,7 +741,17 @@ export interface PrintTicketInput {
   area: string;
   tableLabel: string;
   covers?: number | null;
-  items: { sku?: string; name: string; qty: number; unitPrice: number; vatRate?: number; note?: string; station?: 'KITCHEN' | 'BAR' | 'DESSERT'; categoryId?: number; categoryName?: string }[];
+  items: {
+    sku?: string;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate?: number;
+    note?: string;
+    station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+    categoryId?: number;
+    categoryName?: string;
+  }[];
   note?: string | null;
   userName?: string;
   // When true, store a receipt snapshot for history but don't actually print.
@@ -590,5 +807,3 @@ export interface ApiUpdater {
   downloadUpdate(): Promise<{ success?: boolean; error?: string }>;
   installUpdate(): Promise<{ success?: boolean; error?: string }>;
 }
-
-

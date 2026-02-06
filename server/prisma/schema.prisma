@@ -21,6 +21,11 @@ model Business {
   billingUpdatedAt   DateTime?
   billingPeriodEnd   DateTime?
   billingPausedAt    DateTime?
+  // Stripe cancellation warning fields:
+  // - cancelAt: when the subscription will end (if cancel_at_period_end=true)
+  // - cancelRequestedAt: when cancellation was requested (best-effort)
+  billingCancelAt         DateTime?
+  billingCancelRequestedAt DateTime?
   stripeCustomerId   String? @unique
   stripeSubscriptionId String? @unique
 

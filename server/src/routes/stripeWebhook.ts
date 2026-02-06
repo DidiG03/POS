@@ -70,6 +70,12 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
         const sub = event.data.object as Stripe.Subscription;
         const customerId = typeof sub.customer === 'string' ? sub.customer : '';
         const status = sub.status === 'active' || sub.status === 'trialing' ? 'ACTIVE' : sub.status === 'past_due' ? 'PAST_DUE' : 'PAST_DUE';
+        // Cancellation warning (best-effort): if the customer canceled but it's still active until period end,
+        // we keep billing ACTIVE but store cancelAt/cancelRequestedAt so the UI can show a warning.
+        const cancelAtPeriodEnd = Boolean((sub as any)?.cancel_at_period_end);
+        const cancelAt = Number((sub as any)?.cancel_at || 0);
+        const canceledAt = Number((sub as any)?.canceled_at || 0);
+
         // Stripe's generated TS types in this repo don't expose subscription.current_period_end,
         // but subscription items do expose current_period_end. Use the max item period end as best-effort.
         let periodEnd: number | null = null;
@@ -89,18 +95,45 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
           subscriptionId: sub.id,
           periodEnd,
         });
+        // Update cancellation fields (separate update to keep helper small and flexible)
+        try {
+          await prisma.business.updateMany({
+            where: { stripeCustomerId: customerId },
+            data: {
+              billingCancelAt: cancelAtPeriodEnd && cancelAt > 0 ? new Date(cancelAt * 1000) : null,
+              billingCancelRequestedAt: cancelAtPeriodEnd
+                ? (canceledAt > 0 ? new Date(canceledAt * 1000) : new Date())
+                : null,
+            } as any,
+          });
+        } catch {
+          // ignore
+        }
         break;
       }
       case 'customer.subscription.deleted': {
         const sub = event.data.object as Stripe.Subscription;
         const customerId = typeof sub.customer === 'string' ? sub.customer : '';
         await setBusinessBillingByCustomer(customerId, { status: 'PAUSED', subscriptionId: null, periodEnd: null, pausedAt: Math.floor(Date.now() / 1000) });
+        // Mark cancellation timestamp for UI warning/history.
+        try {
+          const now = new Date();
+          await prisma.business.updateMany({
+            where: { stripeCustomerId: customerId },
+            data: {
+              billingCancelAt: now,
+              billingCancelRequestedAt: now,
+            } as any,
+          });
+        } catch {
+          // ignore
+        }
         break;
       }
       default:
         break;
     }
-  } catch (e) {
+  } catch {
     // don't retry forever; Stripe will retry webhooks on 5xx
     return res.status(500).json({ error: 'webhook handler failed' });
   }

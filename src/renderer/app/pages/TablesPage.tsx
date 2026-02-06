@@ -1,14 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSessionStore } from '../../stores/session';
-import { useOrderContext } from '../../stores/orderContext';
+import { useOrderContext } from '@shared/stores/orderContext';
 import { useNavigate } from 'react-router-dom';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useTicketStore } from '../../stores/ticket';
 import { formatMoneyCompact } from '../../utils/format';
 
 type TableStatus = 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED';
-type TableNode = { id: number; kind?: 'TABLE'; label: string; x: number; y: number; status: TableStatus };
-type AreaNode = { id: number; kind: 'AREA'; label: string; x: number; y: number; w: number; h: number };
+type TableNode = {
+  id: number;
+  kind?: 'TABLE';
+  label: string;
+  x: number;
+  y: number;
+  status: TableStatus;
+};
+type AreaNode = {
+  id: number;
+  kind: 'AREA';
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
 type LayoutNode = TableNode | AreaNode;
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
 
@@ -25,8 +40,12 @@ export default function TablesPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('occupied');
   const [currency, setCurrency] = useState<string>('EUR');
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-  const { setSelectedTable, pendingAction, setPendingAction } = useOrderContext();
+  const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+  const { setSelectedTable, pendingAction, setPendingAction } =
+    useOrderContext();
   const navigate = useNavigate();
   const { isOpen, openMap, setAll, setOpen } = useTableStatus();
   const [openLoaded, setOpenLoaded] = useState(false);
@@ -34,15 +53,23 @@ export default function TablesPage() {
   useEffect(() => {
     // Expose setOpen for SSE updates
     (window as any).__tableStatusStore__ = { setOpen };
-    return () => { (window as any).__tableStatusStore__ = null; };
+    return () => {
+      (window as any).__tableStatusStore__ = null;
+    };
   }, [setOpen]);
   const { hydrate, clear } = useTicketStore();
 
   const [userMap, setUserMap] = useState<Record<number, string>>({});
-  const [initialsByTable, setInitialsByTable] = useState<Record<string, string>>({});
+  const [initialsByTable, setInitialsByTable] = useState<
+    Record<string, string>
+  >({});
   const [ownerByTable, setOwnerByTable] = useState<Record<string, number>>({});
-  const [metricsByTable, setMetricsByTable] = useState<Record<string, { covers: number | null; total: number }>>({});
-  const [openedAtByTable, setOpenedAtByTable] = useState<Record<string, string>>({});
+  const [metricsByTable, setMetricsByTable] = useState<
+    Record<string, { covers: number | null; total: number }>
+  >({});
+  const [openedAtByTable, setOpenedAtByTable] = useState<
+    Record<string, string>
+  >({});
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   function formatElapsed(ms: number) {
@@ -50,7 +77,8 @@ export default function TablesPage() {
     const hh = Math.floor(s / 3600);
     const mm = Math.floor((s % 3600) / 60);
     const ss = s % 60;
-    if (hh > 0) return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+    if (hh > 0)
+      return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
     return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
   }
 
@@ -70,12 +98,19 @@ export default function TablesPage() {
   useEffect(() => {
     (async () => {
       const s = await window.api.settings.get();
-      setCurrency(String((s as any)?.currency || 'EUR').trim().toUpperCase() || 'EUR');
-      setAreas(s.tableAreas ?? [
-        { name: 'Main Hall', count: s.tableCountMainHall ?? 8 },
-        { name: 'Terrace', count: s.tableCountTerrace ?? 4 },
-      ]);
-      if (!s.tableAreas && area !== 'Main Hall' && area !== 'Terrace') setArea('Main Hall');
+      setCurrency(
+        String((s as any)?.currency || 'EUR')
+          .trim()
+          .toUpperCase() || 'EUR',
+      );
+      setAreas(
+        s.tableAreas ?? [
+          { name: 'Main Hall', count: s.tableCountMainHall ?? 8 },
+          { name: 'Terrace', count: s.tableCountTerrace ?? 4 },
+        ],
+      );
+      if (!s.tableAreas && area !== 'Main Hall' && area !== 'Terrace')
+        setArea('Main Hall');
     })();
   }, []);
 
@@ -84,7 +119,9 @@ export default function TablesPage() {
     let timer: any;
     let cancelled = false;
     const loop = async () => {
-      const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+      const hidden =
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden';
       try {
         if (hidden) return;
         const open = await window.api.tables.listOpen();
@@ -96,7 +133,9 @@ export default function TablesPage() {
       } catch (e: any) {
         void e;
         if (!cancelled) {
-          setOpenLoadError('Loading occupied tables… (slow/offline network). Retrying…');
+          setOpenLoadError(
+            'Loading occupied tables… (slow/offline network). Retrying…',
+          );
         }
       } finally {
         // Slow down while hidden to reduce background work.
@@ -111,7 +150,11 @@ export default function TablesPage() {
   }, [setAll]);
 
   function generateDefaultNodes(areaName: string, count: number): TableNode[] {
-    const width = 760; const height = 460; const cx = width / 2; const cy = height / 2; const radius = Math.min(cx, cy) - 60;
+    const width = 760;
+    const height = 460;
+    const cx = width / 2;
+    const cy = height / 2;
+    const radius = Math.min(cx, cy) - 60;
     // Always use 'T' prefix across all areas so we don't create multiple label schemes
     const baseLabel = 'T';
     const n = Math.max(0, count);
@@ -119,7 +162,13 @@ export default function TablesPage() {
       const angle = (i / Math.max(1, n)) * Math.PI * 2;
       const x = cx + radius * Math.cos(angle);
       const y = cy + radius * Math.sin(angle);
-      return { id: i + 1, label: `${baseLabel}${i + 1}`, x, y, status: 'FREE' } as TableNode;
+      return {
+        id: i + 1,
+        label: `${baseLabel}${i + 1}`,
+        x,
+        y,
+        status: 'FREE',
+      } as TableNode;
     });
   }
 
@@ -154,7 +203,7 @@ export default function TablesPage() {
             return { ...n, kind: 'TABLE', label: `T${num}` } as TableNode;
           });
           const normalizedAreas = areasSaved.map((a: any, idx: number) => ({
-            id: Number(a?.id) || (-(idx + 1)),
+            id: Number(a?.id) || -(idx + 1),
             kind: 'AREA' as const,
             label: String(a?.label || 'Area'),
             x: Number(a?.x || 160),
@@ -192,9 +241,13 @@ export default function TablesPage() {
           if (!isOpen(area, n.label)) return;
           const k = `${area}:${n.label}`;
           try {
-            const data = await window.api.tickets.getLatestForTable(area, n.label);
+            const data = await window.api.tickets.getLatestForTable(
+              area,
+              n.label,
+            );
             if (data?.userId) ownerUpdates.push([k, data.userId]);
-            if (data?.userId && userMap[data.userId]) badgeUpdates.push([k, toInitials(userMap[data.userId])]);
+            if (data?.userId && userMap[data.userId])
+              badgeUpdates.push([k, toInitials(userMap[data.userId])]);
           } catch (e) {
             void e;
           }
@@ -222,7 +275,10 @@ export default function TablesPage() {
 
   const openLabelsInArea = useMemo(() => {
     if (!nodes) return [];
-    return nodes.filter(isTableNode).filter((n) => isOpen(area, n.label)).map((n) => n.label);
+    return nodes
+      .filter(isTableNode)
+      .filter((n) => isOpen(area, n.label))
+      .map((n) => n.label);
   }, [nodes, area, isOpen, openMap]);
 
   // Bottom filters: when Covers/Revenue mode is active, prefetch per-table metrics for open tables.
@@ -231,21 +287,25 @@ export default function TablesPage() {
     if (!nodes || !area) return;
     if (viewMode === 'occupied' || viewMode === 'time') return;
     let cancelled = false;
-    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
+    const isHidden = () =>
+      typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
     const load = async () => {
       if (isHidden()) return;
       const labels = openLabelsInArea;
       if (!labels.length) {
         setMetricsByTable((prev) => {
-          const next: Record<string, { covers: number | null; total: number }> = {};
-          for (const [k, v] of Object.entries(prev)) if (!k.startsWith(`${area}:`)) next[k] = v;
+          const next: Record<string, { covers: number | null; total: number }> =
+            {};
+          for (const [k, v] of Object.entries(prev))
+            if (!k.startsWith(`${area}:`)) next[k] = v;
           return next;
         });
         return;
       }
 
-      const updates: Array<[string, { covers: number | null; total: number }]> = [];
+      const updates: Array<[string, { covers: number | null; total: number }]> =
+        [];
       const queue = [...labels];
       const concurrency = Math.min(6, queue.length);
       const workers = Array.from({ length: concurrency }).map(async () => {
@@ -256,13 +316,24 @@ export default function TablesPage() {
             // - covers.getLast() for covers
             // - tickets.getLatestForTable() for a current snapshot total
             const [last, covers] = await Promise.all([
-              (window as any).api.tickets.getLatestForTable(area, label).catch(() => null),
+              (window as any).api.tickets
+                .getLatestForTable(area, label)
+                .catch(() => null),
               (window as any).api.covers.getLast(area, label).catch(() => null),
             ]);
             const items = Array.isArray(last?.items) ? last.items : [];
-            const total = items.filter((it: any) => !it?.voided).reduce((s: number, it: any) => s + Number(it?.unitPrice || 0) * Number(it?.qty || 1), 0);
+            const total = items
+              .filter((it: any) => !it?.voided)
+              .reduce(
+                (s: number, it: any) =>
+                  s + Number(it?.unitPrice || 0) * Number(it?.qty || 1),
+                0,
+              );
             const cov = covers ?? last?.covers ?? null;
-            updates.push([`${area}:${label}`, { covers: cov, total: Number(total || 0) }]);
+            updates.push([
+              `${area}:${label}`,
+              { covers: cov, total: Number(total || 0) },
+            ]);
           } catch (e) {
             void e;
           }
@@ -272,7 +343,9 @@ export default function TablesPage() {
       if (cancelled) return;
 
       setMetricsByTable((prev) => {
-        const next: Record<string, { covers: number | null; total: number }> = { ...prev };
+        const next: Record<string, { covers: number | null; total: number }> = {
+          ...prev,
+        };
         for (const [k, v] of updates) next[k] = v;
         // Remove metrics for tables no longer open in this area
         for (const k of Object.keys(next)) {
@@ -298,7 +371,8 @@ export default function TablesPage() {
     if (!nodes || !area) return;
     if (viewMode !== 'time') return;
     let cancelled = false;
-    const isHidden = () => (typeof document !== 'undefined' && document.visibilityState === 'hidden');
+    const isHidden = () =>
+      typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
     const load = async () => {
       if (isHidden()) return;
@@ -306,7 +380,8 @@ export default function TablesPage() {
       if (!labels.length) {
         setOpenedAtByTable((prev) => {
           const next: Record<string, string> = {};
-          for (const [k, v] of Object.entries(prev)) if (!k.startsWith(`${area}:`)) next[k] = v;
+          for (const [k, v] of Object.entries(prev))
+            if (!k.startsWith(`${area}:`)) next[k] = v;
           return next;
         });
         return;
@@ -319,7 +394,9 @@ export default function TablesPage() {
         while (queue.length && !cancelled) {
           const label = queue.shift()!;
           try {
-            const tip = await (window as any).api.tickets.getTableTooltip(area, label).catch(() => null);
+            const tip = await (window as any).api.tickets
+              .getTableTooltip(area, label)
+              .catch(() => null);
             const iso = String((tip as any)?.firstAt || '');
             if (iso) updates.push([`${area}:${label}`, iso]);
           } catch (e) {
@@ -354,7 +431,11 @@ export default function TablesPage() {
   useEffect(() => {
     if (viewMode !== 'time') return;
     const t = window.setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      )
+        return;
       setNowMs(Date.now());
     }, 1000);
     return () => window.clearInterval(t);
@@ -377,7 +458,10 @@ export default function TablesPage() {
       }
       const update = () => {
         const r = el.getBoundingClientRect();
-        setCanvasSize({ w: Math.max(0, Math.floor(r.width)), h: Math.max(0, Math.floor(r.height)) });
+        setCanvasSize({
+          w: Math.max(0, Math.floor(r.width)),
+          h: Math.max(0, Math.floor(r.height)),
+        });
       };
       update();
       ro = new ResizeObserver(() => update());
@@ -386,7 +470,11 @@ export default function TablesPage() {
     setup();
     return () => {
       cancelled = true;
-      try { ro?.disconnect(); } catch { /* ignore */ }
+      try {
+        ro?.disconnect();
+      } catch {
+        /* ignore */
+      }
     };
   }, []);
 
@@ -432,7 +520,10 @@ export default function TablesPage() {
     if (cw < 200 || ch < 200) return { scale: 1, tx: 0, ty: 0 };
 
     const tableHalf = 32; // circle is 64x64, positioned at center
-    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
     for (const n of cur as any[]) {
       if (!n) continue;
       if (String(n.kind || 'TABLE') === 'AREA') {
@@ -453,12 +544,21 @@ export default function TablesPage() {
         maxY = Math.max(maxY, y + tableHalf);
       }
     }
-    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return { scale: 1, tx: 0, ty: 0 };
+    if (
+      !Number.isFinite(minX) ||
+      !Number.isFinite(minY) ||
+      !Number.isFinite(maxX) ||
+      !Number.isFinite(maxY)
+    )
+      return { scale: 1, tx: 0, ty: 0 };
     const bw = Math.max(1, maxX - minX);
     const bh = Math.max(1, maxY - minY);
 
     const maxScale = 1.6;
-    const scale = Math.max(1, Math.min(maxScale, (cw - pad * 2) / bw, (ch - pad * 2) / bh));
+    const scale = Math.max(
+      1,
+      Math.min(maxScale, (cw - pad * 2) / bw, (ch - pad * 2) / bh),
+    );
 
     const tx = (cw - bw * scale) / 2 - minX * scale;
     const ty = (ch - bh * scale) / 2 - minY * scale;
@@ -497,7 +597,15 @@ export default function TablesPage() {
                   const x = rect ? Math.max(120, rect.width * 0.5) : 240;
                   const y = rect ? Math.max(120, rect.height * 0.4) : 180;
                   const id = nextAreaId(cur);
-                  const node: AreaNode = { id, kind: 'AREA', label: 'Area', x, y, w: 260, h: 160 };
+                  const node: AreaNode = {
+                    id,
+                    kind: 'AREA',
+                    label: 'Area',
+                    x,
+                    y,
+                    w: 260,
+                    h: 160,
+                  };
                   return [node, ...cur];
                 });
               }}
@@ -520,7 +628,6 @@ export default function TablesPage() {
         </div>
       </div>
 
-
       <div
         ref={canvasRef}
         className={`w-full flex-1 min-h-0 rounded bg-gray-800 ${editable ? 'overflow-hidden' : 'overflow-auto'}`}
@@ -530,7 +637,10 @@ export default function TablesPage() {
           touchAction: editable ? ('none' as any) : ('pan-x pan-y' as any),
         }}
       >
-        <div className="relative" style={{ width: worldSize.w, height: worldSize.h }}>
+        <div
+          className="relative"
+          style={{ width: worldSize.w, height: worldSize.h }}
+        >
           {/* NOTE: In view mode we transform the whole plan (grid + nodes) so it fills the screen */}
           <div
             className="absolute inset-0"
@@ -559,81 +669,135 @@ export default function TablesPage() {
                 key={a.id}
                 node={a}
                 editable={editable}
-                onMove={(x, y) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), x, y } : n)) ?? prev)}
-                onResize={(w, h) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), w, h } : n)) ?? prev)}
-                onRename={(label) => setNodes((prev) => prev?.map((n) => (n.id === a.id ? { ...(n as any), label } : n)) ?? prev)}
-                onDelete={() => setNodes((prev) => prev?.filter((n) => n.id !== a.id) ?? prev)}
+                onMove={(x, y) =>
+                  setNodes(
+                    (prev) =>
+                      prev?.map((n) =>
+                        n.id === a.id ? { ...(n as any), x, y } : n,
+                      ) ?? prev,
+                  )
+                }
+                onResize={(w, h) =>
+                  setNodes(
+                    (prev) =>
+                      prev?.map((n) =>
+                        n.id === a.id ? { ...(n as any), w, h } : n,
+                      ) ?? prev,
+                  )
+                }
+                onRename={(label) =>
+                  setNodes(
+                    (prev) =>
+                      prev?.map((n) =>
+                        n.id === a.id ? { ...(n as any), label } : n,
+                      ) ?? prev,
+                  )
+                }
+                onDelete={() =>
+                  setNodes((prev) => prev?.filter((n) => n.id !== a.id) ?? prev)
+                }
               />
             ))}
 
-            {openLoaded && nodes?.filter(isTableNode).map((t, idx) => (
-              <DraggableCircle
-                key={t.id}
-                node={t}
-                editable={editable}
-                area={area}
-                onMove={(x, y) =>
-                  setNodes((prev) =>
-                    prev?.map((n) => (n.id === t.id ? { ...(n as any), x, y } : n)) ?? prev,
-                  )
-                }
-                onClick={() => {
-                  if (editable) return;
-                  setSelectedTable({ id: t.id, label: t.label, area });
-                  const action = pendingAction;
-                  if (action) setPendingAction(null);
-                  // If table is open, hydrate current ticket from last sent ticket and skip covers prompt
-                  if (isOpen(area, t.label)) {
-                    (async () => {
-                      const data = await window.api.tickets.getLatestForTable(area, t.label);
-                      if (data) hydrate({ items: data.items as any, note: data.note || '' });
-                      navigate('/app/order');
-                    })();
-                    return;
+            {openLoaded &&
+              nodes?.filter(isTableNode).map((t) => (
+                <DraggableCircle
+                  key={t.id}
+                  node={t}
+                  editable={editable}
+                  area={area}
+                  onMove={(x, y) =>
+                    setNodes(
+                      (prev) =>
+                        prev?.map((n) =>
+                          n.id === t.id ? { ...(n as any), x, y } : n,
+                        ) ?? prev,
+                    )
                   }
-                  // If table is free, start with a clean ticket
-                  clear();
-                  navigate('/app/order');
-                  if (action) {
-                    setTimeout(() => {
-                      // no-op: could show a toast here if desired
-                    }, 0);
+                  onClick={() => {
+                    if (editable) return;
+                    setSelectedTable({ id: t.id, label: t.label, area });
+                    const action = pendingAction;
+                    if (action) setPendingAction(null);
+                    // If table is open, hydrate current ticket from last sent ticket and skip covers prompt
+                    if (isOpen(area, t.label)) {
+                      (async () => {
+                        const data = await window.api.tickets.getLatestForTable(
+                          area,
+                          t.label,
+                        );
+                        if (data)
+                          hydrate({
+                            items: data.items as any,
+                            note: data.note || '',
+                          });
+                        navigate('/app/order');
+                      })();
+                      return;
+                    }
+                    // If table is free, start with a clean ticket
+                    clear();
+                    navigate('/app/order');
+                    if (action) {
+                      setTimeout(() => {
+                        // no-op: could show a toast here if desired
+                      }, 0);
+                    }
+                  }}
+                  colorClass={(() => {
+                    if (!isOpen(area, t.label)) return GREEN;
+                    const ownerId = ownerByTable[`${area}:${t.label}`];
+                    const uid = user?.id;
+                    if (
+                      ownerId != null &&
+                      uid != null &&
+                      Number(ownerId) === Number(uid)
+                    )
+                      return RED;
+                    return ORANGE;
+                  })()}
+                  badge={
+                    isOpen(area, t.label)
+                      ? initialsByTable[`${area}:${t.label}`]
+                      : undefined
                   }
-                }}
-                colorClass={(() => {
-                  if (!isOpen(area, t.label)) return GREEN;
-                  const ownerId = ownerByTable[`${area}:${t.label}`];
-                  const uid = user?.id;
-                  if (ownerId != null && uid != null && Number(ownerId) === Number(uid)) return RED;
-                  return ORANGE;
-                })()}
-                badge={isOpen(area, t.label) ? initialsByTable[`${area}:${t.label}`] : undefined}
-                ownerName={(ownerByTable[`${area}:${t.label}`] && userMap[ownerByTable[`${area}:${t.label}`]]) || undefined}
-                statusText={isOpen(area, t.label) ? 'OPEN' : 'FREE'}
-                viewMode={viewMode}
-                metricText={(() => {
-                  const k = `${area}:${t.label}`;
-                  const m = metricsByTable[k];
-                  if (!isOpen(area, t.label)) return null;
-                  if (viewMode === 'covers') return m ? String(m.covers ?? '—') : '…';
-                  if (viewMode === 'revenue') return m ? formatMoney(m.total) : '…';
-                  if (viewMode === 'time') {
-                    const iso = openedAtByTable[k];
-                    const ms = iso ? new Date(iso).getTime() : NaN;
-                    return Number.isFinite(ms) ? formatElapsed(nowMs - ms) : '…';
+                  ownerName={
+                    (ownerByTable[`${area}:${t.label}`] &&
+                      userMap[ownerByTable[`${area}:${t.label}`]]) ||
+                    undefined
                   }
-                  return null;
-                })()}
-              />
-            ))}
+                  statusText={isOpen(area, t.label) ? 'OPEN' : 'FREE'}
+                  viewMode={viewMode}
+                  metricText={(() => {
+                    const k = `${area}:${t.label}`;
+                    const m = metricsByTable[k];
+                    if (!isOpen(area, t.label)) return null;
+                    if (viewMode === 'covers')
+                      return m ? String(m.covers ?? '—') : '…';
+                    if (viewMode === 'revenue')
+                      return m ? formatMoney(m.total) : '…';
+                    if (viewMode === 'time') {
+                      const iso = openedAtByTable[k];
+                      const ms = iso ? new Date(iso).getTime() : NaN;
+                      return Number.isFinite(ms)
+                        ? formatElapsed(nowMs - ms)
+                        : '…';
+                    }
+                    return null;
+                  })()}
+                />
+              ))}
           </div>
 
           {!openLoaded && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-900/60">
               <div className="bg-gray-800 border border-gray-700 rounded p-4 w-full max-w-sm">
-                <div className="text-sm font-semibold mb-1">Loading tables…</div>
+                <div className="text-sm font-semibold mb-1">
+                  Loading tables…
+                </div>
                 <div className="text-xs opacity-80">
-                  {openLoadError || 'Fetching occupied tables from the host PC.'}
+                  {openLoadError ||
+                    'Fetching occupied tables from the host PC.'}
                 </div>
                 <div className="mt-3 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
@@ -642,24 +806,43 @@ export default function TablesPage() {
               </div>
             </div>
           )}
-        {/* Sample bar counter/obstacles */}
-        {area === 'Main Hall' && (
-          <div className="absolute bottom-6 left-6 right-6 h-4 rounded bg-gray-700 opacity-70" title="Bar" />
-        )}
+          {/* Sample bar counter/obstacles */}
+          {area === 'Main Hall' && (
+            <div
+              className="absolute bottom-6 left-6 right-6 h-4 rounded bg-gray-700 opacity-70"
+              title="Bar"
+            />
+          )}
         </div>
       </div>
 
       <div className="flex items-center justify-center gap-2 bg-gray-800 rounded p-2">
-        <ModeButton active={viewMode === 'occupied'} onClick={() => setViewMode('occupied')} label="Occupied">
+        <ModeButton
+          active={viewMode === 'occupied'}
+          onClick={() => setViewMode('occupied')}
+          label="Occupied"
+        >
           <IconUsers />
         </ModeButton>
-        <ModeButton active={viewMode === 'covers'} onClick={() => setViewMode('covers')} label="Covers">
+        <ModeButton
+          active={viewMode === 'covers'}
+          onClick={() => setViewMode('covers')}
+          label="Covers"
+        >
           <IconCovers />
         </ModeButton>
-        <ModeButton active={viewMode === 'revenue'} onClick={() => setViewMode('revenue')} label="Revenue">
+        <ModeButton
+          active={viewMode === 'revenue'}
+          onClick={() => setViewMode('revenue')}
+          label="Revenue"
+        >
           <IconMoney />
         </ModeButton>
-        <ModeButton active={viewMode === 'time'} onClick={() => setViewMode('time')} label="Time">
+        <ModeButton
+          active={viewMode === 'time'}
+          onClick={() => setViewMode('time')}
+          label="Time"
+        >
           <IconClock />
         </ModeButton>
       </div>
@@ -685,7 +868,14 @@ function AreaRect({
   const ref = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const modeRef = useRef<null | 'DRAG' | 'E' | 'S' | 'SE'>(null);
-  const startRef = useRef<{ x: number; y: number; w: number; h: number; px: number; py: number } | null>(null);
+  const startRef = useRef<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    px: number;
+    py: number;
+  } | null>(null);
   const suppressClickUntilRef = useRef(0);
   const [renaming, setRenaming] = useState(false);
   const [draftLabel, setDraftLabel] = useState(node.label);
@@ -715,13 +905,26 @@ function AreaRect({
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as HTMLElement | null;
       // Don't start dragging/resizing when clicking interactive controls inside the box.
-      if (target && (target.closest('button') || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+      if (
+        target &&
+        (target.closest('button') ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA')
+      ) {
         return;
       }
       const t = e.target as HTMLElement;
       const h = String(t?.dataset?.handle || '');
-      modeRef.current = h === 'e' ? 'E' : h === 's' ? 'S' : h === 'se' ? 'SE' : 'DRAG';
-      startRef.current = { x: node.x, y: node.y, w: node.w, h: node.h, px: e.clientX, py: e.clientY };
+      modeRef.current =
+        h === 'e' ? 'E' : h === 's' ? 'S' : h === 'se' ? 'SE' : 'DRAG';
+      startRef.current = {
+        x: node.x,
+        y: node.y,
+        w: node.w,
+        h: node.h,
+        px: e.clientX,
+        py: e.clientY,
+      };
       (el as any).setPointerCapture?.(e.pointerId);
       e.preventDefault();
       e.stopPropagation();
@@ -733,9 +936,14 @@ function AreaRect({
       if (modeRef.current === 'DRAG') {
         onMove(startRef.current.x + dx, startRef.current.y + dy);
       } else {
-        const addW = modeRef.current === 'E' || modeRef.current === 'SE' ? dx : 0;
-        const addH = modeRef.current === 'S' || modeRef.current === 'SE' ? dy : 0;
-        onResize(Math.max(80, startRef.current.w + addW), Math.max(80, startRef.current.h + addH));
+        const addW =
+          modeRef.current === 'E' || modeRef.current === 'SE' ? dx : 0;
+        const addH =
+          modeRef.current === 'S' || modeRef.current === 'SE' ? dy : 0;
+        onResize(
+          Math.max(80, startRef.current.w + addW),
+          Math.max(80, startRef.current.h + addH),
+        );
       }
       e.preventDefault();
     };
@@ -743,7 +951,11 @@ function AreaRect({
       if (modeRef.current) suppressClickUntilRef.current = Date.now() + 250;
       modeRef.current = null;
       startRef.current = null;
-      try { (el as any).releasePointerCapture?.(e.pointerId); } catch { /* ignore */ }
+      try {
+        (el as any).releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* ignore */
+      }
       e.preventDefault();
     };
     el.addEventListener('pointerdown', onPointerDown);
@@ -762,9 +974,18 @@ function AreaRect({
     <div
       ref={ref}
       className={`absolute -translate-x-1/2 -translate-y-1/2 border-2 border-emerald-500 bg-transparent rounded ${editable ? 'cursor-move' : 'pointer-events-none'} select-none`}
-      style={{ left: node.x, top: node.y, width: node.w, height: node.h, touchAction: 'none' as any }}
+      style={{
+        left: node.x,
+        top: node.y,
+        width: node.w,
+        height: node.h,
+        touchAction: 'none' as any,
+      }}
       onClick={(e) => {
-        if (Date.now() < suppressClickUntilRef.current) { e.preventDefault(); e.stopPropagation(); }
+        if (Date.now() < suppressClickUntilRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
       }}
       onDoubleClick={() => {
         if (!editable) return;
@@ -800,7 +1021,9 @@ function AreaRect({
               if (next && next !== node.label) onRename(next);
               setRenaming(false);
             }}
-            onClick={(e) => { e.stopPropagation(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
           />
         ) : (
           node.label
@@ -811,15 +1034,31 @@ function AreaRect({
           <button
             type="button"
             className="absolute right-2 top-2 text-xs px-2 py-1 rounded bg-gray-900/60 border border-gray-700 hover:bg-gray-900"
-            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(); }}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onDelete();
+            }}
             title="Delete"
           >
             ✕
           </button>
-          <div data-handle="e" className="absolute top-1/2 -right-1 w-2 h-10 -translate-y-1/2 bg-emerald-500/80 rounded cursor-ew-resize" />
-          <div data-handle="s" className="absolute left-1/2 -bottom-1 w-10 h-2 -translate-x-1/2 bg-emerald-500/80 rounded cursor-ns-resize" />
-          <div data-handle="se" className="absolute -right-1 -bottom-1 w-3 h-3 bg-emerald-500 rounded cursor-nwse-resize" />
+          <div
+            data-handle="e"
+            className="absolute top-1/2 -right-1 w-2 h-10 -translate-y-1/2 bg-emerald-500/80 rounded cursor-ew-resize"
+          />
+          <div
+            data-handle="s"
+            className="absolute left-1/2 -bottom-1 w-10 h-2 -translate-x-1/2 bg-emerald-500/80 rounded cursor-ns-resize"
+          />
+          <div
+            data-handle="se"
+            className="absolute -right-1 -bottom-1 w-3 h-3 bg-emerald-500 rounded cursor-nwse-resize"
+          />
         </>
       )}
     </div>
@@ -852,10 +1091,17 @@ function DraggableCircle({
   metricText?: string | null;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [tooltip, setTooltip] = useState<{ covers: number | null; firstAt: string | null; total: number } | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    covers: number | null;
+    firstAt: string | null;
+    total: number;
+  } | null>(null);
   const [showTip, setShowTip] = useState(false);
   const holdTimer = useRef<any>(null);
-  const [pos, setPos] = useState<{ x: number; y: number }>({ x: node.x, y: node.y });
+  const [pos, setPos] = useState<{ x: number; y: number }>({
+    x: node.x,
+    y: node.y,
+  });
   const posRef = useRef<{ x: number; y: number }>({ x: node.x, y: node.y });
   const rafRef = useRef<number | null>(null);
   const draggingRef = useRef(false);
@@ -916,7 +1162,8 @@ function DraggableCircle({
         setPos(finalPos);
         onMove(finalPos.x, finalPos.y);
         // Prevent accidental click right after dragging
-        if (dragDistanceRef.current > 6) suppressClickUntilRef.current = Date.now() + 300;
+        if (dragDistanceRef.current > 6)
+          suppressClickUntilRef.current = Date.now() + 300;
       }
       e.preventDefault();
     };
@@ -941,30 +1188,44 @@ function DraggableCircle({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    let cancelled = false;
     const fetchTip = async () => {
       try {
         if (!area) return;
-        const t = await (window as any).api.tickets.getTableTooltip(area, node.label);
+        const t = await (window as any).api.tickets.getTableTooltip(
+          area,
+          node.label,
+        );
+        if (cancelled) return;
         setTooltip(t);
         setShowTip(true);
       } catch (e) {
         void e;
       }
     };
-    const onEnter = () => { holdTimer.current = setTimeout(fetchTip, 500); };
-    const onLeave = () => { clearTimeout(holdTimer.current); setShowTip(false); };
-    const onDown = () => { holdTimer.current = setTimeout(fetchTip, 2000); };
+    const onEnter = () => {
+      holdTimer.current = setTimeout(fetchTip, 500);
+    };
+    const onLeave = () => {
+      clearTimeout(holdTimer.current);
+      setShowTip(false);
+    };
+    const onDown = () => {
+      holdTimer.current = setTimeout(fetchTip, 2000);
+    };
     el.addEventListener('mouseenter', onEnter);
     el.addEventListener('mouseleave', onLeave);
     el.addEventListener('touchstart', onDown, { passive: true } as any);
     el.addEventListener('touchend', onLeave, { passive: true } as any);
     return () => {
+      cancelled = true;
+      clearTimeout(holdTimer.current);
       el.removeEventListener('mouseenter', onEnter);
       el.removeEventListener('mouseleave', onLeave);
       el.removeEventListener('touchstart', onDown as any);
       el.removeEventListener('touchend', onLeave as any);
     };
-  }, [node.label]);
+  }, [area, node.label]);
 
   return (
     <div
@@ -1009,15 +1270,33 @@ function DraggableCircle({
         <div className="absolute top-18 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-black/80 text-white px-2 py-1 rounded shadow">
           {ownerName && <div>{ownerName}</div>}
           <div>Guests: {tooltip.covers ?? '-'}</div>
-          <div>Since: {tooltip.firstAt ? new Date(tooltip.firstAt).toLocaleTimeString() : '-'}</div>
-          <div>Total: {tooltip.total.toFixed ? tooltip.total.toFixed(2) : tooltip.total}</div>
+          <div>
+            Since:{' '}
+            {tooltip.firstAt
+              ? new Date(tooltip.firstAt).toLocaleTimeString()
+              : '-'}
+          </div>
+          <div>
+            Total:{' '}
+            {tooltip.total.toFixed ? tooltip.total.toFixed(2) : tooltip.total}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function ModeButton({ active, onClick, label, children }: { active: boolean; onClick: () => void; label: string; children: any }) {
+function ModeButton({
+  active,
+  onClick,
+  label,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  children: any;
+}) {
   return (
     <button
       className={`flex items-center gap-2 px-3 py-2 rounded ${active ? 'bg-gray-700' : 'bg-gray-900/40 hover:bg-gray-700/60'}`}
@@ -1025,7 +1304,9 @@ function ModeButton({ active, onClick, label, children }: { active: boolean; onC
       title={label}
       type="button"
     >
-      <span className={`${active ? 'text-white' : 'text-gray-200'} opacity-90`}>{children}</span>
+      <span className={`${active ? 'text-white' : 'text-gray-200'} opacity-90`}>
+        {children}
+      </span>
       <span className="text-sm">{label}</span>
     </button>
   );
@@ -1072,7 +1353,12 @@ function IconMoney() {
         strokeWidth="2"
         strokeLinecap="round"
       />
-      <path d="M12 3v18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M12 3v18"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -1080,10 +1366,18 @@ function IconMoney() {
 function IconClock() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-      <path d="M12 22a10 10 0 1 0-10-10 10 10 0 0 0 10 10Z" stroke="currentColor" strokeWidth="2" />
-      <path d="M12 6v6l4 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M12 22a10 10 0 1 0-10-10 10 10 0 0 0 10 10Z"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path
+        d="M12 6v6l4 2"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
-
-

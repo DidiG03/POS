@@ -94,6 +94,13 @@ function ensurePackagedDefaults() {
       process.env.POS_CLOUD_URL =
         'https://pos-api-1075917751068.europe-west1.run.app';
     }
+    // Auto-updates: GitHub Releases source.
+    if (!String(process.env.GITHUB_OWNER || '').trim()) {
+      process.env.GITHUB_OWNER = 'DidiG03';
+    }
+    if (!String(process.env.GITHUB_REPO || '').trim()) {
+      process.env.GITHUB_REPO = 'POS';
+    }
   } catch {
     // ignore
   }

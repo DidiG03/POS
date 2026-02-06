@@ -4,6 +4,12 @@ export const coreServices = {
   async readSettings() {
     const envDefaults = {
       restaurantName: process.env.RESTAURANT_NAME || ' Code Orbit Agroturizem',
+      businessInfo: {
+        address: process.env.BUSINESS_ADDRESS || '',
+        phone: process.env.BUSINESS_PHONE || '',
+        email: process.env.BUSINESS_EMAIL || '',
+        website: process.env.BUSINESS_WEBSITE || '',
+      },
       currency: process.env.CURRENCY || 'EUR',
       defaultVatRate: Number(process.env.VAT_RATE_DEFAULT || 0.2),
       printer: {
@@ -75,6 +81,11 @@ export const coreServices = {
   async updateSettings(input: any) {
     const current = await this.readSettings();
     const merged = { ...current, ...input };
+    if (input?.businessInfo)
+      merged.businessInfo = {
+        ...(current.businessInfo || {}),
+        ...input.businessInfo,
+      };
     if (input?.printer)
       merged.printer = { ...(current.printer || {}), ...input.printer };
     if (input?.printers)

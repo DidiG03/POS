@@ -48,30 +48,16 @@ export function UpdateNotification() {
     };
 
     window.addEventListener('updater:event', handleEvent as EventListener);
-    return () => window.removeEventListener('updater:event', handleEvent as EventListener);
+    return () =>
+      window.removeEventListener('updater:event', handleEvent as EventListener);
   }, []);
 
   const loadStatus = async () => {
     try {
       const s = await window.api.updater.getUpdateStatus();
       setStatus(s);
-    } catch (e) {
+    } catch {
       // Ignore errors (updater might not be available)
-    }
-  };
-
-  const handleCheckForUpdates = async () => {
-    setIsChecking(true);
-    setError(null);
-    try {
-      const result = await window.api.updater.checkForUpdates();
-      if (result.error) {
-        setError(result.error);
-      }
-    } catch (e: any) {
-      setError(e?.message || 'Failed to check for updates');
-    } finally {
-      setIsChecking(false);
     }
   };
 
@@ -115,8 +101,12 @@ export function UpdateNotification() {
             </p>
             {status.updateInfo?.releaseNotes && (
               <details className="text-xs text-blue-100 mb-2">
-                <summary className="cursor-pointer hover:text-white">Release notes</summary>
-                <div className="mt-2 whitespace-pre-wrap">{status.updateInfo.releaseNotes}</div>
+                <summary className="cursor-pointer hover:text-white">
+                  Release notes
+                </summary>
+                <div className="mt-2 whitespace-pre-wrap">
+                  {status.updateInfo.releaseNotes}
+                </div>
               </details>
             )}
             <div className="flex gap-2">
@@ -136,7 +126,9 @@ export function UpdateNotification() {
           </div>
         </div>
         {error && (
-          <div className="mt-2 text-xs text-red-200 bg-red-900/30 rounded p-2">{error}</div>
+          <div className="mt-2 text-xs text-red-200 bg-red-900/30 rounded p-2">
+            {error}
+          </div>
         )}
       </div>
     );
@@ -155,7 +147,9 @@ export function UpdateNotification() {
                 style={{ width: `${downloadProgress}%` }}
               />
             </div>
-            <p className="text-xs text-blue-100">{Math.round(downloadProgress)}%</p>
+            <p className="text-xs text-blue-100">
+              {Math.round(downloadProgress)}%
+            </p>
           </div>
         </div>
       </div>
@@ -170,7 +164,8 @@ export function UpdateNotification() {
           <div className="flex-1">
             <h3 className="font-semibold mb-1">Update Ready to Install</h3>
             <p className="text-sm text-green-100 mb-3">
-              Version {status.updateInfo?.version} has been downloaded. The app will restart to install.
+              Version {status.updateInfo?.version} has been downloaded. The app
+              will restart to install.
             </p>
             <div className="flex gap-2">
               <button

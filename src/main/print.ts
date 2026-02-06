@@ -69,6 +69,11 @@ export function buildEscposTicket(
     : new Date();
   const nowStr = formatDateTime(now);
   const restaurant = settings.restaurantName || 'Restaurant';
+  const businessInfo: any = (settings as any).businessInfo || {};
+  const bizAddress = String(businessInfo?.address || '').trim();
+  const bizPhone = String(businessInfo?.phone || '').trim();
+  const bizEmail = String(businessInfo?.email || '').trim();
+  const bizWebsite = String(businessInfo?.website || '').trim();
   const currency = settings.currency || 'EUR';
 
   const lines: Buffer[] = [];
@@ -98,6 +103,17 @@ export function buildEscposTicket(
     lines.push(escposText(`${restaurant}\n`));
     lines.push(cmdTextSize('normal'));
     lines.push(cmdBold(false));
+    // Subtitle: address + phone (business info)
+    const subtitleLines: string[] = [];
+    if (bizAddress) {
+      for (const raw of String(bizAddress).split(/\r?\n/g)) {
+        const t = String(raw || '').trim();
+        if (!t) continue;
+        subtitleLines.push(...wrapEscposText(t, 32));
+      }
+    }
+    if (bizPhone) subtitleLines.push(...wrapEscposText(bizPhone, 32));
+    for (const ln of subtitleLines) lines.push(escposText(`${ln}\n`));
   }
   if (kind === 'ORDER') {
     lines.push(cmdBold(true));
@@ -229,6 +245,9 @@ export function buildEscposTicket(
   lines.push(escposText('\n'));
   lines.push(cmdAlign('center'));
   lines.push(escposText('Thank you!\n'));
+  // Business contact (below Thank you)
+  if (bizEmail) lines.push(escposText(`${bizEmail}\n`));
+  if (bizWebsite) lines.push(escposText(`${bizWebsite}\n`));
   lines.push(escposText('Powered by Code Orbit POS\n'));
   lines.push(cmdAlign('left'));
   lines.push(escposText('\n'));
@@ -246,6 +265,11 @@ export function buildHtmlReceipt(
     : new Date();
   const nowStr = formatDateTime(now);
   const restaurant = settings.restaurantName || 'Restaurant';
+  const businessInfo: any = (settings as any).businessInfo || {};
+  const bizAddress = String(businessInfo?.address || '').trim();
+  const bizPhone = String(businessInfo?.phone || '').trim();
+  const bizEmail = String(businessInfo?.email || '').trim();
+  const bizWebsite = String(businessInfo?.website || '').trim();
   const currency = settings.currency || 'EUR';
   const meta: any = payload.meta || {};
   const vatEnabled = meta?.vatEnabled !== false;
@@ -315,6 +339,28 @@ export function buildHtmlReceipt(
       ? `<div class="sep"></div><div class="paid">PAID</div>${meta?.method || meta?.paymentMethod ? `<div class="small">Method: ${safe(String(meta?.method || meta?.paymentMethod).toUpperCase())}</div>` : ''}`
       : '';
 
+  const subtitleParts: string[] = [];
+  if (bizAddress) {
+    const addrLines = String(bizAddress)
+      .split(/\r?\n/g)
+      .map((x) => String(x || '').trim())
+      .filter(Boolean);
+    subtitleParts.push(...addrLines);
+  }
+  if (bizPhone) subtitleParts.push(bizPhone);
+  const subtitleHtml =
+    kind === 'ORDER' || subtitleParts.length === 0
+      ? ''
+      : `<div class="subtitle small">${subtitleParts.map((x) => safe(x)).join('<br/>')}</div>`;
+
+  const contactHtmlParts: string[] = [];
+  if (bizEmail) contactHtmlParts.push(safe(bizEmail));
+  if (bizWebsite) contactHtmlParts.push(safe(bizWebsite));
+  const contactHtml =
+    contactHtmlParts.length === 0
+      ? ''
+      : `<div class="footer small">${contactHtmlParts.join('<br/>')}</div>`;
+
   return `<!doctype html>
 <html>
   <head>
@@ -324,6 +370,7 @@ export function buildHtmlReceipt(
       body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #000; }
       .title { text-align: center; font-weight: 800; font-size: 18px; margin: 2px 0 6px; }
       .titleSlip { text-align: center; font-weight: 500; font-size: 12px; margin: 2px 0 6px; }
+      .subtitle { text-align: center; margin: -2px 0 6px; }
       .sep { border-top: 1px dashed #000; margin: 6px 0; }
       .small { font-size: 11px; }
       .row { display: flex; justify-content: space-between; gap: 8px; }
@@ -336,6 +383,7 @@ export function buildHtmlReceipt(
   </head>
   <body>
     <div class="${kind === 'ORDER' ? 'titleSlip' : 'title'}">${safe(restaurant)}</div>
+    ${subtitleHtml}
     ${kind === 'ORDER' ? `<div class="paid">${safe(`${routeLabel ? routeLabel.toUpperCase() : stationLabel && stationLabel !== 'ALL' ? stationLabel : ''}${routeLabel || (stationLabel && stationLabel !== 'ALL') ? ' ' : ''}ORDER`)}</div>` : ''}
     <div class="small">${safe(`${payload.area} - ${payload.tableLabel}`)}</div>
     ${payload.covers ? `<div class="small">Covers: ${safe(payload.covers)}</div>` : ''}
@@ -356,6 +404,7 @@ export function buildHtmlReceipt(
     ${payload.note ? `<div class="sep"></div><div class="small">Note:</div><div class="small">${safe(payload.note)}</div>` : ''}
     ${paidBlock}
     <div class="footer small">Thank you!</div>
+    ${contactHtml}
     <div class="footer small">Powered by Code Orbit POS</div>
   </body>
 </html>`;
@@ -685,8 +734,27 @@ function escposText(s: string): Buffer {
     .replaceAll('€', 'EUR')
     .replaceAll('\u00A0', ' '); // NBSP
   // Strip non-ASCII characters (ESC/POS typically uses single-byte code pages).
+  // eslint-disable-next-line no-control-regex
   const ascii = normalized.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '?');
   return Buffer.from(ascii, 'ascii');
+}
+
+function wrapEscposText(s: string, width: number): string[] {
+  const t = String(s || '').trim();
+  if (!t) return [];
+  const w = Math.max(8, Math.min(64, Number(width) || 32));
+  const out: string[] = [];
+  let cur = t;
+  while (cur.length > w) {
+    // Prefer breaking on whitespace within width.
+    const slice = cur.slice(0, w + 1);
+    let cut = slice.lastIndexOf(' ');
+    if (cut < Math.floor(w * 0.5)) cut = w; // fallback hard cut
+    out.push(cur.slice(0, cut).trimEnd());
+    cur = cur.slice(cut).trimStart();
+  }
+  if (cur) out.push(cur);
+  return out;
 }
 
 function cmdAlign(align: 'left' | 'center' | 'right'): Buffer {

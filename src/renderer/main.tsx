@@ -19,7 +19,7 @@ if (typeof window !== 'undefined') {
     if (Sentry && Sentry.getCurrentHub) {
       (window as any).__sentry__ = Sentry.getCurrentHub().getClient();
     }
-  } catch (e) {
+  } catch {
     // Sentry not available (e.g., SENTRY_DSN not set) - this is fine
   }
 }
@@ -27,7 +27,9 @@ if (typeof window !== 'undefined') {
 // Polyfill window.api for browser (tablets) by calling the LAN HTTP API
 // When running inside Electron, preload already defines window.api
 if (!(window as any).api) {
-  const CLOUD_BASE_RAW = String((import.meta as any)?.env?.VITE_POS_CLOUD_URL || '').trim();
+  const CLOUD_BASE_RAW = String(
+    (import.meta as any)?.env?.VITE_POS_CLOUD_URL || '',
+  ).trim();
   let CLOUD_BASE = CLOUD_BASE_RAW ? CLOUD_BASE_RAW.replace(/\/+$/g, '') : '';
   let IS_CLOUD = Boolean(CLOUD_BASE);
   const BUSINESS_KEY = 'pos_business_code';
@@ -61,7 +63,9 @@ if (!(window as any).api) {
 
   const setBusinessCode = (code: string) => {
     try {
-      const v = String(code || '').trim().toUpperCase();
+      const v = String(code || '')
+        .trim()
+        .toUpperCase();
       if (v) localStorage.setItem(BUSINESS_KEY, v);
       else localStorage.removeItem(BUSINESS_KEY);
     } catch {
@@ -77,7 +81,10 @@ if (!(window as any).api) {
     if (backParam) localStorage.setItem('pos_backend_host', backParam);
     if (httpParam) localStorage.setItem('pos_backend_http', httpParam);
     if (httpsParam) localStorage.setItem('pos_backend_https', httpsParam);
-    const host = localStorage.getItem('pos_backend_host') || window.location.hostname || 'localhost';
+    const host =
+      localStorage.getItem('pos_backend_host') ||
+      window.location.hostname ||
+      'localhost';
     const httpPort = localStorage.getItem('pos_backend_http') || '3333';
     const httpsPort = localStorage.getItem('pos_backend_https') || '3443';
     return { host, httpPort, httpsPort };
@@ -87,7 +94,11 @@ if (!(window as any).api) {
   const HTTP_BASE = `http://${host}:${httpPort}`;
   const CLIENT_TIMEOUT_MS = 5000;
 
-  async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = CLIENT_TIMEOUT_MS) {
+  async function fetchWithTimeout(
+    input: RequestInfo | URL,
+    init?: RequestInit,
+    timeoutMs = CLIENT_TIMEOUT_MS,
+  ) {
     const controller = new AbortController();
     const t = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -99,12 +110,20 @@ if (!(window as any).api) {
 
   // Simple SSE client for real-time updates
   let es: EventSource | null = null;
+  const stopSse = () => {
+    try {
+      if (es) es.close();
+    } catch {
+      // ignore
+    }
+    es = null;
+  };
   const startSse = () => {
     try {
       if (IS_CLOUD) return; // cloud mode uses polling for now
       const token = getToken();
       if (!token) return;
-      if (es) es.close();
+      if (es) stopSse();
       const url = `${HTTP_BASE}/events?token=${encodeURIComponent(token)}`;
       es = new EventSource(url);
       es.addEventListener('tables', (ev: any) => {
@@ -124,6 +143,23 @@ if (!(window as any).api) {
     }
   };
   startSse();
+
+  // Ensure "manual logout" clears the browser token + closes SSE.
+  try {
+    window.addEventListener('pos:forceLogout', () => {
+      try {
+        localStorage.removeItem(TOKEN_KEY_LOCAL);
+        localStorage.removeItem(TOKEN_KEY_CLOUD);
+      } catch {
+        // ignore
+      }
+      stopSse();
+    });
+    window.addEventListener('beforeunload', stopSse);
+    window.addEventListener('pagehide', stopSse);
+  } catch {
+    // ignore
+  }
 
   function isRetryableNetworkError(e: any) {
     const name = String(e?.name || '');
@@ -161,8 +197,11 @@ if (!(window as any).api) {
     } catch {
       // ignore
     }
+    stopSse();
     try {
-      window.dispatchEvent(new CustomEvent('pos:forceLogout', { detail: { reason } }));
+      window.dispatchEvent(
+        new CustomEvent('pos:forceLogout', { detail: { reason } }),
+      );
     } catch {
       // ignore
     }
@@ -178,7 +217,8 @@ if (!(window as any).api) {
     if (IS_CLOUD) {
       const r = await fetchWithRetry(CLOUD_BASE + path, { ...opts, headers });
       if (!r.ok) {
-        if (r.status === 401 || r.status === 403) forceLogout('Session expired');
+        if (r.status === 401 || r.status === 403)
+          forceLogout('Session expired');
         throw new HttpError(r.status);
       }
       const ct = r.headers.get('content-type') || '';
@@ -188,7 +228,8 @@ if (!(window as any).api) {
       try {
         const r = await fetchWithRetry(HTTP_BASE + path, { ...opts, headers });
         if (!r.ok) {
-          if (r.status === 401 || r.status === 403) forceLogout('Session expired');
+          if (r.status === 401 || r.status === 403)
+            forceLogout('Session expired');
           throw new HttpError(r.status);
         }
         const ct = r.headers.get('content-type') || '';
@@ -196,9 +237,13 @@ if (!(window as any).api) {
       } catch (e: any) {
         // Only fall back to HTTPS when HTTP failed due to network/timeouts.
         if (!isRetryableNetworkError(e)) throw e;
-        const r2 = await fetchWithRetry(HTTPS_BASE + path, { ...opts, headers });
+        const r2 = await fetchWithRetry(HTTPS_BASE + path, {
+          ...opts,
+          headers,
+        });
         if (!r2.ok) {
-          if (r2.status === 401 || r2.status === 403) forceLogout('Session expired');
+          if (r2.status === 401 || r2.status === 403)
+            forceLogout('Session expired');
           throw new HttpError(r2.status);
         }
         const ct2 = r2.headers.get('content-type') || '';
@@ -220,7 +265,8 @@ if (!(window as any).api) {
       const r = await fetchWithRetry(HTTP_BASE + path, { ...opts, headers });
       if (!r.ok) {
         // Only treat 401/403 as "session expired" if we actually have a token.
-        if (token && (r.status === 401 || r.status === 403)) forceLogout('Session expired');
+        if (token && (r.status === 401 || r.status === 403))
+          forceLogout('Session expired');
         throw new HttpError(r.status);
       }
       const ct = r.headers.get('content-type') || '';
@@ -229,7 +275,8 @@ if (!(window as any).api) {
       if (!isRetryableNetworkError(e)) throw e;
       const r2 = await fetchWithRetry(HTTPS_BASE + path, { ...opts, headers });
       if (!r2.ok) {
-        if (token && (r2.status === 401 || r2.status === 403)) forceLogout('Session expired');
+        if (token && (r2.status === 401 || r2.status === 403))
+          forceLogout('Session expired');
         throw new HttpError(r2.status);
       }
       const ct2 = r2.headers.get('content-type') || '';
@@ -242,8 +289,12 @@ if (!(window as any).api) {
     try {
       const wasCloud = IS_CLOUD;
       const s: any = await goLan('/settings').catch(() => null);
-      const backendUrl = String((s as any)?.cloud?.backendUrl || '').trim().replace(/\/+$/g, '');
-      const businessCode = String((s as any)?.cloud?.businessCode || '').trim().toUpperCase();
+      const backendUrl = String((s as any)?.cloud?.backendUrl || '')
+        .trim()
+        .replace(/\/+$/g, '');
+      const businessCode = String((s as any)?.cloud?.businessCode || '')
+        .trim()
+        .toUpperCase();
       if (backendUrl && businessCode) {
         CLOUD_BASE = backendUrl;
         IS_CLOUD = true;
@@ -277,14 +328,20 @@ if (!(window as any).api) {
       async loginWithPin(pin: string, userId?: number, pairingCode?: string) {
         // Tablets are served from the host LAN API. Enforce host pairing code before any login (even in cloud mode).
         try {
-          await goLan('/pairing/verify', { method: 'POST', body: JSON.stringify({ pairingCode }) });
-        } catch (e: any) {
+          await goLan('/pairing/verify', {
+            method: 'POST',
+            body: JSON.stringify({ pairingCode }),
+          });
+        } catch {
           throw new Error('Pairing code required');
         }
         const body = IS_CLOUD
           ? { businessCode: getBusinessCode(), pin, userId }
           : { pin, userId, pairingCode };
-        const resp = await go('/auth/login', { method: 'POST', body: JSON.stringify(body) });
+        const resp = await go('/auth/login', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
         if (resp && typeof resp === 'object' && 'token' in resp) {
           const t = (resp as any).token;
           if (typeof t === 'string' && t.length > 10) setToken(t);
@@ -294,28 +351,55 @@ if (!(window as any).api) {
         return resp;
       },
       async verifyManagerPin(pin: string) {
-        const r = await goLan('/auth/verify-manager-pin', { method: 'POST', body: JSON.stringify({ pin }) });
-        return (r && typeof r === 'object') ? r : { ok: false };
+        const r = await goLan('/auth/verify-manager-pin', {
+          method: 'POST',
+          body: JSON.stringify({ pin }),
+        });
+        return r && typeof r === 'object' ? r : { ok: false };
       },
-      async createUser() { throw new Error('not supported in browser'); },
-      async logoutAdmin() { return true; },
+      async createUser() {
+        throw new Error('not supported in browser');
+      },
+      async logoutAdmin() {
+        return true;
+      },
       async listUsers(_input?: { includeAdmins?: boolean }) {
         // Always go through the LAN host for user listing so tablets never need the provider-supplied business password.
         // Host will proxy cloud /auth/public-users if cloud is enabled.
         return await goLan('/auth/users');
       },
-      async updateUser() { throw new Error('not supported in browser'); },
-      async syncStaffFromApi() { throw new Error('not supported in browser'); },
-      async deleteUser() { throw new Error('not supported in browser'); },
+      async updateUser() {
+        throw new Error('not supported in browser');
+      },
+      async syncStaffFromApi() {
+        throw new Error('not supported in browser');
+      },
+      async deleteUser() {
+        throw new Error('not supported in browser');
+      },
     },
     menu: {
-      async listCategoriesWithItems() { return await go('/menu/categories'); },
-      async createCategory() { throw new Error('not supported in browser'); },
-      async updateCategory() { throw new Error('not supported in browser'); },
-      async deleteCategory() { throw new Error('not supported in browser'); },
-      async createItem() { throw new Error('not supported in browser'); },
-      async updateItem() { throw new Error('not supported in browser'); },
-      async deleteItem() { throw new Error('not supported in browser'); },
+      async listCategoriesWithItems() {
+        return await go('/menu/categories');
+      },
+      async createCategory() {
+        throw new Error('not supported in browser');
+      },
+      async updateCategory() {
+        throw new Error('not supported in browser');
+      },
+      async deleteCategory() {
+        throw new Error('not supported in browser');
+      },
+      async createItem() {
+        throw new Error('not supported in browser');
+      },
+      async updateItem() {
+        throw new Error('not supported in browser');
+      },
+      async deleteItem() {
+        throw new Error('not supported in browser');
+      },
     },
     settings: {
       async get() {
@@ -339,33 +423,73 @@ if (!(window as any).api) {
           setBusinessCode(bc);
           return await (window as any).api.settings.get();
         }
-        return await go('/settings/update', { method: 'POST', body: JSON.stringify(input) });
+        return await go('/settings/update', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
       },
-      async testPrint() { const r = await go('/print/test', { method: 'POST', body: JSON.stringify({}) }); return !!(r && (r.ok === true)); },
-      async setPrinter() { throw new Error('not supported in browser'); },
-      async listPrinters() { throw new Error('not supported in browser'); },
-      async listSerialPorts() { throw new Error('not supported in browser'); },
+      async testPrint() {
+        const r = await go('/print/test', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        return !!(r && r.ok === true);
+      },
+      async setPrinter() {
+        throw new Error('not supported in browser');
+      },
+      async listPrinters() {
+        throw new Error('not supported in browser');
+      },
+      async listSerialPorts() {
+        throw new Error('not supported in browser');
+      },
     },
     billing: {
       async getStatus() {
         try {
           return await go('/billing/status');
         } catch (e: any) {
-          return { billingEnabled: false, status: 'ACTIVE', message: String(e?.message || e || '') };
+          return {
+            billingEnabled: false,
+            status: 'ACTIVE',
+            message: String(e?.message || e || ''),
+          };
+        }
+      },
+      async getStatusLive() {
+        try {
+          return await go('/billing/status?live=1');
+        } catch (e: any) {
+          return {
+            billingEnabled: false,
+            status: 'ACTIVE',
+            message: String(e?.message || e || ''),
+          };
         }
       },
       async createCheckoutSession() {
         try {
-          return await go('/admin/billing/create-checkout', { method: 'POST', body: JSON.stringify({}) });
+          return await go('/admin/billing/create-checkout', {
+            method: 'POST',
+            body: JSON.stringify({}),
+          });
         } catch (e: any) {
-          return { error: String(e?.message || 'Could not create checkout session') };
+          return {
+            error: String(e?.message || 'Could not create checkout session'),
+          };
         }
       },
       async createPortalSession() {
         try {
-          return await go('/admin/billing/create-portal', { method: 'POST', body: JSON.stringify({}) });
+          return await go('/admin/billing/create-portal', {
+            method: 'POST',
+            body: JSON.stringify({}),
+          });
         } catch (e: any) {
-          return { error: String(e?.message || 'Could not create portal session') };
+          return {
+            error: String(e?.message || 'Could not create portal session'),
+          };
         }
       },
     },
@@ -382,49 +506,140 @@ if (!(window as any).api) {
       },
     },
     shifts: {
-      async getOpen(userId: number) { return await go(`/shifts/get-open?userId=${encodeURIComponent(String(userId))}`); },
-      async clockIn(userId: number) { return await go('/shifts/clock-in', { method: 'POST', body: JSON.stringify({ userId }) }); },
-      async clockOut(userId: number) { return await go('/shifts/clock-out', { method: 'POST', body: JSON.stringify({ userId }) }); },
+      async getOpen(userId: number) {
+        return await go(
+          `/shifts/get-open?userId=${encodeURIComponent(String(userId))}`,
+        );
+      },
+      async clockIn(userId: number) {
+        return await go('/shifts/clock-in', {
+          method: 'POST',
+          body: JSON.stringify({ userId }),
+        });
+      },
+      async clockOut(userId: number) {
+        return await go('/shifts/clock-out', {
+          method: 'POST',
+          body: JSON.stringify({ userId }),
+        });
+      },
       // Use LAN proxy so login screen can show "clocked in" even before the tablet is logged in.
-      async listOpen() { return await goLan('/shifts/open'); },
+      async listOpen() {
+        return await goLan('/shifts/open');
+      },
     },
     tickets: {
-      async log(input: any) { await go('/tickets', { method: 'POST', body: JSON.stringify(input) }); return true; },
-      async getLatestForTable(area: string, tableLabel: string) { return await go(`/tickets/latest?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`); },
-      async voidItem(input: any) { await go('/tickets/void-item', { method: 'POST', body: JSON.stringify(input) }); return true; },
-      async voidTicket(input: any) { await go('/tickets/void-ticket', { method: 'POST', body: JSON.stringify(input) }); return true; },
+      async log(input: any) {
+        await go('/tickets', { method: 'POST', body: JSON.stringify(input) });
+        return true;
+      },
+      async getLatestForTable(area: string, tableLabel: string) {
+        return await go(
+          `/tickets/latest?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
+        );
+      },
+      async voidItem(input: any) {
+        await go('/tickets/void-item', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+        return true;
+      },
+      async voidTicket(input: any) {
+        await go('/tickets/void-ticket', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+        return true;
+      },
       async print(input: any) {
         if (IS_CLOUD) {
           const { recordOnly, ...payload } = (input || {}) as any;
-          await go('/print-jobs/enqueue', { method: 'POST', body: JSON.stringify({ type: 'RECEIPT', payload, recordOnly: Boolean(recordOnly) }) });
+          await go('/print-jobs/enqueue', {
+            method: 'POST',
+            body: JSON.stringify({
+              type: 'RECEIPT',
+              payload,
+              recordOnly: Boolean(recordOnly),
+            }),
+          });
           return true;
         }
-        const r = await go('/print/ticket', { method: 'POST', body: JSON.stringify(input) });
-        return !!(r && (r.ok === true));
+        const r = await go('/print/ticket', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+        return !!(r && r.ok === true);
       },
     },
     tables: {
-      async setOpen(area: string, label: string, open: boolean) { await go('/tables/open', { method: 'POST', body: JSON.stringify({ area, label, open }) }); return true; },
-      async listOpen() { return await go('/tables/open'); },
-      async transfer(input: any) { return await go('/tables/transfer', { method: 'POST', body: JSON.stringify(input) }); },
+      async setOpen(area: string, label: string, open: boolean) {
+        await go('/tables/open', {
+          method: 'POST',
+          body: JSON.stringify({ area, label, open }),
+        });
+        return true;
+      },
+      async listOpen() {
+        return await go('/tables/open');
+      },
+      async transfer(input: any) {
+        return await go('/tables/transfer', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+      },
     },
     covers: {
-      async save(area: string, label: string, covers: number) { await go('/covers/save', { method: 'POST', body: JSON.stringify({ area, label, covers }) }); return true; },
-      async getLast(area: string, label: string) { return await go(`/covers/last?area=${encodeURIComponent(area)}&label=${encodeURIComponent(label)}`); },
+      async save(area: string, label: string, covers: number) {
+        await go('/covers/save', {
+          method: 'POST',
+          body: JSON.stringify({ area, label, covers }),
+        });
+        return true;
+      },
+      async getLast(area: string, label: string) {
+        return await go(
+          `/covers/last?area=${encodeURIComponent(area)}&label=${encodeURIComponent(label)}`,
+        );
+      },
     },
     admin: {
-      async getOverview() { return await go('/admin/overview'); },
-      async openWindow() { return false; },
-      async listShifts() { throw new Error('not supported in browser'); },
-      async listTicketCounts() { throw new Error('not supported in browser'); },
-      async listTicketsByUser() { throw new Error('not supported in browser'); },
-      async listNotifications() { throw new Error('not supported in browser'); },
-      async markAllNotificationsRead() { return false; },
-      async getTopSellingToday() { throw new Error('not supported in browser'); },
-      async getSalesTrends(input: any) { const range = input?.range || 'daily'; return await go(`/admin/sales-trends?range=${encodeURIComponent(range)}`); },
+      async getOverview() {
+        return await go('/admin/overview');
+      },
+      async openWindow() {
+        return false;
+      },
+      async listShifts() {
+        throw new Error('not supported in browser');
+      },
+      async listTicketCounts() {
+        throw new Error('not supported in browser');
+      },
+      async listTicketsByUser() {
+        throw new Error('not supported in browser');
+      },
+      async listNotifications() {
+        throw new Error('not supported in browser');
+      },
+      async markAllNotificationsRead() {
+        return false;
+      },
+      async getTopSellingToday() {
+        throw new Error('not supported in browser');
+      },
+      async getSalesTrends(input: any) {
+        const range = input?.range || 'daily';
+        return await go(
+          `/admin/sales-trends?range=${encodeURIComponent(range)}`,
+        );
+      },
     },
     kds: {
-      async openWindow() { return false; },
+      async openWindow() {
+        return false;
+      },
       async listTickets(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();
         const status = String(input?.status || 'NEW').toUpperCase();
@@ -439,14 +654,20 @@ if (!(window as any).api) {
       async bump(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();
         const ticketId = Number(input?.ticketId || 0);
-        const r = await goLan('/kds/bump', { method: 'POST', body: JSON.stringify({ station, ticketId }) });
+        const r = await goLan('/kds/bump', {
+          method: 'POST',
+          body: JSON.stringify({ station, ticketId }),
+        });
         return Boolean((r as any)?.ok ?? true);
       },
       async bumpItem(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();
         const ticketId = Number(input?.ticketId || 0);
         const itemIdx = Number(input?.itemIdx ?? input?.idx ?? -1);
-        const r = await goLan('/kds/bump-item', { method: 'POST', body: JSON.stringify({ station, ticketId, itemIdx }) });
+        const r = await goLan('/kds/bump-item', {
+          method: 'POST',
+          body: JSON.stringify({ station, ticketId, itemIdx }),
+        });
         return Boolean((r as any)?.ok ?? true);
       },
       async debug() {
@@ -462,7 +683,9 @@ if (!(window as any).api) {
       },
       async getMySalesTrends(input: any) {
         const range = String(input?.range || 'daily');
-        return await go(`/reports/my/sales-trends?range=${encodeURIComponent(range)}`);
+        return await go(
+          `/reports/my/sales-trends?range=${encodeURIComponent(range)}`,
+        );
       },
       async listMyActiveTickets(_userId: number) {
         return await go('/reports/my/active-tickets');
@@ -483,8 +706,18 @@ if (!(window as any).api) {
       },
     },
     layout: {
-      async get(userId: number, area: string) { return await go(`/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(area)}`); },
-      async save(userId: number, area: string, nodes: any[]) { await go('/layout/save', { method: 'POST', body: JSON.stringify({ userId, area, nodes }) }); return true; },
+      async get(userId: number, area: string) {
+        return await go(
+          `/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(area)}`,
+        );
+      },
+      async save(userId: number, area: string, nodes: any[]) {
+        await go('/layout/save', {
+          method: 'POST',
+          body: JSON.stringify({ userId, area, nodes }),
+        });
+        return true;
+      },
     },
     notifications: {
       async list(userId: number, onlyUnread?: boolean) {
@@ -495,17 +728,46 @@ if (!(window as any).api) {
       },
       async markAllRead(userId: number) {
         void userId;
-        await go('/notifications/mark-all-read', { method: 'POST', body: JSON.stringify({}) });
+        await go('/notifications/mark-all-read', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
         return true;
       },
     },
     requests: {
-      create: async (input: any) => go('/requests/create', { method: 'POST', body: JSON.stringify(input) }).then(() => true),
-      listForOwner: async (ownerId: number) => go(`/requests/list-for-owner?ownerId=${encodeURIComponent(String(ownerId))}`),
-      approve: async (id: number, ownerId: number) => go('/requests/approve', { method: 'POST', body: JSON.stringify({ id, ownerId }) }).then(() => true),
-      reject: async (id: number, ownerId: number) => go('/requests/reject', { method: 'POST', body: JSON.stringify({ id, ownerId }) }).then(() => true),
-      pollApprovedForTable: async (ownerId: number, area: string, tableLabel: string) => go(`/requests/poll-approved?ownerId=${encodeURIComponent(String(ownerId))}&area=${encodeURIComponent(area)}&tableLabel=${encodeURIComponent(tableLabel)}`),
-      markApplied: async (ids: number[]) => go('/requests/mark-applied', { method: 'POST', body: JSON.stringify({ ids }) }).then(() => true),
+      create: async (input: any) =>
+        go('/requests/create', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        }).then(() => true),
+      listForOwner: async (ownerId: number) =>
+        go(
+          `/requests/list-for-owner?ownerId=${encodeURIComponent(String(ownerId))}`,
+        ),
+      approve: async (id: number, ownerId: number) =>
+        go('/requests/approve', {
+          method: 'POST',
+          body: JSON.stringify({ id, ownerId }),
+        }).then(() => true),
+      reject: async (id: number, ownerId: number) =>
+        go('/requests/reject', {
+          method: 'POST',
+          body: JSON.stringify({ id, ownerId }),
+        }).then(() => true),
+      pollApprovedForTable: async (
+        ownerId: number,
+        area: string,
+        tableLabel: string,
+      ) =>
+        go(
+          `/requests/poll-approved?ownerId=${encodeURIComponent(String(ownerId))}&area=${encodeURIComponent(area)}&tableLabel=${encodeURIComponent(tableLabel)}`,
+        ),
+      markApplied: async (ids: number[]) =>
+        go('/requests/mark-applied', {
+          method: 'POST',
+          body: JSON.stringify({ ids }),
+        }).then(() => true),
     },
   };
   (window as any).__BROWSER_CLIENT__ = true;
@@ -529,14 +791,22 @@ function BootScreen({
   canRetry?: boolean;
   onRetry?: () => void;
 }) {
-  const isBrowser = typeof window !== 'undefined' && Boolean((window as any).__BROWSER_CLIENT__);
+  const isBrowser =
+    typeof window !== 'undefined' &&
+    Boolean((window as any).__BROWSER_CLIENT__);
   const backend = useMemo(() => {
     try {
-      const host = localStorage.getItem('pos_backend_host') || window.location.hostname || 'localhost';
+      const host =
+        localStorage.getItem('pos_backend_host') ||
+        window.location.hostname ||
+        'localhost';
       const httpPort = localStorage.getItem('pos_backend_http') || '3333';
       return { host, httpPort };
     } catch {
-      return { host: window.location.hostname || 'localhost', httpPort: '3333' };
+      return {
+        host: window.location.hostname || 'localhost',
+        httpPort: '3333',
+      };
     }
   }, []);
   return (
@@ -546,7 +816,10 @@ function BootScreen({
         {detail && <div className="text-sm opacity-80 mb-4">{detail}</div>}
         {isBrowser && (
           <div className="text-xs opacity-70 mb-4">
-            Backend: <span className="font-mono">{backend.host}:{backend.httpPort}</span>
+            Backend:{' '}
+            <span className="font-mono">
+              {backend.host}:{backend.httpPort}
+            </span>
           </div>
         )}
         <div className="flex items-center gap-2">
@@ -554,7 +827,10 @@ function BootScreen({
           <div className="text-xs opacity-70">Please wait…</div>
         </div>
         {canRetry && onRetry && (
-          <button className="mt-4 w-full px-3 py-2 rounded bg-gray-700 hover:bg-gray-600" onClick={onRetry}>
+          <button
+            className="mt-4 w-full px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+            onClick={onRetry}
+          >
             Retry
           </button>
         )}
@@ -571,7 +847,9 @@ function Root() {
 
   useEffect(() => {
     const onForce = (ev: any) => {
-      const reason = ev?.detail?.reason ? String(ev.detail.reason) : 'Session expired';
+      const reason = ev?.detail?.reason
+        ? String(ev.detail.reason)
+        : 'Session expired';
       // Clear both staff + admin sessions (safe default)
       try {
         useSessionStore.getState().setUser(null);
@@ -603,11 +881,23 @@ function Root() {
       const staff = useSessionStore.getState() as any;
       const admin = useAdminSessionStore.getState() as any;
       const now = Date.now();
-      const staffExpired = staff?.user && typeof staff?.expiresAtMs === 'number' && staff.expiresAtMs > 0 && staff.expiresAtMs <= now;
-      const adminExpired = admin?.user && typeof admin?.expiresAtMs === 'number' && admin.expiresAtMs > 0 && admin.expiresAtMs <= now;
+      const staffExpired =
+        staff?.user &&
+        typeof staff?.expiresAtMs === 'number' &&
+        staff.expiresAtMs > 0 &&
+        staff.expiresAtMs <= now;
+      const adminExpired =
+        admin?.user &&
+        typeof admin?.expiresAtMs === 'number' &&
+        admin.expiresAtMs > 0 &&
+        admin.expiresAtMs <= now;
       if (staffExpired || adminExpired) {
         try {
-          window.dispatchEvent(new CustomEvent('pos:forceLogout', { detail: { reason: 'Session expired' } }));
+          window.dispatchEvent(
+            new CustomEvent('pos:forceLogout', {
+              detail: { reason: 'Session expired' },
+            }),
+          );
         } catch {
           // ignore
         }
@@ -656,7 +946,9 @@ function Root() {
       }
       if (!cancelled) {
         setMsg('Cannot reach POS backend');
-        setDetail('Check that the host PC is running and you are on the same Wi‑Fi.');
+        setDetail(
+          'Check that the host PC is running and you are on the same Wi‑Fi.',
+        );
       }
     })();
     return () => {
@@ -665,7 +957,14 @@ function Root() {
   }, [nonce]);
 
   if (!ready) {
-    return <BootScreen message={msg} detail={detail} canRetry={msg === 'Cannot reach POS backend'} onRetry={() => setNonce((n) => n + 1)} />;
+    return (
+      <BootScreen
+        message={msg}
+        detail={detail}
+        canRetry={msg === 'Cannot reach POS backend'}
+        onRetry={() => setNonce((n) => n + 1)}
+      />
+    );
   }
   return <RouterProvider router={router} />;
 }
@@ -677,5 +976,3 @@ createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
-
-

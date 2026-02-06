@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTicketStore } from '../../stores/ticket';
-import { useOrderContext } from '../../stores/orderContext';
+import { useOrderContext } from '@shared/stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
@@ -1815,12 +1815,10 @@ export default function OrderPage() {
                         .getLatestForTable(toA, toL)
                         .catch(() => null as any);
                       if (latest?.items) {
-                        useTicketStore
-                          .getState()
-                          .hydrate({
-                            items: latest.items as any,
-                            note: latest.note || '',
-                          });
+                        useTicketStore.getState().hydrate({
+                          items: latest.items as any,
+                          note: latest.note || '',
+                        });
                       }
                     }
 
@@ -2348,36 +2346,6 @@ function IconCard() {
       <path d="M3 10h18" stroke="currentColor" strokeWidth="2" />
       <path
         d="M7 15h4"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-function IconGift() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M4 11h16v10H4V11Z" stroke="currentColor" strokeWidth="2" />
-      <path d="M12 11v10" stroke="currentColor" strokeWidth="2" />
-      <path d="M4 7h16v4H4V7Z" stroke="currentColor" strokeWidth="2" />
-      <path
-        d="M12 7c-1.5-3-4-3-4-1s4 1 4 1Zm0 0c1.5-3 4-3 4-1s-4 1-4 1Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-function IconRoom() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M4 10h16v11H4V10Z" stroke="currentColor" strokeWidth="2" />
-      <path d="M7 10V6h10v4" stroke="currentColor" strokeWidth="2" />
-      <path
-        d="M8 14h8"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"

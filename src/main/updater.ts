@@ -1,10 +1,10 @@
 /**
  * Auto-updater for Electron app
- * 
+ *
  * Supports multiple update servers:
  * - GitHub Releases (recommended for open source)
  * - Generic update server (custom URL)
- * 
+ *
  * Configuration:
  * - GITHUB_OWNER: GitHub username/org (e.g., "yourusername")
  * - GITHUB_REPO: Repository name (e.g., "POS")
@@ -13,10 +13,11 @@
  */
 
 import { autoUpdater, UpdateInfo } from 'electron-updater';
-import { app, BrowserWindow } from 'electron';
+import { BrowserWindow } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
 
-const IS_DEV = process.env.NODE_ENV !== 'production' || process.env.ELECTRON_IS_DEV === '1';
+const IS_DEV =
+  process.env.NODE_ENV !== 'production' || process.env.ELECTRON_IS_DEV === '1';
 const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED !== 'false';
 const GITHUB_OWNER = process.env.GITHUB_OWNER || '';
 const GITHUB_REPO = process.env.GITHUB_REPO || '';
@@ -45,11 +46,13 @@ export const updaterHandlers = {
   getUpdateStatus: () => {
     return {
       hasUpdate: updateInfo !== null,
-      updateInfo: updateInfo ? {
-        version: updateInfo.version,
-        releaseDate: releaseDateIso((updateInfo as any).releaseDate),
-        releaseNotes: updateInfo.releaseNotes || '',
-      } : null,
+      updateInfo: updateInfo
+        ? {
+            version: updateInfo.version,
+            releaseDate: releaseDateIso((updateInfo as any).releaseDate),
+            releaseNotes: updateInfo.releaseNotes || '',
+          }
+        : null,
       downloaded: updateDownloaded,
       checking: false,
     };
@@ -66,7 +69,10 @@ export const updaterHandlers = {
       await autoUpdater.checkForUpdates();
       return { success: true };
     } catch (error: any) {
-      captureException(error instanceof Error ? error : new Error(String(error)), { context: 'updater:checkForUpdates' });
+      captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: 'updater:checkForUpdates' },
+      );
       return { error: error?.message || 'Failed to check for updates' };
     }
   },
@@ -79,7 +85,10 @@ export const updaterHandlers = {
       await autoUpdater.downloadUpdate();
       return { success: true };
     } catch (error: any) {
-      captureException(error instanceof Error ? error : new Error(String(error)), { context: 'updater:downloadUpdate' });
+      captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: 'updater:downloadUpdate' },
+      );
       return { error: error?.message || 'Failed to download update' };
     }
   },
@@ -113,13 +122,19 @@ export function setupAutoUpdater(): void {
         owner: GITHUB_OWNER,
         repo: GITHUB_REPO,
       });
-      console.log(`[AutoUpdater] Configured for GitHub: ${GITHUB_OWNER}/${GITHUB_REPO}`);
+      console.log(
+        `[AutoUpdater] Configured for GitHub: ${GITHUB_OWNER}/${GITHUB_REPO}`,
+      );
     } else if (UPDATE_SERVER_URL) {
       // Custom update server
       autoUpdater.setFeedURL(UPDATE_SERVER_URL);
-      console.log(`[AutoUpdater] Configured for custom server: ${UPDATE_SERVER_URL}`);
+      console.log(
+        `[AutoUpdater] Configured for custom server: ${UPDATE_SERVER_URL}`,
+      );
     } else {
-      console.warn('[AutoUpdater] No update server configured. Set GITHUB_OWNER/GITHUB_REPO or UPDATE_SERVER_URL');
+      console.warn(
+        '[AutoUpdater] No update server configured. Set GITHUB_OWNER/GITHUB_REPO or UPDATE_SERVER_URL',
+      );
       return;
     }
 
@@ -148,7 +163,10 @@ export function setupAutoUpdater(): void {
     });
 
     autoUpdater.on('update-not-available', (info: UpdateInfo) => {
-      console.log('[AutoUpdater] No update available. Current version:', info.version);
+      console.log(
+        '[AutoUpdater] No update available. Current version:',
+        info.version,
+      );
       updateInfo = null;
       updateDownloaded = false;
       notifyListeners('update-not-available');
@@ -187,14 +205,20 @@ export function setupAutoUpdater(): void {
     }, 5000); // 5 seconds after app start
 
     // Check for updates periodically (every 4 hours)
-    updateCheckInterval = setInterval(() => {
-      checkForUpdates();
-    }, 4 * 60 * 60 * 1000); // 4 hours
+    updateCheckInterval = setInterval(
+      () => {
+        checkForUpdates();
+      },
+      4 * 60 * 60 * 1000,
+    ); // 4 hours
 
     console.log('[AutoUpdater] Initialized successfully');
   } catch (error) {
     console.error('[AutoUpdater] Initialization failed:', error);
-    captureException(error instanceof Error ? error : new Error(String(error)), { context: 'updater:init' });
+    captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: 'updater:init' },
+    );
   }
 }
 
@@ -216,7 +240,9 @@ function notifyListeners(event: string, data?: any): void {
     }
   }
   // Clean up destroyed windows
-  updateCheckListeners = new Set(Array.from(updateCheckListeners).filter(w => !w.isDestroyed()));
+  updateCheckListeners = new Set(
+    Array.from(updateCheckListeners).filter((w) => !w.isDestroyed()),
+  );
 }
 
 export function registerUpdateListener(window: BrowserWindow): void {

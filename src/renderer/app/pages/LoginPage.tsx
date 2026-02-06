@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
-import { isClockOnlyRole } from '../../utils/roles';
+import { isClockOnlyRole } from '@shared/utils/roles';
 
 export default function LoginPage() {
   const [pin, setPin] = useState('');

@@ -53,6 +53,7 @@ function sanitizeString(
     .replace(/javascript:/gi, '')
     .replace(/on\w+=/gi, '')
     // Remove control characters
+    // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x1F\x7F]/g, '');
 
   return sanitized;

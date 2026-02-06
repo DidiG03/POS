@@ -14,4 +14,3 @@ export function isClockOnlyRole(role: unknown): boolean {
   const r = String(role || '').toUpperCase();
   return CLOCK_ONLY_ROLES.has(r);
 }
-

@@ -73,8 +73,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "",
-      "repo": ""
+      "owner": "DidiG03",
+      "repo": "POS"
     }
   },
   "lint-staged": {

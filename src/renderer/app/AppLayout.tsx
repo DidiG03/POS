@@ -1,10 +1,10 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSessionStore } from '../stores/session';
 import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
-import { isClockOnlyRole } from '../utils/roles';
+import { isClockOnlyRole } from '@shared/utils/roles';
 
 export default function AppLayout() {
   const { user, setUser } = useSessionStore();
@@ -25,6 +25,35 @@ export default function AppLayout() {
     status?: string;
   } | null>(null);
   const [billingCheckedAt, setBillingCheckedAt] = useState<number>(0);
+
+  const forceLogout = useCallback(
+    (reason = 'Logged out') => {
+      // Centralized logout so browser clients also clear tokens + SSE (via renderer/main.tsx handler).
+      try {
+        window.dispatchEvent(
+          new CustomEvent('pos:forceLogout', { detail: { reason } }),
+        );
+        return;
+      } catch {
+        // fallback
+      }
+      try {
+        setUser(null);
+      } catch {
+        // ignore
+      }
+      try {
+        navigate('/');
+      } catch {
+        // ignore
+      }
+    },
+    [navigate, setUser],
+  );
+
+  const handleNotifCount = useCallback((n: number) => {
+    setUnreadCount(n);
+  }, []);
 
   useEffect(() => {
     // Expose a simple global flag other pages can read to disable risky actions during network issues
@@ -145,14 +174,19 @@ export default function AppLayout() {
   }, [user?.id]);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       if (!user) return;
       const open = await window.api.shifts.getOpen(user.id).catch(() => null);
-      setHasOpen(Boolean(open));
+      if (!cancelled) setHasOpen(Boolean(open));
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   const clockOnly = Boolean(user && isClockOnlyRole((user as any).role));
+  const isWaiter = String((user as any)?.role || '').toUpperCase() === 'WAITER';
   const billingEnabled = Boolean(billing?.billingEnabled);
   const billingStatus = String(billing?.status || 'ACTIVE').toUpperCase();
   const billingPaused =
@@ -255,8 +289,7 @@ export default function AppLayout() {
                       onClick={async () => {
                         await window.api.shifts.clockOut(user.id);
                         setHasOpen(false);
-                        setUser(null);
-                        navigate('/');
+                        forceLogout('Clocked out');
                       }}
                     >
                       Clock out
@@ -348,7 +381,7 @@ export default function AppLayout() {
                   {user ? (
                     <NotificationsList
                       userId={user.id}
-                      onCount={(n) => setUnreadCount(n)}
+                      onCount={handleNotifCount}
                     />
                   ) : (
                     <div className="opacity-70">No notifications</div>
@@ -361,14 +394,16 @@ export default function AppLayout() {
 
           {/* Scrollable links (only the links scroll, not the popovers) */}
           <div className="flex items-center gap-2 sm:gap-4 overflow-x-auto whitespace-nowrap min-w-0">
-            <NavLink
-              to="/app/clock"
-              className={({ isActive }) =>
-                isActive ? 'underline' : 'hover:underline'
-              }
-            >
-              Clock
-            </NavLink>
+            {!isWaiter && (
+              <NavLink
+                to="/app/clock"
+                className={({ isActive }) =>
+                  isActive ? 'underline' : 'hover:underline'
+                }
+              >
+                Clock
+              </NavLink>
+            )}
             {!clockOnly && (
               <>
                 <NavLink
@@ -393,8 +428,7 @@ export default function AppLayout() {
               <button
                 className="ml-1 px-3 py-1 rounded-full bg-red-700 hover:bg-red-800 cursor-pointer text-sm"
                 onClick={() => {
-                  setUser(null);
-                  navigate('/');
+                  forceLogout('Logged out');
                 }}
                 type="button"
               >
@@ -430,14 +464,19 @@ function NotificationsList({
     }[]
   >([]);
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const all = await window.api.notifications.list(userId).catch(() => []);
+      if (cancelled) return;
       setItems(all);
       const unreadCount = Array.isArray(all)
         ? all.filter((n: any) => !n?.readAt).length
         : 0;
       onCount(unreadCount);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [userId, onCount]);
   const filtered = items.filter(
     (n) => !/requested to add items/i.test(n.message),
@@ -476,10 +515,14 @@ function OwnerRequests({ userId }: { userId: number }) {
     }>
   >([]);
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const r = await window.api.requests.listForOwner(userId).catch(() => []);
-      setRows(r);
+      if (!cancelled) setRows(r);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
   if (!rows.length) return null;
   return (

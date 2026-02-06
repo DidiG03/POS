@@ -10,7 +10,6 @@ import {
   setSentryUser,
   captureException,
   addBreadcrumb,
-  sentryEnabled,
 } from './services/sentry';
 initSentry();
 import { coreServices } from './services/core';
@@ -35,8 +34,6 @@ import {
   getCloudSessionUserId,
   hasCloudSession,
   hasCloudSessionForSender,
-  isCloudAdmin,
-  isCloudAdminForSender,
   setCloudSession,
   setCloudSessionForSender,
   setCloudToken,
@@ -83,6 +80,10 @@ import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import { startPrinterStationLoop } from './services/printerStation';
 import { transferTableLocal } from './services/tableTransfer';
+import {
+  startNotificationRetentionLoop,
+  stopNotificationRetentionLoop,
+} from './services/notificationRetention';
 
 dotenv.config();
 
@@ -545,7 +546,7 @@ function startAutoVoidStaleTicketsLoop() {
               { userId: systemUserId, area, tableLabel, reason },
               { requireAuth: true, senderId: 0 },
             );
-          } catch (e: any) {
+          } catch {
             await enqueueOutbox({
               id: `tickets:void-ticket:${area}:${tableLabel}:${Date.now()}`,
               method: 'POST',
@@ -661,7 +662,7 @@ function startAutoVoidStaleTicketsLoop() {
               { area, label: tableLabel, open: false },
               { requireAuth: true, senderId: 0 },
             );
-          } catch (e: any) {
+          } catch {
             await enqueueOutbox({
               id: `tables:open:${area}:${tableLabel}:${Date.now()}`,
               method: 'POST',
@@ -762,6 +763,8 @@ app.whenReady().then(async () => {
   startPrinterStationLoop();
   // Offline outbox: retry queued cloud writes when connectivity returns.
   startOutboxLoop();
+  // Notifications: automatically delete notifications older than 1 week (DB retention).
+  startNotificationRetentionLoop(prisma, { days: 7 });
   // KDS: auto-bump stale tickets after 12 hours.
   startKdsAutoBumpLoop();
   // Tickets: auto-void stale open tables after 12 hours + notify.
@@ -786,6 +789,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   cleanupUpdater();
   stopMemoryMonitoring();
+  stopNotificationRetentionLoop();
 });
 
 // Updater IPC handlers
@@ -1496,7 +1500,20 @@ ipcMain.handle('settings:update', async (_e, input) => {
         signal: ac.signal,
       } as any).finally(() => clearTimeout(t));
       const data = await r.json().catch(() => null);
-      if (!r.ok || !Array.isArray(data) || data.length === 0) {
+      if (!r.ok) {
+        const errText = String((data as any)?.error || '').trim();
+        // Common operational issue: cloud backend was deployed but Cloud SQL migrations were not applied.
+        // Prisma then throws "column does not exist" for newly added fields.
+        if (/does not exist/i.test(errText) && /business\./i.test(errText)) {
+          throw new Error(
+            'Cloud backend database is missing migrations. Ask the provider to run: `cd server && npx prisma migrate deploy` against the Cloud SQL DATABASE_URL.',
+          );
+        }
+        throw new Error(
+          errText || 'Invalid Business code or Business password.',
+        );
+      }
+      if (!Array.isArray(data) || data.length === 0) {
         throw new Error('Invalid Business code or Business password.');
       }
       // Normalize the code back into the input so it is stored consistently.
@@ -1842,6 +1859,25 @@ ipcMain.handle('billing:getStatus', async (_e) => {
     });
   } catch (e: any) {
     // If the cloud is unreachable, don't hard-lock the POS; treat as active but surface message.
+    return {
+      status: 'ACTIVE',
+      billingEnabled: true,
+      message: String(e?.message || 'Could not check billing status'),
+    };
+  }
+});
+
+ipcMain.handle('billing:getStatusLive', async (_e) => {
+  const cloud = await getCloudConfig().catch(() => null);
+  if (!cloud) {
+    return { status: 'ACTIVE', billingEnabled: false };
+  }
+  try {
+    return await cloudJson('GET', '/billing/status?live=1', undefined, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    });
+  } catch (e: any) {
     return {
       status: 'ACTIVE',
       billingEnabled: true,
@@ -3558,16 +3594,7 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
     // Validate items array
     if (!Array.isArray(items) || items.length === 0) return false;
 
-    // Use sanitized values
-    const sanitizedPayload = {
-      userId,
-      area: sanitizedArea,
-      tableLabel: sanitizedTableLabel,
-      covers: sanitizedCovers,
-      items,
-      note: sanitizedNote,
-      idempotencyKey,
-    };
+    // Use sanitized values (do not persist raw input)
     const cloud = await getCloudConfig().catch(() => null);
     if (cloud) {
       const idem =
@@ -5174,8 +5201,8 @@ ipcMain.handle('requests:approve', async (_e, input) => {
         note: last?.note ?? null,
       },
     });
-  } catch (e) {
-    void e;
+  } catch {
+    // ignore
   }
   await prisma.notification
     .create({

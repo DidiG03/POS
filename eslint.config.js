@@ -4,11 +4,14 @@ import tsParser from '@typescript-eslint/parser';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import reactPlugin from 'eslint-plugin-react';
 import reactHooksPlugin from 'eslint-plugin-react-hooks';
+import eslintConfigPrettier from 'eslint-config-prettier';
 import globals from 'globals';
 
 export default [
   { ignores: ['dist', 'node_modules', 'prisma/dev.db'] },
   js.configs.recommended,
+  // Disable stylistic rules that conflict with Prettier
+  eslintConfigPrettier,
   {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {

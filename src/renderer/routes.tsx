@@ -6,7 +6,7 @@ import React from 'react';
 import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { useEffect } from 'react';
-import { isClockOnlyRole } from './utils/roles';
+import { isClockOnlyRole } from '@shared/utils/roles';
 
 const LoginPage = React.lazy(() => import('./app/pages/LoginPage'));
 const TablesPage = React.lazy(() => import('./app/pages/TablesPage'));
@@ -26,12 +26,19 @@ const AdminSettingsPage = React.lazy(
 const AdminMenuPage = React.lazy(() => import('./app/pages/AdminMenuPage'));
 const KdsPage = React.lazy(() => import('./app/pages/KdsPage'));
 
-function withSuspense(el: React.ReactElement) {
+function SuspenseFallback() {
   return (
-    <React.Suspense fallback={<div className="p-4 opacity-70">Loading…</div>}>
-      {el}
-    </React.Suspense>
+    <div className="w-full h-full min-h-[60vh] flex items-center justify-center">
+      <div className="rounded border border-gray-700 bg-gray-900/40 px-4 py-3 flex items-center gap-3">
+        <div className="w-4 h-4 rounded-full border-2 border-gray-500 border-t-transparent animate-spin" />
+        <div className="text-sm opacity-80">Loading…</div>
+      </div>
+    </div>
   );
+}
+
+function withSuspense(el: React.ReactElement) {
+  return <React.Suspense fallback={<SuspenseFallback />}>{el}</React.Suspense>;
 }
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
@@ -45,19 +52,23 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
     (window.location.hash || '').startsWith('#/kds');
   const [ok, setOk] = React.useState<boolean>(true);
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       // KDS clients should be usable without shift clock-in.
       if (!isBrowser || isKdsContext || !user?.id) {
-        setOk(true);
+        if (!cancelled) setOk(true);
         return;
       }
       try {
         const open = await (window as any).api.shifts.getOpen(user.id);
-        setOk(Boolean(open));
+        if (!cancelled) setOk(Boolean(open));
       } catch {
-        setOk(false);
+        if (!cancelled) setOk(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [isBrowser, isKdsContext, user?.id]);
   if (!user) return withSuspense(<LoginPage />);
   if (isBrowser && !ok) return withSuspense(<LoginPage />);
@@ -97,6 +108,16 @@ function RequirePosAccess({ children }: { children: React.ReactElement }) {
   return children;
 }
 
+function RequireClockAccess({ children }: { children: React.ReactElement }) {
+  const user = useSessionStore((s) => s.user);
+  if (!user) return <Navigate to="/" replace />;
+  // Requirement: waiters must NOT see/use the Clock page.
+  if (String((user as any)?.role || '').toUpperCase() === 'WAITER') {
+    return <Navigate to="/app/tables" replace />;
+  }
+  return children;
+}
+
 export const routes: RouteObject[] = [
   { path: '/', element: withSuspense(<LoginPage />) },
   {
@@ -109,7 +130,12 @@ export const routes: RouteObject[] = [
     children: [
       // No home screen: send staff straight to Tables.
       { index: true, element: <AppIndexRedirect /> },
-      { path: 'clock', element: withSuspense(<ClockPage />) },
+      {
+        path: 'clock',
+        element: (
+          <RequireClockAccess>{withSuspense(<ClockPage />)}</RequireClockAccess>
+        ),
+      },
       {
         path: 'tables',
         element: (

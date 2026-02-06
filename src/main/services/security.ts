@@ -1,6 +1,6 @@
 /**
  * Security utilities for the POS system
- * 
+ *
  * Includes:
  * - Rate limiting for IPC handlers
  * - Input sanitization
@@ -8,10 +8,13 @@
  * - PIN validation
  */
 
-import { ipcMain, IpcMainInvokeEvent } from 'electron';
+import { IpcMainInvokeEvent } from 'electron';
 
 // Rate limiting for IPC handlers (in-memory, per sender)
-const ipcRateLimits = new Map<number, Map<string, { count: number; resetAt: number }>>();
+const ipcRateLimits = new Map<
+  number,
+  Map<string, { count: number; resetAt: number }>
+>();
 
 export interface RateLimitOptions {
   maxAttempts?: number; // Max attempts per window
@@ -125,7 +128,9 @@ export function logSecurityEvent(event: string, details: any): void {
 /**
  * Get security audit log (for admin review)
  */
-export function getSecurityLog(limit = 100): Array<{ timestamp: number; event: string; details: any }> {
+export function getSecurityLog(
+  limit = 100,
+): Array<{ timestamp: number; event: string; details: any }> {
   return securityLog.slice(-limit);
 }
 
@@ -133,7 +138,10 @@ export function getSecurityLog(limit = 100): Array<{ timestamp: number; event: s
  * Sanitize string input to prevent XSS
  * Removes potentially dangerous characters and HTML tags
  */
-export function sanitizeString(input: string | null | undefined, maxLength = 500): string {
+export function sanitizeString(
+  input: string | null | undefined,
+  maxLength = 500,
+): string {
   if (!input) return '';
   let sanitized = String(input)
     .trim()
@@ -153,9 +161,14 @@ export function sanitizeString(input: string | null | undefined, maxLength = 500
 /**
  * Sanitize string array (e.g., for notes, names)
  */
-export function sanitizeStringArray(input: (string | null | undefined)[] | null | undefined, maxLength = 500): string[] {
+export function sanitizeStringArray(
+  input: (string | null | undefined)[] | null | undefined,
+  maxLength = 500,
+): string[] {
   if (!Array.isArray(input)) return [];
-  return input.map((item) => sanitizeString(item, maxLength)).filter((s) => s.length > 0);
+  return input
+    .map((item) => sanitizeString(item, maxLength))
+    .filter((s) => s.length > 0);
 }
 
 /**
@@ -163,7 +176,10 @@ export function sanitizeStringArray(input: (string | null | undefined)[] | null 
  * PINs should be 4-6 digits (current requirement)
  * Can be extended for stronger requirements
  */
-export function validatePin(pin: string | null | undefined, rejectWeak = true): { valid: boolean; error?: string } {
+export function validatePin(
+  pin: string | null | undefined,
+  rejectWeak = true,
+): { valid: boolean; error?: string } {
   if (!pin) return { valid: false, error: 'PIN is required' };
   const pinStr = String(pin).trim();
 
@@ -174,9 +190,21 @@ export function validatePin(pin: string | null | undefined, rejectWeak = true): 
 
   // Only reject weak PINs when creating/updating (not during login)
   if (rejectWeak) {
-    const weakPins = ['0000', '1111', '1234', '12345', '123456', '9999', '99999', '999999'];
+    const weakPins = [
+      '0000',
+      '1111',
+      '1234',
+      '12345',
+      '123456',
+      '9999',
+      '99999',
+      '999999',
+    ];
     if (weakPins.includes(pinStr)) {
-      return { valid: false, error: 'PIN is too common. Please choose a different PIN.' };
+      return {
+        valid: false,
+        error: 'PIN is too common. Please choose a different PIN.',
+      };
     }
   }
 
@@ -186,7 +214,12 @@ export function validatePin(pin: string | null | undefined, rejectWeak = true): 
 /**
  * Sanitize numeric input
  */
-export function sanitizeNumber(input: any, min?: number, max?: number, defaultValue = 0): number {
+export function sanitizeNumber(
+  input: any,
+  min?: number,
+  max?: number,
+  defaultValue = 0,
+): number {
   const num = Number(input);
   if (!Number.isFinite(num)) return defaultValue;
   if (min !== undefined && num < min) return min;
@@ -198,7 +231,8 @@ export function sanitizeNumber(input: any, min?: number, max?: number, defaultVa
  * Generate secure random token
  */
 export function generateSecureToken(length = 32): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const chars =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   const randomBytes = new Uint8Array(length);
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
     crypto.getRandomValues(randomBytes);
