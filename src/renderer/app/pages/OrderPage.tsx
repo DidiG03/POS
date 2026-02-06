@@ -30,24 +30,52 @@ export default function OrderPage() {
   const [categories, setCategories] = useState<MenuCategoryDTO[]>([]);
   const [selectedCatId, setSelectedCatId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
-  const { lines, addItem, increment, decrement, setLineNote, orderNote, setOrderNote, clear, removeLine } = useTicketStore();
-  const [weightModal, setWeightModal] = useState<{ sku: string; name: string; unitPrice: number; vatRate: number } | null>(null);
+  const {
+    lines,
+    addItem,
+    increment,
+    decrement,
+    setLineNote,
+    orderNote,
+    setOrderNote,
+    clear,
+    removeLine,
+  } = useTicketStore();
+  const [weightModal, setWeightModal] = useState<{
+    sku: string;
+    name: string;
+    unitPrice: number;
+    vatRate: number;
+  } | null>(null);
   const [weightInput, setWeightInput] = useState<string>('');
-  const { selectedTable, setPendingAction, setSelectedTable } = useOrderContext();
+  const { selectedTable, setPendingAction, setSelectedTable } =
+    useOrderContext();
   const { setOpen, isOpen } = useTableStatus();
   const [showCovers, setShowCovers] = useState(false);
   const [coversValue, setCoversValue] = useState('');
-  const [coversKnown, setCoversKnown] = useState<number | null | undefined>(undefined);
-  const [coversMode, setCoversMode] = useState<'openAndSend' | 'editOnly'>('openAndSend');
+  const [coversKnown, setCoversKnown] = useState<number | null | undefined>(
+    undefined,
+  );
+  const [coversMode, setCoversMode] = useState<'openAndSend' | 'editOnly'>(
+    'openAndSend',
+  );
   const [showPayment, setShowPayment] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE'>('CASH');
+  const [paymentMethod, setPaymentMethod] = useState<
+    'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE'
+  >('CASH');
   const [amountPaid, setAmountPaid] = useState<string>('');
   const [printReceipt, setPrintReceipt] = useState<boolean>(true);
-  const [discountType, setDiscountType] = useState<'NONE' | 'PERCENT' | 'AMOUNT'>('NONE');
+  const [discountType, setDiscountType] = useState<
+    'NONE' | 'PERCENT' | 'AMOUNT'
+  >('NONE');
   const [discountValue, setDiscountValue] = useState<string>('');
   const [discountReason, setDiscountReason] = useState<string>('');
   const [vatEnabled, setVatEnabled] = useState<boolean>(true);
-  const [serviceChargeCfg, setServiceChargeCfg] = useState<{ enabled: boolean; mode: 'PERCENT' | 'AMOUNT'; value: number }>({
+  const [serviceChargeCfg, setServiceChargeCfg] = useState<{
+    enabled: boolean;
+    mode: 'PERCENT' | 'AMOUNT';
+    value: number;
+  }>({
     enabled: false,
     mode: 'PERCENT',
     value: 10,
@@ -69,30 +97,45 @@ export default function OrderPage() {
   const suppressFreeOnEmptyRef = useRef(false);
   const initialRenderRef = useRef(true);
   const [requestLocked, setRequestLocked] = useState(false);
-  const [busyAction, setBusyAction] = useState<'send' | 'pay' | 'void' | 'request' | null>(null);
-  const isBrowserClient = typeof window !== 'undefined' && Boolean((window as any).__BROWSER_CLIENT__);
-  const backendOk = typeof window !== 'undefined' ? (window as any).__BACKEND_OK__ !== false : true;
-  const netOk = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+  const [busyAction, setBusyAction] = useState<
+    'send' | 'pay' | 'void' | 'request' | null
+  >(null);
+  const isBrowserClient =
+    typeof window !== 'undefined' &&
+    Boolean((window as any).__BROWSER_CLIENT__);
+  const backendOk =
+    typeof window !== 'undefined'
+      ? (window as any).__BACKEND_OK__ !== false
+      : true;
+  const netOk =
+    typeof navigator === 'undefined' ? true : navigator.onLine !== false;
   const connectionOk = !isBrowserClient || (netOk && backendOk);
   const [mobilePane, setMobilePane] = useState<'menu' | 'ticket'>('menu');
 
   // Transfer table (move table and/or change owner)
   const [showTransfer, setShowTransfer] = useState(false);
-  const [transferMode, setTransferMode] = useState<'WAITER' | 'TABLE'>('WAITER');
-  const [transferUsers, setTransferUsers] = useState<Array<{ id: number; displayName: string; role: string; active: boolean }>>([]);
+  const [transferMode, setTransferMode] = useState<'WAITER' | 'TABLE'>(
+    'WAITER',
+  );
+  const [transferUsers, setTransferUsers] = useState<
+    Array<{ id: number; displayName: string; role: string; active: boolean }>
+  >([]);
   const [transferToUserId, setTransferToUserId] = useState<number | null>(null);
   const [transferToArea, setTransferToArea] = useState<string>('');
   const [transferToLabel, setTransferToLabel] = useState<string>('');
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferError, setTransferError] = useState<string | null>(null);
 
-  const isTableOpen = selectedTable ? isOpen(selectedTable.area, selectedTable.label) : false;
+  const isTableOpen = selectedTable
+    ? isOpen(selectedTable.area, selectedTable.label)
+    : false;
   const hasUnsentItems = lines.some((l) => l.staged);
   const canTransfer = Boolean(
     selectedTable &&
       isOpen(selectedTable.area, selectedTable.label) &&
       user?.id &&
-      (user.role === 'ADMIN' || (ownerId != null && Number(ownerId) === Number(user.id))),
+      (user.role === 'ADMIN' ||
+        (ownerId != null && Number(ownerId) === Number(user.id))),
   );
 
   function formatElapsed(ms: number) {
@@ -100,7 +143,8 @@ export default function OrderPage() {
     const hh = Math.floor(s / 3600);
     const mm = Math.floor((s % 3600) / 60);
     const ss = s % 60;
-    if (hh > 0) return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+    if (hh > 0)
+      return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
     return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
   }
 
@@ -108,16 +152,30 @@ export default function OrderPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!selectedTable) { setOpenedAtMs(null); return; }
-      if (!isOpen(selectedTable.area, selectedTable.label)) { setOpenedAtMs(null); return; }
-      const tip = await window.api.tickets.getTableTooltip(selectedTable.area, selectedTable.label).catch(() => null);
+      if (!selectedTable) {
+        setOpenedAtMs(null);
+        return;
+      }
+      if (!isOpen(selectedTable.area, selectedTable.label)) {
+        setOpenedAtMs(null);
+        return;
+      }
+      const tip = await window.api.tickets
+        .getTableTooltip(selectedTable.area, selectedTable.label)
+        .catch(() => null);
       const iso = (tip as any)?.firstAt as string | null | undefined;
       const t = iso ? new Date(iso).getTime() : NaN;
       if (cancelled) return;
       setOpenedAtMs(Number.isFinite(t) ? t : null);
     })();
-    return () => { cancelled = true; };
-  }, [selectedTable?.area, selectedTable?.label, isOpen(selectedTable?.area || '', selectedTable?.label || '')]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedTable?.area,
+    selectedTable?.label,
+    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+  ]);
 
   useEffect(() => {
     if (!openedAtMs) return;
@@ -138,7 +196,10 @@ export default function OrderPage() {
         return;
       }
       try {
-        const last = await window.api.covers.getLast(selectedTable.area, selectedTable.label);
+        const last = await window.api.covers.getLast(
+          selectedTable.area,
+          selectedTable.label,
+        );
         if (cancelled) return;
         setCoversKnown(last ?? null);
       } catch {
@@ -159,7 +220,10 @@ export default function OrderPage() {
     typeof coversKnown === 'number' &&
     coversKnown > 0;
 
-  const totals = useMemo(() => computeTotals(lines, vatEnabled), [lines, vatEnabled]);
+  const totals = useMemo(
+    () => computeTotals(lines, vatEnabled),
+    [lines, vatEnabled],
+  );
   const [approvalsCfg, setApprovalsCfg] = useState<{
     requireManagerPinForDiscount: boolean;
     requireManagerPinForVoid: boolean;
@@ -177,20 +241,38 @@ export default function OrderPage() {
     pin: string;
     error: string | null;
   }>({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
-  const approvalResolveRef = useRef<((v: { userId: number; userName: string } | null) => void) | null>(null);
+  const approvalResolveRef = useRef<
+    ((v: { userId: number; userName: string } | null) => void) | null
+  >(null);
 
   function requestManagerApproval(action: string) {
-    setApprovalModal({ open: true, action, kind: 'MANAGER', pin: '', error: null });
-    return new Promise<{ userId: number; userName: string } | null>((resolve) => {
-      approvalResolveRef.current = resolve;
+    setApprovalModal({
+      open: true,
+      action,
+      kind: 'MANAGER',
+      pin: '',
+      error: null,
     });
+    return new Promise<{ userId: number; userName: string } | null>(
+      (resolve) => {
+        approvalResolveRef.current = resolve;
+      },
+    );
   }
 
   function requestAdminApproval(action: string) {
-    setApprovalModal({ open: true, action, kind: 'ADMIN', pin: '', error: null });
-    return new Promise<{ userId: number; userName: string } | null>((resolve) => {
-      approvalResolveRef.current = resolve;
+    setApprovalModal({
+      open: true,
+      action,
+      kind: 'ADMIN',
+      pin: '',
+      error: null,
     });
+    return new Promise<{ userId: number; userName: string } | null>(
+      (resolve) => {
+        approvalResolveRef.current = resolve;
+      },
+    );
   }
 
   async function reloadPreferences() {
@@ -199,14 +281,23 @@ export default function OrderPage() {
       setVatEnabled((s as any)?.preferences?.vatEnabled !== false);
       const sc = (s as any)?.preferences?.serviceCharge || {};
       const enabled = Boolean(sc.enabled);
-      const mode = String(sc.mode || 'PERCENT').toUpperCase() === 'AMOUNT' ? 'AMOUNT' : 'PERCENT';
+      const mode =
+        String(sc.mode || 'PERCENT').toUpperCase() === 'AMOUNT'
+          ? 'AMOUNT'
+          : 'PERCENT';
       const value = Number(sc.value ?? 10);
-      setServiceChargeCfg({ enabled, mode, value: Number.isFinite(value) ? value : 10 });
+      setServiceChargeCfg({
+        enabled,
+        mode,
+        value: Number.isFinite(value) ? value : 10,
+      });
       const approvals = (s as any)?.security?.approvals || {};
       setApprovalsCfg({
-        requireManagerPinForDiscount: approvals.requireManagerPinForDiscount !== false,
+        requireManagerPinForDiscount:
+          approvals.requireManagerPinForDiscount !== false,
         requireManagerPinForVoid: approvals.requireManagerPinForVoid !== false,
-        requireManagerPinForServiceChargeRemoval: approvals.requireManagerPinForServiceChargeRemoval !== false,
+        requireManagerPinForServiceChargeRemoval:
+          approvals.requireManagerPinForServiceChargeRemoval !== false,
       });
     } catch {
       // ignore
@@ -216,7 +307,9 @@ export default function OrderPage() {
   useEffect(() => {
     void reloadPreferences();
     // Keep prefs fresh when admin changes them in another window/tab.
-    const onFocus = () => { void reloadPreferences(); };
+    const onFocus = () => {
+      void reloadPreferences();
+    };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, []);
@@ -227,9 +320,16 @@ export default function OrderPage() {
     if (!Number.isFinite(base) || base <= 0) return 0;
     const v = Number(serviceChargeCfg.value || 0);
     if (!Number.isFinite(v) || v <= 0) return 0;
-    if (serviceChargeCfg.mode === 'PERCENT') return Math.max(0, (base * v) / 100);
+    if (serviceChargeCfg.mode === 'PERCENT')
+      return Math.max(0, (base * v) / 100);
     return Math.max(0, v);
-  }, [serviceChargeCfg.enabled, serviceChargeCfg.mode, serviceChargeCfg.value, applyServiceCharge, totals.total]);
+  }, [
+    serviceChargeCfg.enabled,
+    serviceChargeCfg.mode,
+    serviceChargeCfg.value,
+    applyServiceCharge,
+    totals.total,
+  ]);
 
   // Service charge amount as configured (ignores waiter toggle). Used for approval checks.
   const serviceChargeConfiguredAmount = useMemo(() => {
@@ -238,11 +338,20 @@ export default function OrderPage() {
     if (!Number.isFinite(base) || base <= 0) return 0;
     const v = Number(serviceChargeCfg.value || 0);
     if (!Number.isFinite(v) || v <= 0) return 0;
-    if (serviceChargeCfg.mode === 'PERCENT') return Math.max(0, (base * v) / 100);
+    if (serviceChargeCfg.mode === 'PERCENT')
+      return Math.max(0, (base * v) / 100);
     return Math.max(0, v);
-  }, [serviceChargeCfg.enabled, serviceChargeCfg.mode, serviceChargeCfg.value, totals.total]);
+  }, [
+    serviceChargeCfg.enabled,
+    serviceChargeCfg.mode,
+    serviceChargeCfg.value,
+    totals.total,
+  ]);
 
-  const totalBeforeDiscount = Math.max(0, Number(totals.total || 0) + serviceChargeAmount);
+  const totalBeforeDiscount = Math.max(
+    0,
+    Number(totals.total || 0) + serviceChargeAmount,
+  );
   const discountAmount = useMemo(() => {
     const base = Number(totalBeforeDiscount || 0);
     if (!Number.isFinite(base) || base <= 0) return 0;
@@ -260,8 +369,16 @@ export default function OrderPage() {
   const selected = useMemo(() => {
     // Virtual Favourites category id: -1
     if (selectedCatId === -1) {
-      const items = categories.flatMap((c) => c.items).filter((i) => favouriteSkus.includes(i.sku));
-      return { id: -1, name: 'Favourites', sortOrder: -999, active: true, items } as any;
+      const items = categories
+        .flatMap((c) => c.items)
+        .filter((i) => favouriteSkus.includes(i.sku));
+      return {
+        id: -1,
+        name: 'Favourites',
+        sortOrder: -999,
+        active: true,
+        items,
+      } as any;
     }
     return categories.find((c) => c.id === selectedCatId) ?? categories[0];
   }, [categories, selectedCatId, favouriteSkus]);
@@ -270,9 +387,12 @@ export default function OrderPage() {
     const q = query.trim().toLowerCase();
     // If there is a search query, search across all categories' items
     if (q) {
-      return categories.flatMap((c) => c.items).filter(
-        (i: any) => i.name.toLowerCase().includes(q) || i.sku.toLowerCase().includes(q)
-      );
+      return categories
+        .flatMap((c) => c.items)
+        .filter(
+          (i: any) =>
+            i.name.toLowerCase().includes(q) || i.sku.toLowerCase().includes(q),
+        );
     }
     // Otherwise, show items from the selected category (or first category)
     return selected ? selected.items : categories.flatMap((c) => c.items);
@@ -286,7 +406,8 @@ export default function OrderPage() {
 
   const categoryNameById = useMemo(() => {
     const m = new Map<number, string>();
-    for (const c of categories as any[]) m.set(Number(c.id), String(c.name || ''));
+    for (const c of categories as any[])
+      m.set(Number(c.id), String(c.name || ''));
     return m;
   }, [categories]);
 
@@ -304,7 +425,9 @@ export default function OrderPage() {
     setTransferToUserId(null);
     (async () => {
       const users = await window.api.auth.listUsers().catch(() => [] as any[]);
-      setTransferUsers((Array.isArray(users) ? users : []).filter((u: any) => u && u.active));
+      setTransferUsers(
+        (Array.isArray(users) ? users : []).filter((u: any) => u && u.active),
+      );
     })();
   }, [showTransfer, selectedTable?.area, selectedTable?.label]);
 
@@ -320,13 +443,20 @@ export default function OrderPage() {
         return;
       }
       try {
-        const data = await window.api.tickets.getLatestForTable(selectedTable.area, selectedTable.label);
+        const data = await window.api.tickets.getLatestForTable(
+          selectedTable.area,
+          selectedTable.label,
+        );
         setOwnerId(data?.userId ?? null);
       } catch {
         setOwnerId(null);
       }
     })();
-  }, [selectedTable?.area, selectedTable?.label, isOpen(selectedTable?.area || '', selectedTable?.label || '')]);
+  }, [
+    selectedTable?.area,
+    selectedTable?.label,
+    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+  ]);
 
   // Hydrate lines from server when selecting a table or on refresh
   useEffect(() => {
@@ -335,17 +465,26 @@ export default function OrderPage() {
       // Only hydrate for tables currently marked as open
       if (!isOpen(selectedTable.area, selectedTable.label)) return;
       try {
-        const latest = await window.api.tickets.getLatestForTable(selectedTable.area, selectedTable.label);
+        const latest = await window.api.tickets.getLatestForTable(
+          selectedTable.area,
+          selectedTable.label,
+        );
         const items = Array.isArray(latest?.items) ? latest!.items : [];
         const remaining = items.filter((it: any) => !it.voided);
         if (remaining.length) {
-          useTicketStore.getState().hydrate({ items: remaining as any, note: latest?.note || '' });
+          useTicketStore
+            .getState()
+            .hydrate({ items: remaining as any, note: latest?.note || '' });
         }
       } catch (e) {
         void e;
       }
     })();
-  }, [selectedTable?.area, selectedTable?.label, isOpen(selectedTable?.area || '', selectedTable?.label || '')]);
+  }, [
+    selectedTable?.area,
+    selectedTable?.label,
+    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+  ]);
 
   // If an open table's ticket becomes empty due to voids, free the table (turn green) after server check
   useEffect(() => {
@@ -359,12 +498,17 @@ export default function OrderPage() {
       if (suppressFreeOnEmptyRef.current) return;
       (async () => {
         try {
-          const latest = await window.api.tickets.getLatestForTable(selectedTable.area, selectedTable.label);
+          const latest = await window.api.tickets.getLatestForTable(
+            selectedTable.area,
+            selectedTable.label,
+          );
           const items = Array.isArray(latest?.items) ? latest!.items : [];
           const remaining = items.filter((it: any) => !it.voided);
           if (remaining.length) {
             // Rehydrate and keep table open
-            useTicketStore.getState().hydrate({ items: remaining as any, note: latest?.note || '' });
+            useTicketStore
+              .getState()
+              .hydrate({ items: remaining as any, note: latest?.note || '' });
             setOpen(selectedTable.area, selectedTable.label, true);
             return;
           }
@@ -372,7 +516,9 @@ export default function OrderPage() {
           void e;
         }
         setOpen(selectedTable.area, selectedTable.label, false);
-        window.api.tables.setOpen(selectedTable.area, selectedTable.label, false).catch(() => {});
+        window.api.tables
+          .setOpen(selectedTable.area, selectedTable.label, false)
+          .catch(() => {});
       })();
     }
   }, [lines.length, selectedTable]);
@@ -387,13 +533,22 @@ export default function OrderPage() {
     let timer: any;
     const tick = async () => {
       try {
-        const rows = await window.api.requests.pollApprovedForTable(user.id, selectedTable.area, selectedTable.label);
+        const rows = await window.api.requests.pollApprovedForTable(
+          user.id,
+          selectedTable.area,
+          selectedTable.label,
+        );
         if (Array.isArray(rows) && rows.length) {
           // Merge items into current ticket
           for (const r of rows) {
             const items = Array.isArray(r.items) ? r.items : [];
             for (const it of items) {
-              addItem({ sku: String(it.name), name: String(it.name), unitPrice: Number(it.unitPrice || 0), vatRate: Number(it.vatRate || 0) });
+              addItem({
+                sku: String(it.name),
+                name: String(it.name),
+                unitPrice: Number(it.unitPrice || 0),
+                vatRate: Number(it.vatRate || 0),
+              });
               // adjust quantity if >1
               const times = Math.max(1, Number(it.qty || 1)) - 1;
               for (let i = 0; i < times; i++) {
@@ -432,7 +587,9 @@ export default function OrderPage() {
         </button>
       </div>
 
-      <div className={`md:col-span-2 min-h-0 overflow-auto ${mobilePane === 'menu' ? 'flex-1' : 'hidden'} md:block`}>
+      <div
+        className={`md:col-span-2 min-h-0 overflow-auto ${mobilePane === 'menu' ? 'flex-1' : 'hidden'} md:block`}
+      >
         <div className="flex gap-2 mb-3">
           <input
             placeholder="Search menu..."
@@ -475,21 +632,50 @@ export default function OrderPage() {
                   onClick={() => {
                     if (isDisabled) return;
                     // If isKg, open weight keypad; otherwise add normally
-                    const isKg = Boolean((i as any)?.isKg) || Boolean((i as any)?.tags?.isKg);
+                    const isKg =
+                      Boolean((i as any)?.isKg) ||
+                      Boolean((i as any)?.tags?.isKg);
                     if (isKg) {
-                      setWeightModal({ sku: i.sku, name: i.name, unitPrice: i.price, vatRate: i.vatRate, station: i.station, categoryId: i.categoryId, categoryName: categoryNameById.get(Number(i.categoryId)) || undefined } as any);
+                      setWeightModal({
+                        sku: i.sku,
+                        name: i.name,
+                        unitPrice: i.price,
+                        vatRate: i.vatRate,
+                        station: i.station,
+                        categoryId: i.categoryId,
+                        categoryName:
+                          categoryNameById.get(Number(i.categoryId)) ||
+                          undefined,
+                      } as any);
                       setWeightInput('');
                     } else {
-                      addItem({ sku: i.sku, name: i.name, unitPrice: i.price, vatRate: i.vatRate, station: i.station, categoryId: i.categoryId, categoryName: categoryNameById.get(Number(i.categoryId)) || undefined } as any);
+                      addItem({
+                        sku: i.sku,
+                        name: i.name,
+                        unitPrice: i.price,
+                        vatRate: i.vatRate,
+                        station: i.station,
+                        categoryId: i.categoryId,
+                        categoryName:
+                          categoryNameById.get(Number(i.categoryId)) ||
+                          undefined,
+                      } as any);
                     }
                   }}
                 >
-                  <div className={`font-medium pr-6 ${isDisabled ? 'line-through' : ''}`}>{i.name}</div>
+                  <div
+                    className={`font-medium pr-6 ${isDisabled ? 'line-through' : ''}`}
+                  >
+                    {i.name}
+                  </div>
                   <div className="text-sm">{i.price}</div>
                 </button>
                 <button
                   className={`absolute top-1 right-1 text-xs px-2 py-1 rounded ${isFav ? 'bg-pink-700' : 'bg-emerald-700'} cursor-pointer`}
-                  onClick={(e) => { e.stopPropagation(); if (user?.id) fav.toggle(user.id, i.sku); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (user?.id) fav.toggle(user.id, i.sku);
+                  }}
                   title={isFav ? 'Remove from favourites' : 'Add to favourites'}
                 >
                   {isFav ? '♥' : '♡'}
@@ -500,15 +686,21 @@ export default function OrderPage() {
         </div>
       </div>
 
-      <div className={`bg-gray-800 p-3 rounded flex flex-col min-h-0 h-full relative ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:block`}>
+      <div
+        className={`bg-gray-800 p-3 rounded flex flex-col min-h-0 h-full relative ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:block`}
+      >
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold flex items-center gap-2">
-            <span>Ticket {selectedTable ? `- ${selectedTable.label}` : ''}</span>
-            {selectedTable && isOpen(selectedTable.area, selectedTable.label) && openedAtMs && (
-              <span className="text-xs font-mono px-2 py-1 rounded bg-gray-700/60 border border-gray-600">
-                {formatElapsed(nowMs - openedAtMs)}
-              </span>
-            )}
+            <span>
+              Ticket {selectedTable ? `- ${selectedTable.label}` : ''}
+            </span>
+            {selectedTable &&
+              isOpen(selectedTable.area, selectedTable.label) &&
+              openedAtMs && (
+                <span className="text-xs font-mono px-2 py-1 rounded bg-gray-700/60 border border-gray-600">
+                  {formatElapsed(nowMs - openedAtMs)}
+                </span>
+              )}
           </div>
           <div className="flex items-center gap-2">
             {canTransfer && (
@@ -521,21 +713,28 @@ export default function OrderPage() {
                 Transfer
               </button>
             )}
-            {selectedTable && isOpen(selectedTable.area, selectedTable.label) && (
-              <button
-                type="button"
-                className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded border border-gray-600"
-                onClick={() => {
-                  setCoversMode('editOnly');
-                  setCoversValue(typeof coversKnown === 'number' ? String(coversKnown) : '');
-                  setShowCovers(true);
-                }}
-                title="Edit guests (covers)"
-              >
-                <ForkKnifeIcon />
-                <span className="text-sm font-semibold">{typeof coversKnown === 'number' ? coversKnown : '—'}</span>
-              </button>
-            )}
+            {selectedTable &&
+              isOpen(selectedTable.area, selectedTable.label) && (
+                <button
+                  type="button"
+                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded border border-gray-600"
+                  onClick={() => {
+                    setCoversMode('editOnly');
+                    setCoversValue(
+                      typeof coversKnown === 'number'
+                        ? String(coversKnown)
+                        : '',
+                    );
+                    setShowCovers(true);
+                  }}
+                  title="Edit guests (covers)"
+                >
+                  <ForkKnifeIcon />
+                  <span className="text-sm font-semibold">
+                    {typeof coversKnown === 'number' ? coversKnown : '—'}
+                  </span>
+                </button>
+              )}
           </div>
         </div>
         <div className="flex-1 min-h-0 overflow-auto pb-80">
@@ -544,96 +743,147 @@ export default function OrderPage() {
               <div className="text-sm opacity-60">Select items to add…</div>
             ) : (
               lines.map((l) => {
-              const showRequestOnly = Boolean(
-                selectedTable &&
-                isOpen(selectedTable.area, selectedTable.label) &&
-                ownerId &&
-                user?.id != null && Number(ownerId) !== Number(user.id)
-              );
-              const isTableOpen = Boolean(selectedTable && isOpen(selectedTable.area, selectedTable.label));
-              const dimmed = isTableOpen && !l.staged; // darker when already sent
-              return (
-              <div key={l.id} className="bg-gray-700 rounded px-2 py-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className={`${dimmed ? 'text-gray-400' : 'text-white'} font-medium`}>{l.name}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {selectedTable && isOpen(selectedTable.area, selectedTable.label) && !showRequestOnly && l.staged ? (
-                      <>
-                        <button 
-                          className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                          style={{ width: '28px', height: '28px', minWidth: '28px', minHeight: '28px', padding: 0 }}
-                          onClick={() => decrement(l.id)}
-                          disabled={l.qty === 1}
+                const showRequestOnly = Boolean(
+                  selectedTable &&
+                    isOpen(selectedTable.area, selectedTable.label) &&
+                    ownerId &&
+                    user?.id != null &&
+                    Number(ownerId) !== Number(user.id),
+                );
+                const isTableOpen = Boolean(
+                  selectedTable &&
+                    isOpen(selectedTable.area, selectedTable.label),
+                );
+                const dimmed = isTableOpen && !l.staged; // darker when already sent
+                return (
+                  <div key={l.id} className="bg-gray-700 rounded px-2 py-2">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div
+                          className={`${dimmed ? 'text-gray-400' : 'text-white'} font-medium`}
                         >
-                          -
-                        </button>
-                        <div className="w-6 text-center">{l.qty}</div>
-                        <button 
-                          className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                          style={{ width: '28px', height: '28px', minWidth: '28px', minHeight: '28px', padding: 0 }}
-                          onClick={() => increment(l.id)} 
-                          disabled={l.qty >= 100}
+                          {l.name}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {selectedTable &&
+                        isOpen(selectedTable.area, selectedTable.label) &&
+                        !showRequestOnly &&
+                        l.staged ? (
+                          <>
+                            <button
+                              className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
+                              style={{
+                                width: '28px',
+                                height: '28px',
+                                minWidth: '28px',
+                                minHeight: '28px',
+                                padding: 0,
+                              }}
+                              onClick={() => decrement(l.id)}
+                              disabled={l.qty === 1}
+                            >
+                              -
+                            </button>
+                            <div className="w-6 text-center">{l.qty}</div>
+                            <button
+                              className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
+                              style={{
+                                width: '28px',
+                                height: '28px',
+                                minWidth: '28px',
+                                minHeight: '28px',
+                                padding: 0,
+                              }}
+                              onClick={() => increment(l.id)}
+                              disabled={l.qty >= 100}
+                            >
+                              +
+                            </button>
+                          </>
+                        ) : (
+                          <div className="w-6 text-center text-gray-400">
+                            QTY:{l.qty}
+                          </div>
+                        )}
+                        <div
+                          className={`w-20 text-right ${dimmed ? 'text-gray-400' : 'text-white'}`}
+                        >
+                          {l.unitPrice * l.qty}
+                        </div>
+                        {/* When table is open (sent), owner can void already-sent lines; staged (unsent) lines can be removed */}
+                        {selectedTable && isTableOpen && !showRequestOnly ? (
+                          l.staged ? (
+                            <button
+                              className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
+                              style={{
+                                width: '28px',
+                                height: '28px',
+                                minWidth: '28px',
+                                minHeight: '28px',
+                                padding: 0,
+                              }}
+                              onClick={() => removeLine(l.id)}
+                            >
+                              X
+                            </button>
+                          ) : (
+                            <button
+                              className="bg-red-700 hover:bg-red-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
+                              style={{
+                                width: '28px',
+                                height: '28px',
+                                minWidth: '28px',
+                                minHeight: '28px',
+                                padding: 0,
+                              }}
+                              onClick={() =>
+                                setVoidTarget({
+                                  id: l.id,
+                                  name: l.name,
+                                  qty: l.qty,
+                                  unitPrice: l.unitPrice,
+                                  vatRate: l.vatRate,
+                                  note: l.note,
+                                })
+                              }
+                              title="Void"
+                            >
+                              A
+                            </button>
+                          )
+                        ) : (
+                          // For non-owners or not-open tables: allow removing; if in request-only mode, only staged lines are allowed
+                          <button
+                            className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
+                            style={{
+                              width: '28px',
+                              height: '28px',
+                              minWidth: '28px',
+                              minHeight: '28px',
+                              padding: 0,
+                            }}
+                            disabled={showRequestOnly && !l.staged}
+                            onClick={() => removeLine(l.id)}
                           >
-                            +
+                            X
                           </button>
-                      </>
-                    ) : (<div className="w-6 text-center text-gray-400">QTY:{l.qty}</div>)}
-                    <div className={`w-20 text-right ${dimmed ? 'text-gray-400' : 'text-white'}`}>{(l.unitPrice * l.qty)}</div>
-                    {/* When table is open (sent), owner can void already-sent lines; staged (unsent) lines can be removed */}
-                    {selectedTable && isTableOpen && !showRequestOnly ? (
-                      l.staged ? (
-                        <button
-                          className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                          style={{ width: '28px', height: '28px', minWidth: '28px', minHeight: '28px', padding: 0 }}
-                          onClick={() => removeLine(l.id)}
-                        >
-                          X
-                        </button>
-                      ) : (
-                        <button
-                          className="bg-red-700 hover:bg-red-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                          style={{ width: '28px', height: '28px', minWidth: '28px', minHeight: '28px', padding: 0 }}
-                          onClick={() =>
-                            setVoidTarget({
-                              id: l.id,
-                              name: l.name,
-                              qty: l.qty,
-                              unitPrice: l.unitPrice,
-                              vatRate: l.vatRate,
-                              note: l.note,
-                            })
-                          }
-                          title="Void"
-                        >
-                          A
-                        </button>
-                      )
-                    ) : (
-                      // For non-owners or not-open tables: allow removing; if in request-only mode, only staged lines are allowed
-                      <button
-                        className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                        style={{ width: '28px', height: '28px', minWidth: '28px', minHeight: '28px', padding: 0 }}
-                        disabled={showRequestOnly && !l.staged}
-                        onClick={() => removeLine(l.id)}
-                      >
-                        X
-                      </button>
-                    )}
+                        )}
+                      </div>
+                    </div>
+                    <input
+                      className={`mt-2 w-full rounded px-2 py-1 text-sm placeholder:text-gray-300 ${dimmed && !(showRequestOnly && l.staged) ? 'bg-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-600'}`}
+                      placeholder="Add note (e.g., No onion, extra cheese)"
+                      value={l.note ?? ''}
+                      disabled={Boolean(
+                        isTableOpen && !(showRequestOnly && l.staged),
+                      )}
+                      onChange={(e) => setLineNote(l.id, e.target.value)}
+                    />
                   </div>
-                </div>
-                <input
-                  className={`mt-2 w-full rounded px-2 py-1 text-sm placeholder:text-gray-300 ${dimmed && !(showRequestOnly && l.staged) ? 'bg-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-600'}`}
-                  placeholder="Add note (e.g., No onion, extra cheese)"
-                  value={l.note ?? ''}
-                  disabled={Boolean(isTableOpen && !(showRequestOnly && l.staged))}
-                  onChange={(e) => setLineNote(l.id, e.target.value)}
-                />
-              </div>
-            );
-          })
-        )}
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -641,15 +891,21 @@ export default function OrderPage() {
         <div className="absolute left-0 right-0 bottom-0 bg-gray-800 border-t border-gray-700 p-3">
           <div className="space-y-3 text-sm">
             <div>
-              <label className="block text-xs mb-1 opacity-70">Order notes</label>
+              <label className="block text-xs mb-1 opacity-70">
+                Order notes
+              </label>
               {(() => {
                 const requestOnly = Boolean(
                   selectedTable &&
-                  isOpen(selectedTable.area, selectedTable.label) &&
-                  ownerId &&
-                  user?.id != null && Number(ownerId) !== Number(user.id)
+                    isOpen(selectedTable.area, selectedTable.label) &&
+                    ownerId &&
+                    user?.id != null &&
+                    Number(ownerId) !== Number(user.id),
                 );
-                const ticketOpen = Boolean(selectedTable && isOpen(selectedTable.area, selectedTable.label));
+                const ticketOpen = Boolean(
+                  selectedTable &&
+                    isOpen(selectedTable.area, selectedTable.label),
+                );
                 // Disable order note both when ticket is open and in request-only mode; notes should only be on staged items
                 const disabled = ticketOpen || requestOnly;
                 return (
@@ -677,31 +933,48 @@ export default function OrderPage() {
               {(() => {
                 const showRequestOnly = Boolean(
                   selectedTable &&
-                  isOpen(selectedTable.area, selectedTable.label) &&
-                  ownerId &&
-                  user?.id != null && Number(ownerId) !== Number(user.id)
+                    isOpen(selectedTable.area, selectedTable.label) &&
+                    ownerId &&
+                    user?.id != null &&
+                    Number(ownerId) !== Number(user.id),
                 );
                 if (showRequestOnly) {
                   const stagedCount = lines.filter((l) => l.staged).length;
                   return (
                     <button
                       className="flex-1 bg-amber-700 hover:bg-amber-600 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                      disabled={stagedCount === 0 || requestLocked || busyAction != null || !connectionOk}
+                      disabled={
+                        stagedCount === 0 ||
+                        requestLocked ||
+                        busyAction != null ||
+                        !connectionOk
+                      }
                       onClick={async () => {
                         if (busyAction != null) return;
                         if (!selectedTable || !user?.id || !ownerId) return;
                         const staged = lines.filter((l) => l.staged);
                         if (staged.length === 0) {
-                          alert('Add items (new lines) before sending a request');
+                          alert(
+                            'Add items (new lines) before sending a request',
+                          );
                           return;
                         }
                         if (!connectionOk) {
-                          alert('Network is slow/offline. Please wait and try again.');
+                          alert(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         setBusyAction('request');
                         // IMPORTANT: only request staged items (newly added), not the whole existing ticket.
-                        const items = staged.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note }));
+                        const items = staged.map((l) => ({
+                          sku: l.sku,
+                          name: l.name,
+                          qty: l.qty,
+                          unitPrice: l.unitPrice,
+                          vatRate: l.vatRate,
+                          note: l.note,
+                        }));
                         try {
                           await window.api.requests.create({
                             requesterId: user.id,
@@ -714,14 +987,18 @@ export default function OrderPage() {
                           setRequestLocked(true);
                           alert('Request sent to the owner');
                         } catch {
-                          alert('Request failed (network slow). Please try again.');
+                          alert(
+                            'Request failed (network slow). Please try again.',
+                          );
                         } finally {
                           setBusyAction(null);
                         }
                       }}
                       type="button"
                     >
-                      {busyAction === 'request' ? 'Sending…' : 'Request to add items'}
+                      {busyAction === 'request'
+                        ? 'Sending…'
+                        : 'Request to add items'}
                     </button>
                   );
                 }
@@ -729,25 +1006,43 @@ export default function OrderPage() {
                   <>
                     <button
                       className="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                      disabled={lines.length === 0 || busyAction != null || !connectionOk}
+                      disabled={
+                        lines.length === 0 ||
+                        busyAction != null ||
+                        !connectionOk
+                      }
                       onClick={async () => {
                         if (busyAction != null) return;
                         if (!connectionOk) {
-                          alert('Network is slow/offline. Please wait and try again.');
+                          alert(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         setBusyAction('void');
                         try {
-                          if (selectedTable && isOpen(selectedTable.area, selectedTable.label)) {
+                          if (
+                            selectedTable &&
+                            isOpen(selectedTable.area, selectedTable.label)
+                          ) {
                             if (!user?.id) return;
-                            let approvedByAdmin: { userId: number; userName: string } | null = null;
+                            let approvedByAdmin: {
+                              userId: number;
+                              userName: string;
+                            } | null = null;
                             if (approvalsCfg.requireManagerPinForVoid) {
-                              const approved = await requestAdminApproval('Admin PIN required to void ticket');
+                              const approved = await requestAdminApproval(
+                                'Admin PIN required to void ticket',
+                              );
                               if (!approved) return;
                               approvedByAdmin = approved;
                             }
                             // Optimistic UI: immediately clear and mark table as free locally.
-                            setOpen(selectedTable.area, selectedTable.label, false);
+                            setOpen(
+                              selectedTable.area,
+                              selectedTable.label,
+                              false,
+                            );
                             clear();
                             setOrderNote('');
 
@@ -756,13 +1051,28 @@ export default function OrderPage() {
                               area: selectedTable.area,
                               tableLabel: selectedTable.label,
                               reason: orderNote || undefined,
-                              ...(approvedByAdmin ? { approvedByAdminId: approvedByAdmin.userId, approvedByAdminName: approvedByAdmin.userName } : {}),
+                              ...(approvedByAdmin
+                                ? {
+                                    approvedByAdminId: approvedByAdmin.userId,
+                                    approvedByAdminName:
+                                      approvedByAdmin.userName,
+                                  }
+                                : {}),
                             });
                             // Persist free table server-side too (otherwise TablesPage refresh will re-mark it open).
-                            await window.api.tables.setOpen(selectedTable.area, selectedTable.label, false).catch(() => {});
+                            await window.api.tables
+                              .setOpen(
+                                selectedTable.area,
+                                selectedTable.label,
+                                false,
+                              )
+                              .catch(() => {});
                           }
                           // When table isn't open, void button acts as "clear"
-                          if (!selectedTable || !isOpen(selectedTable.area, selectedTable.label)) {
+                          if (
+                            !selectedTable ||
+                            !isOpen(selectedTable.area, selectedTable.label)
+                          ) {
                             clear();
                             setOrderNote('');
                           }
@@ -776,13 +1086,18 @@ export default function OrderPage() {
                     >
                       {busyAction === 'void'
                         ? 'Voiding…'
-                        : selectedTable && isOpen(selectedTable.area, selectedTable.label)
+                        : selectedTable &&
+                            isOpen(selectedTable.area, selectedTable.label)
                           ? 'Void Ticket'
                           : 'Clear'}
                     </button>
                     <button
                       className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                      disabled={lines.length === 0 || busyAction != null || !connectionOk}
+                      disabled={
+                        lines.length === 0 ||
+                        busyAction != null ||
+                        !connectionOk
+                      }
                       onClick={async () => {
                         if (busyAction != null) return;
                         if (!selectedTable) {
@@ -798,13 +1113,18 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          alert('Network is slow/offline. Please wait and try again.');
+                          alert(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         // Enrich log with details (table, order lines, notes, covers)
                         setBusyAction('send');
                         try {
-                          const lastCovers = await window.api.covers.getLast(selectedTable.area, selectedTable.label);
+                          const lastCovers = await window.api.covers.getLast(
+                            selectedTable.area,
+                            selectedTable.label,
+                          );
                           const stagedOnly = lines.filter((l) => l.staged);
                           const isFireOrder = stagedOnly.length > 0;
                           const details = {
@@ -812,10 +1132,30 @@ export default function OrderPage() {
                             area: selectedTable.area,
                             covers: lastCovers ?? null,
                             orderNote,
-                            lines: lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName })),
+                            lines: lines.map((l) => ({
+                              sku: l.sku,
+                              name: l.name,
+                              qty: l.qty,
+                              unitPrice: l.unitPrice,
+                              vatRate: l.vatRate,
+                              note: l.note,
+                              station: (l as any).station,
+                              categoryId: (l as any).categoryId,
+                              categoryName: (l as any).categoryName,
+                            })),
                           };
                           const printLines = isFireOrder
-                            ? stagedOnly.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName }))
+                            ? stagedOnly.map((l) => ({
+                                sku: l.sku,
+                                name: l.name,
+                                qty: l.qty,
+                                unitPrice: l.unitPrice,
+                                vatRate: l.vatRate,
+                                note: l.note,
+                                station: (l as any).station,
+                                categoryId: (l as any).categoryId,
+                                categoryName: (l as any).categoryName,
+                              }))
                             : details.lines;
                           // (optional) send log
                           if (!user?.id) return; // require logged-in user to log ticket
@@ -847,17 +1187,37 @@ export default function OrderPage() {
                               serviceChargeMode: serviceChargeCfg.mode,
                               serviceChargeValue: serviceChargeCfg.value,
                               serviceChargeAmount: serviceChargeCfg.enabled
-                                ? (serviceChargeCfg.mode === 'PERCENT'
-                                    ? Math.max(0, (Number(totals.total || 0) * Number(serviceChargeCfg.value || 0)) / 100)
-                                    : Math.max(0, Number(serviceChargeCfg.value || 0)))
+                                ? serviceChargeCfg.mode === 'PERCENT'
+                                  ? Math.max(
+                                      0,
+                                      (Number(totals.total || 0) *
+                                        Number(serviceChargeCfg.value || 0)) /
+                                        100,
+                                    )
+                                  : Math.max(
+                                      0,
+                                      Number(serviceChargeCfg.value || 0),
+                                    )
                                 : 0,
                             },
                           });
                           // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
-                          setOpen(selectedTable.area, selectedTable.label, true);
-                          await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
+                          setOpen(
+                            selectedTable.area,
+                            selectedTable.label,
+                            true,
+                          );
+                          await window.api.tables
+                            .setOpen(
+                              selectedTable.area,
+                              selectedTable.label,
+                              true,
+                            )
+                            .catch(() => {});
                         } catch {
-                          alert('Send failed (network slow). Please try again.');
+                          alert(
+                            'Send failed (network slow). Please try again.',
+                          );
                         } finally {
                           setBusyAction(null);
                         }
@@ -882,7 +1242,8 @@ export default function OrderPage() {
                               ? 'Send the order and set guests before payment'
                               : hasUnsentItems
                                 ? 'Send the order before payment'
-                                : typeof coversKnown !== 'number' || coversKnown <= 0
+                                : typeof coversKnown !== 'number' ||
+                                    coversKnown <= 0
                                   ? 'Set guests before payment'
                                   : !connectionOk
                                     ? 'Network is slow/offline — wait before paying'
@@ -896,7 +1257,9 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          alert('Network is slow/offline. Please wait and try again.');
+                          alert(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         // Open payment modal (choose method + amount + print)
@@ -909,9 +1272,18 @@ export default function OrderPage() {
                         const base = Number(totals.total || 0);
                         const v = Number(serviceChargeCfg.value || 0);
                         const scAmt = scEnabled
-                          ? (serviceChargeCfg.mode === 'PERCENT' ? (base * v) / 100 : v)
+                          ? serviceChargeCfg.mode === 'PERCENT'
+                            ? (base * v) / 100
+                            : v
                           : 0;
-                        setAmountPaid(String(Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0)).toFixed(2)));
+                        setAmountPaid(
+                          String(
+                            Math.max(
+                              0,
+                              base + (Number.isFinite(scAmt) ? scAmt : 0),
+                            ).toFixed(2),
+                          ),
+                        );
                         setPrintReceipt(true);
                         setShowPayment(true);
                       }}
@@ -932,29 +1304,50 @@ export default function OrderPage() {
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-6xl p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="text-lg font-semibold">Payment</div>
-              <button className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600" onClick={() => setShowPayment(false)}>Close</button>
+              <button
+                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                onClick={() => setShowPayment(false)}
+              >
+                Close
+              </button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {/* Order summary */}
               <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
                 <div className="text-sm opacity-80 mb-2">Order summary</div>
-                <div className="text-xs opacity-60 mb-2">Select the guests for payment</div>
+                <div className="text-xs opacity-60 mb-2">
+                  Select the guests for payment
+                </div>
                 <div className="flex gap-2 mb-3">
-                  <button className="flex-1 bg-gray-700 rounded py-2 text-sm opacity-70" disabled>Covers</button>
+                  <button
+                    className="flex-1 bg-gray-700 rounded py-2 text-sm opacity-70"
+                    disabled
+                  >
+                    Covers
+                  </button>
                 </div>
                 <div className="flex-1 overflow-auto space-y-2">
                   <div className="bg-gray-700/60 rounded p-3 flex items-center justify-between">
                     <div>
-                      <div className="text-sm font-medium">Table {selectedTable.label}</div>
-                      <div className="text-xs opacity-70">Covers: {typeof coversKnown === 'number' ? coversKnown : '—'}</div>
+                      <div className="text-sm font-medium">
+                        Table {selectedTable.label}
+                      </div>
+                      <div className="text-xs opacity-70">
+                        Covers:{' '}
+                        {typeof coversKnown === 'number' ? coversKnown : '—'}
+                      </div>
                     </div>
-                    <div className="text-sm font-semibold">{formatAmount(totals.total)}</div>
+                    <div className="text-sm font-semibold">
+                      {formatAmount(totals.total)}
+                    </div>
                   </div>
                 </div>
                 <div className="mt-3 text-sm opacity-80 flex justify-between">
                   <span>Total</span>
-                  <span className="font-semibold">{formatAmount(totals.total)}</span>
+                  <span className="font-semibold">
+                    {formatAmount(totals.total)}
+                  </span>
                 </div>
               </div>
 
@@ -964,11 +1357,19 @@ export default function OrderPage() {
                   <div className="text-sm opacity-80">Payment methods</div>
                 </div>
                 <div className="space-y-2">
-                  <PayMethodButton active={paymentMethod === 'CASH'} onClick={() => setPaymentMethod('CASH')} label="Cash">
+                  <PayMethodButton
+                    active={paymentMethod === 'CASH'}
+                    onClick={() => setPaymentMethod('CASH')}
+                    label="Cash"
+                  >
                     <IconCash />
                   </PayMethodButton>
                   <div className="text-xs opacity-60 mt-3">Cards</div>
-                  <PayMethodButton active={paymentMethod === 'CARD'} onClick={() => setPaymentMethod('CARD')} label="Card">
+                  <PayMethodButton
+                    active={paymentMethod === 'CARD'}
+                    onClick={() => setPaymentMethod('CARD')}
+                    label="Card"
+                  >
                     <IconCard />
                   </PayMethodButton>
                   {/* <div className="text-xs opacity-60 mt-3">Other</div>
@@ -985,7 +1386,9 @@ export default function OrderPage() {
                     <IconReceipt />
                     Payment amount
                   </div>
-                  <div className="text-sm font-semibold">{formatAmount(totalDue)}</div>
+                  <div className="text-sm font-semibold">
+                    {formatAmount(totalDue)}
+                  </div>
                 </div>
                 {/* <button
                   className="bg-blue-600 hover:bg-blue-700 rounded py-4 font-semibold"
@@ -1018,26 +1421,39 @@ export default function OrderPage() {
                     <div className="flex items-center justify-between mb-2">
                       <div className="text-sm font-medium">Service charge</div>
                       <div className="text-xs opacity-70">
-                        {applyServiceCharge && serviceChargeAmount > 0 ? `+ ${formatAmount(serviceChargeAmount)}` : '—'}
+                        {applyServiceCharge && serviceChargeAmount > 0
+                          ? `+ ${formatAmount(serviceChargeAmount)}`
+                          : '—'}
                       </div>
                     </div>
                     <label className="flex items-center justify-between gap-3">
-                      <div className="text-sm opacity-80">Apply service charge</div>
+                      <div className="text-sm opacity-80">
+                        Apply service charge
+                      </div>
                       <input
                         type="checkbox"
                         checked={applyServiceCharge}
-                        onChange={(e) => setApplyServiceCharge(e.target.checked)}
+                        onChange={(e) =>
+                          setApplyServiceCharge(e.target.checked)
+                        }
                       />
                     </label>
                     <div className="text-xs opacity-70 mt-2">
-                      Config: {serviceChargeCfg.mode === 'PERCENT' ? `${serviceChargeCfg.value}%` : `${serviceChargeCfg.value}`}
+                      Config:{' '}
+                      {serviceChargeCfg.mode === 'PERCENT'
+                        ? `${serviceChargeCfg.value}%`
+                        : `${serviceChargeCfg.value}`}
                     </div>
                   </div>
                 )}
                 <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-sm font-medium">Discount</div>
-                    <div className="text-xs opacity-70">{discountAmount > 0 ? `- ${formatAmount(discountAmount)}` : '—'}</div>
+                    <div className="text-xs opacity-70">
+                      {discountAmount > 0
+                        ? `- ${formatAmount(discountAmount)}`
+                        : '—'}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2 mb-2">
                     <button
@@ -1063,7 +1479,13 @@ export default function OrderPage() {
                     </button> */}
                     <input
                       className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm"
-                      placeholder={discountType === 'PERCENT' ? 'e.g. 10' : discountType === 'AMOUNT' ? 'e.g. 5.00' : 'Select type'}
+                      placeholder={
+                        discountType === 'PERCENT'
+                          ? 'e.g. 10'
+                          : discountType === 'AMOUNT'
+                            ? 'e.g. 5.00'
+                            : 'Select type'
+                      }
                       value={discountValue}
                       disabled={discountType === 'NONE'}
                       onChange={(e) => setDiscountValue(e.target.value)}
@@ -1078,19 +1500,24 @@ export default function OrderPage() {
                   {discountAmount > 0 && (
                     <div className="text-xs opacity-70 mt-2 flex items-center justify-between">
                       <span>Total after discount</span>
-                      <span className="font-semibold">{formatAmount(totalDue)}</span>
+                      <span className="font-semibold">
+                        {formatAmount(totalDue)}
+                      </span>
                     </div>
                   )}
                 </div>
                 <div className="mt-auto pt-3">
                   {(() => {
-                    const needsDiscountApproval = approvalsCfg.requireManagerPinForDiscount && discountAmount > 0;
+                    const needsDiscountApproval =
+                      approvalsCfg.requireManagerPinForDiscount &&
+                      discountAmount > 0;
                     const needsServiceRemovalApproval =
                       approvalsCfg.requireManagerPinForServiceChargeRemoval &&
                       serviceChargeCfg.enabled &&
                       serviceChargeConfiguredAmount > 0 &&
                       !applyServiceCharge;
-                    if (!needsDiscountApproval && !needsServiceRemovalApproval) return null;
+                    if (!needsDiscountApproval && !needsServiceRemovalApproval)
+                      return null;
                     return (
                       <div className="mb-2 text-xs text-amber-200 opacity-90">
                         Manager PIN required to complete this payment.
@@ -1108,7 +1535,9 @@ export default function OrderPage() {
                       onClick={() => setPrintReceipt((v) => !v)}
                       aria-label="Toggle print receipt"
                     >
-                      <span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${printReceipt ? 'left-6' : 'left-1'}`} />
+                      <span
+                        className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${printReceipt ? 'left-6' : 'left-1'}`}
+                      />
                     </button>
                   </div>
                   <button
@@ -1119,14 +1548,22 @@ export default function OrderPage() {
                       if (!connectionOk) return;
                       setBusyAction('pay');
                       try {
-                        const needsDiscountApproval = approvalsCfg.requireManagerPinForDiscount && discountAmount > 0;
+                        const needsDiscountApproval =
+                          approvalsCfg.requireManagerPinForDiscount &&
+                          discountAmount > 0;
                         const needsServiceRemovalApproval =
                           approvalsCfg.requireManagerPinForServiceChargeRemoval &&
                           serviceChargeCfg.enabled &&
                           serviceChargeConfiguredAmount > 0 &&
                           !applyServiceCharge;
-                        let managerApprovedBy: { userId: number; userName: string } | null = null;
-                        if (needsDiscountApproval || needsServiceRemovalApproval) {
+                        let managerApprovedBy: {
+                          userId: number;
+                          userName: string;
+                        } | null = null;
+                        if (
+                          needsDiscountApproval ||
+                          needsServiceRemovalApproval
+                        ) {
                           managerApprovedBy = await requestManagerApproval(
                             needsDiscountApproval && needsServiceRemovalApproval
                               ? 'Approve discount & service charge removal'
@@ -1137,41 +1574,74 @@ export default function OrderPage() {
                           if (!managerApprovedBy) return;
                         }
                         // Payment receipt snapshot (printed or record-only for reports/history)
-                          const lastCovers = await window.api.covers.getLast(selectedTable.area, selectedTable.label).catch(() => null);
-                        const items = lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName }));
-                          await window.api.tickets.print({
+                        const lastCovers = await window.api.covers
+                          .getLast(selectedTable.area, selectedTable.label)
+                          .catch(() => null);
+                        const items = lines.map((l) => ({
+                          sku: l.sku,
+                          name: l.name,
+                          qty: l.qty,
+                          unitPrice: l.unitPrice,
+                          vatRate: l.vatRate,
+                          note: l.note,
+                          station: (l as any).station,
+                          categoryId: (l as any).categoryId,
+                          categoryName: (l as any).categoryName,
+                        }));
+                        await window.api.tickets
+                          .print({
                             area: selectedTable.area,
                             tableLabel: selectedTable.label,
                             covers: lastCovers ?? null,
                             items,
                             note: orderNote || null,
-                          userName: user?.displayName || undefined,
-                          recordOnly: !printReceipt,
-                          meta: {
-                            kind: 'PAYMENT',
-                            userId: user?.id ?? null,
-                            method: paymentMethod,
-                            paidAt: new Date().toISOString(),
-                            amountPaid: Number(amountPaid),
-                            vatEnabled,
-                            baseTotal: totals.total,
-                            serviceChargeEnabled: serviceChargeCfg.enabled,
-                            serviceChargeApplied: serviceChargeCfg.enabled ? applyServiceCharge : false,
-                            serviceChargeMode: serviceChargeCfg.mode,
-                            serviceChargeValue: serviceChargeCfg.value,
-                            serviceChargeAmount,
-                            totalBefore: totalBeforeDiscount,
-                            discountType,
-                            discountValue: discountType === 'NONE' ? null : Number(String(discountValue || '').replace(',', '.')),
-                            discountAmount,
-                            discountReason: (discountReason || '').trim() || null,
-                            totalAfter: totalDue,
-                            managerApprovedById: managerApprovedBy?.userId ?? null,
-                            managerApprovedByName: managerApprovedBy?.userName ?? null,
-                          },
-                          }).catch(() => {});
+                            userName: user?.displayName || undefined,
+                            recordOnly: !printReceipt,
+                            meta: {
+                              kind: 'PAYMENT',
+                              userId: user?.id ?? null,
+                              method: paymentMethod,
+                              paidAt: new Date().toISOString(),
+                              amountPaid: Number(amountPaid),
+                              vatEnabled,
+                              baseTotal: totals.total,
+                              serviceChargeEnabled: serviceChargeCfg.enabled,
+                              serviceChargeApplied: serviceChargeCfg.enabled
+                                ? applyServiceCharge
+                                : false,
+                              serviceChargeMode: serviceChargeCfg.mode,
+                              serviceChargeValue: serviceChargeCfg.value,
+                              serviceChargeAmount,
+                              totalBefore: totalBeforeDiscount,
+                              discountType,
+                              discountValue:
+                                discountType === 'NONE'
+                                  ? null
+                                  : Number(
+                                      String(discountValue || '').replace(
+                                        ',',
+                                        '.',
+                                      ),
+                                    ),
+                              discountAmount,
+                              discountReason:
+                                (discountReason || '').trim() || null,
+                              totalAfter: totalDue,
+                              managerApprovedById:
+                                managerApprovedBy?.userId ?? null,
+                              managerApprovedByName:
+                                managerApprovedBy?.userName ?? null,
+                            },
+                          })
+                          .catch(() => {});
                         setOpen(selectedTable.area, selectedTable.label, false);
-                        await window.api.tables.setOpen(selectedTable.area, selectedTable.label, false).catch(() => {});
+                        await window.api.tables
+                          .setOpen(
+                            selectedTable.area,
+                            selectedTable.label,
+                            false,
+                          )
+                          .catch(() => {});
                         clear();
                         setOrderNote('');
                         setShowPayment(false);
@@ -1205,20 +1675,29 @@ export default function OrderPage() {
             </div>
 
             <div className="text-sm opacity-80 mb-3">
-              From: <b>{selectedTable.area} {selectedTable.label}</b>
+              From:{' '}
+              <b>
+                {selectedTable.area} {selectedTable.label}
+              </b>
             </div>
 
             <div className="flex gap-2 mb-4">
               <button
                 className={`flex-1 py-2 rounded ${transferMode === 'WAITER' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                onClick={() => { setTransferMode('WAITER'); setTransferError(null); }}
+                onClick={() => {
+                  setTransferMode('WAITER');
+                  setTransferError(null);
+                }}
                 type="button"
               >
                 To waiter
               </button>
               <button
                 className={`flex-1 py-2 rounded ${transferMode === 'TABLE' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                onClick={() => { setTransferMode('TABLE'); setTransferError(null); }}
+                onClick={() => {
+                  setTransferMode('TABLE');
+                  setTransferError(null);
+                }}
                 type="button"
               >
                 To table
@@ -1231,7 +1710,11 @@ export default function OrderPage() {
                 <select
                   className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
                   value={transferToUserId ?? ''}
-                  onChange={(e) => setTransferToUserId(e.target.value ? Number(e.target.value) : null)}
+                  onChange={(e) =>
+                    setTransferToUserId(
+                      e.target.value ? Number(e.target.value) : null,
+                    )
+                  }
                 >
                   <option value="">(choose waiter)</option>
                   {transferUsers
@@ -1290,7 +1773,9 @@ export default function OrderPage() {
                 disabled={
                   transferBusy ||
                   !canTransfer ||
-                  (transferMode === 'WAITER' ? !transferToUserId : !transferToArea.trim() || !transferToLabel.trim())
+                  (transferMode === 'WAITER'
+                    ? !transferToUserId
+                    : !transferToArea.trim() || !transferToLabel.trim())
                 }
                 onClick={async () => {
                   if (!selectedTable || !user?.id) return;
@@ -1308,7 +1793,9 @@ export default function OrderPage() {
                       payload.toArea = transferToArea.trim();
                       payload.toLabel = transferToLabel.trim();
                     }
-                    const r: any = await (window.api.tables as any).transfer(payload);
+                    const r: any = await (window.api.tables as any).transfer(
+                      payload,
+                    );
                     if (!r || r.ok !== true) {
                       setTransferError(String(r?.error || 'Transfer failed'));
                       return;
@@ -1319,16 +1806,29 @@ export default function OrderPage() {
                       const toL = transferToLabel.trim();
                       setOpen(selectedTable.area, selectedTable.label, false);
                       setOpen(toA, toL, true);
-                      setSelectedTable({ ...selectedTable, area: toA, label: toL });
-                      const latest = await window.api.tickets.getLatestForTable(toA, toL).catch(() => null as any);
+                      setSelectedTable({
+                        ...selectedTable,
+                        area: toA,
+                        label: toL,
+                      });
+                      const latest = await window.api.tickets
+                        .getLatestForTable(toA, toL)
+                        .catch(() => null as any);
                       if (latest?.items) {
-                        useTicketStore.getState().hydrate({ items: latest.items as any, note: latest.note || '' });
+                        useTicketStore
+                          .getState()
+                          .hydrate({
+                            items: latest.items as any,
+                            note: latest.note || '',
+                          });
                       }
                     }
 
                     setShowTransfer(false);
                   } catch (e: any) {
-                    setTransferError(String(e?.message || e || 'Transfer failed'));
+                    setTransferError(
+                      String(e?.message || e || 'Transfer failed'),
+                    );
                   } finally {
                     setTransferBusy(false);
                   }
@@ -1345,7 +1845,8 @@ export default function OrderPage() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
           <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
             <h3 className="text-center mb-2">
-              {coversMode === 'editOnly' ? 'Edit guests' : 'Guests for table'} {selectedTable.label}
+              {coversMode === 'editOnly' ? 'Edit guests' : 'Guests for table'}{' '}
+              {selectedTable.label}
             </h3>
             <input
               autoFocus
@@ -1356,7 +1857,12 @@ export default function OrderPage() {
               onChange={(e) => setCoversValue(e.target.value)}
             />
             <div className="flex gap-2 mt-4">
-              <button className="flex-1 bg-gray-600 py-2 rounded" onClick={() => setShowCovers(false)}>Cancel</button>
+              <button
+                className="flex-1 bg-gray-600 py-2 rounded"
+                onClick={() => setShowCovers(false)}
+              >
+                Cancel
+              </button>
               <button
                 className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
                 onClick={async () => {
@@ -1364,7 +1870,11 @@ export default function OrderPage() {
                   if (!Number.isFinite(num) || num <= 0) return;
                   if (coversMode === 'editOnly') {
                     // Just update covers (no ticket logging/printing)
-                    await window.api.covers.save(selectedTable.area, selectedTable.label, num);
+                    await window.api.covers.save(
+                      selectedTable.area,
+                      selectedTable.label,
+                      num,
+                    );
                     setCoversKnown(num);
                     setShowCovers(false);
                     return;
@@ -1376,8 +1886,14 @@ export default function OrderPage() {
                   setShowCovers(false);
                   // IMPORTANT: when opening a table in cloud mode, set "open" first so the
                   // cloud "openAt" timestamp exists BEFORE we write covers/tickets (tooltip uses openAt as the session start).
-                  await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
-                  await window.api.covers.save(selectedTable.area, selectedTable.label, num);
+                  await window.api.tables
+                    .setOpen(selectedTable.area, selectedTable.label, true)
+                    .catch(() => {});
+                  await window.api.covers.save(
+                    selectedTable.area,
+                    selectedTable.label,
+                    num,
+                  );
                   const stagedOnly = lines.filter((l) => l.staged);
                   const isFireOrder = stagedOnly.length > 0;
                   const details = {
@@ -1385,10 +1901,30 @@ export default function OrderPage() {
                     area: selectedTable.area,
                     covers: num,
                     orderNote,
-                    lines: lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName })),
+                    lines: lines.map((l) => ({
+                      sku: l.sku,
+                      name: l.name,
+                      qty: l.qty,
+                      unitPrice: l.unitPrice,
+                      vatRate: l.vatRate,
+                      note: l.note,
+                      station: (l as any).station,
+                      categoryId: (l as any).categoryId,
+                      categoryName: (l as any).categoryName,
+                    })),
                   };
                   const printLines = isFireOrder
-                    ? stagedOnly.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, note: l.note, station: (l as any).station, categoryId: (l as any).categoryId, categoryName: (l as any).categoryName }))
+                    ? stagedOnly.map((l) => ({
+                        sku: l.sku,
+                        name: l.name,
+                        qty: l.qty,
+                        unitPrice: l.unitPrice,
+                        vatRate: l.vatRate,
+                        note: l.note,
+                        station: (l as any).station,
+                        categoryId: (l as any).categoryId,
+                        categoryName: (l as any).categoryName,
+                      }))
                     : details.lines;
                   // (optional) send log
                   if (!user?.id) return;
@@ -1418,14 +1954,21 @@ export default function OrderPage() {
                       serviceChargeMode: serviceChargeCfg.mode,
                       serviceChargeValue: serviceChargeCfg.value,
                       serviceChargeAmount: serviceChargeCfg.enabled
-                        ? (serviceChargeCfg.mode === 'PERCENT'
-                            ? Math.max(0, (Number(totals.total || 0) * Number(serviceChargeCfg.value || 0)) / 100)
-                            : Math.max(0, Number(serviceChargeCfg.value || 0)))
+                        ? serviceChargeCfg.mode === 'PERCENT'
+                          ? Math.max(
+                              0,
+                              (Number(totals.total || 0) *
+                                Number(serviceChargeCfg.value || 0)) /
+                                100,
+                            )
+                          : Math.max(0, Number(serviceChargeCfg.value || 0))
                         : 0,
                     },
                   });
                   // Keep this as a best-effort "ensure open" after printing.
-                  await window.api.tables.setOpen(selectedTable.area, selectedTable.label, true).catch(() => {});
+                  await window.api.tables
+                    .setOpen(selectedTable.area, selectedTable.label, true)
+                    .catch(() => {});
                 }}
               >
                 Konfirmo
@@ -1440,17 +1983,28 @@ export default function OrderPage() {
           <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
             <h3 className="text-center mb-2">Void item?</h3>
             <p className="text-sm opacity-80 text-center mb-4">
-              {voidTarget.name} ×{voidTarget.qty} on {selectedTable.area} • {selectedTable.label}
+              {voidTarget.name} ×{voidTarget.qty} on {selectedTable.area} •{' '}
+              {selectedTable.label}
             </p>
             <div className="flex gap-2 mt-2">
-              <button className="flex-1 bg-gray-600 py-2 rounded" onClick={() => setVoidTarget(null)}>Cancel</button>
+              <button
+                className="flex-1 bg-gray-600 py-2 rounded"
+                onClick={() => setVoidTarget(null)}
+              >
+                Cancel
+              </button>
               <button
                 className="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded"
                 onClick={async () => {
                   if (!user?.id) return;
-                  let approvedByAdmin: { userId: number; userName: string } | null = null;
+                  let approvedByAdmin: {
+                    userId: number;
+                    userName: string;
+                  } | null = null;
                   if (approvalsCfg.requireManagerPinForVoid) {
-                    const approved = await requestAdminApproval('Admin PIN required to void item');
+                    const approved = await requestAdminApproval(
+                      'Admin PIN required to void item',
+                    );
                     if (!approved) return;
                     approvedByAdmin = approved;
                   }
@@ -1465,7 +2019,12 @@ export default function OrderPage() {
                       vatRate: voidTarget.vatRate,
                       note: voidTarget.note,
                     },
-                    ...(approvedByAdmin ? { approvedByAdminId: approvedByAdmin.userId, approvedByAdminName: approvedByAdmin.userName } : {}),
+                    ...(approvedByAdmin
+                      ? {
+                          approvedByAdminId: approvedByAdmin.userId,
+                          approvedByAdminName: approvedByAdmin.userName,
+                        }
+                      : {}),
                   });
                   removeLine(voidTarget.id);
                   setVoidTarget(null);
@@ -1482,35 +2041,96 @@ export default function OrderPage() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
           <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
             <h3 className="text-center mb-2">Enter weight (kg or g)</h3>
-            <div className="mb-2 text-center opacity-80">{weightModal.name}</div>
+            <div className="mb-2 text-center opacity-80">
+              {weightModal.name}
+            </div>
             <div className="grid grid-cols-3 gap-2 mb-3">
               {[...'123456789'].map((d) => (
-                <button key={d} className="bg-gray-700 py-2 rounded" onClick={() => setWeightInput((v) => v + d)}>{d}</button>
+                <button
+                  key={d}
+                  className="bg-gray-700 py-2 rounded"
+                  onClick={() => setWeightInput((v) => v + d)}
+                >
+                  {d}
+                </button>
               ))}
-              <button className="bg-gray-700 py-2 rounded" onClick={() => setWeightInput((v) => v + '0')}>0</button>
-              <button className="bg-gray-700 py-2 rounded" onClick={() => setWeightInput((v) => (v.includes('.') ? v : v + '.'))}>.</button>
-              <button className="bg-gray-700 py-2 rounded" onClick={() => setWeightInput('')}>Clear</button>
+              <button
+                className="bg-gray-700 py-2 rounded"
+                onClick={() => setWeightInput((v) => v + '0')}
+              >
+                0
+              </button>
+              <button
+                className="bg-gray-700 py-2 rounded"
+                onClick={() =>
+                  setWeightInput((v) => (v.includes('.') ? v : v + '.'))
+                }
+              >
+                .
+              </button>
+              <button
+                className="bg-gray-700 py-2 rounded"
+                onClick={() => setWeightInput('')}
+              >
+                Clear
+              </button>
             </div>
             <div className="flex gap-2 mb-3">
-              <button className="flex-1 bg-gray-700 py-2 rounded" onClick={() => setWeightInput((v) => v + ' kg')}>kg</button>
-              <button className="flex-1 bg-gray-700 py-2 rounded" onClick={() => setWeightInput((v) => v + ' g')}>g</button>
+              <button
+                className="flex-1 bg-gray-700 py-2 rounded"
+                onClick={() => setWeightInput((v) => v + ' kg')}
+              >
+                kg
+              </button>
+              <button
+                className="flex-1 bg-gray-700 py-2 rounded"
+                onClick={() => setWeightInput((v) => v + ' g')}
+              >
+                g
+              </button>
             </div>
-            <input className="w-full bg-gray-700 rounded px-2 py-2 text-center mb-3" placeholder="e.g., 0.35 kg or 350 g" value={weightInput} onChange={(e) => setWeightInput(e.target.value)} />
+            <input
+              className="w-full bg-gray-700 rounded px-2 py-2 text-center mb-3"
+              placeholder="e.g., 0.35 kg or 350 g"
+              value={weightInput}
+              onChange={(e) => setWeightInput(e.target.value)}
+            />
             <div className="flex gap-2">
-              <button className="flex-1 bg-gray-600 py-2 rounded" onClick={() => setWeightModal(null)}>Cancel</button>
-              <button className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded" onClick={() => {
-                if (!weightModal) return;
-                const raw = weightInput.trim().toLowerCase();
-                if (!raw) return;
-                let qty = 0;
-                if (raw.endsWith('kg')) qty = Number(raw.replace('kg','').trim());
-                else if (raw.endsWith('g')) qty = Number(raw.replace('g','').trim()) / 1000;
-                else qty = Number(raw);
-                if (!Number.isFinite(qty) || qty <= 0) return;
-                addItem({ sku: weightModal.sku, name: weightModal.name, unitPrice: weightModal.unitPrice, vatRate: weightModal.vatRate, qty, station: (weightModal as any).station, categoryId: (weightModal as any).categoryId, categoryName: (weightModal as any).categoryName } as any);
-                setWeightModal(null);
-                setWeightInput('');
-              }}>Konfirmo</button>
+              <button
+                className="flex-1 bg-gray-600 py-2 rounded"
+                onClick={() => setWeightModal(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
+                onClick={() => {
+                  if (!weightModal) return;
+                  const raw = weightInput.trim().toLowerCase();
+                  if (!raw) return;
+                  let qty = 0;
+                  if (raw.endsWith('kg'))
+                    qty = Number(raw.replace('kg', '').trim());
+                  else if (raw.endsWith('g'))
+                    qty = Number(raw.replace('g', '').trim()) / 1000;
+                  else qty = Number(raw);
+                  if (!Number.isFinite(qty) || qty <= 0) return;
+                  addItem({
+                    sku: weightModal.sku,
+                    name: weightModal.name,
+                    unitPrice: weightModal.unitPrice,
+                    vatRate: weightModal.vatRate,
+                    qty,
+                    station: (weightModal as any).station,
+                    categoryId: (weightModal as any).categoryId,
+                    categoryName: (weightModal as any).categoryName,
+                  } as any);
+                  setWeightModal(null);
+                  setWeightInput('');
+                }}
+              >
+                Konfirmo
+              </button>
             </div>
           </div>
         </div>
@@ -1519,27 +2139,61 @@ export default function OrderPage() {
       {approvalModal.open && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-sm p-5">
-            <div className="text-lg font-semibold mb-1">{approvalModal.kind === 'ADMIN' ? 'Admin approval' : 'Manager approval'}</div>
-            <div className="text-sm opacity-70 mb-3">{approvalModal.action}</div>
+            <div className="text-lg font-semibold mb-1">
+              {approvalModal.kind === 'ADMIN'
+                ? 'Admin approval'
+                : 'Manager approval'}
+            </div>
+            <div className="text-sm opacity-70 mb-3">
+              {approvalModal.action}
+            </div>
             <input
               autoFocus
               type="password"
               inputMode="numeric"
               className="w-full bg-gray-700 rounded px-3 py-2"
-              placeholder={approvalModal.kind === 'ADMIN' ? 'Enter admin PIN' : 'Enter manager PIN'}
+              placeholder={
+                approvalModal.kind === 'ADMIN'
+                  ? 'Enter admin PIN'
+                  : 'Enter manager PIN'
+              }
               value={approvalModal.pin}
-              onChange={(e) => setApprovalModal((s) => ({ ...s, pin: e.target.value.replace(/[^0-9]/g, '').slice(0, 6), error: null }))}
+              onChange={(e) =>
+                setApprovalModal((s) => ({
+                  ...s,
+                  pin: e.target.value.replace(/[^0-9]/g, '').slice(0, 6),
+                  error: null,
+                }))
+              }
               onKeyDown={async (e) => {
                 if (e.key !== 'Enter') return;
                 const pin = approvalModal.pin;
                 try {
                   const r = await window.api.auth.verifyManagerPin(pin);
                   if (!r?.ok) {
-                    setApprovalModal((s) => ({ ...s, error: approvalModal.kind === 'ADMIN' ? 'Invalid admin PIN.' : 'Invalid manager PIN.' }));
+                    setApprovalModal((s) => ({
+                      ...s,
+                      error:
+                        approvalModal.kind === 'ADMIN'
+                          ? 'Invalid admin PIN.'
+                          : 'Invalid manager PIN.',
+                    }));
                     return;
                   }
-                  setApprovalModal({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
-                  approvalResolveRef.current?.({ userId: Number((r as any).userId || 0), userName: String((r as any).userName || (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager')) });
+                  setApprovalModal({
+                    open: false,
+                    action: '',
+                    kind: 'MANAGER',
+                    pin: '',
+                    error: null,
+                  });
+                  approvalResolveRef.current?.({
+                    userId: Number((r as any).userId || 0),
+                    userName: String(
+                      (r as any).userName ||
+                        (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager'),
+                    ),
+                  });
                   approvalResolveRef.current = null;
                 } catch (err: any) {
                   const status = Number(err?.status || 0);
@@ -1551,12 +2205,22 @@ export default function OrderPage() {
                 }
               }}
             />
-            {approvalModal.error && <div className="text-sm text-rose-300 mt-2">{approvalModal.error}</div>}
+            {approvalModal.error && (
+              <div className="text-sm text-rose-300 mt-2">
+                {approvalModal.error}
+              </div>
+            )}
             <div className="flex gap-2 mt-4">
               <button
                 className="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded"
                 onClick={() => {
-                  setApprovalModal({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
+                  setApprovalModal({
+                    open: false,
+                    action: '',
+                    kind: 'MANAGER',
+                    pin: '',
+                    error: null,
+                  });
                   approvalResolveRef.current?.(null);
                   approvalResolveRef.current = null;
                 }}
@@ -1570,11 +2234,31 @@ export default function OrderPage() {
                   try {
                     const r = await window.api.auth.verifyManagerPin(pin);
                     if (!r?.ok) {
-                      setApprovalModal((s) => ({ ...s, error: approvalModal.kind === 'ADMIN' ? 'Invalid admin PIN.' : 'Invalid manager PIN.' }));
+                      setApprovalModal((s) => ({
+                        ...s,
+                        error:
+                          approvalModal.kind === 'ADMIN'
+                            ? 'Invalid admin PIN.'
+                            : 'Invalid manager PIN.',
+                      }));
                       return;
                     }
-                    setApprovalModal({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
-                    approvalResolveRef.current?.({ userId: Number((r as any).userId || 0), userName: String((r as any).userName || (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager')) });
+                    setApprovalModal({
+                      open: false,
+                      action: '',
+                      kind: 'MANAGER',
+                      pin: '',
+                      error: null,
+                    });
+                    approvalResolveRef.current?.({
+                      userId: Number((r as any).userId || 0),
+                      userName: String(
+                        (r as any).userName ||
+                          (approvalModal.kind === 'ADMIN'
+                            ? 'Admin'
+                            : 'Manager'),
+                      ),
+                    });
                     approvalResolveRef.current = null;
                   } catch (err: any) {
                     const status = Number(err?.status || 0);
@@ -1621,7 +2305,17 @@ function ForkKnifeIcon() {
   );
 }
 
-function PayMethodButton({ active, onClick, label, children }: { active: boolean; onClick: () => void; label: string; children: any }) {
+function PayMethodButton({
+  active,
+  onClick,
+  label,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  children: any;
+}) {
   return (
     <button
       type="button"
@@ -1638,7 +2332,12 @@ function IconCash() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
       <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="2" />
-      <path d="M7 12h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M7 12h4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -1647,7 +2346,12 @@ function IconCard() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
       <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="2" />
       <path d="M3 10h18" stroke="currentColor" strokeWidth="2" />
-      <path d="M7 15h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M7 15h4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -1657,7 +2361,13 @@ function IconGift() {
       <path d="M4 11h16v10H4V11Z" stroke="currentColor" strokeWidth="2" />
       <path d="M12 11v10" stroke="currentColor" strokeWidth="2" />
       <path d="M4 7h16v4H4V7Z" stroke="currentColor" strokeWidth="2" />
-      <path d="M12 7c-1.5-3-4-3-4-1s4 1 4 1Zm0 0c1.5-3 4-3 4-1s-4 1-4 1Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M12 7c-1.5-3-4-3-4-1s4 1 4 1Zm0 0c1.5-3 4-3 4-1s-4 1-4 1Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -1666,15 +2376,30 @@ function IconRoom() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
       <path d="M4 10h16v11H4V10Z" stroke="currentColor" strokeWidth="2" />
       <path d="M7 10V6h10v4" stroke="currentColor" strokeWidth="2" />
-      <path d="M8 14h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M8 14h8"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
 function IconReceipt() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M6 2h12v20l-2-1-2 1-2-1-2 1-2-1-2 1V2Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M9 7h6M9 11h6M9 15h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M6 2h12v20l-2-1-2 1-2-1-2 1-2-1-2 1V2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9 7h6M9 11h6M9 15h6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -1683,8 +2408,18 @@ function IconPrinter() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
       <path d="M6 9V3h12v6" stroke="currentColor" strokeWidth="2" />
       <path d="M6 17h12v4H6v-4Z" stroke="currentColor" strokeWidth="2" />
-      <path d="M6 10H5a3 3 0 0 0-3 3v4h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M18 10h1a3 3 0 0 1 3 3v4h-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M6 10H5a3 3 0 0 0-3 3v4h4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M18 10h1a3 3 0 0 1 3 3v4h-4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -1698,25 +2433,41 @@ function TicketTotals({
 }: {
   totals: { subtotal: number; vat: number; total: number };
   vatEnabled: boolean;
-  serviceChargeCfg: { enabled: boolean; mode: 'PERCENT' | 'AMOUNT'; value: number };
+  serviceChargeCfg: {
+    enabled: boolean;
+    mode: 'PERCENT' | 'AMOUNT';
+    value: number;
+  };
   applyServiceCharge: boolean;
   serviceChargeAmount: number;
 }) {
   const formatAmount = useMemo(() => makeFormatAmount(), []);
-  const totalWithService = Math.max(0, Number(totals.total || 0) + Number(serviceChargeAmount || 0));
+  const totalWithService = Math.max(
+    0,
+    Number(totals.total || 0) + Number(serviceChargeAmount || 0),
+  );
   return (
     <>
-      <div className="flex justify-between"><span>Subtotal</span><span>  {formatAmount(totals.subtotal)}</span></div>
+      <div className="flex justify-between">
+        <span>Subtotal</span>
+        <span> {formatAmount(totals.subtotal)}</span>
+      </div>
       {vatEnabled ? (
-      <div className="flex justify-between"><span>VAT</span><span>  {formatAmount(totals.vat)}</span></div>
+        <div className="flex justify-between">
+          <span>VAT</span>
+          <span> {formatAmount(totals.vat)}</span>
+        </div>
       ) : (
-        <div className="flex justify-between"><span>VAT</span><span className="opacity-70">Disabled</span></div>
+        <div className="flex justify-between">
+          <span>VAT</span>
+          <span className="opacity-70">Disabled</span>
+        </div>
       )}
       {serviceChargeCfg.enabled && (
         <div className="flex justify-between">
           <span>Service charge</span>
           {applyServiceCharge ? (
-            <span>  {formatAmount(serviceChargeAmount)}</span>
+            <span> {formatAmount(serviceChargeAmount)}</span>
           ) : (
             <span className="opacity-70">Removed</span>
           )}
@@ -1724,19 +2475,32 @@ function TicketTotals({
       )}
       <div className="flex justify-between font-semibold">
         <span>Total</span>
-        <span>  {formatAmount(totalWithService)}</span>
+        <span> {formatAmount(totalWithService)}</span>
       </div>
     </>
   );
 }
 
-function computeTotals(lines: Array<{ unitPrice: number; qty: number; vatRate: number }>, vatEnabled = true) {
-  const subtotal = (lines || []).reduce((s, l) => s + Number(l.unitPrice || 0) * Number(l.qty || 0), 0);
-  const vat = vatEnabled ? (lines || []).reduce((s, l) => s + Number(l.unitPrice || 0) * Number(l.qty || 0) * Number(l.vatRate || 0), 0) : 0;
+function computeTotals(
+  lines: Array<{ unitPrice: number; qty: number; vatRate: number }>,
+  vatEnabled = true,
+) {
+  const subtotal = (lines || []).reduce(
+    (s, l) => s + Number(l.unitPrice || 0) * Number(l.qty || 0),
+    0,
+  );
+  const vat = vatEnabled
+    ? (lines || []).reduce(
+        (s, l) =>
+          s +
+          Number(l.unitPrice || 0) *
+            Number(l.qty || 0) *
+            Number(l.vatRate || 0),
+        0,
+      )
+    : 0;
   const total = subtotal + vat;
   return { subtotal, vat, total };
 }
 
 // makeFormatAmount imported from utils/format
-
-

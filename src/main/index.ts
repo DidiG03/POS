@@ -5,7 +5,13 @@ import os from 'node:os';
 import fs from 'node:fs';
 import dotenv from 'dotenv';
 // Initialize Sentry early (before other imports that might throw)
-import { initSentry, setSentryUser, captureException, addBreadcrumb, sentryEnabled } from './services/sentry';
+import {
+  initSentry,
+  setSentryUser,
+  captureException,
+  addBreadcrumb,
+  sentryEnabled,
+} from './services/sentry';
 initSentry();
 import { coreServices } from './services/core';
 import {
@@ -20,12 +26,58 @@ import {
   UpdateMenuItemInputSchema,
   TransferTableInputSchema,
 } from '@shared/ipc';
-import { clearCloudAdminSession, clearCloudSessionForSender, cloudJson, getCloudAccessPassword, getCloudConfig, getCloudSessionUserId, hasCloudSession, hasCloudSessionForSender, isCloudAdmin, isCloudAdminForSender, setCloudSession, setCloudSessionForSender, setCloudToken } from './services/cloud';
-import { enqueueOutbox, getOutboxStatus, isLikelyOfflineError, startOutboxLoop } from './services/offlineOutbox';
-import { setupAutoUpdater, updaterHandlers, registerUpdateListener, cleanup as cleanupUpdater } from './updater';
-import { checkRateLimit, cleanupSenderRateLimits, logSecurityEvent, sanitizeString, validatePin, sanitizeNumber, getSecurityLog } from './services/security';
-import { startMemoryMonitoring, stopMemoryMonitoring, getMemoryStats, exportMemorySnapshot, getMemoryUsage, formatMemoryUsage } from './services/memoryMonitor';
-import { buildEscposTicket, buildHtmlReceipt, classifyPrinterError, printHtmlToSystemPrinter, sendToCupsRawPrinter, sendToPrinterVerbose } from './print';
+import {
+  clearCloudAdminSession,
+  clearCloudSessionForSender,
+  cloudJson,
+  getCloudAccessPassword,
+  getCloudConfig,
+  getCloudSessionUserId,
+  hasCloudSession,
+  hasCloudSessionForSender,
+  isCloudAdmin,
+  isCloudAdminForSender,
+  setCloudSession,
+  setCloudSessionForSender,
+  setCloudToken,
+} from './services/cloud';
+import {
+  enqueueOutbox,
+  getOutboxStatus,
+  isLikelyOfflineError,
+  startOutboxLoop,
+} from './services/offlineOutbox';
+import {
+  setupAutoUpdater,
+  updaterHandlers,
+  registerUpdateListener,
+  cleanup as cleanupUpdater,
+} from './updater';
+import {
+  checkRateLimit,
+  cleanupSenderRateLimits,
+  logSecurityEvent,
+  sanitizeString,
+  validatePin,
+  sanitizeNumber,
+  getSecurityLog,
+} from './services/security';
+import {
+  startMemoryMonitoring,
+  stopMemoryMonitoring,
+  getMemoryStats,
+  exportMemorySnapshot,
+  getMemoryUsage,
+  formatMemoryUsage,
+} from './services/memoryMonitor';
+import {
+  buildEscposTicket,
+  buildHtmlReceipt,
+  classifyPrinterError,
+  printHtmlToSystemPrinter,
+  sendToCupsRawPrinter,
+  sendToPrinterVerbose,
+} from './print';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
@@ -68,8 +120,12 @@ function broadcastPrinterEvent(payload: any) {
 
 async function getSqliteDbFilePath(): Promise<string | null> {
   try {
-    const rows = (await (prisma as any).$queryRawUnsafe('PRAGMA database_list;')) as any[];
-    const main = Array.isArray(rows) ? rows.find((r) => String(r?.name || r?.[1] || '') === 'main') : null;
+    const rows = (await (prisma as any).$queryRawUnsafe(
+      'PRAGMA database_list;',
+    )) as any[];
+    const main = Array.isArray(rows)
+      ? rows.find((r) => String(r?.name || r?.[1] || '') === 'main')
+      : null;
     const file = String(main?.file ?? main?.[2] ?? '');
     if (!file) return null;
     return resolvePath(file);
@@ -110,7 +166,11 @@ function backupFileName(now = new Date()) {
   return `pos-backup-${y}${m}${d}-${hh}${mm}${ss}.db`;
 }
 
-async function createDbBackupNow(): Promise<{ ok: boolean; file?: string; error?: string }> {
+async function createDbBackupNow(): Promise<{
+  ok: boolean;
+  file?: string;
+  error?: string;
+}> {
   const dbPath = await getSqliteDbFilePath();
   if (!dbPath) return { ok: false, error: 'Could not locate database file' };
   const dir = getBackupsDir();
@@ -120,14 +180,18 @@ async function createDbBackupNow(): Promise<{ ok: boolean; file?: string; error?
   try {
     // Best effort to checkpoint WAL into the main db file.
     try {
-      await (prisma as any).$executeRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE);');
+      await (prisma as any).$executeRawUnsafe(
+        'PRAGMA wal_checkpoint(TRUNCATE);',
+      );
     } catch {
       // ignore
     }
 
     // Prefer a consistent backup (SQLite 3.27+)
     try {
-      await (prisma as any).$executeRawUnsafe(`VACUUM INTO '${dest.replace(/'/g, "''")}';`);
+      await (prisma as any).$executeRawUnsafe(
+        `VACUUM INTO '${dest.replace(/'/g, "''")}';`,
+      );
       return { ok: true, file: dest };
     } catch {
       // fallback to file copy
@@ -140,15 +204,30 @@ async function createDbBackupNow(): Promise<{ ok: boolean; file?: string; error?
   }
 }
 
-function listDbBackups(): Array<{ file: string; name: string; bytes: number; createdAt: string }> {
+function listDbBackups(): Array<{
+  file: string;
+  name: string;
+  bytes: number;
+  createdAt: string;
+}> {
   const dir = getBackupsDir();
   ensureDir(dir);
-  const out: Array<{ file: string; name: string; bytes: number; createdAt: string }> = [];
+  const out: Array<{
+    file: string;
+    name: string;
+    bytes: number;
+    createdAt: string;
+  }> = [];
   for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.db'))) {
     const file = join(dir, name);
     try {
       const st = fs.statSync(file);
-      out.push({ file, name, bytes: st.size, createdAt: st.mtime.toISOString() });
+      out.push({
+        file,
+        name,
+        bytes: st.size,
+        createdAt: st.mtime.toISOString(),
+      });
     } catch {
       // ignore
     }
@@ -158,11 +237,14 @@ function listDbBackups(): Array<{ file: string; name: string; bytes: number; cre
   return out;
 }
 
-async function restoreDbBackup(name: string): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }> {
+async function restoreDbBackup(
+  name: string,
+): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }> {
   const dir = getBackupsDir();
   ensureDir(dir);
   const safeName = String(name || '').replace(/[^0-9A-Za-z._-]/g, '');
-  if (!safeName.endsWith('.db')) return { ok: false, error: 'Invalid backup file' };
+  if (!safeName.endsWith('.db'))
+    return { ok: false, error: 'Invalid backup file' };
   const src = join(dir, safeName);
   if (!fs.existsSync(src)) return { ok: false, error: 'Backup not found' };
   const dbPath = await getSqliteDbFilePath();
@@ -219,7 +301,9 @@ async function ensureKdsLocalSchema() {
   try {
     // 1) MenuItem.station (sqlite doesn't support IF NOT EXISTS for ALTER TABLE; ignore errors)
     try {
-      await (prisma as any).$executeRawUnsafe(`ALTER TABLE "MenuItem" ADD COLUMN "station" TEXT NOT NULL DEFAULT 'KITCHEN';`);
+      await (prisma as any).$executeRawUnsafe(
+        `ALTER TABLE "MenuItem" ADD COLUMN "station" TEXT NOT NULL DEFAULT 'KITCHEN';`,
+      );
     } catch {
       // ignore
     }
@@ -231,19 +315,29 @@ async function ensureKdsLocalSchema() {
     await (prisma as any).$executeRawUnsafe(
       `CREATE TABLE IF NOT EXISTS "KdsOrder" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "dayKey" TEXT NOT NULL, "orderNo" INTEGER NOT NULL, "area" TEXT NOT NULL, "tableLabel" TEXT NOT NULL, "openedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "closedAt" DATETIME);`,
     );
-    await (prisma as any).$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "KdsOrder_dayKey_orderNo_key" ON "KdsOrder"("dayKey","orderNo");`);
-    await (prisma as any).$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "KdsOrder_area_tableLabel_closedAt_idx" ON "KdsOrder"("area","tableLabel","closedAt");`);
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS "KdsOrder_dayKey_orderNo_key" ON "KdsOrder"("dayKey","orderNo");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "KdsOrder_area_tableLabel_closedAt_idx" ON "KdsOrder"("area","tableLabel","closedAt");`,
+    );
 
     await (prisma as any).$executeRawUnsafe(
       `CREATE TABLE IF NOT EXISTS "KdsTicket" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "orderId" INTEGER NOT NULL, "userId" INTEGER, "firedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "itemsJson" JSONB NOT NULL, "note" TEXT, CONSTRAINT "KdsTicket_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "KdsOrder" ("id") ON DELETE RESTRICT ON UPDATE CASCADE, CONSTRAINT "KdsTicket_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE);`,
     );
-    await (prisma as any).$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "KdsTicket_orderId_firedAt_idx" ON "KdsTicket"("orderId","firedAt");`);
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "KdsTicket_orderId_firedAt_idx" ON "KdsTicket"("orderId","firedAt");`,
+    );
 
     await (prisma as any).$executeRawUnsafe(
       `CREATE TABLE IF NOT EXISTS "KdsTicketStation" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "ticketId" INTEGER NOT NULL, "station" TEXT NOT NULL, "status" TEXT NOT NULL DEFAULT 'NEW', "bumpedAt" DATETIME, "bumpedById" INTEGER, CONSTRAINT "KdsTicketStation_ticketId_fkey" FOREIGN KEY ("ticketId") REFERENCES "KdsTicket" ("id") ON DELETE RESTRICT ON UPDATE CASCADE, CONSTRAINT "KdsTicketStation_bumpedById_fkey" FOREIGN KEY ("bumpedById") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE);`,
     );
-    await (prisma as any).$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "KdsTicketStation_ticketId_station_key" ON "KdsTicketStation"("ticketId","station");`);
-    await (prisma as any).$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "KdsTicketStation_station_status_bumpedAt_idx" ON "KdsTicketStation"("station","status","bumpedAt");`);
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS "KdsTicketStation_ticketId_station_key" ON "KdsTicketStation"("ticketId","station");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "KdsTicketStation_station_status_bumpedAt_idx" ON "KdsTicketStation"("station","status","bumpedAt");`,
+    );
 
     __kdsSchemaReady = true;
     __kdsLastError = null;
@@ -306,7 +400,10 @@ function createAdminWindow() {
   });
   const url = process.env.ELECTRON_RENDERER_URL;
   if (url) adminWindow.loadURL(url + '#/admin');
-  else adminWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'), { hash: '/admin' });
+  else
+    adminWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'), {
+      hash: '/admin',
+    });
   adminWindow.on('closed', () => {
     cleanupSenderRateLimits(adminWindow?.id || 0);
     adminWindow = null;
@@ -335,7 +432,10 @@ function createKdsWindow() {
   });
   const url = process.env.ELECTRON_RENDERER_URL;
   if (url) kdsWindow.loadURL(url + '#/kds');
-  else kdsWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'), { hash: '/kds' });
+  else
+    kdsWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'), {
+      hash: '/kds',
+    });
   kdsWindow.on('closed', () => {
     kdsWindow = null;
   });
@@ -376,16 +476,28 @@ function startAutoVoidStaleTicketsLoop() {
   const runOnce = async () => {
     try {
       const keyOpen = 'tables:open';
-      const openRow = await prisma.syncState.findUnique({ where: { key: keyOpen } }).catch(() => null);
-      const openMap = ((openRow?.valueJson as any) || {}) as Record<string, boolean>;
+      const openRow = await prisma.syncState
+        .findUnique({ where: { key: keyOpen } })
+        .catch(() => null);
+      const openMap = ((openRow?.valueJson as any) || {}) as Record<
+        string,
+        boolean
+      >;
 
       const keyAt = 'tables:openAt';
-      const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } }).catch(() => null);
+      const atRow = await prisma.syncState
+        .findUnique({ where: { key: keyAt } })
+        .catch(() => null);
       const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
 
       const keyClosedOverride = 'tables:closedOverride';
-      const closedRow = await prisma.syncState.findUnique({ where: { key: keyClosedOverride } }).catch(() => null);
-      const closedOverride = ((closedRow?.valueJson as any) || {}) as Record<string, string>;
+      const closedRow = await prisma.syncState
+        .findUnique({ where: { key: keyClosedOverride } })
+        .catch(() => null);
+      const closedOverride = ((closedRow?.valueJson as any) || {}) as Record<
+        string,
+        string
+      >;
 
       const now = Date.now();
       const staleKeys = Object.entries(atMap)
@@ -400,14 +512,19 @@ function startAutoVoidStaleTicketsLoop() {
       if (staleKeys.length === 0) return;
 
       const cloud = await getCloudConfig().catch(() => null);
-      const cloudActorUserId = cloud ? (getCloudSessionUserId(cloud.businessCode) || null) : null;
+      const cloudActorUserId = cloud
+        ? getCloudSessionUserId(cloud.businessCode) || null
+        : null;
       for (const k of staleKeys) {
         const [area, tableLabel] = String(k).split(':');
         if (!area || !tableLabel) continue;
 
         // Find an actor userId for local mirroring/audit (use last ticket owner if possible).
         const last = await prisma.ticketLog
-          .findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } })
+          .findFirst({
+            where: { area, tableLabel },
+            orderBy: { createdAt: 'desc' },
+          })
           .catch(() => null as any);
         const actorUserId = Number(last?.userId || 0) || 0;
 
@@ -416,7 +533,12 @@ function startAutoVoidStaleTicketsLoop() {
         const systemUserId = Number(cloudActorUserId || 0) || 0;
         if (cloud && systemUserId) {
           try {
-            await cloudJson('POST', '/tickets/void-ticket', { userId: systemUserId, area, tableLabel, reason }, { requireAuth: true, senderId: 0 });
+            await cloudJson(
+              'POST',
+              '/tickets/void-ticket',
+              { userId: systemUserId, area, tableLabel, reason },
+              { requireAuth: true, senderId: 0 },
+            );
           } catch (e: any) {
             await enqueueOutbox({
               id: `tickets:void-ticket:${area}:${tableLabel}:${Date.now()}`,
@@ -452,24 +574,52 @@ function startAutoVoidStaleTicketsLoop() {
           // Local mode: mark pending/approved requests as rejected and notify.
           try {
             const nowDt = new Date();
-            const rows = await prisma.ticketRequest.findMany({
-              where: { area, tableLabel, status: { in: ['PENDING', 'APPROVED'] as any } },
-              select: { id: true, requesterId: true, ownerId: true },
-              take: 200,
-            } as any).catch(() => []);
+            const rows = await prisma.ticketRequest
+              .findMany({
+                where: {
+                  area,
+                  tableLabel,
+                  status: { in: ['PENDING', 'APPROVED'] as any },
+                },
+                select: { id: true, requesterId: true, ownerId: true },
+                take: 200,
+              } as any)
+              .catch(() => []);
             if (rows.length) {
-              await prisma.ticketRequest.updateMany({
-                where: { area, tableLabel, status: { in: ['PENDING', 'APPROVED'] as any } },
-                data: { status: 'REJECTED' as any, decidedAt: nowDt },
-              } as any).catch(() => null);
+              await prisma.ticketRequest
+                .updateMany({
+                  where: {
+                    area,
+                    tableLabel,
+                    status: { in: ['PENDING', 'APPROVED'] as any },
+                  },
+                  data: { status: 'REJECTED' as any, decidedAt: nowDt },
+                } as any)
+                .catch(() => null);
               const msg = `Auto-cancelled add-item requests on ${area} ${tableLabel}: ticket exceeded 12 hours`;
               const usersToNotify = new Set<number>();
-              for (const r of rows as any[]) { usersToNotify.add(Number(r.requesterId)); usersToNotify.add(Number(r.ownerId)); }
-              const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true }, select: { id: true } } as any).catch(() => []);
+              for (const r of rows as any[]) {
+                usersToNotify.add(Number(r.requesterId));
+                usersToNotify.add(Number(r.ownerId));
+              }
+              const admins = await prisma.user
+                .findMany({
+                  where: { role: 'ADMIN', active: true },
+                  select: { id: true },
+                } as any)
+                .catch(() => []);
               for (const a of admins as any[]) usersToNotify.add(Number(a.id));
               for (const uid of usersToNotify) {
                 if (!uid) continue;
-                await prisma.notification.create({ data: { userId: uid, type: 'OTHER' as any, message: msg } as any }).catch(() => {});
+                await prisma.notification
+                  .create({
+                    data: {
+                      userId: uid,
+                      type: 'OTHER' as any,
+                      message: msg,
+                    } as any,
+                  })
+                  .catch(() => {});
               }
             }
           } catch {
@@ -485,11 +635,13 @@ function startAutoVoidStaleTicketsLoop() {
         }
         try {
           delete atMap[`${area}:${tableLabel}`];
-          await prisma.syncState.upsert({
-            where: { key: keyAt },
-            create: { key: keyAt, valueJson: atMap },
-            update: { valueJson: atMap },
-          }).catch(() => null);
+          await prisma.syncState
+            .upsert({
+              where: { key: keyAt },
+              create: { key: keyAt, valueJson: atMap },
+              update: { valueJson: atMap },
+            })
+            .catch(() => null);
         } catch {
           // ignore
         }
@@ -497,7 +649,12 @@ function startAutoVoidStaleTicketsLoop() {
         // In cloud mode, also enqueue table close if needed.
         if (cloud) {
           try {
-            await cloudJson('POST', '/tables/open', { area, label: tableLabel, open: false }, { requireAuth: true, senderId: 0 });
+            await cloudJson(
+              'POST',
+              '/tables/open',
+              { area, label: tableLabel, open: false },
+              { requireAuth: true, senderId: 0 },
+            );
           } catch (e: any) {
             await enqueueOutbox({
               id: `tables:open:${area}:${tableLabel}:${Date.now()}`,
@@ -513,11 +670,13 @@ function startAutoVoidStaleTicketsLoop() {
         // Override: if cloud still reports this table as open, hide it from the UI until cloud close succeeds.
         try {
           closedOverride[`${area}:${tableLabel}`] = new Date().toISOString();
-          await prisma.syncState.upsert({
-            where: { key: keyClosedOverride },
-            create: { key: keyClosedOverride, valueJson: closedOverride },
-            update: { valueJson: closedOverride },
-          }).catch(() => null);
+          await prisma.syncState
+            .upsert({
+              where: { key: keyClosedOverride },
+              create: { key: keyClosedOverride, valueJson: closedOverride },
+              update: { valueJson: closedOverride },
+            })
+            .catch(() => null);
         } catch {
           // ignore
         }
@@ -525,9 +684,18 @@ function startAutoVoidStaleTicketsLoop() {
         // Mirror locally: mark latest ticket items voided + note reason (best-effort).
         try {
           if (last) {
-            const itemsArr = ((last.itemsJson as any[]) || []).map((it: any) => ({ ...it, voided: true }));
-            const note2 = last.note ? `${last.note} | VOIDED: ${reason}` : `VOIDED: ${reason}`;
-            await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: itemsArr, note: note2 } }).catch(() => null);
+            const itemsArr = ((last.itemsJson as any[]) || []).map(
+              (it: any) => ({ ...it, voided: true }),
+            );
+            const note2 = last.note
+              ? `${last.note} | VOIDED: ${reason}`
+              : `VOIDED: ${reason}`;
+            await prisma.ticketLog
+              .update({
+                where: { id: last.id },
+                data: { itemsJson: itemsArr, note: note2 },
+              })
+              .catch(() => null);
           }
         } catch {
           // ignore
@@ -538,14 +706,35 @@ function startAutoVoidStaleTicketsLoop() {
         // - In cloud mode the admin panel feed is cloud-backed, but the void-ticket API call will create a notification there.
         if (!cloud && actorUserId) {
           const msg = `Auto-voided ticket on ${area} ${tableLabel}: exceeded 12 hours`;
-          await prisma.notification.create({ data: { userId: actorUserId, type: 'OTHER' as any, message: msg } }).catch(() => {});
+          await prisma.notification
+            .create({
+              data: { userId: actorUserId, type: 'OTHER' as any, message: msg },
+            })
+            .catch(() => {});
         }
 
         // KDS is always local: reflect void + close order immediately.
         try {
-          if (actorUserId) await applyKdsVoidTicket({ userId: actorUserId, area, tableLabel, reason }).catch(() => false);
-          const active = await (prisma as any).kdsOrder.findFirst({ where: { area, tableLabel, closedAt: null }, orderBy: { openedAt: 'desc' } }).catch(() => null);
-          if (active) await (prisma as any).kdsOrder.update({ where: { id: active.id }, data: { closedAt: new Date() } }).catch(() => null);
+          if (actorUserId)
+            await applyKdsVoidTicket({
+              userId: actorUserId,
+              area,
+              tableLabel,
+              reason,
+            }).catch(() => false);
+          const active = await (prisma as any).kdsOrder
+            .findFirst({
+              where: { area, tableLabel, closedAt: null },
+              orderBy: { openedAt: 'desc' },
+            })
+            .catch(() => null);
+          if (active)
+            await (prisma as any).kdsOrder
+              .update({
+                where: { id: active.id },
+                data: { closedAt: new Date() },
+              })
+              .catch(() => null);
         } catch {
           // ignore
         }
@@ -572,7 +761,10 @@ app.whenReady().then(async () => {
   // Tickets: auto-void stale open tables after 12 hours + notify.
   startAutoVoidStaleTicketsLoop();
   // Memory monitoring: track memory usage to detect leaks (runs every minute)
-  if (process.env.NODE_ENV !== 'production' || process.env.MEMORY_MONITORING === 'true') {
+  if (
+    process.env.NODE_ENV !== 'production' ||
+    process.env.MEMORY_MONITORING === 'true'
+  ) {
     startMemoryMonitoring(60000); // Check every minute
   }
 
@@ -617,19 +809,32 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
   const error = reason instanceof Error ? reason : new Error(String(reason));
-  captureException(error, { type: 'unhandledRejection', promise: String(promise) });
+  captureException(error, {
+    type: 'unhandledRejection',
+    promise: String(promise),
+  });
 });
 
 // IPC Handlers (skeleton with validation)
 ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
   // Rate limit login attempts
-  if (!checkRateLimit(_e, 'auth:loginWithPin', { maxAttempts: 5, windowMs: 5 * 60 * 1000 })) {
-    logSecurityEvent('ipc_rate_limit_exceeded', { handler: 'auth:loginWithPin', senderId: _e.sender.id });
-    throw new Error('Too many login attempts. Please wait before trying again.');
+  if (
+    !checkRateLimit(_e, 'auth:loginWithPin', {
+      maxAttempts: 5,
+      windowMs: 5 * 60 * 1000,
+    })
+  ) {
+    logSecurityEvent('ipc_rate_limit_exceeded', {
+      handler: 'auth:loginWithPin',
+      senderId: _e.sender.id,
+    });
+    throw new Error(
+      'Too many login attempts. Please wait before trying again.',
+    );
   }
 
   const { pin, userId } = LoginWithPinInputSchema.parse(payload);
-  
+
   // Validate PIN format (but don't reject weak PINs during login - users may already have them)
   const pinValidation = validatePin(pin, false); // rejectWeak = false for login
   if (!pinValidation.valid) {
@@ -665,11 +870,15 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
       } catch {
         // ignore per-sender storage errors
       }
-      } catch {
-        setCloudToken(String(resp.token), cloud.businessCode);
-      }
+    } catch {
+      setCloudToken(String(resp.token), cloud.businessCode);
+    }
     // Set Sentry user context after successful cloud login
-    setSentryUser(Number(resp.user?.id || 0), resp.user?.displayName, resp.user?.role);
+    setSentryUser(
+      Number(resp.user?.id || 0),
+      resp.user?.displayName,
+      resp.user?.role,
+    );
     addBreadcrumb('User logged in (cloud)', 'auth', 'info');
     return resp.user;
   }
@@ -680,13 +889,15 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
   const ok = await bcrypt.compare(pin, user.pinHash);
   if (!ok) {
     // record a security notification for the targeted user
-    await prisma.notification.create({ 
-      data: {
-        userId: user.id,
-        type: 'SECURITY' as any,
-        message: 'Wrong PIN attempt on your account',
-      },
-    }).catch(() => {});
+    await prisma.notification
+      .create({
+        data: {
+          userId: user.id,
+          type: 'SECURITY' as any,
+          message: 'Wrong PIN attempt on your account',
+        },
+      })
+      .catch(() => {});
     return null;
   }
   const userData = {
@@ -717,15 +928,27 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
         { businessCode: cloud.businessCode, pin },
         { requireAuth: false, senderId: _e.sender.id },
       );
-      return (r && typeof r === 'object') ? r : { ok: false };
+      return r && typeof r === 'object' ? r : { ok: false };
     } catch {
       return { ok: false };
     }
   }
-  const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true }, orderBy: { id: 'asc' } }).catch(() => []);
+  const admins = await prisma.user
+    .findMany({
+      where: { role: 'ADMIN', active: true },
+      orderBy: { id: 'asc' },
+    })
+    .catch(() => []);
   for (const u of admins as any[]) {
-    const ok = await bcrypt.compare(pin, String((u as any).pinHash || '')).catch(() => false);
-    if (ok) return { ok: true, userId: (u as any).id, userName: (u as any).displayName };
+    const ok = await bcrypt
+      .compare(pin, String((u as any).pinHash || ''))
+      .catch(() => false);
+    if (ok)
+      return {
+        ok: true,
+        userId: (u as any).id,
+        userName: (u as any).displayName,
+      };
   }
   return { ok: false };
 });
@@ -744,31 +967,46 @@ ipcMain.handle('auth:logoutAdmin', async (_e) => {
 
 ipcMain.handle('auth:createUser', async (_e, payload) => {
   // Rate limit user creation (admin only)
-  if (!checkRateLimit(_e, 'auth:createUser', { maxAttempts: 20, windowMs: 60 * 1000 })) {
-    logSecurityEvent('ipc_rate_limit_exceeded', { handler: 'auth:createUser', senderId: _e.sender.id });
+  if (
+    !checkRateLimit(_e, 'auth:createUser', {
+      maxAttempts: 20,
+      windowMs: 60 * 1000,
+    })
+  ) {
+    logSecurityEvent('ipc_rate_limit_exceeded', {
+      handler: 'auth:createUser',
+      senderId: _e.sender.id,
+    });
     throw new Error('Too many requests. Please slow down.');
   }
 
   const input = CreateUserInputSchema.parse(payload);
-  
+
   // Validate PIN format
   if (input.pin) {
     const pinValidation = validatePin(input.pin);
     if (!pinValidation.valid) {
-      logSecurityEvent('invalid_pin_format', { handler: 'auth:createUser', senderId: _e.sender.id });
+      logSecurityEvent('invalid_pin_format', {
+        handler: 'auth:createUser',
+        senderId: _e.sender.id,
+      });
       throw new Error(pinValidation.error || 'Invalid PIN format');
     }
   }
-  
+
   // Sanitize display name
   const sanitizedDisplayName = sanitizeString(input.displayName, 80);
   if (!sanitizedDisplayName) {
     throw new Error('Display name is required');
   }
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    return await cloudJson('POST', '/auth/users', input, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson('POST', '/auth/users', input, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    });
   }
   const pinHash = await bcrypt.hash(input.pin, 10);
   const created = await prisma.user.create({
@@ -805,7 +1043,10 @@ ipcMain.handle('auth:listUsers', async (_e, payload) => {
       'GET',
       `/auth/public-users?businessCode=${encodeURIComponent(cloud.businessCode)}&includeAdmins=${includeAdmins ? '1' : '0'}`,
       undefined,
-      { requireAuth: false, extraHeaders: pw ? { 'x-business-password': pw } : undefined },
+      {
+        requireAuth: false,
+        extraHeaders: pw ? { 'x-business-password': pw } : undefined,
+      },
     ).catch(() => []);
   }
   const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
@@ -820,22 +1061,34 @@ ipcMain.handle('auth:listUsers', async (_e, payload) => {
 
 ipcMain.handle('auth:updateUser', async (_e, payload) => {
   // Rate limit user updates (admin only)
-  if (!checkRateLimit(_e, 'auth:updateUser', { maxAttempts: 20, windowMs: 60 * 1000 })) {
-    logSecurityEvent('ipc_rate_limit_exceeded', { handler: 'auth:updateUser', senderId: _e.sender.id });
+  if (
+    !checkRateLimit(_e, 'auth:updateUser', {
+      maxAttempts: 20,
+      windowMs: 60 * 1000,
+    })
+  ) {
+    logSecurityEvent('ipc_rate_limit_exceeded', {
+      handler: 'auth:updateUser',
+      senderId: _e.sender.id,
+    });
     throw new Error('Too many requests. Please slow down.');
   }
 
   const input = UpdateUserInputSchema.parse(payload);
-  
+
   // Validate PIN format if provided
   if (input.pin) {
     const pinValidation = validatePin(input.pin);
     if (!pinValidation.valid) {
-      logSecurityEvent('invalid_pin_format', { handler: 'auth:updateUser', senderId: _e.sender.id, userId: input.id });
+      logSecurityEvent('invalid_pin_format', {
+        handler: 'auth:updateUser',
+        senderId: _e.sender.id,
+        userId: input.id,
+      });
       throw new Error(pinValidation.error || 'Invalid PIN format');
     }
   }
-  
+
   // Sanitize display name if provided
   const sanitizedInput: any = { ...input };
   if (input.displayName) {
@@ -845,23 +1098,37 @@ ipcMain.handle('auth:updateUser', async (_e, payload) => {
     }
     sanitizedInput.displayName = sanitized;
   }
-  
-  // Log user update (security audit)
-  logSecurityEvent('user_updated', { senderId: _e.sender.id, userId: input.id, fields: Object.keys(input) });
 
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  // Log user update (security audit)
+  logSecurityEvent('user_updated', {
+    senderId: _e.sender.id,
+    userId: input.id,
+    fields: Object.keys(input),
+  });
+
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    return await cloudJson('PUT', `/auth/users/${encodeURIComponent(String(input.id))}`, sanitizedInput, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson(
+      'PUT',
+      `/auth/users/${encodeURIComponent(String(input.id))}`,
+      sanitizedInput,
+      { requireAuth: true, senderId: _e.sender.id },
+    );
   }
   let pinHash: string | undefined;
   if (sanitizedInput.pin) pinHash = await bcrypt.hash(sanitizedInput.pin, 10);
   const updated = await prisma.user.update({
     where: { id: input.id },
     data: {
-      ...(sanitizedInput.displayName ? { displayName: sanitizedInput.displayName } : {}),
+      ...(sanitizedInput.displayName
+        ? { displayName: sanitizedInput.displayName }
+        : {}),
       ...(sanitizedInput.role ? { role: sanitizedInput.role } : {}),
-      ...(typeof sanitizedInput.active === 'boolean' ? { active: sanitizedInput.active } : {}),
+      ...(typeof sanitizedInput.active === 'boolean'
+        ? { active: sanitizedInput.active }
+        : {}),
       ...(pinHash ? { pinHash } : {}),
     },
   });
@@ -879,11 +1146,17 @@ ipcMain.handle('auth:deleteUser', async (_e, payload) => {
   const id = Number(input.id);
   if (!id) throw new Error('invalid user id');
 
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     // Hosted mode: we only "disable" via DELETE endpoint
-    await cloudJson('DELETE', `/auth/users/${encodeURIComponent(String(id))}`, undefined, { requireAuth: true, senderId: _e.sender.id });
+    await cloudJson(
+      'DELETE',
+      `/auth/users/${encodeURIComponent(String(id))}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    );
     return true;
   }
 
@@ -897,12 +1170,23 @@ ipcMain.handle('auth:deleteUser', async (_e, payload) => {
 
   // Safety: don't remove the last active admin
   if (user.role === 'ADMIN' && user.active) {
-    const otherActiveAdmins = await prisma.user.count({ where: { role: 'ADMIN' as any, active: true, id: { not: id } } as any });
-    if (otherActiveAdmins <= 0) throw new Error('cannot delete the last active admin');
+    const otherActiveAdmins = await prisma.user.count({
+      where: { role: 'ADMIN' as any, active: true, id: { not: id } } as any,
+    });
+    if (otherActiveAdmins <= 0)
+      throw new Error('cannot delete the last active admin');
   }
 
   // Safety: only allow hard delete when the user has no history
-  const [orders, tickets, notifications, shiftsOpened, shiftsClosed, reqMade, reqOwned] = await Promise.all([
+  const [
+    orders,
+    tickets,
+    notifications,
+    shiftsOpened,
+    shiftsClosed,
+    reqMade,
+    reqOwned,
+  ] = await Promise.all([
     prisma.order.count({ where: { userId: id } }),
     prisma.ticketLog.count({ where: { userId: id } }),
     prisma.notification.count({ where: { userId: id } }),
@@ -911,8 +1195,16 @@ ipcMain.handle('auth:deleteUser', async (_e, payload) => {
     prisma.ticketRequest.count({ where: { requesterId: id } }),
     prisma.ticketRequest.count({ where: { ownerId: id } }),
   ]);
-  const total = orders + tickets + notifications + shiftsOpened + shiftsClosed + reqMade + reqOwned;
-  if (total > 0) throw new Error('user has history; disable instead of deleting');
+  const total =
+    orders +
+    tickets +
+    notifications +
+    shiftsOpened +
+    shiftsClosed +
+    reqMade +
+    reqOwned;
+  if (total > 0)
+    throw new Error('user has history; disable instead of deleting');
 
   await prisma.user.delete({ where: { id } });
   return true;
@@ -925,11 +1217,24 @@ ipcMain.handle('shifts:getOpen', async (_e, { userId }) => {
   if (cloud) {
     // Login screen may call this before auth; return null instead of throwing.
     if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson('GET', `/shifts/get-open?userId=${encodeURIComponent(String(userId))}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => null);
+    return await cloudJson(
+      'GET',
+      `/shifts/get-open?userId=${encodeURIComponent(String(userId))}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => null);
   }
-  const open = await prisma.dayShift.findFirst({ where: { closedAt: null, openedById: userId } });
+  const open = await prisma.dayShift.findFirst({
+    where: { closedAt: null, openedById: userId },
+  });
   return open
-    ? { id: open.id, openedAt: open.openedAt.toISOString(), closedAt: open.closedAt?.toISOString() ?? null, openedById: open.openedById, closedById: open.closedById ?? null }
+    ? {
+        id: open.id,
+        openedAt: open.openedAt.toISOString(),
+        closedAt: open.closedAt?.toISOString() ?? null,
+        openedById: open.openedById,
+        closedById: open.closedById ?? null,
+      }
     : null;
 });
 
@@ -937,24 +1242,62 @@ ipcMain.handle('shifts:clockIn', async (_e, { userId }) => {
   if (await cloudEnabledButMissingBusinessCode()) return null;
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    return await cloudJson('POST', '/shifts/clock-in', { userId }, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson(
+      'POST',
+      '/shifts/clock-in',
+      { userId },
+      { requireAuth: true, senderId: _e.sender.id },
+    );
   }
-  const already = await prisma.dayShift.findFirst({ where: { closedAt: null, openedById: userId } });
-  if (already) return { id: already.id, openedAt: already.openedAt.toISOString(), closedAt: null, openedById: already.openedById, closedById: already.closedById ?? null };
-  const created = await prisma.dayShift.create({ data: { openedById: userId, totalsJson: {} } as any });
-  return { id: created.id, openedAt: created.openedAt.toISOString(), closedAt: null, openedById: created.openedById, closedById: created.closedById ?? null };
+  const already = await prisma.dayShift.findFirst({
+    where: { closedAt: null, openedById: userId },
+  });
+  if (already)
+    return {
+      id: already.id,
+      openedAt: already.openedAt.toISOString(),
+      closedAt: null,
+      openedById: already.openedById,
+      closedById: already.closedById ?? null,
+    };
+  const created = await prisma.dayShift.create({
+    data: { openedById: userId, totalsJson: {} } as any,
+  });
+  return {
+    id: created.id,
+    openedAt: created.openedAt.toISOString(),
+    closedAt: null,
+    openedById: created.openedById,
+    closedById: created.closedById ?? null,
+  };
 });
 
 ipcMain.handle('shifts:clockOut', async (_e, { userId }) => {
   if (await cloudEnabledButMissingBusinessCode()) return null;
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    return await cloudJson('POST', '/shifts/clock-out', { userId }, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson(
+      'POST',
+      '/shifts/clock-out',
+      { userId },
+      { requireAuth: true, senderId: _e.sender.id },
+    );
   }
-  const open = await prisma.dayShift.findFirst({ where: { closedAt: null, openedById: userId } });
+  const open = await prisma.dayShift.findFirst({
+    where: { closedAt: null, openedById: userId },
+  });
   if (!open) return null;
-  const updated = await prisma.dayShift.update({ where: { id: open.id }, data: { closedAt: new Date(), closedById: userId } });
-  return { id: updated.id, openedAt: updated.openedAt.toISOString(), closedAt: updated.closedAt?.toISOString() ?? null, openedById: updated.openedById, closedById: updated.closedById ?? null };
+  const updated = await prisma.dayShift.update({
+    where: { id: open.id },
+    data: { closedAt: new Date(), closedById: userId },
+  });
+  return {
+    id: updated.id,
+    openedAt: updated.openedAt.toISOString(),
+    closedAt: updated.closedAt?.toISOString() ?? null,
+    openedById: updated.openedById,
+    closedById: updated.closedById ?? null,
+  };
 });
 
 ipcMain.handle('shifts:listOpen', async (_e) => {
@@ -965,9 +1308,20 @@ ipcMain.handle('shifts:listOpen', async (_e) => {
     if (!hasCloudSession(cloud.businessCode)) {
       const q = new URLSearchParams({ businessCode: cloud.businessCode });
       const pw = await getCloudAccessPassword().catch(() => null);
-      return await cloudJson('GET', `/shifts/public-open?${q.toString()}`, undefined, { requireAuth: false, extraHeaders: pw ? { 'x-business-password': pw } : undefined }).catch(() => []);
+      return await cloudJson(
+        'GET',
+        `/shifts/public-open?${q.toString()}`,
+        undefined,
+        {
+          requireAuth: false,
+          extraHeaders: pw ? { 'x-business-password': pw } : undefined,
+        },
+      ).catch(() => []);
     }
-    return await cloudJson('GET', '/shifts/open', undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => []);
+    return await cloudJson('GET', '/shifts/open', undefined, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    }).catch(() => []);
   }
   const open = await prisma.dayShift.findMany({ where: { closedAt: null } });
   return open.map((s: { openedById: number }) => s.openedById);
@@ -979,23 +1333,36 @@ ipcMain.handle('auth:syncStaffFromApi', async (_e, raw) => {
   if (await cloudEnabledButMissingBusinessCode()) return 0;
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) return 0;
-  const url: string = (raw?.url as string) || process.env.STAFF_API_URL || 'https:// Code Orbit-agroturizem.com/api/staff';
+  const url: string =
+    (raw?.url as string) ||
+    process.env.STAFF_API_URL ||
+    'https:// Code Orbit-agroturizem.com/api/staff';
   // Cache: skip network if synced within 10 minutes
-  const staffLast = await prisma.syncState.findUnique({ where: { key: 'staff:lastSync' } });
-  const staffTs = staffLast?.valueJson ? Number((staffLast.valueJson as any).ts) : 0;
+  const staffLast = await prisma.syncState.findUnique({
+    where: { key: 'staff:lastSync' },
+  });
+  const staffTs = staffLast?.valueJson
+    ? Number((staffLast.valueJson as any).ts)
+    : 0;
   if (Date.now() - staffTs < 10 * 60 * 1000) {
     const users = await prisma.user.findMany({});
     return users.length;
   }
   let res: any;
   try {
-    res = await fetch(url, { headers: { Accept: 'application/json' } as any } as any);
+    res = await fetch(url, {
+      headers: { Accept: 'application/json' } as any,
+    } as any);
   } catch {
     return (await prisma.user.count()) || 0; // network failure: silently fallback
   }
   if (!res.ok) {
     // Upstream 5xx: keep existing staff, update lastSync to avoid loops for a short period
-    await prisma.syncState.upsert({ where: { key: 'staff:lastSync' }, create: { key: 'staff:lastSync', valueJson: { ts: Date.now() } }, update: { valueJson: { ts: Date.now() } } });
+    await prisma.syncState.upsert({
+      where: { key: 'staff:lastSync' },
+      create: { key: 'staff:lastSync', valueJson: { ts: Date.now() } },
+      update: { valueJson: { ts: Date.now() } },
+    });
     return (await prisma.user.count()) || 0;
   }
   const body = await res.json();
@@ -1007,11 +1374,24 @@ ipcMain.handle('auth:syncStaffFromApi', async (_e, raw) => {
     const pin = String(s.posPin ?? '').trim();
     if (!pin) continue;
     const pinHash = await bcrypt.hash(pin, 10);
-    const existing = await prisma.user.findFirst({ where: { externalId: s.id } });
+    const existing = await prisma.user.findFirst({
+      where: { externalId: s.id },
+    });
     if (existing) {
-      await prisma.user.update({ where: { id: existing.id }, data: { displayName: fullName, pinHash, active: true } });
+      await prisma.user.update({
+        where: { id: existing.id },
+        data: { displayName: fullName, pinHash, active: true },
+      });
     } else {
-      await prisma.user.create({ data: { displayName: fullName || 'Staff', role: 'WAITER', pinHash, active: true, externalId: s.id } });
+      await prisma.user.create({
+        data: {
+          displayName: fullName || 'Staff',
+          role: 'WAITER',
+          pinHash,
+          active: true,
+          externalId: s.id,
+        },
+      });
     }
     count += 1;
   }
@@ -1025,13 +1405,25 @@ ipcMain.handle('auth:syncStaffFromApi', async (_e, raw) => {
 
 async function readSettings() {
   const base = await coreServices.readSettings();
-  const dbAreas = await prisma.area.findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } }).catch(() => []);
+  const dbAreas = await prisma.area
+    .findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } })
+    .catch(() => []);
   const tableAreas = (dbAreas as any[]).length
     ? (dbAreas as any[]).map((a) => ({ name: a.name, count: a.defaultCount }))
-    : base.tableAreas ?? [
-      { name: 'Main Hall', count: process.env.TABLE_COUNT_MAIN_HALL ? Number(process.env.TABLE_COUNT_MAIN_HALL) : 8 },
-      { name: 'Terrace', count: process.env.TABLE_COUNT_TERRACE ? Number(process.env.TABLE_COUNT_TERRACE) : 4 },
-    ];
+    : (base.tableAreas ?? [
+        {
+          name: 'Main Hall',
+          count: process.env.TABLE_COUNT_MAIN_HALL
+            ? Number(process.env.TABLE_COUNT_MAIN_HALL)
+            : 8,
+        },
+        {
+          name: 'Terrace',
+          count: process.env.TABLE_COUNT_TERRACE
+            ? Number(process.env.TABLE_COUNT_TERRACE)
+            : 4,
+        },
+      ]);
   const result: any = { ...base, tableAreas };
   // Never expose API secret to renderer
   if (result?.security && typeof result.security === 'object') {
@@ -1055,15 +1447,29 @@ ipcMain.handle('settings:update', async (_e, input) => {
   // This prevents saving wrong values and then having a confusing "no users" login screen.
   try {
     const envCloudUrl = String(process.env.POS_CLOUD_URL || '').trim();
-    const nextCodeRaw = String((input as any)?.cloud?.businessCode || '').trim();
-    const nextPwRaw = String((input as any)?.cloud?.accessPassword || '').trim();
+    const nextCodeRaw = String(
+      (input as any)?.cloud?.businessCode || '',
+    ).trim();
+    const nextPwRaw = String(
+      (input as any)?.cloud?.accessPassword || '',
+    ).trim();
     if (envCloudUrl && (nextCodeRaw || nextPwRaw)) {
-      const businessCode = nextCodeRaw.replace(/[^0-9A-Za-z_-]/g, '').toUpperCase().slice(0, 24);
+      const businessCode = nextCodeRaw
+        .replace(/[^0-9A-Za-z_-]/g, '')
+        .toUpperCase()
+        .slice(0, 24);
       if (!businessCode) throw new Error('Business code is required.');
-      if (nextPwRaw.length < 6) throw new Error('Business password is required (min 6 chars).');
+      if (nextPwRaw.length < 6)
+        throw new Error('Business password is required (min 6 chars).');
       // Verify against cloud by attempting to list users (admin must always exist for a tenant).
       const url = `${envCloudUrl.replace(/\/+$/g, '')}/auth/public-users?businessCode=${encodeURIComponent(businessCode)}&includeAdmins=1`;
-      const r = await fetch(url, { method: 'GET', headers: { Accept: 'application/json', 'x-business-password': nextPwRaw } as any } as any);
+      const r = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'x-business-password': nextPwRaw,
+        } as any,
+      } as any);
       const data = await r.json().catch(() => null);
       if (!r.ok || !Array.isArray(data) || data.length === 0) {
         throw new Error('Invalid Business code or Business password.');
@@ -1078,7 +1484,10 @@ ipcMain.handle('settings:update', async (_e, input) => {
   const merged = await coreServices.updateSettings(input);
   // Also reflect table areas into Area table if provided
   if (Array.isArray((input as any).tableAreas)) {
-    const areas = (input as any).tableAreas as { name: string; count: number }[];
+    const areas = (input as any).tableAreas as {
+      name: string;
+      count: number;
+    }[];
     for (let i = 0; i < areas.length; i++) {
       const a = areas[i];
       await prisma.area.upsert({
@@ -1089,7 +1498,10 @@ ipcMain.handle('settings:update', async (_e, input) => {
     }
     // Deactivate others not in list
     const names = areas.map((a) => a.name);
-    await prisma.area.updateMany({ where: { name: { notIn: names } }, data: { active: false } });
+    await prisma.area.updateMany({
+      where: { name: { notIn: names } },
+      data: { active: false },
+    });
   }
   return merged;
 });
@@ -1114,20 +1526,41 @@ ipcMain.handle('settings:setPrinter', async (_e, payload) => {
   const _ = SetPrinterInputSchema.parse(payload);
   const current = await readSettings();
   const merged = { ...current, printer: { ...current.printer, ..._ } } as any;
-  await prisma.syncState.upsert({ where: { key: 'settings' }, create: { key: 'settings', valueJson: merged }, update: { valueJson: merged } });
+  await prisma.syncState.upsert({
+    where: { key: 'settings' },
+    create: { key: 'settings', valueJson: merged },
+    update: { valueJson: merged },
+  });
   return merged;
 });
 
 ipcMain.handle('settings:testPrint', async () => {
   try {
     const settings = await readSettings();
-    const mode = (settings.printer?.mode || (settings.printer?.serialPath ? 'SERIAL' : settings.printer?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+    const mode = (settings.printer?.mode ||
+      (settings.printer?.serialPath
+        ? 'SERIAL'
+        : settings.printer?.deviceName
+          ? 'SYSTEM'
+          : 'NETWORK')) as any;
     if (mode === 'SYSTEM') {
       // Default ON: most receipt printers should receive raw ESC/POS (HTML/PostScript prints as "code")
       const raw = (settings.printer as any)?.systemRawEscpos !== false;
       if (raw) {
-        const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
-        const r = await sendToCupsRawPrinter({ deviceName: settings.printer?.deviceName, data });
+        const data = Buffer.from(
+          [
+            '\x1b@',
+            ' Code Orbit POS Test Print\n',
+            '-------------------------\n',
+            new Date().toISOString() + '\n\n',
+            '\x1dV\x41\x10',
+          ].join(''),
+          'binary',
+        );
+        const r = await sendToCupsRawPrinter({
+          deviceName: settings.printer?.deviceName,
+          data,
+        });
         return r.ok;
       } else {
         const html = buildHtmlReceipt(
@@ -1140,9 +1573,13 @@ ipcMain.handle('settings:testPrint', async () => {
             userName: 'POS',
             meta: { vatEnabled: true },
           },
-          settings as any
+          settings as any,
         );
-        const r = await printHtmlToSystemPrinter({ html, deviceName: settings.printer?.deviceName, silent: settings.printer?.silent !== false });
+        const r = await printHtmlToSystemPrinter({
+          html,
+          deviceName: settings.printer?.deviceName,
+          silent: settings.printer?.silent !== false,
+        });
         return r.ok;
       }
     }
@@ -1153,22 +1590,51 @@ ipcMain.handle('settings:testPrint', async () => {
         baudRate: Number((p as any).baudRate || 19200),
         dataBits: (Number((p as any).dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
         stopBits: (Number((p as any).stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-        parity: (String((p as any).parity || 'none') as any) as 'none' | 'even' | 'odd',
+        parity: String((p as any).parity || 'none') as any as
+          | 'none'
+          | 'even'
+          | 'odd',
       };
       if (!cfg.path) throw new Error('Serial port not configured');
-      const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+      const data = Buffer.from(
+        [
+          '\x1b@',
+          ' Code Orbit POS Test Print\n',
+          '-------------------------\n',
+          new Date().toISOString() + '\n\n',
+          '\x1dV\x41\x10',
+        ].join(''),
+        'binary',
+      );
       const { sendToSerialPrinter } = await import('./serial');
       const r = await sendToSerialPrinter(cfg as any, data);
       return r.ok;
     }
     const ip = process.env.PRINTER_IP || settings.printer?.ip;
-    const port = Number(process.env.PRINTER_PORT || settings.printer?.port || 9100);
+    const port = Number(
+      process.env.PRINTER_PORT || settings.printer?.port || 9100,
+    );
     if (!ip) throw new Error('Printer IP not configured');
-    const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+    const data = Buffer.from(
+      [
+        '\x1b@',
+        ' Code Orbit POS Test Print\n',
+        '-------------------------\n',
+        new Date().toISOString() + '\n\n',
+        '\x1dV\x41\x10',
+      ].join(''),
+      'binary',
+    );
     const r = await sendToPrinterVerbose(ip, port, data);
     if (!r.ok) {
       const c = classifyPrinterError(r.error);
-      broadcastPrinterEvent({ level: 'error', kind: c.kind, message: c.userMessage, detail: r.error, at: Date.now() });
+      broadcastPrinterEvent({
+        level: 'error',
+        kind: c.kind,
+        message: c.userMessage,
+        detail: r.error,
+        at: Date.now(),
+      });
     }
     return r.ok;
   } catch {
@@ -1179,14 +1645,33 @@ ipcMain.handle('settings:testPrint', async () => {
 ipcMain.handle('settings:testPrintVerbose', async () => {
   try {
     const settings = await readSettings();
-    const mode = (settings.printer?.mode || (settings.printer?.serialPath ? 'SERIAL' : settings.printer?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+    const mode = (settings.printer?.mode ||
+      (settings.printer?.serialPath
+        ? 'SERIAL'
+        : settings.printer?.deviceName
+          ? 'SYSTEM'
+          : 'NETWORK')) as any;
     if (mode === 'SYSTEM') {
       // Default ON: most receipt printers should receive raw ESC/POS (HTML/PostScript prints as "code")
       const raw = (settings.printer as any)?.systemRawEscpos !== false;
       if (raw) {
-        const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
-        const r = await sendToCupsRawPrinter({ deviceName: settings.printer?.deviceName, data });
-        return r.ok ? { ok: true } : { ok: false, error: r.error || 'CUPS raw print failed' };
+        const data = Buffer.from(
+          [
+            '\x1b@',
+            ' Code Orbit POS Test Print\n',
+            '-------------------------\n',
+            new Date().toISOString() + '\n\n',
+            '\x1dV\x41\x10',
+          ].join(''),
+          'binary',
+        );
+        const r = await sendToCupsRawPrinter({
+          deviceName: settings.printer?.deviceName,
+          data,
+        });
+        return r.ok
+          ? { ok: true }
+          : { ok: false, error: r.error || 'CUPS raw print failed' };
       } else {
         const html = buildHtmlReceipt(
           {
@@ -1198,10 +1683,16 @@ ipcMain.handle('settings:testPrintVerbose', async () => {
             userName: 'POS',
             meta: { vatEnabled: true },
           },
-          settings as any
+          settings as any,
         );
-        const r = await printHtmlToSystemPrinter({ html, deviceName: settings.printer?.deviceName, silent: settings.printer?.silent !== false });
-        return r.ok ? { ok: true } : { ok: false, error: r.error || 'System print failed' };
+        const r = await printHtmlToSystemPrinter({
+          html,
+          deviceName: settings.printer?.deviceName,
+          silent: settings.printer?.silent !== false,
+        });
+        return r.ok
+          ? { ok: true }
+          : { ok: false, error: r.error || 'System print failed' };
       }
     }
     if (mode === 'SERIAL') {
@@ -1211,24 +1702,62 @@ ipcMain.handle('settings:testPrintVerbose', async () => {
         baudRate: Number((p as any).baudRate || 19200),
         dataBits: (Number((p as any).dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
         stopBits: (Number((p as any).stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-        parity: (String((p as any).parity || 'none') as any) as 'none' | 'even' | 'odd',
+        parity: String((p as any).parity || 'none') as any as
+          | 'none'
+          | 'even'
+          | 'odd',
       };
       if (!cfg.path) return { ok: false, error: 'Serial port not configured' };
-      const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+      const data = Buffer.from(
+        [
+          '\x1b@',
+          ' Code Orbit POS Test Print\n',
+          '-------------------------\n',
+          new Date().toISOString() + '\n\n',
+          '\x1dV\x41\x10',
+        ].join(''),
+        'binary',
+      );
       const { sendToSerialPrinter } = await import('./serial');
       const r = await sendToSerialPrinter(cfg as any, data);
-      return r.ok ? { ok: true } : { ok: false, error: r.error || 'Serial print failed' };
+      return r.ok
+        ? { ok: true }
+        : { ok: false, error: r.error || 'Serial print failed' };
     }
     const ip = process.env.PRINTER_IP || settings.printer?.ip;
-    const port = Number(process.env.PRINTER_PORT || settings.printer?.port || 9100);
+    const port = Number(
+      process.env.PRINTER_PORT || settings.printer?.port || 9100,
+    );
     if (!ip) return { ok: false, error: 'Printer IP not configured' };
-    const data = Buffer.from(['\x1b@', ' Code Orbit POS Test Print\n', '-------------------------\n', new Date().toISOString() + '\n\n', '\x1dV\x41\x10'].join(''), 'binary');
+    const data = Buffer.from(
+      [
+        '\x1b@',
+        ' Code Orbit POS Test Print\n',
+        '-------------------------\n',
+        new Date().toISOString() + '\n\n',
+        '\x1dV\x41\x10',
+      ].join(''),
+      'binary',
+    );
     const r = await sendToPrinterVerbose(ip, port, data);
     if (!r.ok) {
       const c = classifyPrinterError(r.error);
-      broadcastPrinterEvent({ level: 'error', kind: c.kind, message: c.userMessage, detail: r.error, at: Date.now() });
+      broadcastPrinterEvent({
+        level: 'error',
+        kind: c.kind,
+        message: c.userMessage,
+        detail: r.error,
+        at: Date.now(),
+      });
     }
-    return r.ok ? { ok: true } : { ok: false, error: r.error || `Send failed (protocol ${process.env.PRINTER_PROTOCOL || (port === 515 ? 'LPR' : 'RAW')} to ${ip}:${port})` };
+    return r.ok
+      ? { ok: true }
+      : {
+          ok: false,
+          error:
+            r.error ||
+            `Send failed (protocol ${process.env.PRINTER_PROTOCOL || (port === 515 ? 'LPR' : 'RAW')} to ${ip}:${port})`,
+        };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Unknown error') };
   }
@@ -1277,18 +1806,31 @@ ipcMain.handle('billing:getStatus', async (_e) => {
     return { status: 'ACTIVE', billingEnabled: false };
   }
   try {
-    return await cloudJson('GET', '/billing/status', undefined, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson('GET', '/billing/status', undefined, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    });
   } catch (e: any) {
     // If the cloud is unreachable, don't hard-lock the POS; treat as active but surface message.
-    return { status: 'ACTIVE', billingEnabled: true, message: String(e?.message || 'Could not check billing status') };
+    return {
+      status: 'ACTIVE',
+      billingEnabled: true,
+      message: String(e?.message || 'Could not check billing status'),
+    };
   }
 });
 
 ipcMain.handle('billing:createCheckoutSession', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
-  if (!cloud) return { error: 'Cloud billing is not configured on this device' };
+  if (!cloud)
+    return { error: 'Cloud billing is not configured on this device' };
   try {
-    return await cloudJson('POST', '/admin/billing/create-checkout', {}, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson(
+      'POST',
+      '/admin/billing/create-checkout',
+      {},
+      { requireAuth: true, senderId: _e.sender.id },
+    );
   } catch (e: any) {
     return { error: String(e?.message || 'Could not create checkout session') };
   }
@@ -1296,9 +1838,15 @@ ipcMain.handle('billing:createCheckoutSession', async (_e) => {
 
 ipcMain.handle('billing:createPortalSession', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
-  if (!cloud) return { error: 'Cloud billing is not configured on this device' };
+  if (!cloud)
+    return { error: 'Cloud billing is not configured on this device' };
   try {
-    return await cloudJson('POST', '/admin/billing/create-portal', {}, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson(
+      'POST',
+      '/admin/billing/create-portal',
+      {},
+      { requireAuth: true, senderId: _e.sender.id },
+    );
   } catch (e: any) {
     return { error: String(e?.message || 'Could not create portal session') };
   }
@@ -1328,7 +1876,12 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     const idem = `print:${Date.now()}:${Math.random().toString(16).slice(2)}`;
     let status: 'SENT' | 'FAILED' | 'QUEUED' = 'SENT';
     try {
-      await cloudJson('POST', '/print-jobs/enqueue', { type: 'RECEIPT', payload, recordOnly, idempotencyKey: idem }, { requireAuth: true, senderId: _e.sender.id });
+      await cloudJson(
+        'POST',
+        '/print-jobs/enqueue',
+        { type: 'RECEIPT', payload, recordOnly, idempotencyKey: idem },
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         status = 'QUEUED';
@@ -1345,7 +1898,13 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     }
     // Also store a local PrintJob snapshot for history/reports even in cloud mode.
     try {
-      await prisma.printJob.create({ data: { type: 'RECEIPT' as any, payloadJson: payload, status: status as any } });
+      await prisma.printJob.create({
+        data: {
+          type: 'RECEIPT' as any,
+          payloadJson: payload,
+          status: status as any,
+        },
+      });
     } catch {
       // ignore
     }
@@ -1367,9 +1926,16 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     const kind = String(meta?.kind || '');
     const userId = Number(meta?.userId || 0);
     const discountAmt = Number(meta?.discountAmount || 0);
-    if (kind === 'PAYMENT' && userId && Number.isFinite(discountAmt) && discountAmt > 0) {
+    if (
+      kind === 'PAYMENT' &&
+      userId &&
+      Number.isFinite(discountAmt) &&
+      discountAmt > 0
+    ) {
       const before = Number(meta?.totalBefore ?? meta?.total ?? 0);
-      const after = Number(meta?.totalAfter ?? Math.max(0, before - discountAmt));
+      const after = Number(
+        meta?.totalAfter ?? Math.max(0, before - discountAmt),
+      );
       const dtype = String(meta?.discountType || '').toUpperCase();
       const dval = meta?.discountValue;
       const dLabel =
@@ -1387,10 +1953,25 @@ ipcMain.handle('tickets:print', async (_e, input) => {
         `${reason ? ` · reason: ${reason}` : ''}` +
         `${approvedBy ? ` · approved by: ${approvedBy}` : ' · NO MANAGER APPROVAL'}`;
       // Notify actor + all admins
-      await prisma.notification.create({ data: { userId, type: 'OTHER' as any, message: msg } as any });
-      const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true }, select: { id: true } } as any).catch(() => []);
+      await prisma.notification.create({
+        data: { userId, type: 'OTHER' as any, message: msg } as any,
+      });
+      const admins = await prisma.user
+        .findMany({
+          where: { role: 'ADMIN', active: true },
+          select: { id: true },
+        } as any)
+        .catch(() => []);
       for (const a of admins as any[]) {
-        await prisma.notification.create({ data: { userId: Number(a.id), type: 'OTHER' as any, message: msg } as any }).catch(() => {});
+        await prisma.notification
+          .create({
+            data: {
+              userId: Number(a.id),
+              type: 'OTHER' as any,
+              message: msg,
+            } as any,
+          })
+          .catch(() => {});
       }
     }
   } catch {
@@ -1399,7 +1980,13 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   // recordOnly = store receipt snapshot for history without printing.
   if (recordOnly) {
     try {
-      await prisma.printJob.create({ data: { type: 'RECEIPT' as any, payloadJson: payload, status: 'SENT' as any } });
+      await prisma.printJob.create({
+        data: {
+          type: 'RECEIPT' as any,
+          payloadJson: payload,
+          status: 'SENT' as any,
+        },
+      });
       return true;
     } catch {
       return false;
@@ -1411,11 +1998,21 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     const arr = Array.isArray(s?.printers) ? s.printers : [];
     if (arr.length) return arr;
     const legacy = s?.printer;
-    if (legacy && Object.keys(legacy).length) return [{ id: 'default', name: 'Default printer', enabled: true, ...(legacy || {}) }];
+    if (legacy && Object.keys(legacy).length)
+      return [
+        {
+          id: 'default',
+          name: 'Default printer',
+          enabled: true,
+          ...(legacy || {}),
+        },
+      ];
     return [];
   };
   const pickProfile = (s: any, printerId?: string | null) => {
-    const profiles = normalizeProfiles(s).filter((p: any) => p && p.enabled !== false);
+    const profiles = normalizeProfiles(s).filter(
+      (p: any) => p && p.enabled !== false,
+    );
     if (!profiles.length) return null;
     if (printerId) {
       const hit = profiles.find((p: any) => String(p.id) === String(printerId));
@@ -1424,24 +2021,43 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     return profiles[0] || null;
   };
   const printWithProfile = async (printerProfile: any, pld: any) => {
-    const mode = (printerProfile?.mode || (printerProfile?.serialPath ? 'SERIAL' : printerProfile?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
+    const mode = (printerProfile?.mode ||
+      (printerProfile?.serialPath
+        ? 'SERIAL'
+        : printerProfile?.deviceName
+          ? 'SYSTEM'
+          : 'NETWORK')) as any;
     if (mode === 'SYSTEM') {
       const raw = printerProfile?.systemRawEscpos !== false;
       if (raw) {
         const data = buildEscposTicket(pld, settings as any);
-        return await sendToCupsRawPrinter({ deviceName: printerProfile?.deviceName, data });
+        return await sendToCupsRawPrinter({
+          deviceName: printerProfile?.deviceName,
+          data,
+        });
       } else {
         const html = buildHtmlReceipt(pld, settings as any);
-        return await printHtmlToSystemPrinter({ html, deviceName: printerProfile?.deviceName, silent: printerProfile?.silent !== false });
+        return await printHtmlToSystemPrinter({
+          html,
+          deviceName: printerProfile?.deviceName,
+          silent: printerProfile?.silent !== false,
+        });
       }
     }
     if (mode === 'SERIAL') {
       const cfg = {
         path: String(printerProfile?.serialPath || ''),
         baudRate: Number(printerProfile?.baudRate || 19200),
-        dataBits: (Number(printerProfile?.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
-        stopBits: (Number(printerProfile?.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-        parity: (String(printerProfile?.parity || 'none') as any) as 'none' | 'even' | 'odd',
+        dataBits: (Number(printerProfile?.dataBits || 8) === 7 ? 7 : 8) as
+          | 7
+          | 8,
+        stopBits: (Number(printerProfile?.stopBits || 1) === 2 ? 2 : 1) as
+          | 1
+          | 2,
+        parity: String(printerProfile?.parity || 'none') as any as
+          | 'none'
+          | 'even'
+          | 'odd',
       };
       if (!cfg.path) return { ok: false, error: 'Serial port not configured' };
       const data = buildEscposTicket(pld, settings as any);
@@ -1449,16 +2065,22 @@ ipcMain.handle('tickets:print', async (_e, input) => {
       return await sendToSerialPrinter(cfg as any, data);
     }
     const ip = process.env.PRINTER_IP || printerProfile?.ip;
-    const port = Number(process.env.PRINTER_PORT || printerProfile?.port || 9100);
+    const port = Number(
+      process.env.PRINTER_PORT || printerProfile?.port || 9100,
+    );
     if (!ip) return { ok: false, error: 'Printer IP not configured' };
     const data = buildEscposTicket(pld, settings as any);
     const r = await sendToPrinterVerbose(ip, port, data);
-    return r.ok ? { ok: true } : { ok: false, error: r.error || `Send failed (to ${ip}:${port})` };
+    return r.ok
+      ? { ok: true }
+      : { ok: false, error: r.error || `Send failed (to ${ip}:${port})` };
   };
 
   const routingEnabled = Boolean((settings as any)?.printerRouting?.enabled);
-  const receiptPrinterId = (settings as any)?.printerRouting?.receiptPrinterId || 'default';
-  const receiptProfile = pickProfile(settings, receiptPrinterId) || pickProfile(settings, 'default');
+  const receiptPrinterId =
+    (settings as any)?.printerRouting?.receiptPrinterId || 'default';
+  const receiptProfile =
+    pickProfile(settings, receiptPrinterId) || pickProfile(settings, 'default');
   if (!receiptProfile) return false;
 
   const kind = String((payload as any)?.meta?.kind || '').toUpperCase();
@@ -1468,30 +2090,60 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   if (routingEnabled && kind === 'ORDER') {
     const routing = (settings as any)?.printerRouting || {};
     const stationRouting = (routing?.station || {}) as any;
-    const categoryRouting = (routing?.categories || {}) as Record<string, string>;
+    const categoryRouting = (routing?.categories || {}) as Record<
+      string,
+      string
+    >;
     const normKey = (s: any) =>
       String(s ?? '')
         .trim()
         .toLowerCase();
-    const skus = Array.from(new Set(items.map((it) => String(it?.sku || '')).filter(Boolean)));
+    const skus = Array.from(
+      new Set(items.map((it) => String(it?.sku || '')).filter(Boolean)),
+    );
     const menu = skus.length
-      ? await prisma.menuItem.findMany({ where: { sku: { in: skus } }, select: { sku: true, station: true, categoryId: true } } as any).catch(() => [])
+      ? await prisma.menuItem
+          .findMany({
+            where: { sku: { in: skus } },
+            select: { sku: true, station: true, categoryId: true },
+          } as any)
+          .catch(() => [])
       : [];
     const bySku = new Map<string, { station?: string; categoryId?: number }>();
-    for (const m of menu as any[]) bySku.set(String(m.sku), { station: String(m.station || ''), categoryId: Number(m.categoryId) });
+    for (const m of menu as any[])
+      bySku.set(String(m.sku), {
+        station: String(m.station || ''),
+        categoryId: Number(m.categoryId),
+      });
 
     const buckets = new Map<string, any[]>();
     for (const it of items) {
       const sku = String(it?.sku || '');
       const info = sku ? bySku.get(sku) : undefined;
-      const categoryId = Number.isFinite(Number((it as any)?.categoryId)) ? Number((it as any).categoryId) : info?.categoryId;
-      const categoryKey = categoryId != null && Number.isFinite(categoryId) ? String(categoryId) : '';
+      const categoryId = Number.isFinite(Number((it as any)?.categoryId))
+        ? Number((it as any).categoryId)
+        : info?.categoryId;
+      const categoryKey =
+        categoryId != null && Number.isFinite(categoryId)
+          ? String(categoryId)
+          : '';
       const categoryNameKey = normKey((it as any)?.categoryName);
-      const printerIdByCategoryName = categoryNameKey && categoryRouting[categoryNameKey] ? categoryRouting[categoryNameKey] : '';
-      const printerIdByCategoryId = categoryKey && categoryRouting[categoryKey] ? categoryRouting[categoryKey] : '';
-      const printerIdByCategory = printerIdByCategoryName || printerIdByCategoryId;
-      const station = (String((it as any)?.station || info?.station || 'KITCHEN').toUpperCase() as any) || 'KITCHEN';
-      const printerIdByStation = stationRouting?.[station] || stationRouting?.ALL || '';
+      const printerIdByCategoryName =
+        categoryNameKey && categoryRouting[categoryNameKey]
+          ? categoryRouting[categoryNameKey]
+          : '';
+      const printerIdByCategoryId =
+        categoryKey && categoryRouting[categoryKey]
+          ? categoryRouting[categoryKey]
+          : '';
+      const printerIdByCategory =
+        printerIdByCategoryName || printerIdByCategoryId;
+      const station =
+        (String(
+          (it as any)?.station || info?.station || 'KITCHEN',
+        ).toUpperCase() as any) || 'KITCHEN';
+      const printerIdByStation =
+        stationRouting?.[station] || stationRouting?.ALL || '';
       const printerId = printerIdByCategory || printerIdByStation || '';
       const groupKey = printerIdByCategory
         ? `CAT:${categoryNameKey || categoryKey || 'unknown'}`
@@ -1505,12 +2157,24 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     for (const [key, groupItems] of buckets.entries()) {
       const [printerId, group] = key.split('|');
       const prof = pickProfile(settings, printerId) || receiptProfile;
-      const routeLabel = String(group || '').startsWith('CAT:') ? String(group).slice(4) : String(group || '').startsWith('ST:') ? String(group).slice(3) : '';
-      const st = String(group || '').startsWith('ST:') ? String(group).slice(3) : 'ALL';
+      const routeLabel = String(group || '').startsWith('CAT:')
+        ? String(group).slice(4)
+        : String(group || '').startsWith('ST:')
+          ? String(group).slice(3)
+          : '';
+      const st = String(group || '').startsWith('ST:')
+        ? String(group).slice(3)
+        : 'ALL';
       const pld = {
         ...payload,
         items: groupItems,
-        meta: { ...((payload as any)?.meta || {}), kind: 'ORDER', station: st, hidePrices: true, routeLabel },
+        meta: {
+          ...((payload as any)?.meta || {}),
+          kind: 'ORDER',
+          station: st,
+          hidePrices: true,
+          routeLabel,
+        },
       };
       const r = await printWithProfile(prof, pld);
       if (!r.ok) {
@@ -1543,8 +2207,13 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     try {
       const uid = Number((payload as any)?.meta?.userId || 0);
       if (uid) {
-        const msg = failCount > 1 ? `${c.userMessage} (${failCount} print jobs failed)` : c.userMessage;
-        await prisma.notification.create({ data: { userId: uid, type: 'OTHER' as any, message: msg } as any });
+        const msg =
+          failCount > 1
+            ? `${c.userMessage} (${failCount} print jobs failed)`
+            : c.userMessage;
+        await prisma.notification.create({
+          data: { userId: uid, type: 'OTHER' as any, message: msg } as any,
+        });
       }
     } catch {
       // ignore
@@ -1552,7 +2221,13 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   }
   // Also store a PrintJob record (useful for receipt history)
   try {
-    await prisma.printJob.create({ data: { type: 'RECEIPT' as any, payloadJson: payload, status: ok ? ('SENT' as any) : ('FAILED' as any) } });
+    await prisma.printJob.create({
+      data: {
+        type: 'RECEIPT' as any,
+        payloadJson: payload,
+        status: ok ? ('SENT' as any) : ('FAILED' as any),
+      },
+    });
   } catch {
     // ignore
   }
@@ -1566,52 +2241,99 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
   if (!userId) return [];
   const listLocal = async () => {
     const [openRow, atRow] = await Promise.all([
-      prisma.syncState.findUnique({ where: { key: 'tables:open' } }).catch(() => null),
-      prisma.syncState.findUnique({ where: { key: 'tables:openAt' } }).catch(() => null),
+      prisma.syncState
+        .findUnique({ where: { key: 'tables:open' } })
+        .catch(() => null),
+      prisma.syncState
+        .findUnique({ where: { key: 'tables:openAt' } })
+        .catch(() => null),
     ]);
-    const openMap = ((openRow?.valueJson as any) || {}) as Record<string, boolean>;
+    const openMap = ((openRow?.valueJson as any) || {}) as Record<
+      string,
+      boolean
+    >;
     const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-    const openKeys = Object.entries(openMap).filter(([, v]) => Boolean(v)).map(([k]) => k);
+    const openKeys = Object.entries(openMap)
+      .filter(([, v]) => Boolean(v))
+      .map(([k]) => k);
 
-    const tickets = await Promise.all(openKeys.map(async (k) => {
-      const [area, tableLabel] = k.split(':');
-      if (!area || !tableLabel) return null;
-      const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } }).catch(() => null);
-      if (!last || Number(last.userId) !== Number(userId)) return null;
-      const sinceIso = atMap[k];
-      const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-      const since = sinceParsed && Number.isFinite(sinceParsed.getTime()) ? sinceParsed : null;
-      const where: any = { area, tableLabel };
-      if (since) where.createdAt = { gte: since };
-      const [rows, coversRow, u] = await Promise.all([
-        prisma.ticketLog.findMany({ where, orderBy: { createdAt: 'asc' } }).catch(() => [] as any[]),
-        prisma.covers.findFirst({ where: { area, label: tableLabel, ...(since ? { createdAt: { gte: since } as any } : {}) }, orderBy: { id: 'desc' } } as any).catch(() => null),
-        prisma.user.findUnique({ where: { id: last.userId } }).catch(() => null),
-      ]);
-      const itemsAll = rows.flatMap((r: any) => (Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : []));
-      const items = itemsAll.filter((it: any) => !it?.voided);
-      const subtotal = items.reduce((s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1), 0);
-      // ACTIVE tickets are not "paid", so we don't have a meta.vatEnabled; use item vatRates.
-      const vat = items.reduce((s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1) * Number(it.vatRate || 0), 0);
-      return {
-        kind: 'ACTIVE',
-        area,
-        tableLabel,
-        createdAt: (since ? since.toISOString() : last.createdAt.toISOString()),
-        paidAt: null,
-        covers: coversRow?.covers ?? (last.covers ?? null),
-        note: (rows.find((r: any) => r.note)?.note ?? last.note ?? null),
-        userName: u?.displayName ?? null,
-        paymentMethod: null,
-        vatEnabled: null,
-        items,
-        subtotal,
-        vat,
-        total: subtotal + vat,
-      } as any;
-    }));
+    const tickets = await Promise.all(
+      openKeys.map(async (k) => {
+        const [area, tableLabel] = k.split(':');
+        if (!area || !tableLabel) return null;
+        const last = await prisma.ticketLog
+          .findFirst({
+            where: { area, tableLabel },
+            orderBy: { createdAt: 'desc' },
+          })
+          .catch(() => null);
+        if (!last || Number(last.userId) !== Number(userId)) return null;
+        const sinceIso = atMap[k];
+        const sinceParsed = sinceIso ? new Date(sinceIso) : null;
+        const since =
+          sinceParsed && Number.isFinite(sinceParsed.getTime())
+            ? sinceParsed
+            : null;
+        const where: any = { area, tableLabel };
+        if (since) where.createdAt = { gte: since };
+        const [rows, coversRow, u] = await Promise.all([
+          prisma.ticketLog
+            .findMany({ where, orderBy: { createdAt: 'asc' } })
+            .catch(() => [] as any[]),
+          prisma.covers
+            .findFirst({
+              where: {
+                area,
+                label: tableLabel,
+                ...(since ? { createdAt: { gte: since } as any } : {}),
+              },
+              orderBy: { id: 'desc' },
+            } as any)
+            .catch(() => null),
+          prisma.user
+            .findUnique({ where: { id: last.userId } })
+            .catch(() => null),
+        ]);
+        const itemsAll = rows.flatMap((r: any) =>
+          Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [],
+        );
+        const items = itemsAll.filter((it: any) => !it?.voided);
+        const subtotal = items.reduce(
+          (s: number, it: any) =>
+            s + Number(it.unitPrice || 0) * Number(it.qty || 1),
+          0,
+        );
+        // ACTIVE tickets are not "paid", so we don't have a meta.vatEnabled; use item vatRates.
+        const vat = items.reduce(
+          (s: number, it: any) =>
+            s +
+            Number(it.unitPrice || 0) *
+              Number(it.qty || 1) *
+              Number(it.vatRate || 0),
+          0,
+        );
+        return {
+          kind: 'ACTIVE',
+          area,
+          tableLabel,
+          createdAt: since ? since.toISOString() : last.createdAt.toISOString(),
+          paidAt: null,
+          covers: coversRow?.covers ?? last.covers ?? null,
+          note: rows.find((r: any) => r.note)?.note ?? last.note ?? null,
+          userName: u?.displayName ?? null,
+          paymentMethod: null,
+          vatEnabled: null,
+          items,
+          subtotal,
+          vat,
+          total: subtotal + vat,
+        } as any;
+      }),
+    );
 
-    return (tickets.filter(Boolean) as any[]).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    return (tickets.filter(Boolean) as any[]).sort((a, b) =>
+      String(b.createdAt).localeCompare(String(a.createdAt)),
+    );
   };
 
   const cloud = await getCloudConfig().catch(() => null);
@@ -1619,7 +2341,10 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
     if (!hasCloudSession(cloud.businessCode)) return [];
     // Cloud server may be older and not have these endpoints yet. Fall back to local computation on 404.
     try {
-      return await cloudJson('GET', '/reports/my/active-tickets', undefined, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson('GET', '/reports/my/active-tickets', undefined, {
+        requireAuth: true,
+        senderId: _e.sender.id,
+      });
     } catch (e: any) {
       const msg = String(e?.message || e || '');
       if (msg.toLowerCase().includes('not found')) return await listLocal();
@@ -1633,16 +2358,20 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
 ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
   if (await cloudEnabledButMissingBusinessCode()) return [];
   const userId = Number(input?.userId || 0);
-  const q = String(input?.q || '').trim().toLowerCase();
+  const q = String(input?.q || '')
+    .trim()
+    .toLowerCase();
   const limit = Math.min(200, Math.max(1, Number(input?.limit || 40)));
   if (!userId) return [];
 
   const listLocal = async () => {
-    const jobs = await prisma.printJob.findMany({
-      where: { type: 'RECEIPT' as any },
-      orderBy: { createdAt: 'desc' },
-      take: 500,
-    }).catch(() => []);
+    const jobs = await prisma.printJob
+      .findMany({
+        where: { type: 'RECEIPT' as any },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      })
+      .catch(() => []);
 
     const out: any[] = [];
     for (const j of jobs as any[]) {
@@ -1658,9 +2387,22 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
       const userName = p.userName ?? null;
       const paymentMethod = (meta.method ?? null) as any;
       const paidAt = meta.paidAt ?? j.createdAt.toISOString();
-      const subtotal = items.reduce((s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1), 0);
+      const subtotal = items.reduce(
+        (s: number, it: any) =>
+          s + Number(it.unitPrice || 0) * Number(it.qty || 1),
+        0,
+      );
       const vatEnabled = meta?.vatEnabled !== false;
-      const vat = vatEnabled ? items.reduce((s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1) * Number(it.vatRate || 0), 0) : 0;
+      const vat = vatEnabled
+        ? items.reduce(
+            (s: number, it: any) =>
+              s +
+              Number(it.unitPrice || 0) *
+                Number(it.qty || 1) *
+                Number(it.vatRate || 0),
+            0,
+          )
+        : 0;
       const serviceChargeEnabled = (meta.serviceChargeEnabled ?? null) as any;
       const serviceChargeApplied = (meta.serviceChargeApplied ?? null) as any;
       const serviceChargeMode = (meta.serviceChargeMode ?? null) as any;
@@ -1672,13 +2414,17 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
       const discountReason = (meta.discountReason ?? null) as any;
       const fallbackTotal = Math.max(
         0,
-        subtotal + vat +
+        subtotal +
+          vat +
           (Number.isFinite(serviceChargeAmount) ? serviceChargeAmount : 0) -
           (Number.isFinite(discountAmount) ? discountAmount : 0),
       );
       const totalAfter = Number(meta.totalAfter);
-      const total = Number.isFinite(totalAfter) ? Math.max(0, totalAfter) : fallbackTotal;
-      const hay = `${area} ${tableLabel} ${String(userName || '')} ${items.map((it: any) => it.name).join(' ')}`.toLowerCase();
+      const total = Number.isFinite(totalAfter)
+        ? Math.max(0, totalAfter)
+        : fallbackTotal;
+      const hay =
+        `${area} ${tableLabel} ${String(userName || '')} ${items.map((it: any) => it.name).join(' ')}`.toLowerCase();
       if (q && !hay.includes(q)) continue;
       out.push({
         kind: 'PAID',
@@ -1695,7 +2441,9 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
         serviceChargeApplied,
         serviceChargeMode,
         serviceChargeValue,
-        serviceChargeAmount: Number.isFinite(serviceChargeAmount) ? serviceChargeAmount : null,
+        serviceChargeAmount: Number.isFinite(serviceChargeAmount)
+          ? serviceChargeAmount
+          : null,
         discountType,
         discountValue,
         discountAmount: Number.isFinite(discountAmount) ? discountAmount : null,
@@ -1720,7 +2468,12 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
     if (q) qs.set('q', q);
     qs.set('limit', String(limit));
     try {
-      return await cloudJson('GET', `/reports/my/paid-tickets?${qs.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson(
+        'GET',
+        `/reports/my/paid-tickets?${qs.toString()}`,
+        undefined,
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       const msg = String(e?.message || e || '');
       if (msg.toLowerCase().includes('not found')) return await listLocal();
@@ -1746,20 +2499,31 @@ ipcMain.handle('tables:setOpen', async (_e, input) => {
     try {
       await coreServices.setTableOpen(area, label, open);
       const keyAt = 'tables:openAt';
-      const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } });
+      const atRow = await prisma.syncState.findUnique({
+        where: { key: keyAt },
+      });
       const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
       if (open) {
         if (!atMap[kKey]) atMap[kKey] = new Date().toISOString();
       } else {
         delete atMap[kKey];
       }
-      await prisma.syncState.upsert({ where: { key: keyAt }, create: { key: keyAt, valueJson: atMap }, update: { valueJson: atMap } });
+      await prisma.syncState.upsert({
+        where: { key: keyAt },
+        create: { key: keyAt, valueJson: atMap },
+        update: { valueJson: atMap },
+      });
     } catch {
       // ignore
     }
     // Best-effort cloud sync (older servers may not support it). If offline, queue and return optimistic success.
     try {
-      return await cloudJson('POST', '/tables/open', { area, label, open }, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson(
+        'POST',
+        '/tables/open',
+        { area, label, open },
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         await enqueueOutbox({
@@ -1787,7 +2551,11 @@ ipcMain.handle('tables:setOpen', async (_e, input) => {
   } else {
     delete atMap[kKey];
   }
-  await prisma.syncState.upsert({ where: { key: keyAt }, create: { key: keyAt, valueJson: atMap }, update: { valueJson: atMap } });
+  await prisma.syncState.upsert({
+    where: { key: keyAt },
+    create: { key: keyAt, valueJson: atMap },
+    update: { valueJson: atMap },
+  });
 
   // If a table is being closed, also close the active KDS order (if any).
   if (!open) {
@@ -1797,7 +2565,10 @@ ipcMain.handle('tables:setOpen', async (_e, input) => {
         orderBy: { openedAt: 'desc' },
       });
       if (active) {
-        await (prisma as any).kdsOrder.update({ where: { id: active.id }, data: { closedAt: new Date() } });
+        await (prisma as any).kdsOrder.update({
+          where: { id: active.id },
+          data: { closedAt: new Date() },
+        });
       }
     } catch {
       // ignore if KDS tables are not migrated yet
@@ -1811,8 +2582,13 @@ ipcMain.handle('tables:listOpen', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     const keyClosedOverride = 'tables:closedOverride';
-    const closedRow = await prisma.syncState.findUnique({ where: { key: keyClosedOverride } }).catch(() => null);
-    const closedOverride = ((closedRow?.valueJson as any) || {}) as Record<string, string>;
+    const closedRow = await prisma.syncState
+      .findUnique({ where: { key: keyClosedOverride } })
+      .catch(() => null);
+    const closedOverride = ((closedRow?.valueJson as any) || {}) as Record<
+      string,
+      string
+    >;
     const now = Date.now();
     // Cleanup old overrides (> 7 days)
     try {
@@ -1825,13 +2601,20 @@ ipcMain.handle('tables:listOpen', async (_e) => {
         }
       }
       if (changed) {
-        await prisma.syncState.upsert({ where: { key: keyClosedOverride }, create: { key: keyClosedOverride, valueJson: closedOverride }, update: { valueJson: closedOverride } }).catch(() => null);
+        await prisma.syncState
+          .upsert({
+            where: { key: keyClosedOverride },
+            create: { key: keyClosedOverride, valueJson: closedOverride },
+            update: { valueJson: closedOverride },
+          })
+          .catch(() => null);
       }
     } catch {
       // ignore
     }
 
-    const isOverridden = (area: string, label: string) => Boolean(closedOverride[`${area}:${label}`]);
+    const isOverridden = (area: string, label: string) =>
+      Boolean(closedOverride[`${area}:${label}`]);
 
     // If cloud session is missing, fall back to local open map (offline-friendly).
     if (!hasCloudSession(cloud.businessCode)) {
@@ -1844,16 +2627,27 @@ ipcMain.handle('tables:listOpen', async (_e) => {
           const [area, label] = k.split(':');
           return { area, label };
         })
-        .filter((t) => !isOverridden(String(t.area || ''), String(t.label || '')));
+        .filter(
+          (t) => !isOverridden(String(t.area || ''), String(t.label || '')),
+        );
     }
 
-    const cloudOpen = await cloudJson('GET', '/tables/open', undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => []);
+    const cloudOpen = await cloudJson('GET', '/tables/open', undefined, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    }).catch(() => []);
     // Filter out force-closed overrides (auto-void etc) until cloud catches up.
-    const filtered = (Array.isArray(cloudOpen) ? cloudOpen : []).filter((t: any) => !isOverridden(String(t?.area || ''), String(t?.label || '')));
+    const filtered = (Array.isArray(cloudOpen) ? cloudOpen : []).filter(
+      (t: any) => !isOverridden(String(t?.area || ''), String(t?.label || '')),
+    );
 
     // If cloud no longer reports a table open, remove override entry (cloud caught up).
     try {
-      const cloudKeys = new Set((Array.isArray(cloudOpen) ? cloudOpen : []).map((t: any) => `${String(t?.area || '')}:${String(t?.label || '')}`));
+      const cloudKeys = new Set(
+        (Array.isArray(cloudOpen) ? cloudOpen : []).map(
+          (t: any) => `${String(t?.area || '')}:${String(t?.label || '')}`,
+        ),
+      );
       let changed = false;
       for (const k of Object.keys(closedOverride)) {
         if (!cloudKeys.has(k)) {
@@ -1862,7 +2656,13 @@ ipcMain.handle('tables:listOpen', async (_e) => {
         }
       }
       if (changed) {
-        await prisma.syncState.upsert({ where: { key: keyClosedOverride }, create: { key: keyClosedOverride, valueJson: closedOverride }, update: { valueJson: closedOverride } }).catch(() => null);
+        await prisma.syncState
+          .upsert({
+            where: { key: keyClosedOverride },
+            create: { key: keyClosedOverride, valueJson: closedOverride },
+            update: { valueJson: closedOverride },
+          })
+          .catch(() => null);
       }
     } catch {
       // ignore
@@ -1883,7 +2683,8 @@ ipcMain.handle('tables:listOpen', async (_e) => {
 
 ipcMain.handle('tables:transfer', async (_e, payload) => {
   try {
-    if (await cloudEnabledButMissingBusinessCode()) return { ok: false, error: 'Cloud config incomplete' };
+    if (await cloudEnabledButMissingBusinessCode())
+      return { ok: false, error: 'Cloud config incomplete' };
     const input = TransferTableInputSchema.parse(payload);
     // NOTE: In cloud mode, table/ticket ownership is still mirrored locally for offline and LAN UI.
     // We implement transfer locally; cloud sync can be added later if needed.
@@ -1901,17 +2702,30 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
   if (cloud) {
     const cacheKey = 'cloud:menuCache';
     const readCache = async () => {
-      const row = await prisma.syncState.findUnique({ where: { key: cacheKey } }).catch(() => null);
+      const row = await prisma.syncState
+        .findUnique({ where: { key: cacheKey } })
+        .catch(() => null);
       const v: any = (row?.valueJson as any) || null;
-      const cats = Array.isArray(v?.categories) ? v.categories : (Array.isArray(v) ? v : []);
+      const cats = Array.isArray(v?.categories)
+        ? v.categories
+        : Array.isArray(v)
+          ? v
+          : [];
       return Array.isArray(cats) ? cats : [];
     };
     const writeCache = async (categories: any[]) => {
-      await prisma.syncState.upsert({
-        where: { key: cacheKey },
-        create: { key: cacheKey, valueJson: { savedAt: new Date().toISOString(), categories } },
-        update: { valueJson: { savedAt: new Date().toISOString(), categories } },
-      }).catch(() => null);
+      await prisma.syncState
+        .upsert({
+          where: { key: cacheKey },
+          create: {
+            key: cacheKey,
+            valueJson: { savedAt: new Date().toISOString(), categories },
+          },
+          update: {
+            valueJson: { savedAt: new Date().toISOString(), categories },
+          },
+        })
+        .catch(() => null);
     };
     const mergeMissingFromCache = (fresh: any[], cached: any[]) => {
       const freshCats = Array.isArray(fresh) ? fresh : [];
@@ -1920,19 +2734,30 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
       for (const c of freshCats) {
         const id = Number((c as any)?.id || 0);
         if (!id) continue;
-        byCatId.set(id, { ...c, items: Array.isArray((c as any).items) ? [...(c as any).items] : [] });
+        byCatId.set(id, {
+          ...c,
+          items: Array.isArray((c as any).items) ? [...(c as any).items] : [],
+        });
       }
       // Track all items returned by cloud so we don't duplicate
       const presentItemIds = new Set<number>();
       for (const c of byCatId.values()) {
-        for (const it of (c.items || [])) presentItemIds.add(Number((it as any)?.id || 0));
+        for (const it of c.items || [])
+          presentItemIds.add(Number((it as any)?.id || 0));
       }
       // If cloud endpoint still filters inactive items, keep previously-seen inactive items from cache
       for (const c of cachedCats) {
         const catId = Number((c as any)?.id || 0);
         if (!catId) continue;
-        const cachedItems: any[] = Array.isArray((c as any)?.items) ? (c as any).items : [];
-        const missing = cachedItems.filter((it) => Boolean(it) && (it as any).active === false && !presentItemIds.has(Number((it as any)?.id || 0)));
+        const cachedItems: any[] = Array.isArray((c as any)?.items)
+          ? (c as any).items
+          : [];
+        const missing = cachedItems.filter(
+          (it) =>
+            Boolean(it) &&
+            (it as any).active === false &&
+            !presentItemIds.has(Number((it as any)?.id || 0)),
+        );
         if (!missing.length) continue;
         const target = byCatId.get(catId) ?? { ...c, items: [] };
         target.items = Array.isArray(target.items) ? target.items : [];
@@ -1942,21 +2767,32 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
       const merged = Array.from(byCatId.values());
       for (const c of merged) {
         if (Array.isArray((c as any).items)) {
-          (c as any).items.sort((a: any, b: any) => String(a?.name || '').localeCompare(String(b?.name || '')));
+          (c as any).items.sort((a: any, b: any) =>
+            String(a?.name || '').localeCompare(String(b?.name || '')),
+          );
         }
       }
       return merged;
     };
 
     // If we're not logged in, still allow offline ordering from last cached menu.
-    if (!hasCloudSessionForSender(_e.sender.id, cloud.businessCode) && !hasCloudSession(cloud.businessCode)) {
+    if (
+      !hasCloudSessionForSender(_e.sender.id, cloud.businessCode) &&
+      !hasCloudSession(cloud.businessCode)
+    ) {
       return await readCache();
     }
 
     try {
-      const categories = await cloudJson('GET', '/menu/categories', undefined, { requireAuth: true, senderId: _e.sender.id });
+      const categories = await cloudJson('GET', '/menu/categories', undefined, {
+        requireAuth: true,
+        senderId: _e.sender.id,
+      });
       const cached = await readCache();
-      const merged = mergeMissingFromCache(Array.isArray(categories) ? categories : [], cached);
+      const merged = mergeMissingFromCache(
+        Array.isArray(categories) ? categories : [],
+        cached,
+      );
       await writeCache(merged);
       return merged;
     } catch (e: any) {
@@ -1992,10 +2828,14 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
 
 ipcMain.handle('menu:createCategory', async (_e, payload) => {
   const input = CreateMenuCategoryInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    return await cloudJson('POST', '/menu/categories', input, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson('POST', '/menu/categories', input, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    });
   }
   const created = await prisma.category.create({
     data: {
@@ -2010,18 +2850,28 @@ ipcMain.handle('menu:createCategory', async (_e, payload) => {
 
 ipcMain.handle('menu:updateCategory', async (_e, payload) => {
   const input = UpdateMenuCategoryInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    await cloudJson('PUT', `/menu/categories/${encodeURIComponent(String(input.id))}`, input, { requireAuth: true, senderId: _e.sender.id });
+    await cloudJson(
+      'PUT',
+      `/menu/categories/${encodeURIComponent(String(input.id))}`,
+      input,
+      { requireAuth: true, senderId: _e.sender.id },
+    );
     return true;
   }
   await prisma.category.update({
     where: { id: input.id },
     data: {
       ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
-      ...(typeof input.sortOrder === 'number' ? { sortOrder: input.sortOrder } : {}),
-      ...((input as any).color !== undefined ? { color: (input as any).color } : {}),
+      ...(typeof input.sortOrder === 'number'
+        ? { sortOrder: input.sortOrder }
+        : {}),
+      ...((input as any).color !== undefined
+        ? { color: (input as any).color }
+        : {}),
       ...(typeof input.active === 'boolean' ? { active: input.active } : {}),
     } as any,
   });
@@ -2031,23 +2881,37 @@ ipcMain.handle('menu:updateCategory', async (_e, payload) => {
 ipcMain.handle('menu:deleteCategory', async (_e, payload) => {
   const id = Number((payload as any)?.id || 0);
   if (!id) return false;
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    await cloudJson('DELETE', `/menu/categories/${encodeURIComponent(String(id))}`, undefined, { requireAuth: true, senderId: _e.sender.id });
+    await cloudJson(
+      'DELETE',
+      `/menu/categories/${encodeURIComponent(String(id))}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    );
     return true;
   }
-  await prisma.category.update({ where: { id }, data: { active: false } as any }).catch(() => null);
-  await prisma.menuItem.updateMany({ where: { categoryId: id }, data: { active: false } as any }).catch(() => null);
+  await prisma.category
+    .update({ where: { id }, data: { active: false } as any })
+    .catch(() => null);
+  await prisma.menuItem
+    .updateMany({ where: { categoryId: id }, data: { active: false } as any })
+    .catch(() => null);
   return true;
 });
 
 ipcMain.handle('menu:createItem', async (_e, payload) => {
   const input = CreateMenuItemInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    return await cloudJson('POST', '/menu/items', input, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson('POST', '/menu/items', input, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    });
   }
   const created = await prisma.menuItem.create({
     data: {
@@ -2055,10 +2919,14 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
       sku: String(input.sku || input.name).trim(),
       categoryId: Number(input.categoryId),
       price: Number(input.price),
-      vatRate: Number((input as any).vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2),
+      vatRate: Number(
+        (input as any).vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2,
+      ),
       active: (input as any).active ?? true,
       isKg: (input as any).isKg ?? false,
-      ...(typeof (input as any).station === 'string' ? { station: String((input as any).station).toUpperCase() } : {}),
+      ...(typeof (input as any).station === 'string'
+        ? { station: String((input as any).station).toUpperCase() }
+        : {}),
     } as any,
   });
   return { id: created.id, sku: created.sku };
@@ -2066,29 +2934,58 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
 
 ipcMain.handle('menu:updateItem', async (_e, payload) => {
   const input = UpdateMenuItemInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    await cloudJson('PUT', `/menu/items/${encodeURIComponent(String(input.id))}`, input, { requireAuth: true, senderId: _e.sender.id });
+    await cloudJson(
+      'PUT',
+      `/menu/items/${encodeURIComponent(String(input.id))}`,
+      input,
+      { requireAuth: true, senderId: _e.sender.id },
+    );
     // Update local menu cache so disabled items don't "disappear" from admin UI even if cloud endpoint filters inactive.
     try {
       const cacheKey = 'cloud:menuCache';
-      const row = await prisma.syncState.findUnique({ where: { key: cacheKey } }).catch(() => null);
+      const row = await prisma.syncState
+        .findUnique({ where: { key: cacheKey } })
+        .catch(() => null);
       const v: any = (row?.valueJson as any) || null;
-      const cats: any[] = Array.isArray(v?.categories) ? v.categories : (Array.isArray(v) ? v : []);
+      const cats: any[] = Array.isArray(v?.categories)
+        ? v.categories
+        : Array.isArray(v)
+          ? v
+          : [];
       if (Array.isArray(cats) && cats.length) {
         const next = cats.map((c: any) => {
           const items = Array.isArray(c?.items) ? c.items : [];
           return {
             ...c,
-            items: items.map((it: any) => (Number(it?.id || 0) === Number(input.id) ? { ...it, ...input } : it)),
+            items: items.map((it: any) =>
+              Number(it?.id || 0) === Number(input.id)
+                ? { ...it, ...input }
+                : it,
+            ),
           };
         });
-        await prisma.syncState.upsert({
-          where: { key: cacheKey },
-          create: { key: cacheKey, valueJson: { savedAt: new Date().toISOString(), categories: next } },
-          update: { valueJson: { savedAt: new Date().toISOString(), categories: next } },
-        }).catch(() => null);
+        await prisma.syncState
+          .upsert({
+            where: { key: cacheKey },
+            create: {
+              key: cacheKey,
+              valueJson: {
+                savedAt: new Date().toISOString(),
+                categories: next,
+              },
+            },
+            update: {
+              valueJson: {
+                savedAt: new Date().toISOString(),
+                categories: next,
+              },
+            },
+          })
+          .catch(() => null);
       }
     } catch {
       // ignore
@@ -2100,11 +2997,19 @@ ipcMain.handle('menu:updateItem', async (_e, payload) => {
     data: {
       ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
       ...(typeof input.price === 'number' ? { price: input.price } : {}),
-      ...(typeof (input as any).vatRate === 'number' ? { vatRate: (input as any).vatRate } : {}),
+      ...(typeof (input as any).vatRate === 'number'
+        ? { vatRate: (input as any).vatRate }
+        : {}),
       ...(typeof input.active === 'boolean' ? { active: input.active } : {}),
-      ...(typeof (input as any).isKg === 'boolean' ? { isKg: (input as any).isKg } : {}),
-      ...(typeof input.categoryId === 'number' ? { categoryId: input.categoryId } : {}),
-      ...(typeof (input as any).station === 'string' ? { station: String((input as any).station).toUpperCase() } : {}),
+      ...(typeof (input as any).isKg === 'boolean'
+        ? { isKg: (input as any).isKg }
+        : {}),
+      ...(typeof input.categoryId === 'number'
+        ? { categoryId: input.categoryId }
+        : {}),
+      ...(typeof (input as any).station === 'string'
+        ? { station: String((input as any).station).toUpperCase() }
+        : {}),
     } as any,
   });
   return true;
@@ -2113,13 +3018,21 @@ ipcMain.handle('menu:updateItem', async (_e, payload) => {
 ipcMain.handle('menu:deleteItem', async (_e, payload) => {
   const id = Number((payload as any)?.id || 0);
   if (!id) return false;
-  if (await cloudEnabledButMissingBusinessCode()) throw new Error('Cloud enabled but business code missing');
+  if (await cloudEnabledButMissingBusinessCode())
+    throw new Error('Cloud enabled but business code missing');
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    await cloudJson('DELETE', `/menu/items/${encodeURIComponent(String(id))}`, undefined, { requireAuth: true, senderId: _e.sender.id });
+    await cloudJson(
+      'DELETE',
+      `/menu/items/${encodeURIComponent(String(id))}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    );
     return true;
   }
-  await prisma.menuItem.update({ where: { id }, data: { active: false } as any }).catch(() => null);
+  await prisma.menuItem
+    .update({ where: { id }, data: { active: false } as any })
+    .catch(() => null);
   return true;
 });
 
@@ -2144,10 +3057,18 @@ ipcMain.handle('admin:getOverview', async (_e) => {
   if (cloud) {
     // In cloud mode, if admin token is missing/invalid, force logout the admin renderer so it re-prompts for login.
     try {
-      return await cloudJson('GET', '/admin/overview', undefined, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson('GET', '/admin/overview', undefined, {
+        requireAuth: true,
+        senderId: _e.sender.id,
+      });
     } catch (e: any) {
       const msg = String(e?.message || e || '').toLowerCase();
-      if (msg.includes('forbidden') || msg.includes('unauthorized') || msg.includes('not logged in') || msg.includes('admin login required')) {
+      if (
+        msg.includes('forbidden') ||
+        msg.includes('unauthorized') ||
+        msg.includes('not logged in') ||
+        msg.includes('admin login required')
+      ) {
         forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
       }
       return {
@@ -2165,31 +3086,73 @@ ipcMain.handle('admin:getOverview', async (_e) => {
       };
     }
   }
-  const [users, openShifts, openTables, lowStock, queued, menuSync, staffSync, revenueRows] = await Promise.all([
+  const [
+    users,
+    openShifts,
+    openTables,
+    lowStock,
+    queued,
+    menuSync,
+    staffSync,
+    revenueRows,
+  ] = await Promise.all([
     prisma.user.count({ where: { active: true } }),
     prisma.dayShift.count({ where: { closedAt: null } }),
     (async () => {
       const key = 'tables:open';
-      const row = await prisma.syncState.findUnique({ where: { key } }).catch(() => null);
+      const row = await prisma.syncState
+        .findUnique({ where: { key } })
+        .catch(() => null);
       const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
       return Object.values(map).filter(Boolean).length;
     })(),
-    prisma.inventoryItem.count({ where: { qtyOnHand: { lt: prisma.inventoryItem.fields.lowStockThreshold } } }).catch(() => 0),
-    prisma.printJob.count({ where: { status: 'QUEUED' } }).catch(() => 0),
-    prisma.syncState.findUnique({ where: { key: 'menu:lastSync' } }).catch(() => null),
-    prisma.syncState.findUnique({ where: { key: 'staff:lastSync' } }).catch(() => null),
-    prisma.ticketLog.findMany({
-      where: {
-        createdAt: {
-          gte: new Date(new Date().setHours(0, 0, 0, 0)),
-          lte: new Date(new Date().setHours(23, 59, 59, 999)),
+    prisma.inventoryItem
+      .count({
+        where: {
+          qtyOnHand: { lt: prisma.inventoryItem.fields.lowStockThreshold },
         },
-      },
-      select: { itemsJson: true },
-    }).catch(() => []),
+      })
+      .catch(() => 0),
+    prisma.printJob.count({ where: { status: 'QUEUED' } }).catch(() => 0),
+    prisma.syncState
+      .findUnique({ where: { key: 'menu:lastSync' } })
+      .catch(() => null),
+    prisma.syncState
+      .findUnique({ where: { key: 'staff:lastSync' } })
+      .catch(() => null),
+    prisma.ticketLog
+      .findMany({
+        where: {
+          createdAt: {
+            gte: new Date(new Date().setHours(0, 0, 0, 0)),
+            lte: new Date(new Date().setHours(23, 59, 59, 999)),
+          },
+        },
+        select: { itemsJson: true },
+      })
+      .catch(() => []),
   ]);
-  const revenueTodayNet = (revenueRows as any[]).reduce((s, r) => s + (r.itemsJson as any[]).reduce((ss: number, it: any) => ss + (Number(it.unitPrice) * Number(it.qty || 1)), 0), 0);
-  const revenueTodayVat = (revenueRows as any[]).reduce((s, r) => s + (r.itemsJson as any[]).reduce((ss: number, it: any) => ss + (Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0)), 0), 0);
+  const revenueTodayNet = (revenueRows as any[]).reduce(
+    (s, r) =>
+      s +
+      (r.itemsJson as any[]).reduce(
+        (ss: number, it: any) =>
+          ss + Number(it.unitPrice) * Number(it.qty || 1),
+        0,
+      ),
+    0,
+  );
+  const revenueTodayVat = (revenueRows as any[]).reduce(
+    (s, r) =>
+      s +
+      (r.itemsJson as any[]).reduce(
+        (ss: number, it: any) =>
+          ss +
+          Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0),
+        0,
+      ),
+    0,
+  );
   return {
     activeUsers: users,
     openShifts,
@@ -2240,7 +3203,9 @@ async function getEnabledStations() {
   try {
     const s: any = await readSettings();
     const raw = (s as any)?.kds?.enabledStations;
-    const arr = Array.isArray(raw) ? raw.map((x) => String(x).toUpperCase()) : ['KITCHEN'];
+    const arr = Array.isArray(raw)
+      ? raw.map((x) => String(x).toUpperCase())
+      : ['KITCHEN'];
     const uniq = Array.from(new Set(arr.filter(Boolean)));
     return uniq.length ? uniq : ['KITCHEN'];
   } catch {
@@ -2280,7 +3245,9 @@ async function createKdsTicketFromLog(input: {
       });
       for (const r of menuRows as any[]) {
         const st = String((r as any)?.station || 'KITCHEN').toUpperCase();
-        skuToStation[String((r as any)?.sku || '')] = enabled.has(st) ? st : fallbackStation;
+        skuToStation[String((r as any)?.sku || '')] = enabled.has(st)
+          ? st
+          : fallbackStation;
       }
     }
   } catch {
@@ -2316,7 +3283,9 @@ async function createKdsTicketFromLog(input: {
     // Our self-healing schema may add a FK on KdsTicket.userId, so only set it if the local user exists.
     let safeUserId: number | null = null;
     try {
-      const u = await tx.user.findUnique({ where: { id: Number(input.userId) } });
+      const u = await tx.user.findUnique({
+        where: { id: Number(input.userId) },
+      });
       safeUserId = u ? Number(input.userId) : null;
     } catch {
       safeUserId = null;
@@ -2333,7 +3302,10 @@ async function createKdsTicketFromLog(input: {
         update: {},
       });
       const nextNo = Number(counter?.lastNo || 0) + 1;
-      await tx.kdsDayCounter.update({ where: { dayKey }, data: { lastNo: nextNo } });
+      await tx.kdsDayCounter.update({
+        where: { dayKey },
+        data: { lastNo: nextNo },
+      });
       order = await tx.kdsOrder.create({
         data: {
           dayKey,
@@ -2371,7 +3343,12 @@ async function createKdsTicketFromLog(input: {
   return created;
 }
 
-async function applyKdsVoidTicket(input: { userId: number; area: string; tableLabel: string; reason?: string }) {
+async function applyKdsVoidTicket(input: {
+  userId: number;
+  area: string;
+  tableLabel: string;
+  reason?: string;
+}) {
   const okSchema = await ensureKdsLocalSchema();
   if (!okSchema) return false;
   const area = String(input.area || '');
@@ -2389,27 +3366,44 @@ async function applyKdsVoidTicket(input: { userId: number; area: string; tableLa
       // Only set bumpedById if the user exists locally (cloud user ids may not).
       let safeBumpedById: number | null = null;
       try {
-        const u = await tx.user.findUnique({ where: { id: Number(input.userId) } });
+        const u = await tx.user.findUnique({
+          where: { id: Number(input.userId) },
+        });
         safeBumpedById = u ? Number(input.userId) : null;
       } catch {
         safeBumpedById = null;
       }
 
-      const tickets = await tx.kdsTicket.findMany({ where: { orderId: order.id }, orderBy: { id: 'asc' } });
+      const tickets = await tx.kdsTicket.findMany({
+        where: { orderId: order.id },
+        orderBy: { id: 'asc' },
+      });
       const now = new Date();
       for (const t of tickets) {
-        const items = (Array.isArray(t.itemsJson) ? t.itemsJson : []).map((it: any) => ({ ...it, voided: true }));
+        const items = (Array.isArray(t.itemsJson) ? t.itemsJson : []).map(
+          (it: any) => ({ ...it, voided: true }),
+        );
         const note = t.note
           ? `${t.note} | VOIDED${input.reason ? `: ${input.reason}` : ''}`
           : `VOIDED${input.reason ? `: ${input.reason}` : ''}`;
-        await tx.kdsTicket.update({ where: { id: t.id }, data: { itemsJson: items, note } });
+        await tx.kdsTicket.update({
+          where: { id: t.id },
+          data: { itemsJson: items, note },
+        });
         // Mark all stations NEW->DONE so they disappear from the kitchen queue
         await tx.kdsTicketStation.updateMany({
           where: { ticketId: t.id, status: 'NEW' },
-          data: { status: 'DONE', bumpedAt: now, ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}) },
+          data: {
+            status: 'DONE',
+            bumpedAt: now,
+            ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}),
+          },
         });
       }
-      await tx.kdsOrder.update({ where: { id: order.id }, data: { closedAt: now } });
+      await tx.kdsOrder.update({
+        where: { id: order.id },
+        data: { closedAt: now },
+      });
     });
     return true;
   } catch {
@@ -2417,7 +3411,12 @@ async function applyKdsVoidTicket(input: { userId: number; area: string; tableLa
   }
 }
 
-async function applyKdsVoidItem(input: { userId: number; area: string; tableLabel: string; item: any }) {
+async function applyKdsVoidItem(input: {
+  userId: number;
+  area: string;
+  tableLabel: string;
+  item: any;
+}) {
   const okSchema = await ensureKdsLocalSchema();
   if (!okSchema) return false;
   const area = String(input.area || '');
@@ -2437,16 +3436,23 @@ async function applyKdsVoidItem(input: { userId: number; area: string; tableLabe
       // Only set bumpedById if the user exists locally (cloud user ids may not).
       let safeBumpedById: number | null = null;
       try {
-        const u = await tx.user.findUnique({ where: { id: Number(input.userId) } });
+        const u = await tx.user.findUnique({
+          where: { id: Number(input.userId) },
+        });
         safeBumpedById = u ? Number(input.userId) : null;
       } catch {
         safeBumpedById = null;
       }
 
-      const tickets = await tx.kdsTicket.findMany({ where: { orderId: order.id }, orderBy: { id: 'asc' } });
+      const tickets = await tx.kdsTicket.findMany({
+        where: { orderId: order.id },
+        orderBy: { id: 'asc' },
+      });
       const now = new Date();
       for (const t of tickets) {
-        const itemsAll = Array.isArray(t.itemsJson) ? (t.itemsJson as any[]) : [];
+        const itemsAll = Array.isArray(t.itemsJson)
+          ? (t.itemsJson as any[])
+          : [];
         let changed = false;
         const nextItems = itemsAll.map((it: any) => {
           const itSku = String(it?.sku || '').trim();
@@ -2459,17 +3465,30 @@ async function applyKdsVoidItem(input: { userId: number; area: string; tableLabe
           return it;
         });
         if (changed) {
-          await tx.kdsTicket.update({ where: { id: t.id }, data: { itemsJson: nextItems } });
+          await tx.kdsTicket.update({
+            where: { id: t.id },
+            data: { itemsJson: nextItems },
+          });
 
           // For each station on this ticket: if no remaining non-voided items, mark station DONE.
-          const stations = await tx.kdsTicketStation.findMany({ where: { ticketId: t.id } });
+          const stations = await tx.kdsTicketStation.findMany({
+            where: { ticketId: t.id },
+          });
           for (const stRow of stations) {
             const station = String(stRow.station || '').toUpperCase();
-            const remaining = nextItems.filter((it: any) => !it?.voided && String(it?.station || '').toUpperCase() === station);
+            const remaining = nextItems.filter(
+              (it: any) =>
+                !it?.voided &&
+                String(it?.station || '').toUpperCase() === station,
+            );
             if (remaining.length === 0) {
               await tx.kdsTicketStation.updateMany({
                 where: { ticketId: t.id, station, status: 'NEW' },
-                data: { status: 'DONE', bumpedAt: now, ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}) },
+                data: {
+                  status: 'DONE',
+                  bumpedAt: now,
+                  ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}),
+                },
               });
             }
           }
@@ -2486,12 +3505,18 @@ async function applyKdsVoidItem(input: { userId: number; area: string; tableLabe
 ipcMain.handle('tickets:log', async (_e, payload) => {
   try {
     // Rate limit ticket creation
-    if (!checkRateLimit(_e, 'tickets:log', { maxAttempts: 100, windowMs: 60 * 1000 })) {
+    if (
+      !checkRateLimit(_e, 'tickets:log', {
+        maxAttempts: 100,
+        windowMs: 60 * 1000,
+      })
+    ) {
       throw new Error('Too many requests. Please slow down.');
     }
 
     if (await cloudEnabledButMissingBusinessCode()) return false;
-    const { userId, area, tableLabel, covers, items, note, idempotencyKey } = payload || {};
+    const { userId, area, tableLabel, covers, items, note, idempotencyKey } =
+      payload || {};
     if (!userId || !area || !tableLabel) return false;
 
     // Sanitize inputs
@@ -2502,7 +3527,7 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
 
     // Validate items array
     if (!Array.isArray(items) || items.length === 0) return false;
-    
+
     // Use sanitized values
     const sanitizedPayload = {
       userId,
@@ -2513,45 +3538,91 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
       note: sanitizedNote,
       idempotencyKey,
     };
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    const idem = String(idempotencyKey || '').trim() || `pos:${Date.now()}:${Math.random().toString(16).slice(2)}`;
-    try {
-    await cloudJson(
-      'POST',
-      '/tickets',
-        { userId, area: sanitizedArea, tableLabel: sanitizedTableLabel, covers: sanitizedCovers, items: items ?? [], note: sanitizedNote, idempotencyKey: idem },
-      { requireAuth: true },
-    );
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) {
-        await enqueueOutbox({
-          id: `tickets:log:${idem}`,
-          method: 'POST',
-          path: '/tickets',
-          body: { userId, area: sanitizedArea, tableLabel: sanitizedTableLabel, covers: sanitizedCovers, items: items ?? [], note: sanitizedNote, idempotencyKey: idem },
-          requireAuth: true,
-        });
-      } else {
-        throw e;
+    const cloud = await getCloudConfig().catch(() => null);
+    if (cloud) {
+      const idem =
+        String(idempotencyKey || '').trim() ||
+        `pos:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+      try {
+        await cloudJson(
+          'POST',
+          '/tickets',
+          {
+            userId,
+            area: sanitizedArea,
+            tableLabel: sanitizedTableLabel,
+            covers: sanitizedCovers,
+            items: items ?? [],
+            note: sanitizedNote,
+            idempotencyKey: idem,
+          },
+          { requireAuth: true },
+        );
+      } catch (e: any) {
+        if (isLikelyOfflineError(e)) {
+          await enqueueOutbox({
+            id: `tickets:log:${idem}`,
+            method: 'POST',
+            path: '/tickets',
+            body: {
+              userId,
+              area: sanitizedArea,
+              tableLabel: sanitizedTableLabel,
+              covers: sanitizedCovers,
+              items: items ?? [],
+              note: sanitizedNote,
+              idempotencyKey: idem,
+            },
+            requireAuth: true,
+          });
+        } else {
+          throw e;
+        }
       }
-    }
-    // Also mirror ticket logs locally so features relying on local DB (fallback reports/KDS) still work in cloud mode.
-    try {
-      await prisma.ticketLog.create({
-        data: {
+      // Also mirror ticket logs locally so features relying on local DB (fallback reports/KDS) still work in cloud mode.
+      try {
+        await prisma.ticketLog.create({
+          data: {
+            userId: Number(userId),
+            area: sanitizedArea,
+            tableLabel: sanitizedTableLabel,
+            covers: sanitizedCovers,
+            itemsJson: items ?? [],
+            note: sanitizedNote,
+          },
+        });
+      } catch {
+        // ignore
+      }
+      // Even in cloud mode, keep KDS local so the kitchen screen works offline/on-prem.
+      try {
+        await createKdsTicketFromLog({
           userId: Number(userId),
           area: sanitizedArea,
           tableLabel: sanitizedTableLabel,
-          covers: sanitizedCovers,
-          itemsJson: items ?? [],
+          items: items ?? [],
           note: sanitizedNote,
-        },
-      });
-    } catch {
-      // ignore
+        });
+      } catch (e: any) {
+        __kdsLastError = String(
+          e?.message || e || 'Failed to create KDS ticket (cloud)',
+        );
+        console.error('KDS create ticket failed (cloud)', e);
+      }
+      return true;
     }
-    // Even in cloud mode, keep KDS local so the kitchen screen works offline/on-prem.
+    await prisma.ticketLog.create({
+      data: {
+        userId: Number(userId),
+        area: sanitizedArea,
+        tableLabel: sanitizedTableLabel,
+        covers: sanitizedCovers,
+        itemsJson: items ?? [],
+        note: sanitizedNote,
+      },
+    });
+
+    // KDS: create station-specific ticket rows (best-effort; does not block sending).
     try {
       await createKdsTicketFromLog({
         userId: Number(userId),
@@ -2561,39 +3632,25 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
         note: sanitizedNote,
       });
     } catch (e: any) {
-      __kdsLastError = String(e?.message || e || 'Failed to create KDS ticket (cloud)');
-      console.error('KDS create ticket failed (cloud)', e);
+      __kdsLastError = String(e?.message || e || 'Failed to create KDS ticket');
+      console.error('KDS create ticket failed', e);
+      captureException(e instanceof Error ? e : new Error(String(e)), {
+        context: 'tickets:log:KDS',
+      });
     }
     return true;
-  }
-  await prisma.ticketLog.create({
-    data: {
-      userId: Number(userId),
-      area: sanitizedArea,
-      tableLabel: sanitizedTableLabel,
-      covers: sanitizedCovers,
-      itemsJson: items ?? [],
-      note: sanitizedNote,
-    },
-  });
-
-  // KDS: create station-specific ticket rows (best-effort; does not block sending).
-  try {
-    await createKdsTicketFromLog({
-      userId: Number(userId),
-      area: sanitizedArea,
-      tableLabel: sanitizedTableLabel,
-      items: items ?? [],
-      note: sanitizedNote,
-    });
-  } catch (e: any) {
-    __kdsLastError = String(e?.message || e || 'Failed to create KDS ticket');
-    console.error('KDS create ticket failed', e);
-    captureException(e instanceof Error ? e : new Error(String(e)), { context: 'tickets:log:KDS' });
-  }
-    return true;
   } catch (error: any) {
-    captureException(error instanceof Error ? error : new Error(String(error)), { context: 'tickets:log', payload: { userId: payload?.userId, area: payload?.area, tableLabel: payload?.tableLabel } });
+    captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      {
+        context: 'tickets:log',
+        payload: {
+          userId: payload?.userId,
+          area: payload?.area,
+          tableLabel: payload?.tableLabel,
+        },
+      },
+    );
     throw error; // Re-throw to maintain existing error handling behavior
   }
 });
@@ -2616,7 +3673,8 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
       const items = Array.isArray(resp.items) ? resp.items : [];
       return { ...resp, items: items.filter((it: any) => !it?.voided) };
     } catch (e: any) {
-      if (shouldForceLogoutOnError(e)) forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
+      if (shouldForceLogoutOnError(e))
+        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
       throw e;
     }
   }
@@ -2645,30 +3703,59 @@ ipcMain.handle('tickets:getTableTooltip', async (_e, input) => {
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return null;
     const q = new URLSearchParams({ area, tableLabel });
-    return await cloudJson('GET', `/tickets/tooltip?${q.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => null);
+    return await cloudJson(
+      'GET',
+      `/tickets/tooltip?${q.toString()}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => null);
   }
   // Show only for currently open tables
-  const openRow = await prisma.syncState.findUnique({ where: { key: 'tables:open' } });
-  const openMap = ((openRow?.valueJson as any) || {}) as Record<string, boolean>;
+  const openRow = await prisma.syncState.findUnique({
+    where: { key: 'tables:open' },
+  });
+  const openMap = ((openRow?.valueJson as any) || {}) as Record<
+    string,
+    boolean
+  >;
   const k = `${area}:${tableLabel}`;
   if (!openMap[k]) return null;
   // Session start time
-  const atRow = await prisma.syncState.findUnique({ where: { key: 'tables:openAt' } });
+  const atRow = await prisma.syncState.findUnique({
+    where: { key: 'tables:openAt' },
+  });
   const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
   const sinceIso = atMap[k];
   const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-  const since = sinceParsed && Number.isFinite(sinceParsed.getTime()) ? sinceParsed : null;
+  const since =
+    sinceParsed && Number.isFinite(sinceParsed.getTime()) ? sinceParsed : null;
   const where: any = { area, tableLabel };
   if (since) where.createdAt = { gte: since };
   const [last, coversRow] = await Promise.all([
     prisma.ticketLog.findFirst({ where, orderBy: { createdAt: 'desc' } }),
-    prisma.covers.findFirst({ where: { area, label: tableLabel, ...(since ? { createdAt: { gte: since } as any } : {}) }, orderBy: { id: 'desc' } } as any),
+    prisma.covers.findFirst({
+      where: {
+        area,
+        label: tableLabel,
+        ...(since ? { createdAt: { gte: since } as any } : {}),
+      },
+      orderBy: { id: 'desc' },
+    } as any),
   ]);
-  const items = ((last?.itemsJson as any[]) || []).filter((it: any) => !it.voided);
-  const total = items.reduce((s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1), 0);
+  const items = ((last?.itemsJson as any[]) || []).filter(
+    (it: any) => !it.voided,
+  );
+  const total = items.reduce(
+    (s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1),
+    0,
+  );
   return {
     covers: coversRow?.covers ?? null,
-    firstAt: since ? since.toISOString() : last ? new Date(last.createdAt).toISOString() : null,
+    firstAt: since
+      ? since.toISOString()
+      : last
+        ? new Date(last.createdAt).toISOString()
+        : null,
     total,
   };
 });
@@ -2678,7 +3765,10 @@ ipcMain.handle('kds:listTickets', async (_e, input) => {
   if (await cloudEnabledButMissingBusinessCode()) return [];
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const status = String((input as any)?.status || 'NEW').toUpperCase();
-  const limit = Math.min(200, Math.max(1, Number((input as any)?.limit || 100)));
+  const limit = Math.min(
+    200,
+    Math.max(1, Number((input as any)?.limit || 100)),
+  );
   // IMPORTANT: KDS is always local (even when POS is in cloud mode).
 
   await ensureKdsLocalSchema();
@@ -2686,31 +3776,40 @@ ipcMain.handle('kds:listTickets', async (_e, input) => {
     const rows = await (prisma as any).kdsTicketStation.findMany({
       where: { station, status },
       include: { ticket: { include: { order: true } } },
-      orderBy: status === 'NEW' ? { ticket: { firedAt: 'asc' } } : { bumpedAt: 'desc' },
+      orderBy:
+        status === 'NEW'
+          ? { ticket: { firedAt: 'asc' } }
+          : { bumpedAt: 'desc' },
       take: limit,
     });
 
-    return (rows as any[]).map((r: any) => {
-      const t = r.ticket;
-      const o = t?.order;
-      const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
-      const items = itemsAll
-        .map((it: any, idx: number) => ({ ...it, _idx: idx }))
-        .filter((it: any) => String(it?.station || '').toUpperCase() === station && !it?.voided)
-        .filter((it: any) => (status === 'NEW' ? !it?.bumped : true));
-      // In NEW view, hide station cards that have no remaining items (e.g., everything was voided).
-      if (status === 'NEW' && items.length === 0) return null;
-      return {
-        ticketId: t?.id,
-        orderNo: o?.orderNo,
-        area: o?.area,
-        tableLabel: o?.tableLabel,
-        firedAt: t?.firedAt?.toISOString?.() ?? null,
-        note: t?.note ?? null,
-        items,
-        bumpedAt: r?.bumpedAt?.toISOString?.() ?? null,
-      };
-    }).filter(Boolean);
+    return (rows as any[])
+      .map((r: any) => {
+        const t = r.ticket;
+        const o = t?.order;
+        const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
+        const items = itemsAll
+          .map((it: any, idx: number) => ({ ...it, _idx: idx }))
+          .filter(
+            (it: any) =>
+              String(it?.station || '').toUpperCase() === station &&
+              !it?.voided,
+          )
+          .filter((it: any) => (status === 'NEW' ? !it?.bumped : true));
+        // In NEW view, hide station cards that have no remaining items (e.g., everything was voided).
+        if (status === 'NEW' && items.length === 0) return null;
+        return {
+          ticketId: t?.id,
+          orderNo: o?.orderNo,
+          area: o?.area,
+          tableLabel: o?.tableLabel,
+          firedAt: t?.firedAt?.toISOString?.() ?? null,
+          note: t?.note ?? null,
+          items,
+          bumpedAt: r?.bumpedAt?.toISOString?.() ?? null,
+        };
+      })
+      .filter(Boolean);
   } catch {
     return [];
   }
@@ -2720,14 +3819,30 @@ ipcMain.handle('kds:debug', async () => {
   const cloud = await getCloudConfig().catch(() => null);
   const schemaReady = await ensureKdsLocalSchema();
   const enabledStations = await getEnabledStations();
-  const out: any = { mode: cloud ? 'cloud+local-kds' : 'local', schemaReady, enabledStations, lastError: __kdsLastError, counts: {}, latest: null };
+  const out: any = {
+    mode: cloud ? 'cloud+local-kds' : 'local',
+    schemaReady,
+    enabledStations,
+    lastError: __kdsLastError,
+    counts: {},
+    latest: null,
+  };
   out.counts.ticketLog = await prisma.ticketLog.count().catch(() => 0);
   if (schemaReady) {
-    out.counts.kdsOrders = await (prisma as any).kdsOrder.count().catch(() => 0);
-    out.counts.kdsTickets = await (prisma as any).kdsTicket.count().catch(() => 0);
-    out.counts.kdsStations = await (prisma as any).kdsTicketStation.count().catch(() => 0);
+    out.counts.kdsOrders = await (prisma as any).kdsOrder
+      .count()
+      .catch(() => 0);
+    out.counts.kdsTickets = await (prisma as any).kdsTicket
+      .count()
+      .catch(() => 0);
+    out.counts.kdsStations = await (prisma as any).kdsTicketStation
+      .count()
+      .catch(() => 0);
     out.latest = await (prisma as any).kdsTicketStation
-      .findFirst({ orderBy: { id: 'desc' }, include: { ticket: { include: { order: true } } } })
+      .findFirst({
+        orderBy: { id: 'desc' },
+        include: { ticket: { include: { order: true } } },
+      })
       .catch(() => null);
   }
   return out;
@@ -2745,7 +3860,11 @@ ipcMain.handle('kds:bump', async (_e, input) => {
   try {
     const updated = await (prisma as any).kdsTicketStation.updateMany({
       where: { ticketId, station, status: 'NEW' },
-      data: { status: 'DONE', bumpedAt: new Date(), ...(bumpedById ? { bumpedById } : {}) },
+      data: {
+        status: 'DONE',
+        bumpedAt: new Date(),
+        ...(bumpedById ? { bumpedById } : {}),
+      },
     });
     return Boolean(updated?.count);
   } catch {
@@ -2763,9 +3882,13 @@ ipcMain.handle('kds:bumpItem', async (_e, input) => {
   await ensureKdsLocalSchema();
   const now = new Date();
   try {
-    const ticket = await (prisma as any).kdsTicket.findUnique({ where: { id: ticketId } }).catch(() => null);
+    const ticket = await (prisma as any).kdsTicket
+      .findUnique({ where: { id: ticketId } })
+      .catch(() => null);
     if (!ticket) return false;
-    const itemsAll: any[] = Array.isArray(ticket.itemsJson) ? ticket.itemsJson : [];
+    const itemsAll: any[] = Array.isArray(ticket.itemsJson)
+      ? ticket.itemsJson
+      : [];
     if (itemIdx >= itemsAll.length) return false;
     const it = itemsAll[itemIdx];
     if (!it) return false;
@@ -2774,16 +3897,26 @@ ipcMain.handle('kds:bumpItem', async (_e, input) => {
     if (it?.bumped) return true;
     const nextItems = itemsAll.slice();
     nextItems[itemIdx] = { ...it, bumped: true, bumpedAt: now.toISOString() };
-    await (prisma as any).kdsTicket.update({ where: { id: ticketId }, data: { itemsJson: nextItems } });
+    await (prisma as any).kdsTicket.update({
+      where: { id: ticketId },
+      data: { itemsJson: nextItems },
+    });
 
     // If no remaining items for this station, auto-complete the station ticket.
     const remaining = nextItems.filter(
-      (x: any) => !x?.voided && !x?.bumped && String(x?.station || '').toUpperCase() === station,
+      (x: any) =>
+        !x?.voided &&
+        !x?.bumped &&
+        String(x?.station || '').toUpperCase() === station,
     );
     if (remaining.length === 0) {
       await (prisma as any).kdsTicketStation.updateMany({
         where: { ticketId, station, status: 'NEW' },
-        data: { status: 'DONE', bumpedAt: now, ...(bumpedById ? { bumpedById } : {}) },
+        data: {
+          status: 'DONE',
+          bumpedAt: now,
+          ...(bumpedById ? { bumpedById } : {}),
+        },
       });
     }
     return true;
@@ -2799,21 +3932,32 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   const item = input?.item as any;
-  const approvedByAdminId = input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
-  const approvedByAdminName = input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
+  const approvedByAdminId =
+    input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
+  const approvedByAdminName =
+    input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
   if (!userId || !area || !tableLabel || !item?.name) return false;
 
   // Enforce admin PIN approval for voids if enabled in settings.
   try {
     const settings: any = await readSettings();
-    const requireApproval = (settings?.security?.approvals?.requireManagerPinForVoid !== false);
+    const requireApproval =
+      settings?.security?.approvals?.requireManagerPinForVoid !== false;
     if (requireApproval) {
-      const actor = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
-      const actorIsAdmin = String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
+      const actor = await prisma.user
+        .findUnique({ where: { id: userId } })
+        .catch(() => null);
+      const actorIsAdmin =
+        String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
       if (!actorIsAdmin) {
         if (!approvedByAdminId) return false;
-        const approver = await prisma.user.findUnique({ where: { id: approvedByAdminId } }).catch(() => null);
-        const approverIsAdmin = approver && (approver as any).active !== false && String((approver as any).role || '').toUpperCase() === 'ADMIN';
+        const approver = await prisma.user
+          .findUnique({ where: { id: approvedByAdminId } })
+          .catch(() => null);
+        const approverIsAdmin =
+          approver &&
+          (approver as any).active !== false &&
+          String((approver as any).role || '').toUpperCase() === 'ADMIN';
         if (!approverIsAdmin) return false;
       }
     }
@@ -2824,14 +3968,33 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     try {
-    await cloudJson('POST', '/tickets/void-item', { userId, area, tableLabel, item, approvedByAdminId, approvedByAdminName }, { requireAuth: true, senderId: _e.sender.id });
+      await cloudJson(
+        'POST',
+        '/tickets/void-item',
+        {
+          userId,
+          area,
+          tableLabel,
+          item,
+          approvedByAdminId,
+          approvedByAdminName,
+        },
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         await enqueueOutbox({
           id: `tickets:void-item:${area}:${tableLabel}:${Date.now()}`,
           method: 'POST',
           path: '/tickets/void-item',
-          body: { userId, area, tableLabel, item, approvedByAdminId, approvedByAdminName },
+          body: {
+            userId,
+            area,
+            tableLabel,
+            item,
+            approvedByAdminId,
+            approvedByAdminName,
+          },
           requireAuth: true,
         });
       } else {
@@ -2840,41 +4003,67 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
     }
     // Mirror locally so the UI and fallback reports reflect voids immediately.
     try {
-      const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } }).catch(() => null);
+      const last = await prisma.ticketLog
+        .findFirst({
+          where: { area, tableLabel },
+          orderBy: { createdAt: 'desc' },
+        })
+        .catch(() => null);
       if (last) {
         const itemsArr = (last.itemsJson as any[]) || [];
         const idx = itemsArr.findIndex((it: any) => it.name === item.name);
         if (idx !== -1) {
           itemsArr[idx] = { ...itemsArr[idx], voided: true };
-          await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: itemsArr } }).catch(() => null);
+          await prisma.ticketLog
+            .update({ where: { id: last.id }, data: { itemsJson: itemsArr } })
+            .catch(() => null);
         }
       }
     } catch {
       // ignore
     }
     // KDS is local even in cloud mode: reflect voids immediately.
-    await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(() => false);
+    await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(
+      () => false,
+    );
     return true;
   }
   const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
-  await prisma.notification.create({ data: { userId, type: 'OTHER' as any, message } }).catch(() => {});
+  await prisma.notification
+    .create({ data: { userId, type: 'OTHER' as any, message } })
+    .catch(() => {});
   try {
-    const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true }, select: { id: true } } as any).catch(() => []);
+    const admins = await prisma.user
+      .findMany({
+        where: { role: 'ADMIN', active: true },
+        select: { id: true },
+      } as any)
+      .catch(() => []);
     for (const a of admins as any[]) {
-      await prisma.notification.create({ data: { userId: Number(a.id), type: 'OTHER' as any, message } }).catch(() => {});
+      await prisma.notification
+        .create({
+          data: { userId: Number(a.id), type: 'OTHER' as any, message },
+        })
+        .catch(() => {});
     }
   } catch {
     // ignore
   }
   // Also append a void marker in the latest ticket log for this table (if exists)
-  const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } });
+  const last = await prisma.ticketLog.findFirst({
+    where: { area, tableLabel },
+    orderBy: { createdAt: 'desc' },
+  });
   if (last) {
     const items = (last.itemsJson as any[]) || [];
     const idx = items.findIndex((it: any) => it.name === item.name);
     if (idx !== -1) {
       items[idx] = { ...items[idx], voided: true };
-      await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: items } });
+      await prisma.ticketLog.update({
+        where: { id: last.id },
+        data: { itemsJson: items },
+      });
     }
   }
   await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(() => false);
@@ -2887,21 +4076,32 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   const reason = String(input?.reason || '');
-  const approvedByAdminId = input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
-  const approvedByAdminName = input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
+  const approvedByAdminId =
+    input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
+  const approvedByAdminName =
+    input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
   if (!userId || !area || !tableLabel) return false;
 
   // Enforce admin PIN approval for voids if enabled in settings.
   try {
     const settings: any = await readSettings();
-    const requireApproval = (settings?.security?.approvals?.requireManagerPinForVoid !== false);
+    const requireApproval =
+      settings?.security?.approvals?.requireManagerPinForVoid !== false;
     if (requireApproval) {
-      const actor = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
-      const actorIsAdmin = String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
+      const actor = await prisma.user
+        .findUnique({ where: { id: userId } })
+        .catch(() => null);
+      const actorIsAdmin =
+        String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
       if (!actorIsAdmin) {
         if (!approvedByAdminId) return false;
-        const approver = await prisma.user.findUnique({ where: { id: approvedByAdminId } }).catch(() => null);
-        const approverIsAdmin = approver && (approver as any).active !== false && String((approver as any).role || '').toUpperCase() === 'ADMIN';
+        const approver = await prisma.user
+          .findUnique({ where: { id: approvedByAdminId } })
+          .catch(() => null);
+        const approverIsAdmin =
+          approver &&
+          (approver as any).active !== false &&
+          String((approver as any).role || '').toUpperCase() === 'ADMIN';
         if (!approverIsAdmin) return false;
       }
     }
@@ -2911,14 +4111,33 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     try {
-    await cloudJson('POST', '/tickets/void-ticket', { userId, area, tableLabel, reason, approvedByAdminId, approvedByAdminName }, { requireAuth: true, senderId: _e.sender.id });
+      await cloudJson(
+        'POST',
+        '/tickets/void-ticket',
+        {
+          userId,
+          area,
+          tableLabel,
+          reason,
+          approvedByAdminId,
+          approvedByAdminName,
+        },
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         await enqueueOutbox({
           id: `tickets:void-ticket:${area}:${tableLabel}:${Date.now()}`,
           method: 'POST',
           path: '/tickets/void-ticket',
-          body: { userId, area, tableLabel, reason, approvedByAdminId, approvedByAdminName },
+          body: {
+            userId,
+            area,
+            tableLabel,
+            reason,
+            approvedByAdminId,
+            approvedByAdminName,
+          },
           requireAuth: true,
         });
       } else {
@@ -2932,7 +4151,12 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
       // ignore
     }
     try {
-      await cloudJson('POST', '/tables/open', { area, label: tableLabel, open: false }, { requireAuth: true, senderId: _e.sender.id });
+      await cloudJson(
+        'POST',
+        '/tables/open',
+        { area, label: tableLabel, open: false },
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         await enqueueOutbox({
@@ -2947,37 +4171,77 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
     }
     // Mirror locally: mark latest ticket items voided (best-effort)
     try {
-      const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } }).catch(() => null);
+      const last = await prisma.ticketLog
+        .findFirst({
+          where: { area, tableLabel },
+          orderBy: { createdAt: 'desc' },
+        })
+        .catch(() => null);
       if (last) {
-        const itemsArr = ((last.itemsJson as any[]) || []).map((it: any) => ({ ...it, voided: true }));
+        const itemsArr = ((last.itemsJson as any[]) || []).map((it: any) => ({
+          ...it,
+          voided: true,
+        }));
         const note2 = last.note
           ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}`
           : `VOIDED${reason ? `: ${reason}` : ''}`;
-        await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: itemsArr, note: note2 } }).catch(() => null);
+        await prisma.ticketLog
+          .update({
+            where: { id: last.id },
+            data: { itemsJson: itemsArr, note: note2 },
+          })
+          .catch(() => null);
       }
     } catch {
       // ignore
     }
     // KDS is local even in cloud mode: reflect voids immediately.
-    await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(() => false);
+    await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(
+      () => false,
+    );
     return true;
   }
   const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
-  await prisma.notification.create({ data: { userId, type: 'OTHER' as any, message } }).catch(() => {});
+  await prisma.notification
+    .create({ data: { userId, type: 'OTHER' as any, message } })
+    .catch(() => {});
   try {
-    const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true }, select: { id: true } } as any).catch(() => []);
+    const admins = await prisma.user
+      .findMany({
+        where: { role: 'ADMIN', active: true },
+        select: { id: true },
+      } as any)
+      .catch(() => []);
     for (const a of admins as any[]) {
-      await prisma.notification.create({ data: { userId: Number(a.id), type: 'OTHER' as any, message } }).catch(() => {});
+      await prisma.notification
+        .create({
+          data: { userId: Number(a.id), type: 'OTHER' as any, message },
+        })
+        .catch(() => {});
     }
   } catch {
     // ignore
   }
   // Mark all items in the latest ticket as voided for admin view
-  const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel }, orderBy: { createdAt: 'desc' } });
+  const last = await prisma.ticketLog.findFirst({
+    where: { area, tableLabel },
+    orderBy: { createdAt: 'desc' },
+  });
   if (last) {
-    const items = ((last.itemsJson as any[]) || []).map((it: any) => ({ ...it, voided: true }));
-    await prisma.ticketLog.update({ where: { id: last.id }, data: { itemsJson: items, note: last.note ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}` : `VOIDED${reason ? `: ${reason}` : ''}` } });
+    const items = ((last.itemsJson as any[]) || []).map((it: any) => ({
+      ...it,
+      voided: true,
+    }));
+    await prisma.ticketLog.update({
+      where: { id: last.id },
+      data: {
+        itemsJson: items,
+        note: last.note
+          ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}`
+          : `VOIDED${reason ? `: ${reason}` : ''}`,
+      },
+    });
   }
   // Close table in local open map + openAt so it becomes FREE immediately
   try {
@@ -2986,18 +4250,31 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
     const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } });
     const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
     delete atMap[`${area}:${tableLabel}`];
-    await prisma.syncState.upsert({ where: { key: keyAt }, create: { key: keyAt, valueJson: atMap }, update: { valueJson: atMap } });
+    await prisma.syncState.upsert({
+      where: { key: keyAt },
+      create: { key: keyAt, valueJson: atMap },
+      update: { valueJson: atMap },
+    });
   } catch {
     // ignore
   }
   // Also close active KDS order (best-effort)
   try {
-    const active = await (prisma as any).kdsOrder.findFirst({ where: { area, tableLabel, closedAt: null }, orderBy: { openedAt: 'desc' } });
-    if (active) await (prisma as any).kdsOrder.update({ where: { id: active.id }, data: { closedAt: new Date() } });
+    const active = await (prisma as any).kdsOrder.findFirst({
+      where: { area, tableLabel, closedAt: null },
+      orderBy: { openedAt: 'desc' },
+    });
+    if (active)
+      await (prisma as any).kdsOrder.update({
+        where: { id: active.id },
+        data: { closedAt: new Date() },
+      });
   } catch {
     // ignore
   }
-  await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(() => false);
+  await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(
+    () => false,
+  );
   return true;
 });
 
@@ -3011,7 +4288,12 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     q.set('userId', String(userId));
     if (input?.startIso) q.set('startIso', String(input.startIso));
     if (input?.endIso) q.set('endIso', String(input.endIso));
-    return await cloudJson('GET', `/admin/tickets-by-user?${q.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id });
+    return await cloudJson(
+      'GET',
+      `/admin/tickets-by-user?${q.toString()}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    );
   }
   const userId = Number(input?.userId);
   if (!userId) return [];
@@ -3021,7 +4303,10 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
     if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
   }
-  const rows = await prisma.ticketLog.findMany({ where, orderBy: { createdAt: 'desc' } });
+  const rows = await prisma.ticketLog.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+  });
   return rows.map((r: any) => ({
     id: r.id,
     area: r.area,
@@ -3030,8 +4315,16 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     createdAt: r.createdAt.toISOString(),
     items: r.itemsJson as any,
     note: r.note,
-    subtotal: (r.itemsJson as any[]).reduce((s: number, it: any) => s + (Number(it.unitPrice) * Number(it.qty || 1)), 0),
-    vat: (r.itemsJson as any[]).reduce((s: number, it: any) => s + (Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0)), 0),
+    subtotal: (r.itemsJson as any[]).reduce(
+      (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
+      0,
+    ),
+    vat: (r.itemsJson as any[]).reduce(
+      (s: number, it: any) =>
+        s +
+        Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0),
+      0,
+    ),
   }));
 });
 
@@ -3044,7 +4337,10 @@ ipcMain.handle('notifications:list', async (_e, input) => {
     if (!hasCloudSession(cloud.businessCode)) return [];
     const q = new URLSearchParams();
     if (onlyUnread) q.set('onlyUnread', '1');
-    return await cloudJson('GET', `/notifications?${q.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => []);
+    return await cloudJson('GET', `/notifications?${q.toString()}`, undefined, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    }).catch(() => []);
   }
   const userId = Number(input?.userId);
   if (!userId) return [];
@@ -3066,11 +4362,19 @@ ipcMain.handle('notifications:markAllRead', async (_e, input) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson('POST', '/notifications/mark-all-read', {}, { requireAuth: true, senderId: _e.sender.id }).catch(() => false);
+    return await cloudJson(
+      'POST',
+      '/notifications/mark-all-read',
+      {},
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => false);
   }
   const userId = Number(input?.userId);
   if (!userId) return false;
-  await prisma.notification.updateMany({ where: { userId, readAt: null }, data: { readAt: new Date() } });
+  await prisma.notification.updateMany({
+    where: { userId, readAt: null },
+    data: { readAt: new Date() },
+  });
   return true;
 });
 
@@ -3082,10 +4386,20 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
     if (input?.startIso) q.set('startIso', String(input.startIso));
     if (input?.endIso) q.set('endIso', String(input.endIso));
     try {
-      return await cloudJson('GET', `/admin/ticket-counts?${q.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson(
+        'GET',
+        `/admin/ticket-counts?${q.toString()}`,
+        undefined,
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       const msg = String(e?.message || e || '').toLowerCase();
-      if (msg.includes('forbidden') || msg.includes('unauthorized') || msg.includes('not logged in') || msg.includes('admin login required')) {
+      if (
+        msg.includes('forbidden') ||
+        msg.includes('unauthorized') ||
+        msg.includes('not logged in') ||
+        msg.includes('admin login required')
+      ) {
         forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
       }
       return [];
@@ -3097,13 +4411,24 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
     if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
     if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
   }
-  const logs = await prisma.ticketLog.groupBy({ where, by: ['userId'], _count: { userId: true } } as any).catch(() => []);
-  const users = await prisma.user.findMany({ where: { role: { not: 'ADMIN' } } as any });
-  const openShifts = await prisma.dayShift.findMany({ where: { closedAt: null } });
+  const logs = await prisma.ticketLog
+    .groupBy({ where, by: ['userId'], _count: { userId: true } } as any)
+    .catch(() => []);
+  const users = await prisma.user.findMany({
+    where: { role: { not: 'ADMIN' } } as any,
+  });
+  const openShifts = await prisma.dayShift.findMany({
+    where: { closedAt: null },
+  });
   const openIds = new Set(openShifts.map((s: any) => s.openedById));
   const counts: Record<number, number> = {};
   for (const r of logs as any[]) counts[r.userId] = r._count.userId;
-  return users.map((u: any) => ({ id: u.id, name: u.displayName, active: openIds.has(u.id), tickets: counts[u.id] ?? 0 }));
+  return users.map((u: any) => ({
+    id: u.id,
+    name: u.displayName,
+    active: openIds.has(u.id),
+    tickets: counts[u.id] ?? 0,
+  }));
 });
 
 ipcMain.handle('admin:listShifts', async (_e, input) => {
@@ -3114,11 +4439,21 @@ ipcMain.handle('admin:listShifts', async (_e, input) => {
       const q = new URLSearchParams();
       if (input?.startIso) q.set('startIso', String(input.startIso));
       if (input?.endIso) q.set('endIso', String(input.endIso));
-      const path = q.toString() ? `/admin/shifts?${q.toString()}` : '/admin/shifts';
-      return await cloudJson('GET', path, undefined, { requireAuth: true, senderId: _e.sender.id });
+      const path = q.toString()
+        ? `/admin/shifts?${q.toString()}`
+        : '/admin/shifts';
+      return await cloudJson('GET', path, undefined, {
+        requireAuth: true,
+        senderId: _e.sender.id,
+      });
     } catch (e: any) {
       const msg = String(e?.message || e || '').toLowerCase();
-      if (msg.includes('forbidden') || msg.includes('unauthorized') || msg.includes('not logged in') || msg.includes('admin login required')) {
+      if (
+        msg.includes('forbidden') ||
+        msg.includes('unauthorized') ||
+        msg.includes('not logged in') ||
+        msg.includes('admin login required')
+      ) {
         forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
       }
       return [];
@@ -3162,10 +4497,20 @@ ipcMain.handle('admin:listNotifications', async (_e, input) => {
     if (input?.onlyUnread) q.set('onlyUnread', '1');
     if (input?.limit) q.set('limit', String(input.limit));
     try {
-      return await cloudJson('GET', `/admin/notifications?${q.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson(
+        'GET',
+        `/admin/notifications?${q.toString()}`,
+        undefined,
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       const msg = String(e?.message || e || '').toLowerCase();
-      if (msg.includes('forbidden') || msg.includes('unauthorized') || msg.includes('not logged in') || msg.includes('admin login required')) {
+      if (
+        msg.includes('forbidden') ||
+        msg.includes('unauthorized') ||
+        msg.includes('not logged in') ||
+        msg.includes('admin login required')
+      ) {
         forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
       }
       return [];
@@ -3195,16 +4540,29 @@ ipcMain.handle('admin:markAllNotificationsRead', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     try {
-      return await cloudJson('POST', '/admin/notifications/mark-all-read', {}, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson(
+        'POST',
+        '/admin/notifications/mark-all-read',
+        {},
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       const msg = String(e?.message || e || '').toLowerCase();
-      if (msg.includes('forbidden') || msg.includes('unauthorized') || msg.includes('not logged in') || msg.includes('admin login required')) {
+      if (
+        msg.includes('forbidden') ||
+        msg.includes('unauthorized') ||
+        msg.includes('not logged in') ||
+        msg.includes('admin login required')
+      ) {
         forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
       }
       return false;
     }
   }
-  await prisma.notification.updateMany({ where: { readAt: null }, data: { readAt: new Date() } });
+  await prisma.notification.updateMany({
+    where: { readAt: null },
+    data: { readAt: new Date() },
+  });
   return true;
 });
 
@@ -3214,10 +4572,18 @@ ipcMain.handle('admin:getTopSellingToday', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     try {
-      return await cloudJson('GET', '/admin/top-selling-today', undefined, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson('GET', '/admin/top-selling-today', undefined, {
+        requireAuth: true,
+        senderId: _e.sender.id,
+      });
     } catch (e: any) {
       const msg = String(e?.message || e || '').toLowerCase();
-      if (msg.includes('forbidden') || msg.includes('unauthorized') || msg.includes('not logged in') || msg.includes('admin login required')) {
+      if (
+        msg.includes('forbidden') ||
+        msg.includes('unauthorized') ||
+        msg.includes('not logged in') ||
+        msg.includes('admin login required')
+      ) {
         forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
       }
       return null;
@@ -3225,7 +4591,10 @@ ipcMain.handle('admin:getTopSellingToday', async (_e) => {
   }
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
-  const rows = await prisma.ticketLog.findMany({ where: { createdAt: { gte: start, lte: end } }, select: { itemsJson: true } });
+  const rows = await prisma.ticketLog.findMany({
+    where: { createdAt: { gte: start, lte: end } },
+    select: { itemsJson: true },
+  });
   const map = new Map<string, { qty: number; revenue: number }>();
   for (const r of rows) {
     const items = (r.itemsJson as any[]) || [];
@@ -3241,14 +4610,16 @@ ipcMain.handle('admin:getTopSellingToday', async (_e) => {
   }
   let best: { name: string; qty: number; revenue: number } | null = null;
   for (const [name, v] of map.entries()) {
-    if (!best || v.qty > best.qty) best = { name, qty: v.qty, revenue: v.revenue };
+    if (!best || v.qty > best.qty)
+      best = { name, qty: v.qty, revenue: v.revenue };
   }
   return best;
 });
 
 // Sales trends (daily/weekly/monthly)
 ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return { range: input?.range || 'daily', points: [] } as any;
+  if (await cloudEnabledButMissingBusinessCode())
+    return { range: input?.range || 'daily', points: [] } as any;
   const range = (input?.range as any) || 'daily';
   const today = new Date(new Date().setHours(0, 0, 0, 0));
   let start: Date;
@@ -3273,7 +4644,10 @@ ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
       from.setHours(0, 0, 0, 0);
       to.setHours(23, 59, 59, 999);
       const oneJan = new Date(from.getFullYear(), 0, 1);
-      const week = Math.ceil((((from.getTime() - oneJan.getTime()) / 86400000) + oneJan.getDay() + 1) / 7);
+      const week = Math.ceil(
+        ((from.getTime() - oneJan.getTime()) / 86400000 + oneJan.getDay() + 1) /
+          7,
+      );
       const label = `${from.getFullYear()}-W${String(week).padStart(2, '0')}`;
       const key = label;
       buckets.push({ key, label, from, to });
@@ -3294,7 +4668,9 @@ ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
   }
 
   const rows = await prisma.ticketLog.findMany({
-    where: { createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to } },
+    where: {
+      createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to },
+    },
     select: { createdAt: true, itemsJson: true },
     orderBy: { createdAt: 'asc' },
   });
@@ -3303,7 +4679,10 @@ ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
     const when = new Date(r.createdAt);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
-    const net = (r.itemsJson as any[]).reduce((s: number, it: any) => s + (Number(it.unitPrice) * Number(it.qty || 1)), 0);
+    const net = (r.itemsJson as any[]).reduce(
+      (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
+      0,
+    );
     result[idx].total += net;
     result[idx].orders += 1;
   }
@@ -3335,32 +4714,71 @@ ipcMain.handle('admin:exportMemorySnapshot', async () => {
 });
 
 ipcMain.handle('reports:getMyOverview', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
+  if (await cloudEnabledButMissingBusinessCode())
+    return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
   const userId = Number(input?.userId || 0);
   if (!userId) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
-    return await cloudJson('GET', '/reports/my/overview', undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => ({ revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 }));
+    if (!hasCloudSession(cloud.businessCode))
+      return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
+    return await cloudJson('GET', '/reports/my/overview', undefined, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    }).catch(() => ({ revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 }));
   }
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date();
-  const rows = await prisma.ticketLog.findMany({
-    where: { userId, createdAt: { gte: start, lte: end } },
-    select: { itemsJson: true },
-  }).catch(() => []);
-  const revenueTodayNet = rows.reduce((s: number, r: any) => s + ((r.itemsJson as any[]) || []).reduce((ss: number, it: any) => ss + Number(it.unitPrice || 0) * Number(it.qty || 1), 0), 0);
-  const revenueTodayVat = rows.reduce((s: number, r: any) => s + ((r.itemsJson as any[]) || []).reduce((ss: number, it: any) => ss + Number(it.unitPrice || 0) * Number(it.qty || 1) * Number(it.vatRate || 0), 0), 0);
+  const rows = await prisma.ticketLog
+    .findMany({
+      where: { userId, createdAt: { gte: start, lte: end } },
+      select: { itemsJson: true },
+    })
+    .catch(() => []);
+  const revenueTodayNet = rows.reduce(
+    (s: number, r: any) =>
+      s +
+      ((r.itemsJson as any[]) || []).reduce(
+        (ss: number, it: any) =>
+          ss + Number(it.unitPrice || 0) * Number(it.qty || 1),
+        0,
+      ),
+    0,
+  );
+  const revenueTodayVat = rows.reduce(
+    (s: number, r: any) =>
+      s +
+      ((r.itemsJson as any[]) || []).reduce(
+        (ss: number, it: any) =>
+          ss +
+          Number(it.unitPrice || 0) *
+            Number(it.qty || 1) *
+            Number(it.vatRate || 0),
+        0,
+      ),
+    0,
+  );
   // Open orders: open tables where latest ticket owner is this user.
-  const openList = await prisma.syncState.findUnique({ where: { key: 'tables:open' } }).catch(() => null);
+  const openList = await prisma.syncState
+    .findUnique({ where: { key: 'tables:open' } })
+    .catch(() => null);
   const map = ((openList?.valueJson as any) || {}) as Record<string, boolean>;
-  const openKeys = Object.entries(map).filter(([, v]) => Boolean(v)).map(([k]) => k);
-  const latests = await Promise.all(openKeys.map(async (k: string) => {
-    const [area, label] = k.split(':');
-    if (!area || !label) return false;
-    const last = await prisma.ticketLog.findFirst({ where: { area, tableLabel: label }, orderBy: { createdAt: 'desc' } }).catch(() => null);
-    return Boolean(last && Number(last.userId) === Number(userId));
-  }));
+  const openKeys = Object.entries(map)
+    .filter(([, v]) => Boolean(v))
+    .map(([k]) => k);
+  const latests = await Promise.all(
+    openKeys.map(async (k: string) => {
+      const [area, label] = k.split(':');
+      if (!area || !label) return false;
+      const last = await prisma.ticketLog
+        .findFirst({
+          where: { area, tableLabel: label },
+          orderBy: { createdAt: 'desc' },
+        })
+        .catch(() => null);
+      return Boolean(last && Number(last.userId) === Number(userId));
+    }),
+  );
   const openOrders = latests.filter(Boolean).length;
   return { revenueTodayNet, revenueTodayVat, openOrders };
 });
@@ -3372,11 +4790,17 @@ ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson('GET', '/reports/my/top-selling-today', undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => null);
+    return await cloudJson('GET', '/reports/my/top-selling-today', undefined, {
+      requireAuth: true,
+      senderId: _e.sender.id,
+    }).catch(() => null);
   }
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
-  const rows = await prisma.ticketLog.findMany({ where: { userId, createdAt: { gte: start, lte: end } }, select: { itemsJson: true } });
+  const rows = await prisma.ticketLog.findMany({
+    where: { userId, createdAt: { gte: start, lte: end } },
+    select: { itemsJson: true },
+  });
   const map = new Map<string, { qty: number; revenue: number }>();
   for (const r of rows) {
     const items = (r.itemsJson as any[]) || [];
@@ -3392,21 +4816,29 @@ ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {
   }
   let best: { name: string; qty: number; revenue: number } | null = null;
   for (const [name, v] of map.entries()) {
-    if (!best || v.qty > best.qty) best = { name, qty: v.qty, revenue: v.revenue };
+    if (!best || v.qty > best.qty)
+      best = { name, qty: v.qty, revenue: v.revenue };
   }
   return best;
 });
 
 ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return { range: input?.range || 'daily', points: [] } as any;
+  if (await cloudEnabledButMissingBusinessCode())
+    return { range: input?.range || 'daily', points: [] } as any;
   const userId = Number(input?.userId || 0);
   const range = (input?.range as any) || 'daily';
   if (!userId) return { range, points: [] } as any;
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return { range, points: [] } as any;
+    if (!hasCloudSession(cloud.businessCode))
+      return { range, points: [] } as any;
     const q = new URLSearchParams({ range: String(range) });
-    return await cloudJson('GET', `/reports/my/sales-trends?${q.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => ({ range, points: [] }));
+    return await cloudJson(
+      'GET',
+      `/reports/my/sales-trends?${q.toString()}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => ({ range, points: [] }));
   }
   const today = new Date(new Date().setHours(0, 0, 0, 0));
   let buckets: { label: string; from: Date; to: Date }[] = [];
@@ -3427,7 +4859,10 @@ ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
       from.setHours(0, 0, 0, 0);
       to.setHours(23, 59, 59, 999);
       const oneJan = new Date(from.getFullYear(), 0, 1);
-      const week = Math.ceil((((from.getTime() - oneJan.getTime()) / 86400000) + oneJan.getDay() + 1) / 7);
+      const week = Math.ceil(
+        ((from.getTime() - oneJan.getTime()) / 86400000 + oneJan.getDay() + 1) /
+          7,
+      );
       const label = `${from.getFullYear()}-W${String(week).padStart(2, '0')}`;
       buckets.push({ label, from, to });
     }
@@ -3443,17 +4878,28 @@ ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
       buckets.push({ label, from, to });
     }
   }
-  const rows = await prisma.ticketLog.findMany({
-    where: { userId, createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to } },
-    select: { createdAt: true, itemsJson: true },
-    orderBy: { createdAt: 'asc' },
-  }).catch(() => []);
+  const rows = await prisma.ticketLog
+    .findMany({
+      where: {
+        userId,
+        createdAt: {
+          gte: buckets[0].from,
+          lte: buckets[buckets.length - 1].to,
+        },
+      },
+      select: { createdAt: true, itemsJson: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    .catch(() => []);
   const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
   for (const r of rows as any[]) {
     const when = new Date(r.createdAt);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
-    const net = ((r.itemsJson as any[]) || []).reduce((s: number, it: any) => s + (Number(it.unitPrice) * Number(it.qty || 1)), 0);
+    const net = ((r.itemsJson as any[]) || []).reduce(
+      (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
+      0,
+    );
     result[idx].total += net;
     result[idx].orders += 1;
   }
@@ -3474,7 +4920,12 @@ ipcMain.handle('covers:save', async (_e, { area, label, covers }) => {
       // ignore
     }
     try {
-      return await cloudJson('POST', '/covers/save', { area, label, covers: num }, { requireAuth: true, senderId: _e.sender.id });
+      return await cloudJson(
+        'POST',
+        '/covers/save',
+        { area, label, covers: num },
+        { requireAuth: true, senderId: _e.sender.id },
+      );
     } catch (e: any) {
       if (isLikelyOfflineError(e)) {
         await enqueueOutbox({
@@ -3499,9 +4950,17 @@ ipcMain.handle('covers:getLast', async (_e, { area, label }) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson('GET', `/covers/last?area=${encodeURIComponent(String(area))}&label=${encodeURIComponent(String(label))}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => null);
+    return await cloudJson(
+      'GET',
+      `/covers/last?area=${encodeURIComponent(String(area))}&label=${encodeURIComponent(String(label))}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => null);
   }
-  const row = await prisma.covers.findFirst({ where: { area, label }, orderBy: { id: 'desc' } });
+  const row = await prisma.covers.findFirst({
+    where: { area, label },
+    orderBy: { id: 'desc' },
+  });
   return row?.covers ?? null;
 });
 
@@ -3511,7 +4970,12 @@ ipcMain.handle('layout:get', async (_e, { userId, area }) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson('GET', `/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(String(area))}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => null);
+    return await cloudJson(
+      'GET',
+      `/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(String(area))}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => null);
   }
   const key = `layout:${userId}:${area}`;
   const row = await prisma.syncState.findUnique({ where: { key } });
@@ -3523,7 +4987,12 @@ ipcMain.handle('layout:save', async (_e, { userId, area, nodes }) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson('POST', '/layout/save', { userId, area, nodes }, { requireAuth: true, senderId: _e.sender.id }).catch(() => false);
+    return await cloudJson(
+      'POST',
+      '/layout/save',
+      { userId, area, nodes },
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => false);
   }
   const key = `layout:${userId}:${area}`;
   await prisma.syncState.upsert({
@@ -3534,16 +5003,21 @@ ipcMain.handle('layout:save', async (_e, { userId, area, nodes }) => {
   return true;
 });
 
-
 // Create a request from non-owner
 ipcMain.handle('requests:create', async (_e, input) => {
   const { requesterId, ownerId, area, tableLabel, items, note } = input || {};
-  if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items)) return false;
+  if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items))
+    return false;
   if (await cloudEnabledButMissingBusinessCode()) return false;
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson('POST', '/requests/create', { requesterId, ownerId, area, tableLabel, items, note: note ?? null }, { requireAuth: true, senderId: _e.sender.id }).catch(() => false);
+    return await cloudJson(
+      'POST',
+      '/requests/create',
+      { requesterId, ownerId, area, tableLabel, items, note: note ?? null },
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => false);
   }
 
   const created = await prisma.ticketRequest.create({
@@ -3559,9 +5033,15 @@ ipcMain.handle('requests:create', async (_e, input) => {
   });
 
   // Notify owner
-  const requester = await prisma.user.findUnique({ where: { id: Number(requesterId) } });
+  const requester = await prisma.user.findUnique({
+    where: { id: Number(requesterId) },
+  });
   const msg = `${requester?.displayName || 'Staff'} requested to add items on ${area} ${tableLabel} (Request #${created.id})`;
-  await prisma.notification.create({ data: { userId: Number(ownerId), type: 'OTHER' as any, message: msg } }).catch(() => {});
+  await prisma.notification
+    .create({
+      data: { userId: Number(ownerId), type: 'OTHER' as any, message: msg },
+    })
+    .catch(() => {});
   return true;
 });
 
@@ -3573,28 +5053,57 @@ ipcMain.handle('requests:listForOwner', async (_e, input) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return [];
-    return await cloudJson('GET', `/requests/list-for-owner?ownerId=${encodeURIComponent(String(ownerId))}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => []);
+    return await cloudJson(
+      'GET',
+      `/requests/list-for-owner?ownerId=${encodeURIComponent(String(ownerId))}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => []);
   }
-  const rows = await prisma.ticketRequest.findMany({ where: { ownerId, status: 'PENDING' as any }, orderBy: { createdAt: 'desc' } } as any);
-  return rows.map((r: any) => ({ id: r.id, area: r.area, tableLabel: r.tableLabel, requesterId: r.requesterId, items: r.itemsJson, note: r.note, createdAt: r.createdAt.toISOString() }));
+  const rows = await prisma.ticketRequest.findMany({
+    where: { ownerId, status: 'PENDING' as any },
+    orderBy: { createdAt: 'desc' },
+  } as any);
+  return rows.map((r: any) => ({
+    id: r.id,
+    area: r.area,
+    tableLabel: r.tableLabel,
+    requesterId: r.requesterId,
+    items: r.itemsJson,
+    note: r.note,
+    createdAt: r.createdAt.toISOString(),
+  }));
 });
 
 // Approve or reject
 ipcMain.handle('requests:approve', async (_e, input) => {
-  const id = Number(input?.id); const ownerId = Number(input?.ownerId);
+  const id = Number(input?.id);
+  const ownerId = Number(input?.ownerId);
   if (!id || !ownerId) return false;
   if (await cloudEnabledButMissingBusinessCode()) return false;
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson('POST', '/requests/approve', { id, ownerId }, { requireAuth: true, senderId: _e.sender.id }).catch(() => false);
+    return await cloudJson(
+      'POST',
+      '/requests/approve',
+      { id, ownerId },
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => false);
   }
   const r = await prisma.ticketRequest.findUnique({ where: { id } });
-  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any)) return false;
-  await prisma.ticketRequest.update({ where: { id }, data: { status: 'APPROVED' as any, decidedAt: new Date() } });
+  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
+    return false;
+  await prisma.ticketRequest.update({
+    where: { id },
+    data: { status: 'APPROVED' as any, decidedAt: new Date() },
+  });
   // Persist the approval by appending items to the latest ticket log snapshot
   try {
-    const last = await prisma.ticketLog.findFirst({ where: { area: r.area, tableLabel: r.tableLabel }, orderBy: { createdAt: 'desc' } });
+    const last = await prisma.ticketLog.findFirst({
+      where: { area: r.area, tableLabel: r.tableLabel },
+      orderBy: { createdAt: 'desc' },
+    });
     const baseItems = ((last?.itemsJson as any[]) || []).map((it: any) => ({
       name: String(it.name || 'Item'),
       qty: Number(it.qty || 1),
@@ -3616,7 +5125,10 @@ ipcMain.handle('requests:approve', async (_e, input) => {
     for (const it of incoming) {
       const existing = map.get(it.name);
       if (existing) {
-        map.set(it.name, { ...existing, qty: Number(existing.qty || 0) + Number(it.qty || 1) });
+        map.set(it.name, {
+          ...existing,
+          qty: Number(existing.qty || 0) + Number(it.qty || 1),
+        });
       } else {
         map.set(it.name, { ...it });
       }
@@ -3635,39 +5147,78 @@ ipcMain.handle('requests:approve', async (_e, input) => {
   } catch (e) {
     void e;
   }
-  await prisma.notification.create({ data: { userId: r.requesterId, type: 'OTHER' as any, message: `Your request #${id} on ${r.area} ${r.tableLabel} was approved` } }).catch(() => {});
+  await prisma.notification
+    .create({
+      data: {
+        userId: r.requesterId,
+        type: 'OTHER' as any,
+        message: `Your request #${id} on ${r.area} ${r.tableLabel} was approved`,
+      },
+    })
+    .catch(() => {});
   return true;
 });
 
 ipcMain.handle('requests:reject', async (_e, input) => {
-  const id = Number(input?.id); const ownerId = Number(input?.ownerId);
+  const id = Number(input?.id);
+  const ownerId = Number(input?.ownerId);
   if (!id || !ownerId) return false;
   if (await cloudEnabledButMissingBusinessCode()) return false;
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson('POST', '/requests/reject', { id, ownerId }, { requireAuth: true, senderId: _e.sender.id }).catch(() => false);
+    return await cloudJson(
+      'POST',
+      '/requests/reject',
+      { id, ownerId },
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => false);
   }
   const r = await prisma.ticketRequest.findUnique({ where: { id } });
-  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any)) return false;
-  await prisma.ticketRequest.update({ where: { id }, data: { status: 'REJECTED' as any, decidedAt: new Date() } });
-  await prisma.notification.create({ data: { userId: r.requesterId, type: 'OTHER' as any, message: `Your request #${id} on ${r.area} ${r.tableLabel} was rejected` } }).catch(() => {});
+  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
+    return false;
+  await prisma.ticketRequest.update({
+    where: { id },
+    data: { status: 'REJECTED' as any, decidedAt: new Date() },
+  });
+  await prisma.notification
+    .create({
+      data: {
+        userId: r.requesterId,
+        type: 'OTHER' as any,
+        message: `Your request #${id} on ${r.area} ${r.tableLabel} was rejected`,
+      },
+    })
+    .catch(() => {});
   return true;
 });
 
 // Owner's OrderPage polls approved requests for current table
 ipcMain.handle('requests:pollApprovedForTable', async (_e, input) => {
   const ownerId = Number(input?.ownerId);
-  const area = String(input?.area || ''); const tableLabel = String(input?.tableLabel || '');
+  const area = String(input?.area || '');
+  const tableLabel = String(input?.tableLabel || '');
   if (!ownerId || !area || !tableLabel) return [];
   if (await cloudEnabledButMissingBusinessCode()) return [];
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return [];
-    const q = new URLSearchParams({ ownerId: String(ownerId), area, tableLabel });
-    return await cloudJson('GET', `/requests/poll-approved?${q.toString()}`, undefined, { requireAuth: true, senderId: _e.sender.id }).catch(() => []);
+    const q = new URLSearchParams({
+      ownerId: String(ownerId),
+      area,
+      tableLabel,
+    });
+    return await cloudJson(
+      'GET',
+      `/requests/poll-approved?${q.toString()}`,
+      undefined,
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => []);
   }
-  const rows = await prisma.ticketRequest.findMany({ where: { ownerId, area, tableLabel, status: 'APPROVED' as any }, orderBy: { createdAt: 'asc' } } as any);
+  const rows = await prisma.ticketRequest.findMany({
+    where: { ownerId, area, tableLabel, status: 'APPROVED' as any },
+    orderBy: { createdAt: 'asc' },
+  } as any);
   return rows.map((r: any) => ({ id: r.id, items: r.itemsJson, note: r.note }));
 });
 
@@ -3679,10 +5230,16 @@ ipcMain.handle('requests:markApplied', async (_e, input) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
     if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson('POST', '/requests/mark-applied', { ids }, { requireAuth: true, senderId: _e.sender.id }).catch(() => false);
+    return await cloudJson(
+      'POST',
+      '/requests/mark-applied',
+      { ids },
+      { requireAuth: true, senderId: _e.sender.id },
+    ).catch(() => false);
   }
-  await prisma.ticketRequest.updateMany({ where: { id: { in: ids }, status: 'APPROVED' as any }, data: { status: 'APPLIED' as any, decidedAt: new Date() } } as any);
+  await prisma.ticketRequest.updateMany({
+    where: { id: { in: ids }, status: 'APPROVED' as any },
+    data: { status: 'APPLIED' as any, decidedAt: new Date() },
+  } as any);
   return true;
 });
-
-

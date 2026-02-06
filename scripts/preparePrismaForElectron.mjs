@@ -10,14 +10,37 @@ function exists(p) {
   }
 }
 
+function isGeneratedPrismaDir(prismaDir) {
+  // Prisma generates JS entrypoints like:
+  //   .prisma/client/default.js
+  // plus engine binaries in the same folder.
+  return (
+    exists(prismaDir) &&
+    (exists(path.join(prismaDir, 'client', 'default.js')) ||
+      exists(path.join(prismaDir, 'client', 'index.js')) ||
+      exists(path.join(prismaDir, 'client', 'default.d.ts')))
+  );
+}
+
 function findPrismaDirInPnpmStore(rootDir) {
   const pnpmDir = path.join(rootDir, 'node_modules', '.pnpm');
   if (!exists(pnpmDir)) return null;
-  const entries = fs.readdirSync(pnpmDir).filter((n) => n.startsWith('@prisma+client@'));
+
+  const entries = fs.readdirSync(pnpmDir);
+
+  // Prefer the @prisma/client entry (most reliable).
+  const preferred = entries.filter((n) => n.startsWith('@prisma+client@'));
+  for (const e of preferred) {
+    const candidate = path.join(pnpmDir, e, 'node_modules', '.prisma');
+    if (isGeneratedPrismaDir(candidate)) return candidate;
+  }
+
+  // Fallback: any entry that has a generated .prisma/client.
   for (const e of entries) {
     const candidate = path.join(pnpmDir, e, 'node_modules', '.prisma');
-    if (exists(candidate)) return candidate;
+    if (isGeneratedPrismaDir(candidate)) return candidate;
   }
+
   return null;
 }
 
@@ -29,16 +52,16 @@ function copyDir(src, dest) {
 
 const ROOT = process.cwd();
 const dest = path.join(ROOT, 'node_modules', '.prisma');
-
-if (exists(dest)) {
-  console.log('[prisma] node_modules/.prisma already exists, skipping.');
-  process.exit(0);
-}
+const destOk = isGeneratedPrismaDir(dest);
 
 const src = findPrismaDirInPnpmStore(ROOT);
 if (!src) {
   console.error('[prisma] Could not find generated .prisma directory under pnpm store. Did you run `pnpm db:generate`?');
   process.exit(1);
+}
+
+if (destOk) {
+  console.log('[prisma] node_modules/.prisma already looks complete. Refreshing anyway to ensure Electron packaging includes it.');
 }
 
 console.log(`[prisma] Copying ${src} -> ${dest}`);

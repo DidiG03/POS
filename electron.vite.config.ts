@@ -16,7 +16,9 @@ export default defineConfig({
     build: {
       outDir: 'dist/main',
       rollupOptions: {
-        input: resolve(__dirname, 'src/main/index.ts'),
+        input: {
+          index: resolve(__dirname, 'src/main/entry.ts'),
+        },
         external: ['@prisma/client', '.prisma/client', /\.prisma\/client/],
       },
     },
