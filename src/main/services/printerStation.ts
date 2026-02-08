@@ -71,6 +71,8 @@ async function routeOrderPayloadByStation(payload: any, settings: any): Promise<
   const routing = (settings as any)?.printerRouting || {};
   const stationRouting = (routing?.station || {}) as Partial<Record<Station, string>>;
   const categoryRouting = (routing?.categories || {}) as Record<string, string>;
+  const fallbackPrinterId =
+    String((routing as any)?.fallbackPrinterId || stationRouting?.ALL || '').trim();
   const items: any[] = Array.isArray(payload?.items) ? payload.items : [];
   const skus = Array.from(new Set(items.map((it) => String(it?.sku || '')).filter(Boolean)));
   const menu = skus.length
@@ -91,29 +93,23 @@ async function routeOrderPayloadByStation(payload: any, settings: any): Promise<
     const printerIdByCategoryName = categoryName && categoryRouting[categoryName] ? String(categoryRouting[categoryName]) : '';
     const printerIdByCategoryId = categoryKey && categoryRouting[categoryKey] ? String(categoryRouting[categoryKey]) : '';
     const printerIdByCategory = printerIdByCategoryName || printerIdByCategoryId;
-    const station = (String(it?.station || info?.station || 'KITCHEN').toUpperCase() as any) as Station;
-    const printerIdByStation = stationRouting?.[station as Station] ? String(stationRouting[station as Station]) : '';
-    const printerIdFallback = stationRouting?.ALL ? String(stationRouting.ALL) : '';
-    const printerId = printerIdByCategory || printerIdByStation || printerIdFallback || '';
-    // Split by CATEGORY when category routing is set (even if multiple categories share same printer),
-    // otherwise fall back to station-based slips.
-    const groupKey =
-      printerIdByCategory
-        ? `CAT:${categoryName || categoryKey || 'unknown'}`
-        : `ST:${station}`;
+    const printerId = (printerIdByCategory || fallbackPrinterId || '').trim();
+    // When category routing exists, split by CATEGORY. Otherwise, everything goes to fallback.
+    const groupKey = printerIdByCategory
+      ? `CAT:${categoryName || categoryKey || 'unknown'}`
+      : `FB:ALL`;
     const key = `${printerId}|${groupKey}`;
     if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key)!.push({ ...it, station, categoryId });
+    buckets.get(key)!.push({ ...it, station: 'ALL', categoryId });
   }
 
   const out: Array<{ station: Station; printerId?: string; payload: any }> = [];
   for (const [key, groupItems] of buckets.entries()) {
     const [printerId, group] = key.split('|');
     const isCat = String(group || '').startsWith('CAT:');
-    const routeLabel = isCat ? String(group || '').slice(4) : String(group || '').startsWith('ST:') ? String(group).slice(3) : '';
-    const stGuess = String(group || '').startsWith('ST:') ? String(group).slice(3).toUpperCase() : 'ALL';
-    const st = (stGuess === 'KITCHEN' || stGuess === 'BAR' || stGuess === 'DESSERT' ? (stGuess as Station) : 'ALL') as Station;
-    const meta = { ...(payload?.meta || {}), kind: 'ORDER', station: st, hidePrices: true, routeLabel };
+    const routeLabel = isCat ? String(group || '').slice(4) : 'all';
+    const st: Station = 'ALL';
+    const meta = { ...(payload?.meta || {}), kind: 'ORDER', station: 'ALL', hidePrices: true, routeLabel: routeLabel || 'all' };
     out.push({ station: st, printerId: (printerId || '').trim() || undefined, payload: { ...payload, items: groupItems, meta } });
   }
   return out;

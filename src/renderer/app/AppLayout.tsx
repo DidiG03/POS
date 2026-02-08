@@ -5,6 +5,35 @@ import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
 import { isClockOnlyRole } from '@shared/utils/roles';
+import { toast } from '../stores/toasts';
+
+function IconTables() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
+      <path d="M4 7h16v6H4V7Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M7 13v7M17 13v7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M9 4h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconReports() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
+      <path d="M6 3h12v18H6V3Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M9 7h6M9 11h6M9 15h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconLogout() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
+      <path d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M13 12H3m0 0 3-3M3 12l3 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 export default function AppLayout() {
   const { user, setUser } = useSessionStore();
@@ -240,8 +269,8 @@ export default function AppLayout() {
           disabled to prevent mistakes.
         </div>
       )}
-      <header className="bg-gray-800 px-3 sm:px-4 py-2 sm:py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+      <header className="bg-gray-800 px-3 sm:px-4 py-2 sm:py-3 grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-2 items-center">
+        <div className="flex items-center gap-2 min-w-0 justify-start">
           <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
             <span className="hidden sm:inline">
               Code Orbit - {user?.displayName} -
@@ -258,9 +287,10 @@ export default function AppLayout() {
                       const { openMap } = useTableStatus.getState();
                       const anyOpen = Object.values(openMap).some(Boolean);
                       if (anyOpen) {
-                        alert(
-                          "You can't clock out while you still have open tables. Please close all open orders first.",
-                        );
+                          toast.warn(
+                            "You can't clock out while you still have open tables. Please close all open orders first.",
+                            { title: 'Cannot clock out' },
+                          );
                         return;
                       }
                     }
@@ -300,7 +330,48 @@ export default function AppLayout() {
             </>
           )}
         </div>
-        <nav className="flex items-center gap-2 sm:gap-4 min-w-0">
+
+        {/* Center nav (primary actions) */}
+        <div className="flex items-center justify-start sm:justify-center min-w-0">
+          <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto whitespace-nowrap">
+            {!isWaiter && (
+              <NavLink
+                to="/app/clock"
+                className={({ isActive }) =>
+                  isActive ? 'underline' : 'hover:underline'
+                }
+              >
+                Clock
+              </NavLink>
+            )}
+            {!clockOnly && (
+              <>
+                <NavLink
+                  to="/app/tables"
+                  className={({ isActive }) =>
+                    `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+                  }
+                  title="Tables"
+                >
+                  <IconTables />
+                  <span className="hidden sm:inline">Tables</span>
+                </NavLink>
+                <NavLink
+                  to="/app/reports"
+                  className={({ isActive }) =>
+                    `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+                  }
+                  title="Reports"
+                >
+                  <IconReports />
+                  <span className="hidden sm:inline">Reports</span>
+                </NavLink>
+              </>
+            )}
+          </div>
+        </div>
+
+        <nav className="flex items-center gap-2 sm:gap-3 min-w-0 justify-start sm:justify-end">
           {user && (
             <div
               className={`text-xs px-2 py-1 rounded border ${
@@ -392,50 +463,19 @@ export default function AppLayout() {
             )}
           </div>
 
-          {/* Scrollable links (only the links scroll, not the popovers) */}
-          <div className="flex items-center gap-2 sm:gap-4 overflow-x-auto whitespace-nowrap min-w-0">
-            {!isWaiter && (
-              <NavLink
-                to="/app/clock"
-                className={({ isActive }) =>
-                  isActive ? 'underline' : 'hover:underline'
-                }
-              >
-                Clock
-              </NavLink>
-            )}
-            {!clockOnly && (
-              <>
-                <NavLink
-                  to="/app/tables"
-                  className={({ isActive }) =>
-                    isActive ? 'underline' : 'hover:underline'
-                  }
-                >
-                  Tables
-                </NavLink>
-                <NavLink
-                  to="/app/reports"
-                  className={({ isActive }) =>
-                    isActive ? 'underline' : 'hover:underline'
-                  }
-                >
-                  Reports
-                </NavLink>
-              </>
-            )}
-            {user && (
-              <button
-                className="ml-1 px-3 py-1 rounded-full bg-red-700 hover:bg-red-800 cursor-pointer text-sm"
-                onClick={() => {
-                  forceLogout('Logged out');
-                }}
-                type="button"
-              >
-                Logout
-              </button>
-            )}
-          </div>
+          {user && (
+            <button
+              className="ml-1 px-3 py-1 rounded bg-red-700 hover:bg-red-800 cursor-pointer text-sm flex items-center gap-2"
+              onClick={() => {
+                forceLogout('Logged out');
+              }}
+              type="button"
+              title="Logout"
+            >
+              <IconLogout />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
+          )}
         </nav>
       </header>
       <main className="flex-1 p-2 sm:p-4 min-h-0 overflow-hidden">

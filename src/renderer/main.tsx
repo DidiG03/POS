@@ -7,6 +7,7 @@ import { offlineQueue } from './utils/offlineQueue';
 import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { Toaster } from './components/Toaster';
 // PWA registration disabled for desktop build
 
 // Initialize Sentry in renderer (if available via Electron preload)
@@ -433,7 +434,23 @@ if (!(window as any).api) {
           method: 'POST',
           body: JSON.stringify({}),
         });
-        return !!(r && r.ok === true);
+        const ok = !!(r && r.ok === true);
+        if (!ok) {
+          const err = r && (r.error || r.message) ? String(r.error || r.message) : '';
+          window.dispatchEvent(
+            new CustomEvent('printer:event', {
+              detail: {
+                level: 'error',
+                kind: 'TEST',
+                message:
+                  'Printer test failed. Check power/paper and the IP/port settings.',
+                detail: err || undefined,
+                at: Date.now(),
+              },
+            }),
+          );
+        }
+        return ok;
       },
       async setPrinter() {
         throw new Error('not supported in browser');
@@ -569,7 +586,23 @@ if (!(window as any).api) {
           method: 'POST',
           body: JSON.stringify(input),
         });
-        return !!(r && r.ok === true);
+        const ok = !!(r && r.ok === true);
+        if (!ok) {
+          const err = r && (r.error || r.message) ? String(r.error || r.message) : '';
+          window.dispatchEvent(
+            new CustomEvent('printer:event', {
+              detail: {
+                level: 'error',
+                kind: 'PRINT',
+                message:
+                  'Printer failed to print. Check paper/power and the IP/port settings.',
+                detail: err || undefined,
+                at: Date.now(),
+              },
+            }),
+          );
+        }
+        return ok;
       },
     },
     tables: {
@@ -973,6 +1006,7 @@ createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ErrorBoundary>
       <Root />
+      <Toaster />
     </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -19,6 +19,122 @@ import { transferTableLocal } from './services/tableTransfer';
 import { cloudJson, getCloudConfig } from './services/cloud';
 import { isClockOnlyRole } from '@shared/utils/roles';
 
+async function maybeAlertSuspiciousVoidsLocal(input: {
+  actorUserId: number;
+  kind: 'VOID_ITEM' | 'VOID_TICKET';
+}) {
+  // Conservative thresholds to avoid false accusations.
+  const windowMinutes = 60;
+  const threshold = input.kind === 'VOID_TICKET' ? 3 : 6;
+  const cooldownMinutes = 60;
+  const since = new Date(Date.now() - windowMinutes * 60 * 1000);
+  const prefix = input.kind === 'VOID_TICKET' ? 'Voided ticket on ' : 'Voided item on ';
+
+  const count = await prisma.notification
+    .count({
+      where: {
+        userId: input.actorUserId,
+        type: 'OTHER' as any,
+        createdAt: { gte: since } as any,
+        message: { startsWith: prefix } as any,
+      } as any,
+    })
+    .catch(() => 0);
+  if (count < threshold) return;
+
+  const actor = await prisma.user
+    .findUnique({ where: { id: input.actorUserId } })
+    .catch(() => null as any);
+  const actorName = actor?.displayName
+    ? String(actor.displayName)
+    : `User #${input.actorUserId}`;
+
+  const admins = await prisma.user
+    .findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 })
+    .catch(() => []);
+
+  const cooldownSince = new Date(Date.now() - cooldownMinutes * 60 * 1000);
+  const actionLabel = input.kind === 'VOID_TICKET' ? 'voided tickets' : 'voided items';
+  const msg = `Unusual activity (auto-check): ${count} ${actionLabel} by ${actorName} in the last ${windowMinutes} minutes. This can be normal during corrections; please review if unexpected.`;
+
+  for (const a of admins as any[]) {
+    const already = await prisma.notification
+      .count({
+        where: {
+          userId: a.id,
+          type: 'SECURITY' as any,
+          createdAt: { gte: cooldownSince } as any,
+          message: { startsWith: 'Unusual activity (auto-check):' } as any,
+        } as any,
+      })
+      .catch(() => 0);
+    if (already > 0) continue;
+    await prisma.notification
+      .create({
+        data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any,
+      })
+      .catch(() => {});
+  }
+}
+
+async function maybeAlertVoidSoonAfterPaymentLocal(input: {
+  actorUserId: number;
+  area: string;
+  tableLabel: string;
+  kind: 'VOID_ITEM' | 'VOID_TICKET';
+}) {
+  const windowMinutes = 10;
+  const cooldownMinutes = 60;
+  const now = Date.now();
+  const cooldownSince = new Date(now - cooldownMinutes * 60 * 1000);
+  const key = `${input.area}:${input.tableLabel}`;
+
+  const row = await prisma.syncState
+    .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
+    .catch(() => null as any);
+  const map = ((row?.valueJson as any) || {}) as Record<string, string>;
+  const lastIso = map[key];
+  if (!lastIso) return;
+  const last = new Date(lastIso);
+  const deltaMs = now - last.getTime();
+  if (!Number.isFinite(deltaMs) || deltaMs < 0 || deltaMs > windowMinutes * 60 * 1000) return;
+
+  const actor = await prisma.user
+    .findUnique({ where: { id: input.actorUserId } })
+    .catch(() => null as any);
+  const actorName = actor?.displayName
+    ? String(actor.displayName)
+    : `User #${input.actorUserId}`;
+  const admins = await prisma.user
+    .findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 })
+    .catch(() => []);
+
+  const minutesAgo = Math.max(0, Math.round(deltaMs / 60000));
+  const actionLabel = input.kind === 'VOID_TICKET' ? 'voided a ticket' : 'voided an item';
+  const msg =
+    `Unusual activity (auto-check): ${actorName} ${actionLabel} on ${input.area} Table ${input.tableLabel} about ${minutesAgo} minutes after payment. ` +
+    `This can be normal (corrections/reprints); please review if unexpected.`;
+
+  for (const a of admins as any[]) {
+    const already = await prisma.notification
+      .count({
+        where: {
+          userId: a.id,
+          type: 'SECURITY' as any,
+          createdAt: { gte: cooldownSince } as any,
+          message: { includes: 'minutes after payment' } as any,
+        } as any,
+      })
+      .catch(() => 0);
+    if (already > 0) continue;
+    await prisma.notification
+      .create({
+        data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any,
+      })
+      .catch(() => {});
+  }
+}
+
 type CorsPolicy = {
   allowOrigin: (
     origin: string | undefined,
@@ -81,6 +197,20 @@ async function ensureKdsLocalSchema() {
     return false;
   }
 }
+
+// Suspicious-pattern detection (best-effort, in-memory).
+const mgrPinFailByIp = new Map<string, { count: number; resetAt: number; lastAlertAt: number }>();
+
+// Suspicious-pattern detection (best-effort, in-memory) for payment adjustments.
+const payAdjustByUser = new Map<
+  number,
+  {
+    discountCount: number;
+    serviceRemovalCount: number;
+    resetAt: number;
+    lastAlertAt: number;
+  }
+>();
 
 function dayKeyLocal(d = new Date()) {
   const y = d.getFullYear();
@@ -229,6 +359,55 @@ async function issueToken(
   const body = `${header}.${payload}`;
   const sig = base64url(hmacSha256(secret, body));
   return `${body}.${sig}`;
+}
+
+async function issueApprovalToken(
+  secret: string,
+  ctx: { userId: number; role?: string },
+  ttlSeconds = 5 * 60,
+) {
+  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64url(
+    JSON.stringify({
+      sub: ctx.userId,
+      role: ctx.role,
+      purpose: 'manager_approval',
+      iat: now,
+      exp: now + ttlSeconds,
+    }),
+  );
+  const body = `${header}.${payload}`;
+  const sig = base64url(hmacSha256(secret, body));
+  return `${body}.${sig}`;
+}
+
+async function verifyApprovalToken(
+  secret: string,
+  token: string,
+): Promise<AuthContext> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [h, p, s] = parts;
+  const expected = base64url(hmacSha256(secret, `${h}.${p}`));
+  if (s.length !== expected.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(s)))
+    return null;
+  let payload: any;
+  try {
+    const b64 = p.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+    payload = JSON.parse(Buffer.from(b64 + pad, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (String(payload?.purpose || '') !== 'manager_approval') return null;
+  if (!payload?.sub || typeof payload.sub !== 'number') return null;
+  if (typeof payload.exp === 'number' && payload.exp < now) return null;
+  // Only admins can approve.
+  if (String(payload.role || '').toUpperCase() !== 'ADMIN') return null;
+  return { userId: payload.sub, role: payload.role };
 }
 
 async function verifyToken(
@@ -731,10 +910,21 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Verify manager/admin PIN for approvals (requires staff to be logged in).
       if (req.method === 'POST' && pathname === '/auth/verify-manager-pin') {
+        // For LAN host API, do not trust x-forwarded-for (clients can spoof it).
+        const remoteIp = String(req.socket.remoteAddress || '').trim();
         const { pin } = await parseJson(req);
         const p = String(pin || '').trim();
         if (!/^\d{4,6}$/.test(p))
           return send(res, 200, { ok: false }, corsOrigin);
+        // Track repeated failures per IP (conservative thresholds, neutral admin alert).
+        const windowMinutes = 10;
+        const threshold = 10;
+        const cooldownMinutes = 60;
+        const now = Date.now();
+        const cur = mgrPinFailByIp.get(remoteIp);
+        if (!cur || cur.resetAt <= now) {
+          mgrPinFailByIp.set(remoteIp, { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: cur?.lastAlertAt || 0 });
+        }
         const cloud = await getCloudConfig().catch(() => null);
         if (cloud) {
           try {
@@ -744,6 +934,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               { businessCode: cloud.businessCode, pin: p },
               { requireAuth: false, senderId: 0 },
             );
+            if (!(r && typeof r === 'object' && (r as any).ok === true)) {
+              const st = mgrPinFailByIp.get(remoteIp)!;
+              st.count += 1;
+              mgrPinFailByIp.set(remoteIp, st);
+              if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
+                const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 }).catch(() => []);
+                const msg =
+                  `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes` +
+                  `${remoteIp ? ` from IP ${remoteIp}` : ''}. ` +
+                  `This can be normal (mistyped PINs); please review if unexpected.`;
+                for (const a of admins as any[]) {
+                  await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+                }
+                st.lastAlertAt = now;
+                mgrPinFailByIp.set(remoteIp, st);
+              }
+            } else {
+              const st = mgrPinFailByIp.get(remoteIp);
+              if (st) mgrPinFailByIp.set(remoteIp, { ...st, count: 0 });
+            }
             return send(
               res,
               200,
@@ -765,6 +975,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             .compare(p, String((u as any).pinHash || ''))
             .catch(() => false);
           if (ok)
+            // success resets counter
+            {
+              const st = mgrPinFailByIp.get(remoteIp);
+              if (st) mgrPinFailByIp.set(remoteIp, { ...st, count: 0 });
+              const approvalToken = await issueApprovalToken(secret, {
+                userId: (u as any).id,
+                role: 'ADMIN',
+              });
             return send(
               res,
               200,
@@ -772,9 +990,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 ok: true,
                 userId: (u as any).id,
                 userName: (u as any).displayName,
+                  approvalToken,
               },
               corsOrigin,
             );
+            }
+        }
+        // failure increments counter + maybe alert
+        const st = mgrPinFailByIp.get(remoteIp)!;
+        st.count += 1;
+        mgrPinFailByIp.set(remoteIp, st);
+        if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
+          const msg =
+            `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes` +
+            `${remoteIp ? ` from IP ${remoteIp}` : ''}. ` +
+            `This can be normal (mistyped PINs); please review if unexpected.`;
+          for (const a of admins as any[]) {
+            await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+          }
+          st.lastAlertAt = now;
+          mgrPinFailByIp.set(remoteIp, st);
         }
         return send(res, 200, { ok: false }, corsOrigin);
       }
@@ -1272,6 +1507,83 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             : settings?.printer?.deviceName
               ? 'SYSTEM'
               : 'NETWORK')) as any;
+
+        // Track last payment time per table + payment adjustment alerts.
+        // Run before printing so it works for all printer modes.
+        try {
+          const meta: any = payload?.meta || {};
+          const kind = String(meta?.kind || '').toUpperCase();
+          if (kind === 'PAYMENT') {
+            const k = `${payload.area}:${payload.tableLabel}`;
+            const payRow = await prisma.syncState
+              .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
+              .catch(() => null as any);
+            const map = ((payRow?.valueJson as any) || {}) as Record<string, string>;
+            map[k] = new Date().toISOString();
+            if (payRow?.key) {
+              await prisma.syncState
+                .update({ where: { key: 'antitheft:lastPaymentAt' }, data: { valueJson: map } as any })
+                .catch(() => null);
+            } else {
+              await prisma.syncState
+                .create({ data: { key: 'antitheft:lastPaymentAt', valueJson: map } as any })
+                .catch(() => null);
+            }
+
+            // Suspicious-pattern alerting for payment adjustments (discounts / service charge removal).
+            const userId = Number(meta?.userId || 0);
+            const discountAmt = Number(meta?.discountAmount || 0);
+            const scEnabled = Boolean(meta?.serviceChargeEnabled);
+            const scApplied = Boolean(meta?.serviceChargeApplied);
+            const scAmt = Number(meta?.serviceChargeAmount || 0);
+            if (userId) {
+              const windowMinutes = 60;
+              const cooldownMinutes = 60;
+              const now = Date.now();
+              const cur = payAdjustByUser.get(userId);
+              if (!cur || cur.resetAt <= now) {
+                payAdjustByUser.set(userId, {
+                  discountCount: 0,
+                  serviceRemovalCount: 0,
+                  resetAt: now + windowMinutes * 60 * 1000,
+                  lastAlertAt: cur?.lastAlertAt || 0,
+                });
+              }
+              const st = payAdjustByUser.get(userId)!;
+              if (Number.isFinite(discountAmt) && discountAmt > 0) st.discountCount += 1;
+              if (scEnabled && !scApplied && Number.isFinite(scAmt) && scAmt > 0) st.serviceRemovalCount += 1;
+              payAdjustByUser.set(userId, st);
+
+              const actor = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null as any);
+              const actorName = actor?.displayName ? String(actor.displayName) : `User #${userId}`;
+              const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 }).catch(() => []);
+              const canAlert = !st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
+
+              if (canAlert && st.discountCount >= 5) {
+                const msg =
+                  `Unusual activity (auto-check): ${st.discountCount} discounted payments by ${actorName} in the last ${windowMinutes} minutes. ` +
+                  `This can be normal during promotions; please review if unexpected.`;
+                for (const a of admins as any[]) {
+                  await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+                }
+                st.lastAlertAt = now;
+                payAdjustByUser.set(userId, st);
+              } else if (canAlert && st.serviceRemovalCount >= 3) {
+                const msg =
+                  `Unusual activity (auto-check): ${st.serviceRemovalCount} service charge removals by ${actorName} in the last ${windowMinutes} minutes. ` +
+                  `This can be normal during corrections; please review if unexpected.`;
+                for (const a of admins as any[]) {
+                  await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+                }
+                st.lastAlertAt = now;
+                payAdjustByUser.set(userId, st);
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+
         if (mode === 'SYSTEM') {
           // Default ON: receipt printers expect raw ESC/POS, not PostScript/PDF
           const raw = settings?.printer?.systemRawEscpos !== false;
@@ -1351,6 +1663,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           item,
           approvedByAdminId,
           approvedByAdminName,
+          approvedByAdminToken,
         } = await parseJson(req);
         if (!userId || !area || !tableLabel || !item?.name)
           return send(res, 400, 'invalid', corsOrigin);
@@ -1363,7 +1676,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             .catch(() => null);
           const requireApproval =
             settings?.security?.approvals?.requireManagerPinForVoid !== false;
-          if (requireApproval && auth && auth.role !== 'ADMIN') {
+          if (requireApproval && (!auth || auth.role !== 'ADMIN')) {
             const aid =
               approvedByAdminId != null ? Number(approvedByAdminId) : 0;
             if (!aid)
@@ -1373,6 +1686,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 { error: 'admin_approval_required' },
                 corsOrigin,
               );
+            const tok = String(approvedByAdminToken || '').trim();
+            const approved = tok ? await verifyApprovalToken(secret, tok) : null;
+            if (!approved || approved.userId !== aid || String((approved as any).role || '').toUpperCase() !== 'ADMIN')
+              return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
             const approver = await prisma.user
               .findUnique({ where: { id: aid } })
               .catch(() => null);
@@ -1418,6 +1735,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             });
           }
         }
+        // Best-effort suspicious-pattern alerting (admins only; conservative thresholds).
+        void maybeAlertSuspiciousVoidsLocal({
+          actorUserId: Number(userId),
+          kind: 'VOID_ITEM',
+        });
+        void maybeAlertVoidSoonAfterPaymentLocal({
+          actorUserId: Number(userId),
+          area: String(area),
+          tableLabel: String(tableLabel),
+          kind: 'VOID_ITEM',
+        });
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/tickets/void-ticket') {
@@ -1428,6 +1756,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           reason,
           approvedByAdminId,
           approvedByAdminName,
+          approvedByAdminToken,
         } = await parseJson(req);
         if (!userId || !area || !tableLabel)
           return send(res, 400, 'invalid', corsOrigin);
@@ -1440,7 +1769,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             .catch(() => null);
           const requireApproval =
             settings?.security?.approvals?.requireManagerPinForVoid !== false;
-          if (requireApproval && auth && auth.role !== 'ADMIN') {
+          if (requireApproval && (!auth || auth.role !== 'ADMIN')) {
             const aid =
               approvedByAdminId != null ? Number(approvedByAdminId) : 0;
             if (!aid)
@@ -1450,6 +1779,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 { error: 'admin_approval_required' },
                 corsOrigin,
               );
+            const tok = String(approvedByAdminToken || '').trim();
+            const approved = tok ? await verifyApprovalToken(secret, tok) : null;
+            if (!approved || approved.userId !== aid || String((approved as any).role || '').toUpperCase() !== 'ADMIN')
+              return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
             const approver = await prisma.user
               .findUnique({ where: { id: aid } })
               .catch(() => null);
@@ -1519,6 +1852,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         } catch (e) {
           void e;
         }
+        // Best-effort suspicious-pattern alerting (admins only; conservative thresholds).
+        void maybeAlertSuspiciousVoidsLocal({
+          actorUserId: Number(userId),
+          kind: 'VOID_TICKET',
+        });
+        void maybeAlertVoidSoonAfterPaymentLocal({
+          actorUserId: Number(userId),
+          area: String(area),
+          tableLabel: String(tableLabel),
+          kind: 'VOID_TICKET',
+        });
         return send(res, 200, 'ok', corsOrigin);
       }
 

@@ -115,6 +115,10 @@ export default function LoginPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showShiftConfirm, setShowShiftConfirm] = useState(false);
   const [pendingUser, setPendingUser] = useState<any>(null);
+  const [boot, setBoot] = useState<{
+    staffLoaded: boolean;
+    openLoaded: boolean;
+  }>({ staffLoaded: false, openLoaded: false });
   const { setUser } = useSessionStore();
   const { setUser: setAdminUser } = useAdminSessionStore();
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -129,6 +133,8 @@ export default function LoginPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    setBoot({ staffLoaded: false, openLoaded: isAdminContext });
     (async () => {
       const s = await window.api.settings.get();
       setEnableAdmin(s.enableAdmin ?? false);
@@ -150,6 +156,7 @@ export default function LoginPage() {
         if (isAdminContext) setAdminBusinessCodeMode(true);
         setStaff([]);
         setOpenIds([]);
+        if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
         return;
       }
       setCloudNotice(null);
@@ -169,6 +176,7 @@ export default function LoginPage() {
           );
           setStaff([]);
           setOpenIds([]);
+          if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
           return;
         }
         throw e;
@@ -188,6 +196,7 @@ export default function LoginPage() {
           setCloudNotice('Invalid Business code or Business password.');
           setStaff([]);
           setOpenIds([]);
+          if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
           return;
         }
         // Staff login: empty staff list can also mean "no staff created yet".
@@ -211,12 +220,15 @@ export default function LoginPage() {
         }
         setStaff([]);
         setOpenIds([]);
+        if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
         return;
       }
       const list = isAdminContext
         ? users.filter((u) => u.role === 'ADMIN' && u.active)
         : users.filter((u) => u.active && u.role !== 'ADMIN');
+      if (cancelled) return;
       setStaff(list);
+      setBoot((b) => ({ ...b, staffLoaded: true }));
       // If cloud returned only admins (common when billing is paused), explain why staff list is empty.
       if (!isAdminContext && backendUrl) {
         const hasAdmins =
@@ -233,21 +245,47 @@ export default function LoginPage() {
       if (!isAdminContext) {
         try {
           const ids = await window.api.shifts.listOpen();
+          if (cancelled) return;
           setOpenIds(ids);
         } catch (e) {
           void e;
+          if (cancelled) return;
+          setOpenIds([]);
+        } finally {
+          if (!cancelled) setBoot((b) => ({ ...b, openLoaded: true }));
         }
       } else {
         setOpenIds([]);
+        if (!cancelled) setBoot((b) => ({ ...b, openLoaded: true }));
       }
     })();
-  }, [reloadNonce]);
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadNonce, isAdminContext]);
 
   const [enableAdmin, setEnableAdmin] = useState(false);
 
+  const shouldShowBootLoader =
+    // If we need user input (business code/password), show that UI instead of a loader.
+    !cloudNotice &&
+    !(isAdminContext && adminBusinessCodeMode) &&
+    (isAdminContext ? !boot.staffLoaded : !(boot.staffLoaded && boot.openLoaded));
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900">
-      <div className="bg-gray-800 p-6 rounded-lg w-full max-w-2xl">
+      {shouldShowBootLoader ? (
+        <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
+          <div className="text-lg font-semibold mb-2">
+            Connecting to POS backend…
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <div className="text-xs opacity-70">Please wait…</div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-gray-800 p-6 rounded-lg w-full max-w-2xl">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-xl font-semibold">
             {isAdminContext ? 'Admin Login' : 'Select Staff'}
@@ -555,7 +593,8 @@ export default function LoginPage() {
             </div>
           </div>
         )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

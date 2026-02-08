@@ -928,6 +928,23 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
   // Validate format (but don't reject weak PINs during verification - managers may already have them)
   const pinValidation = validatePin(pin, false); // rejectWeak = false for verification
   if (!pinValidation.valid) return { ok: false };
+
+  // Suspicious-pattern alerting (local): repeated manager PIN failures from the same window/sender.
+  // Conservative thresholds + neutral wording to avoid false accusations.
+  const windowMinutes = 10;
+  const threshold = 10;
+  const cooldownMinutes = 60;
+  const senderId = Number(_e.sender.id || 0);
+  const now = Date.now();
+  // Map is attached to global to avoid duplicate instances in dev reloads.
+  const g: any = globalThis as any;
+  if (!g.__mgrPinFailBySender) g.__mgrPinFailBySender = new Map();
+  const failMap: Map<number, { count: number; resetAt: number; lastAlertAt: number }> =
+    g.__mgrPinFailBySender;
+  const cur = failMap.get(senderId);
+  if (!cur || cur.resetAt <= now) {
+    failMap.set(senderId, { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: cur?.lastAlertAt || 0 });
+  }
   if (await cloudEnabledButMissingBusinessCode()) return { ok: false };
   const cloud = await getCloudConfig().catch(() => null);
   if (cloud) {
@@ -938,6 +955,28 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
         { businessCode: cloud.businessCode, pin },
         { requireAuth: false, senderId: _e.sender.id },
       );
+      // If cloud says ok=false, treat as a failure for local alerting too.
+      if (!(r && typeof r === 'object' && (r as any).ok === true)) {
+        const st = failMap.get(senderId)!;
+        st.count += 1;
+        failMap.set(senderId, st);
+        if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
+          // Notify all local admins (SECURITY) once per cooldown window.
+          const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 }).catch(() => []);
+          const msg =
+            `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes. ` +
+            `This can be normal (mistyped PINs); please review if unexpected.`;
+          for (const a of admins as any[]) {
+            await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+          }
+          st.lastAlertAt = now;
+          failMap.set(senderId, st);
+        }
+      } else {
+        // Success resets the counter
+        const st = failMap.get(senderId);
+        if (st) failMap.set(senderId, { ...st, count: 0 });
+      }
       return r && typeof r === 'object' ? r : { ok: false };
     } catch {
       return { ok: false };
@@ -953,12 +992,42 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
     const ok = await bcrypt
       .compare(pin, String((u as any).pinHash || ''))
       .catch(() => false);
-    if (ok)
+    if (ok) {
+      // Success resets the counter
+      const st = failMap.get(senderId);
+      if (st) failMap.set(senderId, { ...st, count: 0 });
+      // Local-only short-lived approval token to prevent spoofing approvals.
+      const g2: any = globalThis as any;
+      if (!g2.__approvalTokensLocal) g2.__approvalTokensLocal = new Map();
+      const tokMap: Map<string, { userId: number; role: string; exp: number }> =
+        g2.__approvalTokensLocal;
+      const token = crypto.randomBytes(24).toString('base64url');
+      tokMap.set(token, {
+        userId: (u as any).id,
+        role: 'ADMIN',
+        exp: Date.now() + 5 * 60 * 1000,
+      });
       return {
         ok: true,
         userId: (u as any).id,
         userName: (u as any).displayName,
+        approvalToken: token,
       };
+    }
+  }
+  // Failure
+  const st = failMap.get(senderId)!;
+  st.count += 1;
+  failMap.set(senderId, st);
+  if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
+    const msg =
+      `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes. ` +
+      `This can be normal (mistyped PINs); please review if unexpected.`;
+    for (const a of admins as any[]) {
+      await prisma.notification.create({ data: { userId: (a as any).id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+    }
+    st.lastAlertAt = now;
+    failMap.set(senderId, st);
   }
   return { ok: false };
 });
@@ -2155,11 +2224,9 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   let failCount = 0;
   if (routingEnabled && kind === 'ORDER') {
     const routing = (settings as any)?.printerRouting || {};
-    const stationRouting = (routing?.station || {}) as any;
-    const categoryRouting = (routing?.categories || {}) as Record<
-      string,
-      string
-    >;
+    const stationRouting = (routing?.station || {}) as any; // backward compat for fallback
+    const categoryRouting = (routing?.categories || {}) as Record<string, string>;
+    const fallbackPrinterId = String((routing as any)?.fallbackPrinterId || stationRouting?.ALL || '').trim();
     const normKey = (s: any) =>
       String(s ?? '')
         .trim()
@@ -2204,19 +2271,13 @@ ipcMain.handle('tickets:print', async (_e, input) => {
           : '';
       const printerIdByCategory =
         printerIdByCategoryName || printerIdByCategoryId;
-      const station =
-        (String(
-          (it as any)?.station || info?.station || 'KITCHEN',
-        ).toUpperCase() as any) || 'KITCHEN';
-      const printerIdByStation =
-        stationRouting?.[station] || stationRouting?.ALL || '';
-      const printerId = printerIdByCategory || printerIdByStation || '';
+      const printerId = String(printerIdByCategory || fallbackPrinterId || '').trim();
       const groupKey = printerIdByCategory
         ? `CAT:${categoryNameKey || categoryKey || 'unknown'}`
-        : `ST:${station}`;
+        : `FB:ALL`;
       const key = `${printerId || ''}|${groupKey}`;
       if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key)!.push({ ...(it as any), station, categoryId });
+      buckets.get(key)!.push({ ...(it as any), station: 'ALL', categoryId });
     }
 
     let okAll = true;
@@ -2225,19 +2286,14 @@ ipcMain.handle('tickets:print', async (_e, input) => {
       const prof = pickProfile(settings, printerId) || receiptProfile;
       const routeLabel = String(group || '').startsWith('CAT:')
         ? String(group).slice(4)
-        : String(group || '').startsWith('ST:')
-          ? String(group).slice(3)
-          : '';
-      const st = String(group || '').startsWith('ST:')
-        ? String(group).slice(3)
-        : 'ALL';
+        : 'all';
       const pld = {
         ...payload,
         items: groupItems,
         meta: {
           ...((payload as any)?.meta || {}),
           kind: 'ORDER',
-          station: st,
+          station: 'ALL',
           hidePrices: true,
           routeLabel,
         },

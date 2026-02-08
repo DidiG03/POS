@@ -7,6 +7,7 @@ import { useSessionStore } from '../../stores/session';
 import { logTicket } from '../../api';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
+import { toast } from '../../stores/toasts';
 
 type MenuItemDTO = {
   id: number;
@@ -50,7 +51,10 @@ export default function OrderPage() {
   const [weightInput, setWeightInput] = useState<string>('');
   const { selectedTable, setPendingAction, setSelectedTable } =
     useOrderContext();
-  const { setOpen, isOpen } = useTableStatus();
+  const { setOpen, setAll, isOpen } = useTableStatus();
+  const [openLoaded, setOpenLoaded] = useState(false);
+  const [openLoadError, setOpenLoadError] = useState<string | null>(null);
+  const [ticketLoaded, setTicketLoaded] = useState(false);
   const [showCovers, setShowCovers] = useState(false);
   const [coversValue, setCoversValue] = useState('');
   const [coversKnown, setCoversKnown] = useState<number | null | undefined>(
@@ -148,6 +152,41 @@ export default function OrderPage() {
     return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
   }
 
+  // Ensure table open/occupied status is loaded even when user refreshes on OrderPage.
+  // This prevents "free/occupied" and ticket hydration flicker.
+  useEffect(() => {
+    let timer: any;
+    let cancelled = false;
+    const loop = async () => {
+      const hidden =
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden';
+      try {
+        if (hidden) return;
+        const open = await window.api.tables.listOpen();
+        if (Array.isArray(open)) setAll(open);
+        if (!cancelled) {
+          setOpenLoaded(true);
+          setOpenLoadError(null);
+        }
+      } catch (e: any) {
+        void e;
+        if (!cancelled) {
+          setOpenLoadError(
+            'Loading occupied tables… (slow/offline network). Retrying…',
+          );
+        }
+      } finally {
+        timer = setTimeout(loop, hidden ? 12000 : 4000);
+      }
+    };
+    loop();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [setAll]);
+
   // Live "table open" timer (uses session start from tickets tooltip, which is based on tables:openAt)
   useEffect(() => {
     let cancelled = false;
@@ -182,6 +221,51 @@ export default function OrderPage() {
     const t = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(t);
   }, [openedAtMs]);
+
+  // Load ticket snapshot for open tables before rendering the page (prevents empty->pop-in on refresh).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!openLoaded) return;
+      if (!selectedTable) {
+        setTicketLoaded(true);
+        return;
+      }
+      // When table is not open, ticket is a new draft (no need to wait).
+      if (!isOpen(selectedTable.area, selectedTable.label)) {
+        setTicketLoaded(true);
+        return;
+      }
+      setTicketLoaded(false);
+      try {
+        const latest = await window.api.tickets.getLatestForTable(
+          selectedTable.area,
+          selectedTable.label,
+        );
+        const items = Array.isArray(latest?.items) ? latest!.items : [];
+        const remaining = items.filter((it: any) => !it.voided);
+        if (remaining.length) {
+          useTicketStore
+            .getState()
+            .hydrate({ items: remaining as any, note: latest?.note || '' });
+        } else {
+          useTicketStore.getState().hydrate({ items: [], note: latest?.note || '' });
+        }
+      } catch (e) {
+        void e;
+      } finally {
+        if (!cancelled) setTicketLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    openLoaded,
+    selectedTable?.area,
+    selectedTable?.label,
+    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+  ]);
 
   // Track covers for the selected table (used to gate "Pay")
   useEffect(() => {
@@ -242,7 +326,7 @@ export default function OrderPage() {
     error: string | null;
   }>({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
   const approvalResolveRef = useRef<
-    ((v: { userId: number; userName: string } | null) => void) | null
+    ((v: { userId: number; userName: string; approvalToken?: string } | null) => void) | null
   >(null);
 
   function requestManagerApproval(action: string) {
@@ -566,6 +650,29 @@ export default function OrderPage() {
     tick();
     return () => clearTimeout(timer);
   }, [user?.id, selectedTable?.area, selectedTable?.label, ownerId]);
+
+  const shouldBlockForLoading =
+    !openLoaded ||
+    (openLoaded && Boolean(selectedTable) && isTableOpen && !ticketLoaded);
+
+  if (shouldBlockForLoading) {
+    return (
+      <div className="min-h-[60vh] w-full flex items-center justify-center">
+        <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
+          <div className="text-lg font-semibold mb-2">
+            Connecting to POS backend…
+          </div>
+          <div className="text-sm opacity-80 mb-4">
+            {openLoadError || (isTableOpen ? 'Loading ticket…' : 'Please wait…')}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <div className="text-xs opacity-70">Please wait…</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full min-h-0 flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3">
@@ -954,15 +1061,11 @@ export default function OrderPage() {
                         if (!selectedTable || !user?.id || !ownerId) return;
                         const staged = lines.filter((l) => l.staged);
                         if (staged.length === 0) {
-                          alert(
-                            'Add items (new lines) before sending a request',
-                          );
+                          toast.warn('Add items (new lines) before sending a request');
                           return;
                         }
                         if (!connectionOk) {
-                          alert(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn('Network is slow/offline. Please wait and try again.');
                           return;
                         }
                         setBusyAction('request');
@@ -985,11 +1088,9 @@ export default function OrderPage() {
                             note: null,
                           });
                           setRequestLocked(true);
-                          alert('Request sent to the owner');
+                          toast.success('Request sent to the owner');
                         } catch {
-                          alert(
-                            'Request failed (network slow). Please try again.',
-                          );
+                          toast.error('Request failed (network slow). Please try again.');
                         } finally {
                           setBusyAction(null);
                         }
@@ -1014,9 +1115,7 @@ export default function OrderPage() {
                       onClick={async () => {
                         if (busyAction != null) return;
                         if (!connectionOk) {
-                          alert(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn('Network is slow/offline. Please wait and try again.');
                           return;
                         }
                         setBusyAction('void');
@@ -1029,6 +1128,7 @@ export default function OrderPage() {
                             let approvedByAdmin: {
                               userId: number;
                               userName: string;
+                              approvalToken?: string;
                             } | null = null;
                             if (approvalsCfg.requireManagerPinForVoid) {
                               const approved = await requestAdminApproval(
@@ -1056,6 +1156,8 @@ export default function OrderPage() {
                                     approvedByAdminId: approvedByAdmin.userId,
                                     approvedByAdminName:
                                       approvedByAdmin.userName,
+                                    approvedByAdminToken:
+                                      approvedByAdmin.approvalToken,
                                   }
                                 : {}),
                             });
@@ -1077,7 +1179,7 @@ export default function OrderPage() {
                             setOrderNote('');
                           }
                         } catch {
-                          alert('Failed to void/clear. Please try again.');
+                          toast.error('Failed to void/clear. Please try again.');
                         } finally {
                           setBusyAction(null);
                         }
@@ -1113,9 +1215,7 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          alert(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn('Network is slow/offline. Please wait and try again.');
                           return;
                         }
                         // Enrich log with details (table, order lines, notes, covers)
@@ -1215,9 +1315,7 @@ export default function OrderPage() {
                             )
                             .catch(() => {});
                         } catch {
-                          alert(
-                            'Send failed (network slow). Please try again.',
-                          );
+                          toast.error('Send failed (network slow). Please try again.');
                         } finally {
                           setBusyAction(null);
                         }
@@ -1257,9 +1355,7 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          alert(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn('Network is slow/offline. Please wait and try again.');
                           return;
                         }
                         // Open payment modal (choose method + amount + print)
@@ -1646,7 +1742,7 @@ export default function OrderPage() {
                         setOrderNote('');
                         setShowPayment(false);
                       } catch {
-                        alert('Payment action failed. Please try again.');
+                        toast.error('Payment action failed. Please try again.');
                       } finally {
                         setBusyAction(null);
                       }
@@ -1998,6 +2094,7 @@ export default function OrderPage() {
                   let approvedByAdmin: {
                     userId: number;
                     userName: string;
+                    approvalToken?: string;
                   } | null = null;
                   if (approvalsCfg.requireManagerPinForVoid) {
                     const approved = await requestAdminApproval(
@@ -2021,6 +2118,7 @@ export default function OrderPage() {
                       ? {
                           approvedByAdminId: approvedByAdmin.userId,
                           approvedByAdminName: approvedByAdmin.userName,
+                          approvedByAdminToken: approvedByAdmin.approvalToken,
                         }
                       : {}),
                   });
@@ -2191,6 +2289,7 @@ export default function OrderPage() {
                       (r as any).userName ||
                         (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager'),
                     ),
+                    approvalToken: String((r as any).approvalToken || '') || undefined,
                   });
                   approvalResolveRef.current = null;
                 } catch (err: any) {
@@ -2256,6 +2355,7 @@ export default function OrderPage() {
                             ? 'Admin'
                             : 'Manager'),
                       ),
+                      approvalToken: String((r as any).approvalToken || '') || undefined,
                     });
                     approvalResolveRef.current = null;
                   } catch (err: any) {

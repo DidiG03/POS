@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { UpdateStatusDTO } from '@shared/ipc';
+import { toast } from '../../stores/toasts';
 
 type MemoryStats = {
   current: { heapUsed: number; rss: number; timestamp: number };
@@ -38,8 +39,269 @@ const sections: Section[] = [
   { key: 'updates', label: 'System Updates' },
   { key: 'billing', label: 'Billing' },
   { key: 'lan', label: 'LAN / Tablets' },
-  { key: 'about', label: 'About' },
+  { key: 'about', label: 'Business Info' },
 ];
+
+function ChevronRight() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className="w-4 h-4 opacity-70"
+      aria-hidden
+    >
+      <path
+        fillRule="evenodd"
+        d="M9.22 4.22a.75.75 0 011.06 0l6 6a.75.75 0 010 1.06l-6 6a.75.75 0 11-1.06-1.06L14.94 12 9.22 5.28a.75.75 0 010-1.06z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+function IconWrap({ children }: { children: any }) {
+  return (
+    <span className="w-8 h-8 rounded bg-gray-900/50 border border-gray-700 flex items-center justify-center">
+      {children}
+    </span>
+  );
+}
+
+function SectionIcon({ k }: { k: Section['key'] }) {
+  const common = { className: 'w-4 h-4 opacity-90', 'aria-hidden': true } as any;
+  if (k === 'printer')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M7 8V4h10v4M7 17h10v3H7v-3Z"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M6 17H5a3 3 0 0 1-3-3v-2a4 4 0 0 1 4-4h12a4 4 0 0 1 4 4v2a3 3 0 0 1-3 3h-1"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'areas')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M4 6h16M4 12h16M4 18h16"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <path
+            d="M7 6v12M17 6v12"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            opacity="0.7"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'kds')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M4 5h16v10H4V5Z"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M8 19h8M12 15v4"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'preferences')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M4 7h10M18 7h2M4 17h2M10 17h10"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <path
+            d="M14 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM10 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"
+            stroke="currentColor"
+            strokeWidth="2"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'backups')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M20 7.5A4.5 4.5 0 0 0 11.6 5 4 4 0 0 0 4 8.5C4 11 6 13 8.5 13H19a3 3 0 0 0 1-5.5Z"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M12 12v7m0 0-3-3m3 3 3-3"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'memory')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M7 7h10v10H7V7Z"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M4 10h2M4 14h2M18 10h2M18 14h2M10 4v2M14 4v2M10 18v2M14 18v2"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            opacity="0.8"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'cloud')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M20 17.5a4.5 4.5 0 0 0-2.8-8.4A5 5 0 0 0 7.3 8.3 4 4 0 0 0 8 16h11.5A3.5 3.5 0 0 0 20 17.5Z"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M12 11v6m0 0 2-2m-2 2-2-2"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'updates')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M20 12a8 8 0 1 1-2.34-5.66"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <path
+            d="M20 4v6h-6"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'billing')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M3 7h18v10H3V7Z"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M3 10h18"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <path
+            d="M7 14h4"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'lan')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 19h.01"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
+          <path
+            d="M8.5 15.5a5 5 0 0 1 7 0"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <path
+            d="M5 12a10 10 0 0 1 14 0"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            opacity="0.8"
+          />
+        </svg>
+      </IconWrap>
+    );
+  // about/business info
+  return (
+    <IconWrap>
+      <svg {...common} viewBox="0 0 24 24" fill="none">
+        <path
+          d="M12 17v-5"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+        <path
+          d="M12 8h.01"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+        <path
+          d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+          stroke="currentColor"
+          strokeWidth="2"
+        />
+      </svg>
+    </IconWrap>
+  );
+}
 
 export default function AdminSettingsPage() {
   const [selected, setSelected] = useState<Section['key']>('printer');
@@ -52,22 +314,14 @@ export default function AdminSettingsPage() {
               <button
                 className={`w-full px-4 py-3 hover:bg-gray-700 ${selected === s.key ? 'bg-gray-700' : ''}`}
                 onClick={() => setSelected(s.key)}
+                type="button"
               >
                 <div className="flex items-center justify-between">
-                  <span>{s.label}</span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    className="w-4 h-4 opacity-70"
-                    aria-hidden
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M9.22 4.22a.75.75 0 011.06 0l6 6a.75.75 0 010 1.06l-6 6a.75.75 0 11-1.06-1.06L14.94 12 9.22 5.28a.75.75 0 010-1.06z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
+                  <div className="flex items-center gap-3">
+                    <SectionIcon k={s.key} />
+                    <span>{s.label}</span>
+                  </div>
+                  <ChevronRight />
                 </div>
               </button>
             </li>
@@ -955,20 +1209,6 @@ function KdsSettings() {
 }
 
 function PrinterSettings() {
-  const CATEGORY_PRESETS = [
-    'Drinks',
-    'Food',
-    'Desserts',
-    'Starters',
-    'Mains',
-    'Sides',
-    'Salads',
-    'Breakfast',
-    'Hot Drinks',
-    'Soft Drinks',
-    'Alcohol',
-  ] as const;
-
   type Profile = {
     id: string;
     name: string;
@@ -989,13 +1229,17 @@ function PrinterSettings() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [routingEnabled, setRoutingEnabled] = useState(false);
   const [receiptPrinterId, setReceiptPrinterId] = useState<string>('default');
-  const [stationKitchen, setStationKitchen] = useState<string>('');
-  const [stationBar, setStationBar] = useState<string>('');
-  const [stationDessert, setStationDessert] = useState<string>('');
-  const [stationAll, setStationAll] = useState<string>('default');
-  const [categoryRouting, setCategoryRouting] = useState<
-    Record<string, string>
-  >({});
+  // Single fallback printer for ORDER items that don't match a category route.
+  const [fallbackPrinterId, setFallbackPrinterId] = useState<string>('default');
+  // Category routing (optional). Key is categoryId string (e.g. "12") for stability.
+  const [categoryRouting, setCategoryRouting] = useState<Record<string, string>>(
+    {},
+  );
+  const [menuCategories, setMenuCategories] = useState<
+    Array<{ id: number; name: string }>
+  >([]);
+  const [routeCatId, setRouteCatId] = useState<string>('');
+  const [routePrinterId, setRoutePrinterId] = useState<string>('default');
 
   const [printers, setPrinters] = useState<
     { name: string; isDefault?: boolean }[]
@@ -1055,33 +1299,44 @@ function PrinterSettings() {
       const r: any = (s as any)?.printerRouting || {};
       setRoutingEnabled(Boolean(r?.enabled));
       setReceiptPrinterId(String(r?.receiptPrinterId || 'default'));
-      setStationKitchen(String(r?.station?.KITCHEN || ''));
-      setStationBar(String(r?.station?.BAR || ''));
-      setStationDessert(String(r?.station?.DESSERT || ''));
-      setStationAll(String(r?.station?.ALL || 'default'));
-      // Category routing keys are stored as normalized category names (lowercase), but we also accept legacy numeric keys.
-      const cats = (await window.api.menu
+      setFallbackPrinterId(String(r?.fallbackPrinterId || r?.station?.ALL || 'default'));
+      // Category routing: allow routing by the *actual* menu categories.
+      // Storage format: mapping of categoryId (string) -> printerProfileId.
+      const rawCats = (await window.api.menu
         .listCategoriesWithItems()
         .catch(() => [] as any[])) as any[];
-      const idToName = new Map<string, string>();
-      for (const c of cats) idToName.set(String(c.id), String(c.name || ''));
-      const rawCatMap: Record<string, string> = (r?.categories || {}) as any;
+      const cats = (Array.isArray(rawCats) ? rawCats : []).map((c: any) => ({
+        id: Number(c?.id || 0),
+        name: String(c?.name || '').trim(),
+      }));
+      setMenuCategories(cats.filter((c) => c.id > 0 && c.name));
       const norm = (x: any) =>
         String(x ?? '')
           .trim()
           .toLowerCase();
-      const next: Record<string, string> = {};
-      for (const preset of CATEGORY_PRESETS) {
-        const key = norm(preset);
-        next[key] = rawCatMap[key] || '';
+      const nameToId = new Map<string, number>();
+      for (const c of cats) {
+        if (c.id > 0 && c.name) nameToId.set(norm(c.name), c.id);
       }
-      // migrate numeric keys if possible
-      for (const [k, v] of Object.entries(rawCatMap || {})) {
-        if (/^\d+$/.test(String(k))) {
-          const nm = idToName.get(String(k));
-          const nk = nm ? norm(nm) : '';
-          if (nk && next[nk] == null) next[nk] = String(v || '');
+      const rawCatMap: Record<string, string> = (r?.categories || {}) as any;
+      const next: Record<string, string> = {};
+      for (const [k0, v0] of Object.entries(rawCatMap || {})) {
+        const k = String(k0 || '').trim();
+        const v = String(v0 || '').trim();
+        if (!v) continue;
+        // Prefer stable id keys.
+        if (/^\d+$/.test(k)) {
+          next[k] = v;
+          continue;
         }
+        // Backward compat: name-based keys (normalized) -> map to id.
+        const id = nameToId.get(norm(k));
+        if (id) {
+          next[String(id)] = v;
+          continue;
+        }
+        // Unknown key: keep it (but UI will show it as unknown).
+        next[k] = v;
       }
       setCategoryRouting(next);
 
@@ -1114,15 +1369,55 @@ function PrinterSettings() {
     </>
   );
 
+  const categoryNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const c of menuCategories) m.set(Number(c.id), String(c.name || ''));
+    return m;
+  }, [menuCategories]);
+
+  const routedEntries = useMemo(() => {
+    const out: Array<{ key: string; categoryId: number | null; label: string; printerId: string }> = [];
+    for (const [k, v] of Object.entries(categoryRouting || {})) {
+      const printerId = String(v || '').trim();
+      if (!printerId) continue;
+      const categoryId = /^\d+$/.test(k) ? Number(k) : null;
+      const label =
+        categoryId != null
+          ? categoryNameById.get(categoryId) || `Category #${categoryId} (missing)`
+          : `Category key: ${k}`;
+      out.push({ key: k, categoryId, label, printerId });
+    }
+    // stable order: known categories first, then unknown keys
+    out.sort((a, b) => {
+      const ak = a.categoryId == null ? 9 : 0;
+      const bk = b.categoryId == null ? 9 : 0;
+      if (ak !== bk) return ak - bk;
+      return a.label.localeCompare(b.label);
+    });
+    return out;
+  }, [categoryRouting, categoryNameById]);
+
+  const availableCategoriesToAdd = useMemo(() => {
+    const used = new Set<string>();
+    for (const k of Object.keys(categoryRouting || {})) {
+      if (/^\d+$/.test(k)) used.add(String(k));
+    }
+    return menuCategories.filter((c) => c.id > 0 && !used.has(String(c.id)));
+  }, [menuCategories, categoryRouting]);
+
   return (
     <div>
       <div className="text-lg font-semibold mb-3">Printers</div>
       {status && <div className="text-xs text-amber-200 mb-3">{status}</div>}
 
       <div className="bg-gray-800/40 border border-gray-700 rounded p-3 mb-4">
-        <div className="font-semibold mb-2">Routing (multiple printers)</div>
-        <label className="flex items-center justify-between gap-3 mb-2">
-          <div className="text-sm">Enable routing (Kitchen/Bar/Dessert)</div>
+        <div className="font-semibold mb-2">Routing</div>
+        <div className="text-xs opacity-70 mb-3">
+          Enable routing and optionally route categories to specific printers. Categories not routed will print to the fallback printer.
+        </div>
+
+        <label className="flex items-center justify-between gap-3 mb-3">
+          <div className="text-sm">Enable routing (by category)</div>
           <input
             type="checkbox"
             checked={routingEnabled}
@@ -1130,99 +1425,137 @@ function PrinterSettings() {
           />
         </label>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
           <label className="text-sm">
             <div className="opacity-80 mb-1">Receipt printer (PAYMENT)</div>
             <select
               className="w-full bg-gray-700 rounded px-3 py-2"
               value={receiptPrinterId}
               onChange={(e) => setReceiptPrinterId(e.target.value)}
+              disabled={!routingEnabled}
             >
               {pickOptions(false)}
             </select>
           </label>
           <label className="text-sm">
-            <div className="opacity-80 mb-1">Fallback printer (ALL)</div>
+            <div className="opacity-80 mb-1">Fallback printer (ORDER)</div>
             <select
               className="w-full bg-gray-700 rounded px-3 py-2"
-              value={stationAll}
-              onChange={(e) => setStationAll(e.target.value)}
+              value={fallbackPrinterId}
+              onChange={(e) => setFallbackPrinterId(e.target.value)}
+              disabled={!routingEnabled}
             >
               {pickOptions(false)}
             </select>
           </label>
-          <label className="text-sm">
-            <div className="opacity-80 mb-1">Kitchen printer (ORDER)</div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={stationKitchen}
-              onChange={(e) => setStationKitchen(e.target.value)}
-            >
-              {pickOptions()}
-            </select>
-          </label>
-          <label className="text-sm">
-            <div className="opacity-80 mb-1">Bar printer (ORDER)</div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={stationBar}
-              onChange={(e) => setStationBar(e.target.value)}
-            >
-              {pickOptions()}
-            </select>
-          </label>
-          <label className="text-sm">
-            <div className="opacity-80 mb-1">Dessert printer (ORDER)</div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={stationDessert}
-              onChange={(e) => setStationDessert(e.target.value)}
-            >
-              {pickOptions()}
-            </select>
-          </label>
         </div>
 
-        <div className="text-xs opacity-70 mt-2">
-          Tip: “Bluetooth” printers often appear as <b>Serial</b> (COM /
-          /dev/tty.*) or an OS <b>System printer</b>. Routing uses each menu
-          item’s <b>Station</b> (Kitchen/Bar/Dessert).
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+          <label className="text-sm md:col-span-1">
+            <div className="opacity-80 mb-1">Category</div>
+            <select
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              value={routeCatId}
+              onChange={(e) => setRouteCatId(String(e.target.value || ''))}
+              disabled={!routingEnabled}
+            >
+              <option value="">Select category…</option>
+              {availableCategoriesToAdd.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm md:col-span-1">
+            <div className="opacity-80 mb-1">Printer</div>
+            <select
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              value={routePrinterId}
+              onChange={(e) => setRoutePrinterId(String(e.target.value || 'default'))}
+              disabled={!routingEnabled}
+            >
+              {pickOptions(false)}
+            </select>
+          </label>
+          <div className="flex items-end">
+            <button
+              className="w-full px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
+              type="button"
+              disabled={!routingEnabled || !routeCatId}
+              onClick={() => {
+                const cid = String(routeCatId || '').trim();
+                if (!cid) return;
+                setCategoryRouting((m) => ({ ...(m || {}), [cid]: String(routePrinterId || 'default') }));
+                setRouteCatId('');
+              }}
+            >
+              Add route
+            </button>
+          </div>
         </div>
-      </div>
 
-      <div className="bg-gray-800/40 border border-gray-700 rounded p-3 mb-4">
-        <div className="font-semibold mb-2">
-          Category → printer (recommended)
-        </div>
-        <div className="text-xs opacity-70 mb-2">
-          Categories are selected from a preset list (Drinks/Food/Desserts/etc).
-          Here you choose which printer each category should go to. This
-          overrides station routing when set.
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {CATEGORY_PRESETS.map((c) => {
-            const key = String(c).toLowerCase();
-            return (
-              <label key={c} className="text-sm">
-                <div className="opacity-80 mb-1">{c}</div>
+        {routedEntries.length === 0 ? (
+          <div className="text-xs opacity-70">
+            No category routes yet. Station routing will be used.
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-700 border border-gray-700 rounded overflow-hidden">
+            {routedEntries.map((r) => (
+              <div key={r.key} className="p-3 flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium truncate">{r.label}</div>
+                  {r.categoryId == null && (
+                    <div className="text-xs opacity-60">
+                      Unknown key stored in settings. You can remove it if not needed.
+                    </div>
+                  )}
+                </div>
                 <select
-                  className="w-full bg-gray-700 rounded px-3 py-2"
-                  value={categoryRouting[key] || ''}
+                  className="bg-gray-700 rounded px-3 py-2"
+                  value={r.printerId}
+                  disabled={!routingEnabled}
                   onChange={(e) =>
-                    setCategoryRouting((m) => ({ ...m, [key]: e.target.value }))
+                    setCategoryRouting((m) => ({
+                      ...(m || {}),
+                      [r.key]: String(e.target.value || ''),
+                    }))
                   }
                 >
-                  <option value="">(use station routing)</option>
-                  {enabledProfiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.mode})
-                    </option>
-                  ))}
+                  {pickOptions(false)}
                 </select>
-              </label>
-            );
-          })}
-        </div>
+                <button
+                  className="w-10 h-10 rounded bg-rose-700 hover:bg-rose-800 active:bg-rose-900 flex items-center justify-center"
+                  type="button"
+                  disabled={!routingEnabled}
+                  aria-label={`Remove route for ${r.label}`}
+                  onClick={() =>
+                    setCategoryRouting((m) => {
+                      const next = { ...(m || {}) } as any;
+                      delete next[r.key];
+                      return next;
+                    })
+                  }
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    className="w-4 h-4"
+                    aria-hidden
+                  >
+                    <path
+                      d="M6 6l12 12M18 6 6 18"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between mb-2">
@@ -1554,12 +1887,10 @@ function PrinterSettings() {
               printerRouting: {
                 enabled: routingEnabled,
                 receiptPrinterId,
-                station: {
-                  KITCHEN: stationKitchen || undefined,
-                  BAR: stationBar || undefined,
-                  DESSERT: stationDessert || undefined,
-                  ALL: stationAll || undefined,
-                },
+                // Keep backward compat: store fallback printer under station.ALL too.
+                station: { ALL: fallbackPrinterId || undefined },
+                fallbackPrinterId: fallbackPrinterId || undefined,
+                // Store category routing by categoryId string for stability.
                 categories: categoryRouting,
               },
             } as any);
@@ -1603,7 +1934,7 @@ function AreasSettings() {
         {areas.map((a, idx) => (
           <div key={idx} className="flex items-center gap-3">
             <input
-              className="bg-gray-700 rounded px-2 py-1 flex-1"
+              className="bg-gray-700 rounded px-3 py-2 flex-1"
               value={a.name}
               onChange={(e) =>
                 setAreas((arr) =>
@@ -1614,7 +1945,7 @@ function AreasSettings() {
               }
             />
             <input
-              className="w-24 bg-gray-700 rounded px-2 py-1"
+              className="w-24 bg-gray-700 rounded px-3 py-2"
               type="number"
               min={0}
               value={a.count}
@@ -1627,10 +1958,25 @@ function AreasSettings() {
               }
             />
             <button
-              className="p-1 rounded bg-red-600 hover:bg-red-700 cursor-pointer"
+              className="w-10 h-10 rounded bg-rose-700 hover:bg-rose-800 active:bg-rose-900 flex items-center justify-center"
               onClick={() => setAreas((arr) => arr.filter((_, i) => i !== idx))}
+              type="button"
+              aria-label={`Remove area ${a.name || idx + 1}`}
             >
-              x
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                className="w-4 h-4"
+                aria-hidden
+              >
+                <path
+                  d="M6 6l12 12M18 6 6 18"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
             </button>
           </div>
         ))}
@@ -2101,9 +2447,9 @@ function MemoryMonitorSection() {
     setExporting(true);
     try {
       const path = await window.api.admin.exportMemorySnapshot();
-      alert(`Memory snapshot exported to: ${path}`);
+      toast.success(`Memory snapshot exported to: ${path}`, { title: 'Exported' });
     } catch (e: any) {
-      alert(`Failed to export: ${e?.message || 'Unknown error'}`);
+      toast.error(`Failed to export: ${e?.message || 'Unknown error'}`, { title: 'Export failed' });
     } finally {
       setExporting(false);
     }

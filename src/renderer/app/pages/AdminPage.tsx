@@ -27,6 +27,7 @@ type AdminShift = {
 
 export default function AdminPage() {
   const [ov, setOv] = useState<Overview | null>(null);
+  const [currency, setCurrency] = useState<string>('EUR');
   const [shifts, setShifts] = useState<AdminShift[]>([]);
   const [showShiftsModal, setShowShiftsModal] = useState(false);
   const [shiftFilter, setShiftFilter] = useState<'OPEN' | 'CLOSED' | 'ALL'>(
@@ -89,6 +90,8 @@ export default function AdminPage() {
         const businessCode = String(
           (s as any)?.cloud?.businessCode || '',
         ).trim();
+        const cur = String((s as any)?.currency || '').trim();
+        if (cur) setCurrency(cur);
         setDataSource(backendUrl && businessCode ? 'cloud' : 'local');
         if (backendUrl && !businessCode) {
           setAdminNotice(
@@ -329,9 +332,16 @@ export default function AdminPage() {
         <Stat title="Open Orders" value={ov?.openOrders} />
         <Stat
           title="Revenue Today (net)"
-          value={ov ? (ov.revenueTodayNet ?? 0) : '—'}
+          value={ov ? (ov.revenueTodayNet ?? 0) : null}
+          kind="money"
+          currency={currency}
         />
-        <Stat title="VAT Today" value={ov ? (ov.revenueTodayVat ?? 0) : '—'} />
+        <Stat
+          title="VAT Today"
+          value={ov ? (ov.revenueTodayVat ?? 0) : null}
+          kind="money"
+          currency={currency}
+        />
         <div className="bg-gray-800 rounded p-4">
           <div className="text-sm opacity-70">Top Selling Today</div>
           <div className="mt-1 text-lg font-semibold">
@@ -339,7 +349,10 @@ export default function AdminPage() {
           </div>
           {topSelling && (
             <div className="text-sm opacity-80">
-              Qty: {topSelling.qty} • Revenue: {topSelling.revenue}
+              Qty: {topSelling.qty} • Revenue:{' '}
+              <span className="font-semibold tabular-nums">
+                {formatMoney(topSelling.revenue, currency)}
+              </span>
             </div>
           )}
         </div>
@@ -896,11 +909,50 @@ export default function AdminPage() {
   );
 }
 
-function Stat({ title, value }: { title: string; value: any }) {
+function formatMoney(amount: number, currency: string): string {
+  const n = Number(amount || 0);
+  if (!Number.isFinite(n)) return '—';
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: currency || 'EUR',
+      maximumFractionDigits: 2,
+      minimumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    return `${n.toFixed(2)} ${currency || 'EUR'}`;
+  }
+}
+
+function Stat({
+  title,
+  value,
+  kind = 'count',
+  currency,
+}: {
+  title: string;
+  value: any;
+  kind?: 'count' | 'money' | 'text';
+  currency?: string;
+}) {
+  const display =
+    kind === 'money'
+      ? value == null
+        ? '—'
+        : formatMoney(Number(value || 0), String(currency || 'EUR'))
+      : value ?? '—';
   return (
     <div className="bg-gray-800 rounded p-4">
       <div className="text-sm opacity-70">{title}</div>
-      <div className="text-2xl font-semibold mt-1">{value ?? '—'}</div>
+      <div
+        className={`mt-1 ${
+          kind === 'money'
+            ? 'text-3xl font-bold tabular-nums tracking-tight text-emerald-100'
+            : 'text-2xl font-semibold'
+        }`}
+      >
+        {display}
+      </div>
     </div>
   );
 }

@@ -279,7 +279,13 @@ export interface ApiAuth {
   ): Promise<UserDTO | null>;
   verifyManagerPin(
     pin: string,
-  ): Promise<{ ok: boolean; userId?: number; userName?: string }>;
+  ): Promise<{
+    ok: boolean;
+    userId?: number;
+    userName?: string;
+    // Short-lived token proving manager/admin approval.
+    approvalToken?: string;
+  }>;
   logoutAdmin(): Promise<boolean>;
   createUser(input: CreateUserInput): Promise<UserDTO>;
   listUsers(input?: { includeAdmins?: boolean }): Promise<UserDTO[]>;

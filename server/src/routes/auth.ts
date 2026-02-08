@@ -2,7 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../db.js';
-import { issueToken } from '../auth/jwt.js';
+import { issueApprovalToken, issueToken } from '../auth/jwt.js';
 import { requireAuth, type AuthedRequest } from '../auth/middleware.js';
 import crypto from 'node:crypto';
 import { env } from '../env.js';
@@ -11,6 +11,71 @@ export const authRouter = Router();
 
 function normalizeBusinessCode(input: string) {
   return input.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 24);
+}
+
+// Suspicious-pattern detection (best-effort, in-memory).
+// Keep thresholds conservative to avoid false accusations.
+const managerPinFailures = new Map<
+  string,
+  { count: number; resetAt: number; lastAlertAt: number }
+>();
+function managerPinKey(businessId: string, remoteIp: string) {
+  return `${businessId}::${remoteIp || 'unknown'}`;
+}
+async function maybeAlertManagerPinFailures(input: {
+  businessId: string;
+  remoteIp: string;
+  // For messaging only:
+  businessCode: string;
+  windowMinutes: number;
+  threshold: number;
+  cooldownMinutes: number;
+  currentCount: number;
+}) {
+  const now = Date.now();
+  const k = managerPinKey(input.businessId, input.remoteIp);
+  const cur = managerPinFailures.get(k);
+  const lastAlertAt = cur?.lastAlertAt || 0;
+  if (lastAlertAt && now - lastAlertAt < input.cooldownMinutes * 60 * 1000) return;
+
+  const admins = await prisma.user
+    .findMany({
+      where: { businessId: input.businessId, role: 'ADMIN', active: true } as any,
+      select: { id: true },
+      take: 50,
+    })
+    .catch(() => []);
+
+  const msg =
+    `Unusual activity (auto-check): ${input.currentCount} manager PIN verification failures in the last ${input.windowMinutes} minutes ` +
+    `for business ${input.businessCode}${input.remoteIp ? ` from IP ${input.remoteIp}` : ''}. ` +
+    `This can be normal (mistyped PINs); please review if unexpected.`;
+
+  for (const a of admins as any[]) {
+    await prisma.notification
+      .create({
+        data: {
+          businessId: input.businessId,
+          userId: a.id,
+          type: 'SECURITY' as any,
+          message: msg,
+        } as any,
+      })
+      .catch(() => {});
+  }
+
+  // Mark alert time to apply cooldown.
+  const existing = managerPinFailures.get(k);
+  if (existing) {
+    existing.lastAlertAt = now;
+    managerPinFailures.set(k, existing);
+  } else {
+    managerPinFailures.set(k, {
+      count: input.currentCount,
+      resetAt: now + input.windowMinutes * 60 * 1000,
+      lastAlertAt: now,
+    });
+  }
 }
 
 function billingPausedForBusiness(biz: any): boolean {
@@ -118,6 +183,17 @@ authRouter.post('/verify-manager-pin', async (req, res) => {
   const biz = await prisma.business.findUnique({ where: { code: businessCode } });
   if (!biz || (biz as any).active === false) return res.status(200).json({ ok: false });
 
+  // Track repeated approval PIN failures (per business + IP).
+  const windowMinutes = 10;
+  const threshold = 10;
+  const cooldownMinutes = 60;
+  const key = managerPinKey(biz.id, remoteIp);
+  const now = Date.now();
+  const cur = managerPinFailures.get(key);
+  if (!cur || cur.resetAt <= now) {
+    managerPinFailures.set(key, { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: cur?.lastAlertAt || 0 });
+  }
+
   const admins = await prisma.user.findMany({
     where: { businessId: biz.id, active: true, role: 'ADMIN' },
     orderBy: { id: 'asc' },
@@ -126,8 +202,30 @@ authRouter.post('/verify-manager-pin', async (req, res) => {
   for (const u of admins) {
     const ok = await bcrypt.compare(String(input.pin), u.pinHash);
     if (ok) {
-      return res.status(200).json({ ok: true, userId: u.id, userName: u.displayName });
+      // Reset failure counter on success.
+      const st = managerPinFailures.get(key);
+      if (st) managerPinFailures.set(key, { ...st, count: 0 });
+      // Return a short-lived approval token so approvals cannot be spoofed by guessing an admin ID.
+      const approvalToken = issueApprovalToken({ businessId: biz.id, userId: u.id, role: 'ADMIN' });
+      return res
+        .status(200)
+        .json({ ok: true, userId: u.id, userName: u.displayName, approvalToken });
     }
+  }
+  // Failed verification: increment and possibly alert.
+  const st2 = managerPinFailures.get(key) || { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: 0 };
+  st2.count += 1;
+  managerPinFailures.set(key, st2);
+  if (st2.count >= threshold) {
+    void maybeAlertManagerPinFailures({
+      businessId: biz.id,
+      businessCode,
+      remoteIp,
+      windowMinutes,
+      threshold,
+      cooldownMinutes,
+      currentCount: st2.count,
+    });
   }
   return res.status(200).json({ ok: false });
 });

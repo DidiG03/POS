@@ -29,9 +29,14 @@ const KdsPage = React.lazy(() => import('./app/pages/KdsPage'));
 function SuspenseFallback() {
   return (
     <div className="w-full h-full min-h-[60vh] flex items-center justify-center">
-      <div className="rounded border border-gray-700 bg-gray-900/40 px-4 py-3 flex items-center gap-3">
-        <div className="w-4 h-4 rounded-full border-2 border-gray-500 border-t-transparent animate-spin" />
-        <div className="text-sm opacity-80">Loading…</div>
+      <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
+        <div className="text-lg font-semibold mb-2">
+          Connecting to POS backend…
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <div className="text-xs opacity-70">Please wait…</div>
+        </div>
       </div>
     </div>
   );
@@ -39,6 +44,11 @@ function SuspenseFallback() {
 
 function withSuspense(el: React.ReactElement) {
   return <React.Suspense fallback={<SuspenseFallback />}>{el}</React.Suspense>;
+}
+
+function withSuspenseNoFallback(el: React.ReactElement) {
+  // Used for screens that already render their own boot/loading UI (e.g. LoginPage).
+  return <React.Suspense fallback={null}>{el}</React.Suspense>;
 }
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
@@ -70,8 +80,8 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
       cancelled = true;
     };
   }, [isBrowser, isKdsContext, user?.id]);
-  if (!user) return withSuspense(<LoginPage />);
-  if (isBrowser && !ok) return withSuspense(<LoginPage />);
+  if (!user) return withSuspenseNoFallback(<LoginPage />);
+  if (isBrowser && !ok) return withSuspenseNoFallback(<LoginPage />);
   return children;
 }
 
@@ -84,8 +94,8 @@ function RequireAdmin({ children }: { children: React.ReactElement }) {
   const adminUser = useAdminSessionStore((s) => s.user);
   const staffUser = useSessionStore((s) => s.user);
   const user = isAdminContext ? adminUser : staffUser;
-  if (!user) return withSuspense(<LoginPage />);
-  if (user.role !== 'ADMIN') return withSuspense(<LoginPage />);
+  if (!user) return withSuspenseNoFallback(<LoginPage />);
+  if (user.role !== 'ADMIN') return withSuspenseNoFallback(<LoginPage />);
   return children;
 }
 
@@ -119,7 +129,7 @@ function RequireClockAccess({ children }: { children: React.ReactElement }) {
 }
 
 export const routes: RouteObject[] = [
-  { path: '/', element: withSuspense(<LoginPage />) },
+  { path: '/', element: withSuspenseNoFallback(<LoginPage />) },
   {
     path: '/app',
     element: (

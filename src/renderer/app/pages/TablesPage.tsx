@@ -791,17 +791,16 @@ export default function TablesPage() {
 
           {!openLoaded && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-900/60">
-              <div className="bg-gray-800 border border-gray-700 rounded p-4 w-full max-w-sm">
-                <div className="text-sm font-semibold mb-1">
-                  Loading tables…
+              <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
+                <div className="text-lg font-semibold mb-2">
+                  Connecting to POS backend…
                 </div>
-                <div className="text-xs opacity-80">
-                  {openLoadError ||
-                    'Fetching occupied tables from the host PC.'}
+                <div className="text-sm opacity-80 mb-4">
+                  {openLoadError || 'Fetching occupied tables from the host PC.'}
                 </div>
-                <div className="mt-3 flex items-center gap-2">
+                <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <div className="text-xs opacity-70">Please wait</div>
+                  <div className="text-xs opacity-70">Please wait…</div>
                 </div>
               </div>
             </div>
