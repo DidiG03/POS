@@ -106,6 +106,24 @@ const MAIN_RUNTIME_DIR =
   basename(MAIN_DIR) === 'chunks' ? resolvePath(MAIN_DIR, '..') : MAIN_DIR;
 const PRELOAD_PATH = join(MAIN_RUNTIME_DIR, '../preload/index.cjs');
 const RENDERER_INDEX_HTML = join(MAIN_RUNTIME_DIR, '../renderer/index.html');
+// App icon: resolve from project root (dev) or packaged resources
+const APP_ICON_PATH = (() => {
+  // In dev: project root / build-resources / icon.png
+  // In prod: process.resourcesPath or app path
+  const candidates = [
+    join(app.getAppPath(), 'build-resources', 'icon.png'),
+    join(MAIN_RUNTIME_DIR, '../../build-resources/icon.png'),
+    join(process.cwd(), 'build-resources', 'icon.png'),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch {
+      // ignore
+    }
+  }
+  return undefined;
+})();
 
 let mainWindow: BrowserWindow | null = null;
 let adminWindow: BrowserWindow | null = null;
@@ -361,6 +379,7 @@ function createWindow() {
     width: 1280,
     height: 800,
     backgroundColor: '#111827',
+    ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -398,6 +417,7 @@ function createAdminWindow() {
     height: 700,
     backgroundColor: '#111827',
     title: 'Admin -  Code Orbit POS',
+    ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -430,6 +450,7 @@ function createKdsWindow() {
     height: 800,
     backgroundColor: '#111827',
     title: 'Kitchen Display -  Code Orbit POS',
+    ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -756,6 +777,16 @@ function startAutoVoidStaleTicketsLoop() {
 }
 
 app.whenReady().then(async () => {
+  // Set macOS dock icon (BrowserWindow icon doesn't affect dock on macOS)
+  if (process.platform === 'darwin' && APP_ICON_PATH) {
+    try {
+      const { nativeImage } = await import('electron');
+      const img = nativeImage.createFromPath(APP_ICON_PATH);
+      if (!img.isEmpty()) app.dock.setIcon(img);
+    } catch {
+      // ignore — dock icon stays default
+    }
+  }
   createWindow();
   setupAutoUpdater();
   await startApiServer();

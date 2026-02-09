@@ -34,6 +34,10 @@
   "build": {
     "appId": "com.codeorbit.pos",
     "productName": "Code Orbit POS",
+    "directories": {
+      "buildResources": "build-resources"
+    },
+    "icon": "build-resources/icon.png",
     "asarUnpack": [
       "node_modules/.prisma/**",
       "**/node_modules/.prisma/**",
@@ -61,15 +65,19 @@
       "target": [
         "dmg"
       ],
-      "category": "public.app-category.business"
+      "category": "public.app-category.business",
+      "icon": "build-resources/icon.icns"
     },
     "win": {
       "target": [
         "nsis"
-      ]
+      ],
+      "icon": "build-resources/icon.ico"
     },
     "nsis": {
-      "include": "build/installer.nsh"
+      "include": "build/installer.nsh",
+      "installerIcon": "build-resources/icon.ico",
+      "uninstallerIcon": "build-resources/icon.ico"
     },
     "publish": {
       "provider": "github",
