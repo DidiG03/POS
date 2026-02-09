@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { toast } from '../stores/toasts';
 
 type PrinterEvent = {
@@ -20,11 +20,16 @@ export function PrinterNotification() {
       const level = d.level || 'error';
       const message = d.message ? String(d.message) : '';
       const detail = d.detail ? String(d.detail) : undefined;
-      const key = `${String(d.kind || '')}|${message}|${String(detail || '')}`.slice(0, 500);
+      const key =
+        `${String(d.kind || '')}|${message}|${String(detail || '')}`.slice(
+          0,
+          500,
+        );
       const at = Number(d.at || Date.now());
 
       // Deduplicate bursts (same printer failure can be reported multiple times quickly)
-      if (key && key === lastKeyRef.current && at - lastAtRef.current < 1500) return;
+      if (key && key === lastKeyRef.current && at - lastAtRef.current < 1500)
+        return;
       lastKeyRef.current = key;
       lastAtRef.current = at;
 
@@ -35,10 +40,10 @@ export function PrinterNotification() {
       else toast.error(message, { title, detail });
     };
     window.addEventListener('printer:event', handle as EventListener);
-    return () => window.removeEventListener('printer:event', handle as EventListener);
+    return () =>
+      window.removeEventListener('printer:event', handle as EventListener);
   }, []);
 
   // We now render printer errors via the shared toast system.
   return null;
 }
-

@@ -82,7 +82,13 @@ function IconX() {
 
 function IconPencil() {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
       <path
         d="M12 20h9"
         stroke="currentColor"
@@ -101,8 +107,19 @@ function IconPencil() {
 
 function IconTrash() {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
-      <path d="M3 6h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
+      <path
+        d="M3 6h18"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
       <path
         d="M8 6V4h8v2"
         stroke="currentColor"
@@ -116,8 +133,18 @@ function IconTrash() {
         strokeWidth="2"
         strokeLinejoin="round"
       />
-      <path d="M10 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M10 11v6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M14 11v6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -188,9 +215,15 @@ export default function AdminMenuPage() {
   const [billingPaused, setBillingPaused] = useState(false);
   const [editCategoryId, setEditCategoryId] = useState<number | null>(null);
 
-  const selected = useMemo(() => cats.find((c) => c.id === selectedId) || null, [cats, selectedId]);
+  const selected = useMemo(
+    () => cats.find((c) => c.id === selectedId) || null,
+    [cats, selectedId],
+  );
   const editCategory = useMemo(
-    () => (editCategoryId == null ? null : cats.find((c) => c.id === editCategoryId) || null),
+    () =>
+      editCategoryId == null
+        ? null
+        : cats.find((c) => c.id === editCategoryId) || null,
     [cats, editCategoryId],
   );
 
@@ -201,7 +234,8 @@ export default function AdminMenuPage() {
       const data = await window.api.menu.listCategoriesWithItems();
       setCats(data as any);
       if (data?.length && selectedId == null) setSelectedId(data[0].id);
-      if (selectedId != null && !data?.some((c: any) => c.id === selectedId)) setSelectedId(data?.[0]?.id ?? null);
+      if (selectedId != null && !data?.some((c: any) => c.id === selectedId))
+        setSelectedId(data?.[0]?.id ?? null);
     } catch (e: any) {
       setErr(e?.message || 'Failed to load menu');
     } finally {
@@ -215,7 +249,8 @@ export default function AdminMenuPage() {
 
   useEffect(() => {
     // Close the modal if the category was removed during reload/delete
-    if (editCategoryId != null && !cats.some((c) => c.id === editCategoryId)) setEditCategoryId(null);
+    if (editCategoryId != null && !cats.some((c) => c.id === editCategoryId))
+      setEditCategoryId(null);
   }, [cats, editCategoryId]);
 
   useEffect(() => {
@@ -231,14 +266,18 @@ export default function AdminMenuPage() {
     })();
   }, []);
 
-  const [newCatName, setNewCatName] = useState<(typeof CATEGORY_PRESETS)[number] | ''>('');
+  const [newCatName, setNewCatName] = useState<
+    (typeof CATEGORY_PRESETS)[number] | ''
+  >('');
   const [newCatColor, setNewCatColor] = useState<string>('#22c55e');
 
   const [newItemName, setNewItemName] = useState('');
   const [newItemPrice, setNewItemPrice] = useState<string>('');
   const [newItemVat, setNewItemVat] = useState<string>('0.2');
   const [newItemIsKg, setNewItemIsKg] = useState(false);
-  const [newItemStation, setNewItemStation] = useState<'KITCHEN' | 'BAR' | 'DESSERT'>('KITCHEN');
+  const [newItemStation, setNewItemStation] = useState<
+    'KITCHEN' | 'BAR' | 'DESSERT'
+  >('KITCHEN');
 
   async function withSaving<T>(label: string, fn: () => Promise<T>) {
     setSaving(label);
@@ -271,266 +310,300 @@ export default function AdminMenuPage() {
   return (
     <>
       <div className="h-full min-h-0 grid grid-cols-1 md:grid-cols-12 gap-4">
-      <div className="md:col-span-4 bg-gray-800 rounded border border-gray-700 overflow-hidden min-h-0 flex flex-col">
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-          <div className="font-semibold">Categories</div>
-          <button
-            className="text-sm px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 flex items-center gap-2"
-            onClick={() => void reload()}
-            type="button"
-            title="Refresh"
-          >
-            <IconRefresh />
-            Refresh
-          </button>
-        </div>
-        <div className="p-4 border-b border-gray-700">
-          <div className="text-xs opacity-70 mb-2">Add category</div>
-          <div className="flex gap-2">
-            <select
-              className="bg-gray-700 rounded px-3 py-2 flex-1"
-              value={newCatName}
-              onChange={(e) => setNewCatName(e.target.value as any)}
-              title="Category preset"
-              disabled={saving != null || billingPaused}
-            >
-              <option value="">Select category…</option>
-              {CATEGORY_PRESETS.map((n) => {
-                const taken = cats.some((c) => c.name.trim().toLowerCase() === n.toLowerCase());
-                return (
-                  <option key={n} value={n} disabled={taken}>
-                    {n}{taken ? ' (already exists)' : ''}
-                  </option>
-                );
-              })}
-            </select>
-            <input
-              type="color"
-              className="w-12 h-10 rounded bg-gray-700 border border-gray-600"
-              value={newCatColor}
-              onChange={(e) => setNewCatColor(e.target.value)}
-              title="Category color"
-              disabled={saving != null || billingPaused}
-            />
+        <div className="md:col-span-4 bg-gray-800 rounded border border-gray-700 overflow-hidden min-h-0 flex flex-col">
+          <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+            <div className="font-semibold">Categories</div>
             <button
-              className="px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-              disabled={!newCatName || saving != null || billingPaused}
-              onClick={() =>
-                void withSaving('create-category', async () => {
-                  const resp = await window.api.menu.createCategory({ name: String(newCatName), color: newCatColor } as any);
-                  setNewCatName('');
-                  await reload();
-                  const createdId = Number((resp as any)?.id || 0);
-                  if (createdId) setSelectedId(createdId);
-                })
-              }
+              className="text-sm px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 flex items-center gap-2"
+              onClick={() => void reload()}
               type="button"
+              title="Refresh"
             >
-              Add
+              <IconRefresh />
+              Refresh
             </button>
+          </div>
+          <div className="p-4 border-b border-gray-700">
+            <div className="text-xs opacity-70 mb-2">Add category</div>
+            <div className="flex gap-2">
+              <select
+                className="bg-gray-700 rounded px-3 py-2 flex-1"
+                value={newCatName}
+                onChange={(e) => setNewCatName(e.target.value as any)}
+                title="Category preset"
+                disabled={saving != null || billingPaused}
+              >
+                <option value="">Select category…</option>
+                {CATEGORY_PRESETS.map((n) => {
+                  const taken = cats.some(
+                    (c) => c.name.trim().toLowerCase() === n.toLowerCase(),
+                  );
+                  return (
+                    <option key={n} value={n} disabled={taken}>
+                      {n}
+                      {taken ? ' (already exists)' : ''}
+                    </option>
+                  );
+                })}
+              </select>
+              <input
+                type="color"
+                className="w-12 h-10 rounded bg-gray-700 border border-gray-600"
+                value={newCatColor}
+                onChange={(e) => setNewCatColor(e.target.value)}
+                title="Category color"
+                disabled={saving != null || billingPaused}
+              />
+              <button
+                className="px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
+                disabled={!newCatName || saving != null || billingPaused}
+                onClick={() =>
+                  void withSaving('create-category', async () => {
+                    const resp = await window.api.menu.createCategory({
+                      name: String(newCatName),
+                      color: newCatColor,
+                    } as any);
+                    setNewCatName('');
+                    await reload();
+                    const createdId = Number((resp as any)?.id || 0);
+                    if (createdId) setSelectedId(createdId);
+                  })
+                }
+                type="button"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+
+          <div className="p-2 overflow-auto min-h-0">
+            {cats.length === 0 ? (
+              <div className="p-3 text-sm opacity-70">No categories yet.</div>
+            ) : (
+              <div className="space-y-1">
+                {cats.map((c) => (
+                  <button
+                    key={c.id}
+                    className={`w-full text-left px-3 py-2 rounded hover:bg-gray-700 ${selectedId === c.id ? 'bg-gray-700' : ''}`}
+                    onClick={() => setSelectedId(c.id)}
+                    type="button"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="inline-block w-3 h-3 rounded"
+                          style={{ backgroundColor: c.color || '#374151' }}
+                        />
+                        <span className="font-medium truncate">{c.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs px-2 py-0.5 rounded bg-gray-900/40 border border-gray-700 opacity-90">
+                          {c.items?.length || 0}
+                        </span>
+                        <button
+                          type="button"
+                          className="w-8 h-8 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center disabled:opacity-60"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setSelectedId(c.id);
+                            setEditCategoryId(c.id);
+                          }}
+                          disabled={saving != null || billingPaused}
+                          aria-label={`Edit category ${c.name}`}
+                          title="Edit category"
+                        >
+                          <IconPencil />
+                        </button>
+                        <button
+                          type="button"
+                          className="w-8 h-8 rounded bg-rose-700 hover:bg-rose-800 border border-rose-600 flex items-center justify-center disabled:opacity-60"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void withSaving('delete-category', async () => {
+                              const ok = window.confirm(
+                                `Delete category "${c.name}"?\n\nThis will also hide its items (soft delete).`,
+                              );
+                              if (!ok) return;
+                              await window.api.menu.deleteCategory(c.id);
+                              await reload();
+                            });
+                          }}
+                          disabled={saving != null || billingPaused}
+                          aria-label={`Delete category ${c.name}`}
+                          title="Delete category"
+                        >
+                          <IconTrash />
+                        </button>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="p-2 overflow-auto min-h-0">
-          {cats.length === 0 ? (
-            <div className="p-3 text-sm opacity-70">No categories yet.</div>
-          ) : (
-            <div className="space-y-1">
-              {cats.map((c) => (
-                <button
-                  key={c.id}
-                  className={`w-full text-left px-3 py-2 rounded hover:bg-gray-700 ${selectedId === c.id ? 'bg-gray-700' : ''}`}
-                  onClick={() => setSelectedId(c.id)}
-                  type="button"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="inline-block w-3 h-3 rounded" style={{ backgroundColor: c.color || '#374151' }} />
-                      <span className="font-medium truncate">{c.name}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs px-2 py-0.5 rounded bg-gray-900/40 border border-gray-700 opacity-90">
-                        {c.items?.length || 0}
-                      </span>
-                      <button
-                        type="button"
-                        className="w-8 h-8 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center disabled:opacity-60"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setSelectedId(c.id);
-                          setEditCategoryId(c.id);
-                        }}
-                        disabled={saving != null || billingPaused}
-                        aria-label={`Edit category ${c.name}`}
-                        title="Edit category"
-                      >
-                        <IconPencil />
-                      </button>
-                      <button
-                        type="button"
-                        className="w-8 h-8 rounded bg-rose-700 hover:bg-rose-800 border border-rose-600 flex items-center justify-center disabled:opacity-60"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          void withSaving('delete-category', async () => {
-                            const ok = window.confirm(
-                              `Delete category \"${c.name}\"?\n\nThis will also hide its items (soft delete).`,
-                            );
-                            if (!ok) return;
-                            await window.api.menu.deleteCategory(c.id);
-                            await reload();
-                          });
-                        }}
-                        disabled={saving != null || billingPaused}
-                        aria-label={`Delete category ${c.name}`}
-                        title="Delete category"
-                      >
-                        <IconTrash />
-                      </button>
+        <div className="md:col-span-8 bg-gray-800 rounded border border-gray-700 overflow-hidden min-h-0 flex flex-col">
+          <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+            <div className="font-semibold truncate">
+              {selected ? `Category: ${selected.name}` : 'Menu editor'}
+            </div>
+            {saving && <div className="text-xs opacity-70">Saving…</div>}
+          </div>
+
+          <div className="p-4 space-y-4 overflow-auto min-h-0">
+            {err && (
+              <div className="p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">
+                {err}
+              </div>
+            )}
+            {billingPaused && (
+              <div className="p-3 rounded bg-amber-900/20 border border-amber-800 text-amber-200 text-sm">
+                Billing is paused. You can view your menu, but adding or editing
+                menu items is disabled until payment is completed.
+              </div>
+            )}
+
+            {!selected ? (
+              <div className="rounded border border-gray-700 bg-gray-900/30 p-6 text-sm opacity-80">
+                Select a category on the left to edit its details and items.
+              </div>
+            ) : (
+              <>
+                <div className="rounded border border-gray-700 bg-gray-800/40 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="font-semibold">Items</div>
+                    <div className="text-xs opacity-70">
+                      {selected.items?.length || 0} items
                     </div>
                   </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
 
-      <div className="md:col-span-8 bg-gray-800 rounded border border-gray-700 overflow-hidden min-h-0 flex flex-col">
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-          <div className="font-semibold truncate">{selected ? `Category: ${selected.name}` : 'Menu editor'}</div>
-          {saving && <div className="text-xs opacity-70">Saving…</div>}
-        </div>
-
-        <div className="p-4 space-y-4 overflow-auto min-h-0">
-          {err && <div className="p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">{err}</div>}
-          {billingPaused && (
-            <div className="p-3 rounded bg-amber-900/20 border border-amber-800 text-amber-200 text-sm">
-              Billing is paused. You can view your menu, but adding or editing menu items is disabled until payment is completed.
-            </div>
-          )}
-
-          {!selected ? (
-            <div className="rounded border border-gray-700 bg-gray-900/30 p-6 text-sm opacity-80">
-              Select a category on the left to edit its details and items.
-            </div>
-          ) : (
-            <>
-              <div className="rounded border border-gray-700 bg-gray-800/40 p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="font-semibold">Items</div>
-                  <div className="text-xs opacity-70">{selected.items?.length || 0} items</div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 mb-3">
-                  <input
-                    className="sm:col-span-4 bg-gray-700 rounded px-3 py-2"
-                    placeholder="Item name"
-                    value={newItemName}
-                    onChange={(e) => setNewItemName(e.target.value)}
-                    disabled={saving != null || billingPaused}
-                  />
-                  <select
-                    className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-                    value={newItemStation}
-                    onChange={(e) => setNewItemStation(e.target.value as any)}
-                    title="Station"
-                    disabled={saving != null || billingPaused}
-                  >
-                    <option value="KITCHEN">Kitchen</option>
-                    <option value="BAR">Bar</option>
-                    <option value="DESSERT">Dessert</option>
-                  </select>
-                  <input
-                    className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-                    placeholder="Price"
-                    inputMode="decimal"
-                    value={newItemPrice}
-                    onChange={(e) => setNewItemPrice(e.target.value.replace(/[^0-9.]/g, ''))}
-                    disabled={saving != null || billingPaused}
-                  />
-                  <input
-                    className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-                    placeholder="VAT (0.2)"
-                    inputMode="decimal"
-                    value={newItemVat}
-                    onChange={(e) => setNewItemVat(e.target.value.replace(/[^0-9.]/g, ''))}
-                    disabled={saving != null || billingPaused}
-                  />
-                  <label className="sm:col-span-1 flex items-center gap-2 text-sm opacity-90">
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 mb-3">
                     <input
-                      type="checkbox"
-                      checked={newItemIsKg}
-                      onChange={(e) => setNewItemIsKg(e.target.checked)}
+                      className="sm:col-span-4 bg-gray-700 rounded px-3 py-2"
+                      placeholder="Item name"
+                      value={newItemName}
+                      onChange={(e) => setNewItemName(e.target.value)}
                       disabled={saving != null || billingPaused}
                     />
-                    kg
-                  </label>
-                  <button
-                    className="sm:col-span-1 bg-emerald-700 hover:bg-emerald-800 rounded px-3 py-2 disabled:opacity-60"
-                    disabled={!newItemName.trim() || !newItemPrice || saving != null || billingPaused}
-                    onClick={() =>
-                      void withSaving('create-item', async () => {
-                        const price = Number(newItemPrice);
-                        const vatRate = newItemVat ? Number(newItemVat) : undefined;
-                        await window.api.menu.createItem({
-                          categoryId: selected.id,
-                          name: newItemName.trim(),
-                          price,
-                          vatRate,
-                          isKg: newItemIsKg,
-                          station: newItemStation,
-                          active: true,
-                        } as any);
-                        setNewItemName('');
-                        setNewItemPrice('');
-                        setNewItemIsKg(false);
-                        setNewItemStation('KITCHEN');
-                        await reload();
-                      })
-                    }
-                    type="button"
-                  >
-                    Add
-                  </button>
-                </div>
-
-                {selected.items.length === 0 ? (
-                  <div className="opacity-70 text-sm">No items yet.</div>
-                ) : (
-                  <div className="divide-y divide-gray-700 border border-gray-700 rounded overflow-hidden">
-                    {selected.items.map((it) => (
-                      <ItemRow
-                        key={it.id}
-                        item={it}
-                        disabled={saving != null}
-                        onSave={(patch) =>
-                          withSaving('update-item', async () => {
-                            await window.api.menu.updateItem({ id: it.id, ...patch } as any);
-                            await reload();
-                          })
-                        }
-                        onDelete={() =>
-                          withSaving('delete-item', async () => {
-                            await window.api.menu.deleteItem(it.id);
-                            await reload();
-                          })
-                        }
+                    <select
+                      className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
+                      value={newItemStation}
+                      onChange={(e) => setNewItemStation(e.target.value as any)}
+                      title="Station"
+                      disabled={saving != null || billingPaused}
+                    >
+                      <option value="KITCHEN">Kitchen</option>
+                      <option value="BAR">Bar</option>
+                      <option value="DESSERT">Dessert</option>
+                    </select>
+                    <input
+                      className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
+                      placeholder="Price"
+                      inputMode="decimal"
+                      value={newItemPrice}
+                      onChange={(e) =>
+                        setNewItemPrice(e.target.value.replace(/[^0-9.]/g, ''))
+                      }
+                      disabled={saving != null || billingPaused}
+                    />
+                    <input
+                      className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
+                      placeholder="VAT (0.2)"
+                      inputMode="decimal"
+                      value={newItemVat}
+                      onChange={(e) =>
+                        setNewItemVat(e.target.value.replace(/[^0-9.]/g, ''))
+                      }
+                      disabled={saving != null || billingPaused}
+                    />
+                    <label className="sm:col-span-1 flex items-center gap-2 text-sm opacity-90">
+                      <input
+                        type="checkbox"
+                        checked={newItemIsKg}
+                        onChange={(e) => setNewItemIsKg(e.target.checked)}
+                        disabled={saving != null || billingPaused}
                       />
-                    ))}
+                      kg
+                    </label>
+                    <button
+                      className="sm:col-span-1 bg-emerald-700 hover:bg-emerald-800 rounded px-3 py-2 disabled:opacity-60"
+                      disabled={
+                        !newItemName.trim() ||
+                        !newItemPrice ||
+                        saving != null ||
+                        billingPaused
+                      }
+                      onClick={() =>
+                        void withSaving('create-item', async () => {
+                          const price = Number(newItemPrice);
+                          const vatRate = newItemVat
+                            ? Number(newItemVat)
+                            : undefined;
+                          await window.api.menu.createItem({
+                            categoryId: selected.id,
+                            name: newItemName.trim(),
+                            price,
+                            vatRate,
+                            isKg: newItemIsKg,
+                            station: newItemStation,
+                            active: true,
+                          } as any);
+                          setNewItemName('');
+                          setNewItemPrice('');
+                          setNewItemIsKg(false);
+                          setNewItemStation('KITCHEN');
+                          await reload();
+                        })
+                      }
+                      type="button"
+                    >
+                      Add
+                    </button>
                   </div>
-                )}
-              </div>
 
-            </>
-          )}
+                  {selected.items.length === 0 ? (
+                    <div className="opacity-70 text-sm">No items yet.</div>
+                  ) : (
+                    <div className="divide-y divide-gray-700 border border-gray-700 rounded overflow-hidden">
+                      {selected.items.map((it) => (
+                        <ItemRow
+                          key={it.id}
+                          item={it}
+                          disabled={saving != null}
+                          onSave={(patch) =>
+                            withSaving('update-item', async () => {
+                              await window.api.menu.updateItem({
+                                id: it.id,
+                                ...patch,
+                              } as any);
+                              await reload();
+                            })
+                          }
+                          onDelete={() =>
+                            withSaving('delete-item', async () => {
+                              await window.api.menu.deleteItem(it.id);
+                              await reload();
+                            })
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      </div>
       </div>
 
       {editCategory && (
-        <Modal title={`Edit category: ${editCategory.name}`} onClose={() => setEditCategoryId(null)}>
+        <Modal
+          title={`Edit category: ${editCategory.name}`}
+          onClose={() => setEditCategoryId(null)}
+        >
           <CategoryEditor
             category={editCategory}
             allCategories={cats}
@@ -538,7 +611,10 @@ export default function AdminMenuPage() {
             showDelete={false}
             onSave={(patch) =>
               withSaving('update-category', async () => {
-                await window.api.menu.updateCategory({ id: editCategory.id, ...patch } as any);
+                await window.api.menu.updateCategory({
+                  id: editCategory.id,
+                  ...patch,
+                } as any);
                 await reload();
                 setEditCategoryId(null);
               })
@@ -551,10 +627,6 @@ export default function AdminMenuPage() {
   );
 }
 
-// Modal is intentionally rendered outside of scroll containers
-// so it can overlay the whole page correctly.
-// eslint-disable-next-line react/jsx-no-useless-fragment
-
 function CategoryEditor({
   category,
   allCategories,
@@ -566,13 +638,22 @@ function CategoryEditor({
   category: MenuCategory;
   allCategories: MenuCategory[];
   disabled: boolean;
-  onSave: (patch: { name?: string; sortOrder?: number; color?: string | null; active?: boolean }) => Promise<any>;
+  onSave: (patch: {
+    name?: string;
+    sortOrder?: number;
+    color?: string | null;
+    active?: boolean;
+  }) => Promise<any>;
   onDelete: () => Promise<any>;
   showDelete?: boolean;
 }) {
   const [name, setName] = useState(category.name);
-  const [color, setColor] = useState<string>(String(category.color || '#374151'));
-  const [colorText, setColorText] = useState<string>(String(category.color || '#374151'));
+  const [color, setColor] = useState<string>(
+    String(category.color || '#374151'),
+  );
+  const [colorText, setColorText] = useState<string>(
+    String(category.color || '#374151'),
+  );
   const [sortOrder, setSortOrder] = useState(String(category.sortOrder ?? 0));
 
   useEffect(() => {
@@ -586,7 +667,9 @@ function CategoryEditor({
   function normalizeColorInput(v: string): string | null {
     const raw = String(v || '').trim();
     if (!raw) return null;
-    const up = raw.startsWith('#') ? raw.toUpperCase() : `#${raw.toUpperCase()}`;
+    const up = raw.startsWith('#')
+      ? raw.toUpperCase()
+      : `#${raw.toUpperCase()}`;
     if (/^#[0-9A-F]{6}$/.test(up)) return up;
     return null;
   }
@@ -603,8 +686,13 @@ function CategoryEditor({
             disabled={disabled}
           >
             {/* If this category is legacy/custom, keep it selectable so we don't break existing data */}
-            {!CATEGORY_PRESETS.some((p) => p.toLowerCase() === String(category.name || '').toLowerCase()) && (
-              <option value={category.name}>{`Legacy: ${category.name}`}</option>
+            {!CATEGORY_PRESETS.some(
+              (p) =>
+                p.toLowerCase() === String(category.name || '').toLowerCase(),
+            ) && (
+              <option
+                value={category.name}
+              >{`Legacy: ${category.name}`}</option>
             )}
             {CATEGORY_PRESETS.map((n) => (
               <option key={n} value={n}>
@@ -660,7 +748,9 @@ function CategoryEditor({
             className="bg-gray-700 rounded px-3 py-2 w-full"
             inputMode="numeric"
             value={sortOrder}
-            onChange={(e) => setSortOrder(e.target.value.replace(/[^0-9]/g, ''))}
+            onChange={(e) =>
+              setSortOrder(e.target.value.replace(/[^0-9]/g, ''))
+            }
             disabled={disabled}
           />
         </div>
@@ -671,9 +761,12 @@ function CategoryEditor({
           className="w-full sm:w-auto px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium"
           disabled={disabled}
           onClick={() => {
-            const norm = normalizeColorInput(colorText) ?? (color ? String(color) : null);
+            const norm =
+              normalizeColorInput(colorText) ?? (color ? String(color) : null);
             const nextName = name.trim();
-            const preset = CATEGORY_PRESETS.find((p) => p.toLowerCase() === nextName.toLowerCase());
+            const preset = CATEGORY_PRESETS.find(
+              (p) => p.toLowerCase() === nextName.toLowerCase(),
+            );
             if (preset) {
               const takenByOther = allCategories.some(
                 (c) =>
@@ -682,7 +775,11 @@ function CategoryEditor({
               );
               if (takenByOther) return;
             }
-            onSave({ name: name.trim(), color: norm, sortOrder: Number(sortOrder || 0) });
+            onSave({
+              name: name.trim(),
+              color: norm,
+              sortOrder: Number(sortOrder || 0),
+            });
           }}
           type="button"
         >
@@ -715,14 +812,23 @@ function ItemRow({
 }: {
   item: MenuItem;
   disabled: boolean;
-  onSave: (patch: { name?: string; price?: number; vatRate?: number; isKg?: boolean; station?: 'KITCHEN' | 'BAR' | 'DESSERT'; active?: boolean }) => Promise<any>;
+  onSave: (patch: {
+    name?: string;
+    price?: number;
+    vatRate?: number;
+    isKg?: boolean;
+    station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+    active?: boolean;
+  }) => Promise<any>;
   onDelete: () => Promise<any>;
 }) {
   const [name, setName] = useState(item.name);
   const [price, setPrice] = useState(String(item.price));
   const [vat, setVat] = useState(String(item.vatRate ?? 0.2));
   const [isKg, setIsKg] = useState(Boolean(item.isKg));
-  const [station, setStation] = useState<'KITCHEN' | 'BAR' | 'DESSERT'>((item.station as any) || 'KITCHEN');
+  const [station, setStation] = useState<'KITCHEN' | 'BAR' | 'DESSERT'>(
+    (item.station as any) || 'KITCHEN',
+  );
   const [active, setActive] = useState(Boolean(item.active));
 
   useEffect(() => {
@@ -773,7 +879,10 @@ function ItemRow({
         onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
         disabled={disabled}
       />
-      <label className="sm:col-span-1 flex items-center gap-2 text-xs opacity-90" title="Sold by kg">
+      <label
+        className="sm:col-span-1 flex items-center gap-2 text-xs opacity-90"
+        title="Sold by kg"
+      >
         <input
           type="checkbox"
           checked={isKg}
@@ -782,7 +891,10 @@ function ItemRow({
         />
         <span>kg</span>
       </label>
-      <label className="sm:col-span-1 flex items-center gap-2 text-xs opacity-90" title="Show in waiter menu">
+      <label
+        className="sm:col-span-1 flex items-center gap-2 text-xs opacity-90"
+        title="Show in waiter menu"
+      >
         <input
           type="checkbox"
           checked={active}
@@ -794,13 +906,24 @@ function ItemRow({
           }}
           disabled={disabled}
         />
-        <span className={active ? '' : 'text-rose-200'}>{active ? 'Enabled' : 'Disabled'}</span>
+        <span className={active ? '' : 'text-rose-200'}>
+          {active ? 'Enabled' : 'Disabled'}
+        </span>
       </label>
       <div className="sm:col-span-2 flex flex-col sm:flex-row gap-2 justify-end">
         <button
           className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-60"
           disabled={disabled}
-          onClick={() => onSave({ name: name.trim(), price: Number(price || 0), vatRate: Number(vat || 0), isKg, station, active })}
+          onClick={() =>
+            onSave({
+              name: name.trim(),
+              price: Number(price || 0),
+              vatRate: Number(vat || 0),
+              isKg,
+              station,
+              active,
+            })
+          }
           type="button"
         >
           Save
@@ -819,4 +942,3 @@ function ItemRow({
     </div>
   );
 }
-
