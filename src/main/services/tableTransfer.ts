@@ -10,6 +10,8 @@ export type TransferTableInput = {
   toUserId?: number | null;
   // Actor initiating the transfer (required for authorization)
   actorUserId: number;
+  /** When in cloud mode, actor may not exist in local DB; pass role from session to bypass lookup */
+  actorRole?: string;
 };
 
 export type TransferTableResult = { ok: true } | { ok: false; error: string };
@@ -54,11 +56,20 @@ export async function transferTableLocal(input: TransferTableInput): Promise<Tra
     prisma.ticketLog.findFirst({ where: { area: fromArea, tableLabel: fromLabel }, orderBy: { createdAt: 'desc' } }).catch(() => null),
   ]);
 
-  if (!actor || actor.active === false) return { ok: false, error: 'Actor not found' };
+  // In cloud mode, actor may not exist in local DB; use actorRole from session when provided
+  const actorRoleFromSession = String(input.actorRole || '').trim();
+  const effectiveActor =
+    actor && actor.active !== false
+      ? actor
+      : actorRoleFromSession
+        ? ({ role: actorRoleFromSession, active: true } as { role: string; active: boolean })
+        : null;
+
+  if (!effectiveActor) return { ok: false, error: 'Actor not found' };
   if (!last) return { ok: false, error: 'No active ticket found for this table' };
 
   const currentOwnerId = Number(last.userId || 0);
-  const isAdmin = String((actor as any).role || '').toUpperCase() === 'ADMIN';
+  const isAdmin = String((effectiveActor as any).role || '').toUpperCase() === 'ADMIN';
   if (!isAdmin && Number(actorUserId) !== Number(currentOwnerId)) {
     return { ok: false, error: 'Only the table owner or an admin can transfer a table' };
   }
@@ -95,6 +106,7 @@ export async function transferTableLocal(input: TransferTableInput): Promise<Tra
     : `[TRANSFER] owner → ${newOwner?.displayName || toUserId}`;
   const nextNote = note ? `${note}\n${transferTag}` : transferTag;
 
+  // Keep same waiter when only moving table; change owner only when transferring to another waiter
   const nextUserId = changingOwner ? Number(toUserId) : Number(currentOwnerId);
   await prisma.ticketLog.create({
     data: {

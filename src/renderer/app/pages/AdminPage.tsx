@@ -25,6 +25,75 @@ type AdminShift = {
   isOpen: boolean;
 };
 
+function IconPencil() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
+      <path
+        d="M12 20h9"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
+      <path
+        d="M3 6h18"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M8 6V4h8v2"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6 6l1 16h10l1-16"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M10 11v6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M14 11v6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export default function AdminPage() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
@@ -55,24 +124,24 @@ export default function AdminPage() {
   const [userQuery, setUserQuery] = useState('');
   const [showAdmins, setShowAdmins] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
-  const [createName, setCreateName] = useState('');
-  const [createRole, setCreateRole] = useState<
-    | 'WAITER'
-    | 'CASHIER'
-    | 'ADMIN'
-    | 'KP'
-    | 'CHEF'
-    | 'HEAD_CHEF'
-    | 'FOOD_RUNNER'
-    | 'HOST'
-    | 'BUSSER'
-    | 'BARTENDER'
-    | 'BARBACK'
-    | 'CLEANER'
-  >('WAITER');
-  const [createPin, setCreatePin] = useState('');
-  const [createActive, setCreateActive] = useState(true);
-  const [staffStatus, setStaffStatus] = useState<string | null>(null);
+  const [showAddStaffModal, setShowAddStaffModal] = useState(false);
+  const [editingStaff, setEditingStaff] = useState<{
+    id: number;
+    displayName: string;
+    role: string;
+    active: boolean;
+  } | null>(null);
+  const [staffStatus, setStaffStatus] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
+
+  // Auto-clear status banner after a few seconds.
+  useEffect(() => {
+    if (!staffStatus) return;
+    const t = window.setTimeout(() => setStaffStatus(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [staffStatus]);
   const [dataSource, setDataSource] = useState<'cloud' | 'local'>('local');
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const [billingPaused, setBillingPaused] = useState(false);
@@ -92,7 +161,7 @@ export default function AdminPage() {
         ).trim();
         const cur = String((s as any)?.currency || '').trim();
         if (cur) setCurrency(cur);
-        setDataSource(backendUrl && businessCode ? 'cloud' : 'local');
+        setDataSource('local');
         if (backendUrl && !businessCode) {
           setAdminNotice(
             'Cloud is enabled but Business code is missing. Set it in Settings → Cloud (Hosted).',
@@ -105,18 +174,6 @@ export default function AdminPage() {
         }
       } catch {
         // ignore
-      }
-
-      // When cloud is enabled, require an ADMIN session before loading admin data.
-      if (dataSource === 'cloud' && (!me || me.role !== 'ADMIN')) {
-        setAdminNotice(
-          'Admin login required. Please login with an ADMIN account from the main login screen.',
-        );
-        setOv(null);
-        setShifts([]);
-        setTopSelling(null);
-        setUsers([]);
-        return;
       }
 
       try {
@@ -662,7 +719,7 @@ export default function AdminPage() {
                 checked={showAdmins}
                 onChange={(e) => setShowAdmins(e.target.checked)}
               />
-              Show admins
+              Admins
             </label>
             <label className="text-xs opacity-80 flex items-center gap-2 select-none">
               <input
@@ -670,103 +727,57 @@ export default function AdminPage() {
                 checked={showInactive}
                 onChange={(e) => setShowInactive(e.target.checked)}
               />
-              Show inactive
+               Inactive
             </label>
             <button
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-              onClick={refreshUsers}
+              className="px-3 py-2 rounded bg-transparent hover:bg-gray-700 text-sm disabled:opacity-60 cursor-pointer"
+              disabled={billingPaused}
+              onClick={() => setShowAddStaffModal(true)}
             >
-              Refresh
+              +
             </button>
           </div>
         </div>
 
-        <div className="bg-gray-900/60 border border-gray-700 rounded p-3 mb-3">
-          <div className="text-sm font-semibold mb-2">Add staff member</div>
-          {billingPaused && (
-            <div className="mb-2 text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
-              Billing is paused. You can access the admin panel, but adding
-              staff is disabled until payment is completed.
-            </div>
-          )}
-          <div className="grid grid-cols-4 gap-2">
-            <input
-              className="bg-gray-700 rounded px-3 py-2 col-span-2"
-              placeholder="Full name"
-              value={createName}
-              onChange={(e) => setCreateName(e.target.value)}
-            />
-            <select
-              className="bg-gray-700 rounded px-3 py-2"
-              value={createRole}
-              onChange={(e) => setCreateRole(e.target.value as any)}
-            >
-              <option value="WAITER">WAITER</option>
-              <option value="CASHIER">CASHIER</option>
-              <option value="ADMIN">ADMIN</option>
-              <option value="KP">KP</option>
-              <option value="CHEF">CHEF</option>
-              <option value="HEAD_CHEF">HEAD_CHEF</option>
-              <option value="FOOD_RUNNER">FOOD_RUNNER</option>
-              <option value="HOST">HOST</option>
-              <option value="BUSSER">BUSSER</option>
-              <option value="BARTENDER">BARTENDER</option>
-              <option value="BARBACK">BARBACK</option>
-              <option value="CLEANER">CLEANER</option>
-            </select>
-            <input
-              className="bg-gray-700 rounded px-3 py-2"
-              placeholder="PIN (4-6 digits)"
-              inputMode="numeric"
-              value={createPin}
-              onChange={(e) =>
-                setCreatePin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
-              }
-            />
+        {showAddStaffModal && (
+          <AddStaffModal
+            billingPaused={billingPaused}
+            onClose={() => setShowAddStaffModal(false)}
+            onSuccess={async () => {
+              await refreshUsers();
+              setShowAddStaffModal(false);
+            }}
+          />
+        )}
+
+        {editingStaff && (
+          <EditStaffModal
+            staff={editingStaff}
+            isSelf={myId === editingStaff.id}
+            onClose={() => setEditingStaff(null)}
+            onSaved={async (msg) => {
+              setStaffStatus({ kind: 'success', message: msg });
+              await refreshUsers();
+              setEditingStaff(null);
+            }}
+            onError={(msg) =>
+              setStaffStatus({ kind: 'error', message: msg })
+            }
+          />
+        )}
+
+        {staffStatus && (
+          <div
+            role="status"
+            className={`mb-3 text-sm rounded px-3 py-2 border ${
+              staffStatus.kind === 'success'
+                ? 'bg-emerald-900/20 border-emerald-800 text-emerald-100'
+                : 'bg-rose-900/20 border-rose-800 text-rose-100'
+            }`}
+          >
+            {staffStatus.message}
           </div>
-          <div className="flex items-center justify-between mt-2">
-            <label className="text-xs opacity-80 flex items-center gap-2 select-none">
-              <input
-                type="checkbox"
-                checked={createActive}
-                onChange={(e) => setCreateActive(e.target.checked)}
-              />
-              Active
-            </label>
-            <button
-              className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 text-sm"
-              disabled={billingPaused}
-              onClick={async () => {
-                setStaffStatus(null);
-                try {
-                  const name = createName.trim();
-                  if (!name) throw new Error('name is required');
-                  if (createPin.length < 4)
-                    throw new Error('PIN must be 4-6 digits');
-                  await window.api.auth.createUser({
-                    displayName: name,
-                    role: createRole,
-                    pin: createPin,
-                    active: createActive,
-                  } as any);
-                  setCreateName('');
-                  setCreatePin('');
-                  setCreateRole('WAITER');
-                  setCreateActive(true);
-                  setStaffStatus('Created.');
-                  await refreshUsers();
-                } catch (e: any) {
-                  setStaffStatus(e?.message || 'Failed to create user');
-                }
-              }}
-            >
-              Add
-            </button>
-          </div>
-          {staffStatus && (
-            <div className="text-xs opacity-80 mt-2">{staffStatus}</div>
-          )}
-        </div>
+        )}
 
         <div className="mb-3">
           <input
@@ -784,7 +795,7 @@ export default function AdminPage() {
                 <th className="py-1 pr-2">ID</th>
                 <th className="py-1 pr-2">Name</th>
                 <th className="py-1 pr-2">Role</th>
-                <th className="py-1 pr-2">Active</th>
+                {/* <th className="py-1 pr-2">Active</th> */}
                 <th className="py-1 pr-2">On shift</th>
                 <th className="py-1 pr-2">Created</th>
                 <th className="py-1 pr-2">Actions</th>
@@ -807,7 +818,7 @@ export default function AdminPage() {
                       {u.role}
                     </span>
                   </td>
-                  <td className="py-1 pr-2">{u.active ? 'Yes' : 'No'}</td>
+                  {/* <td className="py-1 pr-2">{u.active ? 'Yes' : 'No'}</td> */}
                   <td className="py-1 pr-2">
                     {openUserIds.has(u.id) ? 'Yes' : 'No'}
                   </td>
@@ -818,6 +829,20 @@ export default function AdminPage() {
                   </td>
                   <td className="py-1 pr-2">
                     <div className="flex items-center gap-2">
+                      <button
+                        className="px-2 py-1 rounded bg-transparent hover:bg-gray-700 text-xs cursor-pointer"
+                        title="Edit name, role, PIN or active status"
+                        onClick={() =>
+                          setEditingStaff({
+                            id: u.id,
+                            displayName: u.displayName,
+                            role: u.role,
+                            active: Boolean(u.active),
+                          })
+                        }
+                      >
+                        <IconPencil />
+                      </button>
                       {u.active ? (
                         <button
                           className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-40"
@@ -834,11 +859,17 @@ export default function AdminPage() {
                                 id: u.id,
                                 active: false,
                               } as any);
+                              setStaffStatus({
+                                kind: 'success',
+                                message: `Disabled ${u.displayName}.`,
+                              });
                               await refreshUsers();
                             } catch (e: any) {
-                              setStaffStatus(
-                                e?.message || 'Failed to disable user',
-                              );
+                              setStaffStatus({
+                                kind: 'error',
+                                message:
+                                  e?.message || 'Failed to disable user',
+                              });
                             }
                           }}
                         >
@@ -854,11 +885,17 @@ export default function AdminPage() {
                                 id: u.id,
                                 active: true,
                               } as any);
+                              setStaffStatus({
+                                kind: 'success',
+                                message: `Enabled ${u.displayName}.`,
+                              });
                               await refreshUsers();
                             } catch (e: any) {
-                              setStaffStatus(
-                                e?.message || 'Failed to enable user',
-                              );
+                              setStaffStatus({
+                                kind: 'error',
+                                message:
+                                  e?.message || 'Failed to enable user',
+                              });
                             }
                           }}
                         >
@@ -886,16 +923,21 @@ export default function AdminPage() {
                               id: u.id,
                               hard: true,
                             } as any);
-                            setStaffStatus('Deleted.');
+                            setStaffStatus({
+                              kind: 'success',
+                              message: `Deleted ${u.displayName}.`,
+                            });
                             await refreshUsers();
                           } catch (e: any) {
-                            setStaffStatus(
-                              e?.message || 'Failed to delete user',
-                            );
+                            setStaffStatus({
+                              kind: 'error',
+                              message:
+                                e?.message || 'Failed to delete user',
+                            });
                           }
                         }}
                       >
-                        Delete
+                        <IconTrash />
                       </button>
                     </div>
                   </td>
@@ -952,6 +994,380 @@ function Stat({
         }`}
       >
         {display}
+      </div>
+    </div>
+  );
+}
+
+type StaffRole =
+  | 'WAITER'
+  | 'CASHIER'
+  | 'ADMIN'
+  | 'KP'
+  | 'CHEF'
+  | 'HEAD_CHEF'
+  | 'FOOD_RUNNER'
+  | 'HOST'
+  | 'BUSSER'
+  | 'BARTENDER'
+  | 'BARBACK'
+  | 'CLEANER';
+
+function AddStaffModal({
+  billingPaused,
+  onClose,
+  onSuccess,
+}: {
+  billingPaused: boolean;
+  onClose: () => void;
+  onSuccess: () => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<StaffRole>('WAITER');
+  const [pin, setPin] = useState('');
+  const [active, setActive] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  async function handleSubmit() {
+    setError(null);
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError('Name is required');
+      return;
+    }
+    if (pin.length < 4) {
+      setError('PIN must be 4-6 digits');
+      return;
+    }
+    setSaving(true);
+    try {
+      await window.api.auth.createUser({
+        displayName: trimmed,
+        role,
+        pin,
+        active,
+      } as any);
+      await onSuccess();
+    } catch (e: any) {
+      setError(e?.message || 'Failed to create user');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+        onClick={onClose}
+        aria-label="Close modal"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
+      >
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
+          <div className="font-semibold">Add staff member</div>
+          <button
+            type="button"
+            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+              <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-4 space-y-4">
+          {billingPaused && (
+            <div className="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
+              Billing is paused. Adding staff is disabled until payment is completed.
+            </div>
+          )}
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">Full name</div>
+            <input
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              placeholder="Full name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={billingPaused}
+            />
+          </label>
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">Role</div>
+            <select
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              value={role}
+              onChange={(e) => setRole(e.target.value as StaffRole)}
+              disabled={billingPaused}
+            >
+              <option value="WAITER">WAITER</option>
+              <option value="CASHIER">CASHIER</option>
+              <option value="ADMIN">ADMIN</option>
+              <option value="KP">KP</option>
+              <option value="CHEF">CHEF</option>
+              <option value="HEAD_CHEF">HEAD_CHEF</option>
+              <option value="FOOD_RUNNER">FOOD_RUNNER</option>
+              <option value="HOST">HOST</option>
+              <option value="BUSSER">BUSSER</option>
+              <option value="BARTENDER">BARTENDER</option>
+              <option value="BARBACK">BARBACK</option>
+              <option value="CLEANER">CLEANER</option>
+            </select>
+          </label>
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">PIN (4-6 digits)</div>
+            <input
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              placeholder="PIN (4-6 digits)"
+              inputMode="numeric"
+              value={pin}
+              onChange={(e) =>
+                setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
+              }
+              disabled={billingPaused}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm select-none">
+            <input
+              type="checkbox"
+              checked={active}
+              onChange={(e) => setActive(e.target.checked)}
+              disabled={billingPaused}
+            />
+            Active
+          </label>
+          {error && <div className="text-sm text-rose-300">{error}</div>}
+          <div className="flex gap-2 pt-2">
+            <button
+              className="flex-1 px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60"
+              type="button"
+              disabled={billingPaused || saving}
+              onClick={() => void handleSubmit()}
+            >
+              {saving ? 'Adding…' : 'Add'}
+            </button>
+            <button
+              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+              type="button"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditStaffModal({
+  staff,
+  isSelf,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  staff: { id: number; displayName: string; role: string; active: boolean };
+  isSelf: boolean;
+  onClose: () => void;
+  onSaved: (message: string) => Promise<void> | void;
+  onError: (message: string) => void;
+}) {
+  const [name, setName] = useState(staff.displayName);
+  const [role, setRole] = useState<StaffRole>(staff.role as StaffRole);
+  const [pin, setPin] = useState('');
+  const [active, setActive] = useState(staff.active);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  // Only send fields that actually changed (or PIN if user typed one).
+  const dirty =
+    name.trim() !== staff.displayName ||
+    role !== staff.role ||
+    active !== staff.active ||
+    pin.length > 0;
+
+  async function handleSubmit() {
+    setError(null);
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError('Name is required');
+      return;
+    }
+    if (pin && pin.length < 4) {
+      setError('PIN must be 4-6 digits (or leave blank to keep current)');
+      return;
+    }
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload: Record<string, unknown> = { id: staff.id };
+      if (trimmed !== staff.displayName) payload.displayName = trimmed;
+      if (role !== staff.role) payload.role = role;
+      if (active !== staff.active) payload.active = active;
+      if (pin) payload.pin = pin;
+      await window.api.auth.updateUser(payload as any);
+      await onSaved(`Updated ${trimmed}.`);
+    } catch (e: any) {
+      const msg = e?.message || 'Failed to update user';
+      setError(msg);
+      onError(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+        onClick={onClose}
+        aria-label="Close modal"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
+      >
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
+          <div className="font-semibold">
+            Edit staff <span className="opacity-60 text-sm">(ID {staff.id})</span>
+          </div>
+          <button
+            type="button"
+            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="w-4 h-4"
+            >
+              <path
+                d="M6 6l12 12M18 6 6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <div className="p-4 space-y-4">
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">Full name</div>
+            <input
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              placeholder="Full name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">Role</div>
+            <select
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              value={role}
+              onChange={(e) => setRole(e.target.value as StaffRole)}
+              disabled={isSelf && staff.role === 'ADMIN'}
+            >
+              <option value="WAITER">WAITER</option>
+              <option value="CASHIER">CASHIER</option>
+              <option value="ADMIN">ADMIN</option>
+              <option value="KP">KP</option>
+              <option value="CHEF">CHEF</option>
+              <option value="HEAD_CHEF">HEAD_CHEF</option>
+              <option value="FOOD_RUNNER">FOOD_RUNNER</option>
+              <option value="HOST">HOST</option>
+              <option value="BUSSER">BUSSER</option>
+              <option value="BARTENDER">BARTENDER</option>
+              <option value="BARBACK">BARBACK</option>
+              <option value="CLEANER">CLEANER</option>
+            </select>
+            {isSelf && staff.role === 'ADMIN' && (
+              <div className="text-xs opacity-70 mt-1">
+                You can&rsquo;t change your own admin role.
+              </div>
+            )}
+          </label>
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">
+              New PIN{' '}
+              <span className="opacity-60">
+                (leave blank to keep current)
+              </span>
+            </div>
+            <input
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              placeholder="4-6 digits"
+              inputMode="numeric"
+              autoComplete="new-password"
+              value={pin}
+              onChange={(e) =>
+                setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
+              }
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm select-none">
+            <input
+              type="checkbox"
+              checked={active}
+              onChange={(e) => setActive(e.target.checked)}
+              disabled={isSelf}
+            />
+            Active
+            {isSelf && (
+              <span className="text-xs opacity-70">
+                (you can&rsquo;t deactivate yourself)
+              </span>
+            )}
+          </label>
+          {error && <div className="text-sm text-rose-300">{error}</div>}
+          <div className="flex gap-2 pt-2">
+            <button
+              className="flex-1 px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60"
+              type="button"
+              disabled={saving || !dirty}
+              onClick={() => void handleSubmit()}
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+            <button
+              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+              type="button"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

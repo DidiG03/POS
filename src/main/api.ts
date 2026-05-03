@@ -2,7 +2,7 @@ import http from 'http';
 import https from 'https';
 import fs from 'fs';
 import url from 'url';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { prisma } from '@db/client';
@@ -16,8 +16,8 @@ import {
 } from './print';
 import { coreServices } from './services/core';
 import { transferTableLocal } from './services/tableTransfer';
-import { cloudJson, getCloudConfig } from './services/cloud';
 import { isClockOnlyRole } from '@shared/utils/roles';
+import { getCloudConfig } from './services/cloud';
 
 async function maybeAlertSuspiciousVoidsLocal(input: {
   actorUserId: number;
@@ -219,43 +219,6 @@ function dayKeyLocal(d = new Date()) {
   return `${y}-${m}-${dd}`;
 }
 
-async function readCloudSessionFromLocalSettings(): Promise<{
-  backendUrl: string;
-  businessCode: string;
-  token: string;
-} | null> {
-  try {
-    const s: any = await coreServices.readSettings().catch(() => null);
-    const backendUrl = String(s?.cloud?.backendUrl || '')
-      .trim()
-      .replace(/\/+$/g, '');
-    const businessCode = String(s?.cloud?.businessCode || '')
-      .trim()
-      .toUpperCase();
-    if (!backendUrl || !businessCode) return null;
-    const keys = [
-      'cloud:session:staff',
-      'cloud:session:admin',
-      'cloud:session',
-    ];
-    for (const k of keys) {
-      const row = await prisma.syncState
-        .findUnique({ where: { key: k } })
-        .catch(() => null);
-      const v: any = (row?.valueJson as any) || null;
-      const token = String(v?.token || '').trim();
-      const bc = String(v?.businessCode || '')
-        .trim()
-        .toUpperCase();
-      if (token && bc === businessCode)
-        return { backendUrl, businessCode, token };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 function send(
   res: http.ServerResponse,
   code: number,
@@ -452,8 +415,29 @@ function createCorsPolicy(isDev: boolean): CorsPolicy {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const dev = isDev ? ['http://localhost:5173', 'http://127.0.0.1:5173'] : [];
-  const allowList = new Set<string>([...extra, ...dev]);
+  const dev = isDev
+    ? [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        // Vite mobile dev server (vite.mobile.config.ts uses :5174 with host:true).
+        'http://localhost:5174',
+        'http://127.0.0.1:5174',
+      ]
+    : [];
+  // Well-known Capacitor WebView origins. The waiter mobile app talks to the
+  // POS LAN API from these origins; without them the WebView preflight fails
+  // and every fetch silently errors out.
+  //   iOS         → capacitor://localhost
+  //   Android     → http://localhost (default) or https://localhost (when
+  //                 androidScheme:'https' is set in capacitor.config.ts)
+  //   Older Ionic → ionic://localhost
+  const capacitorOrigins = [
+    'capacitor://localhost',
+    'ionic://localhost',
+    'http://localhost',
+    'https://localhost',
+  ];
+  const allowList = new Set<string>([...extra, ...dev, ...capacitorOrigins]);
 
   return {
     allowOrigin(origin: string | undefined, hostHeader: string | undefined) {
@@ -521,30 +505,17 @@ function setSecurityHeaders(
   }
 }
 
-// Basic in-memory rate limit for login attempts (per remote IP)
-const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-function allowLoginAttempt(
-  remoteIp: string,
-  maxPerWindow = 20,
-  windowMs = 10 * 60 * 1000,
-) {
-  const now = Date.now();
-  const cur = loginAttempts.get(remoteIp);
-  if (!cur || cur.resetAt <= now) {
-    loginAttempts.set(remoteIp, { count: 1, resetAt: now + windowMs });
-    return true;
-  }
-  if (cur.count >= maxPerWindow) return false;
-  cur.count += 1;
-  loginAttempts.set(remoteIp, cur);
-  return true;
-}
-
 export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
   const CURRENT_FILE = fileURLToPath(import.meta.url);
   const CURRENT_DIR = dirname(CURRENT_FILE);
-  const RENDERER_DIR = join(CURRENT_DIR, '../renderer');
-  const RENDERER_ORIGIN = process.env.RENDERER_ORIGIN || '';
+  // When bundled, api runs from dist/main/chunks/* — renderer is at dist/renderer
+  const RUNTIME_DIR =
+    basename(CURRENT_DIR) === 'chunks' ? join(CURRENT_DIR, '..') : CURRENT_DIR;
+  const RENDERER_DIR = join(RUNTIME_DIR, '../renderer');
+  const RENDERER_ORIGIN =
+    process.env.RENDERER_ORIGIN ||
+    process.env.ELECTRON_RENDERER_URL ||
+    '';
   const settings = await coreServices.readSettings();
   const allowLan =
     Boolean((settings as any)?.security?.allowLan) ||
@@ -649,7 +620,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               const upstream = await fetch(upstreamUrl);
               const buf = new Uint8Array(await upstream.arrayBuffer());
               const headers: Record<string, string> = {
-                'Content-Type': getContentType(upstreamPath),
+                'Content-Type':
+                  upstream.headers.get('content-type') ||
+                  getContentType(upstreamPath),
               };
               if (corsOrigin)
                 headers['Access-Control-Allow-Origin'] = corsOrigin;
@@ -678,6 +651,40 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           } catch {
             // fall through
           }
+        }
+      }
+
+      // Dev-mode proxy: forward Vite dev resource requests to the Vite dev server
+      // (handles /@vite/client, /@react-refresh, /src/..., /node_modules/... etc.)
+      const isViteDevResource =
+        RENDERER_ORIGIN &&
+        req.method === 'GET' &&
+        !isStaticGet &&
+        (pathname.startsWith('/@') ||
+          pathname.startsWith('/node_modules/') ||
+          pathname.startsWith('/src/') ||
+          /\.(tsx?|jsx?|css|mjs|vue|svelte|wasm)(\?.*)?$/.test(pathname));
+      if (isViteDevResource) {
+        try {
+          const upstreamUrl = new URL(
+            pathname + (parsed.search || ''),
+            RENDERER_ORIGIN,
+          ).toString();
+          const upstream = await fetch(upstreamUrl);
+          if (upstream.ok) {
+            const buf = new Uint8Array(await upstream.arrayBuffer());
+            const ct =
+              upstream.headers.get('content-type') ||
+              getContentType(pathname);
+            const headers: Record<string, string> = { 'Content-Type': ct };
+            if (corsOrigin)
+              headers['Access-Control-Allow-Origin'] = corsOrigin;
+            res.writeHead(upstream.status, headers);
+            res.end(Buffer.from(buf));
+            return;
+          }
+        } catch {
+          // fall through to normal API handling
         }
       }
 
@@ -753,11 +760,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
       }
       if (req.method === 'POST' && pathname === '/auth/login') {
-        const remoteIp = String(
-          (req.socket as any)?.remoteAddress || 'unknown',
-        );
-        if (!allowLoginAttempt(remoteIp))
-          return send(res, 429, { error: 'too many attempts' }, corsOrigin);
+        // Login is intentionally not rate-limited. Waiter tablets retype PINs
+        // throughout a shift and a 429 mid-service is worse than the
+        // brute-force risk, which is already mitigated by the LAN pairing
+        // code requirement (see /auth/pairing-check below).
         const { pin, userId, pairingCode } = await parseJson(req);
         // If this is a LAN client (not loopback) and pairing is required, enforce it.
         try {
@@ -794,6 +800,39 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             );
           }
         }
+        // When cloud is configured and user has externalId, proxy to cloud (tablets send local userId)
+        const cfg = await getCloudConfig().catch(() => null);
+        if (cfg && userId) {
+          const localUser = await prisma.user.findFirst({
+            where: { id: Number(userId), active: true },
+          });
+          const cloudUserId = localUser?.externalId
+            ? Number(localUser.externalId)
+            : null;
+          if (cloudUserId && Number.isFinite(cloudUserId)) {
+            try {
+              const cloudRes = await fetch(
+                `${cfg.backendUrl.replace(/\/+$/, '')}/auth/login`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    businessCode: cfg.businessCode,
+                    pin,
+                    userId: cloudUserId,
+                  }),
+                },
+              );
+              const cloudData = await cloudRes.json().catch(() => null);
+              if (cloudRes.ok && cloudData && typeof cloudData === 'object' && cloudData.token) {
+                return send(res, 200, cloudData, corsOrigin);
+              }
+            } catch {
+              // fall through to local
+            }
+          }
+        }
+        // Local auth
         const where: any = userId
           ? { id: Number(userId), active: true }
           : { active: true };
@@ -833,34 +872,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         );
       }
       if (req.method === 'GET' && pathname === '/auth/users') {
-        // In cloud mode, proxy the cloud public users endpoint so tablets don't need the provider-supplied business password.
-        const cloudCfg = await getCloudConfig().catch(() => null);
-        if (cloudCfg) {
-          try {
-            const s: any = await coreServices.readSettings().catch(() => null);
-            const pw = String(s?.cloud?.accessPassword || '').trim();
-            const url = `${cloudCfg.backendUrl}/auth/public-users?businessCode=${encodeURIComponent(String(cloudCfg.businessCode))}&includeAdmins=1`;
-            const r = await fetch(url, {
-              method: 'GET',
-              headers: {
-                Accept: 'application/json',
-                ...(pw ? { 'x-business-password': pw } : {}),
-              } as any,
-            } as any).catch(() => null as any);
-            if (r && r.ok) {
-              const data = await r.json().catch(() => null);
-              if (Array.isArray(data)) return send(res, 200, data, corsOrigin);
-            }
-          } catch {
-            // fall back to local
-          }
-        }
+        // Local-first: always use local DB for users
+        // Include externalId so tablets in cloud mode can use it for cloud login (cloud expects cloud user id, not local)
         const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
         return send(
           res,
           200,
           users.map((u: any) => ({
             id: u.id,
+            externalId: u.externalId ? String(u.externalId) : undefined,
             displayName: u.displayName,
             role: u.role,
             active: u.active,
@@ -891,7 +911,38 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (!isPublic) {
         const token = pickBearerToken(req, parsed);
         auth = token ? await verifyToken(secret, token) : null;
-        if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        if (!auth) {
+          // When tablet has cloud token (host can't verify), proxy to cloud for all non-public paths
+          const cfg = await getCloudConfig().catch(() => null);
+          if (token && cfg) {
+            try {
+              const cloudUrl = `${cfg.backendUrl}${pathname}${parsed.search || ''}`;
+              const init: RequestInit = {
+                method: req.method || 'GET',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+              };
+              if (['POST', 'PUT', 'PATCH'].includes(req.method || '')) {
+                const body = await parseJson(req);
+                init.body = JSON.stringify(body);
+              }
+              const cloudRes = await fetch(cloudUrl, init);
+              const text = await cloudRes.text();
+              const headers: Record<string, string> = {
+                'Content-Type': cloudRes.headers.get('Content-Type') || 'application/json',
+              };
+              if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
+              res.writeHead(cloudRes.status, headers);
+              res.end(text);
+              return;
+            } catch {
+              // fall through to 401
+            }
+          }
+          return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        }
       }
 
       // Clock-only roles (KP/CHEF/HEAD_CHEF) are allowed to use ONLY shift endpoints.
@@ -925,45 +976,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (!cur || cur.resetAt <= now) {
           mgrPinFailByIp.set(remoteIp, { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: cur?.lastAlertAt || 0 });
         }
-        const cloud = await getCloudConfig().catch(() => null);
-        if (cloud) {
-          try {
-            const r = await cloudJson(
-              'POST',
-              '/auth/verify-manager-pin',
-              { businessCode: cloud.businessCode, pin: p },
-              { requireAuth: false, senderId: 0 },
-            );
-            if (!(r && typeof r === 'object' && (r as any).ok === true)) {
-              const st = mgrPinFailByIp.get(remoteIp)!;
-              st.count += 1;
-              mgrPinFailByIp.set(remoteIp, st);
-              if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
-                const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 }).catch(() => []);
-                const msg =
-                  `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes` +
-                  `${remoteIp ? ` from IP ${remoteIp}` : ''}. ` +
-                  `This can be normal (mistyped PINs); please review if unexpected.`;
-                for (const a of admins as any[]) {
-                  await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
-                }
-                st.lastAlertAt = now;
-                mgrPinFailByIp.set(remoteIp, st);
-              }
-            } else {
-              const st = mgrPinFailByIp.get(remoteIp);
-              if (st) mgrPinFailByIp.set(remoteIp, { ...st, count: 0 });
-            }
-            return send(
-              res,
-              200,
-              r && typeof r === 'object' ? r : { ok: false },
-              corsOrigin,
-            );
-          } catch {
-            return send(res, 200, { ok: false }, corsOrigin);
-          }
-        }
+        // Local-first: always use local DB for manager PIN verification
         const admins = await prisma.user
           .findMany({
             where: { role: 'ADMIN', active: true },
@@ -1038,6 +1051,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               vatRate: Number(i.vatRate),
               active: i.active,
               categoryId: i.categoryId,
+              // Required by the renderer for kg-priced items (opens the
+              // weight keypad) and for kitchen routing. Without these the
+              // mobile / tablet client falls back to a flat add and to the
+              // default station, which silently breaks both flows.
+              isKg: Boolean(i.isKg),
+              station: i.station || 'KITCHEN',
             })),
           })),
           corsOrigin,
@@ -2063,6 +2082,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           toLabel,
           toUserId,
           actorUserId,
+          actorRole: auth?.role,
         } as any).catch((e: any) => ({
           ok: false as const,
           error: String(e?.message || e || 'Transfer failed'),
@@ -2103,46 +2123,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, 'ok', corsOrigin);
       }
 
-      // Shifts (open userIds)
+      // Shifts (open userIds) - Local-first: always use local DB
       if (req.method === 'GET' && pathname === '/shifts/open') {
-        // In cloud mode, proxy open shifts from the cloud backend so tablets see correct clock-in state even before login.
-        const cloud = await readCloudSessionFromLocalSettings();
-        if (cloud?.token && cloud?.backendUrl) {
-          try {
-            const r = await fetch(`${cloud.backendUrl}/shifts/open`, {
-              method: 'GET',
-              headers: { Authorization: `Bearer ${cloud.token}` },
-            } as any);
-            if (r.ok) {
-              const data = await r.json().catch(() => null);
-              if (Array.isArray(data)) return send(res, 200, data, corsOrigin);
-            }
-            // Token invalid/expired → use public endpoint as fallback (prevents false "clocked out" UI).
-            if (r.status === 401 || r.status === 403) {
-              const s: any = await coreServices
-                .readSettings()
-                .catch(() => null);
-              const pw = String(s?.cloud?.accessPassword || '').trim();
-              const pr = await fetch(
-                `${cloud.backendUrl}/shifts/public-open?businessCode=${encodeURIComponent(cloud.businessCode)}`,
-                {
-                  method: 'GET',
-                  headers: {
-                    Accept: 'application/json',
-                    ...(pw ? { 'x-business-password': pw } : {}),
-                  } as any,
-                } as any,
-              ).catch(() => null as any);
-              if (pr && pr.ok) {
-                const pdata = await pr.json().catch(() => null);
-                if (Array.isArray(pdata))
-                  return send(res, 200, pdata, corsOrigin);
-              }
-            }
-          } catch {
-            // fall back to local
-          }
-        }
         const rows = await prisma.dayShift.findMany({
           where: { closedAt: null },
         });

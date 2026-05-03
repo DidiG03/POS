@@ -6,4 +6,17 @@ pnpm-debug.log*
 .env
 coverage
 
-node_modules
+# Capacitor build outputs (Xcode/Android Studio derived files).
+# Note: when you start customizing native projects, you'll want to
+# COMMIT ios/ and android/ instead and only ignore their build dirs.
+ios/App/Pods
+ios/App/build
+ios/App/DerivedData
+android/.gradle
+android/app/build
+android/build
+android/local.properties
+android/app/release
+android/app/debug
+android/captures
+android/.idea

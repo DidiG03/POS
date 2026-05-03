@@ -25,23 +25,24 @@ export const useTableStatus = create<TableStatusState>()(
       setAll: (entries) =>
         set((s) => {
           const now = Date.now();
-          const ttlMs = 4000; // protect optimistic updates for 4s
+          const ttlMs = 15000; // protect optimistic updates for 15s (cloud can be slow)
           const incoming: Record<string, boolean> = {};
           for (const e of entries || []) incoming[tableKey(e.area, e.label)] = true;
-          const merged: Record<string, boolean> = { ...s.openMap };
-          // Set true for incoming open tables
-          for (const k in incoming) {
+          const merged: Record<string, boolean> = {};
+          // Start from server truth
+          for (const k in incoming) merged[k] = true;
+          // Preserve recent optimistic updates that the server hasn't caught up with yet
+          for (const k in s.openMap) {
             const last = s.lastSetAt[k] || 0;
-            // If user just CLOSED a table locally, don't let a stale poll re-open it immediately.
-            if (merged[k] === false && now - last <= ttlMs) continue;
-            merged[k] = true;
-          }
-          // For keys not present in incoming, allow clearing only if not recently set locally
-          for (const k in merged) {
-            if (!incoming[k]) {
-              const last = s.lastSetAt[k] || 0;
-              if (now - last > ttlMs) delete merged[k];
+            const isRecent = now - last <= ttlMs;
+            if (isRecent) {
+              // Keep whatever the user set locally (open OR closed)
+              merged[k] = s.openMap[k];
             }
+          }
+          // Clean up false entries
+          for (const k in merged) {
+            if (!merged[k]) delete merged[k];
           }
           return { openMap: merged } as any;
         }),

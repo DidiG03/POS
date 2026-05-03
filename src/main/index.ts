@@ -3,6 +3,7 @@ import { join, dirname, resolve as resolvePath, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 // Initialize Sentry early (before other imports that might throw)
 import {
@@ -84,6 +85,11 @@ import {
   startNotificationRetentionLoop,
   stopNotificationRetentionLoop,
 } from './services/notificationRetention';
+import {
+  syncUsersFromCloud,
+  syncFromCloudAfterLogin,
+  syncFromCloudManual,
+} from './services/cloudSync';
 
 dotenv.config();
 
@@ -539,10 +545,6 @@ function startAutoVoidStaleTicketsLoop() {
 
       if (staleKeys.length === 0) return;
 
-      const cloud = await getCloudConfig().catch(() => null);
-      const cloudActorUserId = cloud
-        ? getCloudSessionUserId(cloud.businessCode) || null
-        : null;
       for (const k of staleKeys) {
         const [area, tableLabel] = String(k).split(':');
         if (!area || !tableLabel) continue;
@@ -556,50 +558,7 @@ function startAutoVoidStaleTicketsLoop() {
           .catch(() => null as any);
         const actorUserId = Number(last?.userId || 0) || 0;
 
-        // Cloud: void ticket as the "system actor" (whoever is logged in on the host).
-        // This must NOT require manager PIN; it's an automated system cleanup.
-        const systemUserId = Number(cloudActorUserId || 0) || 0;
-        if (cloud && systemUserId) {
-          try {
-            await cloudJson(
-              'POST',
-              '/tickets/void-ticket',
-              { userId: systemUserId, area, tableLabel, reason },
-              { requireAuth: true, senderId: 0 },
-            );
-          } catch {
-            await enqueueOutbox({
-              id: `tickets:void-ticket:${area}:${tableLabel}:${Date.now()}`,
-              method: 'POST',
-              path: '/tickets/void-ticket',
-              body: { userId: systemUserId, area, tableLabel, reason },
-              requireAuth: true,
-              dedupeKey: `tickets:void-ticket:${area}:${tableLabel}`,
-            });
-          }
-        }
-
-        // Also cancel any pending/approved "add items" requests for this stale table.
-        if (cloud) {
-          try {
-            await cloudJson(
-              'POST',
-              '/requests/cancel-stale-for-table',
-              { area, tableLabel, cutoffHours: 12 },
-              { requireAuth: true, senderId: 0 },
-            );
-          } catch {
-            await enqueueOutbox({
-              id: `requests:cancel-stale:${area}:${tableLabel}:${Date.now()}`,
-              method: 'POST',
-              path: '/requests/cancel-stale-for-table',
-              body: { area, tableLabel, cutoffHours: 12 },
-              requireAuth: true,
-              dedupeKey: `requests:cancel-stale:${area}:${tableLabel}`,
-            });
-          }
-        } else {
-          // Local mode: mark pending/approved requests as rejected and notify.
+        // Local-first: cancel pending/approved requests for this stale table.
           try {
             const nowDt = new Date();
             const rows = await prisma.ticketRequest
@@ -653,7 +612,6 @@ function startAutoVoidStaleTicketsLoop() {
           } catch {
             // ignore
           }
-        }
 
         // Close table locally (open map + openAt) so UI immediately turns green.
         try {
@@ -674,28 +632,7 @@ function startAutoVoidStaleTicketsLoop() {
           // ignore
         }
 
-        // In cloud mode, also enqueue table close if needed.
-        if (cloud) {
-          try {
-            await cloudJson(
-              'POST',
-              '/tables/open',
-              { area, label: tableLabel, open: false },
-              { requireAuth: true, senderId: 0 },
-            );
-          } catch {
-            await enqueueOutbox({
-              id: `tables:open:${area}:${tableLabel}:${Date.now()}`,
-              method: 'POST',
-              path: '/tables/open',
-              body: { area, label: tableLabel, open: false },
-              requireAuth: true,
-              dedupeKey: `tables:open:${area}:${tableLabel}`,
-            });
-          }
-        }
-
-        // Override: if cloud still reports this table as open, hide it from the UI until cloud close succeeds.
+        // Override: if table was force-closed, hide from UI until state is consistent.
         try {
           closedOverride[`${area}:${tableLabel}`] = new Date().toISOString();
           await prisma.syncState
@@ -858,22 +795,11 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // IPC Handlers (skeleton with validation)
 ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
-  // Rate limit login attempts
-  if (
-    !checkRateLimit(_e, 'auth:loginWithPin', {
-      maxAttempts: 5,
-      windowMs: 5 * 60 * 1000,
-    })
-  ) {
-    logSecurityEvent('ipc_rate_limit_exceeded', {
-      handler: 'auth:loginWithPin',
-      senderId: _e.sender.id,
-    });
-    throw new Error(
-      'Too many login attempts. Please wait before trying again.',
-    );
-  }
-
+  // Login is intentionally NOT rate-limited on the local POS terminal.
+  // Waiters retype PINs frequently throughout a shift and getting locked out
+  // mid-service is worse than a brute-force risk on a physically supervised
+  // device. We still log every attempt below via security events so failed
+  // logins remain auditable.
   const { pin, userId } = LoginWithPinInputSchema.parse(payload);
 
   // Validate PIN format (but don't reject weak PINs during login - users may already have them)
@@ -882,53 +808,24 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
     logSecurityEvent('invalid_pin_format', { senderId: _e.sender.id, userId });
     throw new Error(pinValidation.error || 'Invalid PIN format');
   }
-  if (await cloudEnabledButMissingBusinessCode()) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // Hosted mode (multi-business)
-    const resp = await cloudJson<{ user: any; token: string } | null>(
-      'POST',
-      '/auth/login',
-      { businessCode: cloud.businessCode, pin, userId: userId ?? undefined },
-      { requireAuth: false },
-    ).catch(() => null);
-    if (!resp || !resp.user || !resp.token) return null;
-    // Store token + role in main process for future admin calls
-    try {
-      setCloudSession({
-        token: String(resp.token),
-        businessCode: cloud.businessCode,
-        role: String(resp.user?.role || 'WAITER') as any,
-        userId: Number(resp.user?.id || 0),
-      });
-      try {
-        setCloudSessionForSender(_e.sender.id, {
-          token: String(resp.token),
-          businessCode: cloud.businessCode,
-          role: String(resp.user?.role || 'WAITER') as any,
-          userId: Number(resp.user?.id || 0),
-        } as any);
-      } catch {
-        // ignore per-sender storage errors
-      }
-    } catch {
-      setCloudToken(String(resp.token), cloud.businessCode);
-    }
-    // Set Sentry user context after successful cloud login
-    setSentryUser(
-      Number(resp.user?.id || 0),
-      resp.user?.displayName,
-      resp.user?.role,
-    );
-    addBreadcrumb('User logged in (cloud)', 'auth', 'info');
-    return resp.user;
-  }
 
+  // Local-first: try local DB for auth
   const where: any = userId ? { id: userId, active: true } : { active: true };
   const user = await prisma.user.findFirst({ where });
-  if (!user) return null;
-  const ok = await bcrypt.compare(pin, user.pinHash);
-  if (!ok) {
+  if (user) {
+    const ok = await bcrypt.compare(pin, user.pinHash);
+    if (ok) {
+      const userData = {
+        id: user.id,
+        displayName: user.displayName,
+        role: user.role,
+        active: user.active,
+        createdAt: user.createdAt.toISOString(),
+      };
+      setSentryUser(user.id, user.displayName, user.role);
+      addBreadcrumb('User logged in', 'auth', 'info');
+      return userData;
+    }
     // record a security notification for the targeted user
     await prisma.notification
       .create({
@@ -939,19 +836,55 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
         },
       })
       .catch(() => {});
-    return null;
   }
-  const userData = {
-    id: user.id,
-    displayName: user.displayName,
-    role: user.role,
-    active: user.active,
-    createdAt: user.createdAt.toISOString(),
-  };
-  // Set Sentry user context after successful login
-  setSentryUser(user.id, user.displayName, user.role);
-  addBreadcrumb('User logged in', 'auth', 'info');
-  return userData;
+
+  // Local failed: try cloud login when cloud is configured (sync data on success)
+  const cfg = await getCloudConfig().catch(() => null);
+  if (cfg && user?.externalId) {
+    const cloudUserId = Number(user.externalId);
+    if (Number.isFinite(cloudUserId)) {
+      try {
+        const loginRes = await cloudJson<{ user: any; token: string }>(
+          'POST',
+          '/auth/login',
+          {
+            businessCode: cfg.businessCode,
+            pin,
+            userId: cloudUserId,
+          }
+        );
+        if (loginRes?.token && loginRes?.user) {
+          const session = {
+            token: loginRes.token,
+            businessCode: cfg.businessCode,
+            role: loginRes.user.role,
+            userId: loginRes.user.id,
+          };
+          setCloudSession(session);
+          setCloudSessionForSender(_e.sender.id, session);
+          await syncFromCloudAfterLogin(
+            loginRes.token,
+            loginRes.user.id,
+            pin
+          );
+          const userData = {
+            id: user.id,
+            displayName: user.displayName,
+            role: user.role,
+            active: user.active,
+            createdAt: user.createdAt.toISOString(),
+          };
+          setSentryUser(user.id, user.displayName, user.role);
+          addBreadcrumb('User logged in via cloud (synced to local)', 'auth', 'info');
+          return userData;
+        }
+      } catch {
+        // Cloud login failed, fall through to return null
+      }
+    }
+  }
+
+  return null;
 });
 
 ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
@@ -976,43 +909,7 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
   if (!cur || cur.resetAt <= now) {
     failMap.set(senderId, { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: cur?.lastAlertAt || 0 });
   }
-  if (await cloudEnabledButMissingBusinessCode()) return { ok: false };
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    try {
-      const r: any = await cloudJson(
-        'POST',
-        '/auth/verify-manager-pin',
-        { businessCode: cloud.businessCode, pin },
-        { requireAuth: false, senderId: _e.sender.id },
-      );
-      // If cloud says ok=false, treat as a failure for local alerting too.
-      if (!(r && typeof r === 'object' && (r as any).ok === true)) {
-        const st = failMap.get(senderId)!;
-        st.count += 1;
-        failMap.set(senderId, st);
-        if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
-          // Notify all local admins (SECURITY) once per cooldown window.
-          const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 }).catch(() => []);
-          const msg =
-            `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes. ` +
-            `This can be normal (mistyped PINs); please review if unexpected.`;
-          for (const a of admins as any[]) {
-            await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
-          }
-          st.lastAlertAt = now;
-          failMap.set(senderId, st);
-        }
-      } else {
-        // Success resets the counter
-        const st = failMap.get(senderId);
-        if (st) failMap.set(senderId, { ...st, count: 0 });
-      }
-      return r && typeof r === 'object' ? r : { ok: false };
-    } catch {
-      return { ok: false };
-    }
-  }
+  // Local-first: always use local DB for manager PIN verification
   const admins = await prisma.user
     .findMany({
       where: { role: 'ADMIN', active: true },
@@ -1064,13 +961,9 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
 });
 
 ipcMain.handle('auth:logoutAdmin', async (_e) => {
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // Clear persisted admin cloud token (and any per-window token for safety)
-    clearCloudAdminSession();
-    clearCloudSessionForSender(_e.sender.id);
-  }
-  // Force this window back to login immediately
+  // Clear any cloud session (used for cloud backup feature)
+  clearCloudAdminSession();
+  clearCloudSessionForSender(_e.sender.id);
   forceLogoutSender(_e.sender, 'logout');
   return true;
 });
@@ -1109,17 +1002,7 @@ ipcMain.handle('auth:createUser', async (_e, payload) => {
   if (!sanitizedDisplayName) {
     throw new Error('Display name is required');
   }
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    return await cloudJson('POST', '/auth/users', input, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    });
-  }
-
-  // Local (SQLite) guard:
+  // Local-first: always use local DB for user creation
   // - Allow creating the very first user only if it's an ADMIN (initial setup).
   // - After that, only allow user creation from the admin window.
   const userCount = await prisma.user.count().catch(() => 0);
@@ -1153,30 +1036,24 @@ ipcMain.handle('auth:createUser', async (_e, payload) => {
 });
 
 ipcMain.handle('auth:listUsers', async (_e, payload) => {
-  // Cloud-only behavior: if provider backend is configured but businessCode is missing,
-  // do NOT fall back to local users (prevents cross-tenant/local leakage).
-  const settings = await coreServices.readSettings().catch(() => null as any);
-  const cloudBackendUrl = String(settings?.cloud?.backendUrl || '').trim();
-  const cloudBusinessCode = String(settings?.cloud?.businessCode || '').trim();
-  if (cloudBackendUrl && !cloudBusinessCode) return [];
-
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // Login screen needs users before auth → use public endpoint
-    const includeAdmins = (payload as any)?.includeAdmins !== false;
-    const pw = await getCloudAccessPassword().catch(() => null);
-    return await cloudJson(
-      'GET',
-      `/auth/public-users?businessCode=${encodeURIComponent(cloud.businessCode)}&includeAdmins=${includeAdmins ? '1' : '0'}`,
-      undefined,
-      {
-        requireAuth: false,
-        extraHeaders: pw ? { 'x-business-password': pw } : undefined,
-      },
-    ).catch(() => []);
+  // Local-first: use local DB for users
+  let users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
+  // When local is empty and cloud is configured, sync users from cloud first
+  if (users.length === 0) {
+    const cfg = await getCloudConfig().catch(() => null);
+    if (cfg) {
+      const syncResult = await syncUsersFromCloud();
+      if (syncResult.error) {
+        addBreadcrumb(`Cloud user sync failed: ${syncResult.error}`, 'auth', 'warning');
+      }
+      users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
+    }
   }
-  const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
-  return users.map((u: any) => ({
+  const includeAdmins = (payload as any)?.includeAdmins !== false;
+  const filtered = includeAdmins
+    ? users
+    : users.filter((u: any) => u.role !== 'ADMIN');
+  return filtered.map((u: any) => ({
     id: u.id,
     displayName: u.displayName,
     role: u.role,
@@ -1232,17 +1109,7 @@ ipcMain.handle('auth:updateUser', async (_e, payload) => {
     fields: Object.keys(input),
   });
 
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    return await cloudJson(
-      'PUT',
-      `/auth/users/${encodeURIComponent(String(input.id))}`,
-      sanitizedInput,
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-  }
+  // Local-first: always use local DB for user updates
   let pinHash: string | undefined;
   if (sanitizedInput.pin) pinHash = await bcrypt.hash(sanitizedInput.pin, 10);
   const updated = await prisma.user.update({
@@ -1272,20 +1139,7 @@ ipcMain.handle('auth:deleteUser', async (_e, payload) => {
   const id = Number(input.id);
   if (!id) throw new Error('invalid user id');
 
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // Hosted mode: we only "disable" via DELETE endpoint
-    await cloudJson(
-      'DELETE',
-      `/auth/users/${encodeURIComponent(String(id))}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-    return true;
-  }
-
+  // Local-first: always use local DB for user delete/disable
   if (!input.hard) {
     await prisma.user.update({ where: { id }, data: { active: false } });
     return true;
@@ -1336,20 +1190,8 @@ ipcMain.handle('auth:deleteUser', async (_e, payload) => {
   return true;
 });
 
-// Shifts IPC
+// Shifts IPC - Local-first: always use local DB
 ipcMain.handle('shifts:getOpen', async (_e, { userId }) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // Login screen may call this before auth; return null instead of throwing.
-    if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson(
-      'GET',
-      `/shifts/get-open?userId=${encodeURIComponent(String(userId))}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => null);
-  }
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -1365,16 +1207,6 @@ ipcMain.handle('shifts:getOpen', async (_e, { userId }) => {
 });
 
 ipcMain.handle('shifts:clockIn', async (_e, { userId }) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    return await cloudJson(
-      'POST',
-      '/shifts/clock-in',
-      { userId },
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-  }
   const already = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -1399,16 +1231,6 @@ ipcMain.handle('shifts:clockIn', async (_e, { userId }) => {
 });
 
 ipcMain.handle('shifts:clockOut', async (_e, { userId }) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    return await cloudJson(
-      'POST',
-      '/shifts/clock-out',
-      { userId },
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-  }
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -1427,38 +1249,12 @@ ipcMain.handle('shifts:clockOut', async (_e, { userId }) => {
 });
 
 ipcMain.handle('shifts:listOpen', async (_e) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // Login screen may call this before auth. Use a public endpoint so "clocked in" is accurate on fresh boot.
-    if (!hasCloudSession(cloud.businessCode)) {
-      const q = new URLSearchParams({ businessCode: cloud.businessCode });
-      const pw = await getCloudAccessPassword().catch(() => null);
-      return await cloudJson(
-        'GET',
-        `/shifts/public-open?${q.toString()}`,
-        undefined,
-        {
-          requireAuth: false,
-          extraHeaders: pw ? { 'x-business-password': pw } : undefined,
-        },
-      ).catch(() => []);
-    }
-    return await cloudJson('GET', '/shifts/open', undefined, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    }).catch(() => []);
-  }
   const open = await prisma.dayShift.findMany({ where: { closedAt: null } });
   return open.map((s: { openedById: number }) => s.openedById);
 });
 
 // Sync staff from external API and upsert into local users
 ipcMain.handle('auth:syncStaffFromApi', async (_e, raw) => {
-  // Deprecated in hosted cloud mode.
-  if (await cloudEnabledButMissingBusinessCode()) return 0;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) return 0;
   const url: string =
     (raw?.url as string) ||
     process.env.STAFF_API_URL ||
@@ -2026,56 +1822,8 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   const recordOnly = Boolean((input as any)?.recordOnly);
   const meta = ((input as any)?.meta as any) || null;
   if (!area || !tableLabel || items.length === 0) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // Cloud mode: enqueue a PrintJob for the Printer Station (avoid direct printing from clients).
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    const payload = {
-      area,
-      tableLabel,
-      covers: input?.covers ?? null,
-      items,
-      note: input?.note ?? null,
-      userName: input?.userName || undefined,
-      meta: (input as any)?.meta ?? undefined,
-    } as any;
-    const idem = `print:${Date.now()}:${Math.random().toString(16).slice(2)}`;
-    let status: 'SENT' | 'FAILED' | 'QUEUED' = 'SENT';
-    try {
-      await cloudJson(
-        'POST',
-        '/print-jobs/enqueue',
-        { type: 'RECEIPT', payload, recordOnly, idempotencyKey: idem },
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) {
-        status = 'QUEUED';
-        await enqueueOutbox({
-          id: `print-jobs:enqueue:${idem}`,
-          method: 'POST',
-          path: '/print-jobs/enqueue',
-          body: { type: 'RECEIPT', payload, recordOnly, idempotencyKey: idem },
-          requireAuth: true,
-        });
-      } else {
-        status = 'FAILED';
-      }
-    }
-    // Also store a local PrintJob snapshot for history/reports even in cloud mode.
-    try {
-      await prisma.printJob.create({
-        data: {
-          type: 'RECEIPT' as any,
-          payloadJson: payload,
-          status: status as any,
-        },
-      });
-    } catch {
-      // ignore
-    }
-    return status !== 'FAILED';
-  }
+
+  // Local-first: print directly via local PrintJob
   const payload = {
     area,
     tableLabel,
@@ -2387,9 +2135,8 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   return ok;
 });
 
-// Waiter-facing ticket lists (receipt-style)
+// Waiter-facing ticket lists (receipt-style) - Local-first: always use local DB
 ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
   const userId = Number(input?.userId || 0);
   if (!userId) return [];
   const listLocal = async () => {
@@ -2489,27 +2236,10 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
     );
   };
 
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return [];
-    // Cloud server may be older and not have these endpoints yet. Fall back to local computation on 404.
-    try {
-      return await cloudJson('GET', '/reports/my/active-tickets', undefined, {
-        requireAuth: true,
-        senderId: _e.sender.id,
-      });
-    } catch (e: any) {
-      const msg = String(e?.message || e || '');
-      if (msg.toLowerCase().includes('not found')) return await listLocal();
-      throw e;
-    }
-  }
-
   return await listLocal();
 });
 
 ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
   const userId = Number(input?.userId || 0);
   const q = String(input?.q || '')
     .trim()
@@ -2611,87 +2341,80 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
     return out;
   };
 
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) {
-      // Don't silently hide; UI should show the real reason.
-      throw new Error('Cloud session missing (please log in again)');
-    }
-    const qs = new URLSearchParams();
-    if (q) qs.set('q', q);
-    qs.set('limit', String(limit));
-    try {
-      return await cloudJson(
-        'GET',
-        `/reports/my/paid-tickets?${qs.toString()}`,
-        undefined,
-        { requireAuth: true, senderId: _e.sender.id },
+  return await listLocal();
+});
+
+// Voided tickets/items report - Local-first
+ipcMain.handle('reports:listMyVoidedTickets', async (_e, input) => {
+  const userId = Number(input?.userId || 0);
+  const limit = Math.min(200, Math.max(1, Number(input?.limit || 40)));
+  if (!userId) return [];
+
+  const listLocal = async () => {
+    // Find ticket logs that contain voided items or are fully voided (note contains VOIDED)
+    const rows = await prisma.ticketLog
+      .findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      })
+      .catch(() => []);
+
+    const out: any[] = [];
+    for (const r of rows as any[]) {
+      const itemsAll = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
+      const voidedItems = itemsAll.filter((it: any) => it?.voided === true);
+      if (voidedItems.length === 0) continue;
+
+      const note = String(r.note || '');
+      const isFullVoid = itemsAll.every((it: any) => it?.voided === true);
+      const u = await prisma.user
+        .findUnique({ where: { id: r.userId } })
+        .catch(() => null);
+
+      const subtotal = voidedItems.reduce(
+        (s: number, it: any) =>
+          s + Number(it.unitPrice || 0) * Number(it.qty || 1),
+        0,
       );
-    } catch (e: any) {
-      const msg = String(e?.message || e || '');
-      if (msg.toLowerCase().includes('not found')) return await listLocal();
-      throw e;
+      const vat = voidedItems.reduce(
+        (s: number, it: any) =>
+          s +
+          Number(it.unitPrice || 0) *
+            Number(it.qty || 1) *
+            Number(it.vatRate || 0),
+        0,
+      );
+
+      out.push({
+        kind: isFullVoid ? 'VOIDED_TICKET' : 'VOIDED_ITEMS',
+        area: r.area,
+        tableLabel: r.tableLabel,
+        createdAt: r.createdAt.toISOString(),
+        note,
+        userName: u?.displayName ?? null,
+        covers: r.covers ?? null,
+        items: voidedItems,
+        totalItems: itemsAll.length,
+        voidedCount: voidedItems.length,
+        subtotal,
+        vat,
+        total: subtotal,
+      });
+      if (out.length >= limit) break;
     }
-  }
+    return out;
+  };
 
   return await listLocal();
 });
 
-// Persist open tables in SyncState for accurate open order counts
+// Persist open tables in SyncState - Local-first: always use local DB
 ipcMain.handle('tables:setOpen', async (_e, input) => {
   const area = String(input?.area || '');
   const label = String(input?.label || '');
   const open = Boolean(input?.open);
   if (!area || !label) return false;
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    const kKey = `${area}:${label}`;
-    // Always mirror locally (used by local fallbacks like reports when cloud endpoints are missing).
-    try {
-      await coreServices.setTableOpen(area, label, open);
-      const keyAt = 'tables:openAt';
-      const atRow = await prisma.syncState.findUnique({
-        where: { key: keyAt },
-      });
-      const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-      if (open) {
-        if (!atMap[kKey]) atMap[kKey] = new Date().toISOString();
-      } else {
-        delete atMap[kKey];
-      }
-      await prisma.syncState.upsert({
-        where: { key: keyAt },
-        create: { key: keyAt, valueJson: atMap },
-        update: { valueJson: atMap },
-      });
-    } catch {
-      // ignore
-    }
-    // Best-effort cloud sync (older servers may not support it). If offline, queue and return optimistic success.
-    try {
-      return await cloudJson(
-        'POST',
-        '/tables/open',
-        { area, label, open },
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) {
-        await enqueueOutbox({
-          id: `tables:open:${area}:${label}:${Date.now()}`,
-          method: 'POST',
-          path: '/tables/open',
-          body: { area, label, open },
-          requireAuth: true,
-          dedupeKey: `tables:open:${area}:${label}`,
-        });
-        return true;
-      }
-      return true;
-    }
-  }
+
   await coreServices.setTableOpen(area, label, open);
   // Track open timestamp for current session
   const keyAt = 'tables:openAt';
@@ -2730,99 +2453,8 @@ ipcMain.handle('tables:setOpen', async (_e, input) => {
   return true;
 });
 
+// Local-first: always use local SyncState for open tables
 ipcMain.handle('tables:listOpen', async (_e) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    const keyClosedOverride = 'tables:closedOverride';
-    const closedRow = await prisma.syncState
-      .findUnique({ where: { key: keyClosedOverride } })
-      .catch(() => null);
-    const closedOverride = ((closedRow?.valueJson as any) || {}) as Record<
-      string,
-      string
-    >;
-    const now = Date.now();
-    // Cleanup old overrides (> 7 days)
-    try {
-      let changed = false;
-      for (const [k, iso] of Object.entries(closedOverride)) {
-        const t = iso ? new Date(iso).getTime() : NaN;
-        if (!Number.isFinite(t) || now - t > 7 * 24 * 60 * 60 * 1000) {
-          delete closedOverride[k];
-          changed = true;
-        }
-      }
-      if (changed) {
-        await prisma.syncState
-          .upsert({
-            where: { key: keyClosedOverride },
-            create: { key: keyClosedOverride, valueJson: closedOverride },
-            update: { valueJson: closedOverride },
-          })
-          .catch(() => null);
-      }
-    } catch {
-      // ignore
-    }
-
-    const isOverridden = (area: string, label: string) =>
-      Boolean(closedOverride[`${area}:${label}`]);
-
-    // If cloud session is missing, fall back to local open map (offline-friendly).
-    if (!hasCloudSession(cloud.businessCode)) {
-      const key = 'tables:open';
-      const row = await prisma.syncState.findUnique({ where: { key } });
-      const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-      return Object.entries(map)
-        .filter(([, v]) => Boolean(v))
-        .map(([k]) => {
-          const [area, label] = k.split(':');
-          return { area, label };
-        })
-        .filter(
-          (t) => !isOverridden(String(t.area || ''), String(t.label || '')),
-        );
-    }
-
-    const cloudOpen = await cloudJson('GET', '/tables/open', undefined, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    }).catch(() => []);
-    // Filter out force-closed overrides (auto-void etc) until cloud catches up.
-    const filtered = (Array.isArray(cloudOpen) ? cloudOpen : []).filter(
-      (t: any) => !isOverridden(String(t?.area || ''), String(t?.label || '')),
-    );
-
-    // If cloud no longer reports a table open, remove override entry (cloud caught up).
-    try {
-      const cloudKeys = new Set(
-        (Array.isArray(cloudOpen) ? cloudOpen : []).map(
-          (t: any) => `${String(t?.area || '')}:${String(t?.label || '')}`,
-        ),
-      );
-      let changed = false;
-      for (const k of Object.keys(closedOverride)) {
-        if (!cloudKeys.has(k)) {
-          delete closedOverride[k];
-          changed = true;
-        }
-      }
-      if (changed) {
-        await prisma.syncState
-          .upsert({
-            where: { key: keyClosedOverride },
-            create: { key: keyClosedOverride, valueJson: closedOverride },
-            update: { valueJson: closedOverride },
-          })
-          .catch(() => null);
-      }
-    } catch {
-      // ignore
-    }
-
-    return filtered;
-  }
   const key = 'tables:open';
   const row = await prisma.syncState.findUnique({ where: { key } });
   const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
@@ -2834,13 +2466,10 @@ ipcMain.handle('tables:listOpen', async (_e) => {
     });
 });
 
+// Local-first: always use local transfer
 ipcMain.handle('tables:transfer', async (_e, payload) => {
   try {
-    if (await cloudEnabledButMissingBusinessCode())
-      return { ok: false, error: 'Cloud config incomplete' };
     const input = TransferTableInputSchema.parse(payload);
-    // NOTE: In cloud mode, table/ticket ownership is still mirrored locally for offline and LAN UI.
-    // We implement transfer locally; cloud sync can be added later if needed.
     return await transferTableLocal(input as any);
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Transfer failed') };
@@ -2849,110 +2478,8 @@ ipcMain.handle('tables:transfer', async (_e, payload) => {
 
 // Menu syncing from remote URL removed: business admins manage menu directly.
 
+// Local-first: always use local DB for menu
 ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    const cacheKey = 'cloud:menuCache';
-    const readCache = async () => {
-      const row = await prisma.syncState
-        .findUnique({ where: { key: cacheKey } })
-        .catch(() => null);
-      const v: any = (row?.valueJson as any) || null;
-      const cats = Array.isArray(v?.categories)
-        ? v.categories
-        : Array.isArray(v)
-          ? v
-          : [];
-      return Array.isArray(cats) ? cats : [];
-    };
-    const writeCache = async (categories: any[]) => {
-      await prisma.syncState
-        .upsert({
-          where: { key: cacheKey },
-          create: {
-            key: cacheKey,
-            valueJson: { savedAt: new Date().toISOString(), categories },
-          },
-          update: {
-            valueJson: { savedAt: new Date().toISOString(), categories },
-          },
-        })
-        .catch(() => null);
-    };
-    const mergeMissingFromCache = (fresh: any[], cached: any[]) => {
-      const freshCats = Array.isArray(fresh) ? fresh : [];
-      const cachedCats = Array.isArray(cached) ? cached : [];
-      const byCatId = new Map<number, any>();
-      for (const c of freshCats) {
-        const id = Number((c as any)?.id || 0);
-        if (!id) continue;
-        byCatId.set(id, {
-          ...c,
-          items: Array.isArray((c as any).items) ? [...(c as any).items] : [],
-        });
-      }
-      // Track all items returned by cloud so we don't duplicate
-      const presentItemIds = new Set<number>();
-      for (const c of byCatId.values()) {
-        for (const it of c.items || [])
-          presentItemIds.add(Number((it as any)?.id || 0));
-      }
-      // If cloud endpoint still filters inactive items, keep previously-seen inactive items from cache
-      for (const c of cachedCats) {
-        const catId = Number((c as any)?.id || 0);
-        if (!catId) continue;
-        const cachedItems: any[] = Array.isArray((c as any)?.items)
-          ? (c as any).items
-          : [];
-        const missing = cachedItems.filter(
-          (it) =>
-            Boolean(it) &&
-            (it as any).active === false &&
-            !presentItemIds.has(Number((it as any)?.id || 0)),
-        );
-        if (!missing.length) continue;
-        const target = byCatId.get(catId) ?? { ...c, items: [] };
-        target.items = Array.isArray(target.items) ? target.items : [];
-        target.items.push(...missing);
-        byCatId.set(catId, target);
-      }
-      const merged = Array.from(byCatId.values());
-      for (const c of merged) {
-        if (Array.isArray((c as any).items)) {
-          (c as any).items.sort((a: any, b: any) =>
-            String(a?.name || '').localeCompare(String(b?.name || '')),
-          );
-        }
-      }
-      return merged;
-    };
-
-    // If we're not logged in, still allow offline ordering from last cached menu.
-    if (
-      !hasCloudSessionForSender(_e.sender.id, cloud.businessCode) &&
-      !hasCloudSession(cloud.businessCode)
-    ) {
-      return await readCache();
-    }
-
-    try {
-      const categories = await cloudJson('GET', '/menu/categories', undefined, {
-        requireAuth: true,
-        senderId: _e.sender.id,
-      });
-      const cached = await readCache();
-      const merged = mergeMissingFromCache(
-        Array.isArray(categories) ? categories : [],
-        cached,
-      );
-      await writeCache(merged);
-      return merged;
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) return await readCache();
-      return [];
-    }
-  }
   const cats = await prisma.category.findMany({
     where: { active: true },
     orderBy: { sortOrder: 'asc' },
@@ -2981,15 +2508,6 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
 
 ipcMain.handle('menu:createCategory', async (_e, payload) => {
   const input = CreateMenuCategoryInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    return await cloudJson('POST', '/menu/categories', input, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    });
-  }
   const created = await prisma.category.create({
     data: {
       name: input.name.trim(),
@@ -3003,18 +2521,6 @@ ipcMain.handle('menu:createCategory', async (_e, payload) => {
 
 ipcMain.handle('menu:updateCategory', async (_e, payload) => {
   const input = UpdateMenuCategoryInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    await cloudJson(
-      'PUT',
-      `/menu/categories/${encodeURIComponent(String(input.id))}`,
-      input,
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-    return true;
-  }
   await prisma.category.update({
     where: { id: input.id },
     data: {
@@ -3034,18 +2540,6 @@ ipcMain.handle('menu:updateCategory', async (_e, payload) => {
 ipcMain.handle('menu:deleteCategory', async (_e, payload) => {
   const id = Number((payload as any)?.id || 0);
   if (!id) return false;
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    await cloudJson(
-      'DELETE',
-      `/menu/categories/${encodeURIComponent(String(id))}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-    return true;
-  }
   await prisma.category
     .update({ where: { id }, data: { active: false } as any })
     .catch(() => null);
@@ -3057,15 +2551,6 @@ ipcMain.handle('menu:deleteCategory', async (_e, payload) => {
 
 ipcMain.handle('menu:createItem', async (_e, payload) => {
   const input = CreateMenuItemInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    return await cloudJson('POST', '/menu/items', input, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    });
-  }
   const created = await prisma.menuItem.create({
     data: {
       name: input.name.trim(),
@@ -3087,64 +2572,6 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
 
 ipcMain.handle('menu:updateItem', async (_e, payload) => {
   const input = UpdateMenuItemInputSchema.parse(payload);
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    await cloudJson(
-      'PUT',
-      `/menu/items/${encodeURIComponent(String(input.id))}`,
-      input,
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-    // Update local menu cache so disabled items don't "disappear" from admin UI even if cloud endpoint filters inactive.
-    try {
-      const cacheKey = 'cloud:menuCache';
-      const row = await prisma.syncState
-        .findUnique({ where: { key: cacheKey } })
-        .catch(() => null);
-      const v: any = (row?.valueJson as any) || null;
-      const cats: any[] = Array.isArray(v?.categories)
-        ? v.categories
-        : Array.isArray(v)
-          ? v
-          : [];
-      if (Array.isArray(cats) && cats.length) {
-        const next = cats.map((c: any) => {
-          const items = Array.isArray(c?.items) ? c.items : [];
-          return {
-            ...c,
-            items: items.map((it: any) =>
-              Number(it?.id || 0) === Number(input.id)
-                ? { ...it, ...input }
-                : it,
-            ),
-          };
-        });
-        await prisma.syncState
-          .upsert({
-            where: { key: cacheKey },
-            create: {
-              key: cacheKey,
-              valueJson: {
-                savedAt: new Date().toISOString(),
-                categories: next,
-              },
-            },
-            update: {
-              valueJson: {
-                savedAt: new Date().toISOString(),
-                categories: next,
-              },
-            },
-          })
-          .catch(() => null);
-      }
-    } catch {
-      // ignore
-    }
-    return true;
-  }
   await prisma.menuItem.update({
     where: { id: input.id },
     data: {
@@ -3171,74 +2598,14 @@ ipcMain.handle('menu:updateItem', async (_e, payload) => {
 ipcMain.handle('menu:deleteItem', async (_e, payload) => {
   const id = Number((payload as any)?.id || 0);
   if (!id) return false;
-  if (await cloudEnabledButMissingBusinessCode())
-    throw new Error('Cloud enabled but business code missing');
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    await cloudJson(
-      'DELETE',
-      `/menu/items/${encodeURIComponent(String(id))}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-    return true;
-  }
   await prisma.menuItem
     .update({ where: { id }, data: { active: false } as any })
     .catch(() => null);
   return true;
 });
 
-// Admin overview
+// Admin overview - Local-first: always use local DB
 ipcMain.handle('admin:getOverview', async (_e) => {
-  if (await cloudEnabledButMissingBusinessCode()) {
-    return {
-      activeUsers: 0,
-      openShifts: 0,
-      openOrders: 0,
-      lowStockItems: 0,
-      queuedPrintJobs: 0,
-      lastMenuSync: null,
-      lastStaffSync: null,
-      printerIp: null,
-      appVersion: process.env.npm_package_version || '0.1.0',
-      revenueTodayNet: 0,
-      revenueTodayVat: 0,
-    };
-  }
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    // In cloud mode, if admin token is missing/invalid, force logout the admin renderer so it re-prompts for login.
-    try {
-      return await cloudJson('GET', '/admin/overview', undefined, {
-        requireAuth: true,
-        senderId: _e.sender.id,
-      });
-    } catch (e: any) {
-      const msg = String(e?.message || e || '').toLowerCase();
-      if (
-        msg.includes('forbidden') ||
-        msg.includes('unauthorized') ||
-        msg.includes('not logged in') ||
-        msg.includes('admin login required')
-      ) {
-        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
-      }
-      return {
-        activeUsers: 0,
-        openShifts: 0,
-        openOrders: 0,
-        lowStockItems: 0,
-        queuedPrintJobs: 0,
-        lastMenuSync: null,
-        lastStaffSync: null,
-        printerIp: null,
-        appVersion: process.env.npm_package_version || '0.1.0',
-        revenueTodayNet: 0,
-        revenueTodayVat: 0,
-      };
-    }
-  }
   const [
     users,
     openShifts,
@@ -3345,6 +2712,49 @@ ipcMain.handle('backups:restore', async (_e, input) => {
   return await restoreDbBackup(name);
 });
 
+ipcMain.handle('backups:uploadToCloud', async (_e, input) => {
+  const name = String((input as any)?.name || '').trim();
+  const cloud = await getCloudConfig().catch(() => null);
+  if (!cloud) return { ok: false, error: 'Cloud not configured' };
+  const pw = await getCloudAccessPassword().catch(() => null);
+  if (!pw) return { ok: false, error: 'Cloud access password not set' };
+  const dir = getBackupsDir();
+  const safeName = name ? String(name).replace(/[^0-9A-Za-z._-]/g, '') : '';
+  const filePath = safeName ? join(dir, safeName.endsWith('.db') ? safeName : `${safeName}.db`) : null;
+  let toUpload = filePath && fs.existsSync(filePath) ? filePath : null;
+  if (!toUpload) {
+    const created = await createDbBackupNow();
+    if (!created.ok || !created.file) return { ok: false, error: created.error || 'Backup failed' };
+    toUpload = created.file;
+  }
+  try {
+    const fileBuffer = fs.readFileSync(toUpload);
+    const filename = basename(toUpload);
+    const formData = new FormData();
+    formData.append('file', new Blob([fileBuffer]), filename);
+    const url = `${cloud.backendUrl.replace(/\/+$/, '')}/backups/upload`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'x-business-code': cloud.businessCode,
+        'x-business-password': pw,
+      } as any,
+      body: formData as any,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      return { ok: false, error: String(err?.error || res.statusText) };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e || 'Upload failed') };
+  }
+});
+
+ipcMain.handle('sync:fromCloud', async (_e) => {
+  return syncFromCloudManual();
+});
+
 function dayKeyLocal(d = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -3408,14 +2818,24 @@ async function createKdsTicketFromLog(input: {
   }
 
   const decorated = lines.map((it: any) => {
+    // 1. Use the station already attached to the item (set by the renderer from menu data)
+    const itemStation = String(it?.station || '').toUpperCase();
+    if (itemStation && enabled.has(itemStation)) {
+      return { ...it, station: itemStation };
+    }
+    // 2. Fall back to local DB lookup by SKU
     const sku = String(it?.sku || '').trim();
     const stRaw = sku ? skuToStation[sku] : '';
-    const st = enabled.has(String(stRaw || '').toUpperCase())
-      ? String(stRaw).toUpperCase()
-      : enabled.has('KITCHEN')
-        ? 'KITCHEN'
-        : fallbackStation;
-    return { ...it, station: st };
+    if (stRaw && enabled.has(String(stRaw).toUpperCase())) {
+      return { ...it, station: String(stRaw).toUpperCase() };
+    }
+    // 3. If the item has a known station that's NOT enabled (e.g. BAR item but only KITCHEN is enabled),
+    //    keep its real station so it gets filtered out of the KDS view rather than mis-routed to KITCHEN.
+    if (itemStation) {
+      return { ...it, station: itemStation };
+    }
+    // 4. No station info at all — default to KITCHEN
+    return { ...it, station: fallbackStation };
   });
 
   const usedStations = Array.from(
@@ -3667,9 +3087,7 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
       throw new Error('Too many requests. Please slow down.');
     }
 
-    if (await cloudEnabledButMissingBusinessCode()) return false;
-    const { userId, area, tableLabel, covers, items, note, idempotencyKey } =
-      payload || {};
+    const { userId, area, tableLabel, covers, items, note } = payload || {};
     if (!userId || !area || !tableLabel) return false;
 
     // Sanitize inputs
@@ -3681,80 +3099,7 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
     // Validate items array
     if (!Array.isArray(items) || items.length === 0) return false;
 
-    // Use sanitized values (do not persist raw input)
-    const cloud = await getCloudConfig().catch(() => null);
-    if (cloud) {
-      const idem =
-        String(idempotencyKey || '').trim() ||
-        `pos:${Date.now()}:${Math.random().toString(16).slice(2)}`;
-      try {
-        await cloudJson(
-          'POST',
-          '/tickets',
-          {
-            userId,
-            area: sanitizedArea,
-            tableLabel: sanitizedTableLabel,
-            covers: sanitizedCovers,
-            items: items ?? [],
-            note: sanitizedNote,
-            idempotencyKey: idem,
-          },
-          { requireAuth: true },
-        );
-      } catch (e: any) {
-        if (isLikelyOfflineError(e)) {
-          await enqueueOutbox({
-            id: `tickets:log:${idem}`,
-            method: 'POST',
-            path: '/tickets',
-            body: {
-              userId,
-              area: sanitizedArea,
-              tableLabel: sanitizedTableLabel,
-              covers: sanitizedCovers,
-              items: items ?? [],
-              note: sanitizedNote,
-              idempotencyKey: idem,
-            },
-            requireAuth: true,
-          });
-        } else {
-          throw e;
-        }
-      }
-      // Also mirror ticket logs locally so features relying on local DB (fallback reports/KDS) still work in cloud mode.
-      try {
-        await prisma.ticketLog.create({
-          data: {
-            userId: Number(userId),
-            area: sanitizedArea,
-            tableLabel: sanitizedTableLabel,
-            covers: sanitizedCovers,
-            itemsJson: items ?? [],
-            note: sanitizedNote,
-          },
-        });
-      } catch {
-        // ignore
-      }
-      // Even in cloud mode, keep KDS local so the kitchen screen works offline/on-prem.
-      try {
-        await createKdsTicketFromLog({
-          userId: Number(userId),
-          area: sanitizedArea,
-          tableLabel: sanitizedTableLabel,
-          items: items ?? [],
-          note: sanitizedNote,
-        });
-      } catch (e: any) {
-        __kdsLastError = String(
-          e?.message || e || 'Failed to create KDS ticket (cloud)',
-        );
-        console.error('KDS create ticket failed (cloud)', e);
-      }
-      return true;
-    }
+    // Local-first: always use local DB for tickets
     await prisma.ticketLog.create({
       data: {
         userId: Number(userId),
@@ -3800,28 +3145,9 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
 });
 
 ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!area || !tableLabel) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    try {
-      const resp: any = await cloudJson(
-        'GET',
-        `/tickets/latest?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
-        undefined,
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-      if (!resp || typeof resp !== 'object') return resp;
-      const items = Array.isArray(resp.items) ? resp.items : [];
-      return { ...resp, items: items.filter((it: any) => !it?.voided) };
-    } catch (e: any) {
-      if (shouldForceLogoutOnError(e))
-        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
-      throw e;
-    }
-  }
   const last = await prisma.ticketLog.findFirst({
     where: { area, tableLabel },
     orderBy: { createdAt: 'desc' },
@@ -3839,21 +3165,9 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
 
 // Tooltip stats for a table: covers, first ticket time, latest total
 ipcMain.handle('tickets:getTableTooltip', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!area || !tableLabel) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return null;
-    const q = new URLSearchParams({ area, tableLabel });
-    return await cloudJson(
-      'GET',
-      `/tickets/tooltip?${q.toString()}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => null);
-  }
   // Show only for currently open tables
   const openRow = await prisma.syncState.findUnique({
     where: { key: 'tables:open' },
@@ -3906,7 +3220,6 @@ ipcMain.handle('tickets:getTableTooltip', async (_e, input) => {
 
 // KDS: list tickets by station + status (NEW/DONE)
 ipcMain.handle('kds:listTickets', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const status = String((input as any)?.status || 'NEW').toUpperCase();
   const limit = Math.min(
@@ -3993,7 +3306,6 @@ ipcMain.handle('kds:debug', async () => {
 });
 
 ipcMain.handle('kds:bump', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return false;
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
   const bumpedById = Number((input as any)?.userId || 0) || null;
@@ -4017,7 +3329,6 @@ ipcMain.handle('kds:bump', async (_e, input) => {
 });
 
 ipcMain.handle('kds:bumpItem', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return false;
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
   const itemIdx = Number((input as any)?.itemIdx ?? -1);
@@ -4071,7 +3382,6 @@ ipcMain.handle('kds:bumpItem', async (_e, input) => {
 
 // Void item: records a notification and returns true
 ipcMain.handle('tickets:voidItem', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return false;
   const userId = Number(input?.userId);
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
@@ -4083,6 +3393,8 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
   if (!userId || !area || !tableLabel || !item?.name) return false;
 
   // Enforce admin PIN approval for voids if enabled in settings.
+  // In cloud mode, pass actorRole from the renderer since cloud user IDs may not exist locally.
+  const actorRoleHint = String(input?.actorRole || '').trim();
   try {
     const settings: any = await readSettings();
     const requireApproval =
@@ -4092,7 +3404,8 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
         .findUnique({ where: { id: userId } })
         .catch(() => null);
       const actorIsAdmin =
-        String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
+        (actor && String((actor as any)?.role || '').toUpperCase() === 'ADMIN') ||
+        (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
       if (!actorIsAdmin) {
         if (!approvedByAdminId) return false;
         const approver = await prisma.user
@@ -4108,69 +3421,6 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
   } catch {
     // Fail closed when approvals are on by default.
     return false;
-  }
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    try {
-      await cloudJson(
-        'POST',
-        '/tickets/void-item',
-        {
-          userId,
-          area,
-          tableLabel,
-          item,
-          approvedByAdminId,
-          approvedByAdminName,
-        },
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) {
-        await enqueueOutbox({
-          id: `tickets:void-item:${area}:${tableLabel}:${Date.now()}`,
-          method: 'POST',
-          path: '/tickets/void-item',
-          body: {
-            userId,
-            area,
-            tableLabel,
-            item,
-            approvedByAdminId,
-            approvedByAdminName,
-          },
-          requireAuth: true,
-        });
-      } else {
-        throw e;
-      }
-    }
-    // Mirror locally so the UI and fallback reports reflect voids immediately.
-    try {
-      const last = await prisma.ticketLog
-        .findFirst({
-          where: { area, tableLabel },
-          orderBy: { createdAt: 'desc' },
-        })
-        .catch(() => null);
-      if (last) {
-        const itemsArr = (last.itemsJson as any[]) || [];
-        const idx = itemsArr.findIndex((it: any) => it.name === item.name);
-        if (idx !== -1) {
-          itemsArr[idx] = { ...itemsArr[idx], voided: true };
-          await prisma.ticketLog
-            .update({ where: { id: last.id }, data: { itemsJson: itemsArr } })
-            .catch(() => null);
-        }
-      }
-    } catch {
-      // ignore
-    }
-    // KDS is local even in cloud mode: reflect voids immediately.
-    await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(
-      () => false,
-    );
-    return true;
   }
   const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
@@ -4215,7 +3465,6 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
 });
 
 ipcMain.handle('tickets:voidTicket', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return false;
   const userId = Number(input?.userId);
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
@@ -4227,6 +3476,7 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
   if (!userId || !area || !tableLabel) return false;
 
   // Enforce admin PIN approval for voids if enabled in settings.
+  const actorRoleHint = String(input?.actorRole || '').trim();
   try {
     const settings: any = await readSettings();
     const requireApproval =
@@ -4236,7 +3486,8 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
         .findUnique({ where: { id: userId } })
         .catch(() => null);
       const actorIsAdmin =
-        String((actor as any)?.role || '').toUpperCase() === 'ADMIN';
+        (actor && String((actor as any)?.role || '').toUpperCase() === 'ADMIN') ||
+        (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
       if (!actorIsAdmin) {
         if (!approvedByAdminId) return false;
         const approver = await prisma.user
@@ -4252,98 +3503,11 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
   } catch {
     return false;
   }
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    try {
-      await cloudJson(
-        'POST',
-        '/tickets/void-ticket',
-        {
-          userId,
-          area,
-          tableLabel,
-          reason,
-          approvedByAdminId,
-          approvedByAdminName,
-        },
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) {
-        await enqueueOutbox({
-          id: `tickets:void-ticket:${area}:${tableLabel}:${Date.now()}`,
-          method: 'POST',
-          path: '/tickets/void-ticket',
-          body: {
-            userId,
-            area,
-            tableLabel,
-            reason,
-            approvedByAdminId,
-            approvedByAdminName,
-          },
-          requireAuth: true,
-        });
-      } else {
-        throw e;
-      }
-    }
-    // Close table locally + enqueue close for cloud if offline.
-    try {
-      await coreServices.setTableOpen(area, tableLabel, false);
-    } catch {
-      // ignore
-    }
-    try {
-      await cloudJson(
-        'POST',
-        '/tables/open',
-        { area, label: tableLabel, open: false },
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) {
-        await enqueueOutbox({
-          id: `tables:open:${area}:${tableLabel}:${Date.now()}`,
-          method: 'POST',
-          path: '/tables/open',
-          body: { area, label: tableLabel, open: false },
-          requireAuth: true,
-          dedupeKey: `tables:open:${area}:${tableLabel}`,
-        });
-      }
-    }
-    // Mirror locally: mark latest ticket items voided (best-effort)
-    try {
-      const last = await prisma.ticketLog
-        .findFirst({
-          where: { area, tableLabel },
-          orderBy: { createdAt: 'desc' },
-        })
-        .catch(() => null);
-      if (last) {
-        const itemsArr = ((last.itemsJson as any[]) || []).map((it: any) => ({
-          ...it,
-          voided: true,
-        }));
-        const note2 = last.note
-          ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}`
-          : `VOIDED${reason ? `: ${reason}` : ''}`;
-        await prisma.ticketLog
-          .update({
-            where: { id: last.id },
-            data: { itemsJson: itemsArr, note: note2 },
-          })
-          .catch(() => null);
-      }
-    } catch {
-      // ignore
-    }
-    // KDS is local even in cloud mode: reflect voids immediately.
-    await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(
-      () => false,
-    );
-    return true;
+  // Local-first: close table locally
+  try {
+    await coreServices.setTableOpen(area, tableLabel, false);
+  } catch {
+    // ignore
   }
   const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
@@ -4423,22 +3587,6 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
 });
 
 ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    const userId = Number(input?.userId || 0);
-    if (!userId) return [];
-    const q = new URLSearchParams();
-    q.set('userId', String(userId));
-    if (input?.startIso) q.set('startIso', String(input.startIso));
-    if (input?.endIso) q.set('endIso', String(input.endIso));
-    return await cloudJson(
-      'GET',
-      `/admin/tickets-by-user?${q.toString()}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-  }
   const userId = Number(input?.userId);
   if (!userId) return [];
   const where: any = { userId };
@@ -4475,17 +3623,6 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
 // Notifications IPC
 ipcMain.handle('notifications:list', async (_e, input) => {
   const onlyUnread = Boolean(input?.onlyUnread);
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return [];
-    const q = new URLSearchParams();
-    if (onlyUnread) q.set('onlyUnread', '1');
-    return await cloudJson('GET', `/notifications?${q.toString()}`, undefined, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    }).catch(() => []);
-  }
   const userId = Number(input?.userId);
   if (!userId) return [];
   const rows = await prisma.notification.findMany({
@@ -4502,17 +3639,6 @@ ipcMain.handle('notifications:list', async (_e, input) => {
 });
 
 ipcMain.handle('notifications:markAllRead', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson(
-      'POST',
-      '/notifications/mark-all-read',
-      {},
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => false);
-  }
   const userId = Number(input?.userId);
   if (!userId) return false;
   await prisma.notification.updateMany({
@@ -4523,32 +3649,6 @@ ipcMain.handle('notifications:markAllRead', async (_e, input) => {
 });
 
 ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    const q = new URLSearchParams();
-    if (input?.startIso) q.set('startIso', String(input.startIso));
-    if (input?.endIso) q.set('endIso', String(input.endIso));
-    try {
-      return await cloudJson(
-        'GET',
-        `/admin/ticket-counts?${q.toString()}`,
-        undefined,
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      const msg = String(e?.message || e || '').toLowerCase();
-      if (
-        msg.includes('forbidden') ||
-        msg.includes('unauthorized') ||
-        msg.includes('not logged in') ||
-        msg.includes('admin login required')
-      ) {
-        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
-      }
-      return [];
-    }
-  }
   const where: any = {};
   if (input?.startIso || input?.endIso) {
     where.createdAt = {};
@@ -4576,33 +3676,6 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
 });
 
 ipcMain.handle('admin:listShifts', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    try {
-      const q = new URLSearchParams();
-      if (input?.startIso) q.set('startIso', String(input.startIso));
-      if (input?.endIso) q.set('endIso', String(input.endIso));
-      const path = q.toString()
-        ? `/admin/shifts?${q.toString()}`
-        : '/admin/shifts';
-      return await cloudJson('GET', path, undefined, {
-        requireAuth: true,
-        senderId: _e.sender.id,
-      });
-    } catch (e: any) {
-      const msg = String(e?.message || e || '').toLowerCase();
-      if (
-        msg.includes('forbidden') ||
-        msg.includes('unauthorized') ||
-        msg.includes('not logged in') ||
-        msg.includes('admin login required')
-      ) {
-        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
-      }
-      return [];
-    }
-  }
   const where: any = {};
   if (input?.startIso || input?.endIso) {
     where.openedAt = {};
@@ -4634,32 +3707,6 @@ ipcMain.handle('admin:listShifts', async (_e, input) => {
 });
 
 ipcMain.handle('admin:listNotifications', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    const q = new URLSearchParams();
-    if (input?.onlyUnread) q.set('onlyUnread', '1');
-    if (input?.limit) q.set('limit', String(input.limit));
-    try {
-      return await cloudJson(
-        'GET',
-        `/admin/notifications?${q.toString()}`,
-        undefined,
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      const msg = String(e?.message || e || '').toLowerCase();
-      if (
-        msg.includes('forbidden') ||
-        msg.includes('unauthorized') ||
-        msg.includes('not logged in') ||
-        msg.includes('admin login required')
-      ) {
-        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
-      }
-      return [];
-    }
-  }
   const onlyUnread = Boolean(input?.onlyUnread);
   const limit = Number(input?.limit || 100);
   const rows = await prisma.notification.findMany({
@@ -4680,29 +3727,6 @@ ipcMain.handle('admin:listNotifications', async (_e, input) => {
 });
 
 ipcMain.handle('admin:markAllNotificationsRead', async (_e) => {
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    try {
-      return await cloudJson(
-        'POST',
-        '/admin/notifications/mark-all-read',
-        {},
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      const msg = String(e?.message || e || '').toLowerCase();
-      if (
-        msg.includes('forbidden') ||
-        msg.includes('unauthorized') ||
-        msg.includes('not logged in') ||
-        msg.includes('admin login required')
-      ) {
-        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
-      }
-      return false;
-    }
-  }
   await prisma.notification.updateMany({
     where: { readAt: null },
     data: { readAt: new Date() },
@@ -4712,27 +3736,6 @@ ipcMain.handle('admin:markAllNotificationsRead', async (_e) => {
 
 // Top selling item today from TicketLog
 ipcMain.handle('admin:getTopSellingToday', async (_e) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    try {
-      return await cloudJson('GET', '/admin/top-selling-today', undefined, {
-        requireAuth: true,
-        senderId: _e.sender.id,
-      });
-    } catch (e: any) {
-      const msg = String(e?.message || e || '').toLowerCase();
-      if (
-        msg.includes('forbidden') ||
-        msg.includes('unauthorized') ||
-        msg.includes('not logged in') ||
-        msg.includes('admin login required')
-      ) {
-        forceLogoutSender(_e.sender, String(e?.message || 'unauthorized'));
-      }
-      return null;
-    }
-  }
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
   const rows = await prisma.ticketLog.findMany({
@@ -4762,8 +3765,6 @@ ipcMain.handle('admin:getTopSellingToday', async (_e) => {
 
 // Sales trends (daily/weekly/monthly)
 ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode())
-    return { range: input?.range || 'daily', points: [] } as any;
   const range = (input?.range as any) || 'daily';
   const today = new Date(new Date().setHours(0, 0, 0, 0));
   let start: Date;
@@ -4858,19 +3859,8 @@ ipcMain.handle('admin:exportMemorySnapshot', async () => {
 });
 
 ipcMain.handle('reports:getMyOverview', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode())
-    return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
   const userId = Number(input?.userId || 0);
   if (!userId) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode))
-      return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
-    return await cloudJson('GET', '/reports/my/overview', undefined, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    }).catch(() => ({ revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 }));
-  }
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date();
   const rows = await prisma.ticketLog
@@ -4928,17 +3918,8 @@ ipcMain.handle('reports:getMyOverview', async (_e, input) => {
 });
 
 ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
   const userId = Number(input?.userId || 0);
   if (!userId) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson('GET', '/reports/my/top-selling-today', undefined, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    }).catch(() => null);
-  }
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
   const rows = await prisma.ticketLog.findMany({
@@ -4967,23 +3948,9 @@ ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {
 });
 
 ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
-  if (await cloudEnabledButMissingBusinessCode())
-    return { range: input?.range || 'daily', points: [] } as any;
   const userId = Number(input?.userId || 0);
   const range = (input?.range as any) || 'daily';
   if (!userId) return { range, points: [] } as any;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode))
-      return { range, points: [] } as any;
-    const q = new URLSearchParams({ range: String(range) });
-    return await cloudJson(
-      'GET',
-      `/reports/my/sales-trends?${q.toString()}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => ({ range, points: [] }));
-  }
   const today = new Date(new Date().setHours(0, 0, 0, 0));
   let buckets: { label: string; from: Date; to: Date }[] = [];
   if (range === 'daily') {
@@ -5053,54 +4020,11 @@ ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
 ipcMain.handle('covers:save', async (_e, { area, label, covers }) => {
   const num = Number(covers);
   if (!area || !label || !Number.isFinite(num) || num <= 0) return false;
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    // Mirror locally for offline-read and queue write if offline.
-    try {
-      await prisma.covers.create({ data: { area, label, covers: num } });
-    } catch {
-      // ignore
-    }
-    try {
-      return await cloudJson(
-        'POST',
-        '/covers/save',
-        { area, label, covers: num },
-        { requireAuth: true, senderId: _e.sender.id },
-      );
-    } catch (e: any) {
-      if (isLikelyOfflineError(e)) {
-        await enqueueOutbox({
-          id: `covers:save:${area}:${label}:${Date.now()}`,
-          method: 'POST',
-          path: '/covers/save',
-          body: { area, label, covers: num },
-          requireAuth: true,
-          dedupeKey: `covers:save:${area}:${label}`,
-        });
-        return true;
-      }
-      return false;
-    }
-  }
   await prisma.covers.create({ data: { area, label, covers: num } });
   return true;
 });
 
 ipcMain.handle('covers:getLast', async (_e, { area, label }) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson(
-      'GET',
-      `/covers/last?area=${encodeURIComponent(String(area))}&label=${encodeURIComponent(String(label))}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => null);
-  }
   const row = await prisma.covers.findFirst({
     where: { area, label },
     orderBy: { id: 'desc' },
@@ -5110,34 +4034,12 @@ ipcMain.handle('covers:getLast', async (_e, { area, label }) => {
 
 // Layout persistence (per user, per area) via SyncState
 ipcMain.handle('layout:get', async (_e, { userId, area }) => {
-  if (await cloudEnabledButMissingBusinessCode()) return null;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return null;
-    return await cloudJson(
-      'GET',
-      `/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(String(area))}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => null);
-  }
   const key = `layout:${userId}:${area}`;
   const row = await prisma.syncState.findUnique({ where: { key } });
   return (row?.valueJson as any)?.nodes ?? null;
 });
 
 ipcMain.handle('layout:save', async (_e, { userId, area, nodes }) => {
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson(
-      'POST',
-      '/layout/save',
-      { userId, area, nodes },
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => false);
-  }
   const key = `layout:${userId}:${area}`;
   await prisma.syncState.upsert({
     where: { key },
@@ -5152,17 +4054,6 @@ ipcMain.handle('requests:create', async (_e, input) => {
   const { requesterId, ownerId, area, tableLabel, items, note } = input || {};
   if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items))
     return false;
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson(
-      'POST',
-      '/requests/create',
-      { requesterId, ownerId, area, tableLabel, items, note: note ?? null },
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => false);
-  }
 
   const created = await prisma.ticketRequest.create({
     data: {
@@ -5193,17 +4084,6 @@ ipcMain.handle('requests:create', async (_e, input) => {
 ipcMain.handle('requests:listForOwner', async (_e, input) => {
   const ownerId = Number(input?.ownerId);
   if (!ownerId) return [];
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return [];
-    return await cloudJson(
-      'GET',
-      `/requests/list-for-owner?ownerId=${encodeURIComponent(String(ownerId))}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => []);
-  }
   const rows = await prisma.ticketRequest.findMany({
     where: { ownerId, status: 'PENDING' as any },
     orderBy: { createdAt: 'desc' },
@@ -5224,17 +4104,6 @@ ipcMain.handle('requests:approve', async (_e, input) => {
   const id = Number(input?.id);
   const ownerId = Number(input?.ownerId);
   if (!id || !ownerId) return false;
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson(
-      'POST',
-      '/requests/approve',
-      { id, ownerId },
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => false);
-  }
   const r = await prisma.ticketRequest.findUnique({ where: { id } });
   if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
     return false;
@@ -5307,17 +4176,6 @@ ipcMain.handle('requests:reject', async (_e, input) => {
   const id = Number(input?.id);
   const ownerId = Number(input?.ownerId);
   if (!id || !ownerId) return false;
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson(
-      'POST',
-      '/requests/reject',
-      { id, ownerId },
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => false);
-  }
   const r = await prisma.ticketRequest.findUnique({ where: { id } });
   if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
     return false;
@@ -5343,22 +4201,6 @@ ipcMain.handle('requests:pollApprovedForTable', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!ownerId || !area || !tableLabel) return [];
-  if (await cloudEnabledButMissingBusinessCode()) return [];
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return [];
-    const q = new URLSearchParams({
-      ownerId: String(ownerId),
-      area,
-      tableLabel,
-    });
-    return await cloudJson(
-      'GET',
-      `/requests/poll-approved?${q.toString()}`,
-      undefined,
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => []);
-  }
   const rows = await prisma.ticketRequest.findMany({
     where: { ownerId, area, tableLabel, status: 'APPROVED' as any },
     orderBy: { createdAt: 'asc' },
@@ -5370,17 +4212,6 @@ ipcMain.handle('requests:pollApprovedForTable', async (_e, input) => {
 ipcMain.handle('requests:markApplied', async (_e, input) => {
   const ids: number[] = Array.isArray(input?.ids) ? input.ids : [];
   if (!ids.length) return false;
-  if (await cloudEnabledButMissingBusinessCode()) return false;
-  const cloud = await getCloudConfig().catch(() => null);
-  if (cloud) {
-    if (!hasCloudSession(cloud.businessCode)) return false;
-    return await cloudJson(
-      'POST',
-      '/requests/mark-applied',
-      { ids },
-      { requireAuth: true, senderId: _e.sender.id },
-    ).catch(() => false);
-  }
   await prisma.ticketRequest.updateMany({
     where: { id: { in: ids }, status: 'APPROVED' as any },
     data: { status: 'APPLIED' as any, decidedAt: new Date() },

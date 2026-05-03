@@ -8,6 +8,7 @@ import { logTicket } from '../../api';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
+import { PageSpinner } from '../../components/PageSpinner';
 
 type MenuItemDTO = {
   id: number;
@@ -18,6 +19,7 @@ type MenuItemDTO = {
   active: boolean;
   categoryId: number;
   station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+  isKg?: boolean;
 };
 type MenuCategoryDTO = {
   id: number;
@@ -100,6 +102,11 @@ export default function OrderPage() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const suppressFreeOnEmptyRef = useRef(false);
   const initialRenderRef = useRef(true);
+  /** Incremented on every void; background effects use it to cancel stale fetches */
+  const hydrateGenRef = useRef(0);
+  /** Set when we send or are about to send; prevents overwriting with empty during server sync delay */
+  const lastSendAtRef = useRef(0);
+  const lastSendTableRef = useRef<{ area: string; label: string } | null>(null);
   const [requestLocked, setRequestLocked] = useState(false);
   const [busyAction, setBusyAction] = useState<
     'send' | 'pay' | 'void' | 'request' | null
@@ -115,6 +122,7 @@ export default function OrderPage() {
     typeof navigator === 'undefined' ? true : navigator.onLine !== false;
   const connectionOk = !isBrowserClient || (netOk && backendOk);
   const [mobilePane, setMobilePane] = useState<'menu' | 'ticket'>('menu');
+  const [ticketSyncing, setTicketSyncing] = useState(false);
 
   // Transfer table (move table and/or change owner)
   const [showTransfer, setShowTransfer] = useState(false);
@@ -141,6 +149,18 @@ export default function OrderPage() {
       (user.role === 'ADMIN' ||
         (ownerId != null && Number(ownerId) === Number(user.id))),
   );
+  // Editing covers (guest count) requires the same ownership rule as transfer:
+  // admins always pass, otherwise only the owning waiter may change covers.
+  // When the table is open but ownerId hasn't been resolved yet (fresh open),
+  // we allow editing — otherwise the very first set-covers would be impossible.
+  const canEditCovers = Boolean(
+    selectedTable &&
+      isOpen(selectedTable.area, selectedTable.label) &&
+      user?.id &&
+      (user.role === 'ADMIN' ||
+        ownerId == null ||
+        Number(ownerId) === Number(user.id)),
+  );
 
   function formatElapsed(ms: number) {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -153,34 +173,60 @@ export default function OrderPage() {
   }
 
   // Ensure table open/occupied status is loaded even when user refreshes on OrderPage.
-  // This prevents "free/occupied" and ticket hydration flicker.
+  // Reset on mount so the loading screen shows until fresh data arrives.
+  const orderPollGenRef = useRef(0);
   useEffect(() => {
+    const gen = ++orderPollGenRef.current;
+    setOpenLoaded(false);
+    setTicketLoaded(false);
     let timer: any;
     let cancelled = false;
-    const loop = async () => {
+    const fetchOnce = async () => {
+      const hidden =
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden';
+      try {
+        if (hidden) {
+          if (!cancelled && gen === orderPollGenRef.current) setOpenLoaded(true);
+          return;
+        }
+        const open = await window.api.tables.listOpen();
+        if (cancelled || gen !== orderPollGenRef.current) return;
+        if (Array.isArray(open)) setAll(open);
+        setOpenLoaded(true);
+        setOpenLoadError(null);
+      } catch (e: any) {
+        void e;
+        if (!cancelled && gen === orderPollGenRef.current) {
+          setOpenLoaded(true);
+          setOpenLoadError(
+            'Loading occupied tables… (slow/offline network). Retrying…',
+          );
+        }
+      }
+    };
+    const poll = async () => {
       const hidden =
         typeof document !== 'undefined' &&
         document.visibilityState === 'hidden';
       try {
         if (hidden) return;
         const open = await window.api.tables.listOpen();
+        if (cancelled || gen !== orderPollGenRef.current) return;
         if (Array.isArray(open)) setAll(open);
-        if (!cancelled) {
-          setOpenLoaded(true);
-          setOpenLoadError(null);
-        }
-      } catch (e: any) {
-        void e;
-        if (!cancelled) {
-          setOpenLoadError(
-            'Loading occupied tables… (slow/offline network). Retrying…',
-          );
-        }
+      } catch {
+        // ignore poll errors
       } finally {
-        timer = setTimeout(loop, hidden ? 12000 : 4000);
+        if (!cancelled && gen === orderPollGenRef.current) {
+          timer = setTimeout(poll, hidden ? 12000 : 4000);
+        }
       }
     };
-    loop();
+    fetchOnce().then(() => {
+      if (!cancelled && gen === orderPollGenRef.current) {
+        timer = setTimeout(poll, 4000);
+      }
+    });
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -225,6 +271,7 @@ export default function OrderPage() {
   // Load ticket snapshot for open tables before rendering the page (prevents empty->pop-in on refresh).
   useEffect(() => {
     let cancelled = false;
+    const gen = hydrateGenRef.current;
     (async () => {
       if (!openLoaded) return;
       if (!selectedTable) {
@@ -242,6 +289,7 @@ export default function OrderPage() {
           selectedTable.area,
           selectedTable.label,
         );
+        if (cancelled || gen !== hydrateGenRef.current) return;
         const items = Array.isArray(latest?.items) ? latest!.items : [];
         const remaining = items.filter((it: any) => !it.voided);
         if (remaining.length) {
@@ -249,12 +297,34 @@ export default function OrderPage() {
             .getState()
             .hydrate({ items: remaining as any, note: latest?.note || '' });
         } else {
+          const currentLines = useTicketStore.getState().lines;
+          const sentTable = lastSendTableRef.current;
+          const isSameTable =
+            sentTable &&
+            selectedTable &&
+            sentTable.area === selectedTable.area &&
+            sentTable.label === selectedTable.label;
+          const withinPostSendGrace =
+            currentLines.length > 0 &&
+            Date.now() - lastSendAtRef.current < 5000 &&
+            isSameTable;
+          if (withinPostSendGrace) {
+            // Don't overwrite with empty — we may have just sent; server may not have synced yet
+            return;
+          }
           useTicketStore.getState().hydrate({ items: [], note: latest?.note || '' });
+          // Table open but no items (opened with covers, never added items) — free it
+          if (selectedTable) {
+            setOpen(selectedTable.area, selectedTable.label, false);
+            window.api.tables
+              .setOpen(selectedTable.area, selectedTable.label, false)
+              .catch(() => {});
+          }
         }
       } catch (e) {
         void e;
       } finally {
-        if (!cancelled) setTicketLoaded(true);
+        if (!cancelled && gen === hydrateGenRef.current) setTicketLoaded(true);
       }
     })();
     return () => {
@@ -517,6 +587,7 @@ export default function OrderPage() {
 
   // Determine owner of the currently selected open table
   useEffect(() => {
+    const gen = hydrateGenRef.current;
     (async () => {
       if (!selectedTable) {
         setOwnerId(null);
@@ -531,8 +602,10 @@ export default function OrderPage() {
           selectedTable.area,
           selectedTable.label,
         );
+        if (gen !== hydrateGenRef.current) return;
         setOwnerId(data?.userId ?? null);
       } catch {
+        if (gen !== hydrateGenRef.current) return;
         setOwnerId(null);
       }
     })();
@@ -542,8 +615,11 @@ export default function OrderPage() {
     isOpen(selectedTable?.area || '', selectedTable?.label || ''),
   ]);
 
-  // Hydrate lines from server when selecting a table or on refresh
+  // Hydrate lines from server when selecting a table or on refresh.
+  // Skip while ticketSyncing — the void flow handles its own re-sync.
   useEffect(() => {
+    if (ticketSyncing) return;
+    const gen = hydrateGenRef.current;
     (async () => {
       if (!selectedTable) return;
       // Only hydrate for tables currently marked as open
@@ -553,12 +629,31 @@ export default function OrderPage() {
           selectedTable.area,
           selectedTable.label,
         );
+        // Stale fetch — a void or new action happened while this was in flight
+        if (gen !== hydrateGenRef.current) return;
         const items = Array.isArray(latest?.items) ? latest!.items : [];
         const remaining = items.filter((it: any) => !it.voided);
         if (remaining.length) {
           useTicketStore
             .getState()
             .hydrate({ items: remaining as any, note: latest?.note || '' });
+        } else {
+          const currentLines = useTicketStore.getState().lines;
+          const sentTable = lastSendTableRef.current;
+          const isSameTable =
+            sentTable &&
+            selectedTable &&
+            sentTable.area === selectedTable.area &&
+            sentTable.label === selectedTable.label;
+          const withinPostSendGrace =
+            currentLines.length > 0 &&
+            Date.now() - lastSendAtRef.current < 5000 &&
+            isSameTable;
+          if (withinPostSendGrace) {
+            // Don't overwrite with empty — we may have just sent; server may not have synced yet
+            return;
+          }
+          useTicketStore.getState().hydrate({ items: [], note: latest?.note || '' });
         }
       } catch (e) {
         void e;
@@ -568,24 +663,29 @@ export default function OrderPage() {
     selectedTable?.area,
     selectedTable?.label,
     isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+    ticketSyncing,
   ]);
 
-  // If an open table's ticket becomes empty due to voids, free the table (turn green) after server check
+  // If an open table's ticket becomes empty due to voids, free the table (turn green) after server check.
+  // Skip while ticketSyncing is active — the void flow handles the re-sync itself.
   useEffect(() => {
     if (initialRenderRef.current) {
       initialRenderRef.current = false;
       return;
     }
+    if (ticketSyncing) return;
     if (!selectedTable) return;
     if (!isOpen(selectedTable.area, selectedTable.label)) return;
     if (lines.length === 0) {
       if (suppressFreeOnEmptyRef.current) return;
+      const gen = hydrateGenRef.current;
       (async () => {
         try {
           const latest = await window.api.tickets.getLatestForTable(
             selectedTable.area,
             selectedTable.label,
           );
+          if (gen !== hydrateGenRef.current) return;
           const items = Array.isArray(latest?.items) ? latest!.items : [];
           const remaining = items.filter((it: any) => !it.voided);
           if (remaining.length) {
@@ -599,13 +699,14 @@ export default function OrderPage() {
         } catch (e) {
           void e;
         }
+        if (gen !== hydrateGenRef.current) return;
         setOpen(selectedTable.area, selectedTable.label, false);
         window.api.tables
           .setOpen(selectedTable.area, selectedTable.label, false)
           .catch(() => {});
       })();
     }
-  }, [lines.length, selectedTable]);
+  }, [lines.length, selectedTable, ticketSyncing]);
 
   // Menu is managed by the business admin (no remote syncing).
 
@@ -657,20 +758,9 @@ export default function OrderPage() {
 
   if (shouldBlockForLoading) {
     return (
-      <div className="min-h-[60vh] w-full flex items-center justify-center">
-        <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
-          <div className="text-lg font-semibold mb-2">
-            Connecting to POS backend…
-          </div>
-          <div className="text-sm opacity-80 mb-4">
-            {openLoadError || (isTableOpen ? 'Loading ticket…' : 'Please wait…')}
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <div className="text-xs opacity-70">Please wait…</div>
-          </div>
-        </div>
-      </div>
+      <PageSpinner
+        message={openLoadError || (!openLoaded ? 'Loading tables…' : 'Loading ticket…')}
+      />
     );
   }
 
@@ -678,6 +768,29 @@ export default function OrderPage() {
     <div className="h-full min-h-0 flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3">
       {/* Mobile: switch between Menu and Ticket to avoid cramped 3-column layout */}
       <div className="md:hidden bg-gray-800/70 border border-gray-700 rounded-lg p-2 flex items-center gap-2">
+        <button
+          className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer text-gray-100 min-h-0 shrink-0"
+          onClick={() => navigate('/app/tables')}
+          type="button"
+          aria-label="Back to tables"
+          title="Back to tables"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            className="w-5 h-5"
+            aria-hidden="true"
+          >
+            <path
+              d="M15 6l-6 6 6 6"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
         <button
           className={`flex-1 py-2 rounded ${mobilePane === 'menu' ? 'bg-emerald-700' : 'bg-gray-700'}`}
           onClick={() => setMobilePane('menu')}
@@ -736,8 +849,9 @@ export default function OrderPage() {
                       ? 'bg-gray-800/60 border border-gray-700 text-gray-400 cursor-not-allowed'
                       : 'bg-emerald-800 hover:bg-emerald-700 cursor-pointer'
                   }`}
+                  disabled={isDisabled || ticketSyncing || busyAction != null}
                   onClick={() => {
-                    if (isDisabled) return;
+                    if (isDisabled || ticketSyncing || busyAction != null) return;
                     // If isKg, open weight keypad; otherwise add normally
                     const isKg =
                       Boolean((i as any)?.isKg) ||
@@ -794,7 +908,7 @@ export default function OrderPage() {
       </div>
 
       <div
-        className={`bg-gray-800 p-3 rounded flex flex-col min-h-0 h-full relative ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:block`}
+        className={`bg-gray-800 p-3 rounded flex flex-col min-h-0 h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
       >
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold flex items-center gap-2">
@@ -824,8 +938,9 @@ export default function OrderPage() {
               isOpen(selectedTable.area, selectedTable.label) && (
                 <button
                   type="button"
-                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded border border-gray-600"
+                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-gray-700"
                   onClick={() => {
+                    if (!canEditCovers) return;
                     setCoversMode('editOnly');
                     setCoversValue(
                       typeof coversKnown === 'number'
@@ -834,7 +949,17 @@ export default function OrderPage() {
                     );
                     setShowCovers(true);
                   }}
-                  title="Edit guests (covers)"
+                  disabled={!canEditCovers}
+                  title={
+                    canEditCovers
+                      ? 'Edit guests (covers)'
+                      : "You can't change covers on a table you don't own"
+                  }
+                  aria-label={
+                    canEditCovers
+                      ? 'Edit guests (covers)'
+                      : 'Edit guests disabled — you do not own this table'
+                  }
                 >
                   <ForkKnifeIcon />
                   <span className="text-sm font-semibold">
@@ -844,7 +969,23 @@ export default function OrderPage() {
               )}
           </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-auto pb-80">
+        <div className="flex-1 min-h-0 overflow-auto relative">
+          {(ticketSyncing || busyAction != null) && (
+            <PageSpinner
+              variant="overlay"
+              message={
+                ticketSyncing
+                  ? 'Syncing ticket…'
+                  : busyAction === 'send'
+                    ? 'Sending order…'
+                    : busyAction === 'void'
+                      ? 'Voiding…'
+                      : busyAction === 'pay'
+                        ? 'Processing payment…'
+                        : 'Please wait…'
+              }
+            />
+          )}
           <div className="space-y-2">
             {lines.length === 0 ? (
               <div className="text-sm opacity-60">Select items to add…</div>
@@ -983,7 +1124,7 @@ export default function OrderPage() {
                       placeholder="Add note (e.g., No onion, extra cheese)"
                       value={l.note ?? ''}
                       disabled={Boolean(
-                        isTableOpen && !(showRequestOnly && l.staged),
+                        dimmed && !(showRequestOnly && l.staged),
                       )}
                       onChange={(e) => setLineNote(l.id, e.target.value)}
                     />
@@ -994,8 +1135,10 @@ export default function OrderPage() {
           </div>
         </div>
 
-        {/* Sticky footer: order notes + totals + actions pinned to bottom */}
-        <div className="absolute left-0 right-0 bottom-0 bg-gray-800 border-t border-gray-700 p-3">
+        {/* Footer pinned at the bottom of the ticket panel as a flex child.
+            Was previously `absolute bottom-0` with `pb-80` on the items list,
+            which overlapped the last item on narrow viewports. */}
+        <div className="shrink-0 mt-3 bg-gray-800 border-t border-gray-700 -mx-3 -mb-3 p-3 rounded-b">
           <div className="space-y-3 text-sm">
             <div>
               <label className="block text-xs mb-1 opacity-70">
@@ -1110,10 +1253,11 @@ export default function OrderPage() {
                       disabled={
                         lines.length === 0 ||
                         busyAction != null ||
-                        !connectionOk
+                        !connectionOk ||
+                        ticketSyncing
                       }
                       onClick={async () => {
-                        if (busyAction != null) return;
+                        if (busyAction != null || ticketSyncing) return;
                         if (!connectionOk) {
                           toast.warn('Network is slow/offline. Please wait and try again.');
                           return;
@@ -1151,6 +1295,7 @@ export default function OrderPage() {
                               area: selectedTable.area,
                               tableLabel: selectedTable.label,
                               reason: orderNote || undefined,
+                              actorRole: user.role,
                               ...(approvedByAdmin
                                 ? {
                                     approvedByAdminId: approvedByAdmin.userId,
@@ -1198,10 +1343,11 @@ export default function OrderPage() {
                       disabled={
                         lines.length === 0 ||
                         busyAction != null ||
-                        !connectionOk
+                        !connectionOk ||
+                        ticketSyncing
                       }
                       onClick={async () => {
-                        if (busyAction != null) return;
+                        if (busyAction != null || ticketSyncing) return;
                         if (!selectedTable) {
                           setPendingAction('send');
                           navigate('/app/tables');
@@ -1219,6 +1365,11 @@ export default function OrderPage() {
                           return;
                         }
                         // Enrich log with details (table, order lines, notes, covers)
+                        lastSendAtRef.current = Date.now();
+                        lastSendTableRef.current = {
+                          area: selectedTable.area,
+                          label: selectedTable.label,
+                        };
                         setBusyAction('send');
                         try {
                           const lastCovers = await window.api.covers.getLast(
@@ -1330,7 +1481,7 @@ export default function OrderPage() {
                     </button>
                     <button
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                      disabled={!canPay || busyAction != null || !connectionOk}
+                      disabled={!canPay || busyAction != null || !connectionOk || ticketSyncing}
                       title={
                         !selectedTable
                           ? 'Select table'
@@ -1396,9 +1547,9 @@ export default function OrderPage() {
       </div>
 
       {showPayment && selectedTable && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-6xl p-4">
-            <div className="flex items-center justify-between mb-3">
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3 sm:p-4 overflow-hidden">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl w-full sm:w-[92vw] max-w-6xl p-4 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+            <div className="flex items-center justify-between mb-3 shrink-0">
               <div className="text-lg font-semibold">Payment</div>
               <button
                 className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
@@ -1408,7 +1559,7 @@ export default function OrderPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
               {/* Order summary */}
               <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
                 <div className="text-sm opacity-80 mb-2">Order summary</div>
@@ -1878,10 +2029,33 @@ export default function OrderPage() {
                   setTransferBusy(true);
                   setTransferError(null);
                   try {
+                    // Block transfer if destination table is already occupied
+                    if (transferMode === 'TABLE') {
+                      const destArea = transferToArea.trim();
+                      const destLabel = transferToLabel.trim();
+                      if (
+                        destArea === selectedTable.area &&
+                        destLabel === selectedTable.label
+                      ) {
+                        setTransferError(
+                          'Destination is the same as the source table',
+                        );
+                        setTransferBusy(false);
+                        return;
+                      }
+                      if (isOpen(destArea, destLabel)) {
+                        setTransferError(
+                          `Table ${destArea} ${destLabel} is already occupied`,
+                        );
+                        setTransferBusy(false);
+                        return;
+                      }
+                    }
                     const payload: any = {
                       fromArea: selectedTable.area,
                       fromLabel: selectedTable.label,
                       actorUserId: user.id,
+                      actorRole: user.role,
                     };
                     if (transferMode === 'WAITER') {
                       payload.toUserId = transferToUserId;
@@ -1963,6 +2137,15 @@ export default function OrderPage() {
                   const num = Number(coversValue);
                   if (!Number.isFinite(num) || num <= 0) return;
                   if (coversMode === 'editOnly') {
+                    // Defense-in-depth: ownership rule for cover edits.
+                    if (!canEditCovers) {
+                      toast.warn(
+                        "You can't change covers on a table you don't own.",
+                        { title: 'Not allowed' },
+                      );
+                      setShowCovers(false);
+                      return;
+                    }
                     // Just update covers (no ticket logging/printing)
                     await window.api.covers.save(
                       selectedTable.area,
@@ -1974,7 +2157,12 @@ export default function OrderPage() {
                     return;
                   }
 
-                  // openAndSend flow
+                  // openAndSend flow — set before setOpen so ticket load effect won't overwrite with empty
+                  lastSendAtRef.current = Date.now();
+                  lastSendTableRef.current = {
+                    area: selectedTable.area,
+                    label: selectedTable.label,
+                  };
                   setCoversKnown(num);
                   setOpen(selectedTable.area, selectedTable.label, true);
                   setShowCovers(false);
@@ -2088,7 +2276,8 @@ export default function OrderPage() {
                 Cancel
               </button>
               <button
-                className="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded"
+                className="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded disabled:opacity-60"
+                disabled={ticketSyncing}
                 onClick={async () => {
                   if (!user?.id) return;
                   let approvedByAdmin: {
@@ -2103,27 +2292,58 @@ export default function OrderPage() {
                     if (!approved) return;
                     approvedByAdmin = approved;
                   }
-                  await window.api.tickets.voidItem({
-                    userId: user.id,
-                    area: selectedTable.area,
-                    tableLabel: selectedTable.label,
-                    item: {
-                      name: voidTarget.name,
-                      qty: voidTarget.qty,
-                      unitPrice: voidTarget.unitPrice,
-                      vatRate: voidTarget.vatRate,
-                      note: voidTarget.note,
-                    },
-                    ...(approvedByAdmin
-                      ? {
-                          approvedByAdminId: approvedByAdmin.userId,
-                          approvedByAdminName: approvedByAdmin.userName,
-                          approvedByAdminToken: approvedByAdmin.approvalToken,
-                        }
-                      : {}),
-                  });
-                  removeLine(voidTarget.id);
+                  hydrateGenRef.current += 1; // cancel any in-flight background fetches
+                  setTicketSyncing(true);
+                  const vt = voidTarget; // capture before clearing modal
                   setVoidTarget(null);
+                  try {
+                    await window.api.tickets.voidItem({
+                      userId: user.id,
+                      area: selectedTable.area,
+                      tableLabel: selectedTable.label,
+                      actorRole: user.role,
+                      item: {
+                        name: vt.name,
+                        qty: vt.qty,
+                        unitPrice: vt.unitPrice,
+                        vatRate: vt.vatRate,
+                        note: vt.note,
+                      },
+                      ...(approvedByAdmin
+                        ? {
+                            approvedByAdminId: approvedByAdmin.userId,
+                            approvedByAdminName: approvedByAdmin.userName,
+                            approvedByAdminToken: approvedByAdmin.approvalToken,
+                          }
+                        : {}),
+                    });
+                    // Optimistically remove the voided line immediately
+                    removeLine(vt.id);
+                    // Re-sync ticket from server to ensure consistency
+                    const latest = await window.api.tickets
+                      .getLatestForTable(selectedTable.area, selectedTable.label)
+                      .catch(() => null as any);
+                    const remaining = (latest?.items as any[] || []).filter(
+                      (it: any) => !it.voided,
+                    );
+                    if (remaining.length) {
+                      useTicketStore.getState().hydrate({
+                        items: remaining as any,
+                        note: latest?.note || '',
+                      });
+                    } else {
+                      // All items voided → free the table
+                      useTicketStore.getState().hydrate({ items: [], note: '' });
+                      setOpen(selectedTable.area, selectedTable.label, false);
+                      window.api.tables
+                        .setOpen(selectedTable.area, selectedTable.label, false)
+                        .catch(() => {});
+                    }
+                  } catch {
+                    toast.error('Failed to void item. Please try again.');
+                  } finally {
+                    setTicketSyncing(false);
+                  }
                 }}
               >
                 Konfirmo Anullimin

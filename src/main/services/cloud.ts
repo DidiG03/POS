@@ -185,6 +185,15 @@ export function getCloudSessionUserId(businessCode: string): number | null {
   return null;
 }
 
+/** Get the current cloud token (admin preferred, then staff) for the configured business. */
+export async function getCloudToken(): Promise<string | null> {
+  const cfg = await getCloudConfig().catch(() => null);
+  if (!cfg) return null;
+  if (adminSession && adminSession.businessCode === cfg.businessCode && adminSession.token) return adminSession.token;
+  if (staffSession && staffSession.businessCode === cfg.businessCode && staffSession.token) return staffSession.token;
+  return null;
+}
+
 export async function cloudJson<T = any>(
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,

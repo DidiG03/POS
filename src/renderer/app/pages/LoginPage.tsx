@@ -1,18 +1,125 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { isClockOnlyRole } from '@shared/utils/roles';
 
+// In-app numeric keypad for PIN entry on mobile.
+//
+// The native iOS keyboard takes 1–2 s to appear on a cold simulator launch and
+// every keystroke goes through WKWebView's text-input pipeline, which adds
+// noticeable latency for short codes. Rendering a button grid in JS bypasses
+// all of that — taps land in the same React tick that paints the next dot.
+function PinKeypad({
+  pin,
+  setPin,
+  maxLength,
+  onSubmit,
+}: {
+  pin: string;
+  setPin: (next: string) => void;
+  maxLength: number;
+  onSubmit: () => void;
+}) {
+  const handleDigit = useCallback(
+    (digit: string) => {
+      if (pin.length >= maxLength) return;
+      // Light haptic feedback on real iOS devices (Capacitor exposes
+      // navigator.vibrate via its WebView shim). No-op on desktop.
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        /* ignore */
+      }
+      setPin(pin + digit);
+    },
+    [pin, maxLength, setPin],
+  );
+
+  const handleBackspace = useCallback(() => {
+    if (!pin.length) return;
+    setPin(pin.slice(0, -1));
+  }, [pin, setPin]);
+
+  // Allow physical keyboards (iPad with Smart Keyboard, browser dev) to type
+  // the PIN even though we never focus a real input.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key >= '0' && e.key <= '9') {
+        e.preventDefault();
+        handleDigit(e.key);
+      } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        handleBackspace();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        onSubmit();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleDigit, handleBackspace, onSubmit]);
+
+  const dots = Array.from({ length: maxLength }, (_, i) => i < pin.length);
+  const keys: { label: string; onPress: () => void; variant?: 'digit' | 'action' }[] = [
+    { label: '1', onPress: () => handleDigit('1') },
+    { label: '2', onPress: () => handleDigit('2') },
+    { label: '3', onPress: () => handleDigit('3') },
+    { label: '4', onPress: () => handleDigit('4') },
+    { label: '5', onPress: () => handleDigit('5') },
+    { label: '6', onPress: () => handleDigit('6') },
+    { label: '7', onPress: () => handleDigit('7') },
+    { label: '8', onPress: () => handleDigit('8') },
+    { label: '9', onPress: () => handleDigit('9') },
+    { label: '⌫', onPress: handleBackspace, variant: 'action' },
+    { label: '0', onPress: () => handleDigit('0') },
+    { label: '⏎', onPress: onSubmit, variant: 'action' },
+  ];
+
+  return (
+    <div className="select-none">
+      <div
+        className="flex items-center justify-center gap-3 mb-4 h-10"
+        aria-label={`PIN, ${pin.length} of ${maxLength} digits entered`}
+        role="status"
+      >
+        {dots.map((filled, i) => (
+          <div
+            key={i}
+            className={`w-3 h-3 rounded-full transition-colors ${filled ? 'bg-emerald-400' : 'bg-gray-600'}`}
+          />
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {keys.map((k) => (
+          <button
+            key={k.label}
+            type="button"
+            onClick={k.onPress}
+            className={`h-14 rounded-lg text-2xl font-semibold active:scale-95 transition-transform ${
+              k.variant === 'action'
+                ? 'bg-gray-700 hover:bg-gray-600 text-emerald-300'
+                : 'bg-gray-700 hover:bg-gray-600 text-gray-100'
+            }`}
+            // Disable iOS long-press / context menus for cleaner taps.
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {k.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function LoginPage() {
+  const PAIRING_STORAGE_KEY = 'pos_pairing_code';
+  const pairingCodeRef = useRef<HTMLInputElement>(null);
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
-  const [pairingCode, setPairingCode] = useState('');
-  const [businessCode, setBusinessCode] = useState<string>(() => {
+  const [pairingCode, setPairingCode] = useState<string>(() => {
     try {
-      return (localStorage.getItem('pos_business_code') || '')
-        .trim()
-        .toUpperCase();
+      return localStorage.getItem(PAIRING_STORAGE_KEY) || '';
     } catch {
       return '';
     }
@@ -41,43 +148,44 @@ export default function LoginPage() {
 
   const onSubmit = async () => {
     setError(null);
-    if (
-      isBrowserClient &&
-      isCloudBrowserClient &&
-      businessCode.trim().length < 2
-    ) {
-      setError('Enter your Business code');
-      return;
-    }
     if (pin.length < 4) {
       setError('Enter 4-6 digits');
       return;
     }
     try {
-      // In browser cloud mode, persist business code locally so auth.listUsers/login can use it.
-      if (isBrowserClient && isCloudBrowserClient) {
+      const codeFromInput = pairingCodeRef.current?.value?.trim().replace(/[^0-9A-Za-z]/g, '').slice(0, 12) || '';
+      const effectivePairingCode = isBrowserClient
+        ? (codeFromInput || pairingCode) || undefined
+        : undefined;
+      // Tablet always sends to host; host proxies to cloud with correct userId when needed
+      const user = await window.api.auth.loginWithPin(
+        pin,
+        selectedId ?? undefined,
+        effectivePairingCode,
+      );
+      // Pairing succeeded — persist the code so the user doesn't need to re-enter it
+      if (isBrowserClient && effectivePairingCode) {
         try {
-          localStorage.setItem(
-            'pos_business_code',
-            businessCode.trim().toUpperCase(),
-          );
+          localStorage.setItem(PAIRING_STORAGE_KEY, effectivePairingCode);
+          setPairingCode(effectivePairingCode);
+          if (pairingCodeRef.current) pairingCodeRef.current.value = effectivePairingCode;
         } catch {
           // ignore
         }
       }
-      const user = await window.api.auth.loginWithPin(
-        pin,
-        selectedId ?? undefined,
-        isBrowserClient ? pairingCode || undefined : undefined,
-      );
       if (user) {
         const clockOnly = isClockOnlyRole((user as any).role);
         if (isAdminContext && user.role !== 'ADMIN') {
           setError('Admin access only');
           return;
         }
-        // Admin goes straight to admin shell
-        if (user.role === 'ADMIN') {
+        // Block admin panel on browser/tablet — admin must use the desktop app
+        if (isBrowserClient && isAdminContext) {
+          setError('Admin panel is not available on tablets');
+          return;
+        }
+        // Admin goes straight to admin shell (Electron only)
+        if (user.role === 'ADMIN' && !isBrowserClient) {
           if (isAdminContext) setAdminUser(user);
           else setUser(user);
           navigate('/admin');
@@ -101,6 +209,14 @@ export default function LoginPage() {
       console.error(e);
       const msg = String(e?.message || e || '');
       if (msg.toLowerCase().includes('pairing code')) {
+        // Stored code is no longer valid — clear it so the input appears
+        try {
+          localStorage.removeItem(PAIRING_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+        setPairingCode('');
+        if (pairingCodeRef.current) pairingCodeRef.current.value = '';
         setError(
           'Pairing code required (ask the manager / Admin → Settings → LAN / Tablets).',
         );
@@ -115,10 +231,14 @@ export default function LoginPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showShiftConfirm, setShowShiftConfirm] = useState(false);
   const [pendingUser, setPendingUser] = useState<any>(null);
+  // The app-level BootScreen (main.tsx) already verifies the backend is alive
+  // before the router renders, so we never show a second full-page spinner.
+  // We track staffLoading to show a subtle inline indicator in the staff grid.
   const [boot, setBoot] = useState<{
     staffLoaded: boolean;
     openLoaded: boolean;
-  }>({ staffLoaded: false, openLoaded: false });
+  }>({ staffLoaded: true, openLoaded: true });
+  const [staffLoading, setStaffLoading] = useState(true);
   const { setUser } = useSessionStore();
   const { setUser: setAdminUser } = useAdminSessionStore();
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -147,18 +267,7 @@ export default function LoginPage() {
             .toUpperCase(),
         );
       }
-      if (backendUrl && !businessCode) {
-        // Cloud is enabled by provider, but tenant not selected → block local fallback.
-        setCloudNotice(
-          'Cloud is enabled. Enter your Business code + Business password to continue.',
-        );
-        // In admin window, allow entering business code directly from login screen.
-        if (isAdminContext) setAdminBusinessCodeMode(true);
-        setStaff([]);
-        setOpenIds([]);
-        if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
-        return;
-      }
+      // Local-first: always load from local DB. Cloud settings are for backup only.
       setCloudNotice(null);
       if (isAdminContext) setAdminBusinessCodeMode(false);
 
@@ -168,59 +277,26 @@ export default function LoginPage() {
           includeAdmins: isAdminContext,
         });
       } catch (e: any) {
-        // Most common: wrong business code/password or cloud temporarily unavailable.
-        if (backendUrl && isAdminContext) setAdminBusinessCodeMode(true);
-        if (backendUrl) {
-          setCloudNotice(
-            e?.message || 'Invalid Business code or Business password.',
-          );
-          setStaff([]);
-          setOpenIds([]);
-          if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
-          return;
-        }
-        throw e;
-      }
-      // In cloud mode, auth.listUsers may return [] when businessCode/password is wrong.
-      // Since every tenant must have at least one admin user, treat empty list as invalid credentials.
-      if (
-        backendUrl &&
-        businessCode &&
-        Array.isArray(users) &&
-        users.length === 0
-      ) {
-        if (isAdminContext) {
-          setAdminBusinessCodeMode(true);
-          // Show a clear hint: server returns [] for wrong/missing business password (enumeration protection),
-          // which otherwise looks like the restaurant "disappeared".
-          setCloudNotice('Invalid Business code or Business password.');
-          setStaff([]);
-          setOpenIds([]);
-          if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
-          return;
-        }
-        // Staff login: empty staff list can also mean "no staff created yet".
-        // If we can fetch admins (includeAdmins=1), then credentials are valid and the tenant exists.
-        try {
-          const all = await window.api.auth.listUsers({ includeAdmins: true });
-          const hasAdmins =
-            Array.isArray(all) &&
-            all.some(
-              (u: any) => String(u?.role || '').toUpperCase() === 'ADMIN',
-            );
-          setCloudNotice(
-            hasAdmins
-              ? 'No staff users yet. Ask an Admin to add staff members in the Admin panel.'
-              : 'Cloud is enabled but staff list is locked. Ask an Admin to enter the Business code + Business password in the Admin login screen.',
-          );
-        } catch {
-          setCloudNotice(
-            'Cloud is enabled but staff list is locked. Ask an Admin to enter the Business code + Business password in the Admin login screen.',
-          );
-        }
+        setCloudNotice(e?.message || 'Failed to load users.');
         setStaff([]);
         setOpenIds([]);
-        if (!cancelled) setBoot({ staffLoaded: true, openLoaded: true });
+        if (!cancelled) { setBoot({ staffLoaded: true, openLoaded: true }); setStaffLoading(false); }
+        return;
+      }
+      // Local-first: empty users means no users in database yet.
+      if (Array.isArray(users) && users.length === 0) {
+        const cloudHint =
+          backendUrl && businessCode
+            ? ' If using cloud, try Sync from cloud in Settings → Backups.'
+            : '';
+        setCloudNotice(
+          isAdminContext
+            ? `No admin users yet. Create the first admin in Settings or run db:seed.${cloudHint}`
+            : `No staff users yet. Ask an Admin to add staff members in the Admin panel.${cloudHint}`,
+        );
+        setStaff([]);
+        setOpenIds([]);
+        if (!cancelled) { setBoot({ staffLoaded: true, openLoaded: true }); setStaffLoading(false); }
         return;
       }
       const list = isAdminContext
@@ -228,20 +304,8 @@ export default function LoginPage() {
         : users.filter((u) => u.active && u.role !== 'ADMIN');
       if (cancelled) return;
       setStaff(list);
+      setStaffLoading(false);
       setBoot((b) => ({ ...b, staffLoaded: true }));
-      // If cloud returned only admins (common when billing is paused), explain why staff list is empty.
-      if (!isAdminContext && backendUrl) {
-        const hasAdmins =
-          Array.isArray(users) &&
-          users.some(
-            (u: any) => String(u?.role || '').toUpperCase() === 'ADMIN',
-          );
-        if (hasAdmins && list.length === 0) {
-          setCloudNotice(
-            'POS is paused (payment required). Only admins can log in until billing is completed.',
-          );
-        }
-      }
       if (!isAdminContext) {
         try {
           const ids = await window.api.shifts.listOpen();
@@ -266,31 +330,14 @@ export default function LoginPage() {
 
   const [enableAdmin, setEnableAdmin] = useState(false);
 
-  const shouldShowBootLoader =
-    // If we need user input (business code/password), show that UI instead of a loader.
-    !cloudNotice &&
-    !(isAdminContext && adminBusinessCodeMode) &&
-    (isAdminContext ? !boot.staffLoaded : !(boot.staffLoaded && boot.openLoaded));
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900">
-      {shouldShowBootLoader ? (
-        <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
-          <div className="text-lg font-semibold mb-2">
-            Connecting to POS backend…
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <div className="text-xs opacity-70">Please wait…</div>
-          </div>
-        </div>
-      ) : (
-        <div className="bg-gray-800 p-6 rounded-lg w-full max-w-2xl">
-        <div className="flex items-center justify-between mb-4">
+    <div className="min-h-dvh flex items-center justify-center bg-gray-900 p-3 sm:p-6 overflow-hidden">
+        <div className="bg-gray-800 p-4 sm:p-6 rounded-lg w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
+        <div className="flex items-center justify-between mb-4 shrink-0">
           <h1 className="text-xl font-semibold">
             {isAdminContext ? 'Admin Login' : 'Select Staff'}
           </h1>
-          {enableAdmin && !isAdminContext && (
+          {enableAdmin && !isAdminContext && !isBrowserClient && (
             <button
               className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
               onClick={() => window.api.admin.openWindow()}
@@ -391,9 +438,9 @@ export default function LoginPage() {
           </div>
         )}
         {isAdminContext ? (
-          <div>
-            <div className="text-sm mb-2 opacity-80">Admins</div>
-            <div className="space-y-2 max-h-64 overflow-auto pr-2">
+          <div className="flex flex-col min-h-0 flex-1">
+            <div className="text-sm mb-2 opacity-80 shrink-0">Admins</div>
+            <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
               {staff.map((s) => (
                 <button
                   key={s.id}
@@ -401,7 +448,6 @@ export default function LoginPage() {
                   onClick={() => {
                     setSelectedId(s.id);
                     setPin('');
-                    setPairingCode('');
                     setError(null);
                     setShowPin(true);
                   }}
@@ -418,15 +464,22 @@ export default function LoginPage() {
                 </button>
               ))}
               {staff.length === 0 && (
-                <div className="opacity-70 text-sm">No admin users</div>
+                <div className="opacity-70 text-sm">
+                  {staffLoading ? 'Loading staff…' : 'No admin users'}
+                </div>
               )}
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-sm mb-2 opacity-80">Not clocked in</div>
-              <div className="space-y-2 max-h-64 overflow-auto pr-2">
+          <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
+            <div className="flex flex-col min-h-0">
+              <div className="text-sm mb-2 opacity-80 shrink-0">Not clocked in</div>
+              <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
+                {staff.length === 0 && !staffLoading && (
+                  <div className="opacity-70 text-sm py-4">
+                    No staff yet. On the host: Admin → Settings → Backups → Sync from cloud.
+                  </div>
+                )}
                 {staff
                   .filter((s) => !openIds.includes(s.id))
                   .map((s) => (
@@ -436,7 +489,6 @@ export default function LoginPage() {
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
-                        setPairingCode('');
                         setError(null);
                         setShowPin(true);
                       }}
@@ -454,9 +506,9 @@ export default function LoginPage() {
                   ))}
               </div>
             </div>
-            <div>
-              <div className="text-sm mb-2 opacity-80">Clocked in</div>
-              <div className="space-y-2 max-h-64 overflow-auto pr-2">
+            <div className="flex flex-col min-h-0">
+              <div className="text-sm mb-2 opacity-80 shrink-0">Clocked in</div>
+              <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
                 {staff
                   .filter((s) => openIds.includes(s.id))
                   .map((s) => (
@@ -466,7 +518,6 @@ export default function LoginPage() {
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
-                        setPairingCode('');
                         setError(null);
                         setShowPin(true);
                       }}
@@ -487,56 +538,47 @@ export default function LoginPage() {
           </div>
         )}
         {showPin && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
-            <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-3 z-50">
+            <div className="bg-gray-800 p-5 rounded w-full max-w-sm max-h-[calc(100dvh-1.5rem)] overflow-y-auto">
               <h2 className="text-center mb-3">
                 Enter PIN for{' '}
                 {staff.find((s) => s.id === selectedId)?.displayName}
               </h2>
-              <input
-                autoFocus
-                type="password"
-                inputMode="numeric"
-                placeholder="PIN"
-                pattern="[0-9]*"
-                maxLength={6}
-                value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
-                className="w-full p-3 rounded bg-gray-700 focus:outline-none"
-                onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
-              />
-              {isBrowserClient && isCloudBrowserClient && (
+              {isBrowserClient ? (
+                // Mobile: in-app keypad — eliminates iOS keyboard latency.
+                // The same render-tick that fires the tap also paints the new
+                // dot, so there's no perceptible delay.
+                <PinKeypad
+                  pin={pin}
+                  setPin={setPin}
+                  maxLength={6}
+                  onSubmit={onSubmit}
+                />
+              ) : (
+                // Desktop (Electron): keep the native input so admins can use
+                // a physical keyboard and barcode/key-fob readers if they want.
                 <input
-                  type="text"
-                  inputMode="text"
-                  placeholder="Business code (e.g. MYRESTAURANT)"
-                  maxLength={24}
-                  value={businessCode}
-                  onChange={(e) =>
-                    setBusinessCode(
-                      e.target.value
-                        .replace(/[^0-9A-Za-z_-]/g, '')
-                        .toUpperCase()
-                        .slice(0, 24),
-                    )
-                  }
-                  className="w-full p-3 rounded bg-gray-700 focus:outline-none mt-2"
+                  autoFocus
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="PIN"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
+                  className="w-full p-3 rounded bg-gray-700 focus:outline-none"
                   onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
                 />
               )}
               {isBrowserClient && (
                 <input
+                  ref={pairingCodeRef}
                   type="text"
                   inputMode="numeric"
                   placeholder="Pairing code (from Admin)"
                   maxLength={12}
-                  value={pairingCode}
-                  onChange={(e) =>
-                    setPairingCode(
-                      e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 12),
-                    )
-                  }
-                  className="w-full p-3 rounded bg-gray-700 focus:outline-none mt-2"
+                  defaultValue={pairingCode}
+                  className="w-full p-3 rounded bg-gray-700 focus:outline-none mt-3"
                   onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
                 />
               )}
@@ -594,7 +636,6 @@ export default function LoginPage() {
           </div>
         )}
         </div>
-      )}
     </div>
   );
 }

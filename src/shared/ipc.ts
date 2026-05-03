@@ -428,6 +428,13 @@ export interface ApiBackups {
   restore(input: {
     name: string;
   }): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }>;
+  uploadToCloud(input?: { name?: string }): Promise<{ ok: boolean; error?: string }>;
+  syncFromCloud(): Promise<{
+    usersSynced: number;
+    menuItemsSynced: number;
+    menuSynced: boolean;
+    error?: string;
+  }>;
 }
 
 export interface KdsTicketDTO {
@@ -792,6 +799,8 @@ export const TransferTableInputSchema = z.object({
   toLabel: z.string().min(1).optional().nullable(),
   toUserId: z.number().int().positive().optional().nullable(),
   actorUserId: z.number().int().positive(),
+  /** When in cloud mode, actor may not exist in local DB; pass role from session to bypass lookup */
+  actorRole: z.string().optional(),
 });
 export type TransferTableInput = z.infer<typeof TransferTableInputSchema>;
 export type TransferTableResult = { ok: true } | { ok: false; error: string };

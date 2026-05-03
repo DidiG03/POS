@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { PageSpinner } from '../../components/PageSpinner';
 
 type MenuItem = {
   id: number;
@@ -151,10 +152,12 @@ function IconTrash() {
 
 function Modal({
   title,
+  subtitle,
   children,
   onClose,
 }: {
   title: string;
+  subtitle?: string;
   children: React.ReactNode;
   onClose: () => void;
 }) {
@@ -182,9 +185,13 @@ function Modal({
         <div className="px-4 sm:px-5 py-3.5 border-b border-gray-700/70 flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="font-semibold truncate">{title}</div>
-            <div className="text-xs opacity-70 mt-0.5">
-              Update details, then save changes.
-            </div>
+            {subtitle !== undefined ? (
+              subtitle && <div className="text-xs opacity-70 mt-0.5">{subtitle}</div>
+            ) : (
+              <div className="text-xs opacity-70 mt-0.5">
+                Update details, then save changes.
+              </div>
+            )}
           </div>
           <button
             type="button"
@@ -271,13 +278,8 @@ export default function AdminMenuPage() {
   >('');
   const [newCatColor, setNewCatColor] = useState<string>('#22c55e');
 
-  const [newItemName, setNewItemName] = useState('');
-  const [newItemPrice, setNewItemPrice] = useState<string>('');
-  const [newItemVat, setNewItemVat] = useState<string>('0.2');
-  const [newItemIsKg, setNewItemIsKg] = useState(false);
-  const [newItemStation, setNewItemStation] = useState<
-    'KITCHEN' | 'BAR' | 'DESSERT'
-  >('KITCHEN');
+  const [showAddItem, setShowAddItem] = useState(false);
+  
 
   async function withSaving<T>(label: string, fn: () => Promise<T>) {
     setSaving(label);
@@ -292,20 +294,7 @@ export default function AdminMenuPage() {
     }
   }
 
-  if (loading)
-    return (
-      <div className="w-full h-full min-h-[60vh] flex items-center justify-center">
-        <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
-          <div className="text-lg font-semibold mb-2">
-            Connecting to POS backend…
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <div className="text-xs opacity-70">Loading menu…</div>
-          </div>
-        </div>
-      </div>
-    );
+  if (loading) return <PageSpinner message="Loading menu…" />;
 
   return (
     <>
@@ -314,13 +303,12 @@ export default function AdminMenuPage() {
           <div className="p-4 border-b border-gray-700 flex items-center justify-between">
             <div className="font-semibold">Categories</div>
             <button
-              className="text-sm px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 flex items-center gap-2"
+              className="text-sm px-3 py-2 rounded bg-transparent hover:bg-gray-700 flex items-center gap-2 cursor-pointer"
               onClick={() => void reload()}
               type="button"
               title="Refresh"
             >
               <IconRefresh />
-              Refresh
             </button>
           </div>
           <div className="p-4 border-b border-gray-700">
@@ -355,7 +343,7 @@ export default function AdminMenuPage() {
                 disabled={saving != null || billingPaused}
               />
               <button
-                className="px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
+                className="px-4 py-2 rounded bg-transparent hover:bg-gray-700 disabled:opacity-60 cursor-pointer"
                 disabled={!newCatName || saving != null || billingPaused}
                 onClick={() =>
                   void withSaving('create-category', async () => {
@@ -371,7 +359,7 @@ export default function AdminMenuPage() {
                 }
                 type="button"
               >
-                Add
+                +
               </button>
             </div>
           </div>
@@ -402,7 +390,7 @@ export default function AdminMenuPage() {
                         </span>
                         <button
                           type="button"
-                          className="w-8 h-8 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center disabled:opacity-60"
+                          className="w-8 h-8 rounded bg-transparent hover:bg-gray-700 flex items-center justify-center disabled:opacity-60 cursor-pointer"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -417,7 +405,7 @@ export default function AdminMenuPage() {
                         </button>
                         <button
                           type="button"
-                          className="w-8 h-8 rounded bg-rose-700 hover:bg-rose-800 border border-rose-600 flex items-center justify-center disabled:opacity-60"
+                          className="w-8 h-8 cursor-pointer rounded bg-rose-700 hover:bg-rose-800 border border-rose-600 flex items-center justify-center disabled:opacity-60"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -450,6 +438,16 @@ export default function AdminMenuPage() {
             <div className="font-semibold truncate">
               {selected ? `Category: ${selected.name}` : 'Menu editor'}
             </div>
+            <div className="mb-3">
+              <button
+                className="px-4 py-2 rounded bg-transparent hover:bg-gray-700 disabled:opacity-60 font-medium flex items-center gap-2 cursor-pointer"
+                disabled={saving != null || billingPaused}
+                onClick={() => setShowAddItem(true)}
+                type="button"
+              >
+                <span className="text-lg leading-none">+</span>
+              </button>
+            </div>
             {saving && <div className="text-xs opacity-70">Saving…</div>}
           </div>
 
@@ -480,89 +478,6 @@ export default function AdminMenuPage() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 mb-3">
-                    <input
-                      className="sm:col-span-4 bg-gray-700 rounded px-3 py-2"
-                      placeholder="Item name"
-                      value={newItemName}
-                      onChange={(e) => setNewItemName(e.target.value)}
-                      disabled={saving != null || billingPaused}
-                    />
-                    <select
-                      className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-                      value={newItemStation}
-                      onChange={(e) => setNewItemStation(e.target.value as any)}
-                      title="Station"
-                      disabled={saving != null || billingPaused}
-                    >
-                      <option value="KITCHEN">Kitchen</option>
-                      <option value="BAR">Bar</option>
-                      <option value="DESSERT">Dessert</option>
-                    </select>
-                    <input
-                      className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-                      placeholder="Price"
-                      inputMode="decimal"
-                      value={newItemPrice}
-                      onChange={(e) =>
-                        setNewItemPrice(e.target.value.replace(/[^0-9.]/g, ''))
-                      }
-                      disabled={saving != null || billingPaused}
-                    />
-                    <input
-                      className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-                      placeholder="VAT (0.2)"
-                      inputMode="decimal"
-                      value={newItemVat}
-                      onChange={(e) =>
-                        setNewItemVat(e.target.value.replace(/[^0-9.]/g, ''))
-                      }
-                      disabled={saving != null || billingPaused}
-                    />
-                    <label className="sm:col-span-1 flex items-center gap-2 text-sm opacity-90">
-                      <input
-                        type="checkbox"
-                        checked={newItemIsKg}
-                        onChange={(e) => setNewItemIsKg(e.target.checked)}
-                        disabled={saving != null || billingPaused}
-                      />
-                      kg
-                    </label>
-                    <button
-                      className="sm:col-span-1 bg-emerald-700 hover:bg-emerald-800 rounded px-3 py-2 disabled:opacity-60"
-                      disabled={
-                        !newItemName.trim() ||
-                        !newItemPrice ||
-                        saving != null ||
-                        billingPaused
-                      }
-                      onClick={() =>
-                        void withSaving('create-item', async () => {
-                          const price = Number(newItemPrice);
-                          const vatRate = newItemVat
-                            ? Number(newItemVat)
-                            : undefined;
-                          await window.api.menu.createItem({
-                            categoryId: selected.id,
-                            name: newItemName.trim(),
-                            price,
-                            vatRate,
-                            isKg: newItemIsKg,
-                            station: newItemStation,
-                            active: true,
-                          } as any);
-                          setNewItemName('');
-                          setNewItemPrice('');
-                          setNewItemIsKg(false);
-                          setNewItemStation('KITCHEN');
-                          await reload();
-                        })
-                      }
-                      type="button"
-                    >
-                      Add
-                    </button>
-                  </div>
 
                   {selected.items.length === 0 ? (
                     <div className="opacity-70 text-sm">No items yet.</div>
@@ -623,7 +538,151 @@ export default function AdminMenuPage() {
           />
         </Modal>
       )}
+
+      {showAddItem && selected && (
+        <Modal
+          title={`Add item to ${selected.name}`}
+          subtitle="Fill in the details for the new menu item."
+          onClose={() => setShowAddItem(false)}
+        >
+          <AddItemForm
+            disabled={saving != null || billingPaused}
+            onAdd={(data) =>
+              withSaving('create-item', async () => {
+                await window.api.menu.createItem({
+                  categoryId: selected.id,
+                  ...data,
+                  active: true,
+                } as any);
+                await reload();
+                setShowAddItem(false);
+              })
+            }
+          />
+        </Modal>
+      )}
     </>
+  );
+}
+
+function AddItemForm({
+  disabled,
+  onAdd,
+}: {
+  disabled: boolean;
+  onAdd: (data: {
+    name: string;
+    price: number;
+    vatRate?: number;
+    isKg: boolean;
+    station: 'KITCHEN' | 'BAR' | 'DESSERT';
+  }) => Promise<any>;
+}) {
+  const [name, setName] = useState('');
+  const [price, setPrice] = useState('');
+  const [vat, setVat] = useState('0.2');
+  const [isKg, setIsKg] = useState(false);
+  const [station, setStation] = useState<'KITCHEN' | 'BAR' | 'DESSERT'>(
+    'KITCHEN',
+  );
+
+  const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-xs opacity-70 mb-1">Item name</div>
+        <input
+          autoFocus
+          className="bg-gray-700 rounded px-3 py-2 w-full"
+          placeholder="e.g. Margherita Pizza"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={disabled}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && canSubmit)
+              onAdd({
+                name: name.trim(),
+                price: Number(price),
+                vatRate: vat ? Number(vat) : undefined,
+                isKg,
+                station,
+              });
+          }}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <div className="text-xs opacity-70 mb-1">Price</div>
+          <input
+            className="bg-gray-700 rounded px-3 py-2 w-full"
+            placeholder="0.00"
+            inputMode="decimal"
+            value={price}
+            onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
+            disabled={disabled}
+          />
+        </div>
+        <div>
+          <div className="text-xs opacity-70 mb-1">VAT rate</div>
+          <input
+            className="bg-gray-700 rounded px-3 py-2 w-full"
+            placeholder="0.2"
+            inputMode="decimal"
+            value={vat}
+            onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
+            disabled={disabled}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <div className="text-xs opacity-70 mb-1">Station</div>
+          <select
+            className="bg-gray-700 rounded px-3 py-2 w-full"
+            value={station}
+            onChange={(e) => setStation(e.target.value as any)}
+            disabled={disabled}
+          >
+            <option value="KITCHEN">Kitchen</option>
+            <option value="BAR">Bar</option>
+            <option value="DESSERT">Dessert</option>
+          </select>
+        </div>
+        <div className="flex items-end pb-1">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={isKg}
+              onChange={(e) => setIsKg(e.target.checked)}
+              disabled={disabled}
+            />
+            Sold by kg
+          </label>
+        </div>
+      </div>
+
+      <div className="flex justify-end pt-2">
+        <button
+          className="w-full px-5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium cursor-pointer"
+          disabled={!canSubmit}
+          onClick={() =>
+            onAdd({
+              name: name.trim(),
+              price: Number(price),
+              vatRate: vat ? Number(vat) : undefined,
+              isKg,
+              station,
+            })
+          }
+          type="button"
+        >
+          Add Item
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -728,21 +787,9 @@ function CategoryEditor({
                 }
               }}
             />
-            <button
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-60 border border-gray-600/70"
-              disabled={disabled}
-              onClick={() => {
-                setColor('#374151');
-                setColorText('');
-              }}
-              title="Clear color"
-              type="button"
-            >
-              Clear
-            </button>
           </div>
         </div>
-        <div className="md:col-span-2">
+        {/* <div className="md:col-span-2">
           <div className="text-xs opacity-70 mb-1">Sort</div>
           <input
             className="bg-gray-700 rounded px-3 py-2 w-full"
@@ -753,12 +800,12 @@ function CategoryEditor({
             }
             disabled={disabled}
           />
-        </div>
+        </div> */}
       </div>
 
       <div className="flex flex-col sm:flex-row gap-2 sm:justify-end pt-2">
         <button
-          className="w-full sm:w-auto px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium"
+          className="w-full px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium"
           disabled={disabled}
           onClick={() => {
             const norm =
@@ -822,6 +869,92 @@ function ItemRow({
   }) => Promise<any>;
   onDelete: () => Promise<any>;
 }) {
+  const [editing, setEditing] = useState(false);
+  const active = Boolean(item.active);
+  const stationLabel =
+    item.station === 'BAR'
+      ? 'Bar'
+      : item.station === 'DESSERT'
+        ? 'Dessert'
+        : 'Kitchen';
+
+  return (
+    <>
+      <div
+        className={`px-3 py-2.5 flex items-center gap-3 ${active ? '' : 'opacity-50 bg-gray-900/20'}`}
+        title={active ? undefined : 'Disabled: hidden from waiter menu'}
+      >
+        <div className="flex-1 min-w-0">
+          <div className={`font-medium truncate ${active ? '' : 'line-through text-gray-400'}`}>
+            {item.name}
+          </div>
+          <div className="text-[10px] opacity-50 mt-0.5">
+            {stationLabel} · VAT {item.vatRate} {item.isKg ? ' · kg' : ''} · SKU: {item.sku}
+          </div>
+        </div>
+        <div className="text-sm font-semibold tabular-nums whitespace-nowrap">
+          {Number(item.price).toFixed(2)}
+        </div>
+        <span
+          className={`text-[10px] px-1.5 py-0.5 rounded ${active ? 'bg-emerald-900/50 text-emerald-300' : 'bg-rose-900/50 text-rose-300'}`}
+        >
+          {active ? 'On' : 'Off'}
+        </span>
+        <button
+          type="button"
+          className="w-8 h-8 rounded bg-transparent hover:bg-gray-700 flex items-center justify-center disabled:opacity-60 cursor-pointer"
+          disabled={disabled}
+          onClick={() => setEditing(true)}
+          aria-label={`Edit ${item.name}`}
+          title="Edit item"
+        >
+          <IconPencil />
+        </button>
+        <button
+          type="button"
+          className="w-8 h-8 rounded bg-rose-700 hover:bg-rose-800 border border-rose-600 flex items-center justify-center disabled:opacity-60"
+          disabled={disabled}
+          onClick={() => onDelete()}
+          aria-label={`Delete ${item.name}`}
+          title="Delete item"
+        >
+          <IconTrash />
+        </button>
+      </div>
+
+      {editing && (
+        <EditItemModal
+          item={item}
+          disabled={disabled}
+          onSave={async (patch) => {
+            await onSave(patch);
+            setEditing(false);
+          }}
+          onClose={() => setEditing(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function EditItemModal({
+  item,
+  disabled,
+  onSave,
+  onClose,
+}: {
+  item: MenuItem;
+  disabled: boolean;
+  onSave: (patch: {
+    name?: string;
+    price?: number;
+    vatRate?: number;
+    isKg?: boolean;
+    station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+    active?: boolean;
+  }) => Promise<any>;
+  onClose: () => void;
+}) {
   const [name, setName] = useState(item.name);
   const [price, setPrice] = useState(String(item.price));
   const [vat, setVat] = useState(String(item.vatRate ?? 0.2));
@@ -831,114 +964,106 @@ function ItemRow({
   );
   const [active, setActive] = useState(Boolean(item.active));
 
-  useEffect(() => {
-    setName(item.name);
-    setPrice(String(item.price));
-    setVat(String(item.vatRate ?? 0.2));
-    setIsKg(Boolean(item.isKg));
-    setStation((item.station as any) || 'KITCHEN');
-    setActive(Boolean(item.active));
-  }, [item.id]);
+  const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
 
   return (
-    <div
-      className={`p-3 grid grid-cols-1 sm:grid-cols-12 gap-2 items-center ${active ? '' : 'opacity-60 bg-gray-900/20'}`}
-      title={active ? undefined : 'Disabled: hidden from waiter menu'}
-    >
-      <div className="sm:col-span-4">
-        <input
-          className={`bg-gray-700 rounded px-3 py-2 w-full ${active ? '' : 'line-through text-gray-300'}`}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={disabled}
-        />
-        <div className="text-[10px] opacity-60 mt-1">SKU: {item.sku}</div>
+    <Modal title={`Edit: ${item.name}`} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <div className="text-xs opacity-70 mb-1">Item name</div>
+          <input
+            autoFocus
+            className="bg-gray-700 rounded px-3 py-2 w-full"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={disabled}
+          />
+          <div className="text-[10px] opacity-50 mt-1">SKU: {item.sku}</div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <div className="text-xs opacity-70 mb-1">Price</div>
+            <input
+              className="bg-gray-700 rounded px-3 py-2 w-full"
+              placeholder="0.00"
+              inputMode="decimal"
+              value={price}
+              onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
+              disabled={disabled}
+            />
+          </div>
+          <div>
+            <div className="text-xs opacity-70 mb-1">VAT rate</div>
+            <input
+              className="bg-gray-700 rounded px-3 py-2 w-full"
+              placeholder="0.2"
+              inputMode="decimal"
+              value={vat}
+              onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
+              disabled={disabled}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <div className="text-xs opacity-70 mb-1">Station</div>
+            <select
+              className="bg-gray-700 rounded px-3 py-2 w-full"
+              value={station}
+              onChange={(e) => setStation(e.target.value as any)}
+              disabled={disabled}
+            >
+              <option value="KITCHEN">Kitchen</option>
+              <option value="BAR">Bar</option>
+              <option value="DESSERT">Dessert</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-3 justify-end pb-1">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={isKg}
+                onChange={(e) => setIsKg(e.target.checked)}
+                disabled={disabled}
+              />
+              Sold by kg
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={active}
+                onChange={(e) => setActive(e.target.checked)}
+                disabled={disabled}
+              />
+              <span className={active ? '' : 'text-rose-300'}>
+                {active ? 'Enabled' : 'Disabled'}
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <button
+            className="w-full px-5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium"
+            disabled={!canSubmit}
+            onClick={() =>
+              onSave({
+                name: name.trim(),
+                price: Number(price || 0),
+                vatRate: Number(vat || 0),
+                isKg,
+                station,
+                active,
+              })
+            }
+            type="button"
+          >
+            Save Changes
+          </button>
+        </div>
       </div>
-      <select
-        className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-        value={station}
-        onChange={(e) => setStation(e.target.value as any)}
-        disabled={disabled}
-        title="Station"
-      >
-        <option value="KITCHEN">Kitchen</option>
-        <option value="BAR">Bar</option>
-        <option value="DESSERT">Dessert</option>
-      </select>
-      <input
-        className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-        inputMode="decimal"
-        value={price}
-        onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
-        disabled={disabled}
-      />
-      <input
-        className="sm:col-span-2 bg-gray-700 rounded px-3 py-2"
-        inputMode="decimal"
-        value={vat}
-        onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
-        disabled={disabled}
-      />
-      <label
-        className="sm:col-span-1 flex items-center gap-2 text-xs opacity-90"
-        title="Sold by kg"
-      >
-        <input
-          type="checkbox"
-          checked={isKg}
-          onChange={(e) => setIsKg(e.target.checked)}
-          disabled={disabled}
-        />
-        <span>kg</span>
-      </label>
-      <label
-        className="sm:col-span-1 flex items-center gap-2 text-xs opacity-90"
-        title="Show in waiter menu"
-      >
-        <input
-          type="checkbox"
-          checked={active}
-          onChange={(e) => {
-            const next = e.target.checked;
-            setActive(next);
-            // Save immediately so disabling takes effect right away on waiter side
-            onSave({ active: next });
-          }}
-          disabled={disabled}
-        />
-        <span className={active ? '' : 'text-rose-200'}>
-          {active ? 'Enabled' : 'Disabled'}
-        </span>
-      </label>
-      <div className="sm:col-span-2 flex flex-col sm:flex-row gap-2 justify-end">
-        <button
-          className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-60"
-          disabled={disabled}
-          onClick={() =>
-            onSave({
-              name: name.trim(),
-              price: Number(price || 0),
-              vatRate: Number(vat || 0),
-              isKg,
-              station,
-              active,
-            })
-          }
-          type="button"
-        >
-          Save
-        </button>
-        <button
-          className="w-10 h-10 rounded bg-rose-700 hover:bg-rose-800 disabled:opacity-60 flex items-center justify-center"
-          disabled={disabled}
-          onClick={() => onDelete()}
-          type="button"
-          aria-label="Delete item"
-          title="Delete item"
-        >
-          <IconX />
-        </button>
-      </div>
-    </div>
+    </Modal>
   );
 }

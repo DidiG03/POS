@@ -19,6 +19,7 @@ import { printJobsRouter } from './routes/printJobs.js';
 import { reportsRouter } from './routes/reports.js';
 import { billingRouter } from './routes/billing.js';
 import { stripeWebhookHandler } from './routes/stripeWebhook.js';
+import { backupsRouter } from './routes/backups.js';
 
 requireEnv();
 
@@ -97,6 +98,7 @@ app.use('/layout', layoutRouter);
 app.use('/requests', requestsRouter);
 app.use('/print-jobs', printJobsRouter);
 app.use('/reports', reportsRouter);
+app.use('/backups', backupsRouter);
 
 // Error handler (keeps Cloud Run logs useful)
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

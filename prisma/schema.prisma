@@ -58,6 +58,7 @@ model Category {
   name      String
   sortOrder Int       @default(0)
   active    Boolean   @default(true)
+  color     String?
   items     MenuItem[]
 }
 
@@ -70,6 +71,7 @@ model MenuItem {
   price      Decimal
   vatRate    Decimal
   active     Boolean   @default(true)
+  isKg       Boolean   @default(false)
   station    PrepStation @default(KITCHEN)
   recipe     RecipeComponent[]
   orderItems OrderItem[]

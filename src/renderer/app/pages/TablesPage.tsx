@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSessionStore } from '../../stores/session';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useNavigate } from 'react-router-dom';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useTicketStore } from '../../stores/ticket';
 import { formatMoneyCompact } from '../../utils/format';
+import { PageSpinner } from '../../components/PageSpinner';
 
 type TableStatus = 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED';
 type TableNode = {
@@ -31,6 +32,54 @@ const GREEN = 'bg-emerald-700';
 const RED = 'bg-rose-700';
 const ORANGE = 'bg-amber-700';
 
+function isAreaNode(n: LayoutNode): n is AreaNode {
+  return (n as any)?.kind === 'AREA';
+}
+function isTableNode(n: LayoutNode): n is TableNode {
+  return !isAreaNode(n);
+}
+
+function formatElapsed(ms: number) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  if (hh > 0)
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+}
+
+function toInitials(name: string): string {
+  const parts = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const first = parts[0]?.[0] || '';
+  const second = parts[1]?.[0] || '';
+  return (first + second).toUpperCase();
+}
+
+function generateDefaultNodes(_areaName: string, count: number): TableNode[] {
+  const width = 760;
+  const height = 460;
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = Math.min(cx, cy) - 60;
+  const n = Math.max(0, count);
+  return Array.from({ length: n }).map((_, i) => {
+    const angle = (i / Math.max(1, n)) * Math.PI * 2;
+    const x = cx + radius * Math.cos(angle);
+    const y = cy + radius * Math.sin(angle);
+    return { id: i + 1, label: `T${i + 1}`, x, y, status: 'FREE' } as TableNode;
+  });
+}
+
+function nextAreaId(cur: LayoutNode[] | null): number {
+  const ids = (cur || []).map((n) => n.id);
+  const min = ids.length ? Math.min(...ids) : 0;
+  return min <= 0 ? min - 1 : -1;
+}
+
 export default function TablesPage() {
   const [area, setArea] = useState<string>('Main Hall');
   const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
@@ -47,16 +96,36 @@ export default function TablesPage() {
   const { setSelectedTable, pendingAction, setPendingAction } =
     useOrderContext();
   const navigate = useNavigate();
-  const { isOpen, openMap, setAll, setOpen } = useTableStatus();
+
+  // Pull stable selectors from zustand — avoid subscribing to the whole store
+  const openMap = useTableStatus((s) => s.openMap);
+  const setAll = useTableStatus((s) => s.setAll);
+  const setOpen = useTableStatus((s) => s.setOpen);
+
+  // Stable snapshot key derived from openMap — only changes when actual keys change.
+  // This prevents effects from re-firing when the poll returns the same data.
+  const openMapKey = useMemo(() => {
+    const keys = Object.keys(openMap)
+      .filter((k) => openMap[k])
+      .sort();
+    return keys.join(',');
+  }, [openMap]);
+
+  const isOpenFn = useCallback(
+    (a: string, label: string) => Boolean(openMap[`${a}:${label}`]),
+    [openMap],
+  );
+
   const [openLoaded, setOpenLoaded] = useState(false);
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
+
   useEffect(() => {
-    // Expose setOpen for SSE updates
     (window as any).__tableStatusStore__ = { setOpen };
     return () => {
       (window as any).__tableStatusStore__ = null;
     };
   }, [setOpen]);
+
   const { hydrate, clear } = useTicketStore();
 
   const [userMap, setUserMap] = useState<Record<number, string>>({});
@@ -72,131 +141,113 @@ export default function TablesPage() {
   >({});
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
-  function formatElapsed(ms: number) {
-    const s = Math.max(0, Math.floor(ms / 1000));
-    const hh = Math.floor(s / 3600);
-    const mm = Math.floor((s % 3600) / 60);
-    const ss = s % 60;
-    if (hh > 0)
-      return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-    return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-  }
-
+  // Load users + settings once on mount
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const users = await window.api.auth.listUsers();
+        const [users, s] = await Promise.all([
+          window.api.auth.listUsers(),
+          window.api.settings.get(),
+        ]);
+        if (cancelled) return;
         const map: Record<number, string> = {};
         for (const u of users) map[u.id] = u.displayName;
         setUserMap(map);
-      } catch (e) {
-        void e;
+        setCurrency(
+          String((s as any)?.currency || 'EUR')
+            .trim()
+            .toUpperCase() || 'EUR',
+        );
+        setAreas(
+          s.tableAreas ?? [
+            { name: 'Main Hall', count: s.tableCountMainHall ?? 8 },
+            { name: 'Terrace', count: s.tableCountTerrace ?? 4 },
+          ],
+        );
+        if (!s.tableAreas && area !== 'Main Hall' && area !== 'Terrace')
+          setArea('Main Hall');
+      } catch {
+        // ignore
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
+  // Poll open tables from server
+  const pollGenRef = useRef(0);
   useEffect(() => {
-    (async () => {
-      const s = await window.api.settings.get();
-      setCurrency(
-        String((s as any)?.currency || 'EUR')
-          .trim()
-          .toUpperCase() || 'EUR',
-      );
-      setAreas(
-        s.tableAreas ?? [
-          { name: 'Main Hall', count: s.tableCountMainHall ?? 8 },
-          { name: 'Terrace', count: s.tableCountTerrace ?? 4 },
-        ],
-      );
-      if (!s.tableAreas && area !== 'Main Hall' && area !== 'Terrace')
-        setArea('Main Hall');
-    })();
-  }, []);
-
-  // Cross-client sync: poll open tables from server and update local state
-  useEffect(() => {
-    let timer: any;
+    const gen = ++pollGenRef.current;
+    setOpenLoaded(false);
+    let timer: ReturnType<typeof setTimeout>;
     let cancelled = false;
-    const loop = async () => {
-      const hidden =
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'hidden';
+    const isHidden = () =>
+      typeof document !== 'undefined' && document.visibilityState === 'hidden';
+
+    const fetchOnce = async () => {
       try {
-        if (hidden) return;
-        const open = await window.api.tables.listOpen();
-        if (Array.isArray(open)) setAll(open);
-        if (!cancelled) {
-          setOpenLoaded(true);
-          setOpenLoadError(null);
+        if (isHidden()) {
+          if (!cancelled && gen === pollGenRef.current) setOpenLoaded(true);
+          return;
         }
-      } catch (e: any) {
-        void e;
-        if (!cancelled) {
+        const open = await window.api.tables.listOpen();
+        if (cancelled || gen !== pollGenRef.current) return;
+        if (Array.isArray(open)) setAll(open);
+        setOpenLoaded(true);
+        setOpenLoadError(null);
+      } catch {
+        if (!cancelled && gen === pollGenRef.current) {
+          setOpenLoaded(true);
           setOpenLoadError(
             'Loading occupied tables… (slow/offline network). Retrying…',
           );
         }
-      } finally {
-        // Slow down while hidden to reduce background work.
-        timer = setTimeout(loop, hidden ? 12000 : 4000);
       }
     };
-    loop();
+
+    const poll = async () => {
+      try {
+        if (!isHidden()) {
+          const open = await window.api.tables.listOpen();
+          if (cancelled || gen !== pollGenRef.current) return;
+          if (Array.isArray(open)) setAll(open);
+        }
+      } catch {
+        // ignore poll errors
+      } finally {
+        if (!cancelled && gen === pollGenRef.current) {
+          timer = setTimeout(poll, isHidden() ? 12000 : 4000);
+        }
+      }
+    };
+
+    fetchOnce().then(() => {
+      if (!cancelled && gen === pollGenRef.current) {
+        timer = setTimeout(poll, 4000);
+      }
+    });
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
   }, [setAll]);
 
-  function generateDefaultNodes(areaName: string, count: number): TableNode[] {
-    const width = 760;
-    const height = 460;
-    const cx = width / 2;
-    const cy = height / 2;
-    const radius = Math.min(cx, cy) - 60;
-    // Always use 'T' prefix across all areas so we don't create multiple label schemes
-    const baseLabel = 'T';
-    const n = Math.max(0, count);
-    return Array.from({ length: n }).map((_, i) => {
-      const angle = (i / Math.max(1, n)) * Math.PI * 2;
-      const x = cx + radius * Math.cos(angle);
-      const y = cy + radius * Math.sin(angle);
-      return {
-        id: i + 1,
-        label: `${baseLabel}${i + 1}`,
-        x,
-        y,
-        status: 'FREE',
-      } as TableNode;
-    });
-  }
-
-  function isAreaNode(n: LayoutNode): n is AreaNode {
-    return (n as any)?.kind === 'AREA';
-  }
-  function isTableNode(n: LayoutNode): n is TableNode {
-    return !isAreaNode(n);
-  }
-  function nextAreaId(cur: LayoutNode[] | null): number {
-    const ids = (cur || []).map((n) => n.id);
-    const min = ids.length ? Math.min(...ids) : 0;
-    return min <= 0 ? min - 1 : -1; // keep areas negative to avoid collision with table ids
-  }
-
-  // Deterministic load: prefer saved layout if it matches area count, else generate once
+  // Load layout when area changes
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       if (!user || !areas.length) return;
       const cfg = areas.find((a) => a.name === area);
       const targetCount = cfg?.count ?? 8;
       const saved = await window.api.layout.get(user.id, area);
+      if (cancelled) return;
       if (Array.isArray(saved)) {
         const savedAny = saved as any[];
         const tables = savedAny.filter((n) => !n?.kind || n.kind === 'TABLE');
         const areasSaved = savedAny.filter((n) => n?.kind === 'AREA');
         if (tables.length === targetCount) {
-          // Normalize any legacy labels like 'M1' -> 'T1' so only one layout scheme exists
           const normalizedTables = tables.map((n: any, i: number) => {
             const match = String(n.label).match(/^(?:[^0-9]*)(\d+)$/);
             const num = match ? Number(match[1]) : i + 1;
@@ -215,47 +266,52 @@ export default function TablesPage() {
           return;
         }
       }
-      setNodes(generateDefaultNodes(area, targetCount));
+      if (!cancelled) setNodes(generateDefaultNodes(area, targetCount));
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [user, area, areas]);
 
-  function toInitials(name: string): string {
-    const parts = String(name || '')
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    const first = parts[0]?.[0] || '';
-    const second = parts[1]?.[0] || '';
-    return (first + second).toUpperCase();
-  }
+  // Compute which labels are open in the current area (stable via openMapKey)
+  const openLabelsInArea = useMemo(() => {
+    if (!nodes) return [] as string[];
+    return nodes
+      .filter(isTableNode)
+      .filter((n) => isOpenFn(area, n.label))
+      .map((n) => n.label);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, area, openMapKey]);
 
-  // Load latest ticket owners for open tables in current area
+  // Load ticket owners for open tables — only re-runs when the set of open labels changes
   useEffect(() => {
+    if (!openLoaded || !nodes || !area) return;
+    let cancelled = false;
+    const labels = openLabelsInArea;
+
     (async () => {
-      if (!openLoaded) return;
-      if (!nodes || !area) return;
       const badgeUpdates: [string, string][] = [];
       const ownerUpdates: [string, number][] = [];
       await Promise.all(
-        nodes.filter(isTableNode).map(async (n) => {
-          if (!isOpen(area, n.label)) return;
-          const k = `${area}:${n.label}`;
+        labels.map(async (label) => {
+          const k = `${area}:${label}`;
           try {
             const data = await window.api.tickets.getLatestForTable(
               area,
-              n.label,
+              label,
             );
+            if (cancelled) return;
             if (data?.userId) ownerUpdates.push([k, data.userId]);
             if (data?.userId && userMap[data.userId])
               badgeUpdates.push([k, toInitials(userMap[data.userId])]);
-          } catch (e) {
-            void e;
+          } catch {
+            // ignore
           }
         }),
       );
+      if (cancelled) return;
       setInitialsByTable((prev) => {
         const next: Record<string, string> = {};
-        // keep badges for other areas, replace current area keys
         for (const [key, val] of Object.entries(prev)) {
           if (!key.startsWith(`${area}:`)) next[key] = val;
         }
@@ -271,28 +327,25 @@ export default function TablesPage() {
         return next;
       });
     })();
-  }, [openLoaded, area, nodes, userMap, openMap]);
 
-  const openLabelsInArea = useMemo(() => {
-    if (!nodes) return [];
-    return nodes
-      .filter(isTableNode)
-      .filter((n) => isOpen(area, n.label))
-      .map((n) => n.label);
-  }, [nodes, area, isOpen, openMap]);
+    return () => {
+      cancelled = true;
+    };
+  }, [openLoaded, area, openLabelsInArea, userMap]);
 
-  // Bottom filters: when Covers/Revenue mode is active, prefetch per-table metrics for open tables.
+  // Covers/Revenue metrics — only when that view mode is active
   useEffect(() => {
-    if (!openLoaded) return;
-    if (!nodes || !area) return;
-    if (viewMode === 'occupied' || viewMode === 'time') return;
+    if (!openLoaded || !nodes || !area) return;
+    if (viewMode !== 'covers' && viewMode !== 'revenue') return;
     let cancelled = false;
-    const isHidden = () =>
-      typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    const labels = openLabelsInArea;
 
     const load = async () => {
-      if (isHidden()) return;
-      const labels = openLabelsInArea;
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      )
+        return;
       if (!labels.length) {
         setMetricsByTable((prev) => {
           const next: Record<string, { covers: number | null; total: number }> =
@@ -312,9 +365,6 @@ export default function TablesPage() {
         while (queue.length && !cancelled) {
           const label = queue.shift()!;
           try {
-            // Use stable sources that don't depend on "openAt" session timestamps:
-            // - covers.getLast() for covers
-            // - tickets.getLatestForTable() for a current snapshot total
             const [last, covers] = await Promise.all([
               (window as any).api.tickets
                 .getLatestForTable(area, label)
@@ -334,8 +384,8 @@ export default function TablesPage() {
               `${area}:${label}`,
               { covers: cov, total: Number(total || 0) },
             ]);
-          } catch (e) {
-            void e;
+          } catch {
+            // ignore
           }
         }
       });
@@ -347,11 +397,10 @@ export default function TablesPage() {
           ...prev,
         };
         for (const [k, v] of updates) next[k] = v;
-        // Remove metrics for tables no longer open in this area
         for (const k of Object.keys(next)) {
           if (!k.startsWith(`${area}:`)) continue;
-          const label = k.split(':').slice(1).join(':');
-          if (!labels.includes(label)) delete next[k];
+          const l = k.split(':').slice(1).join(':');
+          if (!labels.includes(l)) delete next[k];
         }
         return next;
       });
@@ -363,20 +412,21 @@ export default function TablesPage() {
       cancelled = true;
       window.clearInterval(t);
     };
-  }, [openLoaded, area, nodes, viewMode, openLabelsInArea]);
+  }, [openLoaded, area, viewMode, openLabelsInArea]);
 
-  // Time mode: prefetch "opened at" per open table so we can show duration without opening the ticket.
+  // Time mode: fetch "opened at" per open table
   useEffect(() => {
-    if (!openLoaded) return;
-    if (!nodes || !area) return;
+    if (!openLoaded || !nodes || !area) return;
     if (viewMode !== 'time') return;
     let cancelled = false;
-    const isHidden = () =>
-      typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    const labels = openLabelsInArea;
 
     const load = async () => {
-      if (isHidden()) return;
-      const labels = openLabelsInArea;
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      )
+        return;
       if (!labels.length) {
         setOpenedAtByTable((prev) => {
           const next: Record<string, string> = {};
@@ -399,8 +449,8 @@ export default function TablesPage() {
               .catch(() => null);
             const iso = String((tip as any)?.firstAt || '');
             if (iso) updates.push([`${area}:${label}`, iso]);
-          } catch (e) {
-            void e;
+          } catch {
+            // ignore
           }
         }
       });
@@ -410,11 +460,10 @@ export default function TablesPage() {
       setOpenedAtByTable((prev) => {
         const next: Record<string, string> = { ...prev };
         for (const [k, v] of updates) next[k] = v;
-        // Remove entries for tables no longer open in this area
         for (const k of Object.keys(next)) {
           if (!k.startsWith(`${area}:`)) continue;
-          const label = k.split(':').slice(1).join(':');
-          if (!labels.includes(label)) delete next[k];
+          const l = k.split(':').slice(1).join(':');
+          if (!labels.includes(l)) delete next[k];
         }
         return next;
       });
@@ -426,10 +475,12 @@ export default function TablesPage() {
       cancelled = true;
       window.clearInterval(t);
     };
-  }, [openLoaded, area, nodes, viewMode, openLabelsInArea]);
+  }, [openLoaded, area, viewMode, openLabelsInArea]);
 
+  // Clock tick for time mode — only active when there are open tables to show
   useEffect(() => {
     if (viewMode !== 'time') return;
+    if (!openLabelsInArea.length) return;
     const t = window.setInterval(() => {
       if (
         typeof document !== 'undefined' &&
@@ -439,13 +490,14 @@ export default function TablesPage() {
       setNowMs(Date.now());
     }, 1000);
     return () => window.clearInterval(t);
-  }, [viewMode]);
+  }, [viewMode, openLabelsInArea.length]);
 
-  function formatMoney(n: number) {
-    return formatMoneyCompact(currency, n);
-  }
+  const formatMoney = useCallback(
+    (n: number) => formatMoneyCompact(currency, n),
+    [currency],
+  );
 
-  // Track canvas size so we can auto-fit/center the layout on large screens.
+  // Track canvas size for auto-fit
   useEffect(() => {
     let ro: ResizeObserver | null = null;
     let cancelled = false;
@@ -478,38 +530,27 @@ export default function TablesPage() {
     };
   }, []);
 
-  // Compute a "world" size so the canvas can scroll to reach off-screen tables on small screens.
   const worldSize = useMemo(() => {
     const cur = nodes || [];
-    // Table circles are ~64x64; add generous padding so scrolling feels natural.
     const TABLE_R = 40;
     let maxX = 760;
     let maxY = 520;
     for (const n of cur as any[]) {
       if (!n) continue;
       if (String(n.kind || 'TABLE') === 'AREA') {
-        const x = Number(n.x || 0);
-        const y = Number(n.y || 0);
-        const w = Number(n.w || 0);
-        const h = Number(n.h || 0);
-        maxX = Math.max(maxX, x + Math.max(0, w) + 80);
-        maxY = Math.max(maxY, y + Math.max(0, h) + 80);
+        maxX = Math.max(maxX, Number(n.x || 0) + Math.max(0, Number(n.w || 0)) + 80);
+        maxY = Math.max(maxY, Number(n.y || 0) + Math.max(0, Number(n.h || 0)) + 80);
       } else {
-        const x = Number(n.x || 0);
-        const y = Number(n.y || 0);
-        maxX = Math.max(maxX, x + TABLE_R + 80);
-        maxY = Math.max(maxY, y + TABLE_R + 80);
+        maxX = Math.max(maxX, Number(n.x || 0) + TABLE_R + 80);
+        maxY = Math.max(maxY, Number(n.y || 0) + TABLE_R + 80);
       }
     }
-    // Clamp to minimums so empty layouts still look good.
     return {
-      // In view mode, ensure the "plan" fills the viewport even if tables are clustered.
       w: Math.max(760, Math.floor(maxX), editable ? 0 : canvasSize.w),
       h: Math.max(520, Math.floor(maxY), editable ? 0 : canvasSize.h),
     };
   }, [nodes, editable, canvasSize.w, canvasSize.h]);
 
-  // Auto-fit/center layout in view mode (non-edit). This makes the restaurant plan fill the screen.
   const viewTransform = useMemo(() => {
     if (editable) return { scale: 1, tx: 0, ty: 0 };
     const cur = nodes || [];
@@ -519,7 +560,7 @@ export default function TablesPage() {
     const ch = Math.max(0, canvasSize.h);
     if (cw < 200 || ch < 200) return { scale: 1, tx: 0, ty: 0 };
 
-    const tableHalf = 32; // circle is 64x64, positioned at center
+    const tableHalf = 32;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -529,12 +570,10 @@ export default function TablesPage() {
       if (String(n.kind || 'TABLE') === 'AREA') {
         const x = Number(n.x || 0);
         const y = Number(n.y || 0);
-        const w = Number(n.w || 0);
-        const h = Number(n.h || 0);
         minX = Math.min(minX, x);
         minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x + Math.max(0, w));
-        maxY = Math.max(maxY, y + Math.max(0, h));
+        maxX = Math.max(maxX, x + Math.max(0, Number(n.w || 0)));
+        maxY = Math.max(maxY, y + Math.max(0, Number(n.h || 0)));
       } else {
         const x = Number(n.x || 0);
         const y = Number(n.y || 0);
@@ -559,73 +598,157 @@ export default function TablesPage() {
       1,
       Math.min(maxScale, (cw - pad * 2) / bw, (ch - pad * 2) / bh),
     );
-
     const tx = (cw - bw * scale) / 2 - minX * scale;
     const ty = (ch - bh * scale) / 2 - minY * scale;
     return { scale, tx, ty };
   }, [editable, nodes, canvasSize.w, canvasSize.h]);
 
+  // Stable callbacks for node mutation (used by AreaRect / DraggableCircle)
+  const handleNodeMove = useCallback(
+    (id: number, x: number, y: number) =>
+      setNodes(
+        (prev) =>
+          prev?.map((n) => (n.id === id ? { ...(n as any), x, y } : n)) ?? prev,
+      ),
+    [],
+  );
+  const handleNodeResize = useCallback(
+    (id: number, w: number, h: number) =>
+      setNodes(
+        (prev) =>
+          prev?.map((n) => (n.id === id ? { ...(n as any), w, h } : n)) ?? prev,
+      ),
+    [],
+  );
+  const handleNodeRename = useCallback(
+    (id: number, label: string) =>
+      setNodes(
+        (prev) =>
+          prev?.map((n) =>
+            n.id === id ? { ...(n as any), label } : n,
+          ) ?? prev,
+      ),
+    [],
+  );
+  const handleNodeDelete = useCallback(
+    (id: number) =>
+      setNodes((prev) => prev?.filter((n) => n.id !== id) ?? prev),
+    [],
+  );
+  const handleTableClick = useCallback(
+    (t: TableNode) => {
+      if (editable) return;
+      setSelectedTable({ id: t.id, label: t.label, area });
+      const action = pendingAction;
+      if (action) setPendingAction(null);
+      if (isOpenFn(area, t.label)) {
+        (async () => {
+          const data = await window.api.tickets.getLatestForTable(area, t.label);
+          if (data) hydrate({ items: data.items as any, note: data.note || '' });
+          else clear(); // No TicketLog (opened with covers, no items) — show empty
+          navigate('/app/order');
+        })();
+        return;
+      }
+      clear();
+      navigate('/app/order');
+    },
+    [
+      editable,
+      area,
+      pendingAction,
+      setPendingAction,
+      setSelectedTable,
+      isOpenFn,
+      hydrate,
+      clear,
+      navigate,
+    ],
+  );
+
+  if (!openLoaded) {
+    return <PageSpinner message={openLoadError || 'Loading tables…'} />;
+  }
+
+  // Layout editing is a back-office task; hide it on mobile / browser
+  // shells. Admins on the Electron desktop still see it.
+  const isBrowserClient =
+    typeof window !== 'undefined' &&
+    Boolean((window as any).__BROWSER_CLIENT__);
+  const canEditLayout = !isBrowserClient;
+
   return (
-    <div className="h-full flex flex-col gap-3 min-h-0 overflow-hidden">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Tables – {area}</h2>
-        <div className="flex gap-2">
+    <div className="h-full flex flex-col gap-2 sm:gap-3 min-h-0 overflow-hidden">
+      {/* Top bar: title + area pills. On mobile, the H2 is hidden because
+          the active area pill already shows context, and we keep all actions
+          in a single horizontally-scrollable row. */}
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="hidden sm:block text-lg font-semibold whitespace-nowrap">
+          Tables – {area}
+        </h2>
+        <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 sm:mx-0 sm:px-0 flex-1 sm:flex-initial">
           {areas.map((a) => (
             <button
               key={a.name}
-              className={`px-3 py-1 rounded ${area === a.name ? 'bg-gray-700' : 'bg-gray-800'} cursor-pointer`}
+              className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap min-h-0 transition-colors ${
+                area === a.name
+                  ? 'bg-emerald-700 text-white'
+                  : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
+              }`}
               onClick={() => setArea(a.name)}
             >
               {a.name}
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            className={`px-3 py-1 rounded ${editable ? 'bg-amber-700' : 'bg-gray-700'} cursor-pointer`}
-            onClick={() => setEditable((v) => !v)}
-          >
-            {editable ? 'Editing…' : 'Edit layout'}
-          </button>
-          {editable && (
+        {canEditLayout && (
+          <div className="flex items-center gap-2 shrink-0">
             <button
-              className="px-3 py-1 rounded bg-emerald-700 cursor-pointer"
-              onClick={() => {
-                setNodes((prev) => {
-                  const cur = prev || [];
-                  const rect = canvasRef.current?.getBoundingClientRect();
-                  const x = rect ? Math.max(120, rect.width * 0.5) : 240;
-                  const y = rect ? Math.max(120, rect.height * 0.4) : 180;
-                  const id = nextAreaId(cur);
-                  const node: AreaNode = {
-                    id,
-                    kind: 'AREA',
-                    label: 'Area',
-                    x,
-                    y,
-                    w: 260,
-                    h: 160,
-                  };
-                  return [node, ...cur];
-                });
-              }}
+              className={`px-3 py-1.5 rounded text-sm min-h-0 ${editable ? 'bg-amber-700' : 'bg-gray-700'} cursor-pointer`}
+              onClick={() => setEditable((v) => !v)}
             >
-              + Area
+              {editable ? 'Editing…' : 'Edit layout'}
             </button>
-          )}
-          {editable && (
-            <button
-              className="px-3 py-1 rounded bg-emerald-700"
-              onClick={async () => {
-                if (!user || !nodes) return;
-                await window.api.layout.save(user.id, area, nodes);
-                setEditable(false);
-              }}
-            >
-              Save
-            </button>
-          )}
-        </div>
+            {editable && (
+              <button
+                className="px-3 py-1.5 rounded bg-emerald-700 text-sm min-h-0 cursor-pointer"
+                onClick={() => {
+                  setNodes((prev) => {
+                    const cur = prev || [];
+                    const rect = canvasRef.current?.getBoundingClientRect();
+                    const x = rect ? Math.max(120, rect.width * 0.5) : 240;
+                    const y = rect ? Math.max(120, rect.height * 0.4) : 180;
+                    const id = nextAreaId(cur);
+                    const node: AreaNode = {
+                      id,
+                      kind: 'AREA',
+                      label: 'Area',
+                      x,
+                      y,
+                      w: 260,
+                      h: 160,
+                    };
+                    return [node, ...cur];
+                  });
+                }}
+              >
+                + Area
+              </button>
+            )}
+            {editable && (
+              <button
+                className="px-3 py-1.5 rounded bg-emerald-700 text-sm min-h-0"
+                onClick={async () => {
+                  if (!user || !nodes) return;
+                  await window.api.layout.save(user.id, area, nodes);
+                  setEditable(false);
+                }}
+              >
+                Save
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div
@@ -633,7 +756,6 @@ export default function TablesPage() {
         className={`w-full flex-1 min-h-0 rounded bg-gray-800 ${editable ? 'overflow-hidden' : 'overflow-auto'}`}
         style={{
           WebkitOverflowScrolling: 'touch',
-          // Allow finger panning on mobile when NOT editing.
           touchAction: editable ? ('none' as any) : ('pan-x pan-y' as any),
         }}
       >
@@ -641,7 +763,6 @@ export default function TablesPage() {
           className="relative"
           style={{ width: worldSize.w, height: worldSize.h }}
         >
-          {/* NOTE: In view mode we transform the whole plan (grid + nodes) so it fills the screen */}
           <div
             className="absolute inset-0"
             style={
@@ -653,7 +774,6 @@ export default function TablesPage() {
                   }
             }
           >
-            {/* simple grid background */}
             <div
               className="absolute inset-0 opacity-20"
               style={{
@@ -663,149 +783,74 @@ export default function TablesPage() {
               }}
             />
 
-            {/* Area boxes (for kitchen/bar/toilets etc) */}
             {nodes?.filter(isAreaNode).map((a) => (
-              <AreaRect
+              <MemoAreaRect
                 key={a.id}
                 node={a}
                 editable={editable}
-                onMove={(x, y) =>
-                  setNodes(
-                    (prev) =>
-                      prev?.map((n) =>
-                        n.id === a.id ? { ...(n as any), x, y } : n,
-                      ) ?? prev,
-                  )
-                }
-                onResize={(w, h) =>
-                  setNodes(
-                    (prev) =>
-                      prev?.map((n) =>
-                        n.id === a.id ? { ...(n as any), w, h } : n,
-                      ) ?? prev,
-                  )
-                }
-                onRename={(label) =>
-                  setNodes(
-                    (prev) =>
-                      prev?.map((n) =>
-                        n.id === a.id ? { ...(n as any), label } : n,
-                      ) ?? prev,
-                  )
-                }
-                onDelete={() =>
-                  setNodes((prev) => prev?.filter((n) => n.id !== a.id) ?? prev)
-                }
+                onMove={handleNodeMove}
+                onResize={handleNodeResize}
+                onRename={handleNodeRename}
+                onDelete={handleNodeDelete}
               />
             ))}
 
-            {openLoaded &&
-              nodes?.filter(isTableNode).map((t) => (
-                <DraggableCircle
-                  key={t.id}
-                  node={t}
-                  editable={editable}
-                  area={area}
-                  onMove={(x, y) =>
-                    setNodes(
-                      (prev) =>
-                        prev?.map((n) =>
-                          n.id === t.id ? { ...(n as any), x, y } : n,
-                        ) ?? prev,
-                    )
+            {nodes?.filter(isTableNode).map((t) => (
+              <MemoDraggableCircle
+                key={t.id}
+                node={t}
+                editable={editable}
+                area={area}
+                onMove={handleNodeMove}
+                onClick={handleTableClick}
+                colorClass={(() => {
+                  if (!isOpenFn(area, t.label)) return GREEN;
+                  const ownerId = ownerByTable[`${area}:${t.label}`];
+                  const uid = user?.id;
+                  const singleWaiter = Object.keys(userMap).length <= 1;
+                  // RED = my table, ORANGE = other waiter's table
+                  // When owner unknown (no TicketLog yet) or only 1 waiter: use RED
+                  if (
+                    singleWaiter ||
+                    ownerId == null ||
+                    (uid != null && Number(ownerId) === Number(uid))
+                  )
+                    return RED;
+                  return ORANGE;
+                })()}
+                badge={
+                  isOpenFn(area, t.label)
+                    ? initialsByTable[`${area}:${t.label}`]
+                    : undefined
+                }
+                ownerName={
+                  (ownerByTable[`${area}:${t.label}`] &&
+                    userMap[ownerByTable[`${area}:${t.label}`]]) ||
+                  undefined
+                }
+                statusText={isOpenFn(area, t.label) ? 'OPEN' : 'FREE'}
+                viewMode={viewMode}
+                metricText={(() => {
+                  const k = `${area}:${t.label}`;
+                  const m = metricsByTable[k];
+                  if (!isOpenFn(area, t.label)) return null;
+                  if (viewMode === 'covers')
+                    return m ? String(m.covers ?? '—') : '…';
+                  if (viewMode === 'revenue')
+                    return m ? formatMoney(m.total) : '…';
+                  if (viewMode === 'time') {
+                    const iso = openedAtByTable[k];
+                    const ms = iso ? new Date(iso).getTime() : NaN;
+                    return Number.isFinite(ms)
+                      ? formatElapsed(nowMs - ms)
+                      : '…';
                   }
-                  onClick={() => {
-                    if (editable) return;
-                    setSelectedTable({ id: t.id, label: t.label, area });
-                    const action = pendingAction;
-                    if (action) setPendingAction(null);
-                    // If table is open, hydrate current ticket from last sent ticket and skip covers prompt
-                    if (isOpen(area, t.label)) {
-                      (async () => {
-                        const data = await window.api.tickets.getLatestForTable(
-                          area,
-                          t.label,
-                        );
-                        if (data)
-                          hydrate({
-                            items: data.items as any,
-                            note: data.note || '',
-                          });
-                        navigate('/app/order');
-                      })();
-                      return;
-                    }
-                    // If table is free, start with a clean ticket
-                    clear();
-                    navigate('/app/order');
-                    if (action) {
-                      setTimeout(() => {
-                        // no-op: could show a toast here if desired
-                      }, 0);
-                    }
-                  }}
-                  colorClass={(() => {
-                    if (!isOpen(area, t.label)) return GREEN;
-                    const ownerId = ownerByTable[`${area}:${t.label}`];
-                    const uid = user?.id;
-                    if (
-                      ownerId != null &&
-                      uid != null &&
-                      Number(ownerId) === Number(uid)
-                    )
-                      return RED;
-                    return ORANGE;
-                  })()}
-                  badge={
-                    isOpen(area, t.label)
-                      ? initialsByTable[`${area}:${t.label}`]
-                      : undefined
-                  }
-                  ownerName={
-                    (ownerByTable[`${area}:${t.label}`] &&
-                      userMap[ownerByTable[`${area}:${t.label}`]]) ||
-                    undefined
-                  }
-                  statusText={isOpen(area, t.label) ? 'OPEN' : 'FREE'}
-                  viewMode={viewMode}
-                  metricText={(() => {
-                    const k = `${area}:${t.label}`;
-                    const m = metricsByTable[k];
-                    if (!isOpen(area, t.label)) return null;
-                    if (viewMode === 'covers')
-                      return m ? String(m.covers ?? '—') : '…';
-                    if (viewMode === 'revenue')
-                      return m ? formatMoney(m.total) : '…';
-                    if (viewMode === 'time') {
-                      const iso = openedAtByTable[k];
-                      const ms = iso ? new Date(iso).getTime() : NaN;
-                      return Number.isFinite(ms)
-                        ? formatElapsed(nowMs - ms)
-                        : '…';
-                    }
-                    return null;
-                  })()}
-                />
-              ))}
+                  return null;
+                })()}
+              />
+            ))}
           </div>
 
-          {!openLoaded && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-900/60">
-              <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
-                <div className="text-lg font-semibold mb-2">
-                  Connecting to POS backend…
-                </div>
-                <div className="text-sm opacity-80 mb-4">
-                  {openLoadError || 'Fetching occupied tables from the host PC.'}
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <div className="text-xs opacity-70">Please wait…</div>
-                </div>
-              </div>
-            </div>
-          )}
-          {/* Sample bar counter/obstacles */}
           {area === 'Main Hall' && (
             <div
               className="absolute bottom-6 left-6 right-6 h-4 rounded bg-gray-700 opacity-70"
@@ -815,7 +860,7 @@ export default function TablesPage() {
         </div>
       </div>
 
-      <div className="flex items-center justify-center gap-2 bg-gray-800 rounded p-2">
+      <div className="flex items-stretch sm:items-center justify-center gap-1.5 sm:gap-2 bg-gray-800/80 backdrop-blur rounded-lg p-1.5 sm:p-2 shrink-0">
         <ModeButton
           active={viewMode === 'occupied'}
           onClick={() => setViewMode('occupied')}
@@ -849,6 +894,8 @@ export default function TablesPage() {
   );
 }
 
+// --- AreaRect ---
+
 function AreaRect({
   node,
   editable,
@@ -859,10 +906,10 @@ function AreaRect({
 }: {
   node: AreaNode;
   editable: boolean;
-  onMove: (x: number, y: number) => void;
-  onResize: (w: number, h: number) => void;
-  onRename: (label: string) => void;
-  onDelete: () => void;
+  onMove: (id: number, x: number, y: number) => void;
+  onResize: (id: number, w: number, h: number) => void;
+  onRename: (id: number, label: string) => void;
+  onDelete: (id: number) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -889,6 +936,7 @@ function AreaRect({
     return () => window.clearTimeout(t);
   }, [renaming]);
 
+  // Keep DOM in sync imperatively for smooth drag
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -898,29 +946,35 @@ function AreaRect({
     el.style.height = `${node.h}px`;
   }, [node.x, node.y, node.w, node.h]);
 
+  // Use a ref to always read the latest node without re-attaching listeners
+  const nodeRef = useRef(node);
+  nodeRef.current = node;
+  const onMoveRef = useRef(onMove);
+  onMoveRef.current = onMove;
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
+
   useEffect(() => {
     const el = ref.current;
     if (!el || !editable) return;
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as HTMLElement | null;
-      // Don't start dragging/resizing when clicking interactive controls inside the box.
       if (
         target &&
         (target.closest('button') ||
           target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA')
-      ) {
+      )
         return;
-      }
-      const t = e.target as HTMLElement;
-      const h = String(t?.dataset?.handle || '');
+      const h = String((e.target as HTMLElement)?.dataset?.handle || '');
       modeRef.current =
         h === 'e' ? 'E' : h === 's' ? 'S' : h === 'se' ? 'SE' : 'DRAG';
+      const n = nodeRef.current;
       startRef.current = {
-        x: node.x,
-        y: node.y,
-        w: node.w,
-        h: node.h,
+        x: n.x,
+        y: n.y,
+        w: n.w,
+        h: n.h,
         px: e.clientX,
         py: e.clientY,
       };
@@ -932,14 +986,16 @@ function AreaRect({
       if (!startRef.current || !modeRef.current) return;
       const dx = e.clientX - startRef.current.px;
       const dy = e.clientY - startRef.current.py;
+      const n = nodeRef.current;
       if (modeRef.current === 'DRAG') {
-        onMove(startRef.current.x + dx, startRef.current.y + dy);
+        onMoveRef.current(n.id, startRef.current.x + dx, startRef.current.y + dy);
       } else {
         const addW =
           modeRef.current === 'E' || modeRef.current === 'SE' ? dx : 0;
         const addH =
           modeRef.current === 'S' || modeRef.current === 'SE' ? dy : 0;
-        onResize(
+        onResizeRef.current(
+          n.id,
           Math.max(80, startRef.current.w + addW),
           Math.max(80, startRef.current.h + addH),
         );
@@ -967,7 +1023,7 @@ function AreaRect({
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerUp);
     };
-  }, [editable, node.x, node.y, node.w, node.h, onMove, onResize]);
+  }, [editable]);
 
   return (
     <div
@@ -1011,13 +1067,13 @@ function AreaRect({
                 e.preventDefault();
                 e.stopPropagation();
                 const next = draftLabel.trim();
-                if (next) onRename(next);
+                if (next) onRename(node.id, next);
                 setRenaming(false);
               }
             }}
             onBlur={() => {
               const next = draftLabel.trim();
-              if (next && next !== node.label) onRename(next);
+              if (next && next !== node.label) onRename(node.id, next);
               setRenaming(false);
             }}
             onClick={(e) => {
@@ -1040,7 +1096,7 @@ function AreaRect({
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              onDelete();
+              onDelete(node.id);
             }}
             title="Delete"
           >
@@ -1064,6 +1120,10 @@ function AreaRect({
   );
 }
 
+const MemoAreaRect = memo(AreaRect);
+
+// --- DraggableCircle ---
+
 function DraggableCircle({
   node,
   editable,
@@ -1079,8 +1139,8 @@ function DraggableCircle({
 }: {
   node: TableNode;
   editable: boolean;
-  onMove: (x: number, y: number) => void;
-  onClick?: () => void;
+  onMove: (id: number, x: number, y: number) => void;
+  onClick?: (node: TableNode) => void;
   colorClass?: string;
   badge?: string;
   ownerName?: string;
@@ -1107,7 +1167,13 @@ function DraggableCircle({
   const dragDistanceRef = useRef(0);
   const suppressClickUntilRef = useRef(0);
 
-  // Keep local position in sync when not dragging (e.g., load layout / switch area)
+  const onMoveRef = useRef(onMove);
+  onMoveRef.current = onMove;
+  const onClickRef = useRef(onClick);
+  onClickRef.current = onClick;
+  const nodeRef = useRef(node);
+  nodeRef.current = node;
+
   useEffect(() => {
     if (draggingRef.current) return;
     posRef.current = { x: node.x, y: node.y };
@@ -1128,7 +1194,6 @@ function DraggableCircle({
     const onPointerMove = (e: PointerEvent) => {
       if (!draggingRef.current) return;
       const parent = el.parentElement!.getBoundingClientRect();
-      // Position relative to parent center-coordinate system (because of translate -50%)
       const relX = e.clientX - parent.left;
       const relY = e.clientY - parent.top;
       const newX = Math.max(16, Math.min(parent.width - 16, relX));
@@ -1138,7 +1203,6 @@ function DraggableCircle({
       dragDistanceRef.current += Math.sqrt(dx * dx + dy * dy);
       posRef.current = { x: newX, y: newY };
 
-      // Throttle visual updates to once per animation frame for smooth dragging
       if (rafRef.current == null) {
         rafRef.current = window.requestAnimationFrame(() => {
           rafRef.current = null;
@@ -1155,19 +1219,16 @@ function DraggableCircle({
         window.cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      // Commit final position to parent state once (avoids re-render on every move)
       if (wasDragging) {
         const finalPos = posRef.current;
         setPos(finalPos);
-        onMove(finalPos.x, finalPos.y);
-        // Prevent accidental click right after dragging
+        onMoveRef.current(nodeRef.current.id, finalPos.x, finalPos.y);
         if (dragDistanceRef.current > 6)
           suppressClickUntilRef.current = Date.now() + 300;
       }
       e.preventDefault();
     };
     el.addEventListener('pointerdown', onPointerDown);
-    // With pointer capture, move/up events will keep firing for this element
     el.addEventListener('pointermove', onPointerMove);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerUp);
@@ -1181,25 +1242,30 @@ function DraggableCircle({
         rafRef.current = null;
       }
     };
-  }, [editable, onMove]);
+  }, [editable]);
 
-  // Hover / long-press tooltip
+  // Tooltip: use refs so listeners never need re-attaching
+  const areaRef = useRef(area);
+  areaRef.current = area;
+  const labelRef = useRef(node.label);
+  labelRef.current = node.label;
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
     const fetchTip = async () => {
       try {
-        if (!area) return;
+        if (!areaRef.current) return;
         const t = await (window as any).api.tickets.getTableTooltip(
-          area,
-          node.label,
+          areaRef.current,
+          labelRef.current,
         );
         if (cancelled) return;
         setTooltip(t);
         setShowTip(true);
-      } catch (e) {
-        void e;
+      } catch {
+        // ignore
       }
     };
     const onEnter = () => {
@@ -1224,7 +1290,7 @@ function DraggableCircle({
       el.removeEventListener('touchstart', onDown as any);
       el.removeEventListener('touchend', onLeave as any);
     };
-  }, [area, node.label]);
+  }, []);
 
   return (
     <div
@@ -1239,7 +1305,7 @@ function DraggableCircle({
       title={`${node.label} • ${statusText || node.status}`}
       onClick={() => {
         if (Date.now() < suppressClickUntilRef.current) return;
-        onClick?.();
+        onClickRef.current?.(nodeRef.current);
       }}
     >
       <div className="flex flex-col items-center leading-none">
@@ -1285,6 +1351,10 @@ function DraggableCircle({
   );
 }
 
+const MemoDraggableCircle = memo(DraggableCircle);
+
+// --- Bottom bar icons ---
+
 function ModeButton({
   active,
   onClick,
@@ -1298,15 +1368,18 @@ function ModeButton({
 }) {
   return (
     <button
-      className={`flex items-center gap-2 px-3 py-2 rounded ${active ? 'bg-gray-700' : 'bg-gray-900/40 hover:bg-gray-700/60'}`}
+      className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 rounded transition-colors min-h-0 ${
+        active
+          ? 'bg-emerald-600/90 text-white shadow-sm'
+          : 'bg-gray-900/40 text-gray-200 hover:bg-gray-700/60'
+      }`}
       onClick={onClick}
       title={label}
       type="button"
+      aria-pressed={active}
     >
-      <span className={`${active ? 'text-white' : 'text-gray-200'} opacity-90`}>
-        {children}
-      </span>
-      <span className="text-sm">{label}</span>
+      <span className={active ? 'opacity-100' : 'opacity-80'}>{children}</span>
+      <span className="text-xs sm:text-sm">{label}</span>
     </button>
   );
 }

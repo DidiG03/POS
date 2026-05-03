@@ -1,9 +1,6 @@
 import { buildEscposTicket, buildHtmlReceipt, printHtmlToSystemPrinter, sendToCupsRawPrinter, sendToPrinter } from '../print';
 import { coreServices } from './core';
-import { cloudJson, getCloudConfig, hasCloudSession } from './cloud';
 import { prisma } from '@db/client';
-
-type PrintJobDTO = { id: number; type: string; payload: any; createdAt: string };
 
 let started = false;
 
@@ -123,23 +120,22 @@ export function startPrinterStationLoop() {
 
   const tick = async () => {
     try {
-      const cfg = await getCloudConfig().catch(() => null);
-      if (!cfg) return;
-      if (!hasCloudSession(cfg.businessCode)) return;
-
       const settings = await coreServices.readSettings();
       const routingEnabled = Boolean((settings as any)?.printerRouting?.enabled);
       const receiptPrinterId = (settings as any)?.printerRouting?.receiptPrinterId || 'default';
       const fallbackProfile = pickProfile(settings, receiptPrinterId) || pickProfile(settings, 'default');
-      // If we're in pure NETWORK mode and no IP is configured, skip. (Other modes can still print.)
       if (!fallbackProfile) return;
 
-      const jobs = await cloudJson<PrintJobDTO[]>('GET', '/print-jobs/pending?limit=10', undefined, { requireAuth: true }).catch(() => []);
+      // Local-first: fetch QUEUED jobs from local DB
+      const jobs = await prisma.printJob
+        .findMany({ where: { status: 'QUEUED' as any }, orderBy: { createdAt: 'asc' }, take: 10 })
+        .catch(() => []);
+
       for (const job of jobs) {
         if (!job?.id || inFlight.has(job.id)) continue;
         inFlight.add(job.id);
         try {
-          const payload = job.payload || {};
+          const payload = (job.payloadJson as any) || {};
           const meta = (payload as any)?.meta || {};
           const kind = String(meta?.kind || '').toUpperCase();
 
@@ -157,7 +153,10 @@ export function startPrinterStationLoop() {
             okAll = pr.ok;
           }
 
-          await cloudJson('POST', `/print-jobs/${encodeURIComponent(String(job.id))}/ack`, { status: okAll ? 'SENT' : 'FAILED' }, { requireAuth: true }).catch(() => {});
+          await prisma.printJob.update({
+            where: { id: job.id },
+            data: { status: (okAll ? 'SENT' : 'FAILED') as any },
+          }).catch(() => {});
         } finally {
           inFlight.delete(job.id);
         }

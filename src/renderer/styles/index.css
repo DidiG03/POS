@@ -8,9 +8,17 @@
 
 html, body, #root { height: 100%; }
 
-/* Mobile / tablet friendly tweaks */
+/* Match the app shell so iOS status bar / Android nav bar areas blend in */
+html, body {
+  background-color: rgb(17 24 39); /* gray-900 */
+  color: rgb(243 244 246); /* gray-100 */
+}
+
+/* Safe area insets (iPhone notch / Android punch hole / home indicator).
+   Defined as variables so individual elements can opt in. We deliberately
+   do NOT pad the body — that would shift the whole app and break headers
+   that need to extend behind the status bar. */
 :root {
-  /* Safe area insets for Android/iOS cutouts */
   --safe-top: env(safe-area-inset-top);
   --safe-right: env(safe-area-inset-right);
   --safe-bottom: env(safe-area-inset-bottom);
@@ -18,12 +26,9 @@ html, body, #root { height: 100%; }
 }
 
 body {
-  padding-top: var(--safe-top);
-  padding-right: var(--safe-right);
-  padding-bottom: var(--safe-bottom);
-  padding-left: var(--safe-left);
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  overscroll-behavior: none; /* prevent rubber-band drag of the whole shell */
 }
 
 button, .btn {
@@ -34,9 +39,17 @@ input, select {
   min-height: 40px;
 }
 
-/* Prevent double-tap zoom on buttons/links */
 @supports (-webkit-touch-callout: none) {
   a, button { touch-action: manipulation; }
 }
 
+/* Opt-in safe-area helpers */
+.safe-pt { padding-top: var(--safe-top); }
+.safe-pb { padding-bottom: var(--safe-bottom); }
+.safe-pl { padding-left: var(--safe-left); }
+.safe-pr { padding-right: var(--safe-right); }
+.safe-x  { padding-left: var(--safe-left); padding-right: var(--safe-right); }
 
+/* Hide native scrollbars on horizontal pill rows on mobile */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

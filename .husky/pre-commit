@@ -1,3 +1,7 @@
 pnpm exec lint-staged || true
 
-
+# Hard-fail commits that introduce schema drift between the local
+# (SQLite) and server (Postgres) Prisma schemas on shared business models.
+# This catches the class of bug where a field is added on one side only
+# (e.g. `Category.color`, `MenuItem.isKg`) which then crashes at runtime.
+pnpm db:check-parity

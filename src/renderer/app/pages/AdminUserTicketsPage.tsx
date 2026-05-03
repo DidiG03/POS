@@ -13,16 +13,146 @@ type Ticket = {
   vat: number;
 };
 
+type Preferences = {
+  vatEnabled: boolean;
+  serviceCharge: { enabled: boolean; mode: 'PERCENT' | 'AMOUNT'; value: number };
+};
+
+function toDateKey(d: Date): string {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function parseViewDate(startIso: string | undefined): Date {
+  if (!startIso) return new Date();
+  const d = new Date(startIso);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function dayRangeIso(date: Date): { startIso: string; endIso: string } {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const end = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+  const now = new Date();
+  return {
+    startIso: start.toISOString(),
+    endIso: end > now ? now.toISOString() : end.toISOString(),
+  };
+}
+
+function computeServiceCharge(
+  baseTotal: number,
+  prefs: Preferences | null,
+): number {
+  if (!prefs?.serviceCharge?.enabled || baseTotal <= 0) return 0;
+  const v = Number(prefs.serviceCharge.value || 0);
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  if (prefs.serviceCharge.mode === 'PERCENT') return (baseTotal * v) / 100;
+  return v;
+}
+
+function TicketTotalsRow({
+  ticket,
+  prefs,
+  computeServiceCharge,
+  layout = 'stack',
+}: {
+  ticket: Ticket;
+  prefs: Preferences | null;
+  computeServiceCharge: (base: number, p: Preferences | null) => number;
+  layout?: 'stack' | 'inline';
+}) {
+  const vatEnabled = prefs?.vatEnabled !== false;
+  const vat = vatEnabled ? ticket.vat : 0;
+  const base = ticket.subtotal + vat;
+  const serviceCharge = computeServiceCharge(base, prefs);
+  const total = base + serviceCharge;
+  const fmt = (n: number) => n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (layout === 'inline') {
+    return (
+      <div className="mt-2 text-sm flex justify-end gap-4 flex-wrap">
+        {vatEnabled ? (
+          <div>VAT: {fmt(vat)}</div>
+        ) : (
+          <div>VAT: <span className="opacity-70">Disabled</span></div>
+        )}
+        {prefs?.serviceCharge?.enabled && serviceCharge > 0 && (
+          <div>Service: {fmt(serviceCharge)}</div>
+        )}
+        <div>Total: {fmt(total)}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 pt-2 border-t border-gray-700 space-y-1 text-sm">
+      {vatEnabled ? (
+        <div className="flex justify-between opacity-80">
+          <span>VAT</span>
+          <span>{fmt(vat)}</span>
+        </div>
+      ) : (
+        <div className="flex justify-between opacity-70">
+          <span>VAT</span>
+          <span>Disabled</span>
+        </div>
+      )}
+      {prefs?.serviceCharge?.enabled && serviceCharge > 0 && (
+        <div className="flex justify-between opacity-80">
+          <span>Service charge</span>
+          <span>{fmt(serviceCharge)}</span>
+        </div>
+      )}
+      <div className="flex justify-between text-base font-bold">
+        <span>Total</span>
+        <span>{fmt(total)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminUserTicketsPage() {
   const { userId } = useParams();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const start = params.get('start') || undefined;
   const end = params.get('end') || undefined;
   const name = params.get('name') || '';
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
+  const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [view, setView] = useState<'list' | 'grid4'>('grid4');
   const [zoom, setZoom] = useState<number>(1);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s: any = await window.api.settings.get().catch(() => null);
+        if (cancelled) return;
+        const sc = s?.preferences?.serviceCharge || {};
+        setPrefs({
+          vatEnabled: s?.preferences?.vatEnabled !== false,
+          serviceCharge: {
+            enabled: Boolean(sc.enabled),
+            mode: String(sc.mode || 'PERCENT').toUpperCase() === 'AMOUNT' ? 'AMOUNT' : 'PERCENT',
+            value: Number(sc.value ?? 10),
+          },
+        });
+      } catch {
+        if (!cancelled) setPrefs(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const viewDate = parseViewDate(start);
+  const today = new Date();
+  const isToday = viewDate.toDateString() === today.toDateString();
+
+  function goToDate(d: Date) {
+    const { startIso, endIso } = dayRangeIso(d);
+    const next = new URLSearchParams(params);
+    next.set('start', startIso);
+    next.set('end', endIso);
+    setParams(next);
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -40,20 +170,61 @@ export default function AdminUserTicketsPage() {
   }, [userId, start, end]);
 
   const totals = useMemo(() => {
-    const subtotal = tickets.reduce((s, t) => s + t.subtotal, 0);
-    const vat = tickets.reduce((s, t) => s + t.vat, 0);
-    const grand = subtotal + vat;
-    return { subtotal, vat, grand };
-  }, [tickets]);
+    const vatEnabled = prefs?.vatEnabled !== false;
+    let subtotal = 0;
+    let vat = 0;
+    let serviceCharge = 0;
+    for (const t of tickets) {
+      subtotal += t.subtotal;
+      vat += vatEnabled ? t.vat : 0;
+      const base = t.subtotal + (vatEnabled ? t.vat : 0);
+      serviceCharge += computeServiceCharge(base, prefs);
+    }
+    const grand = subtotal + vat + serviceCharge;
+    return { subtotal, vat, serviceCharge, grand };
+  }, [tickets, prefs]);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-lg font-semibold">{name ? `${name}'s Tickets` : 'User Tickets'}</div>
-          <div className="text-xs opacity-70">{start ? new Date(start).toLocaleString() : '—'} → {end ? new Date(end).toLocaleString() : 'Now'}</div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+        <div className="text-lg font-semibold min-w-0 truncate">{name ? `${name}'s Tickets` : 'User Tickets'}</div>
+        <div className="flex items-center gap-2 justify-center">
+          <button
+            type="button"
+            className="w-8 h-8 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
+            onClick={() => goToDate(new Date(viewDate.getTime() - 24 * 60 * 60 * 1000))}
+            aria-label="Previous day"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+              <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <input
+            type="date"
+            value={toDateKey(viewDate)}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v) {
+                const [y, m, d] = v.split('-').map(Number);
+                goToDate(new Date(y, m - 1, d));
+              }
+            }}
+            className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700"
+            title="Click to change date"
+          />
+          <button
+            type="button"
+            className="w-8 h-8 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={() => goToDate(new Date(viewDate.getTime() + 24 * 60 * 60 * 1000))}
+            disabled={isToday}
+            aria-label="Next day"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+              <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 justify-end">
           <div className="bg-gray-800 rounded overflow-hidden text-xs">
             <button
               className={`px-3 py-1 ${view === 'list' ? 'bg-gray-700' : ''}`}
@@ -77,10 +248,17 @@ export default function AdminUserTicketsPage() {
         </div>
       </div>
 
-      <div className="bg-gray-800 rounded p-3 flex gap-6 text-sm">
+      <div className="bg-gray-800 rounded p-3 flex flex-wrap gap-6 text-sm">
         <div>Tickets: {tickets.length.toLocaleString()}</div>
         <div>Subtotal: {totals.subtotal.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
-        <div>VAT: {totals.vat.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
+        {prefs?.vatEnabled !== false ? (
+          <div>VAT: {totals.vat.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
+        ) : (
+          <div>VAT: <span className="opacity-70">Disabled</span></div>
+        )}
+        {prefs?.serviceCharge?.enabled && totals.serviceCharge > 0 && (
+          <div>Service charge: {totals.serviceCharge.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
+        )}
         <div>Total: {totals.grand.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}</div>
       </div>
 
@@ -112,10 +290,11 @@ export default function AdminUserTicketsPage() {
                   )}
                 </div>
                 {t.note && <div className="mt-2 text-xs opacity-80">Note: {t.note}</div>}
-                <div className="mt-2 pt-2 border-t border-gray-700 flex items-center justify-between text-sm">
-                  <div className="opacity-80">VAT: {t.vat}</div>
-                  <div className="text-base font-bold">Total {(t.subtotal + t.vat)}</div>
-                </div>
+                <TicketTotalsRow
+                  ticket={t}
+                  prefs={prefs}
+                  computeServiceCharge={computeServiceCharge}
+                />
               </div>
             );
           })}
@@ -139,10 +318,12 @@ export default function AdminUserTicketsPage() {
                 ))}
               </div>
               {t.note && <div className="text-xs opacity-70 mt-1">Note: {t.note}</div>}
-              <div className="mt-2 text-sm flex justify-end gap-4">
-                <div>VAT: {t.vat}</div>
-                <div>Total: {(t.subtotal + t.vat)}</div>
-              </div>
+              <TicketTotalsRow
+                ticket={t}
+                prefs={prefs}
+                computeServiceCharge={computeServiceCharge}
+                layout="inline"
+              />
             </div>
           ))}
         </div>

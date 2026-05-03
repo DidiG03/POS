@@ -6,7 +6,12 @@ import React from 'react';
 import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { useEffect } from 'react';
-import { isClockOnlyRole } from '@shared/utils/roles';
+import {
+  isClockOnlyRole,
+  canSeeReportsOnMobile,
+  canSeeKdsOnMobile,
+} from '@shared/utils/roles';
+import { PageSpinner } from './components/PageSpinner';
 
 const LoginPage = React.lazy(() => import('./app/pages/LoginPage'));
 const TablesPage = React.lazy(() => import('./app/pages/TablesPage'));
@@ -27,19 +32,7 @@ const AdminMenuPage = React.lazy(() => import('./app/pages/AdminMenuPage'));
 const KdsPage = React.lazy(() => import('./app/pages/KdsPage'));
 
 function SuspenseFallback() {
-  return (
-    <div className="w-full h-full min-h-[60vh] flex items-center justify-center">
-      <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6 text-gray-100">
-        <div className="text-lg font-semibold mb-2">
-          Connecting to POS backend…
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <div className="text-xs opacity-70">Please wait…</div>
-        </div>
-      </div>
-    </div>
-  );
+  return <PageSpinner message="Loading…" />;
 }
 
 function withSuspense(el: React.ReactElement) {
@@ -86,6 +79,11 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
 }
 
 function RequireAdmin({ children }: { children: React.ReactElement }) {
+  const isBrowser =
+    typeof window !== 'undefined' &&
+    Boolean((window as any).__BROWSER_CLIENT__);
+  // Admin panel is not available on browser/tablet clients
+  if (isBrowser) return <Navigate to="/" replace />;
   // Admin window uses its own persisted session so it doesn't get overwritten by waiter login.
   const isAdminContext =
     typeof window !== 'undefined' &&
@@ -128,6 +126,41 @@ function RequireClockAccess({ children }: { children: React.ReactElement }) {
   return children;
 }
 
+// On mobile (Capacitor / browser shell) only ADMIN and CASHIER may see
+// the Reports screen. Other roles get redirected to Tables. The Electron
+// desktop is unrestricted because admins use it for back-office work.
+function RequireReportsAccess({
+  children,
+}: {
+  children: React.ReactElement;
+}) {
+  const user = useSessionStore((s) => s.user);
+  const isBrowser =
+    typeof window !== 'undefined' &&
+    Boolean((window as any).__BROWSER_CLIENT__);
+  if (!user) return <Navigate to="/" replace />;
+  if (isBrowser && !canSeeReportsOnMobile((user as any).role)) {
+    return <Navigate to="/app/tables" replace />;
+  }
+  return children;
+}
+
+// KDS is intended for kitchen staff. On mobile, restrict to kitchen roles
+// so a waiter who pastes a /kds deep link doesn't end up on a screen
+// they can't act on. Electron stays open (the kitchen PC needs it).
+function RequireKdsAccess({ children }: { children: React.ReactElement }) {
+  const user = useSessionStore((s) => s.user);
+  const isBrowser =
+    typeof window !== 'undefined' &&
+    Boolean((window as any).__BROWSER_CLIENT__);
+  if (!isBrowser) return children;
+  if (!user) return <Navigate to="/" replace />;
+  if (!canSeeKdsOnMobile((user as any).role)) {
+    return <Navigate to="/app/tables" replace />;
+  }
+  return children;
+}
+
 export const routes: RouteObject[] = [
   { path: '/', element: withSuspenseNoFallback(<LoginPage />) },
   {
@@ -161,7 +194,11 @@ export const routes: RouteObject[] = [
       {
         path: 'reports',
         element: (
-          <RequirePosAccess>{withSuspense(<ReportsPage />)}</RequirePosAccess>
+          <RequirePosAccess>
+            <RequireReportsAccess>
+              {withSuspense(<ReportsPage />)}
+            </RequireReportsAccess>
+          </RequirePosAccess>
         ),
       },
       {
@@ -192,6 +229,6 @@ export const routes: RouteObject[] = [
   // Standalone kitchen display window
   {
     path: '/kds',
-    element: withSuspense(<KdsPage />),
+    element: <RequireKdsAccess>{withSuspense(<KdsPage />)}</RequireKdsAccess>,
   },
 ];

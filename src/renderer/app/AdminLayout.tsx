@@ -207,7 +207,7 @@ export default function AdminLayout() {
   return (
     <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
       <header className="bg-gray-800 px-3 sm:px-4 py-2.5 sm:py-3 grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-2 items-center">
-        <div className="font-semibold justify-self-start"> Code Orbit POS Admin</div>
+        <div className="font-semibold justify-self-start">Admin Panel</div>
 
         {/* Center nav */}
         <div className="flex items-center justify-start sm:justify-center min-w-0">
@@ -274,7 +274,7 @@ export default function AdminLayout() {
 
           <div className="relative inline-block">
             <button
-              className="px-2 py-1 rounded hover:bg-gray-700"
+              className="px-2 py-1 rounded hover:bg-gray-700 cursor-pointer"
               aria-label="Notifications"
               onClick={() => setShowNotifications((v) => !v)}
             >
@@ -310,7 +310,7 @@ export default function AdminLayout() {
             )}
           </div>
           <button
-            className="px-3 py-1 rounded bg-red-600 hover:bg-red-700 flex items-center gap-2"
+            className="px-3 py-1 rounded bg-red-600 hover:bg-red-700 flex items-center gap-2 cursor-pointer"
             onClick={async () => {
               // Clear persisted admin session so reopening /admin requires PIN again.
               setMe(null as any);
@@ -323,7 +323,6 @@ export default function AdminLayout() {
             title="Logout"
           >
             <IconLogout />
-            <span className="hidden sm:inline">Logout</span>
           </button>
           {/* <button
             className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"

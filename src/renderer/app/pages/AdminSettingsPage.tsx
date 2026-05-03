@@ -319,7 +319,7 @@ export default function AdminSettingsPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <SectionIcon k={s.key} />
-                    <span>{s.label}</span>
+                  <span>{s.label}</span>
                   </div>
                   <ChevronRight />
                 </div>
@@ -622,7 +622,7 @@ function BillingSettings() {
           <div className="font-semibold">Billing</div>
           <div className="text-xs opacity-70">
             Manage your POS subscription and keep the system active.
-          </div>
+        </div>
         </div>
         <button
           className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
@@ -841,7 +841,7 @@ function PreferencesSettings() {
                 <div>
                   <div className="text-sm">
                     Require manager PIN for discounts
-                  </div>
+                </div>
                   <div className="text-xs opacity-70">
                     Any discount at payment requires approval.
                   </div>
@@ -857,7 +857,7 @@ function PreferencesSettings() {
                   <div className="text-sm">Require manager PIN for voids</div>
                   <div className="text-xs opacity-70">
                     Voiding items/tickets requires approval.
-                  </div>
+                </div>
                 </div>
                 <input
                   type="checkbox"
@@ -869,7 +869,7 @@ function PreferencesSettings() {
                 <div>
                   <div className="text-sm">
                     Require manager PIN to remove service charge
-                  </div>
+                </div>
                   <div className="text-xs opacity-70">
                     Removing service charge on a ticket requires approval.
                   </div>
@@ -965,6 +965,20 @@ function BackupsSettings() {
   >([]);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [cloudConfigured, setCloudConfigured] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const s: any = await window.api.settings.get();
+        const url = String(s?.cloud?.backendUrl || '').trim();
+        const code = String(s?.cloud?.businessCode || '').trim();
+        setCloudConfigured(Boolean(url && code));
+      } catch {
+        setCloudConfigured(false);
+      }
+    })();
+  }, []);
 
   async function reload() {
     setLoading(true);
@@ -996,10 +1010,11 @@ function BackupsSettings() {
       <div className="text-lg font-semibold mb-3">Backups</div>
       <div className="text-xs opacity-70 mb-3">
         Backups are stored on this POS computer. Restoring will overwrite the
-        current database and restart the app.
+        current database and restart the app. When cloud is configured, you can
+        sync data from the cloud or upload backups to the cloud.
       </div>
 
-      <div className="flex gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 mb-3">
         <button
           className="flex-1 px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
           disabled={busy != null}
@@ -1027,6 +1042,64 @@ function BackupsSettings() {
         >
           Refresh
         </button>
+        {cloudConfigured && (
+          <>
+            <button
+              className="px-3 py-2 rounded bg-violet-700 hover:bg-violet-800 disabled:opacity-60"
+              disabled={busy != null}
+              onClick={async () => {
+                setBusy('sync');
+                setStatus(null);
+                try {
+                  const syncFn = (window.api as any).backups?.syncFromCloud;
+                  if (typeof syncFn !== 'function') {
+                    setStatus(
+                      'Sync not available. Please restart the app and try again.',
+                    );
+                    return;
+                  }
+                  const r = await syncFn();
+                  if (r?.error) setStatus(r.error);
+                  else if (r?.usersSynced === 0 && r?.menuItemsSynced === 0)
+                    setStatus('No users or menu in cloud.');
+                  else if (!r?.menuSynced)
+                    setStatus(
+                      `Synced ${r?.usersSynced ?? 0} users. Log in to Cloud (Settings) to sync menu.`,
+                    );
+                  else
+                    setStatus(
+                      `Synced ${r?.usersSynced ?? 0} users and ${r?.menuItemsSynced ?? 0} menu items.`,
+                    );
+                } catch (e: any) {
+                  setStatus(e?.message || 'Sync failed');
+                } finally {
+                  setBusy(null);
+                }
+              }}
+            >
+              {busy === 'sync' ? 'Syncing…' : 'Sync from cloud'}
+            </button>
+            <button
+              className="px-3 py-2 rounded bg-sky-700 hover:bg-sky-800 disabled:opacity-60"
+              disabled={busy != null}
+              onClick={async () => {
+                setBusy('upload');
+                setStatus(null);
+                try {
+                  const r = await (window.api as any).backups.uploadToCloud({});
+                  if (!r?.ok) setStatus(r?.error || 'Upload failed');
+                  else setStatus('Backup uploaded to cloud.');
+                } catch (e: any) {
+                  setStatus(e?.message || 'Upload failed');
+                } finally {
+                  setBusy(null);
+                }
+              }}
+            >
+              {busy === 'upload' ? 'Uploading…' : 'Upload to cloud'}
+            </button>
+          </>
+        )}
       </div>
 
       {status && <div className="text-xs opacity-80 mb-3">{status}</div>}
@@ -1048,10 +1121,32 @@ function BackupsSettings() {
                   {new Date(b.createdAt).toLocaleString()} · {fmtBytes(b.bytes)}
                 </div>
               </div>
-              <button
-                className="px-3 py-2 rounded bg-rose-700 hover:bg-rose-800 disabled:opacity-60"
-                disabled={busy != null}
-                onClick={async () => {
+              <div className="flex gap-2">
+                {cloudConfigured && (
+                  <button
+                    className="px-3 py-2 rounded bg-sky-700 hover:bg-sky-800 disabled:opacity-60"
+                    disabled={busy != null}
+                    onClick={async () => {
+                      setBusy(`upload:${b.name}`);
+                      setStatus(null);
+                      try {
+                        const r = await (window.api as any).backups.uploadToCloud({ name: b.name });
+                        if (!r?.ok) setStatus(r?.error || 'Upload failed');
+                        else setStatus(`Uploaded ${b.name} to cloud.`);
+                      } catch (e: any) {
+                        setStatus(e?.message || 'Upload failed');
+                      } finally {
+                        setBusy(null);
+                      }
+                    }}
+                  >
+                    Upload
+                  </button>
+                )}
+                <button
+                  className="px-3 py-2 rounded bg-rose-700 hover:bg-rose-800 disabled:opacity-60"
+                  disabled={busy != null}
+                  onClick={async () => {
                   const ok = confirm(
                     `Restore backup ${b.name}?\n\nThis will overwrite the current database and restart the app.`,
                   );
@@ -1070,13 +1165,14 @@ function BackupsSettings() {
                     else setStatus('Restoring…');
                   } catch (e: any) {
                     setStatus(e?.message || 'Restore failed');
-                  } finally {
+                  }                   finally {
                     setBusy(null);
                   }
                 }}
               >
                 Restore
               </button>
+              </div>
             </div>
           ))}
         </div>
@@ -1208,23 +1304,130 @@ function KdsSettings() {
   );
 }
 
+function AddRouteModal({
+  availableCategories,
+  enabledProfiles,
+  routingEnabled,
+  onAdd,
+  onClose,
+}: {
+  availableCategories: Array<{ id: number; name: string }>;
+  enabledProfiles: Array<{ id: string; name: string; mode?: string }>;
+  routingEnabled: boolean;
+  onAdd: (catId: string, printerId: string) => void;
+  onClose: () => void;
+}) {
+  const [catId, setCatId] = useState('');
+  const [printerId, setPrinterId] = useState('default');
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+        onClick={onClose}
+        aria-label="Close modal"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
+      >
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
+          <div className="font-semibold">Add category route</div>
+          <button
+            type="button"
+            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+              <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-4 space-y-4">
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">Category</div>
+            <select
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              value={catId}
+              onChange={(e) => setCatId(String(e.target.value || ''))}
+              disabled={!routingEnabled}
+            >
+              <option value="">Select category…</option>
+              {availableCategories.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">Printer</div>
+            <select
+              className="w-full bg-gray-700 rounded px-3 py-2"
+              value={printerId}
+              onChange={(e) => setPrinterId(String(e.target.value || 'default'))}
+              disabled={!routingEnabled}
+            >
+              {enabledProfiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.mode || 'NETWORK'})
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex gap-2 pt-2">
+            <button
+              className="flex-1 px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
+              type="button"
+              disabled={!routingEnabled || !catId}
+              onClick={() => onAdd(catId, printerId)}
+            >
+              Add route
+            </button>
+            <button
+              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+              type="button"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type PrinterProfile = {
+  id: string;
+  name: string;
+  enabled?: boolean;
+  mode?: 'NETWORK' | 'SYSTEM' | 'SERIAL';
+  ip?: string;
+  port?: number;
+  deviceName?: string;
+  silent?: boolean;
+  systemRawEscpos?: boolean;
+  serialPath?: string;
+  baudRate?: number;
+  dataBits?: 7 | 8;
+  stopBits?: 1 | 2;
+  parity?: 'none' | 'even' | 'odd';
+};
+
 function PrinterSettings() {
-  type Profile = {
-    id: string;
-    name: string;
-    enabled?: boolean;
-    mode?: 'NETWORK' | 'SYSTEM' | 'SERIAL';
-    ip?: string;
-    port?: number;
-    deviceName?: string;
-    silent?: boolean;
-    systemRawEscpos?: boolean;
-    serialPath?: string;
-    baudRate?: number;
-    dataBits?: 7 | 8;
-    stopBits?: 1 | 2;
-    parity?: 'none' | 'even' | 'odd';
-  };
+  type Profile = PrinterProfile;
 
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [routingEnabled, setRoutingEnabled] = useState(false);
@@ -1238,8 +1441,7 @@ function PrinterSettings() {
   const [menuCategories, setMenuCategories] = useState<
     Array<{ id: number; name: string }>
   >([]);
-  const [routeCatId, setRouteCatId] = useState<string>('');
-  const [routePrinterId, setRoutePrinterId] = useState<string>('default');
+  const [showAddRouteModal, setShowAddRouteModal] = useState(false);
 
   const [printers, setPrinters] = useState<
     { name: string; isDefault?: boolean }[]
@@ -1283,8 +1485,8 @@ function PrinterSettings() {
       const legacy: any = (s as any)?.printer || {};
       const arr: any[] =
         Array.isArray((s as any)?.printers) && (s as any).printers.length
-          ? (s as any).printers
-          : legacy && Object.keys(legacy).length
+        ? (s as any).printers
+        : legacy && Object.keys(legacy).length
             ? [
                 {
                   id: 'default',
@@ -1293,7 +1495,7 @@ function PrinterSettings() {
                   ...legacy,
                 },
               ]
-            : [];
+          : [];
       setProfiles(arr.map((p, idx) => ensureProfile(p, idx)));
 
       const r: any = (s as any)?.printerRouting || {};
@@ -1408,10 +1610,20 @@ function PrinterSettings() {
   return (
     <div>
       <div className="text-lg font-semibold mb-3">Printers</div>
+      
       {status && <div className="text-xs text-amber-200 mb-3">{status}</div>}
-
       <div className="bg-gray-800/40 border border-gray-700 rounded p-3 mb-4">
-        <div className="font-semibold mb-2">Routing</div>
+        <div className="flex items-center justify-between">
+          <div className="font-semibold mb-2">Routing</div>
+          <button
+            className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-sm mb-3"
+            type="button"
+            disabled={!routingEnabled}
+            onClick={() => setShowAddRouteModal(true)}
+          >
+            + Add route
+          </button>
+        </div>
         <div className="text-xs opacity-70 mb-3">
           Enable routing and optionally route categories to specific printers. Categories not routed will print to the fallback printer.
         </div>
@@ -1450,55 +1662,10 @@ function PrinterSettings() {
           </label>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
-          <label className="text-sm md:col-span-1">
-            <div className="opacity-80 mb-1">Category</div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={routeCatId}
-              onChange={(e) => setRouteCatId(String(e.target.value || ''))}
-              disabled={!routingEnabled}
-            >
-              <option value="">Select category…</option>
-              {availableCategoriesToAdd.map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm md:col-span-1">
-            <div className="opacity-80 mb-1">Printer</div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={routePrinterId}
-              onChange={(e) => setRoutePrinterId(String(e.target.value || 'default'))}
-              disabled={!routingEnabled}
-            >
-              {pickOptions(false)}
-            </select>
-          </label>
-          <div className="flex items-end">
-            <button
-              className="w-full px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-              type="button"
-              disabled={!routingEnabled || !routeCatId}
-              onClick={() => {
-                const cid = String(routeCatId || '').trim();
-                if (!cid) return;
-                setCategoryRouting((m) => ({ ...(m || {}), [cid]: String(routePrinterId || 'default') }));
-                setRouteCatId('');
-              }}
-            >
-              Add route
-            </button>
-          </div>
-        </div>
-
         {routedEntries.length === 0 ? (
           <div className="text-xs opacity-70">
             No category routes yet. Station routing will be used.
-          </div>
+        </div>
         ) : (
           <div className="divide-y divide-gray-700 border border-gray-700 rounded overflow-hidden">
             {routedEntries.map((r) => (
@@ -1508,9 +1675,9 @@ function PrinterSettings() {
                   {r.categoryId == null && (
                     <div className="text-xs opacity-60">
                       Unknown key stored in settings. You can remove it if not needed.
-                    </div>
+      </div>
                   )}
-                </div>
+        </div>
                 <select
                   className="bg-gray-700 rounded px-3 py-2"
                   value={r.printerId}
@@ -1552,11 +1719,26 @@ function PrinterSettings() {
                     />
                   </svg>
                 </button>
-              </div>
+        </div>
             ))}
           </div>
         )}
       </div>
+
+      {showAddRouteModal && (
+        <AddRouteModal
+          availableCategories={availableCategoriesToAdd}
+          enabledProfiles={enabledProfiles}
+          routingEnabled={routingEnabled}
+          onAdd={(catId, printerId) => {
+            const cid = String(catId || '').trim();
+            if (!cid) return;
+            setCategoryRouting((m) => ({ ...(m || {}), [cid]: String(printerId || 'default') }));
+            setShowAddRouteModal(false);
+          }}
+          onClose={() => setShowAddRouteModal(false)}
+        />
+      )}
 
       <div className="flex items-center justify-between mb-2">
         <div className="font-semibold">Printer profiles</div>
@@ -1580,298 +1762,38 @@ function PrinterSettings() {
         </button>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-2">
         {profiles.map((p) => (
-          <div
+          <PrinterProfileCard
             key={p.id}
-            className="border border-gray-700 rounded p-3 bg-gray-900/30"
-          >
-            <div className="flex items-center gap-2 mb-2">
-              <input
-                className="bg-gray-700 rounded px-3 py-2 flex-1"
-                placeholder="Printer name"
-                value={p.name}
-                onChange={(e) =>
-                  setProfiles((arr) =>
-                    arr.map((x) =>
-                      x.id === p.id ? { ...x, name: e.target.value } : x,
-                    ),
-                  )
-                }
-              />
-              <label className="text-sm flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={p.enabled !== false}
-                  onChange={(e) =>
-                    setProfiles((arr) =>
-                      arr.map((x) =>
-                        x.id === p.id ? { ...x, enabled: e.target.checked } : x,
-                      ),
-                    )
-                  }
-                />
-                Enabled
-              </label>
-              <button
-                className="px-2 py-2 rounded bg-red-700 hover:bg-red-800"
-                onClick={() =>
-                  setProfiles((arr) => arr.filter((x) => x.id !== p.id))
-                }
-              >
-                x
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 mb-2">
-              <div className="text-xs opacity-70">ID: {p.id}</div>
-              <div className="flex-1" />
-              <select
-                className="bg-gray-700 rounded px-3 py-2"
-                value={p.mode || 'NETWORK'}
-                onChange={(e) =>
-                  setProfiles((arr) =>
-                    arr.map((x) =>
-                      x.id === p.id ? { ...x, mode: e.target.value as any } : x,
-                    ),
-                  )
-                }
-              >
-                <option value="NETWORK">Network (ESC/POS)</option>
-                <option value="SYSTEM">USB / System printer</option>
-                <option value="SERIAL">
-                  Serial (ESC/POS / many Bluetooth)
-                </option>
-              </select>
-            </div>
-
-            {p.mode === 'NETWORK' ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <input
-                    className="bg-gray-700 rounded px-3 py-2 flex-1"
-                    placeholder="Printer IP (e.g. 192.168.1.50)"
-                    value={p.ip || ''}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id ? { ...x, ip: e.target.value } : x,
-                        ),
-                      )
-                    }
-                  />
-                  <input
-                    className="w-28 bg-gray-700 rounded px-3 py-2"
-                    type="number"
-                    min={1}
-                    value={Number(p.port || 9100)}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, port: Number(e.target.value) }
-                            : x,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <div className="text-xs opacity-70">
-                  Raw TCP 9100 (default) or LPR 515.
-                </div>
-              </div>
-            ) : p.mode === 'SYSTEM' ? (
-              <div className="space-y-2">
-                <div className="flex gap-2">
-                  <select
-                    className="bg-gray-700 rounded px-3 py-2 flex-1"
-                    value={p.deviceName || ''}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, deviceName: e.target.value }
-                            : x,
-                        ),
-                      )
-                    }
-                  >
-                    <option value="">(default printer)</option>
-                    {printers.map((sp) => (
-                      <option key={sp.name} value={sp.name}>
-                        {sp.name}
-                        {sp.isDefault ? ' (default)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-                    onClick={async () => {
-                      const list =
-                        (await (window.api.settings as any).listPrinters?.()) ||
-                        [];
-                      setPrinters(list);
-                    }}
-                  >
-                    Refresh
-                  </button>
-                </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={p.silent !== false}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, silent: e.target.checked }
-                            : x,
-                        ),
-                      )
-                    }
-                  />
-                  Silent print (no OS dialog)
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={p.systemRawEscpos !== false}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, systemRawEscpos: e.target.checked }
-                            : x,
-                        ),
-                      )
-                    }
-                  />
-                  Send raw ESC/POS (recommended for receipt printers; fixes
-                  “printing code”)
-                </label>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex gap-2">
-                  <select
-                    className="bg-gray-700 rounded px-3 py-2 flex-1"
-                    value={p.serialPath || ''}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, serialPath: e.target.value }
-                            : x,
-                        ),
-                      )
-                    }
-                  >
-                    <option value="">Select serial port…</option>
-                    {serialPorts.map((sp) => (
-                      <option key={sp.path} value={sp.path}>
-                        {sp.path}
-                        {sp.manufacturer ? ` (${sp.manufacturer})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-                    onClick={async () => {
-                      try {
-                        const list =
-                          (await (
-                            window.api.settings as any
-                          ).listSerialPorts?.()) || [];
-                        setSerialPorts(list);
-                        if (!list.length)
-                          setStatus(
-                            'No serial ports found. If you see an error in console, run: pnpm run serial:rebuild',
-                          );
-                      } catch (e: any) {
-                        setStatus(
-                          String(
-                            e?.message ||
-                              'Serial ports unavailable. Run: pnpm run serial:rebuild',
-                          ),
-                        );
-                      }
-                    }}
-                  >
-                    Refresh
-                  </button>
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    className="w-32 bg-gray-700 rounded px-3 py-2"
-                    type="number"
-                    min={1200}
-                    value={Number(p.baudRate || 19200)}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, baudRate: Number(e.target.value) }
-                            : x,
-                        ),
-                      )
-                    }
-                  />
-                  <select
-                    className="bg-gray-700 rounded px-3 py-2"
-                    value={p.parity || 'none'}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, parity: e.target.value as any }
-                            : x,
-                        ),
-                      )
-                    }
-                  >
-                    <option value="none">Parity: none</option>
-                    <option value="even">Parity: even</option>
-                    <option value="odd">Parity: odd</option>
-                  </select>
-                  <select
-                    className="bg-gray-700 rounded px-3 py-2"
-                    value={p.dataBits || 8}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, dataBits: Number(e.target.value) as any }
-                            : x,
-                        ),
-                      )
-                    }
-                  >
-                    <option value={8}>Data: 8</option>
-                    <option value={7}>Data: 7</option>
-                  </select>
-                  <select
-                    className="bg-gray-700 rounded px-3 py-2"
-                    value={p.stopBits || 1}
-                    onChange={(e) =>
-                      setProfiles((arr) =>
-                        arr.map((x) =>
-                          x.id === p.id
-                            ? { ...x, stopBits: Number(e.target.value) as any }
-                            : x,
-                        ),
-                      )
-                    }
-                  >
-                    <option value={1}>Stop: 1</option>
-                    <option value={2}>Stop: 2</option>
-                  </select>
-                </div>
-                <div className="text-xs opacity-70">
-                  Typical Epson: 19200, none, 8, 1.
-                </div>
-              </div>
-            )}
-          </div>
+            profile={p}
+            printers={printers}
+            serialPorts={serialPorts}
+            onUpdate={(patch) =>
+              setProfiles((arr) =>
+                arr.map((x) => (x.id === p.id ? { ...x, ...patch } : x)),
+              )
+            }
+            onDelete={() =>
+              setProfiles((arr) => arr.filter((x) => x.id !== p.id))
+            }
+            onRefreshPrinters={async () => {
+              const list =
+                (await (window.api.settings as any).listPrinters?.()) || [];
+              setPrinters(list);
+            }}
+            onRefreshSerial={async () => {
+              try {
+                const list =
+                  (await (window.api.settings as any).listSerialPorts?.()) ||
+                  [];
+                setSerialPorts(list);
+                if (!list.length) setStatus('No serial ports found.');
+              } catch (e: any) {
+                setStatus(String(e?.message || 'Serial ports unavailable.'));
+              }
+            }}
+          />
         ))}
       </div>
 
@@ -1904,6 +1826,262 @@ function PrinterSettings() {
       >
         {saving ? 'Saving…' : 'Save Printers'}
       </button>
+    </div>
+  );
+}
+
+function PrinterProfileCard({
+  profile: p,
+  printers,
+  serialPorts,
+  onUpdate,
+  onDelete,
+  onRefreshPrinters,
+  onRefreshSerial,
+}: {
+  profile: PrinterProfile;
+  printers: { name: string; isDefault?: boolean }[];
+  serialPorts: { path: string; manufacturer?: string }[];
+  onUpdate: (patch: Partial<PrinterProfile>) => void;
+  onDelete: () => void;
+  onRefreshPrinters: () => Promise<void>;
+  onRefreshSerial: () => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const mode = p.mode || 'NETWORK';
+  const modeLabel =
+    mode === 'NETWORK' ? 'Network' : mode === 'SYSTEM' ? 'USB' : 'Serial';
+  const connectionDetail =
+    mode === 'NETWORK'
+      ? `${p.ip || '—'}:${p.port || 9100}`
+      : mode === 'SYSTEM'
+        ? p.deviceName || '(default printer)'
+        : p.serialPath || '(none)';
+
+  return (
+    <div className="border border-gray-700 rounded bg-gray-900/30 overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-800/40 transition-colors"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span
+          className="transition-transform duration-150"
+          style={{ transform: expanded ? 'rotate(90deg)' : undefined }}
+        >
+          <ChevronRight />
+        </span>
+
+        <span className="font-semibold truncate flex-1">{p.name}</span>
+
+        <span className="text-[11px] px-2 py-0.5 rounded bg-gray-700 font-medium">
+          {modeLabel}
+        </span>
+
+        <span
+          className={`text-[11px] px-2 py-0.5 rounded font-medium ${
+            p.enabled !== false
+              ? 'bg-emerald-700/40 text-emerald-300'
+              : 'bg-gray-700 text-gray-400'
+          }`}
+        >
+          {p.enabled !== false ? 'Enabled' : 'Disabled'}
+        </span>
+      </button>
+
+      <div className="px-3 pb-1 -mt-1 text-[11px] text-gray-500 flex items-center gap-2">
+        <span>ID: {p.id}</span>
+        <span className="opacity-40">·</span>
+        <span className="truncate">{connectionDetail}</span>
+      </div>
+
+      {expanded && (
+        <div className="px-3 pb-3 pt-2 space-y-3 border-t border-gray-700/50 mt-1">
+          <div className="flex items-center gap-2">
+            <input
+              className="bg-gray-700 rounded px-3 py-2 flex-1"
+              placeholder="Printer name"
+              value={p.name}
+              onChange={(e) => onUpdate({ name: e.target.value })}
+            />
+            <label className="text-sm flex items-center gap-2 whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={p.enabled !== false}
+                onChange={(e) => onUpdate({ enabled: e.target.checked })}
+              />
+              Enabled
+            </label>
+            <button
+              className="px-2 py-2 rounded bg-rose-700 hover:bg-rose-800"
+              onClick={onDelete}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                className="w-4 h-4"
+                aria-hidden
+              >
+                <path
+                  d="M6 6l12 12M18 6 6 18"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </div>
+
+          <select
+            className="bg-gray-700 rounded px-3 py-2 w-full"
+            value={mode}
+            onChange={(e) => onUpdate({ mode: e.target.value as any })}
+          >
+            <option value="NETWORK">Network (ESC/POS)</option>
+            <option value="SYSTEM">USB / System printer</option>
+            <option value="SERIAL">Serial (ESC/POS / many Bluetooth)</option>
+          </select>
+
+          {mode === 'NETWORK' && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  className="bg-gray-700 rounded px-3 py-2 flex-1"
+                  placeholder="Printer IP (e.g. 192.168.1.50)"
+                  value={p.ip || ''}
+                  onChange={(e) => onUpdate({ ip: e.target.value })}
+                />
+                <input
+                  className="w-28 bg-gray-700 rounded px-3 py-2"
+                  type="number"
+                  min={1}
+                  value={Number(p.port || 9100)}
+                  onChange={(e) => onUpdate({ port: Number(e.target.value) })}
+                />
+              </div>
+              <div className="text-xs opacity-70">
+                Raw TCP 9100 (default) or LPR 515.
+              </div>
+            </div>
+          )}
+
+          {mode === 'SYSTEM' && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <select
+                  className="bg-gray-700 rounded px-3 py-2 flex-1"
+                  value={p.deviceName || ''}
+                  onChange={(e) => onUpdate({ deviceName: e.target.value })}
+                >
+                  <option value="">(default printer)</option>
+                  {printers.map((sp) => (
+                    <option key={sp.name} value={sp.name}>
+                      {sp.name}
+                      {sp.isDefault ? ' (default)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+                  onClick={() => onRefreshPrinters()}
+                >
+                  Refresh
+                </button>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={p.silent !== false}
+                  onChange={(e) => onUpdate({ silent: e.target.checked })}
+                />
+                Silent print (no OS dialog)
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={p.systemRawEscpos !== false}
+                  onChange={(e) =>
+                    onUpdate({ systemRawEscpos: e.target.checked })
+                  }
+                />
+                Send raw ESC/POS (recommended for receipt printers)
+              </label>
+            </div>
+          )}
+
+          {mode === 'SERIAL' && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <select
+                  className="bg-gray-700 rounded px-3 py-2 flex-1"
+                  value={p.serialPath || ''}
+                  onChange={(e) => onUpdate({ serialPath: e.target.value })}
+                >
+                  <option value="">Select serial port…</option>
+                  {serialPorts.map((sp) => (
+                    <option key={sp.path} value={sp.path}>
+                      {sp.path}
+                      {sp.manufacturer ? ` (${sp.manufacturer})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+                  onClick={() => onRefreshSerial()}
+                >
+                  Refresh
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  className="bg-gray-700 rounded px-3 py-2"
+                  type="number"
+                  min={1200}
+                  placeholder="Baud rate"
+                  value={Number(p.baudRate || 19200)}
+                  onChange={(e) =>
+                    onUpdate({ baudRate: Number(e.target.value) })
+                  }
+                />
+                <select
+                  className="bg-gray-700 rounded px-3 py-2"
+                  value={p.parity || 'none'}
+                  onChange={(e) => onUpdate({ parity: e.target.value as any })}
+                >
+                  <option value="none">Parity: none</option>
+                  <option value="even">Parity: even</option>
+                  <option value="odd">Parity: odd</option>
+                </select>
+                <select
+                  className="bg-gray-700 rounded px-3 py-2"
+                  value={p.dataBits || 8}
+                  onChange={(e) =>
+                    onUpdate({ dataBits: Number(e.target.value) as any })
+                  }
+                >
+                  <option value={8}>Data: 8</option>
+                  <option value={7}>Data: 7</option>
+                </select>
+                <select
+                  className="bg-gray-700 rounded px-3 py-2"
+                  value={p.stopBits || 1}
+                  onChange={(e) =>
+                    onUpdate({ stopBits: Number(e.target.value) as any })
+                  }
+                >
+                  <option value={1}>Stop: 1</option>
+                  <option value={2}>Stop: 2</option>
+                </select>
+              </div>
+              <div className="text-xs opacity-70">
+                Typical Epson: 19200, none, 8, 1.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2280,7 +2458,7 @@ function LanSettings() {
     };
     return (
       (list || [])
-        .filter(Boolean)
+      .filter(Boolean)
         .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0] || ''
     );
   }

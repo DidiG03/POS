@@ -99,6 +99,9 @@ const api: Api = {
     create: () => ipcRenderer.invoke('backups:create'),
     restore: (input: { name: string }) =>
       ipcRenderer.invoke('backups:restore', input),
+    uploadToCloud: (input?: { name?: string }) =>
+      ipcRenderer.invoke('backups:uploadToCloud', input || {}),
+    syncFromCloud: () => ipcRenderer.invoke('sync:fromCloud'),
   },
   reports: {
     getMyOverview: (userId: number) =>
@@ -116,6 +119,10 @@ const api: Api = {
       q?: string;
       limit?: number;
     }) => ipcRenderer.invoke('reports:listMyPaidTickets', input),
+    listMyVoidedTickets: (input: {
+      userId: number;
+      limit?: number;
+    }) => ipcRenderer.invoke('reports:listMyVoidedTickets', input),
   },
   offline: {
     getStatus: () => ipcRenderer.invoke('offline:getStatus'),

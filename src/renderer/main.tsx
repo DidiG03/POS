@@ -8,7 +8,10 @@ import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from './components/Toaster';
+import { initMobileShell } from './utils/mobileShell';
 // PWA registration disabled for desktop build
+
+void initMobileShell();
 
 // Initialize Sentry in renderer (if available via Electron preload)
 // @sentry/electron automatically sets up renderer instrumentation when initialized in main process,
@@ -82,12 +85,30 @@ if (!(window as any).api) {
     if (backParam) localStorage.setItem('pos_backend_host', backParam);
     if (httpParam) localStorage.setItem('pos_backend_http', httpParam);
     if (httpsParam) localStorage.setItem('pos_backend_https', httpsParam);
+    // Inside Capacitor (iOS/Android WebView) window.location.hostname is
+    // "localhost" / capacitor-scheme, so we cannot use it as a fallback.
+    // Use VITE_DEFAULT_BACKEND_HOST baked at build time instead.
+    const isMobileShell =
+      Boolean((import.meta as any)?.env?.VITE_MOBILE_TARGET) ||
+      Boolean((window as any).Capacitor);
+    const envHost = String(
+      (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HOST || '',
+    ).trim();
+    const envHttp = String(
+      (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HTTP || '',
+    ).trim();
+    const envHttps = String(
+      (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HTTPS || '',
+    ).trim();
     const host =
       localStorage.getItem('pos_backend_host') ||
-      window.location.hostname ||
+      envHost ||
+      (isMobileShell ? '' : window.location.hostname) ||
       'localhost';
-    const httpPort = localStorage.getItem('pos_backend_http') || '3333';
-    const httpsPort = localStorage.getItem('pos_backend_https') || '3443';
+    const httpPort =
+      localStorage.getItem('pos_backend_http') || envHttp || '3333';
+    const httpsPort =
+      localStorage.getItem('pos_backend_https') || envHttps || '3443';
     return { host, httpPort, httpsPort };
   };
   const { host, httpPort, httpsPort } = pickBackend();
@@ -336,12 +357,10 @@ if (!(window as any).api) {
         } catch {
           throw new Error('Pairing code required');
         }
-        const body = IS_CLOUD
-          ? { businessCode: getBusinessCode(), pin, userId }
-          : { pin, userId, pairingCode };
-        const resp = await go('/auth/login', {
+        // Always go through host so it can proxy to cloud with correct userId translation
+        const resp = await goLan('/auth/login', {
           method: 'POST',
-          body: JSON.stringify(body),
+          body: JSON.stringify({ pin, userId, pairingCode }),
         });
         if (resp && typeof resp === 'object' && 'token' in resp) {
           const t = (resp as any).token;
@@ -381,7 +400,7 @@ if (!(window as any).api) {
     },
     menu: {
       async listCategoriesWithItems() {
-        return await go('/menu/categories');
+        return await goLan('/menu/categories');
       },
       async createCategory() {
         throw new Error('not supported in browser');
@@ -416,7 +435,7 @@ if (!(window as any).api) {
             ],
           };
         }
-        return await go('/settings');
+        return await goLan('/settings');
       },
       async update(input: any) {
         if (IS_CLOUD) {
@@ -424,13 +443,13 @@ if (!(window as any).api) {
           setBusinessCode(bc);
           return await (window as any).api.settings.get();
         }
-        return await go('/settings/update', {
+        return await goLan('/settings/update', {
           method: 'POST',
           body: JSON.stringify(input),
         });
       },
       async testPrint() {
-        const r = await go('/print/test', {
+        const r = await goLan('/print/test', {
           method: 'POST',
           body: JSON.stringify({}),
         });
@@ -465,7 +484,7 @@ if (!(window as any).api) {
     billing: {
       async getStatus() {
         try {
-          return await go('/billing/status');
+          return await goLan('/billing/status');
         } catch (e: any) {
           return {
             billingEnabled: false,
@@ -476,7 +495,7 @@ if (!(window as any).api) {
       },
       async getStatusLive() {
         try {
-          return await go('/billing/status?live=1');
+          return await goLan('/billing/status?live=1');
         } catch (e: any) {
           return {
             billingEnabled: false,
@@ -487,7 +506,7 @@ if (!(window as any).api) {
       },
       async createCheckoutSession() {
         try {
-          return await go('/admin/billing/create-checkout', {
+          return await goLan('/admin/billing/create-checkout', {
             method: 'POST',
             body: JSON.stringify({}),
           });
@@ -499,7 +518,7 @@ if (!(window as any).api) {
       },
       async createPortalSession() {
         try {
-          return await go('/admin/billing/create-portal', {
+          return await goLan('/admin/billing/create-portal', {
             method: 'POST',
             body: JSON.stringify({}),
           });
@@ -524,18 +543,18 @@ if (!(window as any).api) {
     },
     shifts: {
       async getOpen(userId: number) {
-        return await go(
+        return await goLan(
           `/shifts/get-open?userId=${encodeURIComponent(String(userId))}`,
         );
       },
       async clockIn(userId: number) {
-        return await go('/shifts/clock-in', {
+        return await goLan('/shifts/clock-in', {
           method: 'POST',
           body: JSON.stringify({ userId }),
         });
       },
       async clockOut(userId: number) {
-        return await go('/shifts/clock-out', {
+        return await goLan('/shifts/clock-out', {
           method: 'POST',
           body: JSON.stringify({ userId }),
         });
@@ -547,23 +566,23 @@ if (!(window as any).api) {
     },
     tickets: {
       async log(input: any) {
-        await go('/tickets', { method: 'POST', body: JSON.stringify(input) });
+        await goLan('/tickets', { method: 'POST', body: JSON.stringify(input) });
         return true;
       },
       async getLatestForTable(area: string, tableLabel: string) {
-        return await go(
+        return await goLan(
           `/tickets/latest?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
         );
       },
       async voidItem(input: any) {
-        await go('/tickets/void-item', {
+        await goLan('/tickets/void-item', {
           method: 'POST',
           body: JSON.stringify(input),
         });
         return true;
       },
       async voidTicket(input: any) {
-        await go('/tickets/void-ticket', {
+        await goLan('/tickets/void-ticket', {
           method: 'POST',
           body: JSON.stringify(input),
         });
@@ -572,7 +591,7 @@ if (!(window as any).api) {
       async print(input: any) {
         if (IS_CLOUD) {
           const { recordOnly, ...payload } = (input || {}) as any;
-          await go('/print-jobs/enqueue', {
+          await goLan('/print-jobs/enqueue', {
             method: 'POST',
             body: JSON.stringify({
               type: 'RECEIPT',
@@ -582,7 +601,7 @@ if (!(window as any).api) {
           });
           return true;
         }
-        const r = await go('/print/ticket', {
+        const r = await goLan('/print/ticket', {
           method: 'POST',
           body: JSON.stringify(input),
         });
@@ -607,17 +626,17 @@ if (!(window as any).api) {
     },
     tables: {
       async setOpen(area: string, label: string, open: boolean) {
-        await go('/tables/open', {
+        await goLan('/tables/open', {
           method: 'POST',
           body: JSON.stringify({ area, label, open }),
         });
         return true;
       },
       async listOpen() {
-        return await go('/tables/open');
+        return await goLan('/tables/open');
       },
       async transfer(input: any) {
-        return await go('/tables/transfer', {
+        return await goLan('/tables/transfer', {
           method: 'POST',
           body: JSON.stringify(input),
         });
@@ -625,21 +644,21 @@ if (!(window as any).api) {
     },
     covers: {
       async save(area: string, label: string, covers: number) {
-        await go('/covers/save', {
+        await goLan('/covers/save', {
           method: 'POST',
           body: JSON.stringify({ area, label, covers }),
         });
         return true;
       },
       async getLast(area: string, label: string) {
-        return await go(
+        return await goLan(
           `/covers/last?area=${encodeURIComponent(area)}&label=${encodeURIComponent(label)}`,
         );
       },
     },
     admin: {
       async getOverview() {
-        return await go('/admin/overview');
+        return await goLan('/admin/overview');
       },
       async openWindow() {
         return false;
@@ -664,7 +683,7 @@ if (!(window as any).api) {
       },
       async getSalesTrends(input: any) {
         const range = input?.range || 'daily';
-        return await go(
+        return await goLan(
           `/admin/sales-trends?range=${encodeURIComponent(range)}`,
         );
       },
@@ -709,19 +728,19 @@ if (!(window as any).api) {
     },
     reports: {
       async getMyOverview(_userId: number) {
-        return await go('/reports/my/overview');
+        return await goLan('/reports/my/overview');
       },
       async getMyTopSellingToday(_userId: number) {
-        return await go('/reports/my/top-selling-today');
+        return await goLan('/reports/my/top-selling-today');
       },
       async getMySalesTrends(input: any) {
         const range = String(input?.range || 'daily');
-        return await go(
+        return await goLan(
           `/reports/my/sales-trends?range=${encodeURIComponent(range)}`,
         );
       },
       async listMyActiveTickets(_userId: number) {
-        return await go('/reports/my/active-tickets');
+        return await goLan('/reports/my/active-tickets');
       },
       async listMyPaidTickets(input: any) {
         const q = String(input?.q || '').trim();
@@ -729,7 +748,11 @@ if (!(window as any).api) {
         const qs = new URLSearchParams();
         if (q) qs.set('q', q);
         if (Number.isFinite(limit) && limit > 0) qs.set('limit', String(limit));
-        return await go(`/reports/my/paid-tickets?${qs.toString()}`);
+        return await goLan(`/reports/my/paid-tickets?${qs.toString()}`);
+      },
+      async listMyVoidedTickets(input: any) {
+        const limit = Number(input?.limit || 40);
+        return await goLan(`/reports/my/voided-tickets?limit=${limit}`);
       },
     },
     offline: {
@@ -740,12 +763,12 @@ if (!(window as any).api) {
     },
     layout: {
       async get(userId: number, area: string) {
-        return await go(
+        return await goLan(
           `/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(area)}`,
         );
       },
       async save(userId: number, area: string, nodes: any[]) {
-        await go('/layout/save', {
+        await goLan('/layout/save', {
           method: 'POST',
           body: JSON.stringify({ userId, area, nodes }),
         });
@@ -757,11 +780,11 @@ if (!(window as any).api) {
         void userId;
         const q = new URLSearchParams();
         if (onlyUnread) q.set('onlyUnread', '1');
-        return await go(`/notifications?${q.toString()}`);
+        return await goLan(`/notifications?${q.toString()}`);
       },
       async markAllRead(userId: number) {
         void userId;
-        await go('/notifications/mark-all-read', {
+        await goLan('/notifications/mark-all-read', {
           method: 'POST',
           body: JSON.stringify({}),
         });
@@ -770,21 +793,21 @@ if (!(window as any).api) {
     },
     requests: {
       create: async (input: any) =>
-        go('/requests/create', {
+        goLan('/requests/create', {
           method: 'POST',
           body: JSON.stringify(input),
         }).then(() => true),
       listForOwner: async (ownerId: number) =>
-        go(
+        goLan(
           `/requests/list-for-owner?ownerId=${encodeURIComponent(String(ownerId))}`,
         ),
       approve: async (id: number, ownerId: number) =>
-        go('/requests/approve', {
+        goLan('/requests/approve', {
           method: 'POST',
           body: JSON.stringify({ id, ownerId }),
         }).then(() => true),
       reject: async (id: number, ownerId: number) =>
-        go('/requests/reject', {
+        goLan('/requests/reject', {
           method: 'POST',
           body: JSON.stringify({ id, ownerId }),
         }).then(() => true),
@@ -793,11 +816,11 @@ if (!(window as any).api) {
         area: string,
         tableLabel: string,
       ) =>
-        go(
+        goLan(
           `/requests/poll-approved?ownerId=${encodeURIComponent(String(ownerId))}&area=${encodeURIComponent(area)}&tableLabel=${encodeURIComponent(tableLabel)}`,
         ),
       markApplied: async (ids: number[]) =>
-        go('/requests/mark-applied', {
+        goLan('/requests/mark-applied', {
           method: 'POST',
           body: JSON.stringify({ ids }),
         }).then(() => true),
@@ -827,6 +850,8 @@ function BootScreen({
   const isBrowser =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
+  const [showSetup, setShowSetup] = useState(false);
+  const [setupNonce, setSetupNonce] = useState(0);
   const backend = useMemo(() => {
     try {
       const host =
@@ -834,39 +859,278 @@ function BootScreen({
         window.location.hostname ||
         'localhost';
       const httpPort = localStorage.getItem('pos_backend_http') || '3333';
-      return { host, httpPort };
+      const httpsPort = localStorage.getItem('pos_backend_https') || '3443';
+      return { host, httpPort, httpsPort };
     } catch {
       return {
         host: window.location.hostname || 'localhost',
         httpPort: '3333',
+        httpsPort: '3443',
       };
     }
-  }, []);
+    // setupNonce forces a re-read after the user saves new settings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupNonce]);
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
-      <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded p-6">
-        <div className="text-lg font-semibold mb-2">{message}</div>
-        {detail && <div className="text-sm opacity-80 mb-4">{detail}</div>}
+    <div className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100 px-6">
+      <div className="flex flex-col items-center gap-4 w-full max-w-md">
+        <svg
+          className="w-7 h-7 animate-spin text-indigo-400"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+        <div className="text-sm text-gray-300 text-center">{message}</div>
+        {detail && (
+          <div className="text-xs text-gray-500 text-center">{detail}</div>
+        )}
         {isBrowser && (
-          <div className="text-xs opacity-70 mb-4">
+          <div className="text-xs text-gray-500 text-center">
             Backend:{' '}
             <span className="font-mono">
               {backend.host}:{backend.httpPort}
             </span>
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <div className="text-xs opacity-70">Please wait…</div>
-        </div>
-        {canRetry && onRetry && (
-          <button
-            className="mt-4 w-full px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-            onClick={onRetry}
-          >
-            Retry
-          </button>
+        {(canRetry || isBrowser) && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 justify-center">
+            {canRetry && onRetry && (
+              <button
+                className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                onClick={onRetry}
+              >
+                Retry
+              </button>
+            )}
+            {isBrowser && (
+              <button
+                className="px-4 py-2 rounded bg-indigo-700 hover:bg-indigo-600 text-sm"
+                onClick={() => setShowSetup(true)}
+                type="button"
+              >
+                Configure server
+              </button>
+            )}
+          </div>
         )}
+      </div>
+      {showSetup && (
+        <BackendSetupModal
+          initial={backend}
+          onClose={() => setShowSetup(false)}
+          onSaved={() => {
+            // Reload so api.ts / goLan picks up the new host. This is the
+            // simplest correct path — nothing in the renderer caches the
+            // backend across config changes.
+            try {
+              setSetupNonce((n) => n + 1);
+              window.location.reload();
+            } catch {
+              // ignore
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Lightweight first-run / recovery panel for waiter phones.
+// Lets the user set the LAN host of the POS computer (and optional ports)
+// without having to rebuild the app or know URL params.
+function BackendSetupModal({
+  initial,
+  onClose,
+  onSaved,
+}: {
+  initial: { host: string; httpPort: string; httpsPort: string };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [host, setHost] = useState(initial.host);
+  const [httpPort, setHttpPort] = useState(initial.httpPort);
+  const [httpsPort, setHttpsPort] = useState(initial.httpsPort);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  function isValidHost(v: string): boolean {
+    const trimmed = v.trim();
+    if (!trimmed) return false;
+    // IPv4
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed)) {
+      return trimmed
+        .split('.')
+        .every((n) => Number(n) >= 0 && Number(n) <= 255);
+    }
+    // Hostname (Tailscale MagicDNS, mDNS, public domain). Conservative.
+    return /^[a-zA-Z0-9]([a-zA-Z0-9-.]*[a-zA-Z0-9])?$/.test(trimmed);
+  }
+
+  function isValidPort(v: string): boolean {
+    if (!v.trim()) return true; // empty is fine, defaults will apply
+    const n = Number(v);
+    return Number.isInteger(n) && n > 0 && n < 65536;
+  }
+
+  async function handleSave() {
+    setError(null);
+    const trimmedHost = host.trim();
+    if (!isValidHost(trimmedHost)) {
+      setError('Enter a valid IP address or hostname');
+      return;
+    }
+    if (!isValidPort(httpPort) || !isValidPort(httpsPort)) {
+      setError('Ports must be numbers between 1 and 65535');
+      return;
+    }
+    setSaving(true);
+    try {
+      localStorage.setItem('pos_backend_host', trimmedHost);
+      if (httpPort.trim())
+        localStorage.setItem('pos_backend_http', httpPort.trim());
+      else localStorage.removeItem('pos_backend_http');
+      if (httpsPort.trim())
+        localStorage.setItem('pos_backend_https', httpsPort.trim());
+      else localStorage.removeItem('pos_backend_https');
+      onSaved();
+    } catch (e: any) {
+      setError(e?.message || 'Failed to save settings');
+      setSaving(false);
+    }
+  }
+
+  function handleClear() {
+    try {
+      localStorage.removeItem('pos_backend_host');
+      localStorage.removeItem('pos_backend_http');
+      localStorage.removeItem('pos_backend_https');
+      onSaved();
+    } catch (e: any) {
+      setError(e?.message || 'Failed to clear settings');
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+        onClick={onClose}
+        aria-label="Close"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
+      >
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
+          <div className="font-semibold">POS server</div>
+          <button
+            type="button"
+            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="w-4 h-4"
+            >
+              <path
+                d="M6 6l12 12M18 6 6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <div className="p-4 space-y-4">
+          <div className="text-xs text-gray-400">
+            Make sure your phone is on the same Wi-Fi as the POS computer.
+            On the POS computer, run <span className="font-mono">ipconfig getifaddr en0</span>{' '}
+            (Mac) or <span className="font-mono">ipconfig</span> (Windows) to find its IP.
+          </div>
+          <label className="block text-sm">
+            <div className="opacity-80 mb-1">Host (IP or name)</div>
+            <input
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
+              placeholder="e.g. 192.168.1.42 or pos-hall.local"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              inputMode="url"
+              autoFocus
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block text-sm">
+              <div className="opacity-80 mb-1">HTTP port</div>
+              <input
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
+                placeholder="3333"
+                value={httpPort}
+                onChange={(e) =>
+                  setHttpPort(e.target.value.replace(/[^0-9]/g, ''))
+                }
+                inputMode="numeric"
+              />
+            </label>
+            <label className="block text-sm">
+              <div className="opacity-80 mb-1">HTTPS port</div>
+              <input
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
+                placeholder="3443"
+                value={httpsPort}
+                onChange={(e) =>
+                  setHttpsPort(e.target.value.replace(/[^0-9]/g, ''))
+                }
+                inputMode="numeric"
+              />
+            </label>
+          </div>
+          {error && <div className="text-sm text-rose-300">{error}</div>}
+          <div className="flex flex-wrap gap-2 pt-2">
+            <button
+              className="flex-1 min-w-[120px] px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60"
+              type="button"
+              disabled={saving}
+              onClick={() => void handleSave()}
+            >
+              {saving ? 'Saving…' : 'Save & reload'}
+            </button>
+            <button
+              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+              type="button"
+              onClick={handleClear}
+              title="Forget saved server and use auto-detection"
+            >
+              Reset
+            </button>
+            <button
+              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+              type="button"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

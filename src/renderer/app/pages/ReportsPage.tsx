@@ -22,6 +22,8 @@ export default function ReportsPage() {
   const [paidTicketsError, setPaidTicketsError] = useState<string | null>(null);
   const [paidQuery, setPaidQuery] = useState<string>('');
   const [paidLimit, setPaidLimit] = useState<number>(40);
+  const [voidedTickets, setVoidedTickets] = useState<any[]>([]);
+  const [voidedTicketsError, setVoidedTicketsError] = useState<string | null>(null);
   const [ticketsApiMissing, setTicketsApiMissing] = useState<boolean>(false);
 
   useEffect(() => {
@@ -67,13 +69,15 @@ export default function ReportsPage() {
         setActiveTicketsError(null);
         setPaidTicketsError(null);
 
-        const [a, p] = await Promise.all([
+        const [a, p, v] = await Promise.all([
           window.api.reports.listMyActiveTickets(user.id),
           window.api.reports.listMyPaidTickets({ userId: user.id, q: paidQuery, limit: paidLimit }),
+          (window.api.reports as any).listMyVoidedTickets?.({ userId: user.id, limit: 40 }).catch(() => []),
         ]);
         if (!alive) return;
         setActiveTickets(Array.isArray(a) ? a : []);
         setPaidTickets(Array.isArray(p) ? p : []);
+        setVoidedTickets(Array.isArray(v) ? v : []);
       } catch (e: any) {
         const msg = String(e?.message || e || '');
         if (msg.includes("No handler registered for 'reports:listMyActiveTickets'") || msg.includes("No handler registered for 'reports:listMyPaidTickets'")) {
@@ -144,7 +148,7 @@ export default function ReportsPage() {
 
       {!loading && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2 p-3 rounded bg-gray-800 border border-gray-700">
+          {/* <div className="lg:col-span-2 p-3 rounded bg-gray-800 border border-gray-700">
             <div className="font-medium mb-2">Sales trend ({range})</div>
             {points.length === 0 ? (
               <div className="opacity-70 text-sm">No data</div>
@@ -165,9 +169,9 @@ export default function ReportsPage() {
                 ))}
               </ul>
             )}
-          </div>
+          </div> */}
 
-          <div className="p-3 rounded bg-gray-800 border border-gray-700">
+          {/* <div className="p-3 rounded bg-gray-800 border border-gray-700">
             <div className="font-medium mb-2">Top selling (today)</div>
             {!topSelling ? (
               <div className="opacity-70 text-sm">No data</div>
@@ -178,7 +182,7 @@ export default function ReportsPage() {
                 <div>Revenue: {fmtCurrency.format(topSelling.revenue)}</div>
               </div>
             )}
-          </div>
+          </div> */}
         </div>
       )}
 
@@ -192,7 +196,7 @@ export default function ReportsPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="p-3 rounded bg-gray-800 border border-gray-700">
               <div className="flex items-center justify-between mb-2">
                 <div className="font-medium">Active tickets</div>
@@ -248,6 +252,27 @@ export default function ReportsPage() {
                 <div className="space-y-3">
                   {paidTickets.map((t: any, idx: number) => (
                     <ReceiptCard key={`${t.area}:${t.tableLabel}:${t.createdAt}:${idx}`} ticket={t} fmtCurrency={fmtCurrency} />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 rounded bg-gray-800 border border-gray-700">
+              <div className="flex items-center justify-between mb-2">
+                <div className="font-medium">Voided tickets</div>
+                <div className="text-xs opacity-70">{voidedTickets.length}</div>
+              </div>
+              {voidedTicketsError && (
+                <div className="mb-2 text-xs text-rose-200 bg-rose-900/30 border border-rose-800 rounded px-3 py-2">
+                  {voidedTicketsError}
+                </div>
+              )}
+              {voidedTickets.length === 0 ? (
+                <div className="opacity-70 text-sm">No voided tickets.</div>
+              ) : (
+                <div className="space-y-3">
+                  {voidedTickets.map((t: any, idx: number) => (
+                    <VoidedReceiptCard key={`void-${t.area}:${t.tableLabel}:${t.createdAt}:${idx}`} ticket={t} fmtCurrency={fmtCurrency} />
                   ))}
                 </div>
               )}
@@ -379,6 +404,82 @@ function ReceiptCard({ ticket, fmtCurrency }: { ticket: any; fmtCurrency: Intl.N
             <div className="flex justify-between text-sm">
               <span className="font-semibold">{hasDiscount ? 'Total (after discount)' : 'Total'}</span>
               <span className="font-semibold">{fmtCurrency.format(Number(ticket?.total || 0))}</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VoidedReceiptCard({ ticket, fmtCurrency }: { ticket: any; fmtCurrency: Intl.NumberFormat }) {
+  const [open, setOpen] = useState<boolean>(false);
+  const items = Array.isArray(ticket?.items) ? ticket.items : [];
+  const when = ticket?.createdAt ? new Date(ticket.createdAt) : null;
+  const isFullVoid = ticket?.kind === 'VOIDED_TICKET';
+
+  return (
+    <div className="rounded border border-rose-800/60 bg-rose-950/30 text-gray-100 overflow-hidden">
+      <button
+        className="w-full text-left px-3 py-2 border-b border-rose-800/40 flex items-start justify-between gap-3"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div>
+          <div className="font-semibold text-sm flex items-center gap-2">
+            {ticket?.area ? `${ticket.area} • ` : ''}Table {ticket?.tableLabel}
+            <span className={`text-xs font-normal px-2 py-0.5 rounded ${isFullVoid ? 'bg-rose-700/60 text-rose-100' : 'bg-amber-700/60 text-amber-100'}`}>
+              {isFullVoid ? 'Fully voided' : `${ticket?.voidedCount || items.length} item${(ticket?.voidedCount || items.length) > 1 ? 's' : ''} voided`}
+            </span>
+          </div>
+          <div className="text-xs text-gray-400">
+            {ticket?.userName ? `Waiter: ${ticket.userName}` : 'Waiter: —'}
+            {ticket?.covers != null ? ` • Covers: ${ticket.covers}` : ''}
+          </div>
+        </div>
+        <div className="text-xs text-gray-400 whitespace-nowrap">
+          {when ? when.toLocaleString() : ''}
+        </div>
+      </button>
+
+      {open && (
+        <div className="px-3 py-2 font-mono">
+          {ticket?.note ? (
+            <div className="text-xs mb-2">
+              <span className="font-semibold">Note:</span> {String(ticket.note)}
+            </div>
+          ) : null}
+
+          <div className="border-t border-rose-800/40 pt-2">
+            {items.length === 0 ? (
+              <div className="text-xs text-gray-400">No items</div>
+            ) : (
+              <div className="space-y-1">
+                {items.map((it: any, idx: number) => {
+                  const qty = Number(it?.qty || 1);
+                  const name = String(it?.name || 'Item');
+                  const unit = Number(it?.unitPrice || 0);
+                  const line = unit * qty;
+                  return (
+                    <div key={idx} className="flex items-start justify-between gap-3 text-xs">
+                      <div className="flex-1">
+                        <div className="flex items-baseline gap-2">
+                          <div className="font-semibold line-through opacity-70">{qty}x</div>
+                          <div className="break-words line-through opacity-70">{name}</div>
+                        </div>
+                        <div className="text-[11px] text-gray-500">{fmtCurrency.format(unit)} each</div>
+                      </div>
+                      <div className="whitespace-nowrap line-through opacity-70">{fmtCurrency.format(line)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-rose-800/40 mt-2 pt-2 text-xs">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Voided total</span>
+              <span className="font-semibold text-rose-300">{fmtCurrency.format(Number(ticket?.subtotal || 0))}</span>
             </div>
           </div>
         </div>

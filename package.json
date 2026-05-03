@@ -24,7 +24,17 @@
     "db:migrate": "prisma migrate dev --name init",
     "db:seed": "tsx scripts/seed.ts",
     "db:wipe": "tsx scripts/wipeLocalDb.ts",
+    "db:check-parity": "tsx scripts/checkSchemaParity.ts",
     "serial:rebuild": "node scripts/rebuildSerialport.mjs",
+    "dev:mobile": "vite --config vite.mobile.config.ts",
+    "build:mobile": "vite build --config vite.mobile.config.ts",
+    "cap:sync": "pnpm build:mobile && cap sync",
+    "cap:add:ios": "cap add ios",
+    "cap:add:android": "cap add android",
+    "cap:open:ios": "cap open ios",
+    "cap:open:android": "cap open android",
+    "cap:run:ios": "pnpm cap:sync && cap run ios",
+    "cap:run:android": "pnpm cap:sync && cap run android",
     "prepare": "husky"
   },
   "engines": {
@@ -110,6 +120,7 @@
     ]
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.3.1",
     "@eslint/js": "^9.33.0",
     "@playwright/test": "^1.54.2",
     "@tailwindcss/postcss": "^4.1.11",
@@ -141,6 +152,14 @@
   },
   "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748",
   "dependencies": {
+    "@capacitor/android": "^8.3.1",
+    "@capacitor/core": "^8.3.1",
+    "@capacitor/ios": "^8.3.1",
+    "@capacitor/keyboard": "^8.0.3",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.2",
     "@prisma/client": "^6.13.0",
     "@sentry/electron": "^7.6.0",
     "bcryptjs": "^3.0.2",

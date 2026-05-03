@@ -4,7 +4,10 @@ import { useSessionStore } from '../stores/session';
 import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
-import { isClockOnlyRole } from '@shared/utils/roles';
+import {
+  isClockOnlyRole,
+  canSeeReportsOnMobile,
+} from '@shared/utils/roles';
 import { toast } from '../stores/toasts';
 
 function IconTables() {
@@ -216,6 +219,9 @@ export default function AppLayout() {
 
   const clockOnly = Boolean(user && isClockOnlyRole((user as any).role));
   const isWaiter = String((user as any)?.role || '').toUpperCase() === 'WAITER';
+  // Hide back-office tabs on mobile/tablet for roles that can't use them.
+  const showReportsTab =
+    !clockOnly && (!isBrowserClient || canSeeReportsOnMobile((user as any)?.role));
   const billingEnabled = Boolean(billing?.billingEnabled);
   const billingStatus = String(billing?.status || 'ACTIVE').toUpperCase();
   const billingPaused =
@@ -269,19 +275,19 @@ export default function AppLayout() {
           disabled to prevent mistakes.
         </div>
       )}
-      <header className="bg-gray-800 px-3 sm:px-4 py-2 sm:py-3 grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-2 items-center">
-        <div className="flex items-center gap-2 min-w-0 justify-start">
+      <header className="bg-gray-800 px-3 sm:px-4 py-2.5 sm:py-3 flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0 justify-start flex-1 sm:flex-initial">
           <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
             <span className="hidden sm:inline">
-              Code Orbit - {user?.displayName} -
+            {user?.displayName}
             </span>
-            <span className="sm:hidden">CO - {user?.displayName}</span>
+            <span className="sm:hidden">{user?.displayName}</span>
           </div>
           {user && (
             <>
               {hasOpen && (
                 <button
-                  className="cursor-pointer hover:underline text-sm whitespace-nowrap"
+                  className="cursor-pointer hover:underline text-xs sm:text-sm whitespace-nowrap text-gray-300 px-1.5 py-1 rounded hover:bg-gray-700/50"
                   onClick={async () => {
                     if (!clockOnly) {
                       const { openMap } = useTableStatus.getState();
@@ -331,8 +337,11 @@ export default function AppLayout() {
           )}
         </div>
 
-        {/* Center nav (primary actions) */}
-        <div className="flex items-center justify-start sm:justify-center min-w-0">
+        {/* Center nav — hidden on mobile to keep the header compact.
+            Mobile users only ever have one or two destinations and we
+            already gate role-restricted routes via RequireReportsAccess /
+            RequireKdsAccess in routes.tsx. */}
+        <div className="hidden sm:flex items-center justify-center min-w-0">
           <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto whitespace-nowrap">
             {!isWaiter && (
               <NavLink
@@ -345,36 +354,36 @@ export default function AppLayout() {
               </NavLink>
             )}
             {!clockOnly && (
-              <>
-                <NavLink
-                  to="/app/tables"
-                  className={({ isActive }) =>
-                    `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
-                  }
-                  title="Tables"
-                >
-                  <IconTables />
-                  <span className="hidden sm:inline">Tables</span>
-                </NavLink>
-                <NavLink
-                  to="/app/reports"
-                  className={({ isActive }) =>
-                    `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
-                  }
-                  title="Reports"
-                >
-                  <IconReports />
-                  <span className="hidden sm:inline">Reports</span>
-                </NavLink>
-              </>
+              <NavLink
+                to="/app/tables"
+                className={({ isActive }) =>
+                  `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+                }
+                title="Tables"
+              >
+                <IconTables />
+                <span>Tables</span>
+              </NavLink>
+            )}
+            {showReportsTab && (
+              <NavLink
+                to="/app/reports"
+                className={({ isActive }) =>
+                  `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+                }
+                title="Reports"
+              >
+                <IconReports />
+                <span>Reports</span>
+              </NavLink>
             )}
           </div>
         </div>
 
-        <nav className="flex items-center gap-2 sm:gap-3 min-w-0 justify-start sm:justify-end">
+        <nav className="flex items-center gap-1.5 sm:gap-3 min-w-0 justify-end">
           {user && (
             <div
-              className={`text-xs px-2 py-1 rounded border ${
+              className={`hidden sm:flex text-xs px-2 py-1 rounded border items-center gap-1.5 ${
                 !syncOk
                   ? 'bg-rose-900/30 border-rose-800 text-rose-100'
                   : queued > 0
@@ -396,6 +405,32 @@ export default function AppLayout() {
                   : 'Online'}
             </div>
           )}
+          {/* Mobile: just a colored dot. */}
+          {user && (
+            <span
+              className={`sm:hidden inline-block w-2.5 h-2.5 rounded-full ${
+                !syncOk
+                  ? 'bg-rose-500'
+                  : queued > 0
+                    ? 'bg-amber-400'
+                    : 'bg-emerald-500'
+              }`}
+              aria-label={
+                !syncOk
+                  ? 'Offline'
+                  : queued > 0
+                    ? `Syncing ${queued}`
+                    : 'Online'
+              }
+              title={
+                !syncOk
+                  ? 'Offline / cannot reach host'
+                  : queued > 0
+                    ? 'Syncing queued actions'
+                    : 'All synced'
+              }
+            />
+          )}
 
           {/* Notification bell (kept OUTSIDE the horizontal scroller so the dropdown isn't clipped) */}
           <div
@@ -407,7 +442,7 @@ export default function AppLayout() {
             }}
           >
             <button
-              className="p-2 rounded hover:bg-gray-700 cursor-pointer"
+              className="p-2 rounded hover:bg-gray-700 cursor-pointer min-h-0"
               aria-label="Notifications"
               onClick={() => setShowNotifications((v) => !v)}
               type="button"
@@ -421,7 +456,7 @@ export default function AppLayout() {
                 <path d="M12 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 006 14h12a1 1 0 00.707-1.707L18 11.586V8a6 6 0 00-6-6zm0 20a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
               </svg>
               {unreadCount > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] px-1 rounded-full">
+                <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] px-1 rounded-full min-w-[1.1rem] text-center">
                   {unreadCount}
                 </span>
               )}
@@ -465,20 +500,20 @@ export default function AppLayout() {
 
           {user && (
             <button
-              className="ml-1 px-3 py-1 rounded bg-red-700 hover:bg-red-800 cursor-pointer text-sm flex items-center gap-2"
+              className="ml-1 px-2 sm:px-3 py-1.5 rounded bg-red-700 hover:bg-red-800 cursor-pointer text-sm flex items-center gap-2 min-h-0"
               onClick={() => {
                 forceLogout('Logged out');
               }}
               type="button"
               title="Logout"
+              aria-label="Logout"
             >
               <IconLogout />
-              <span className="hidden sm:inline">Logout</span>
             </button>
           )}
         </nav>
       </header>
-      <main className="flex-1 p-2 sm:p-4 min-h-0 overflow-hidden">
+      <main className="flex-1 p-2 sm:p-4 safe-pb safe-x min-h-0 overflow-hidden">
         <Outlet />
       </main>
       <UpdateNotification />
