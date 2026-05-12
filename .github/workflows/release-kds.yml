@@ -64,6 +64,7 @@ jobs:
         run: pnpm build:kds
 
       - name: Build + publish installer
+        shell: bash
         env:
           # GitHub Releases auth — built-in token has write permissions
           # for the repo it runs in (DidiG03/POS).
@@ -84,11 +85,31 @@ jobs:
           # builds but users see a SmartScreen warning.
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: >
-          pnpm exec electron-builder
-          --config electron-builder.kds.yml
-          ${{ matrix.target }}
-          --publish ${{ (github.event_name == 'workflow_dispatch' && inputs.publish == 'false') && 'never' || 'always' }}
+        run: |
+          set -euo pipefail
+          CONFIG="${GITHUB_WORKSPACE}/electron-builder.kds.yml"
+          if [[ ! -f "$CONFIG" ]]; then
+            echo "::error::Missing electron-builder config: $CONFIG"
+            exit 1
+          fi
+          if [[ ! -f dist/kds/main/index.js ]]; then
+            echo "::error::Missing KDS main bundle (run build:kds first): dist/kds/main/index.js"
+            exit 1
+          fi
+          # Manual runs can skip publishing; tag pushes always publish.
+          PUBLISH="always"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && \
+             [[ "${{ github.event.inputs.publish }}" == "false" ]]; then
+            PUBLISH="never"
+          fi
+          # `--` ensures pnpm forwards every flag to electron-builder.
+          # Without it, macOS runners sometimes swallow `--config` and
+          # electron-builder treats the project dir as a config path →
+          # "…/POS/POS not a file".
+          pnpm exec -- electron-builder \
+            --config "$CONFIG" \
+            ${{ matrix.target }} \
+            --publish "$PUBLISH"
 
       - name: Upload installers as workflow artifact
         # Mirror the published files to the workflow run too, so you
