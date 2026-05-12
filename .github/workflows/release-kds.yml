@@ -70,21 +70,19 @@ jobs:
           # for the repo it runs in (DidiG03/POS).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # macOS code signing + notarization (optional — leave the
-          # secrets empty to ship an unsigned build for now). When
-          # CSC_LINK is empty, electron-builder produces an unsigned
-          # .dmg and the kitchen owner has to right-click → Open the
-          # first time.
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          # Code-signing secrets are read inside the step so that
+          # MISSING secrets stay UNSET rather than being injected as
+          # empty strings. electron-builder treats `CSC_LINK=""` as a
+          # relative path and resolves it to the project root, which
+          # fails with `…/POS not a file`. Apple env vars only kick in
+          # when MAC_CSC_LINK is present.
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-          # Windows code signing (optional). Without this, NSIS still
-          # builds but users see a SmartScreen warning.
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK_SECRET: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD_SECRET: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           CONFIG="${GITHUB_WORKSPACE}/electron-builder.kds.yml"
@@ -95,6 +93,29 @@ jobs:
           if [[ ! -f dist/kds/main/index.js ]]; then
             echo "::error::Missing KDS main bundle (run build:kds first): dist/kds/main/index.js"
             exit 1
+          fi
+          # Only export signing env vars when the secret actually has
+          # a value. An empty string here is worse than unset because
+          # electron-builder will try to use "" as a cert path.
+          if [[ -n "${MAC_CSC_LINK:-}" ]]; then
+            export CSC_LINK="$MAC_CSC_LINK"
+            export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-}"
+            echo "macOS code signing: enabled"
+          else
+            unset CSC_LINK CSC_KEY_PASSWORD || true
+            # Force-disable Apple notarization too — APPLE_ID being set
+            # alone (without a cert) causes electron-builder to abort.
+            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID || true
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            echo "macOS code signing: disabled (no MAC_CSC_LINK secret) — building unsigned .dmg"
+          fi
+          if [[ -n "${WIN_CSC_LINK_SECRET:-}" ]]; then
+            export WIN_CSC_LINK="$WIN_CSC_LINK_SECRET"
+            export WIN_CSC_KEY_PASSWORD="${WIN_CSC_KEY_PASSWORD_SECRET:-}"
+            echo "Windows code signing: enabled"
+          else
+            unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD || true
+            echo "Windows code signing: disabled (no WIN_CSC_LINK secret)"
           fi
           # Manual runs can skip publishing; tag pushes always publish.
           PUBLISH="always"
