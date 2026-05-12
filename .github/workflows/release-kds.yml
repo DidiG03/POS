@@ -1,0 +1,108 @@
+name: Release KDS
+
+# Trigger:
+#   - Push a tag like `kds-v0.1.0` to cut a release.
+#   - Manual run from the Actions tab via "Run workflow" (handy for
+#     publishing a draft build off the current branch without tagging).
+on:
+  push:
+    tags:
+      - 'kds-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to GitHub Releases (channel: kds)'
+        required: true
+        default: 'true'
+
+# Avoid concurrent runs for the same tag clobbering uploads to the
+# release. New tag pushes cancel an in-flight build of the same tag.
+concurrency:
+  group: release-kds-${{ github.ref }}
+  cancel-in-progress: true
+
+# electron-builder uploads the .dmg/.exe/.AppImage + latest*.yml files
+# to a GitHub Release. That needs write access on the repo's Releases.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build KDS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Build native installers per platform. Cross-building is
+          # possible but native always wins for signing/notarization.
+          - os: macos-latest
+            target: --mac
+          - os: ubuntu-latest
+            target: --linux
+          - os: windows-latest
+            target: --win
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # Version is read from `package.json#packageManager`.
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build KDS bundle
+        run: pnpm build:kds
+
+      - name: Build + publish installer
+        env:
+          # GitHub Releases auth — built-in token has write permissions
+          # for the repo it runs in (DidiG03/POS).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # macOS code signing + notarization (optional — leave the
+          # secrets empty to ship an unsigned build for now). When
+          # CSC_LINK is empty, electron-builder produces an unsigned
+          # .dmg and the kitchen owner has to right-click → Open the
+          # first time.
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+          # Windows code signing (optional). Without this, NSIS still
+          # builds but users see a SmartScreen warning.
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: >
+          pnpm exec electron-builder
+          --config electron-builder.kds.yml
+          ${{ matrix.target }}
+          --publish ${{ (github.event_name == 'workflow_dispatch' && inputs.publish == 'false') && 'never' || 'always' }}
+
+      - name: Upload installers as workflow artifact
+        # Mirror the published files to the workflow run too, so you
+        # can grab them from Actions even if the GitHub Release upload
+        # failed (e.g. permissions).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kds-${{ matrix.os }}
+          path: |
+            dist-installers/kds/**/*.dmg
+            dist-installers/kds/**/*.exe
+            dist-installers/kds/**/*.AppImage
+            dist-installers/kds/**/*.zip
+            dist-installers/kds/**/latest*.yml
+          if-no-files-found: warn
+          retention-days: 14

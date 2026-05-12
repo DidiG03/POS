@@ -1,0 +1,86 @@
+# electron-builder config for the standalone "Code Orbit KDS" installer.
+#
+# This is intentionally separate from `package.json#build` (which is the
+# POS installer). Building the KDS:
+#
+#     pnpm dist:kds       # full installer (mac dmg / win nsis / linux AppImage)
+#     pnpm dist:kds:dir   # unpackaged "dir" build for quick smoke testing
+#
+# Notes:
+# - The KDS bundle does NOT carry Prisma, the seed database, the POS
+#   main process, or printer drivers — it's a thin LAN-client that
+#   talks HTTP to a POS host. This keeps the installer ~80 MB instead
+#   of ~250 MB and means upgrading the kitchen display never touches
+#   the POS database.
+# - The renderer is shared with the POS build (`dist/renderer`). The
+#   KDS just navigates to `#/kds` or `#/kds-setup`.
+# - `extraMetadata.main` overrides `package.json#main` so the packaged
+#   KDS app launches `dist/kds/main/index.js` instead of the POS main.
+# - Auto-update uses its own GitHub release channel (`*-kds.yml`) so a
+#   POS update never reboots a running kitchen display.
+
+appId: com.codeorbit.kds
+productName: Code Orbit KDS
+
+directories:
+  buildResources: build-resources
+  output: dist-installers/kds
+
+# Override package.json#main so the packaged app launches the KDS entry.
+# `name` is also overridden so installers/uninstallers don't collide
+# with the POS app on a machine that has both installed.
+extraMetadata:
+  name: code-orbit-kds
+  main: dist/kds/main/index.js
+  productName: Code Orbit KDS
+
+# Only ship what the KDS needs. Explicitly exclude Prisma, serialport,
+# the POS main bundle, and the seeded SQLite database.
+files:
+  - dist/kds/**
+  - dist/renderer/**
+  - package.json
+  - '!dist/main/**'
+  - '!dist/preload/**'
+  - '!**/node_modules/.prisma/**'
+  - '!**/node_modules/@prisma/**'
+  - '!**/node_modules/prisma/**'
+  - '!**/node_modules/serialport/**'
+  - '!**/node_modules/@serialport/**'
+  - '!**/node_modules/@sentry/**'
+  - '!**/node_modules/electron-updater/**'
+
+# No `extraResources` block — KDS doesn't need seed.db or unpacked
+# Prisma engines.
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.business
+  icon: build-resources/icon.icns
+
+win:
+  target:
+    - nsis
+  icon: build-resources/icon.ico
+
+linux:
+  target:
+    - AppImage
+  category: Utility
+  icon: build-resources/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: build-resources/icon.ico
+  uninstallerIcon: build-resources/icon.ico
+  shortcutName: Code Orbit KDS
+
+publish:
+  provider: github
+  owner: DidiG03
+  repo: POS
+  # Separate channel so KDS releases don't appear as POS updates.
+  channel: kds
