@@ -1,172 +1,311 @@
-import { buildEscposTicket, buildHtmlReceipt, printHtmlToSystemPrinter, sendToCupsRawPrinter, sendToPrinter } from '../print';
-import { coreServices } from './core';
+import { BrowserWindow } from 'electron';
+
 import { prisma } from '@db/client';
 
+import { getCloudConfig } from './cloud';
+import { coreServices } from './core';
+import {
+  RETRY_MAX_ATTEMPTS,
+  dispatchTicket,
+  enqueuePrintRetry,
+  isTransientPrintError,
+  loadDuePrintRetries,
+  nextPendingRetryAt,
+  pickPrinterProfile,
+  printWithProfile,
+  setRetryWakeup,
+} from './printDispatcher';
+
+/**
+ * Background job processor for the local PrintJob table. Two distinct
+ * responsibilities live in here, intentionally combined so we only run
+ * one timer:
+ *
+ *   1. RETRY rows (PR 3) — prints that failed transiently and were
+ *      persisted for an automatic retry. Runs on every install.
+ *
+ *   2. QUEUED rows — only ever produced by the cloud-mode
+ *      `/print-jobs/enqueue` HTTP endpoint, where a remote dashboard
+ *      pushes a print at this POS. Skipped on local-only installs.
+ *
+ * Cadence is adaptive (PR 3): we sleep until the next RETRY row's
+ * `nextAttemptAt`, or until the QUEUED idle interval if cloud mode is
+ * on, or until 5 minutes of nothing-to-do otherwise. `setRetryWakeup`
+ * lets `enqueuePrintRetry` interrupt our sleep early so a fresh retry
+ * doesn't have to wait out a long idle nap. This is dramatically
+ * cheaper than the old fixed 2.5 s setInterval (which was firing
+ * ~34 000 empty SQLite queries/day on local installs) without
+ * sacrificing responsiveness.
+ */
+
 let started = false;
+let timer: NodeJS.Timeout | null = null;
+let running = false;
+let cloudPollEnabled = false;
+let stopping = false;
 
-type Station = 'KITCHEN' | 'BAR' | 'DESSERT' | 'ALL';
+/** Maximum nap when nothing is pending. */
+const IDLE_INTERVAL_MS = 5 * 60_000;
+/** Cloud-mode poll cadence — kept small so cloud-pushed prints feel snappy. */
+const CLOUD_POLL_INTERVAL_MS = 5_000;
 
-function normKey(s: any): string {
-  return String(s ?? '')
-    .trim()
-    .toLowerCase();
-}
-
-function normalizeProfiles(settings: any): any[] {
-  const arr = Array.isArray(settings?.printers) ? settings.printers : [];
-  if (arr.length) return arr;
-  const legacy = settings?.printer;
-  if (legacy && Object.keys(legacy).length) return [{ id: 'default', name: 'Default printer', enabled: true, ...legacy }];
-  return [];
-}
-
-function pickProfile(settings: any, printerId?: string | null): any | null {
-  const profiles = normalizeProfiles(settings).filter((p) => p && p.enabled !== false);
-  if (!profiles.length) return null;
-  if (printerId) {
-    const hit = profiles.find((p) => String(p.id) === String(printerId));
-    if (hit) return hit;
-  }
-  // fallback: first enabled profile
-  return profiles[0] || null;
-}
-
-async function printWithProfile(payload: any, settings: any, profile: any): Promise<{ ok: boolean; error?: string }> {
-  const mode = (profile?.mode || (profile?.serialPath ? 'SERIAL' : profile?.deviceName ? 'SYSTEM' : 'NETWORK')) as any;
-  if (mode === 'SYSTEM') {
-    const raw = profile?.systemRawEscpos !== false;
-    if (raw) {
-      const data = buildEscposTicket(payload, settings as any);
-      return await sendToCupsRawPrinter({ deviceName: profile?.deviceName, data });
-    } else {
-      const html = buildHtmlReceipt(payload, settings as any);
-      return await printHtmlToSystemPrinter({ html, deviceName: profile?.deviceName, silent: profile?.silent !== false });
+function broadcast(channel: string, payload: any) {
+  try {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send(channel, payload);
     }
+  } catch {
+    // ignore — no UIs open is fine
   }
-  if (mode === 'SERIAL') {
-    const cfg = {
-      path: String(profile?.serialPath || ''),
-      baudRate: Number(profile?.baudRate || 19200),
-      dataBits: (Number(profile?.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
-      stopBits: (Number(profile?.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-      parity: (String(profile?.parity || 'none') as any) as 'none' | 'even' | 'odd',
-    };
-    if (!cfg.path) return { ok: false, error: 'Serial port not configured' };
-    const { sendToSerialPrinter } = await import('../serial');
-    const data = buildEscposTicket(payload, settings as any);
-    return await sendToSerialPrinter(cfg as any, data);
-  }
-  const ip = process.env.PRINTER_IP || profile?.ip;
-  const port = Number(process.env.PRINTER_PORT || profile?.port || 9100);
-  if (!ip) return { ok: false, error: 'Printer IP not configured' };
-  const data = buildEscposTicket(payload, settings as any);
-  const ok = await sendToPrinter(ip as string, port, data);
-  return ok ? { ok: true } : { ok: false, error: `Send failed (to ${ip}:${port})` };
 }
 
-async function routeOrderPayloadByStation(payload: any, settings: any): Promise<Array<{ station: Station; printerId?: string; payload: any }>> {
-  const routing = (settings as any)?.printerRouting || {};
-  const stationRouting = (routing?.station || {}) as Partial<Record<Station, string>>;
-  const categoryRouting = (routing?.categories || {}) as Record<string, string>;
-  const fallbackPrinterId =
-    String((routing as any)?.fallbackPrinterId || stationRouting?.ALL || '').trim();
-  const items: any[] = Array.isArray(payload?.items) ? payload.items : [];
-  const skus = Array.from(new Set(items.map((it) => String(it?.sku || '')).filter(Boolean)));
-  const menu = skus.length
-    ? await prisma.menuItem
-        .findMany({ where: { sku: { in: skus } }, select: { sku: true, station: true, categoryId: true } } as any)
-        .catch(() => [])
-    : [];
-  const bySku = new Map<string, { station?: string; categoryId?: number }>();
-  for (const m of menu as any[]) bySku.set(String(m.sku), { station: String(m.station || ''), categoryId: Number(m.categoryId) });
-
-  const buckets = new Map<string, any[]>();
-  for (const it of items) {
-    const sku = String(it?.sku || '');
-    const info = sku ? bySku.get(sku) : undefined;
-    const categoryId = Number.isFinite(Number(it?.categoryId)) ? Number(it?.categoryId) : info?.categoryId;
-    const categoryKey = categoryId != null && Number.isFinite(categoryId) ? String(categoryId) : '';
-    const categoryName = normKey(it?.categoryName);
-    const printerIdByCategoryName = categoryName && categoryRouting[categoryName] ? String(categoryRouting[categoryName]) : '';
-    const printerIdByCategoryId = categoryKey && categoryRouting[categoryKey] ? String(categoryRouting[categoryKey]) : '';
-    const printerIdByCategory = printerIdByCategoryName || printerIdByCategoryId;
-    const printerId = (printerIdByCategory || fallbackPrinterId || '').trim();
-    // When category routing exists, split by CATEGORY. Otherwise, everything goes to fallback.
-    const groupKey = printerIdByCategory
-      ? `CAT:${categoryName || categoryKey || 'unknown'}`
-      : `FB:ALL`;
-    const key = `${printerId}|${groupKey}`;
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key)!.push({ ...it, station: 'ALL', categoryId });
+async function processRetryRow(
+  row: any,
+  settings: any,
+): Promise<{ recovered: boolean; permanentlyFailed: boolean }> {
+  const payload = (row?.payloadJson as any) || {};
+  const profileId = String(row?.printerProfileId || '');
+  const profile = pickPrinterProfile(settings, profileId);
+  // The destination profile may have been deleted from settings while
+  // a retry was queued — in that case there's nothing to retry against.
+  // Mark it FAILED with a clear reason instead of looping forever.
+  if (!profile) {
+    await prisma.printJob
+      .update({
+        where: { id: row.id },
+        data: {
+          status: 'FAILED' as any,
+          lastError: `Printer profile "${profileId}" no longer exists`,
+        } as any,
+      })
+      .catch(() => {});
+    return { recovered: false, permanentlyFailed: true };
   }
 
-  const out: Array<{ station: Station; printerId?: string; payload: any }> = [];
-  for (const [key, groupItems] of buckets.entries()) {
-    const [printerId, group] = key.split('|');
-    const isCat = String(group || '').startsWith('CAT:');
-    const routeLabel = isCat ? String(group || '').slice(4) : 'all';
-    const st: Station = 'ALL';
-    const meta = { ...(payload?.meta || {}), kind: 'ORDER', station: 'ALL', hidePrices: true, routeLabel: routeLabel || 'all' };
-    out.push({ station: st, printerId: (printerId || '').trim() || undefined, payload: { ...payload, items: groupItems, meta } });
+  // No in-flight retries here: `printWithProfile` already does a fast
+  // 250 ms one. The persistent retry queue's whole point is the LONGER
+  // backoff, so each loop tick performs exactly one network attempt.
+  console.log(
+    `[PrinterRetry] Attempting row #${row.id} (printer=${profileId}, attempt=${row.attempts}/${RETRY_MAX_ATTEMPTS})`,
+  );
+  const r = await printWithProfile(payload, settings as any, profile, {
+    retries: 0,
+  });
+  if (r.ok) {
+    await prisma.printJob
+      .update({
+        where: { id: row.id },
+        data: { status: 'SENT' as any, lastError: null } as any,
+      })
+      .catch(() => {});
+    console.log(
+      `[PrinterRetry] ✓ Row #${row.id} succeeded after ${row.attempts} attempt(s)`,
+    );
+    return { recovered: true, permanentlyFailed: false };
   }
-  return out;
+  console.log(
+    `[PrinterRetry] ✗ Row #${row.id} attempt failed: ${r.error || '(no error)'}`,
+  );
+
+  const nextAttempts = Number(row?.attempts || 1) + 1;
+  // Out-of-paper / authentication / unknown printer = permanent.
+  // Don't waste 4 minutes retrying something that's not coming back.
+  if (!isTransientPrintError(r.error)) {
+    await prisma.printJob
+      .update({
+        where: { id: row.id },
+        data: {
+          status: 'FAILED' as any,
+          attempts: nextAttempts,
+          lastError: r.error || 'print failed',
+        } as any,
+      })
+      .catch(() => {});
+    return { recovered: false, permanentlyFailed: true };
+  }
+
+  // Still a network blip — re-enqueue (creates a NEW row with the next
+  // backoff slot). Mark the current row as superseded so we don't
+  // pick it up again.
+  await prisma.printJob
+    .update({
+      where: { id: row.id },
+      data: {
+        status: 'FAILED' as any,
+        attempts: nextAttempts,
+        lastError: r.error || 'transient print failure',
+      } as any,
+    })
+    .catch(() => {});
+  const result = await enqueuePrintRetry({
+    payload,
+    printerProfileId: profile.id,
+    error: r.error || 'transient print failure',
+    priorAttempts: nextAttempts,
+  });
+  return {
+    recovered: false,
+    permanentlyFailed: result.status === 'FAILED',
+  };
 }
 
-export function startPrinterStationLoop() {
+async function processQueuedRow(row: any, settings: any): Promise<void> {
+  const payload = (row?.payloadJson as any) || {};
+  const r = await dispatchTicket(payload, settings as any, {
+    persistRetryOnTransientFailure: true,
+  });
+  await prisma.printJob
+    .update({
+      where: { id: row.id },
+      data: { status: (r.ok ? 'SENT' : 'FAILED') as any } as any,
+    })
+    .catch(() => {});
+}
+
+async function tick(): Promise<{ idle: boolean }> {
+  if (running) return { idle: true };
+  running = true;
+  try {
+    const dueRetries = await loadDuePrintRetries(10);
+    const queuedJobs = cloudPollEnabled
+      ? await prisma.printJob
+          .findMany({
+            where: { status: 'QUEUED' as any },
+            orderBy: { createdAt: 'asc' },
+            take: 10,
+          })
+          .catch(() => [])
+      : [];
+
+    if (!dueRetries.length && !queuedJobs.length) return { idle: true };
+
+    const settings = await coreServices.readSettings();
+    let recoveries = 0;
+
+    for (const row of dueRetries) {
+      try {
+        const r = await processRetryRow(row, settings);
+        if (r.recovered) recoveries++;
+      } catch {
+        // Row-level failure shouldn't break the whole loop; the next
+        // tick will pick the row up again because we leave its status
+        // as RETRY in this branch.
+      }
+    }
+
+    for (const row of queuedJobs) {
+      try {
+        await processQueuedRow(row, settings);
+      } catch {
+        // ignore — same reasoning as above
+      }
+    }
+
+    if (recoveries > 0) {
+      // Tell every renderer "the printer's back". Useful for clearing a
+      // stuck error toast or showing a green "X of Y prints recovered"
+      // confirmation.
+      broadcast('printer:event', {
+        level: 'info',
+        kind: 'recovered',
+        message:
+          recoveries === 1
+            ? 'A queued print succeeded after retry.'
+            : `${recoveries} queued prints succeeded after retry.`,
+        at: Date.now(),
+        context: { recoveries },
+      });
+    }
+    return { idle: false };
+  } finally {
+    running = false;
+  }
+}
+
+/**
+ * Schedule the next tick. Strategy:
+ *   - If a RETRY row is due NOW, run almost immediately (250 ms).
+ *   - Else if a RETRY row is pending in the future, sleep until then.
+ *   - Else if cloud mode is on, poll every CLOUD_POLL_INTERVAL_MS for
+ *     QUEUED rows.
+ *   - Else nap for IDLE_INTERVAL_MS (cheap heartbeat in case the
+ *     wake-up callback was missed during a Prisma reconnect).
+ */
+async function schedule(): Promise<void> {
+  if (stopping) return;
+  let delay = IDLE_INTERVAL_MS;
+  try {
+    const next = await nextPendingRetryAt();
+    if (next) {
+      const ms = Math.max(250, next.getTime() - Date.now());
+      delay = Math.min(delay, ms);
+    }
+    if (cloudPollEnabled) delay = Math.min(delay, CLOUD_POLL_INTERVAL_MS);
+  } catch {
+    delay = CLOUD_POLL_INTERVAL_MS; // safe fallback
+  }
+  if (timer) clearTimeout(timer);
+  timer = setTimeout(() => {
+    void (async () => {
+      try {
+        await tick();
+      } finally {
+        void schedule();
+      }
+    })();
+  }, delay);
+}
+
+export async function startPrinterStationLoop(): Promise<void> {
   if (started) return;
   started = true;
+  stopping = false;
 
-  const inFlight = new Set<number>();
+  // Cloud config decides whether we poll for QUEUED rows. The retry
+  // queue runs on every install regardless.
+  const cfg = await getCloudConfig().catch(() => null);
+  cloudPollEnabled = Boolean(cfg);
+  console.log(
+    `[PrinterStation] Loop started (cloudPoll=${cloudPollEnabled}, retryQueue=enabled)`,
+  );
 
-  const tick = async () => {
-    try {
-      const settings = await coreServices.readSettings();
-      const routingEnabled = Boolean((settings as any)?.printerRouting?.enabled);
-      const receiptPrinterId = (settings as any)?.printerRouting?.receiptPrinterId || 'default';
-      const fallbackProfile = pickProfile(settings, receiptPrinterId) || pickProfile(settings, 'default');
-      if (!fallbackProfile) return;
-
-      // Local-first: fetch QUEUED jobs from local DB
-      const jobs = await prisma.printJob
-        .findMany({ where: { status: 'QUEUED' as any }, orderBy: { createdAt: 'asc' }, take: 10 })
-        .catch(() => []);
-
-      for (const job of jobs) {
-        if (!job?.id || inFlight.has(job.id)) continue;
-        inFlight.add(job.id);
+  // When `enqueuePrintRetry` persists a new row, wake up early so we
+  // don't sleep through it.
+  setRetryWakeup((dueAtMs) => {
+    if (stopping) return;
+    const wait = Math.max(50, dueAtMs - Date.now());
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      void (async () => {
         try {
-          const payload = (job.payloadJson as any) || {};
-          const meta = (payload as any)?.meta || {};
-          const kind = String(meta?.kind || '').toUpperCase();
-
-          let okAll = true;
-          if (routingEnabled && kind === 'ORDER') {
-            const routed = await routeOrderPayloadByStation(payload, settings);
-            for (const r of routed) {
-              const prof = pickProfile(settings, r.printerId) || fallbackProfile;
-              const pr = await printWithProfile(r.payload, settings, prof);
-              if (!pr.ok) okAll = false;
-            }
-          } else {
-            const prof = fallbackProfile;
-            const pr = await printWithProfile(payload, settings, prof);
-            okAll = pr.ok;
-          }
-
-          await prisma.printJob.update({
-            where: { id: job.id },
-            data: { status: (okAll ? 'SENT' : 'FAILED') as any },
-          }).catch(() => {});
+          await tick();
         } finally {
-          inFlight.delete(job.id);
+          void schedule();
         }
-      }
-    } catch {
-      // swallow: printer station should never crash the app
-    }
-  };
+      })();
+    }, wait);
+  });
 
-  tick();
-  setInterval(tick, 2500);
+  // First tick + scheduling kick-off.
+  void (async () => {
+    try {
+      await tick();
+    } finally {
+      void schedule();
+    }
+  })();
 }
 
+export function stopPrinterStationLoop(): void {
+  stopping = true;
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  setRetryWakeup(null);
+  started = false;
+  cloudPollEnabled = false;
+}
+
+/** Allow callers to check exhaustion bound — used by tests + future UI. */
+export const PRINT_RETRY_MAX_ATTEMPTS = RETRY_MAX_ATTEMPTS;

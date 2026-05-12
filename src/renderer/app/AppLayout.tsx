@@ -4,36 +4,87 @@ import { useSessionStore } from '../stores/session';
 import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
-import {
-  isClockOnlyRole,
-  canSeeReportsOnMobile,
-} from '@shared/utils/roles';
+import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
 import { toast } from '../stores/toasts';
 
 function IconTables() {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
-      <path d="M4 7h16v6H4V7Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M7 13v7M17 13v7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M9 4h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
+      <path
+        d="M4 7h16v6H4V7Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7 13v7M17 13v7"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M9 4h6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
 
 function IconReports() {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
-      <path d="M6 3h12v18H6V3Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M9 7h6M9 11h6M9 15h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
+      <path
+        d="M6 3h12v18H6V3Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9 7h6M9 11h6M9 15h4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
 
 function IconLogout() {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden>
-      <path d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M13 12H3m0 0 3-3M3 12l3 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
+      <path
+        d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M13 12H3m0 0 3-3M3 12l3 3"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -221,7 +272,8 @@ export default function AppLayout() {
   const isWaiter = String((user as any)?.role || '').toUpperCase() === 'WAITER';
   // Hide back-office tabs on mobile/tablet for roles that can't use them.
   const showReportsTab =
-    !clockOnly && (!isBrowserClient || canSeeReportsOnMobile((user as any)?.role));
+    !clockOnly &&
+    (!isBrowserClient || canSeeReportsOnMobile((user as any)?.role));
   const billingEnabled = Boolean(billing?.billingEnabled);
   const billingStatus = String(billing?.status || 'ACTIVE').toUpperCase();
   const billingPaused =
@@ -275,12 +327,18 @@ export default function AppLayout() {
           disabled to prevent mistakes.
         </div>
       )}
-      <header className="bg-gray-800 px-3 sm:px-4 py-2.5 sm:py-3 flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-2">
+      <header
+        // The header is the topmost on-screen element, so it owns the
+        // safe-area-top inset (notch / status-bar). We use `max(...)` so
+        // the header keeps its normal vertical breathing room on devices
+        // without a notch, but grows to clear the status bar on iPhones.
+        // Horizontal `safe-x` keeps content out of the rounded corners /
+        // landscape notch area.
+        className="bg-gray-800 px-3 sm:px-4 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-2"
+      >
         <div className="flex items-center gap-2 min-w-0 justify-start flex-1 sm:flex-initial">
           <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
-            <span className="hidden sm:inline">
-            {user?.displayName}
-            </span>
+            <span className="hidden sm:inline">{user?.displayName}</span>
             <span className="sm:hidden">{user?.displayName}</span>
           </div>
           {user && (
@@ -293,10 +351,10 @@ export default function AppLayout() {
                       const { openMap } = useTableStatus.getState();
                       const anyOpen = Object.values(openMap).some(Boolean);
                       if (anyOpen) {
-                          toast.warn(
-                            "You can't clock out while you still have open tables. Please close all open orders first.",
-                            { title: 'Cannot clock out' },
-                          );
+                        toast.warn(
+                          "You can't clock out while you still have open tables. Please close all open orders first.",
+                          { title: 'Cannot clock out' },
+                        );
                         return;
                       }
                     }
@@ -323,7 +381,24 @@ export default function AppLayout() {
                     <button
                       className="w-full bg-red-600 text-white py-1 px-2 cursor-pointer hover:bg-red-700"
                       onClick={async () => {
-                        await window.api.shifts.clockOut(user.id);
+                        const r: any = await window.api.shifts.clockOut(
+                          user.id,
+                        );
+                        // Server now refuses to close a shift while the
+                        // waiter still owns open tables. Show the reason
+                        // (alert is enough here — this header has no
+                        // toast root) and keep them logged in so they
+                        // can finish/transfer the table.
+                        if (r && typeof r === 'object' && r.ok === false) {
+                          window.alert(
+                            String(
+                              r.error ||
+                                'You still have open tables. Close or transfer them first.',
+                            ),
+                          );
+                          setConfirmModal(false);
+                          return;
+                        }
                         setHasOpen(false);
                         forceLogout('Clocked out');
                       }}
@@ -513,8 +588,10 @@ export default function AppLayout() {
           )}
         </nav>
       </header>
-      <main className="flex-1 p-2 sm:p-4 safe-pb safe-x min-h-0 overflow-hidden">
-        <Outlet />
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden p-2 sm:p-4 safe-pb safe-x">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <Outlet />
+        </div>
       </main>
       <UpdateNotification />
       <PrinterNotification />

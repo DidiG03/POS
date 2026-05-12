@@ -31,7 +31,13 @@ function jitter(ms: number) {
 export function isLikelyOfflineError(e: any) {
   const msg = String(e?.message || e || '').toLowerCase();
   const code = String(e?.cause?.code || e?.code || '').toLowerCase();
-  if (code.includes('enotfound') || code.includes('econnrefused') || code.includes('etimedout') || code.includes('econnreset')) return true;
+  if (
+    code.includes('enotfound') ||
+    code.includes('econnrefused') ||
+    code.includes('etimedout') ||
+    code.includes('econnreset')
+  )
+    return true;
   if (msg.includes('fetch failed')) return true;
   if (msg.includes('network')) return true;
   if (msg.includes('socket hang up')) return true;
@@ -50,7 +56,9 @@ function shouldPauseOutboxOnError(e: any) {
 }
 
 async function readOutbox(): Promise<{ items: OutboxItem[] }> {
-  const row = await prisma.syncState.findUnique({ where: { key: OUTBOX_KEY } }).catch(() => null);
+  const row = await prisma.syncState
+    .findUnique({ where: { key: OUTBOX_KEY } })
+    .catch(() => null);
   const value = (row?.valueJson as any) || null;
   const items = Array.isArray(value?.items) ? (value.items as any[]) : [];
   return {
@@ -79,7 +87,11 @@ async function writeOutbox(items: OutboxItem[]) {
   });
 }
 
-export async function enqueueOutbox(input: Omit<OutboxItem, 'attempts' | 'createdAt' | 'nextAttemptAt'> & { createdAt?: string }) {
+export async function enqueueOutbox(
+  input: Omit<OutboxItem, 'attempts' | 'createdAt' | 'nextAttemptAt'> & {
+    createdAt?: string;
+  },
+) {
   const cur = await readOutbox();
   const createdAt = input.createdAt || nowIso();
   const next: OutboxItem = {
@@ -119,13 +131,25 @@ export async function getOutboxStatus() {
   return { queued: readyItems.length, total: cur.items.length };
 }
 
-export async function flushOutboxOnce(): Promise<{ sent: number; remaining: number; paused?: boolean; lastError?: string }> {
-  if (flushing) return { sent: 0, remaining: (await readOutbox()).items.length };
+export async function flushOutboxOnce(): Promise<{
+  sent: number;
+  remaining: number;
+  paused?: boolean;
+  lastError?: string;
+}> {
+  if (flushing)
+    return { sent: 0, remaining: (await readOutbox()).items.length };
   flushing = true;
   try {
     const cfg = await getCloudConfig().catch(() => null);
     if (!cfg) return { sent: 0, remaining: (await readOutbox()).items.length };
-    if (!hasCloudSession(cfg.businessCode)) return { sent: 0, remaining: (await readOutbox()).items.length, paused: true, lastError: 'not logged in' };
+    if (!hasCloudSession(cfg.businessCode))
+      return {
+        sent: 0,
+        remaining: (await readOutbox()).items.length,
+        paused: true,
+        lastError: 'not logged in',
+      };
 
     const cur = await readOutbox();
     const items = cur.items.slice();
@@ -139,7 +163,10 @@ export async function flushOutboxOnce(): Promise<{ sent: number; remaining: numb
       if (Number.isFinite(dueAt) && dueAt > now) continue;
 
       try {
-        await cloudJson(it.method, it.path, it.body, { requireAuth: it.requireAuth, senderId: 0 });
+        await cloudJson(it.method, it.path, it.body, {
+          requireAuth: it.requireAuth,
+          senderId: 0,
+        });
         items.splice(i, 1);
         i -= 1;
         sent += 1;
@@ -149,16 +176,28 @@ export async function flushOutboxOnce(): Promise<{ sent: number; remaining: numb
         if (shouldPauseOutboxOnError(e)) {
           // Stop processing; user likely needs to re-login.
           it.lastError = msg;
-          it.nextAttemptAt = new Date(Date.now() + jitter(60_000)).toISOString();
+          it.nextAttemptAt = new Date(
+            Date.now() + jitter(60_000),
+          ).toISOString();
           changed = true;
           if (changed) await writeOutbox(items);
-          return { sent, remaining: items.length, paused: true, lastError: msg };
+          return {
+            sent,
+            remaining: items.length,
+            paused: true,
+            lastError: msg,
+          };
         }
 
         // Backoff for network/server errors
         it.attempts = Math.min(20, Number(it.attempts || 0) + 1);
-        const backoffMs = Math.min(5 * 60_000, 1000 * Math.pow(2, Math.min(8, it.attempts)));
-        it.nextAttemptAt = new Date(Date.now() + jitter(backoffMs)).toISOString();
+        const backoffMs = Math.min(
+          5 * 60_000,
+          1000 * Math.pow(2, Math.min(8, it.attempts)),
+        );
+        it.nextAttemptAt = new Date(
+          Date.now() + jitter(backoffMs),
+        ).toISOString();
         it.lastError = msg;
         changed = true;
 
@@ -174,7 +213,7 @@ export async function flushOutboxOnce(): Promise<{ sent: number; remaining: numb
   }
 }
 
-let outboxTimer: any = null;
+let outboxTimer: NodeJS.Timeout | null = null;
 export function startOutboxLoop() {
   if (outboxTimer) return;
   outboxTimer = setInterval(() => {
@@ -182,4 +221,9 @@ export function startOutboxLoop() {
   }, 5000);
   void flushOutboxOnce();
 }
-
+export function stopOutboxLoop() {
+  if (outboxTimer) {
+    clearInterval(outboxTimer);
+    outboxTimer = null;
+  }
+}

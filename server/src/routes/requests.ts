@@ -109,6 +109,7 @@ requestsRouter.get('/list-for-owner', requireAuth, async (req: AuthedRequest, re
   const rows = await prisma.ticketRequest.findMany({
     where: { businessId: auth.businessId, ownerId, status: 'PENDING' as any },
     orderBy: { createdAt: 'desc' },
+    take: 200,
   } as any);
 
   return res.status(200).json(rows.map((r: any) => ({ id: r.id, area: r.area, tableLabel: r.tableLabel, requesterId: r.requesterId, items: r.itemsJson, note: r.note, createdAt: r.createdAt.toISOString() })));
@@ -157,6 +158,7 @@ requestsRouter.get('/poll-approved', requireAuth, async (req: AuthedRequest, res
   const rows = await prisma.ticketRequest.findMany({
     where: { businessId: auth.businessId, ownerId, area, tableLabel, status: 'APPROVED' as any },
     orderBy: { createdAt: 'asc' },
+    take: 100,
   } as any);
   return res.status(200).json(rows.map((r: any) => ({ id: r.id, items: r.itemsJson, note: r.note })));
 });
@@ -166,8 +168,15 @@ const MarkAppliedSchema = z.object({ ids: z.array(z.number().int().positive()).m
 requestsRouter.post('/mark-applied', requireAuth, async (req: AuthedRequest, res) => {
   const auth = req.auth!;
   const input = MarkAppliedSchema.parse(req.body || {});
+  // Restrict to requests owned by the caller. Admins can mark any.
+  const whereOwner = auth.role === 'ADMIN' ? {} : { ownerId: auth.userId };
   await prisma.ticketRequest.updateMany({
-    where: { businessId: auth.businessId, id: { in: input.ids }, status: 'APPROVED' as any },
+    where: {
+      businessId: auth.businessId,
+      id: { in: input.ids },
+      status: 'APPROVED' as any,
+      ...whereOwner,
+    } as any,
     data: { status: 'APPLIED' as any, decidedAt: new Date() },
   } as any);
   return res.status(200).json(true);

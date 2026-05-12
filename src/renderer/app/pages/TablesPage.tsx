@@ -8,6 +8,17 @@ import { formatMoneyCompact } from '../../utils/format';
 import { PageSpinner } from '../../components/PageSpinner';
 
 type TableStatus = 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED';
+type TableShape = 'circle' | 'square' | 'rect';
+type AreaVariant =
+  | 'rect'
+  | 'wall'
+  | 'bar'
+  | 'door'
+  | 'plant'
+  | 'pillar'
+  | 'window'
+  | 'stairs';
+
 type TableNode = {
   id: number;
   kind?: 'TABLE';
@@ -15,6 +26,12 @@ type TableNode = {
   x: number;
   y: number;
   status: TableStatus;
+  // Visual extras saved by the admin layout editor. All optional so
+  // pre-shape layouts continue to render exactly as before.
+  shape?: TableShape;
+  w?: number;
+  h?: number;
+  seats?: number;
 };
 type AreaNode = {
   id: number;
@@ -24,6 +41,8 @@ type AreaNode = {
   y: number;
   w: number;
   h: number;
+  variant?: AreaVariant;
+  color?: string;
 };
 type LayoutNode = TableNode | AreaNode;
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
@@ -82,7 +101,13 @@ function nextAreaId(cur: LayoutNode[] | null): number {
 
 export default function TablesPage() {
   const [area, setArea] = useState<string>('Main Hall');
-  const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
+  // Seed with sensible defaults so the area pills + layout fetch
+  // work immediately on mobile, even before `/settings` resolves.
+  // Real values from settings overwrite these once they arrive.
+  const [areas, setAreas] = useState<{ name: string; count: number }[]>([
+    { name: 'Main Hall', count: 8 },
+    { name: 'Terrace', count: 4 },
+  ]);
   const { user } = useSessionStore();
   const [editable, setEditable] = useState(false);
   const [nodes, setNodes] = useState<LayoutNode[] | null>(null);
@@ -124,6 +149,31 @@ export default function TablesPage() {
     return () => {
       (window as any).__tableStatusStore__ = null;
     };
+  }, [setOpen]);
+
+  // Live updates from any other client (Electron window or LAN tablet).
+  // Both the IPC bridge (preload) and the SSE listener (main.tsx) emit
+  // `pos:tablesChanged` with `{ area, label, open }`, so we only need
+  // one listener here regardless of platform.
+  useEffect(() => {
+    const onChanged = (ev: any) => {
+      try {
+        const {
+          area: a,
+          label: l,
+          open: o,
+        } = (ev?.detail || {}) as {
+          area?: string;
+          label?: string;
+          open?: boolean;
+        };
+        if (a && l && typeof o === 'boolean') setOpen(a, l, o);
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('pos:tablesChanged', onChanged);
+    return () => window.removeEventListener('pos:tablesChanged', onChanged);
   }, [setOpen]);
 
   const { hydrate, clear } = useTicketStore();
@@ -234,44 +284,86 @@ export default function TablesPage() {
     };
   }, [setAll]);
 
-  // Load layout when area changes
+  // Load layout when area changes. Layouts are now centrally managed
+  // by the admin in Settings → Table Areas, so we trust the saved
+  // layout verbatim — including its table count, shapes, seats and any
+  // decor variants — and only fall back to defaults when the admin
+  // has never saved a layout for this area.
+  const loadLayoutForArea = useCallback(async () => {
+    // The settings endpoint can be slow on mobile (cloud / capacitor),
+    // and `areas` can briefly be empty before it resolves. Don't gate
+    // the actual layout fetch on areas: with the centralised admin
+    // layout, we just need `area` (a string) and the user's id —
+    // everything else has a sensible default.
+    if (!user) return;
+    const cfg = areas.find((a) => a.name === area);
+    const targetCount = cfg?.count ?? 8;
+    const saved = await window.api.layout
+      .get(user.id, area)
+      .catch(() => null as any);
+    if (Array.isArray(saved) && saved.length) {
+      const savedAny = saved as any[];
+      const tables = savedAny.filter((n) => !n?.kind || n.kind === 'TABLE');
+      const areasSaved = savedAny.filter((n) => n?.kind === 'AREA');
+      const normalizedTables = tables.map((n: any, i: number) => {
+        const match = String(n.label || '').match(/^(?:[^0-9]*)(\d+)$/);
+        const num = match ? Number(match[1]) : i + 1;
+        // Preserve the new shape / size / seats fields so the waiter
+        // view round-trips them when re-saving (and so a future
+        // visual upgrade here picks them up automatically).
+        return {
+          ...n,
+          id: Number(n.id) || i + 1,
+          kind: 'TABLE',
+          label: n.label || `T${num}`,
+          x: Number(n.x || 0),
+          y: Number(n.y || 0),
+        } as TableNode;
+      });
+      const normalizedAreas = areasSaved.map((a: any, idx: number) => ({
+        ...a,
+        id: Number(a?.id) || -(idx + 1),
+        kind: 'AREA' as const,
+        label: String(a?.label ?? ''),
+        x: Number(a?.x || 160),
+        y: Number(a?.y || 160),
+        w: Math.max(8, Number(a?.w || 260)),
+        h: Math.max(8, Number(a?.h || 160)),
+      })) as AreaNode[];
+      setNodes([...(normalizedAreas as any), ...(normalizedTables as any)]);
+      return;
+    }
+    setNodes(generateDefaultNodes(area, targetCount));
+  }, [user, area, areas]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!user || !areas.length) return;
-      const cfg = areas.find((a) => a.name === area);
-      const targetCount = cfg?.count ?? 8;
-      const saved = await window.api.layout.get(user.id, area);
+      await loadLayoutForArea();
       if (cancelled) return;
-      if (Array.isArray(saved)) {
-        const savedAny = saved as any[];
-        const tables = savedAny.filter((n) => !n?.kind || n.kind === 'TABLE');
-        const areasSaved = savedAny.filter((n) => n?.kind === 'AREA');
-        if (tables.length === targetCount) {
-          const normalizedTables = tables.map((n: any, i: number) => {
-            const match = String(n.label).match(/^(?:[^0-9]*)(\d+)$/);
-            const num = match ? Number(match[1]) : i + 1;
-            return { ...n, kind: 'TABLE', label: `T${num}` } as TableNode;
-          });
-          const normalizedAreas = areasSaved.map((a: any, idx: number) => ({
-            id: Number(a?.id) || -(idx + 1),
-            kind: 'AREA' as const,
-            label: String(a?.label || 'Area'),
-            x: Number(a?.x || 160),
-            y: Number(a?.y || 160),
-            w: Math.max(80, Number(a?.w || 260)),
-            h: Math.max(80, Number(a?.h || 160)),
-          })) as AreaNode[];
-          setNodes([...(normalizedAreas as any), ...(normalizedTables as any)]);
-          return;
-        }
-      }
-      if (!cancelled) setNodes(generateDefaultNodes(area, targetCount));
     })();
     return () => {
       cancelled = true;
     };
-  }, [user, area, areas]);
+  }, [loadLayoutForArea]);
+
+  // Live update: admin saved a new shared layout from the AdminSettings
+  // panel — refetch immediately so every waiter device matches without
+  // waiting for a navigation away-and-back.
+  useEffect(() => {
+    const onLayoutChanged = (ev: any) => {
+      try {
+        const detail = (ev?.detail || {}) as { area?: string };
+        if (detail.area && detail.area !== area) return;
+        loadLayoutForArea();
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('pos:layoutChanged', onLayoutChanged);
+    return () =>
+      window.removeEventListener('pos:layoutChanged', onLayoutChanged);
+  }, [area, loadLayoutForArea]);
 
   // Compute which labels are open in the current area (stable via openMapKey)
   const openLabelsInArea = useMemo(() => {
@@ -332,6 +424,62 @@ export default function TablesPage() {
       cancelled = true;
     };
   }, [openLoaded, area, openLabelsInArea, userMap]);
+
+  // Live updates: another client (Electron window or LAN tablet) just
+  // wrote a TicketLog row. The badge `useEffect` above only re-fetches
+  // when the *set* of open tables changes — so when waiter A appends an
+  // item to a table that waiter B already had open, B's screen would
+  // keep showing B's initials until the next 5s poll. By targeted-
+  // refreshing just the affected table's badge / owner here, every
+  // device flips to the actual latest waiter immediately. We trust the
+  // payload's `userId` for an optimistic update so the UI reacts even
+  // before the round-trip to `getLatestForTable` completes.
+  useEffect(() => {
+    const onTicketsChanged = (ev: any) => {
+      try {
+        const detail = (ev?.detail || {}) as {
+          area?: string;
+          tableLabel?: string;
+          userId?: number | null;
+        };
+        const a = detail.area;
+        const label = detail.tableLabel;
+        if (!a || !label || a !== area) return;
+        const k = `${a}:${label}`;
+        const uid = Number(detail.userId);
+        if (Number.isFinite(uid) && uid > 0) {
+          setOwnerByTable((prev) => ({ ...prev, [k]: uid }));
+          const name = userMap[uid];
+          if (name)
+            setInitialsByTable((prev) => ({ ...prev, [k]: toInitials(name) }));
+        }
+        // Authoritative refresh: fetch the latest ticket so we end up in
+        // sync even if the optimistic uid was stale or the user map
+        // hasn't loaded the new waiter yet.
+        (async () => {
+          try {
+            const data = await window.api.tickets.getLatestForTable(a, label);
+            const lid = Number(data?.userId || 0);
+            if (!lid) return;
+            setOwnerByTable((prev) => ({ ...prev, [k]: lid }));
+            const nm = userMap[lid];
+            if (nm)
+              setInitialsByTable((prev) => ({
+                ...prev,
+                [k]: toInitials(nm),
+              }));
+          } catch {
+            // ignore — the next badge effect cycle will recover it
+          }
+        })();
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('pos:ticketsChanged', onTicketsChanged);
+    return () =>
+      window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
+  }, [area, userMap]);
 
   // Covers/Revenue metrics — only when that view mode is active
   useEffect(() => {
@@ -532,56 +680,81 @@ export default function TablesPage() {
 
   const worldSize = useMemo(() => {
     const cur = nodes || [];
-    const TABLE_R = 40;
     let maxX = 760;
     let maxY = 520;
     for (const n of cur as any[]) {
       if (!n) continue;
       if (String(n.kind || 'TABLE') === 'AREA') {
-        maxX = Math.max(maxX, Number(n.x || 0) + Math.max(0, Number(n.w || 0)) + 80);
-        maxY = Math.max(maxY, Number(n.y || 0) + Math.max(0, Number(n.h || 0)) + 80);
+        maxX = Math.max(
+          maxX,
+          Number(n.x || 0) + Math.max(0, Number(n.w || 0)) + 80,
+        );
+        maxY = Math.max(
+          maxY,
+          Number(n.y || 0) + Math.max(0, Number(n.h || 0)) + 80,
+        );
       } else {
-        maxX = Math.max(maxX, Number(n.x || 0) + TABLE_R + 80);
-        maxY = Math.max(maxY, Number(n.y || 0) + TABLE_R + 80);
+        // Use the actual table size (rect tables can be 100×56) so we
+        // never under-allocate the world canvas in editor mode.
+        const halfW = Math.max(32, Number(n.w || 64) / 2);
+        const halfH = Math.max(32, Number(n.h || 64) / 2);
+        maxX = Math.max(maxX, Number(n.x || 0) + halfW + 80);
+        maxY = Math.max(maxY, Number(n.y || 0) + halfH + 80);
       }
     }
+    // In read-only (waiter) mode the auto-fit transform below scales
+    // everything into the canvas viewport — so the world should be
+    // pinned to the canvas size to avoid spurious scrollbars and
+    // miscentered transforms. Only the editor needs a world larger
+    // than the viewport (because editing happens at scale 1).
+    if (!editable) {
+      return {
+        w: Math.max(1, canvasSize.w),
+        h: Math.max(1, canvasSize.h),
+      };
+    }
     return {
-      w: Math.max(760, Math.floor(maxX), editable ? 0 : canvasSize.w),
-      h: Math.max(520, Math.floor(maxY), editable ? 0 : canvasSize.h),
+      w: Math.max(760, Math.floor(maxX)),
+      h: Math.max(520, Math.floor(maxY)),
     };
   }, [nodes, editable, canvasSize.w, canvasSize.h]);
 
   const viewTransform = useMemo(() => {
-    if (editable) return { scale: 1, tx: 0, ty: 0 };
+    const identity = { scale: 1, scaleX: 1, scaleY: 1, tx: 0, ty: 0 };
+    if (editable) return identity;
     const cur = nodes || [];
-    if (!cur.length) return { scale: 1, tx: 0, ty: 0 };
-    const pad = 48;
+    if (!cur.length) return identity;
+    // Tight padding so the layout reaches the edges of the canvas
+    // (avoids the perceived "shrunken canvas" when bh ≈ ch).
+    const pad = 12;
     const cw = Math.max(0, canvasSize.w);
     const ch = Math.max(0, canvasSize.h);
-    if (cw < 200 || ch < 200) return { scale: 1, tx: 0, ty: 0 };
+    if (cw < 200 || ch < 200) return identity;
 
-    const tableHalf = 32;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
     for (const n of cur as any[]) {
       if (!n) continue;
-      if (String(n.kind || 'TABLE') === 'AREA') {
-        const x = Number(n.x || 0);
-        const y = Number(n.y || 0);
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x + Math.max(0, Number(n.w || 0)));
-        maxY = Math.max(maxY, y + Math.max(0, Number(n.h || 0)));
-      } else {
-        const x = Number(n.x || 0);
-        const y = Number(n.y || 0);
-        minX = Math.min(minX, x - tableHalf);
-        minY = Math.min(minY, y - tableHalf);
-        maxX = Math.max(maxX, x + tableHalf);
-        maxY = Math.max(maxY, y + tableHalf);
-      }
+      // BOTH tables AND areas use `translate(-50%, -50%)` for
+      // positioning, so `x, y` is the CENTRE of the node — not the
+      // top-left corner. Treating areas as top-left was overestimating
+      // bh by h/2 (and bw by w/2), shrinking the auto-fit scale and
+      // leaving a big empty band at the bottom of the canvas.
+      const x = Number(n.x || 0);
+      const y = Number(n.y || 0);
+      const isArea = String(n.kind || 'TABLE') === 'AREA';
+      const halfW = isArea
+        ? Math.max(0, Number(n.w || 0)) / 2
+        : Math.max(32, Number(n.w || 64) / 2);
+      const halfH = isArea
+        ? Math.max(0, Number(n.h || 0)) / 2
+        : Math.max(32, Number(n.h || 64) / 2);
+      minX = Math.min(minX, x - halfW);
+      minY = Math.min(minY, y - halfH);
+      maxX = Math.max(maxX, x + halfW);
+      maxY = Math.max(maxY, y + halfH);
     }
     if (
       !Number.isFinite(minX) ||
@@ -589,19 +762,164 @@ export default function TablesPage() {
       !Number.isFinite(maxX) ||
       !Number.isFinite(maxY)
     )
-      return { scale: 1, tx: 0, ty: 0 };
+      return identity;
     const bw = Math.max(1, maxX - minX);
     const bh = Math.max(1, maxY - minY);
 
-    const maxScale = 1.6;
-    const scale = Math.max(
-      1,
-      Math.min(maxScale, (cw - pad * 2) / bw, (ch - pad * 2) / bh),
-    );
-    const tx = (cw - bw * scale) / 2 - minX * scale;
-    const ty = (ch - bh * scale) / 2 - minY * scale;
-    return { scale, tx, ty };
+    // Independent x / y POSITION scales so the layout fills the
+    // canvas in both directions instead of leaving empty bands on the
+    // sides or below. Position scale is given a generous upper bound
+    // so even small layouts spread out to use the available space —
+    // children apply a counter-scale so tables themselves don't grow
+    // beyond `shapeMaxScale` and stay nicely proportioned.
+    const minScale = 0.3;
+    const positionMaxScale = 6;
+    const shapeMaxScale = 1.8;
+    const clamp = (raw: number, lo: number, hi: number) =>
+      Math.max(lo, Math.min(hi, raw));
+    const scaleX = clamp((cw - pad * 2) / bw, minScale, positionMaxScale);
+    const scaleY = clamp((ch - pad * 2) / bh, minScale, positionMaxScale);
+    // Uniform shape scale: the smaller axis dictates how big shapes
+    // can render so they never visually exceed their density-derived
+    // slot. Cap separately so shapes don't blow up on very sparse
+    // layouts even though positions are free to stretch.
+    const scale = clamp(Math.min(scaleX, scaleY), minScale, shapeMaxScale);
+    const tx = (cw - bw * scaleX) / 2 - minX * scaleX;
+    const ty = (ch - bh * scaleY) / 2 - minY * scaleY;
+    return { scale, scaleX, scaleY, tx, ty };
   }, [editable, nodes, canvasSize.w, canvasSize.h]);
+
+  // -------- Pinch-to-zoom + drag-to-pan (read-only canvas) --------
+  // `userZoom` is layered on TOP of the auto-fit transform: the
+  // auto-fit places the floor edge-to-edge in the viewport, and this
+  // user transform lets the staff zoom in for a closer look at busy
+  // sections of the room and pan around when zoomed in.
+  const [userZoom, setUserZoom] = useState({ scale: 1, tx: 0, ty: 0 });
+  const userZoomRef = useRef(userZoom);
+  userZoomRef.current = userZoom;
+  const isZoomed = userZoom.scale > 1.02;
+  const resetZoom = useCallback(
+    () => setUserZoom({ scale: 1, tx: 0, ty: 0 }),
+    [],
+  );
+
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || editable) return;
+
+    // We attach NATIVE touch listeners (passive: false) instead of
+    // PointerEvents because iOS WebKit (used by both Safari and the
+    // Capacitor WKWebView) can drop the second pointer when the first
+    // lands on an interactive element such as a table circle. Native
+    // touch events are reliable for multi-touch and let us call
+    // preventDefault() to suppress the OS double-tap-zoom and any
+    // residual page scrolling.
+
+    let pinchStart: {
+      d0: number;
+      midX: number;
+      midY: number;
+      scale: number;
+      tx: number;
+      ty: number;
+    } | null = null;
+    let panStart: {
+      x: number;
+      y: number;
+      tx: number;
+      ty: number;
+      moved: boolean;
+    } | null = null;
+
+    const ptFromTouch = (t: Touch) => {
+      const r = el.getBoundingClientRect();
+      return { x: t.clientX - r.left, y: t.clientY - r.top };
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      const touches = e.touches;
+      if (touches.length >= 2) {
+        const a = ptFromTouch(touches[0]);
+        const b = ptFromTouch(touches[1]);
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        pinchStart = {
+          d0: Math.max(1, Math.hypot(dx, dy)),
+          midX: (a.x + b.x) / 2,
+          midY: (a.y + b.y) / 2,
+          scale: userZoomRef.current.scale,
+          tx: userZoomRef.current.tx,
+          ty: userZoomRef.current.ty,
+        };
+        panStart = null;
+        e.preventDefault();
+      } else if (touches.length === 1 && userZoomRef.current.scale > 1.02) {
+        const p = ptFromTouch(touches[0]);
+        panStart = {
+          x: p.x,
+          y: p.y,
+          tx: userZoomRef.current.tx,
+          ty: userZoomRef.current.ty,
+          moved: false,
+        };
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const touches = e.touches;
+      if (touches.length >= 2 && pinchStart) {
+        const a = ptFromTouch(touches[0]);
+        const b = ptFromTouch(touches[1]);
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d1 = Math.max(1, Math.hypot(dx, dy));
+        const midX = (a.x + b.x) / 2;
+        const midY = (a.y + b.y) / 2;
+        const ratio = d1 / pinchStart.d0;
+        const newScale = Math.max(1, Math.min(5, pinchStart.scale * ratio));
+        const k = newScale / pinchStart.scale;
+        const newTx =
+          pinchStart.midX -
+          k * (pinchStart.midX - pinchStart.tx) +
+          (midX - pinchStart.midX);
+        const newTy =
+          pinchStart.midY -
+          k * (pinchStart.midY - pinchStart.ty) +
+          (midY - pinchStart.midY);
+        setUserZoom({ scale: newScale, tx: newTx, ty: newTy });
+        e.preventDefault();
+      } else if (touches.length === 1 && panStart) {
+        const p = ptFromTouch(touches[0]);
+        const dxp = p.x - panStart.x;
+        const dyp = p.y - panStart.y;
+        if (!panStart.moved && Math.hypot(dxp, dyp) > 6) panStart.moved = true;
+        if (panStart.moved) {
+          setUserZoom((prev) => ({
+            ...prev,
+            tx: panStart!.tx + dxp,
+            ty: panStart!.ty + dyp,
+          }));
+          e.preventDefault();
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) pinchStart = null;
+      if (e.touches.length === 0) panStart = null;
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart as any);
+      el.removeEventListener('touchmove', onTouchMove as any);
+      el.removeEventListener('touchend', onTouchEnd as any);
+      el.removeEventListener('touchcancel', onTouchEnd as any);
+    };
+  }, [editable]);
 
   // Stable callbacks for node mutation (used by AreaRect / DraggableCircle)
   const handleNodeMove = useCallback(
@@ -624,9 +942,8 @@ export default function TablesPage() {
     (id: number, label: string) =>
       setNodes(
         (prev) =>
-          prev?.map((n) =>
-            n.id === id ? { ...(n as any), label } : n,
-          ) ?? prev,
+          prev?.map((n) => (n.id === id ? { ...(n as any), label } : n)) ??
+          prev,
       ),
     [],
   );
@@ -643,8 +960,12 @@ export default function TablesPage() {
       if (action) setPendingAction(null);
       if (isOpenFn(area, t.label)) {
         (async () => {
-          const data = await window.api.tickets.getLatestForTable(area, t.label);
-          if (data) hydrate({ items: data.items as any, note: data.note || '' });
+          const data = await window.api.tickets.getLatestForTable(
+            area,
+            t.label,
+          );
+          if (data)
+            hydrate({ items: data.items as any, note: data.note || '' });
           else clear(); // No TicketLog (opened with covers, no items) — show empty
           navigate('/app/order');
         })();
@@ -670,12 +991,11 @@ export default function TablesPage() {
     return <PageSpinner message={openLoadError || 'Loading tables…'} />;
   }
 
-  // Layout editing is a back-office task; hide it on mobile / browser
-  // shells. Admins on the Electron desktop still see it.
-  const isBrowserClient =
-    typeof window !== 'undefined' &&
-    Boolean((window as any).__BROWSER_CLIENT__);
-  const canEditLayout = !isBrowserClient;
+  // Floor layouts are now centrally managed by the admin from the
+  // Settings → Table Areas screen, so this page is always read-only
+  // here. Keeping the local `editable` state at `false` avoids a churn
+  // through every callsite while still removing the toolbar UI below.
+  const canEditLayout = false;
 
   return (
     <div className="h-full flex flex-col gap-2 sm:gap-3 min-h-0 overflow-hidden">
@@ -753,36 +1073,68 @@ export default function TablesPage() {
 
       <div
         ref={canvasRef}
-        className={`w-full flex-1 min-h-0 rounded bg-gray-800 ${editable ? 'overflow-hidden' : 'overflow-auto'}`}
+        className={`w-full flex-1 min-h-0 rounded bg-gray-800 relative ${
+          editable ? 'overflow-auto' : 'overflow-hidden touch-none'
+        }`}
+        // Background grid rendered DIRECTLY on the canvas so it always
+        // covers the full visible area regardless of any inner transforms.
         style={{
-          WebkitOverflowScrolling: 'touch',
-          touchAction: editable ? ('none' as any) : ('pan-x pan-y' as any),
+          backgroundImage:
+            'linear-gradient(to right, rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.08) 1px, transparent 1px)',
+          backgroundSize: '40px 40px',
         }}
       >
+        {!editable && isZoomed && (
+          <button
+            type="button"
+            onClick={resetZoom}
+            className="absolute top-2 right-2 z-20 px-2.5 py-1.5 rounded-full bg-gray-900/80 backdrop-blur text-xs font-semibold text-white border border-white/10 shadow-lg active:scale-95"
+            title="Reset zoom"
+          >
+            {Math.round(userZoom.scale * 100)}% • Reset
+          </button>
+        )}
+
         <div
-          className="relative"
-          style={{ width: worldSize.w, height: worldSize.h }}
+          className={editable ? 'relative' : 'absolute inset-0'}
+          style={
+            editable
+              ? { width: worldSize.w, height: worldSize.h }
+              : ({
+                  // User pinch-zoom + pan layer wraps the auto-fit
+                  // transform so users can zoom into busy parts of the
+                  // floor without disrupting the read-only fit.
+                  transform: `translate(${userZoom.tx}px, ${userZoom.ty}px) scale(${userZoom.scale})`,
+                  transformOrigin: '0 0',
+                  willChange: 'transform',
+                } as React.CSSProperties)
+          }
         >
           <div
-            className="absolute inset-0"
+            className={
+              editable ? 'absolute inset-0' : 'absolute inset-0 touch-none'
+            }
             style={
               editable
                 ? undefined
-                : {
-                    transform: `translate(${viewTransform.tx}px, ${viewTransform.ty}px) scale(${viewTransform.scale})`,
+                : ({
+                    transform: `translate(${viewTransform.tx}px, ${viewTransform.ty}px) scale(${viewTransform.scaleX}, ${viewTransform.scaleY})`,
                     transformOrigin: 'top left',
-                  }
+                    // Children read these to counter-distort their own
+                    // shapes (so circles stay circles even when the
+                    // wrapper is non-uniformly scaled to spread positions
+                    // across the whole grid).
+                    ['--floor-cx' as any]:
+                      viewTransform.scaleX > 0
+                        ? viewTransform.scale / viewTransform.scaleX
+                        : 1,
+                    ['--floor-cy' as any]:
+                      viewTransform.scaleY > 0
+                        ? viewTransform.scale / viewTransform.scaleY
+                        : 1,
+                  } as React.CSSProperties)
             }
           >
-            <div
-              className="absolute inset-0 opacity-20"
-              style={{
-                backgroundSize: '40px 40px',
-                backgroundImage:
-                  'linear-gradient(to right, rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.08) 1px, transparent 1px)',
-              }}
-            />
-
             {nodes?.filter(isAreaNode).map((a) => (
               <MemoAreaRect
                 key={a.id}
@@ -850,13 +1202,6 @@ export default function TablesPage() {
               />
             ))}
           </div>
-
-          {area === 'Main Hall' && (
-            <div
-              className="absolute bottom-6 left-6 right-6 h-4 rounded bg-gray-700 opacity-70"
-              title="Bar"
-            />
-          )}
         </div>
       </div>
 
@@ -988,7 +1333,11 @@ function AreaRect({
       const dy = e.clientY - startRef.current.py;
       const n = nodeRef.current;
       if (modeRef.current === 'DRAG') {
-        onMoveRef.current(n.id, startRef.current.x + dx, startRef.current.y + dy);
+        onMoveRef.current(
+          n.id,
+          startRef.current.x + dx,
+          startRef.current.y + dy,
+        );
       } else {
         const addW =
           modeRef.current === 'E' || modeRef.current === 'SE' ? dx : 0;
@@ -1025,16 +1374,27 @@ function AreaRect({
     };
   }, [editable]);
 
+  const variant: AreaVariant = node.variant ?? 'rect';
+  const fill = node.color ?? defaultAreaColor(variant);
+  const styling = areaVariantStyling(variant, fill);
+  const showLabel = variant === 'rect' || variant === 'bar' || !!node.label;
   return (
     <div
       ref={ref}
-      className={`absolute -translate-x-1/2 -translate-y-1/2 border-2 border-emerald-500 bg-transparent rounded ${editable ? 'cursor-move' : 'pointer-events-none'} select-none`}
+      className={`absolute ${styling.className} ${editable ? 'cursor-move' : 'pointer-events-none'} select-none`}
       style={{
         left: node.x,
         top: node.y,
         width: node.w,
         height: node.h,
         touchAction: 'none' as any,
+        ...styling.style,
+        // Counter-scale (--floor-cx / --floor-cy) is set on the parent
+        // wrapper in non-editable mode so shapes stay proportional even
+        // when positions are spread non-uniformly across the canvas.
+        transform:
+          'translate(-50%, -50%) scale(var(--floor-cx, 1), var(--floor-cy, 1))',
+        transformOrigin: 'center',
       }}
       onClick={(e) => {
         if (Date.now() < suppressClickUntilRef.current) {
@@ -1046,49 +1406,93 @@ function AreaRect({
         if (!editable) return;
         setRenaming(true);
       }}
-      title={editable ? 'Double click to rename' : undefined}
+      title={editable ? 'Double click to rename' : node.label || variant}
     >
-      <div className="absolute left-2 top-2 text-xs font-semibold text-emerald-300">
-        {renaming ? (
-          <input
-            ref={inputRef}
-            className="bg-gray-900/70 border border-emerald-500 rounded px-2 py-1 text-emerald-100 text-xs w-44"
-            value={draftLabel}
-            onChange={(e) => setDraftLabel(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                setRenaming(false);
-                setDraftLabel(node.label);
-                return;
-              }
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                e.stopPropagation();
+      {/* Variant decoration so each shape reads at a glance: walls are
+          solid, doors have a swing line, windows have a mullion, etc. */}
+      {variant === 'window' && (
+        <div className="absolute inset-0 flex items-center pointer-events-none">
+          <div className="w-full border-t border-white/40" />
+        </div>
+      )}
+      {variant === 'stairs' && (
+        <div className="absolute inset-1 flex flex-col justify-between pointer-events-none">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-px bg-white/40" />
+          ))}
+        </div>
+      )}
+      {variant === 'door' && (
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+          <div className="w-3/4 border-b-2 border-dashed border-white/60" />
+        </div>
+      )}
+      {(variant === 'plant' || variant === 'pillar') && (
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-white/80 text-base">
+          {variant === 'plant' ? '🌿' : '◼'}
+        </div>
+      )}
+      {showLabel && (
+        <div
+          className={`absolute left-2 top-2 text-xs font-semibold ${
+            variant === 'rect'
+              ? 'text-emerald-300'
+              : 'text-white/90 drop-shadow'
+          }`}
+        >
+          {renaming ? (
+            <input
+              ref={inputRef}
+              className="bg-gray-900/70 border border-emerald-500 rounded px-2 py-1 text-emerald-100 text-xs w-44"
+              value={draftLabel}
+              onChange={(e) => setDraftLabel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setRenaming(false);
+                  setDraftLabel(node.label);
+                  return;
+                }
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const next = draftLabel.trim();
+                  onRename(node.id, next);
+                  setRenaming(false);
+                }
+              }}
+              onBlur={() => {
                 const next = draftLabel.trim();
-                if (next) onRename(node.id, next);
+                if (next !== node.label) onRename(node.id, next);
                 setRenaming(false);
-              }
-            }}
-            onBlur={() => {
-              const next = draftLabel.trim();
-              if (next && next !== node.label) onRename(node.id, next);
-              setRenaming(false);
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-            }}
-          />
-        ) : (
-          node.label
-        )}
-      </div>
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+              }}
+            />
+          ) : (
+            node.label
+          )}
+        </div>
+      )}
       {editable && (
         <>
           <button
             type="button"
-            className="absolute right-2 top-2 text-xs px-2 py-1 rounded bg-gray-900/60 border border-gray-700 hover:bg-gray-900"
+            aria-label="Delete shape"
+            className="absolute bg-rose-600 hover:bg-rose-500 text-white shadow ring-2 ring-gray-900 z-10 flex items-center justify-center"
+            style={{
+              width: 22,
+              height: 22,
+              top: -10,
+              right: -10,
+              padding: 0,
+              borderRadius: '50%',
+              fontSize: 11,
+              lineHeight: 1,
+              boxSizing: 'border-box',
+            }}
             onPointerDown={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -1121,6 +1525,83 @@ function AreaRect({
 }
 
 const MemoAreaRect = memo(AreaRect);
+
+// Map an area variant + fill colour to the wrapper's class + inline
+// style. Mirrors the helper inside FloorCanvas so both the admin
+// editor and the waiter view render decor identically.
+function defaultAreaColor(variant: AreaVariant): string {
+  switch (variant) {
+    case 'wall':
+      return '#1f2937';
+    case 'bar':
+      return '#92400e';
+    case 'door':
+      return '#9ca3af';
+    case 'plant':
+      return '#15803d';
+    case 'pillar':
+      return '#374151';
+    case 'window':
+      return '#7dd3fc';
+    case 'stairs':
+      return '#4b5563';
+    case 'rect':
+    default:
+      return '';
+  }
+}
+
+function areaVariantStyling(
+  variant: AreaVariant,
+  fill: string,
+): { className: string; style: React.CSSProperties } {
+  switch (variant) {
+    case 'wall':
+      return {
+        className: 'rounded-sm',
+        style: { backgroundColor: fill || '#1f2937' },
+      };
+    case 'bar':
+      return {
+        className: 'rounded-md shadow-inner',
+        style: {
+          backgroundImage: `linear-gradient(180deg, ${fill || '#92400e'} 0%, rgba(0,0,0,0.25) 100%)`,
+          backgroundColor: fill || '#92400e',
+        },
+      };
+    case 'door':
+      return {
+        className: 'rounded-sm',
+        style: { backgroundColor: fill || '#9ca3af', opacity: 0.85 },
+      };
+    case 'plant':
+      return {
+        className: 'rounded-full shadow',
+        style: { backgroundColor: fill || '#15803d' },
+      };
+    case 'pillar':
+      return {
+        className: 'rounded-full shadow-md',
+        style: { backgroundColor: fill || '#374151' },
+      };
+    case 'window':
+      return {
+        className: 'rounded-sm',
+        style: { backgroundColor: fill || '#7dd3fc', opacity: 0.8 },
+      };
+    case 'stairs':
+      return {
+        className: 'rounded-sm',
+        style: { backgroundColor: fill || '#4b5563' },
+      };
+    case 'rect':
+    default:
+      return {
+        className: 'border-2 border-emerald-500 bg-transparent rounded',
+        style: fill ? { backgroundColor: fill, opacity: 0.25 } : {},
+      };
+  }
+}
 
 // --- DraggableCircle ---
 
@@ -1292,23 +1773,39 @@ function DraggableCircle({
     };
   }, []);
 
+  const shape: TableShape = node.shape ?? 'circle';
+  const w = Math.max(36, Number(node.w) || (shape === 'rect' ? 100 : 64));
+  const h = Math.max(36, Number(node.h) || (shape === 'rect' ? 56 : 64));
+  const radius =
+    shape === 'circle' ? '9999px' : shape === 'square' ? '10px' : '12px';
   return (
     <div
       ref={ref}
-      className={`absolute -translate-x-1/2 -translate-y-1/2 w-16 h-16 ${colorClass || GREEN} rounded-full flex items-center justify-center shadow-lg ${editable ? 'cursor-move' : 'cursor-pointer'} select-none overflow-hidden`}
+      className={`absolute ${colorClass || GREEN} flex items-center justify-center shadow-lg ${editable ? 'cursor-move' : 'cursor-pointer'} select-none overflow-hidden`}
       style={{
         left: pos.x,
         top: pos.y,
+        width: w,
+        height: h,
+        borderRadius: radius,
         touchAction: 'none' as any,
         willChange: editable ? ('transform,left,top' as any) : undefined,
+        // Counter-scale (--floor-cx / --floor-cy) keeps the shape proportional
+        // even when the parent wrapper applies a non-uniform scale to spread
+        // positions across the whole grid.
+        transform:
+          'translate(-50%, -50%) scale(var(--floor-cx, 1), var(--floor-cy, 1))',
+        transformOrigin: 'center',
       }}
-      title={`${node.label} • ${statusText || node.status}`}
+      title={`${node.label} • ${statusText || node.status}${
+        node.seats ? ` • seats ${node.seats}` : ''
+      }`}
       onClick={() => {
         if (Date.now() < suppressClickUntilRef.current) return;
         onClickRef.current?.(nodeRef.current);
       }}
     >
-      <div className="flex flex-col items-center leading-none">
+      <div className="flex flex-col items-center leading-none px-1">
         <span className="text-sm font-semibold">{node.label}</span>
         {viewMode === 'occupied' ? (
           <>
@@ -1325,12 +1822,19 @@ function DraggableCircle({
           </>
         ) : (
           metricText && (
-            <span className="mt-0.5 text-[10px] font-semibold px-1 py-0.5 rounded bg-black/40 max-w-[56px] text-center leading-[1.05] break-words">
+            <span className="mt-0.5 text-[10px] font-semibold px-1 py-0.5 rounded bg-black/40 max-w-[80px] text-center leading-[1.05] break-words">
               {viewMode === 'covers' ? `P: ${metricText}` : metricText}
             </span>
           )
         )}
       </div>
+      {/* Capacity badge — shown in 'occupied' view when there's no
+          status badge / no metric to display, so we don't double up. */}
+      {node.seats && viewMode === 'occupied' && !badge && !statusText && (
+        <span className="absolute bottom-0.5 right-1 text-[10px] font-semibold opacity-80">
+          {node.seats}
+        </span>
+      )}
       {showTip && tooltip && (
         <div className="absolute top-18 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-black/80 text-white px-2 py-1 rounded shadow">
           {ownerName && <div>{ownerName}</div>}

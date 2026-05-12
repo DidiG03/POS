@@ -79,6 +79,13 @@ const SHARED_ENUMS = [
 // Fields legitimately present only locally (Electron-only behavior).
 const ALLOWED_LOCAL_ONLY: Record<string, string[]> = {
   User: ['twoFactorEnabled', 'twoFactorSecret'],
+  // Printer-offline retry queue lives only on the LAN POS host (SQLite).
+  PrintJob: ['attempts', 'lastError', 'nextAttemptAt', 'printerProfileId'],
+};
+
+// Enum values legitimately present only locally (server/cloud queue path differs).
+const ALLOWED_ENUM_VALUES_LOCAL_ONLY: Record<string, Set<string>> = {
+  PrintStatus: new Set(['RETRY']),
 };
 
 // Fields legitimately present only server-side.
@@ -239,8 +246,12 @@ function diffEnum(
   if (!local) return [`  ! enum ${enumName} missing in LOCAL schema`];
   if (!server) return [`  ! enum ${enumName} missing in SERVER schema`];
   const issues: string[] = [];
+  const localExtraAllowed = ALLOWED_ENUM_VALUES_LOCAL_ONLY[enumName];
   for (const v of local) {
-    if (!server.has(v)) issues.push(`  + enum ${enumName}.${v} only in LOCAL`);
+    if (!server.has(v)) {
+      if (localExtraAllowed?.has(v)) continue;
+      issues.push(`  + enum ${enumName}.${v} only in LOCAL`);
+    }
   }
   for (const v of server) {
     if (!local.has(v)) issues.push(`  - enum ${enumName}.${v} only in SERVER`);

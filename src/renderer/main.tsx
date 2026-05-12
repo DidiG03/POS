@@ -6,6 +6,7 @@ import './styles/index.css';
 import { offlineQueue } from './utils/offlineQueue';
 import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
+import { useReservationSessionStore } from './stores/reservationSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from './components/Toaster';
 import { initMobileShell } from './utils/mobileShell';
@@ -78,6 +79,24 @@ if (!(window as any).api) {
   };
 
   const pickBackend = () => {
+    // Standalone KDS app: the preload (`src/preload/kds.ts`) injects the
+    // saved POS host as `window.__POS_HOST__`. Honor it before any other
+    // resolution so a freshly-installed KDS hits the right host without
+    // touching localStorage.
+    const injected = (window as any).__POS_HOST__ as
+      | {
+          host?: string;
+          httpPort?: number | string;
+          httpsPort?: number | string | null;
+        }
+      | undefined;
+    if (injected && typeof injected.host === 'string' && injected.host.trim()) {
+      return {
+        host: injected.host.trim(),
+        httpPort: String(injected.httpPort || 3333),
+        httpsPort: String(injected.httpsPort || 3443),
+      };
+    }
     const params = new URLSearchParams(window.location.search);
     const backParam = params.get('backend'); // e.g., 192.168.1.50
     const httpParam = params.get('http'); // e.g., 3333
@@ -115,6 +134,8 @@ if (!(window as any).api) {
   const HTTPS_BASE = `https://${host}:${httpsPort}`;
   const HTTP_BASE = `http://${host}:${httpPort}`;
   const CLIENT_TIMEOUT_MS = 5000;
+  /** `/print/*` hits the host, then TCP to the printer — 5s is too tight on Wi‑Fi tablets. */
+  const LAN_PRINT_TIMEOUT_MS = 45_000;
 
   async function fetchWithTimeout(
     input: RequestInfo | URL,
@@ -155,7 +176,57 @@ if (!(window as any).api) {
           if (area && label && typeof open === 'boolean') {
             const store = (window as any).__tableStatusStore__;
             if (store && store.setOpen) store.setOpen(area, label, open);
+            // Also surface as a window event so any future listener (or
+            // a TablesPage that mounts after this update arrives) gets a
+            // chance to react via the same channel as the IPC bridge.
+            try {
+              window.dispatchEvent(
+                new CustomEvent('pos:tablesChanged', { detail: data }),
+              );
+            } catch {
+              // ignore
+            }
           }
+        } catch (e) {
+          void e;
+        }
+      });
+      // Reservations: a HOST/ADMIN on another device created/edited/cancelled
+      // a booking. Re-emit as a window event so the Floor and List pages can
+      // refetch their visible day without us having to import their stores
+      // here. Payload mirrors `ReservationChangePayload` from the service.
+      es.addEventListener('reservations', (ev: any) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          window.dispatchEvent(
+            new CustomEvent('pos:reservationsChanged', { detail: data }),
+          );
+        } catch (e) {
+          void e;
+        }
+      });
+      // Tickets: another waiter just appended an item to a table. The
+      // TablesPage uses this to re-fetch the per-table waiter badge so
+      // every device shows the actual waiter who wrote the latest order
+      // (without waiting for the next 5s poll). Payload mirrors
+      // `TicketChangePayload` from the service.
+      es.addEventListener('ticket', (ev: any) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          window.dispatchEvent(
+            new CustomEvent('pos:ticketsChanged', { detail: data }),
+          );
+        } catch (e) {
+          void e;
+        }
+      });
+      // Floor layout: admin re-published the shared layout for an area.
+      es.addEventListener('layout', (ev: any) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          window.dispatchEvent(
+            new CustomEvent('pos:layoutChanged', { detail: data }),
+          );
         } catch (e) {
           void e;
         }
@@ -189,11 +260,16 @@ if (!(window as any).api) {
     return name === 'AbortError' || e instanceof TypeError;
   }
 
-  async function fetchWithRetry(url: string, init: RequestInit, attempts = 2) {
+  async function fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    attempts = 2,
+    timeoutMs = CLIENT_TIMEOUT_MS,
+  ) {
     let lastErr: any = null;
     for (let i = 0; i <= attempts; i++) {
       try {
-        return await fetchWithTimeout(url, init);
+        return await fetchWithTimeout(url, init, timeoutMs);
       } catch (e: any) {
         lastErr = e;
         if (!isRetryableNetworkError(e) || i === attempts) throw e;
@@ -207,9 +283,35 @@ if (!(window as any).api) {
 
   class HttpError extends Error {
     status: number;
-    constructor(status: number) {
-      super(String(status));
+    code?: string;
+    constructor(status: number, message?: string, code?: string) {
+      super(message || String(status));
       this.status = status;
+      if (code) this.code = code;
+    }
+  }
+
+  // Extract `{ error, code }` from an error response body when present so
+  // user-facing surfaces (e.g. reservation conflict 409) get the real message
+  // instead of the bare HTTP status code.
+  async function readErrorMessage(
+    r: Response,
+  ): Promise<{ message?: string; code?: string }> {
+    try {
+      const ct = r.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) return {};
+      const body: any = await r.json().catch(() => null);
+      if (!body || typeof body !== 'object') return {};
+      const message =
+        typeof body.error === 'string'
+          ? body.error
+          : typeof body.message === 'string'
+            ? body.message
+            : undefined;
+      const code = typeof body.code === 'string' ? body.code : undefined;
+      return { message, code };
+    } catch {
+      return {};
     }
   }
 
@@ -241,7 +343,8 @@ if (!(window as any).api) {
       if (!r.ok) {
         if (r.status === 401 || r.status === 403)
           forceLogout('Session expired');
-        throw new HttpError(r.status);
+        const { message, code } = await readErrorMessage(r);
+        throw new HttpError(r.status, message, code);
       }
       const ct = r.headers.get('content-type') || '';
       return ct.includes('application/json') ? r.json() : r.text();
@@ -252,7 +355,8 @@ if (!(window as any).api) {
         if (!r.ok) {
           if (r.status === 401 || r.status === 403)
             forceLogout('Session expired');
-          throw new HttpError(r.status);
+          const { message, code } = await readErrorMessage(r);
+          throw new HttpError(r.status, message, code);
         }
         const ct = r.headers.get('content-type') || '';
         return ct.includes('application/json') ? r.json() : r.text();
@@ -266,12 +370,17 @@ if (!(window as any).api) {
         if (!r2.ok) {
           if (r2.status === 401 || r2.status === 403)
             forceLogout('Session expired');
-          throw new HttpError(r2.status);
+          const { message, code } = await readErrorMessage(r2);
+          throw new HttpError(r2.status, message, code);
         }
         const ct2 = r2.headers.get('content-type') || '';
         return ct2.includes('application/json') ? r2.json() : r2.text();
       }
     }
+  }
+
+  function lanRequestTimeoutMs(path: string): number {
+    return path.includes('/print') ? LAN_PRINT_TIMEOUT_MS : CLIENT_TIMEOUT_MS;
   }
 
   // Always call the host LAN API (even when cloud mode is enabled).
@@ -282,24 +391,37 @@ if (!(window as any).api) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(((opts?.headers as any) || {}) as any),
     };
+    const timeoutMs = lanRequestTimeoutMs(path);
     // Prefer HTTP first to avoid self-signed cert warnings in browsers, then fallback to HTTPS
     try {
-      const r = await fetchWithRetry(HTTP_BASE + path, { ...opts, headers });
+      const r = await fetchWithRetry(
+        HTTP_BASE + path,
+        { ...opts, headers },
+        2,
+        timeoutMs,
+      );
       if (!r.ok) {
         // Only treat 401/403 as "session expired" if we actually have a token.
         if (token && (r.status === 401 || r.status === 403))
           forceLogout('Session expired');
-        throw new HttpError(r.status);
+        const { message, code } = await readErrorMessage(r);
+        throw new HttpError(r.status, message, code);
       }
       const ct = r.headers.get('content-type') || '';
       return ct.includes('application/json') ? r.json() : r.text();
     } catch (e: any) {
       if (!isRetryableNetworkError(e)) throw e;
-      const r2 = await fetchWithRetry(HTTPS_BASE + path, { ...opts, headers });
+      const r2 = await fetchWithRetry(
+        HTTPS_BASE + path,
+        { ...opts, headers },
+        2,
+        timeoutMs,
+      );
       if (!r2.ok) {
         if (token && (r2.status === 401 || r2.status === 403))
           forceLogout('Session expired');
-        throw new HttpError(r2.status);
+        const { message, code } = await readErrorMessage(r2);
+        throw new HttpError(r2.status, message, code);
       }
       const ct2 = r2.headers.get('content-type') || '';
       return ct2.includes('application/json') ? r2.json() : r2.text();
@@ -455,7 +577,8 @@ if (!(window as any).api) {
         });
         const ok = !!(r && r.ok === true);
         if (!ok) {
-          const err = r && (r.error || r.message) ? String(r.error || r.message) : '';
+          const err =
+            r && (r.error || r.message) ? String(r.error || r.message) : '';
           window.dispatchEvent(
             new CustomEvent('printer:event', {
               detail: {
@@ -566,7 +689,10 @@ if (!(window as any).api) {
     },
     tickets: {
       async log(input: any) {
-        await goLan('/tickets', { method: 'POST', body: JSON.stringify(input) });
+        await goLan('/tickets', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
         return true;
       },
       async getLatestForTable(area: string, tableLabel: string) {
@@ -589,9 +715,45 @@ if (!(window as any).api) {
         return true;
       },
       async print(input: any) {
-        if (IS_CLOUD) {
+        // Smart routing: prefer the LAN host (physical printer attached) so a
+        // mis-set VITE_POS_CLOUD_URL never silently swallows a paper ticket.
+        // If the LAN host is genuinely unreachable AND a cloud is configured,
+        // fall back to the cloud's record-and-queue endpoint so the ticket
+        // isn't lost — a remote print agent will pick it up.
+        try {
+          const r = await goLan('/print/ticket', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+          const ok = !!(r && r.ok === true);
+          if (!ok) {
+            const err =
+              r && (r.error || r.message) ? String(r.error || r.message) : '';
+            window.dispatchEvent(
+              new CustomEvent('printer:event', {
+                detail: {
+                  level: 'error',
+                  kind: 'PRINT',
+                  message:
+                    'Printer failed to print. Check paper/power and the IP/port settings.',
+                  detail: err || undefined,
+                  at: Date.now(),
+                },
+              }),
+            );
+          }
+          return ok;
+        } catch (e: any) {
+          const isTransport =
+            e instanceof TypeError ||
+            String(e?.name || '') === 'AbortError' ||
+            // 404 = LAN host is up but doesn't expose /print/ticket (e.g.
+            // we're talking to a cloud-only Express deployment by mistake);
+            // treat as transport so the cloud fallback below can take over.
+            Number(e?.status) === 404;
+          if (!IS_CLOUD || !isTransport) throw e;
           const { recordOnly, ...payload } = (input || {}) as any;
-          await goLan('/print-jobs/enqueue', {
+          await go('/print-jobs/enqueue', {
             method: 'POST',
             body: JSON.stringify({
               type: 'RECEIPT',
@@ -601,27 +763,6 @@ if (!(window as any).api) {
           });
           return true;
         }
-        const r = await goLan('/print/ticket', {
-          method: 'POST',
-          body: JSON.stringify(input),
-        });
-        const ok = !!(r && r.ok === true);
-        if (!ok) {
-          const err = r && (r.error || r.message) ? String(r.error || r.message) : '';
-          window.dispatchEvent(
-            new CustomEvent('printer:event', {
-              detail: {
-                level: 'error',
-                kind: 'PRINT',
-                message:
-                  'Printer failed to print. Check paper/power and the IP/port settings.',
-                detail: err || undefined,
-                at: Date.now(),
-              },
-            }),
-          );
-        }
-        return ok;
       },
     },
     tables: {
@@ -762,15 +903,23 @@ if (!(window as any).api) {
       },
     },
     layout: {
-      async get(userId: number, area: string) {
-        return await goLan(
-          `/layout/get?userId=${encodeURIComponent(String(userId))}&area=${encodeURIComponent(area)}`,
-        );
+      async get(userId: number, area: string, scope?: string) {
+        const q = new URLSearchParams({
+          userId: String(userId),
+          area: String(area),
+        });
+        if (scope) q.set('scope', String(scope));
+        return await goLan(`/layout/get?${q.toString()}`);
       },
-      async save(userId: number, area: string, nodes: any[]) {
+      async save(userId: number, area: string, nodes: any[], scope?: string) {
         await goLan('/layout/save', {
           method: 'POST',
-          body: JSON.stringify({ userId, area, nodes }),
+          body: JSON.stringify({
+            userId,
+            area,
+            nodes,
+            ...(scope ? { scope } : {}),
+          }),
         });
         return true;
       },
@@ -789,6 +938,54 @@ if (!(window as any).api) {
           body: JSON.stringify({}),
         });
         return true;
+      },
+    },
+    reservations: {
+      // No window concept in the mobile shell; the panel is a route in the
+      // same SPA, so callers use react-router to navigate to /reservations.
+      // Returning false makes the LoginPage fall back to a navigate() call.
+      async openWindow() {
+        return false;
+      },
+      async list(input: any) {
+        const dateIso = String(input?.dateIso || '');
+        const area = input?.area ? String(input.area) : '';
+        const q = new URLSearchParams({ dateIso });
+        if (area) q.set('area', area);
+        return await goLan(`/reservations?${q.toString()}`);
+      },
+      async listCounts(input: any) {
+        const startIso = String(input?.startIso || '');
+        const endIso = String(input?.endIso || '');
+        const q = new URLSearchParams({ startIso, endIso });
+        return await goLan(`/reservations/counts?${q.toString()}`);
+      },
+      async create(input: any) {
+        // The HTTP route always uses the authenticated user as `createdById`
+        // (it ignores any client-supplied id), so we don't need to send one.
+        return await goLan('/reservations', {
+          method: 'POST',
+          body: JSON.stringify(input || {}),
+        });
+      },
+      async update(input: any) {
+        return await goLan('/reservations/update', {
+          method: 'POST',
+          body: JSON.stringify(input || {}),
+        });
+      },
+      async setStatus(input: any) {
+        return await goLan('/reservations/set-status', {
+          method: 'POST',
+          body: JSON.stringify(input || {}),
+        });
+      },
+      async delete(input: any) {
+        const r: any = await goLan('/reservations/delete', {
+          method: 'POST',
+          body: JSON.stringify(input || {}),
+        });
+        return Boolean(r?.ok ?? true);
       },
     },
     requests: {
@@ -880,8 +1077,19 @@ function BootScreen({
           fill="none"
           viewBox="0 0 24 24"
         >
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          />
         </svg>
         <div className="text-sm text-gray-300 text-center">{message}</div>
         {detail && (
@@ -1059,9 +1267,11 @@ function BackendSetupModal({
         </div>
         <div className="p-4 space-y-4">
           <div className="text-xs text-gray-400">
-            Make sure your phone is on the same Wi-Fi as the POS computer.
-            On the POS computer, run <span className="font-mono">ipconfig getifaddr en0</span>{' '}
-            (Mac) or <span className="font-mono">ipconfig</span> (Windows) to find its IP.
+            Make sure your phone is on the same Wi-Fi as the POS computer. On
+            the POS computer, run{' '}
+            <span className="font-mono">ipconfig getifaddr en0</span> (Mac) or{' '}
+            <span className="font-mono">ipconfig</span> (Windows) to find its
+            IP.
           </div>
           <label className="block text-sm">
             <div className="opacity-80 mb-1">Host (IP or name)</div>
@@ -1147,19 +1357,32 @@ function Root() {
       const reason = ev?.detail?.reason
         ? String(ev.detail.reason)
         : 'Session expired';
-      // Clear both staff + admin sessions (safe default)
+      const h = String(window?.location?.hash || '');
+      const isAdmin = h.startsWith('#/admin');
+      const isReservations = h.startsWith('#/reservations');
+      // Clear only the session store(s) that belong to the panel the user
+      // was actually using. Without this scoping, a 401 on the reservation
+      // panel would also wipe the waiter session and dump everyone back to
+      // the staff login screen.
       try {
-        useSessionStore.getState().setUser(null);
-        useAdminSessionStore.getState().setUser(null as any);
+        if (isAdmin) {
+          useAdminSessionStore.getState().setUser(null as any);
+        } else if (isReservations) {
+          useReservationSessionStore.getState().setUser(null as any);
+        } else {
+          useSessionStore.getState().setUser(null);
+          useAdminSessionStore.getState().setUser(null as any);
+        }
       } catch {
         // ignore
       }
-      // Navigate to the appropriate login screen based on current context.
-      // This prevents "Admin logout" from dumping the user into the staff login.
+      // Route back to the matching login screen.
       try {
-        const h = String(window.location.hash || '');
-        const isAdmin = h.startsWith('#/admin');
-        window.location.hash = isAdmin ? '#/admin' : '#/';
+        window.location.hash = isAdmin
+          ? '#/admin'
+          : isReservations
+            ? '#/reservations'
+            : '#/';
       } catch {
         // ignore
       }

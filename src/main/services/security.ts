@@ -85,8 +85,26 @@ function cleanupOldRateLimits(): void {
   }
 }
 
-// Clean up every 5 minutes
-setInterval(cleanupOldRateLimits, 5 * 60 * 1000);
+// Clean up every 5 minutes. The interval handle is `unref`d so it never holds
+// the event loop open during shutdown, and `stopRateLimitSweeper` is exposed
+// so the main process can clear it explicitly on quit.
+let rateLimitSweeperTimer: NodeJS.Timeout | null = setInterval(
+  cleanupOldRateLimits,
+  5 * 60 * 1000,
+);
+if (
+  rateLimitSweeperTimer &&
+  typeof rateLimitSweeperTimer.unref === 'function'
+) {
+  rateLimitSweeperTimer.unref();
+}
+
+export function stopRateLimitSweeper(): void {
+  if (rateLimitSweeperTimer) {
+    clearInterval(rateLimitSweeperTimer);
+    rateLimitSweeperTimer = null;
+  }
+}
 
 /**
  * Clean up rate limits when a window is closed

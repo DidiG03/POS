@@ -109,6 +109,51 @@ export interface TableAreaDTO {
   count: number;
 }
 
+/**
+ * Sidecar metadata attached to every print payload. The renderer pieces
+ * this together when sending an order or a payment, the dispatcher
+ * reads it to decide layout (header style, hide prices, station label),
+ * and the api.ts /print/ticket route reads it to detect payments and
+ * record anti-theft signals. Keep this list in sync with what
+ * `OrderPage.tsx` actually sends.
+ */
+export interface TicketPrintMeta {
+  // What kind of slip this is. Affects header style + which side effects fire.
+  kind?: 'ORDER' | 'PAYMENT' | 'RECEIPT';
+  // Originating user (used for notifications + anti-theft attribution).
+  userId?: number;
+  // Optional station hint set by the routing splitter ("KITCHEN" | "BAR" | "ALL").
+  station?: string;
+  // Human label for routed-order slips ("food", "drinks", etc.).
+  routeLabel?: string;
+  // Suppress money columns on order slips that go to the kitchen.
+  hidePrices?: boolean;
+  // Default true; set false for VAT-exempt receipts.
+  vatEnabled?: boolean;
+
+  // ---- Payment metadata (only on kind === 'PAYMENT') ----------------
+  method?: string;
+  paymentMethod?: string;
+  paidAt?: string;
+  totalBefore?: number;
+  totalAfter?: number;
+  total?: number;
+
+  // ---- Discount metadata (only when a discount was applied) ---------
+  discountType?: 'PERCENT' | 'AMOUNT';
+  discountValue?: number;
+  discountAmount?: number;
+  discountReason?: string;
+  managerApprovedByName?: string;
+
+  // ---- Service charge metadata --------------------------------------
+  serviceChargeEnabled?: boolean;
+  serviceChargeApplied?: boolean;
+  serviceChargeMode?: 'PERCENT' | 'AMOUNT';
+  serviceChargeValue?: number;
+  serviceChargeAmount?: number;
+}
+
 export const LoginWithPinInputSchema = z.object({
   pin: z.string().min(4).max(6),
   userId: z.number().optional(),
@@ -277,9 +322,7 @@ export interface ApiAuth {
     userId?: number,
     pairingCode?: string,
   ): Promise<UserDTO | null>;
-  verifyManagerPin(
-    pin: string,
-  ): Promise<{
+  verifyManagerPin(pin: string): Promise<{
     ok: boolean;
     userId?: number;
     userName?: string;
@@ -307,9 +350,7 @@ export interface ApiRequests {
     items: any[];
     note?: string | null;
   }): Promise<boolean>;
-  listForOwner(
-    ownerId: number,
-  ): Promise<
+  listForOwner(ownerId: number): Promise<
     Array<{
       id: number;
       area: string;
@@ -339,10 +380,23 @@ export interface ShiftDTO {
   closedById?: number | null;
 }
 
+/**
+ * Returned when `clockOut` is refused because the waiter still owns
+ * tables that are open on the floor. The renderer should toast the
+ * `error` message and keep the user logged in so they can close or
+ * transfer the listed tables before clocking out.
+ */
+export interface ClockOutBlockedDTO {
+  ok: false;
+  error: string;
+  code: 'OPEN_TABLES_OWNED';
+  openTables: { area: string; label: string }[];
+}
+
 export interface ApiShifts {
   getOpen(userId: number): Promise<ShiftDTO | null>;
   clockIn(userId: number): Promise<ShiftDTO>;
-  clockOut(userId: number): Promise<ShiftDTO | null>;
+  clockOut(userId: number): Promise<ShiftDTO | ClockOutBlockedDTO | null>;
   listOpen(): Promise<number[]>; // userIds with open shifts
 }
 
@@ -352,6 +406,10 @@ export interface ApiSettings {
   testPrint(): Promise<boolean>;
   setPrinter(input: SetPrinterInput): Promise<SettingsDTO>;
   testPrintVerbose?(): Promise<TestPrintResult>;
+  // Print a Hello-World test payload to a specific profile WITHOUT touching
+  // the saved settings — used by the "Test print" button on each profile
+  // card so an admin can validate the printer config before saving.
+  testPrintProfile?(profile: PrinterProfileDTO): Promise<TestPrintResult>;
   listPrinters?(): Promise<SystemPrinterDTO[]>;
   listSerialPorts?(): Promise<
     {
@@ -409,11 +467,86 @@ export interface Api {
   layout: ApiLayout;
   covers: ApiCovers;
   tickets: ApiTickets;
+  print: ApiPrint;
   notifications: ApiNotifications;
   tables: ApiTables;
   requests: ApiRequests;
   network: ApiNetwork;
   updater: ApiUpdater;
+  reservations: ApiReservations;
+}
+
+export type ReservationStatus =
+  | 'BOOKED'
+  | 'SEATED'
+  | 'COMPLETED'
+  | 'CANCELLED'
+  | 'NO_SHOW';
+
+export interface ReservationDTO {
+  id: number;
+  area: string;
+  tableLabel: string | null;
+  customerName: string;
+  customerPhone: string | null;
+  partySize: number;
+  startsAt: string; // ISO
+  durationMin: number;
+  note: string | null;
+  status: ReservationStatus;
+  createdById: number;
+  createdByName?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReservationCreateInput {
+  area: string;
+  tableLabel?: string | null;
+  customerName: string;
+  customerPhone?: string | null;
+  partySize?: number;
+  startsAtIso: string;
+  durationMin?: number;
+  note?: string | null;
+  createdById: number;
+  // Optional initial status. Defaults to BOOKED on the server. Used by the
+  // walk-in / "Seat now" flow which creates the reservation already SEATED.
+  status?: ReservationStatus;
+}
+
+export interface ReservationUpdateInput {
+  id: number;
+  // Required for authorization. The active host or admin id from the renderer.
+  actorId: number;
+  area?: string;
+  tableLabel?: string | null;
+  customerName?: string;
+  customerPhone?: string | null;
+  partySize?: number;
+  startsAtIso?: string;
+  durationMin?: number;
+  note?: string | null;
+}
+
+export interface ApiReservations {
+  openWindow(): Promise<boolean>;
+  list(input: {
+    dateIso: string; // any ISO inside the target local day
+    area?: string;
+  }): Promise<ReservationDTO[]>;
+  create(input: ReservationCreateInput): Promise<ReservationDTO>;
+  update(input: ReservationUpdateInput): Promise<ReservationDTO>;
+  delete(input: { id: number; actorId: number }): Promise<boolean>;
+  setStatus(input: {
+    id: number;
+    actorId: number;
+    status: ReservationStatus;
+  }): Promise<ReservationDTO>;
+  listCounts(input: {
+    startIso: string;
+    endIso: string;
+  }): Promise<Record<string, number>>;
 }
 
 export interface BackupFileDTO {
@@ -428,7 +561,9 @@ export interface ApiBackups {
   restore(input: {
     name: string;
   }): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }>;
-  uploadToCloud(input?: { name?: string }): Promise<{ ok: boolean; error?: string }>;
+  uploadToCloud(input?: {
+    name?: string;
+  }): Promise<{ ok: boolean; error?: string }>;
   syncFromCloud(): Promise<{
     usersSynced: number;
     menuItemsSynced: number;
@@ -482,6 +617,35 @@ export interface AdminOverviewDTO {
   appVersion: string;
   revenueTodayNet?: number; // without VAT
   revenueTodayVat?: number; // VAT amount
+  // Total guests served today across all tables. Computed from the most
+  // recent cover count saved per (area, label) for the current day.
+  coversToday?: number;
+  // Reservations day-summary (today, local time). All fields are optional so
+  // older clients keep working; renderer should default to 0.
+  reservationsTotalToday?: number;
+  reservationsCoversToday?: number; // sum of partySize across non-cancelled
+  reservationsAvgPartyToday?: number; // covers / parties (rounded to 1 decimal)
+  reservationsByStatusToday?: {
+    BOOKED?: number;
+    SEATED?: number;
+    COMPLETED?: number;
+    NO_SHOW?: number;
+    CANCELLED?: number;
+  };
+  // Bookings still ahead of "now" today (BOOKED only).
+  reservationsUpcomingToday?: number;
+  // No-show rate today, expressed as percentage 0..100. Denominator is
+  // reservations whose start time has already passed today (BOOKED + SEATED +
+  // COMPLETED + NO_SHOW), so it doesn't punish bookings that haven't arrived.
+  reservationsNoShowRateToday?: number;
+  // Next BOOKED reservation today (after now), if any.
+  nextReservationToday?: {
+    timeIso: string;
+    customerName: string;
+    partySize: number;
+    area: string;
+    tableLabel: string | null;
+  } | null;
 }
 
 export interface AdminShiftDTO {
@@ -520,19 +684,26 @@ export interface ApiAdmin {
     startIso?: string;
     endIso?: string;
   }): Promise<AdminShiftDTO[]>;
-  listTicketCounts(input?: {
-    startIso?: string;
-    endIso?: string;
-  }): Promise<{ id: number; name: string; active: boolean; tickets: number }[]>;
+  listTicketCounts(input?: { startIso?: string; endIso?: string }): Promise<
+    {
+      id: number;
+      name: string;
+      active: boolean;
+      tickets: number;
+      /** Number of tickets in the period whose log row was created by a transfer. */
+      transfersIn: number;
+    }[]
+  >;
   listTicketsByUser(
     userId: number,
     range?: { startIso?: string; endIso?: string },
   ): Promise<AdminTicketDTO[]>;
   listNotifications(input?: {
+    userId?: number;
     onlyUnread?: boolean;
     limit?: number;
   }): Promise<AdminNotificationDTO[]>;
-  markAllNotificationsRead(): Promise<boolean>;
+  markAllNotificationsRead(input?: { userId?: number }): Promise<boolean>;
   getTopSellingToday(): Promise<TopSellingDTO | null>;
   getSalesTrends(input: {
     range: 'daily' | 'weekly' | 'monthly';
@@ -540,6 +711,12 @@ export interface ApiAdmin {
   getSecurityLog(limit?: number): Promise<SecurityLogEntry[]>;
   getMemoryStats(): Promise<MemoryStats>;
   exportMemorySnapshot(): Promise<string>;
+  /**
+   * Aggregated business analytics for the Review tab. Computes KPIs, time-
+   * series, top items, hour/weekday breakdowns, and per-waiter performance
+   * for the requested period and (optionally) a comparison period.
+   */
+  getReview(input: ReviewRangeInput): Promise<ReviewDTO>;
 }
 
 // Waiter-facing reports (per-user)
@@ -621,6 +798,26 @@ export interface AdminTicketDTO {
   note?: string | null;
   subtotal: number;
   vat: number;
+  // Resolved on the main process by inspecting the ticket-log row, the
+  // currently open tables map and recent payment receipts.
+  status?: 'PAID' | 'VOIDED' | 'ACTIVE';
+  /**
+   * If the ticket-log row was produced by a table transfer this carries the
+   * structured audit info parsed from the `[TRANSFER ...]` note tag. `MOVED`
+   * means the table itself moved (and possibly changed owner); `OWNER` means
+   * only the owning waiter changed.
+   */
+  transfer?: {
+    kind: 'MOVED' | 'OWNER';
+    fromUserId: number | null;
+    fromUserName: string | null;
+    fromArea: string | null;
+    fromLabel: string | null;
+    toUserId: number | null;
+    toUserName: string | null;
+    byUserId: number | null;
+    byUserName: string | null;
+  } | null;
 }
 
 export interface AdminNotificationDTO {
@@ -650,6 +847,111 @@ export interface SalesTrendDTO {
   points: SalesPointDTO[];
 }
 
+// =====================================================================
+// Admin "Business Review" — analytics over arbitrary date ranges with
+// optional period-over-period comparison.
+// =====================================================================
+
+export type ReviewGranularity = 'day' | 'month' | 'year';
+
+export interface ReviewRangeInput {
+  /** Start of the primary period, ISO. */
+  currentStartIso: string;
+  /** End of the primary period, ISO (inclusive). */
+  currentEndIso: string;
+  /** Optional comparison period start, ISO. */
+  compareStartIso?: string | null;
+  /** Optional comparison period end, ISO (inclusive). */
+  compareEndIso?: string | null;
+  /** Bucket size for the time-series chart. */
+  granularity: ReviewGranularity;
+}
+
+export interface ReviewSummaryDTO {
+  startIso: string;
+  endIso: string;
+  /** Net revenue (sum of unitPrice * qty for non-voided lines). */
+  revenueNet: number;
+  /** Estimated VAT (sum of unitPrice * qty * vatRate for non-voided lines). */
+  revenueVat: number;
+  /** Number of TicketLog rows in the period (proxy for "ticket sends"). */
+  orders: number;
+  /** Number of non-voided line items. */
+  items: number;
+  /** Sum of `covers` across rows that recorded covers. */
+  covers: number;
+  /** revenueNet / orders, 0 when no orders. */
+  avgTicket: number;
+  /** items / orders, 0 when no orders. */
+  avgItemsPerTicket: number;
+  /** Distinct (area, tableLabel) pairs touched. */
+  uniqueTables: number;
+  /** Distinct waiter ids that produced at least one row. */
+  uniqueWaiters: number;
+  /** Number of rows whose entire item list was voided (best-effort). */
+  voidedTickets: number;
+}
+
+export interface ReviewSeriesPointDTO {
+  /** Bucket label, e.g. `04/30`, `2026-05`, `2026`. */
+  label: string;
+  /** Bucket start, ISO — used to align current vs compare on the same x axis. */
+  bucketIso: string;
+  revenue: number;
+  orders: number;
+}
+
+export interface ReviewWaiterDTO {
+  userId: number;
+  name: string;
+  role: string;
+  active: boolean;
+  orders: number;
+  items: number;
+  revenue: number;
+  covers: number;
+  avgTicket: number;
+  /** Total hours across DayShift rows that overlap the period. */
+  hoursWorked: number;
+  /** revenue / max(hoursWorked, 1). */
+  revenuePerHour: number;
+}
+
+export interface ReviewTopItemDTO {
+  name: string;
+  qty: number;
+  revenue: number;
+}
+
+export interface ReviewHourBucketDTO {
+  /** 0..23 (local time of the device). */
+  hour: number;
+  orders: number;
+  revenue: number;
+}
+
+export interface ReviewWeekdayBucketDTO {
+  /** 0..6 with 0 = Sunday. */
+  dayOfWeek: number;
+  orders: number;
+  revenue: number;
+}
+
+export interface ReviewDTO {
+  granularity: ReviewGranularity;
+  current: ReviewSummaryDTO;
+  /** Present only when a comparison range was requested. */
+  compare: ReviewSummaryDTO | null;
+  series: {
+    current: ReviewSeriesPointDTO[];
+    compare: ReviewSeriesPointDTO[] | null;
+  };
+  topItems: ReviewTopItemDTO[];
+  waiters: ReviewWaiterDTO[];
+  hourly: ReviewHourBucketDTO[];
+  weekday: ReviewWeekdayBucketDTO[];
+}
+
 // Table layout
 export type TableLayoutNode =
   | {
@@ -670,11 +972,19 @@ export type TableLayoutNode =
       h: number;
     };
 export interface ApiLayout {
-  get(userId: number, area: string): Promise<TableLayoutNode[] | null>;
+  // `scope` namespaces the saved layout. Defaults to "pos" (waiter view) so
+  // existing callers stay compatible. The reservation panel uses "host" so
+  // hosts and waiters maintain independent floor layouts.
+  get(
+    userId: number,
+    area: string,
+    scope?: string,
+  ): Promise<TableLayoutNode[] | null>;
   save(
     userId: number,
     area: string,
     nodes: TableLayoutNode[],
+    scope?: string,
   ): Promise<boolean>;
 }
 
@@ -687,6 +997,30 @@ declare global {
   interface Window {
     api: Api;
   }
+}
+
+/**
+ * Per-printer pending retry as exposed to the renderer. Mirrors the
+ * subset of the `PrintJob` row that's safe to surface in a UI list —
+ * no payload contents (those can be huge), no arbitrary timestamps in
+ * native form (always ISO strings).
+ */
+export interface PendingPrintRetryDTO {
+  id: number;
+  status: 'RETRY' | 'FAILED';
+  type: string;
+  attempts: number;
+  lastError: string | null;
+  nextAttemptAt: string | null;
+  printerProfileId: string | null;
+  createdAt: string;
+}
+
+export interface ApiPrint {
+  /** List the latest 100 RETRY + FAILED rows for a future admin UI. */
+  listRetries(): Promise<PendingPrintRetryDTO[]>;
+  /** Force-fail a row so it stops retrying. */
+  cancelRetry(id: number): Promise<{ ok: boolean; error?: string }>;
 }
 
 export interface ApiTickets {

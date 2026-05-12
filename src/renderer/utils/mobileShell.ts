@@ -4,7 +4,14 @@
 
 export async function initMobileShell(): Promise<void> {
   try {
-    const Cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean; getPlatform?: () => string } }).Capacitor;
+    const Cap = (
+      window as unknown as {
+        Capacitor?: {
+          isNativePlatform?: () => boolean;
+          getPlatform?: () => string;
+        };
+      }
+    ).Capacitor;
     if (!Cap?.isNativePlatform?.()) return;
 
     // Tag the document so we can target Capacitor with CSS / debug tools.
@@ -16,13 +23,24 @@ export async function initMobileShell(): Promise<void> {
       // ignore
     }
 
-    // Status bar: light icons (Style.Light = "light content") on dark
-    // background, matching the gray-900 app shell.
+    // Status bar: white icons on the dark gray-900 app shell.
+    // NOTE: Capacitor's Style enum is *backwards* from iOS naming conventions
+    // — `Style.Dark` means "light/white content for a dark background" and
+    // `Style.Light` means "dark/black content for a light background". We
+    // want white icons over our dark background, so we pass Style.Dark.
     try {
       const { StatusBar, Style } = await import('@capacitor/status-bar');
-      try { await StatusBar.setStyle({ style: Style.Light }); } catch { /* ignore */ }
+      try {
+        await StatusBar.setStyle({ style: Style.Dark });
+      } catch {
+        /* ignore */
+      }
       // Android only: paint the status bar to match the header.
-      try { await StatusBar.setBackgroundColor({ color: '#111827' }); } catch { /* ignore */ }
+      try {
+        await StatusBar.setBackgroundColor({ color: '#111827' });
+      } catch {
+        /* ignore */
+      }
     } catch {
       // plugin missing — ignore
     }
@@ -32,7 +50,11 @@ export async function initMobileShell(): Promise<void> {
     // warnings in the Xcode console and we don't need it inside a POS.
     try {
       const { Keyboard } = await import('@capacitor/keyboard');
-      try { await Keyboard.setAccessoryBarVisible({ isVisible: false }); } catch { /* ignore */ }
+      try {
+        await Keyboard.setAccessoryBarVisible({ isVisible: false });
+      } catch {
+        /* ignore */
+      }
     } catch {
       // plugin missing — ignore
     }
@@ -40,7 +62,11 @@ export async function initMobileShell(): Promise<void> {
     // Hide the splash screen now that the renderer is mounted.
     try {
       const { SplashScreen } = await import('@capacitor/splash-screen');
-      try { await SplashScreen.hide({ fadeOutDuration: 200 }); } catch { /* ignore */ }
+      try {
+        await SplashScreen.hide({ fadeOutDuration: 200 });
+      } catch {
+        /* ignore */
+      }
     } catch {
       // ignore
     }

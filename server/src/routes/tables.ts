@@ -89,18 +89,15 @@ tablesRouter.post('/transfer', requireAuth, async (req: AuthedRequest, res) => {
     return res.status(403).json({ ok: false, error: 'Forbidden' });
   }
 
+  // SECURITY: Never trust client-supplied actorRole. The role MUST come from the
+  // authenticated user record in the database. If the user row is missing or
+  // inactive, refuse the operation.
   const actor = await prisma.user
     .findFirst({ where: { businessId: auth.businessId, id: actorUserId } as any })
     .catch(() => null);
-  const actorRoleFromSession = String(input.actorRole || '').trim();
-  const effectiveActor =
-    actor && actor.active !== false
-      ? actor
-      : actorRoleFromSession
-        ? ({ role: actorRoleFromSession, active: true } as { role: string; active: boolean })
-        : null;
-
-  if (!effectiveActor) return res.status(400).json({ ok: false, error: 'Actor not found' });
+  if (!actor || actor.active === false) {
+    return res.status(403).json({ ok: false, error: 'Actor not found or inactive' });
+  }
 
   const last = await prisma.ticketLog.findFirst({
     where: { businessId: auth.businessId, area: fromArea, tableLabel: fromLabel } as any,
@@ -109,7 +106,7 @@ tablesRouter.post('/transfer', requireAuth, async (req: AuthedRequest, res) => {
   if (!last) return res.status(400).json({ ok: false, error: 'No active ticket found for this table' });
 
   const currentOwnerId = Number(last.userId || 0);
-  const isAdmin = String((effectiveActor as any).role || '').toUpperCase() === 'ADMIN';
+  const isAdmin = String((actor as any).role || '').toUpperCase() === 'ADMIN';
   if (!isAdmin && Number(actorUserId) !== Number(currentOwnerId)) {
     return res.status(403).json({ ok: false, error: 'Only the table owner or an admin can transfer a table' });
   }

@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAdminSessionStore } from '../stores/adminSession';
 
 function IconOverview() {
@@ -101,6 +101,37 @@ function IconSettings() {
   );
 }
 
+function IconReview() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="w-4 h-4"
+      aria-hidden
+    >
+      <path
+        d="M3 3v18h18"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7 14l3-4 3 3 5-7"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="7" cy="14" r="1.4" fill="currentColor" />
+      <circle cx="10" cy="10" r="1.4" fill="currentColor" />
+      <circle cx="13" cy="13" r="1.4" fill="currentColor" />
+      <circle cx="18" cy="6" r="1.4" fill="currentColor" />
+    </svg>
+  );
+}
+
 function IconLogout() {
   return (
     <svg
@@ -142,7 +173,9 @@ export default function AdminLayout() {
   useEffect(() => {
     const update = () => {
       try {
-        setNetOk(typeof navigator === 'undefined' ? true : navigator.onLine !== false);
+        setNetOk(
+          typeof navigator === 'undefined' ? true : navigator.onLine !== false,
+        );
       } catch {
         setNetOk(true);
       }
@@ -188,21 +221,42 @@ export default function AdminLayout() {
   }, []);
 
   const connectivity = useMemo(() => {
-    if (!netOk || !backendOk) return { label: 'Poor', cls: 'bg-rose-900/30 border-rose-800 text-rose-100' };
+    if (!netOk || !backendOk)
+      return {
+        label: 'Poor',
+        cls: 'bg-rose-900/30 border-rose-800 text-rose-100',
+      };
     const dt = latencyMs ?? 0;
-    if (dt >= 900) return { label: 'Poor', cls: 'bg-rose-900/30 border-rose-800 text-rose-100' };
-    if (dt >= 300) return { label: 'Good', cls: 'bg-amber-900/30 border-amber-800 text-amber-100' };
-    return { label: 'Great', cls: 'bg-emerald-900/30 border-emerald-800 text-emerald-100' };
+    if (dt >= 900)
+      return {
+        label: 'Poor',
+        cls: 'bg-rose-900/30 border-rose-800 text-rose-100',
+      };
+    if (dt >= 300)
+      return {
+        label: 'Good',
+        cls: 'bg-amber-900/30 border-amber-800 text-amber-100',
+      };
+    return {
+      label: 'Great',
+      cls: 'bg-emerald-900/30 border-emerald-800 text-emerald-100',
+    };
   }, [netOk, backendOk, latencyMs]);
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       if (!me || me.role !== 'ADMIN') {
-        setUnreadCount(0);
+        if (!cancelled) setUnreadCount(0);
         return;
       }
-      const unread = await window.api.admin.listNotifications({ onlyUnread: true }).catch(() => []);
-      setUnreadCount(unread.length || 0);
+      const unread = await window.api.admin
+        .listNotifications({ userId: me.id, onlyUnread: true })
+        .catch(() => []);
+      if (!cancelled) setUnreadCount(unread.length || 0);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [me?.id, me?.role]);
   return (
     <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
@@ -212,53 +266,62 @@ export default function AdminLayout() {
         {/* Center nav */}
         <div className="flex items-center justify-start sm:justify-center min-w-0">
           <nav className="text-sm flex items-center gap-2 sm:gap-3 overflow-x-auto whitespace-nowrap">
-          <NavLink
-            to="/admin"
-            end
-            className={({ isActive }) =>
-              `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
-            }
-            title="Overview"
-          >
-            <IconOverview />
-            <span className="hidden sm:inline">Overview</span>
-          </NavLink>
-          <NavLink
-            to="/admin/tickets"
-            className={({ isActive }) =>
-              `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
-            }
-            title="Tickets"
-          >
-            <IconTickets />
-            <span className="hidden sm:inline">Tickets</span>
-          </NavLink>
-          <NavLink
-            to="/admin/menu"
-            className={({ isActive }) =>
-              `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
-            }
-            title="Menu"
-          >
-            <IconMenu />
-            <span className="hidden sm:inline">Menu</span>
-          </NavLink>
-          <NavLink
-            to="/admin/settings"
-            className={({ isActive }) =>
-              `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
-            }
-            title="Settings"
-          >
-            <IconSettings />
-            <span className="hidden sm:inline">Settings</span>
-          </NavLink>
+            <NavLink
+              to="/admin"
+              end
+              className={({ isActive }) =>
+                `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+              }
+              title="Overview"
+            >
+              <IconOverview />
+              <span className="hidden sm:inline">Overview</span>
+            </NavLink>
+            <NavLink
+              to="/admin/review"
+              className={({ isActive }) =>
+                `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+              }
+              title="Review"
+            >
+              <IconReview />
+              <span className="hidden sm:inline">Review</span>
+            </NavLink>
+            <NavLink
+              to="/admin/tickets"
+              className={({ isActive }) =>
+                `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+              }
+              title="Tickets"
+            >
+              <IconTickets />
+              <span className="hidden sm:inline">Tickets</span>
+            </NavLink>
+            <NavLink
+              to="/admin/menu"
+              className={({ isActive }) =>
+                `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+              }
+              title="Menu"
+            >
+              <IconMenu />
+              <span className="hidden sm:inline">Menu</span>
+            </NavLink>
+            <NavLink
+              to="/admin/settings"
+              className={({ isActive }) =>
+                `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+              }
+              title="Settings"
+            >
+              <IconSettings />
+              <span className="hidden sm:inline">Settings</span>
+            </NavLink>
           </nav>
         </div>
 
         {/* Right utilities */}
         <div className="flex items-center gap-2 sm:gap-3 justify-start sm:justify-end min-w-0">
-
           <div
             className={`text-xs px-2 py-1 rounded border ${connectivity.cls}`}
             title={
@@ -278,7 +341,12 @@ export default function AdminLayout() {
               aria-label="Notifications"
               onClick={() => setShowNotifications((v) => !v)}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="w-5 h-5"
+              >
                 <path d="M12 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 006 14h12a1 1 0 00.707-1.707L18 11.586V8a6 6 0 00-6-6zm0 20a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
               </svg>
               {unreadCount > 0 && (
@@ -296,7 +364,10 @@ export default function AdminLayout() {
                       <button
                         className="text-xs text-blue-400 hover:underline"
                         onClick={async () => {
-                          await window.api.admin.markAllNotificationsRead().catch(() => {});
+                          if (!me?.id) return;
+                          await window.api.admin
+                            .markAllNotificationsRead({ userId: me.id })
+                            .catch(() => {});
                           setUnreadCount(0);
                         }}
                       >
@@ -304,7 +375,10 @@ export default function AdminLayout() {
                       </button>
                     )}
                   </div>
-                  <AdminNotificationsList onCount={(n) => setUnreadCount(n)} />
+                  <AdminNotificationsList
+                    userId={me?.id ?? 0}
+                    onCount={(n) => setUnreadCount(n)}
+                  />
                 </div>
               </div>
             )}
@@ -351,16 +425,51 @@ export default function AdminLayout() {
   );
 }
 
-function AdminNotificationsList({ onCount }: { onCount: (n: number) => void }) {
-  const [items, setItems] = useState<{ id: number; userId: number; userName: string; type: string; message: string; readAt: string | null; createdAt: string }[]>([]);
+function AdminNotificationsList({
+  userId,
+  onCount,
+}: {
+  userId: number;
+  onCount: (n: number) => void;
+}) {
+  const [items, setItems] = useState<
+    {
+      id: number;
+      userId: number;
+      userName: string;
+      type: string;
+      message: string;
+      readAt: string | null;
+      createdAt: string;
+    }[]
+  >([]);
+  // PERF: keep a stable ref for the parent callback so this effect doesn't
+  // re-run (and re-fetch) on every parent render. We only refetch on mount.
+  const onCountRef = useRef(onCount);
   useEffect(() => {
-    (async () => {
-      const all = await window.api.admin.listNotifications({}).catch(() => []);
-      setItems(all);
-      const unread = await window.api.admin.listNotifications({ onlyUnread: true }).catch(() => []);
-      onCount(unread.length || 0);
-    })();
+    onCountRef.current = onCount;
   }, [onCount]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!userId) {
+        if (!cancelled) setItems([]);
+        return;
+      }
+      const all = await window.api.admin
+        .listNotifications({ userId })
+        .catch(() => []);
+      if (cancelled) return;
+      setItems(all);
+      // PERF: derive unread count from the same response instead of issuing a
+      // second IPC round-trip.
+      const unread = (all || []).filter((n: any) => !n?.readAt).length;
+      onCountRef.current(unread);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
   if (!items.length) return <div className="opacity-70">No notifications</div>;
   return (
     <ul className="max-h-80 overflow-auto space-y-2">
@@ -385,7 +494,8 @@ function formatAdminNotificationTimestamp(iso: string): string {
   const hourMs = 60 * minuteMs;
   const dayMs = 24 * hourMs;
   const weekMs = 7 * dayMs;
-  if (diffMs < hourMs) return `${Math.max(1, Math.floor(diffMs / minuteMs))}m ago`;
+  if (diffMs < hourMs)
+    return `${Math.max(1, Math.floor(diffMs / minuteMs))}m ago`;
   if (diffMs < dayMs) return `${Math.max(1, Math.floor(diffMs / hourMs))}h ago`;
   if (diffMs < weekMs) return `${Math.max(1, Math.floor(diffMs / dayMs))}d ago`;
   const d = new Date(iso);
@@ -397,5 +507,3 @@ function formatAdminNotificationTimestamp(iso: string): string {
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${mm}/${dd}/${yy} ${hh}-${min}-${ss}`;
 }
-
-

@@ -27,9 +27,22 @@ const app = express();
 // Stripe webhook needs RAW body (must be registered before express.json).
 app.post('/stripe/webhook', express.raw({ type: 'application/json', limit: '2mb' }), stripeWebhookHandler);
 app.use(express.json({ limit: '2mb' }));
+
+// CORS: in production, refuse to fall back to a permissive allow-all.
+// In development we still allow `true` to make local tooling easier.
+if (!env.corsOrigins.length && env.nodeEnv === 'production') {
+  console.warn(
+    '[security] CORS_ORIGINS is empty in production — refusing to enable cross-origin requests.',
+  );
+}
 app.use(
   cors({
-    origin: env.corsOrigins.length ? env.corsOrigins : true,
+    origin:
+      env.corsOrigins.length > 0
+        ? env.corsOrigins
+        : env.nodeEnv === 'production'
+          ? false
+          : true,
     credentials: false,
   }),
 );
@@ -100,17 +113,21 @@ app.use('/print-jobs', printJobsRouter);
 app.use('/reports', reportsRouter);
 app.use('/backups', backupsRouter);
 
-// Error handler (keeps Cloud Run logs useful)
+// Error handler (keeps Cloud Run logs useful but doesn't leak internals to clients)
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('API error', err);
   if (err instanceof ZodError) {
     return res.status(400).json({ error: 'invalid request', issues: err.issues });
   }
   if (err && typeof err === 'object' && typeof err.statusCode === 'number') {
-    return res.status(err.statusCode).json({ error: err.message || 'error' });
+    // 4xx errors are typically safe to surface (the message is intentional).
+    if (err.statusCode >= 400 && err.statusCode < 500) {
+      return res.status(err.statusCode).json({ error: err.message || 'error' });
+    }
   }
-  const msg = typeof err?.message === 'string' ? err.message : 'internal error';
-  return res.status(500).json({ error: msg });
+  // Never leak internal error messages (Prisma stack traces, SQL hints, file paths, etc.)
+  // The full error is logged above; clients only get a generic message.
+  return res.status(500).json({ error: 'internal error' });
 });
 
 app.listen(env.port, () => {

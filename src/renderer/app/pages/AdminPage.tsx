@@ -13,6 +13,26 @@ type Overview = {
   appVersion: string;
   revenueTodayNet?: number;
   revenueTodayVat?: number;
+  coversToday?: number;
+  reservationsTotalToday?: number;
+  reservationsCoversToday?: number;
+  reservationsAvgPartyToday?: number;
+  reservationsByStatusToday?: {
+    BOOKED?: number;
+    SEATED?: number;
+    COMPLETED?: number;
+    NO_SHOW?: number;
+    CANCELLED?: number;
+  };
+  reservationsUpcomingToday?: number;
+  reservationsNoShowRateToday?: number;
+  nextReservationToday?: {
+    timeIso: string;
+    customerName: string;
+    partySize: number;
+    area: string;
+    tableLabel: string | null;
+  } | null;
 };
 
 type AdminShift = {
@@ -151,66 +171,78 @@ export default function AdminPage() {
   const myId = me?.id ?? null;
 
   useEffect(() => {
+    let cancelled = false;
+    const safeSet = <T,>(setter: (v: T) => void, value: T) => {
+      if (!cancelled) setter(value);
+    };
     (async () => {
-      setAdminNotice(null);
+      safeSet(setAdminNotice, null);
       try {
         const s = await window.api.settings.get().catch(() => null as any);
+        if (cancelled) return;
         const backendUrl = String((s as any)?.cloud?.backendUrl || '').trim();
         const businessCode = String(
           (s as any)?.cloud?.businessCode || '',
         ).trim();
         const cur = String((s as any)?.currency || '').trim();
-        if (cur) setCurrency(cur);
-        setDataSource('local');
+        if (cur) safeSet(setCurrency, cur);
+        safeSet(setDataSource, 'local');
         if (backendUrl && !businessCode) {
-          setAdminNotice(
+          safeSet(
+            setAdminNotice,
             'Cloud is enabled but Business code is missing. Set it in Settings → Cloud (Hosted).',
           );
-          setOv(null);
-          setShifts([]);
-          setTopSelling(null);
-          setUsers([]);
+          safeSet(setOv, null as any);
+          safeSet(setShifts, []);
+          safeSet(setTopSelling, null as any);
+          safeSet(setUsers, []);
           return;
         }
       } catch {
         // ignore
       }
 
-      try {
-        const data = await window.api.admin.getOverview();
-        setOv(data);
-      } catch (e: any) {
-        setAdminNotice(e?.message || 'Failed to load admin overview.');
-        setOv(null);
-      }
-      try {
-        const sh = await window.api.admin.listShifts();
-        setShifts(sh);
-      } catch {
-        setShifts([]);
-      }
-      try {
-        const top = await window.api.admin.getTopSellingToday();
-        setTopSelling(top);
-      } catch {
-        setTopSelling(null);
-      }
-      try {
-        const u = await window.api.auth.listUsers();
-        setUsers(u);
-      } catch {
-        setUsers([]);
-      }
+      // Run independent IPC calls in parallel; previously they ran sequentially.
+      const [ovRes, shRes, topRes, usersRes, billingRes] =
+        await Promise.allSettled([
+          window.api.admin.getOverview(),
+          window.api.admin.listShifts(),
+          window.api.admin.getTopSellingToday(),
+          window.api.auth.listUsers(),
+          (window.api as any).billing?.getStatus?.() ?? Promise.resolve(null),
+        ]);
+      if (cancelled) return;
 
-      try {
-        const b = await (window.api as any).billing?.getStatus?.();
-        const enabled = Boolean((b as any)?.billingEnabled);
-        const st = String((b as any)?.status || 'ACTIVE').toUpperCase();
-        setBillingPaused(enabled && (st === 'PAST_DUE' || st === 'PAUSED'));
-      } catch {
-        setBillingPaused(false);
+      if (ovRes.status === 'fulfilled') safeSet(setOv, ovRes.value);
+      else {
+        safeSet(
+          setAdminNotice,
+          (ovRes.reason as any)?.message || 'Failed to load admin overview.',
+        );
+        safeSet(setOv, null as any);
+      }
+      safeSet(setShifts, shRes.status === 'fulfilled' ? shRes.value : []);
+      safeSet(
+        setTopSelling,
+        topRes.status === 'fulfilled' ? topRes.value : (null as any),
+      );
+      safeSet(setUsers, usersRes.status === 'fulfilled' ? usersRes.value : []);
+
+      if (billingRes.status === 'fulfilled' && billingRes.value) {
+        const b = billingRes.value as any;
+        const enabled = Boolean(b?.billingEnabled);
+        const st = String(b?.status || 'ACTIVE').toUpperCase();
+        safeSet(
+          setBillingPaused,
+          enabled && (st === 'PAST_DUE' || st === 'PAUSED'),
+        );
+      } else {
+        safeSet(setBillingPaused, false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [dataSource, me?.id, me?.role]);
 
   // Removed sales trends fetch for simplified overview
@@ -383,8 +415,8 @@ export default function AdminPage() {
           {adminNotice}
         </div>
       )}
-      <div className="grid gap-4 grid-cols-3">
-        <Stat title="Active Users" value={ov?.activeUsers} />
+      <div className="grid gap-4 grid-cols-1 min-[520px]:grid-cols-3 min-w-0 [&>*]:min-w-0">
+        <Stat title="Covers Today" value={ov?.coversToday ?? 0} />
         <Stat title="Open Shifts" value={ov?.openShifts} />
         <Stat title="Open Orders" value={ov?.openOrders} />
         <Stat
@@ -399,13 +431,13 @@ export default function AdminPage() {
           kind="money"
           currency={currency}
         />
-        <div className="bg-gray-800 rounded p-4">
+        <div className="bg-gray-800 rounded p-4 min-w-0 overflow-hidden">
           <div className="text-sm opacity-70">Top Selling Today</div>
-          <div className="mt-1 text-lg font-semibold">
+          <div className="mt-1 text-base sm:text-lg font-semibold break-words">
             {topSelling ? topSelling.name : '—'}
           </div>
           {topSelling && (
-            <div className="text-sm opacity-80">
+            <div className="text-sm opacity-80 mt-1 break-words">
               Qty: {topSelling.qty} • Revenue:{' '}
               <span className="font-semibold tabular-nums">
                 {formatMoney(topSelling.revenue, currency)}
@@ -414,6 +446,8 @@ export default function AdminPage() {
           )}
         </div>
       </div>
+      <ReservationsTodayCard ov={ov} />
+
       <div className="bg-gray-800 rounded p-4 col-span-1">
         <div className="flex items-center justify-between gap-3 mb-2">
           <div className="text-sm opacity-70">Open Shifts</div>
@@ -431,19 +465,21 @@ export default function AdminPage() {
             View all
           </button>
         </div>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-3">
           {shifts.filter((s) => s.isOpen).length === 0 && (
-            <div className="opacity-70">No open shifts</div>
+            <div className="opacity-70 col-span-2">No open shifts</div>
           )}
           {shifts
             .filter((s) => s.isOpen)
             .map((s) => (
               <div key={s.id} className="bg-gray-900 rounded p-3">
-                <div className="text-lg font-semibold">{s.userName}</div>
-                <div className="text-sm opacity-80">
+                <div className="text-base font-semibold truncate">
+                  {s.userName}
+                </div>
+                <div className="text-xs opacity-80">
                   Opened: {new Date(s.openedAt).toLocaleTimeString()}
                 </div>
-                <div className="text-sm">Hours: {s.durationHours}</div>
+                <div className="text-xs">Hours: {s.durationHours}</div>
               </div>
             ))}
         </div>
@@ -703,7 +739,7 @@ export default function AdminPage() {
         </div>
       )}
 
-      <div className="bg-gray-800 rounded p-4 col-span-2">
+      <div className="bg-gray-800 rounded p-4 col-span-1">
         <div className="flex items-center justify-between gap-3 mb-3">
           <div>
             <div className="text-sm opacity-70">Staff members</div>
@@ -727,7 +763,7 @@ export default function AdminPage() {
                 checked={showInactive}
                 onChange={(e) => setShowInactive(e.target.checked)}
               />
-               Inactive
+              Inactive
             </label>
             <button
               className="px-3 py-2 rounded bg-transparent hover:bg-gray-700 text-sm disabled:opacity-60 cursor-pointer"
@@ -760,9 +796,7 @@ export default function AdminPage() {
               await refreshUsers();
               setEditingStaff(null);
             }}
-            onError={(msg) =>
-              setStaffStatus({ kind: 'error', message: msg })
-            }
+            onError={(msg) => setStaffStatus({ kind: 'error', message: msg })}
           />
         )}
 
@@ -867,8 +901,7 @@ export default function AdminPage() {
                             } catch (e: any) {
                               setStaffStatus({
                                 kind: 'error',
-                                message:
-                                  e?.message || 'Failed to disable user',
+                                message: e?.message || 'Failed to disable user',
                               });
                             }
                           }}
@@ -893,8 +926,7 @@ export default function AdminPage() {
                             } catch (e: any) {
                               setStaffStatus({
                                 kind: 'error',
-                                message:
-                                  e?.message || 'Failed to enable user',
+                                message: e?.message || 'Failed to enable user',
                               });
                             }
                           }}
@@ -931,8 +963,7 @@ export default function AdminPage() {
                           } catch (e: any) {
                             setStaffStatus({
                               kind: 'error',
-                              message:
-                                e?.message || 'Failed to delete user',
+                              message: e?.message || 'Failed to delete user',
                             });
                           }
                         }}
@@ -966,6 +997,180 @@ function formatMoney(amount: number, currency: string): string {
   }
 }
 
+// ---------- Reservations day-summary card ----------
+
+function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
+  const total = ov?.reservationsTotalToday ?? 0;
+  const covers = ov?.reservationsCoversToday ?? 0;
+  const avg = ov?.reservationsAvgPartyToday ?? 0;
+  const upcoming = ov?.reservationsUpcomingToday ?? 0;
+  const noShowRate = ov?.reservationsNoShowRateToday ?? 0;
+  const by = ov?.reservationsByStatusToday || {};
+  const next = ov?.nextReservationToday ?? null;
+
+  function nextRelative(iso: string): string {
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return '';
+    const diffMs = t - Date.now();
+    const mins = Math.round(diffMs / 60_000);
+    if (mins <= 0) return 'now';
+    if (mins < 60) return `in ${mins}m`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m === 0 ? `in ${h}h` : `in ${h}h ${m}m`;
+  }
+
+  function openReservations() {
+    void (window.api as any).reservations?.openWindow?.();
+  }
+
+  return (
+    <div className="bg-gray-800 rounded p-4 col-span-1 min-w-0 overflow-hidden">
+      <div className="flex items-center justify-between gap-3 mb-3 min-w-0">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm opacity-70">Reservations today</div>
+          <div className="text-xs opacity-60 break-words">
+            {total === 0
+              ? 'No reservations on the books for today.'
+              : `${total} reservation${total === 1 ? '' : 's'} · ${covers} cover${covers === 1 ? '' : 's'}`}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={openReservations}
+          className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
+        >
+          Open panel
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 min-w-0 [&>*]:min-w-0">
+        <MiniStat label="Covers" value={covers} />
+        <MiniStat label="Parties" value={total} />
+        <MiniStat label="Avg party" value={avg > 0 ? avg.toFixed(1) : '—'} />
+        <MiniStat
+          label="Upcoming"
+          value={upcoming}
+          hint={
+            upcoming > 0 && next
+              ? `${formatTime(next.timeIso)} · ${next.customerName}`
+              : undefined
+          }
+        />
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <StatusPill
+          label="Booked"
+          cls="bg-amber-900/60 border-amber-700 text-amber-100"
+          value={by.BOOKED ?? 0}
+        />
+        <StatusPill
+          label="Seated"
+          cls="bg-rose-900/60 border-rose-700 text-rose-100"
+          value={by.SEATED ?? 0}
+        />
+        <StatusPill
+          label="Completed"
+          cls="bg-emerald-900/60 border-emerald-700 text-emerald-100"
+          value={by.COMPLETED ?? 0}
+        />
+        <StatusPill
+          label="No-show"
+          cls="bg-gray-700/70 border-gray-500 text-gray-100"
+          value={by.NO_SHOW ?? 0}
+        />
+        <StatusPill
+          label="Cancelled"
+          cls="bg-zinc-700/60 border-zinc-500 text-zinc-200"
+          value={by.CANCELLED ?? 0}
+        />
+        <div className="ml-auto text-xs opacity-80">
+          No-show rate:{' '}
+          <span
+            className={`font-semibold ${
+              noShowRate >= 25
+                ? 'text-rose-300'
+                : noShowRate >= 10
+                  ? 'text-amber-300'
+                  : 'text-emerald-300'
+            }`}
+            title="No-shows divided by reservations whose start time has already passed today (Cancelled excluded)."
+          >
+            {noShowRate}%
+          </span>
+        </div>
+      </div>
+
+      {next && (
+        <div className="mt-3 text-xs opacity-80 border-t border-gray-700/70 pt-2 break-words">
+          Next up: <span className="font-mono">{formatTime(next.timeIso)}</span>{' '}
+          · <span className="font-medium">{next.customerName}</span> ·{' '}
+          {next.partySize} pax ·{' '}
+          {next.tableLabel ? `${next.area} ${next.tableLabel}` : next.area} ·{' '}
+          <span className="opacity-70">{nextRelative(next.timeIso)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: number | string;
+  hint?: string;
+}) {
+  return (
+    <div className="bg-gray-900/60 rounded px-3 py-2 min-w-0 overflow-hidden">
+      <div className="text-[11px] uppercase tracking-wide opacity-60 truncate">
+        {label}
+      </div>
+      <div className="text-lg sm:text-xl font-semibold tabular-nums break-words leading-tight">
+        {value}
+      </div>
+      {hint && (
+        <div className="text-[11px] opacity-60 truncate" title={hint}>
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusPill({
+  label,
+  cls,
+  value,
+}: {
+  label: string;
+  cls: string;
+  value: number;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded border ${cls} ${
+        value === 0 ? 'opacity-50' : ''
+      }`}
+    >
+      <span>{label}</span>
+      <span className="font-mono tabular-nums">{value}</span>
+    </span>
+  );
+}
+
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  return (
+    String(d.getHours()).padStart(2, '0') +
+    ':' +
+    String(d.getMinutes()).padStart(2, '0')
+  );
+}
+
 function Stat({
   title,
   value,
@@ -982,15 +1187,15 @@ function Stat({
       ? value == null
         ? '—'
         : formatMoney(Number(value || 0), String(currency || 'EUR'))
-      : value ?? '—';
+      : (value ?? '—');
   return (
-    <div className="bg-gray-800 rounded p-4">
-      <div className="text-sm opacity-70">{title}</div>
+    <div className="bg-gray-800 rounded p-4 min-w-0 overflow-hidden">
+      <div className="text-sm opacity-70 leading-snug">{title}</div>
       <div
-        className={`mt-1 ${
+        className={`mt-1 min-w-0 ${
           kind === 'money'
-            ? 'text-3xl font-bold tabular-nums tracking-tight text-emerald-100'
-            : 'text-2xl font-semibold'
+            ? 'text-lg sm:text-xl md:text-2xl lg:text-3xl font-bold tabular-nums tracking-tight text-emerald-100 leading-tight break-words'
+            : 'text-xl sm:text-2xl font-semibold tabular-nums break-words'
         }`}
       >
         {display}
@@ -1085,15 +1290,26 @@ function AddStaffModal({
             onClick={onClose}
             aria-label="Close"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-              <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="w-4 h-4"
+            >
+              <path
+                d="M6 6l12 12M18 6 6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
             </svg>
           </button>
         </div>
         <div className="p-4 space-y-4">
           {billingPaused && (
             <div className="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
-              Billing is paused. Adding staff is disabled until payment is completed.
+              Billing is paused. Adding staff is disabled until payment is
+              completed.
             </div>
           )}
           <label className="block text-sm">
@@ -1257,7 +1473,8 @@ function EditStaffModal({
       >
         <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
           <div className="font-semibold">
-            Edit staff <span className="opacity-60 text-sm">(ID {staff.id})</span>
+            Edit staff{' '}
+            <span className="opacity-60 text-sm">(ID {staff.id})</span>
           </div>
           <button
             type="button"
@@ -1320,9 +1537,7 @@ function EditStaffModal({
           <label className="block text-sm">
             <div className="opacity-80 mb-1">
               New PIN{' '}
-              <span className="opacity-60">
-                (leave blank to keep current)
-              </span>
+              <span className="opacity-60">(leave blank to keep current)</span>
             </div>
             <input
               className="w-full bg-gray-700 rounded px-3 py-2"

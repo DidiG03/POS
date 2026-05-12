@@ -7,14 +7,18 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
-import {
-  buildEscposTicket,
-  buildHtmlReceipt,
-  printHtmlToSystemPrinter,
-  sendToCupsRawPrinter,
-  sendToPrinter,
-} from './print';
 import { coreServices } from './services/core';
+import {
+  dispatchTicket,
+  pickActiveReceiptProfile,
+  testPrintWithProfile,
+} from './services/printDispatcher';
+import * as reservationsService from './services/reservations';
+import {
+  broadcastTableStatusChanged,
+  broadcastTicketsChanged,
+  broadcastLayoutChanged,
+} from './services/realtime';
 import { transferTableLocal } from './services/tableTransfer';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { getCloudConfig } from './services/cloud';
@@ -28,7 +32,8 @@ async function maybeAlertSuspiciousVoidsLocal(input: {
   const threshold = input.kind === 'VOID_TICKET' ? 3 : 6;
   const cooldownMinutes = 60;
   const since = new Date(Date.now() - windowMinutes * 60 * 1000);
-  const prefix = input.kind === 'VOID_TICKET' ? 'Voided ticket on ' : 'Voided item on ';
+  const prefix =
+    input.kind === 'VOID_TICKET' ? 'Voided ticket on ' : 'Voided item on ';
 
   const count = await prisma.notification
     .count({
@@ -54,7 +59,8 @@ async function maybeAlertSuspiciousVoidsLocal(input: {
     .catch(() => []);
 
   const cooldownSince = new Date(Date.now() - cooldownMinutes * 60 * 1000);
-  const actionLabel = input.kind === 'VOID_TICKET' ? 'voided tickets' : 'voided items';
+  const actionLabel =
+    input.kind === 'VOID_TICKET' ? 'voided tickets' : 'voided items';
   const msg = `Unusual activity (auto-check): ${count} ${actionLabel} by ${actorName} in the last ${windowMinutes} minutes. This can be normal during corrections; please review if unexpected.`;
 
   for (const a of admins as any[]) {
@@ -97,7 +103,12 @@ async function maybeAlertVoidSoonAfterPaymentLocal(input: {
   if (!lastIso) return;
   const last = new Date(lastIso);
   const deltaMs = now - last.getTime();
-  if (!Number.isFinite(deltaMs) || deltaMs < 0 || deltaMs > windowMinutes * 60 * 1000) return;
+  if (
+    !Number.isFinite(deltaMs) ||
+    deltaMs < 0 ||
+    deltaMs > windowMinutes * 60 * 1000
+  )
+    return;
 
   const actor = await prisma.user
     .findUnique({ where: { id: input.actorUserId } })
@@ -110,7 +121,8 @@ async function maybeAlertVoidSoonAfterPaymentLocal(input: {
     .catch(() => []);
 
   const minutesAgo = Math.max(0, Math.round(deltaMs / 60000));
-  const actionLabel = input.kind === 'VOID_TICKET' ? 'voided a ticket' : 'voided an item';
+  const actionLabel =
+    input.kind === 'VOID_TICKET' ? 'voided a ticket' : 'voided an item';
   const msg =
     `Unusual activity (auto-check): ${actorName} ${actionLabel} on ${input.area} Table ${input.tableLabel} about ${minutesAgo} minutes after payment. ` +
     `This can be normal (corrections/reprints); please review if unexpected.`;
@@ -199,7 +211,10 @@ async function ensureKdsLocalSchema() {
 }
 
 // Suspicious-pattern detection (best-effort, in-memory).
-const mgrPinFailByIp = new Map<string, { count: number; resetAt: number; lastAlertAt: number }>();
+const mgrPinFailByIp = new Map<
+  string,
+  { count: number; resetAt: number; lastAlertAt: number }
+>();
 
 // Suspicious-pattern detection (best-effort, in-memory) for payment adjustments.
 const payAdjustByUser = new Map<
@@ -241,14 +256,38 @@ function send(
   res.end(body);
 }
 
+// Hard cap on inbound JSON bodies to prevent OOM / DoS. 1 MB is plenty for
+// every documented LAN-API payload; backups & menu uploads use dedicated streaming routes.
+const MAX_JSON_BYTES = 1024 * 1024;
+
 async function parseJson(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
+    let size = 0;
+    const chunks: Buffer[] = [];
+    let aborted = false;
+    req.on('data', (chunk: Buffer | string) => {
+      if (aborted) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buf.length;
+      if (size > MAX_JSON_BYTES) {
+        aborted = true;
+        const err = Object.assign(new Error('payload too large'), {
+          statusCode: 413,
+        });
+        try {
+          req.destroy();
+        } catch {
+          // ignore
+        }
+        reject(err);
+        return;
+      }
+      chunks.push(buf);
     });
     req.on('end', () => {
+      if (aborted) return;
       try {
+        const body = Buffer.concat(chunks).toString('utf8');
         resolve(body ? JSON.parse(body) : {});
       } catch (e) {
         reject(e);
@@ -513,9 +552,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
     basename(CURRENT_DIR) === 'chunks' ? join(CURRENT_DIR, '..') : CURRENT_DIR;
   const RENDERER_DIR = join(RUNTIME_DIR, '../renderer');
   const RENDERER_ORIGIN =
-    process.env.RENDERER_ORIGIN ||
-    process.env.ELECTRON_RENDERER_URL ||
-    '';
+    process.env.RENDERER_ORIGIN || process.env.ELECTRON_RENDERER_URL || '';
   const settings = await coreServices.readSettings();
   const allowLan =
     Boolean((settings as any)?.security?.allowLan) ||
@@ -565,15 +602,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return;
       }
 
-      // Helper: resolve printer host/port from env or stored settings
-      async function resolvePrinter() {
-        const s = await coreServices.readSettings();
-        const ip = process.env.PRINTER_IP || s?.printer?.ip;
-        const port = Number(
-          process.env.PRINTER_PORT || s?.printer?.port || 9100,
-        );
-        return { ip, port } as { ip?: string; port: number };
-      }
+      // Active receipt-printer resolution is owned by the
+      // `printDispatcher` module — see `pickActiveReceiptProfile()`.
+      // Endpoints below call it directly; no helper needed here.
 
       const isStaticGet =
         req.method === 'GET' &&
@@ -674,11 +705,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           if (upstream.ok) {
             const buf = new Uint8Array(await upstream.arrayBuffer());
             const ct =
-              upstream.headers.get('content-type') ||
-              getContentType(pathname);
+              upstream.headers.get('content-type') || getContentType(pathname);
             const headers: Record<string, string> = { 'Content-Type': ct };
-            if (corsOrigin)
-              headers['Access-Control-Allow-Origin'] = corsOrigin;
+            if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
             res.writeHead(upstream.status, headers);
             res.end(Buffer.from(buf));
             return;
@@ -824,7 +853,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 },
               );
               const cloudData = await cloudRes.json().catch(() => null);
-              if (cloudRes.ok && cloudData && typeof cloudData === 'object' && cloudData.token) {
+              if (
+                cloudRes.ok &&
+                cloudData &&
+                typeof cloudData === 'object' &&
+                cloudData.token
+              ) {
                 return send(res, 200, cloudData, corsOrigin);
               }
             } catch {
@@ -931,9 +965,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               const cloudRes = await fetch(cloudUrl, init);
               const text = await cloudRes.text();
               const headers: Record<string, string> = {
-                'Content-Type': cloudRes.headers.get('Content-Type') || 'application/json',
+                'Content-Type':
+                  cloudRes.headers.get('Content-Type') || 'application/json',
               };
-              if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
+              if (corsOrigin)
+                headers['Access-Control-Allow-Origin'] = corsOrigin;
               res.writeHead(cloudRes.status, headers);
               res.end(text);
               return;
@@ -945,9 +981,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
       }
 
-      // Clock-only roles (KP/CHEF/HEAD_CHEF) are allowed to use ONLY shift endpoints.
-      // This enforces "can only clock in/out" for LAN browser clients.
+      // Clock-only roles (KP/CHEF/HEAD_CHEF/HOST/...) are allowed to use ONLY
+      // shift endpoints. This enforces "can only clock in/out" for LAN browser
+      // clients. HOST is technically clock-only, but the reservation panel
+      // legitimately needs the reservation endpoints (and also `/auth/users`
+      // for the staff list and `/settings` for the area selector). We only
+      // ever expose those to HOSTs because every reservation route still goes
+      // through `assertHostOrAdmin` against the local DB.
       if (auth && isClockOnlyRole((auth as any).role)) {
+        const role = String((auth as any).role || '').toUpperCase();
         const allowed = new Set<string>([
           '/shifts/open',
           '/shifts/get-open',
@@ -955,7 +997,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           '/shifts/clock-out',
           '/shifts/public-open',
         ]);
-        if (!allowed.has(pathname))
+        const isHostReservationsPath =
+          role === 'HOST' &&
+          (pathname === '/auth/users' ||
+            pathname === '/settings' ||
+            pathname === '/auth/verify-manager-pin' ||
+            pathname.startsWith('/reservations') ||
+            pathname.startsWith('/layout/') ||
+            pathname.startsWith('/notifications'));
+        if (!allowed.has(pathname) && !isHostReservationsPath)
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
       }
 
@@ -974,7 +1024,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const now = Date.now();
         const cur = mgrPinFailByIp.get(remoteIp);
         if (!cur || cur.resetAt <= now) {
-          mgrPinFailByIp.set(remoteIp, { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: cur?.lastAlertAt || 0 });
+          mgrPinFailByIp.set(remoteIp, {
+            count: 0,
+            resetAt: now + windowMinutes * 60 * 1000,
+            lastAlertAt: cur?.lastAlertAt || 0,
+          });
         }
         // Local-first: always use local DB for manager PIN verification
         const admins = await prisma.user
@@ -987,15 +1041,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           const ok = await bcrypt
             .compare(p, String((u as any).pinHash || ''))
             .catch(() => false);
-          if (ok)
+          if (ok) {
             // success resets counter
-            {
-              const st = mgrPinFailByIp.get(remoteIp);
-              if (st) mgrPinFailByIp.set(remoteIp, { ...st, count: 0 });
-              const approvalToken = await issueApprovalToken(secret, {
-                userId: (u as any).id,
-                role: 'ADMIN',
-              });
+            const st = mgrPinFailByIp.get(remoteIp);
+            if (st) mgrPinFailByIp.set(remoteIp, { ...st, count: 0 });
+            const approvalToken = await issueApprovalToken(secret, {
+              userId: (u as any).id,
+              role: 'ADMIN',
+            });
             return send(
               res,
               200,
@@ -1003,23 +1056,35 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 ok: true,
                 userId: (u as any).id,
                 userName: (u as any).displayName,
-                  approvalToken,
+                approvalToken,
               },
               corsOrigin,
             );
-            }
+          }
         }
         // failure increments counter + maybe alert
         const st = mgrPinFailByIp.get(remoteIp)!;
         st.count += 1;
         mgrPinFailByIp.set(remoteIp, st);
-        if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
+        if (
+          st.count >= threshold &&
+          (!st.lastAlertAt ||
+            now - st.lastAlertAt > cooldownMinutes * 60 * 1000)
+        ) {
           const msg =
             `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes` +
             `${remoteIp ? ` from IP ${remoteIp}` : ''}. ` +
             `This can be normal (mistyped PINs); please review if unexpected.`;
           for (const a of admins as any[]) {
-            await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+            await prisma.notification
+              .create({
+                data: {
+                  userId: a.id,
+                  type: 'SECURITY' as any,
+                  message: msg,
+                } as any,
+              })
+              .catch(() => {});
           }
           st.lastAlertAt = now;
           mgrPinFailByIp.set(remoteIp, st);
@@ -1192,12 +1257,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         } catch {
           // ignore
         }
-        // broadcast change
+        // Broadcast change so every client (Electron windows + LAN/mobile
+        // tablets via SSE) refreshes the waiter badge / table metrics for
+        // this table immediately, instead of waiting for the next poll.
         try {
-          const clients: Set<any> =
-            (globalThis as any).__SSE_CLIENTS__ || new Set();
-          const evt = `event: ticket\ndata: ${JSON.stringify({ area, tableLabel })}\n\n`;
-          clients.forEach((c: any) => c.res.write(evt));
+          broadcastTicketsChanged({
+            area: String(area),
+            tableLabel: String(tableLabel),
+            userId: Number(userId),
+          });
         } catch (e) {
           void e;
         }
@@ -1207,8 +1275,27 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const area = String(parsed.query.area || '');
         const tableLabel = String(parsed.query.table || '');
         if (!area || !tableLabel) return send(res, 400, 'invalid', corsOrigin);
+        // Scope to the current open session — see the matching IPC
+        // handler `tickets:getLatestForTable`. Without this scope the
+        // mobile waiter view briefly shows the previous (paid-out)
+        // session's items right after Send.
+        const atRow = await prisma.syncState
+          .findUnique({ where: { key: 'tables:openAt' } })
+          .catch(() => null);
+        const atMap = ((atRow?.valueJson as any) || {}) as Record<
+          string,
+          string
+        >;
+        const sinceIso = atMap[`${area}:${tableLabel}`];
+        const sinceParsed = sinceIso ? new Date(sinceIso) : null;
+        const since =
+          sinceParsed && Number.isFinite(sinceParsed.getTime())
+            ? sinceParsed
+            : null;
+        const where: any = { area, tableLabel };
+        if (since) where.createdAt = { gte: since };
         const last = await prisma.ticketLog.findFirst({
-          where: { area, tableLabel },
+          where,
           orderBy: { createdAt: 'desc' },
         });
         if (!last) return send(res, 200, null, corsOrigin);
@@ -1367,132 +1454,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, { schemaReady: ok, counts }, corsOrigin);
       }
 
-      // Printing: test and ticket (for browser clients on LAN). Printing happens on the host machine.
+      // Printing: test and ticket (for browser clients on LAN). All
+      // printer dispatch + routing lives in `printDispatcher.ts`; this
+      // route is just a thin HTTP shim around it.
       if (req.method === 'POST' && pathname === '/print/test') {
-        const row = await prisma.syncState
-          .findUnique({ where: { key: 'settings' } })
-          .catch(() => null);
-        const settings = (row?.valueJson as any) || {
-          restaurantName: ' Code Orbit Agroturizem',
-          currency: 'EUR',
-          defaultVatRate: 0.2,
-        };
-        const mode = (settings?.printer?.mode ||
-          (settings?.printer?.serialPath
-            ? 'SERIAL'
-            : settings?.printer?.deviceName
-              ? 'SYSTEM'
-              : 'NETWORK')) as any;
-        if (mode === 'SYSTEM') {
-          // Default ON: receipt printers expect raw ESC/POS, not PostScript/PDF
-          const raw = settings?.printer?.systemRawEscpos !== false;
-          if (raw) {
-            const data = Buffer.from(
-              [
-                '\x1b@',
-                ' Code Orbit POS Test Print\n',
-                '-------------------------\n',
-                new Date().toISOString() + '\n\n',
-                '\x1dV\x41\x10',
-              ].join(''),
-              'binary',
-            );
-            const r = await sendToCupsRawPrinter({
-              deviceName: settings?.printer?.deviceName,
-              data,
-            });
-            return send(
-              res,
-              r.ok ? 200 : 500,
-              { ok: r.ok, error: r.error },
-              corsOrigin,
-            );
-          } else {
-            const html = buildHtmlReceipt(
-              {
-                area: 'TEST',
-                tableLabel: 'USB',
-                covers: null,
-                items: [
-                  { name: 'Test item', qty: 1, unitPrice: 1.0, vatRate: 0 },
-                ],
-                note: null,
-                userName: 'POS',
-                meta: { vatEnabled: true },
-              } as any,
-              settings as any,
-            );
-            const r = await printHtmlToSystemPrinter({
-              html,
-              deviceName: settings?.printer?.deviceName,
-              silent: settings?.printer?.silent !== false,
-            });
-            return send(
-              res,
-              r.ok ? 200 : 500,
-              { ok: r.ok, error: r.error },
-              corsOrigin,
-            );
-          }
-        }
-        if (mode === 'SERIAL') {
-          const p: any = settings?.printer || {};
-          const cfg = {
-            path: String(p.serialPath || ''),
-            baudRate: Number(p.baudRate || 19200),
-            dataBits: (Number(p.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
-            stopBits: (Number(p.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-            parity: String(p.parity || 'none') as any as
-              | 'none'
-              | 'even'
-              | 'odd',
-          };
-          if (!cfg.path)
-            return send(
-              res,
-              400,
-              { ok: false, error: 'Serial port not configured' },
-              corsOrigin,
-            );
-          const data = Buffer.from(
-            [
-              '\x1b@',
-              ' Code Orbit POS Test Print\n',
-              '-------------------------\n',
-              new Date().toISOString() + '\n\n',
-              '\x1dV\x41\x10',
-            ].join(''),
-            'binary',
-          );
-          const { sendToSerialPrinter } = await import('./serial');
-          const r = await sendToSerialPrinter(cfg as any, data);
-          return send(
-            res,
-            r.ok ? 200 : 500,
-            { ok: r.ok, error: r.error },
-            corsOrigin,
-          );
-        }
-        const { ip, port } = await resolvePrinter();
-        if (!ip)
+        const settings = await coreServices.readSettings();
+        const profile = pickActiveReceiptProfile(settings as any);
+        if (!profile)
           return send(
             res,
             400,
-            { ok: false, error: 'Printer IP not configured' },
+            { ok: false, error: 'No printer configured' },
             corsOrigin,
           );
-        const data = Buffer.from(
-          [
-            '\x1b@',
-            ' Code Orbit POS Test Print\n',
-            '-------------------------\n',
-            new Date().toISOString() + '\n\n',
-            '\x1dV\x41\x10',
-          ].join(''),
-          'binary',
+        const r = await testPrintWithProfile(profile, settings as any);
+        return send(
+          res,
+          r.ok ? 200 : 500,
+          { ok: r.ok, error: r.error },
+          corsOrigin,
         );
-        const ok = await sendToPrinter(ip, port, data);
-        return send(res, ok ? 200 : 500, { ok }, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/print/ticket') {
         const body = await parseJson(req);
@@ -1512,23 +1493,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             { ok: false, error: 'invalid payload' },
             corsOrigin,
           );
-        const row = await prisma.syncState
-          .findUnique({ where: { key: 'settings' } })
-          .catch(() => null);
-        const settings = (row?.valueJson as any) || {
-          restaurantName: ' Code Orbit Agroturizem',
-          currency: 'EUR',
-          defaultVatRate: 0.2,
-        };
-        const mode = (settings?.printer?.mode ||
-          (settings?.printer?.serialPath
-            ? 'SERIAL'
-            : settings?.printer?.deviceName
-              ? 'SYSTEM'
-              : 'NETWORK')) as any;
+        const settings = await coreServices.readSettings();
 
         // Track last payment time per table + payment adjustment alerts.
-        // Run before printing so it works for all printer modes.
+        // Run before printing so it works for all printer modes — and
+        // even if the print itself fails (so we still detect anomalies).
         try {
           const meta: any = payload?.meta || {};
           const kind = String(meta?.kind || '').toUpperCase();
@@ -1537,15 +1506,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             const payRow = await prisma.syncState
               .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
               .catch(() => null as any);
-            const map = ((payRow?.valueJson as any) || {}) as Record<string, string>;
+            const map = ((payRow?.valueJson as any) || {}) as Record<
+              string,
+              string
+            >;
             map[k] = new Date().toISOString();
             if (payRow?.key) {
               await prisma.syncState
-                .update({ where: { key: 'antitheft:lastPaymentAt' }, data: { valueJson: map } as any })
+                .update({
+                  where: { key: 'antitheft:lastPaymentAt' },
+                  data: { valueJson: map } as any,
+                })
                 .catch(() => null);
             } else {
               await prisma.syncState
-                .create({ data: { key: 'antitheft:lastPaymentAt', valueJson: map } as any })
+                .create({
+                  data: {
+                    key: 'antitheft:lastPaymentAt',
+                    valueJson: map,
+                  } as any,
+                })
                 .catch(() => null);
             }
 
@@ -1569,21 +1549,47 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 });
               }
               const st = payAdjustByUser.get(userId)!;
-              if (Number.isFinite(discountAmt) && discountAmt > 0) st.discountCount += 1;
-              if (scEnabled && !scApplied && Number.isFinite(scAmt) && scAmt > 0) st.serviceRemovalCount += 1;
+              if (Number.isFinite(discountAmt) && discountAmt > 0)
+                st.discountCount += 1;
+              if (
+                scEnabled &&
+                !scApplied &&
+                Number.isFinite(scAmt) &&
+                scAmt > 0
+              )
+                st.serviceRemovalCount += 1;
               payAdjustByUser.set(userId, st);
 
-              const actor = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null as any);
-              const actorName = actor?.displayName ? String(actor.displayName) : `User #${userId}`;
-              const admins = await prisma.user.findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 }).catch(() => []);
-              const canAlert = !st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
+              const actor = await prisma.user
+                .findUnique({ where: { id: userId } })
+                .catch(() => null as any);
+              const actorName = actor?.displayName
+                ? String(actor.displayName)
+                : `User #${userId}`;
+              const admins = await prisma.user
+                .findMany({
+                  where: { role: 'ADMIN', active: true } as any,
+                  take: 50,
+                })
+                .catch(() => []);
+              const canAlert =
+                !st.lastAlertAt ||
+                now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
 
               if (canAlert && st.discountCount >= 5) {
                 const msg =
                   `Unusual activity (auto-check): ${st.discountCount} discounted payments by ${actorName} in the last ${windowMinutes} minutes. ` +
                   `This can be normal during promotions; please review if unexpected.`;
                 for (const a of admins as any[]) {
-                  await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+                  await prisma.notification
+                    .create({
+                      data: {
+                        userId: a.id,
+                        type: 'SECURITY' as any,
+                        message: msg,
+                      } as any,
+                    })
+                    .catch(() => {});
                 }
                 st.lastAlertAt = now;
                 payAdjustByUser.set(userId, st);
@@ -1592,7 +1598,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                   `Unusual activity (auto-check): ${st.serviceRemovalCount} service charge removals by ${actorName} in the last ${windowMinutes} minutes. ` +
                   `This can be normal during corrections; please review if unexpected.`;
                 for (const a of admins as any[]) {
-                  await prisma.notification.create({ data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+                  await prisma.notification
+                    .create({
+                      data: {
+                        userId: a.id,
+                        type: 'SECURITY' as any,
+                        message: msg,
+                      } as any,
+                    })
+                    .catch(() => {});
                 }
                 st.lastAlertAt = now;
                 payAdjustByUser.set(userId, st);
@@ -1603,76 +1617,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // ignore
         }
 
-        if (mode === 'SYSTEM') {
-          // Default ON: receipt printers expect raw ESC/POS, not PostScript/PDF
-          const raw = settings?.printer?.systemRawEscpos !== false;
-          if (raw) {
-            const buf = buildEscposTicket(payload, settings);
-            const r = await sendToCupsRawPrinter({
-              deviceName: settings?.printer?.deviceName,
-              data: buf,
-            });
-            return send(
-              res,
-              r.ok ? 200 : 500,
-              { ok: r.ok, error: r.error },
-              corsOrigin,
-            );
-          } else {
-            const html = buildHtmlReceipt(payload, settings as any);
-            const r = await printHtmlToSystemPrinter({
-              html,
-              deviceName: settings?.printer?.deviceName,
-              silent: settings?.printer?.silent !== false,
-            });
-            return send(
-              res,
-              r.ok ? 200 : 500,
-              { ok: r.ok, error: r.error },
-              corsOrigin,
-            );
-          }
-        }
-        if (mode === 'SERIAL') {
-          const p: any = settings?.printer || {};
-          const cfg = {
-            path: String(p.serialPath || ''),
-            baudRate: Number(p.baudRate || 19200),
-            dataBits: (Number(p.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
-            stopBits: (Number(p.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-            parity: String(p.parity || 'none') as any as
-              | 'none'
-              | 'even'
-              | 'odd',
-          };
-          if (!cfg.path)
-            return send(
-              res,
-              400,
-              { ok: false, error: 'Serial port not configured' },
-              corsOrigin,
-            );
-          const buf = buildEscposTicket(payload, settings);
-          const { sendToSerialPrinter } = await import('./serial');
-          const r = await sendToSerialPrinter(cfg as any, buf);
-          return send(
-            res,
-            r.ok ? 200 : 500,
-            { ok: r.ok, error: r.error },
-            corsOrigin,
-          );
-        }
-        const { ip, port } = await resolvePrinter();
-        if (!ip)
-          return send(
-            res,
-            400,
-            { ok: false, error: 'Printer IP not configured' },
-            corsOrigin,
-          );
-        const buf = buildEscposTicket(payload, settings);
-        const ok = await sendToPrinter(ip, port, buf);
-        return send(res, ok ? 200 : 500, { ok }, corsOrigin);
+        // Single dispatch: hands off mode selection, profile picking,
+        // and ORDER/category routing to `printDispatcher`. Used to be
+        // ~150 lines of mode branching here; moving it out also fixed
+        // the iOS routing gap (this HTTP route now respects per-station
+        // / per-category printer assignments, just like the Electron
+        // path does).
+        const r = await dispatchTicket(payload, settings as any, {
+          // iOS / web waiters get the same automatic retry safety net
+          // as the Electron app (PR 3).
+          persistRetryOnTransientFailure: true,
+        });
+        return send(
+          res,
+          r.ok ? 200 : 500,
+          { ok: r.ok, error: r.firstError },
+          corsOrigin,
+        );
       }
       if (req.method === 'POST' && pathname === '/tickets/void-item') {
         const {
@@ -1706,9 +1667,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 corsOrigin,
               );
             const tok = String(approvedByAdminToken || '').trim();
-            const approved = tok ? await verifyApprovalToken(secret, tok) : null;
-            if (!approved || approved.userId !== aid || String((approved as any).role || '').toUpperCase() !== 'ADMIN')
-              return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+            const approved = tok
+              ? await verifyApprovalToken(secret, tok)
+              : null;
+            if (
+              !approved ||
+              approved.userId !== aid ||
+              String((approved as any).role || '').toUpperCase() !== 'ADMIN'
+            )
+              return send(
+                res,
+                403,
+                { error: 'admin_approval_required' },
+                corsOrigin,
+              );
             const approver = await prisma.user
               .findUnique({ where: { id: aid } })
               .catch(() => null);
@@ -1799,9 +1771,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 corsOrigin,
               );
             const tok = String(approvedByAdminToken || '').trim();
-            const approved = tok ? await verifyApprovalToken(secret, tok) : null;
-            if (!approved || approved.userId !== aid || String((approved as any).role || '').toUpperCase() !== 'ADMIN')
-              return send(res, 403, { error: 'admin_approval_required' }, corsOrigin);
+            const approved = tok
+              ? await verifyApprovalToken(secret, tok)
+              : null;
+            if (
+              !approved ||
+              approved.userId !== aid ||
+              String((approved as any).role || '').toUpperCase() !== 'ADMIN'
+            )
+              return send(
+                res,
+                403,
+                { error: 'admin_approval_required' },
+                corsOrigin,
+              );
             const approver = await prisma.user
               .findUnique({ where: { id: aid } })
               .catch(() => null);
@@ -2022,14 +2005,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           create: { key, valueJson: map },
           update: { valueJson: map },
         });
-        // broadcast table status
+        // Broadcast to every client (other LAN tablets via SSE + every
+        // Electron window via IPC) so the floor colour updates without
+        // waiting for the next poll.
         try {
-          const clients: Set<any> =
-            (globalThis as any).__SSE_CLIENTS__ || new Set();
-          const evt = `event: tables\ndata: ${JSON.stringify({ area, label, open })}\n\n`;
-          clients.forEach((c: any) => c.res.write(evt));
-        } catch (e) {
-          void e;
+          broadcastTableStatusChanged({ area, label, open });
+        } catch {
+          // ignore — best effort
         }
         return send(res, 200, 'ok', corsOrigin);
       }
@@ -2090,36 +2072,65 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, r, corsOrigin);
       }
 
-      // Layout: get/save for browser clients
+      // Layout: get/save for browser clients.
+      //
+      // Floor layouts are now centrally managed by the admin and shared
+      // across every waiter / host device. The key is `layout:global:<area>`.
+      // Legacy per-user / per-scope rows are still consulted as a one-time
+      // migration fallback so existing layouts surface in the editor.
+      const globalLayoutKey = (area: string) => `layout:global:${String(area)}`;
       if (req.method === 'GET' && pathname === '/layout/get') {
-        const userId = Number(parsed.query.userId || 0);
         const area = String(parsed.query.area || '');
-        if (!userId || !area) return send(res, 400, 'invalid', corsOrigin);
-        if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN')
-          return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        const key = `layout:${userId}:${area}`;
-        const row = await prisma.syncState
-          .findUnique({ where: { key } })
+        if (!area) return send(res, 400, 'invalid', corsOrigin);
+        const globalRow = await prisma.syncState
+          .findUnique({ where: { key: globalLayoutKey(area) } })
           .catch(() => null);
-        return send(
-          res,
-          200,
-          (row?.valueJson as any)?.nodes ?? null,
-          corsOrigin,
-        );
+        const globalNodes = (globalRow?.valueJson as any)?.nodes;
+        if (Array.isArray(globalNodes)) {
+          return send(res, 200, globalNodes, corsOrigin);
+        }
+        // Migration fallback: scan legacy keys ending in `:<area>` and
+        // return the most recent one so the new shared view still has
+        // tables before the admin saves the first centralised layout.
+        const candidates = await prisma.syncState
+          .findMany({
+            where: { key: { startsWith: 'layout:' } as any } as any,
+            orderBy: { updatedAt: 'desc' } as any,
+          })
+          .catch(() => [] as any[]);
+        const suffix = `:${area}`;
+        for (const row of candidates as any[]) {
+          if (typeof row?.key !== 'string') continue;
+          if (row.key === globalLayoutKey(area)) continue;
+          if (!row.key.endsWith(suffix)) continue;
+          const nodes = (row?.valueJson as any)?.nodes;
+          if (Array.isArray(nodes) && nodes.length) {
+            return send(res, 200, nodes, corsOrigin);
+          }
+        }
+        return send(res, 200, null, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/layout/save') {
-        const { userId, area, nodes } = await parseJson(req);
-        if (!userId || !area || !Array.isArray(nodes))
+        const { area, nodes } = await parseJson(req);
+        if (!area || !Array.isArray(nodes))
           return send(res, 400, 'invalid', corsOrigin);
-        if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN')
+        // Only admins may rewrite the shared floor layout. Bearer-auth is
+        // enforced higher up the stack; we just verify the role here.
+        if (auth && auth.role !== 'ADMIN')
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        const key = `layout:${Number(userId)}:${String(area)}`;
         await prisma.syncState.upsert({
-          where: { key },
-          create: { key, valueJson: { nodes } },
+          where: { key: globalLayoutKey(String(area)) },
+          create: {
+            key: globalLayoutKey(String(area)),
+            valueJson: { nodes },
+          },
           update: { valueJson: { nodes } },
         });
+        try {
+          broadcastLayoutChanged({ area: String(area) });
+        } catch {
+          // best-effort
+        }
         return send(res, 200, 'ok', corsOrigin);
       }
 
@@ -2202,7 +2213,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       // Shift: clock out
       if (req.method === 'POST' && pathname === '/shifts/clock-out') {
-        const { userId } = await parseJson(req);
+        const body = await parseJson(req);
+        const { userId } = body || {};
+        const force = Boolean(body?.force);
         if (!userId) return send(res, 400, 'invalid', corsOrigin);
         if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN')
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
@@ -2210,6 +2223,59 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           where: { closedAt: null, openedById: Number(userId) },
         });
         if (!open) return send(res, 200, null, corsOrigin);
+
+        // Mirror the IPC guard: refuse to clock out while the waiter
+        // still owns open tables. Mobile waiters hit this same path, so
+        // the same anti-stranding rule must apply or iOS becomes the
+        // back door around it.
+        if (!force) {
+          const openTables: Array<{ area: string; label: string }> = [];
+          try {
+            const openRow = await prisma.syncState
+              .findUnique({ where: { key: 'tables:open' } })
+              .catch(() => null);
+            const openMap = ((openRow?.valueJson as any) || {}) as Record<
+              string,
+              boolean
+            >;
+            const keys = Object.entries(openMap)
+              .filter(([, v]) => Boolean(v))
+              .map(([k]) => k);
+            for (const key of keys) {
+              const idx = key.indexOf(':');
+              if (idx <= 0) continue;
+              const area = key.slice(0, idx);
+              const label = key.slice(idx + 1);
+              const last = await prisma.ticketLog
+                .findFirst({
+                  where: { area, tableLabel: label },
+                  orderBy: { createdAt: 'desc' },
+                  select: { userId: true },
+                })
+                .catch(() => null);
+              if (last && Number(last.userId) === Number(userId)) {
+                openTables.push({ area, label });
+              }
+            }
+          } catch {
+            // Best-effort guard — never trap a waiter at work because
+            // of a transient lookup failure.
+          }
+          if (openTables.length > 0) {
+            return send(
+              res,
+              200,
+              {
+                ok: false,
+                error: `You still have ${openTables.length} open table${openTables.length === 1 ? '' : 's'}. Close or transfer them before clocking out.`,
+                code: 'OPEN_TABLES_OWNED',
+                openTables,
+              },
+              corsOrigin,
+            );
+          }
+        }
+
         const updated = await prisma.dayShift.update({
           where: { id: open.id },
           data: { closedAt: new Date(), closedById: Number(userId) },
@@ -2233,8 +2299,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // Settings: get and update (for browser clients)
       if (req.method === 'GET' && pathname === '/settings') {
         const base = await coreServices.readSettings();
+        // Enrich with table areas from DB so mobile/browser clients see the
+        // same areas as the Electron app (which augments via main/index.ts).
+        const dbAreas = await prisma.area
+          .findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } })
+          .catch(() => [] as any[]);
+        const tableAreas = (dbAreas as any[]).length
+          ? (dbAreas as any[]).map((a) => ({
+              name: a.name,
+              count: a.defaultCount,
+            }))
+          : ((base as any).tableAreas ?? []);
         const result = {
           ...base,
+          tableAreas,
           printer: {
             ip: base.printer?.ip || null,
             port: Number(base.printer?.port || 9100),
@@ -2292,8 +2370,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const area = String(parsed.query.area || '');
         const label = String(parsed.query.label || '');
         if (!area || !label) return send(res, 400, 'invalid', corsOrigin);
+        const openAtRow = await prisma.syncState
+          .findUnique({ where: { key: 'tables:openAt' } })
+          .catch(() => null);
+        const openAtMap = ((openAtRow?.valueJson as any) || {}) as Record<
+          string,
+          string
+        >;
+        const sinceIso = openAtMap[`${area}:${label}`];
+        const sinceParsed = sinceIso ? new Date(sinceIso) : null;
+        const sessionStart =
+          sinceParsed && Number.isFinite(sinceParsed.getTime())
+            ? sinceParsed
+            : null;
+        const where: any = { area, label };
+        if (sessionStart) where.createdAt = { gte: sessionStart };
         const row = await prisma.covers.findFirst({
-          where: { area, label },
+          where,
           orderBy: { id: 'desc' },
         });
         return send(res, 200, row?.covers ?? null, corsOrigin);
@@ -2622,9 +2715,92 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, { range, points }, corsOrigin);
       }
 
+      // ----- Reservations (mobile / LAN HOST + ADMIN clients) -----
+      // The reservations service throws errors with `statusCode` properties,
+      // which the catch-all handler below already maps to the right HTTP code.
+      // Auth is already enforced above (these are not in `publicPaths`), and
+      // each service call additionally re-checks role from the local DB.
+      const reservationActorId = Number(auth?.userId || 0);
+
+      if (req.method === 'GET' && pathname === '/reservations') {
+        const dateIso = parsed.query.dateIso
+          ? String(parsed.query.dateIso)
+          : '';
+        const area = parsed.query.area ? String(parsed.query.area) : undefined;
+        // Listing isn't a mutation, but we still gate on host/admin so an
+        // arbitrary tablet token can't read the reservations book.
+        await reservationsService.assertHostOrAdmin(reservationActorId);
+        const list = await reservationsService.listReservationsForDay({
+          dateIso,
+          area,
+        });
+        return send(res, 200, list, corsOrigin);
+      }
+
+      if (req.method === 'GET' && pathname === '/reservations/counts') {
+        const startIso = parsed.query.startIso
+          ? String(parsed.query.startIso)
+          : '';
+        const endIso = parsed.query.endIso ? String(parsed.query.endIso) : '';
+        await reservationsService.assertHostOrAdmin(reservationActorId);
+        const counts = await reservationsService.listReservationCounts({
+          startIso,
+          endIso,
+        });
+        return send(res, 200, counts, corsOrigin);
+      }
+
+      if (req.method === 'POST' && pathname === '/reservations') {
+        const body = await parseJson(req);
+        // The HTTP caller is the actor; ignore any client-supplied id so a
+        // tablet can't impersonate another user when creating reservations.
+        const created = await reservationsService.createReservation({
+          ...(body || {}),
+          createdById: reservationActorId,
+        });
+        return send(res, 200, created, corsOrigin);
+      }
+
+      if (req.method === 'POST' && pathname === '/reservations/update') {
+        const body = await parseJson(req);
+        const updated = await reservationsService.updateReservation({
+          ...(body || {}),
+          actorId: reservationActorId,
+        });
+        return send(res, 200, updated, corsOrigin);
+      }
+
+      if (req.method === 'POST' && pathname === '/reservations/set-status') {
+        const body = await parseJson(req);
+        const updated = await reservationsService.setReservationStatus({
+          id: Number((body || {}).id || 0),
+          status: String((body || {}).status || ''),
+          actorId: reservationActorId,
+        });
+        return send(res, 200, updated, corsOrigin);
+      }
+
+      if (req.method === 'POST' && pathname === '/reservations/delete') {
+        const body = await parseJson(req);
+        const ok = await reservationsService.deleteReservation({
+          id: Number((body || {}).id || 0),
+          actorId: reservationActorId,
+        });
+        return send(res, 200, { ok }, corsOrigin);
+      }
+
       // Fallback
       return send(res, 404, 'not found', corsOrigin);
-    } catch (e) {
+    } catch (e: any) {
+      const code = Number(e?.statusCode || 0);
+      if (code === 413) return send(res, 413, 'payload too large');
+      // Service-level errors (e.g. reservations service) attach `statusCode`
+      // so we can map them to the right HTTP status without leaking internals.
+      if (code === 401 || code === 403 || code === 404 || code === 409) {
+        const message = String(e?.message || 'error');
+        const errCode = String(e?.code || '');
+        return send(res, code, { error: message, code: errCode || undefined });
+      }
       console.error('API error', e);
       return send(res, 500, 'error');
     }
@@ -2645,10 +2821,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
     console.log(`HTTP API listening on http://${bindHost}:${httpPort}`);
   });
 
+  let httpsServer: https.Server | null = null;
   try {
     const key = fs.readFileSync('key.pem');
     const cert = fs.readFileSync('cert.pem');
-    const httpsServer = https.createServer({ key, cert }, handler);
+    httpsServer = https.createServer({ key, cert }, handler);
     httpsServer.on('error', (err: any) => {
       const code = String(err?.code || '');
       if (code === 'EADDRINUSE') {
@@ -2666,5 +2843,5 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
     // no TLS certs, skip HTTPS
   }
 
-  return server;
+  return { http: server, https: httpsServer };
 }

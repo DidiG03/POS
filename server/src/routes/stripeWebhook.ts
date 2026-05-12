@@ -8,6 +8,27 @@ function stripeClient() {
   return new Stripe(env.stripeSecretKey, { apiVersion: '2025-01-27.acacia' } as any);
 }
 
+// Bounded in-process LRU of recently-seen Stripe event ids. Returns true when the
+// event has already been processed by this instance within the window.
+const RECENT_STRIPE_EVENTS = new Map<string, number>();
+const STRIPE_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const STRIPE_DEDUPE_MAX = 5000;
+function rememberStripeEvent(id: string): boolean {
+  if (!id) return false;
+  const now = Date.now();
+  // Sweep expired entries opportunistically.
+  if (RECENT_STRIPE_EVENTS.size > STRIPE_DEDUPE_MAX) {
+    for (const [k, ts] of RECENT_STRIPE_EVENTS) {
+      if (now - ts > STRIPE_DEDUPE_WINDOW_MS) RECENT_STRIPE_EVENTS.delete(k);
+      if (RECENT_STRIPE_EVENTS.size <= STRIPE_DEDUPE_MAX / 2) break;
+    }
+  }
+  const prev = RECENT_STRIPE_EVENTS.get(id);
+  if (prev && now - prev < STRIPE_DEDUPE_WINDOW_MS) return true;
+  RECENT_STRIPE_EVENTS.set(id, now);
+  return false;
+}
+
 function normalizeStatus(s: string): 'ACTIVE' | 'PAST_DUE' | 'PAUSED' {
   const u = String(s || '').toUpperCase();
   if (u === 'PAST_DUE' || u === 'PAUSED') return u as any;
@@ -37,7 +58,16 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
   try {
     event = stripe.webhooks.constructEvent(raw, sig, env.stripeWebhookSecret);
   } catch (err: any) {
-    return res.status(400).json({ error: `invalid signature: ${String(err?.message || err)}` });
+    // Log full detail server-side; never echo signature/parser internals to caller.
+    console.warn('[stripe] webhook signature verification failed', err?.message || err);
+    return res.status(400).json({ error: 'invalid signature' });
+  }
+
+  // Best-effort in-process idempotency to absorb Stripe retries within a short window.
+  // For full cross-instance idempotency, add a dedicated `processed_stripe_events`
+  // table keyed by event.id with a TTL.
+  if (rememberStripeEvent(event.id)) {
+    return res.status(200).json({ received: true, duplicate: true });
   }
 
   try {

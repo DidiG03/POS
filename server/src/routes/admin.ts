@@ -237,7 +237,8 @@ adminRouter.get('/tickets-by-user', requireAuth, async (req: AuthedRequest, res)
     if (startIso) where.createdAt.gte = new Date(startIso);
     if (endIso) where.createdAt.lte = new Date(endIso);
   }
-  const rows = await prisma.ticketLog.findMany({ where, orderBy: { createdAt: 'desc' } });
+  const limit = Math.min(2000, Math.max(1, Number(req.query.limit || 500)));
+  const rows = await prisma.ticketLog.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit });
   return res.status(200).json(
     rows.map((r: any) => ({
       id: r.id,

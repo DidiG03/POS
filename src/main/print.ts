@@ -1,4 +1,4 @@
-import type { SettingsDTO } from '@shared/ipc';
+import type { SettingsDTO, TicketPrintMeta } from '@shared/ipc';
 import os from 'node:os';
 import { BrowserWindow } from 'electron';
 import fs from 'node:fs/promises';
@@ -57,7 +57,7 @@ export type TicketPrintPayload = {
   note?: string | null;
   printedAtIso?: string; // optional, defaults to now
   userName?: string; // optional waiter name
-  meta?: any; // optional (payment metadata like discounts)
+  meta?: TicketPrintMeta;
 };
 
 export function buildEscposTicket(
@@ -500,15 +500,6 @@ export async function sendToCupsRawPrinter(opts: {
   return result;
 }
 
-export async function sendToPrinter(
-  ip: string,
-  port: number,
-  data: Buffer,
-): Promise<boolean> {
-  const r = await sendToPrinterVerbose(ip, port, data);
-  return r.ok;
-}
-
 export type PrinterErrorKind =
   | 'PAPER_OUT'
   | 'OFFLINE'
@@ -581,39 +572,78 @@ export async function sendToPrinterVerbose(
   ip: string,
   port: number,
   data: Buffer,
+  opts?: { forceProtocol?: 'RAW' | 'LPR' },
 ): Promise<{ ok: boolean; error?: string; code?: string }> {
   try {
-    if (port === 515 || process.env.PRINTER_PROTOCOL === 'LPR') {
+    // Protocol selection priority:
+    //   1. `opts.forceProtocol` (explicit caller choice — wins)
+    //   2. `port === 515` (the standard LPD/LPR port)
+    // The legacy `PRINTER_PROTOCOL=LPR` env var is no longer honoured
+    // here: now that the UI has explicit port + mode controls, that env
+    // could only ever silently override the user's choice (it kept
+    // forcing RAW 9100 traffic onto port 515 → ECONNREFUSED). Admins
+    // wanting LPR should set port 515 in the printer profile.
+    const useLpr =
+      opts?.forceProtocol === 'LPR' ||
+      (opts?.forceProtocol !== 'RAW' && port === 515);
+    if (useLpr) {
       const queue = process.env.PRINTER_LPR_QUEUE || 'printer';
-      const ok = await sendViaLpr(ip, 515, queue, data);
-      return ok ? { ok: true } : { ok: false, error: 'LPR send failed' };
+      // sendViaLpr now throws on failure; the outer try/catch wraps it
+      // into a structured `{ ok, error, code }` response so the caller
+      // gets the real socket error instead of a generic
+      // "LPR send failed".
+      await sendViaLpr(ip, port || 515, queue, data);
+      return { ok: true };
     }
 
     const { Socket } = await import('node:net');
     await new Promise<void>((resolve, reject) => {
       const socket = new Socket();
       const timeoutMs = Number(process.env.PRINTER_TIMEOUT_MS || 5000);
-      const onError = (err: any) => {
+      let settled = false;
+      const settle = (err?: any) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimer);
         try {
           socket.destroy();
         } catch (e) {
           void e;
         }
-        reject(err);
+        if (err) reject(err);
+        else resolve();
       };
+      const onError = (err: any) => settle(err);
+      // Bound the *initial connect* explicitly. Node's `socket.setTimeout`
+      // only fires on idle activity once the connection is established —
+      // it does NOT cap how long the kernel waits when the host is
+      // unreachable (EHOSTDOWN / EHOSTUNREACH can sit for 30–75 s on
+      // macOS / Linux). Without this hard timer, a Pay button printing
+      // to a powered-off printer would stall the whole UI for a minute.
+      const connectTimer = setTimeout(
+        () =>
+          onError(
+            Object.assign(new Error('Printer connection timeout'), {
+              code: 'ETIMEDOUT',
+            }),
+          ),
+        timeoutMs,
+      );
       socket.once('error', onError);
+      // Inactivity safety net for the (rare) case where the connection
+      // succeeds but the write hangs.
       socket.setTimeout(timeoutMs, () =>
         onError(
-          Object.assign(new Error('Printer connection timeout'), {
+          Object.assign(new Error('Printer write timeout'), {
             code: 'ETIMEDOUT',
           }),
         ),
       );
       socket.connect(port, ip, () => {
+        clearTimeout(connectTimer);
         socket.write(data, (err) => {
           if (err) return onError(err);
-          socket.end();
-          resolve();
+          socket.end(() => settle());
         });
       });
     });
@@ -625,77 +655,126 @@ export async function sendToPrinterVerbose(
   }
 }
 
-// Minimal LPR (RFC 1179) client to send a raw job via Windows LPD or LPR printers
+/**
+ * Minimal LPR (RFC 1179) client. The protocol is request/response:
+ *
+ *   1. send 0x02 <SP> queue <LF>           wait for ACK (single 0x00 byte)
+ *   2. send 0x02 <SP> size <SP> cfname <LF> control bytes <NUL>   wait ACK
+ *   3. send 0x03 <SP> size <SP> dfname <LF> data bytes <NUL>      wait ACK
+ *
+ * The previous implementation expressed this as nested write callbacks
+ * and could leak the socket if anything threw between callbacks (the
+ * destroy in the error handler ran, but only the FIRST callback chain
+ * registered an error listener — once we were N levels deep the cleanup
+ * was best-effort). The async/await rewrite makes the cleanup
+ * deterministic via try/finally and also returns more useful errors
+ * (timeout / refused / NACK / write error) instead of a generic
+ * "LPR send failed".
+ */
 async function sendViaLpr(
   ip: string,
   port: number,
   queue: string,
   data: Buffer,
-): Promise<boolean> {
+): Promise<void> {
   const { Socket } = await import('node:net');
   const host = os.hostname?.() || 'pos';
-  // Build a minimal control file
   const dfName = `dfA001${host}`;
   const cfName = `cfA001${host}`;
-  const cfLines = [
-    `H${host}`,
-    `Ppos`,
-    `Jticket`,
-    `U${dfName}`,
-    `Nticket.txt`,
-    `ldfA001${host}`,
-  ];
-  const control = Buffer.from(cfLines.join('\r\n') + '\r\n');
-  return await new Promise<boolean>((resolve, reject) => {
-    const s = new Socket();
-    const onError = (e: any) => {
-      try {
-        s.destroy();
-      } catch (err) {
-        void err;
-      }
-      reject(e);
-    };
-    s.once('error', onError);
-    s.setTimeout(5000, () => onError(new Error('LPR timeout')));
-    s.connect(port, ip, () => {
-      const write = (buf: Buffer, cb: () => void) => s.write(buf, cb);
-      const readAck = (cb: () => void) =>
-        s.once('data', (b) =>
-          b[0] === 0 ? cb() : onError(new Error('LPR NACK')),
-        );
-      // 02 <SP> queue <LF>
-      write(Buffer.from([0x02]), () => {});
-      write(Buffer.from(` ${queue}\n`), () => {
-        readAck(() => {
-          // control file: 02 <SP> size <SP> cfname <LF> <contents> <NUL>
-          write(Buffer.from(`\x02 ${control.length} ${cfName}\n`), () => {
-            write(control, () => {
-              write(Buffer.from([0x00]), () => {
-                readAck(() => {
-                  // data file: 03 <SP> size <SP> dfname <LF> <data> <NUL>
-                  write(Buffer.from(`\x03 ${data.length} ${dfName}\n`), () => {
-                    write(data, () => {
-                      write(Buffer.from([0x00]), () => {
-                        readAck(() => {
-                          try {
-                            s.end();
-                          } catch (e) {
-                            void e;
-                          }
-                          resolve(true);
-                        });
-                      });
-                    });
-                  });
-                });
-              });
-            });
-          });
-        });
-      });
-    });
+  const control = Buffer.from(
+    [
+      `H${host}`,
+      `Ppos`,
+      `Jticket`,
+      `U${dfName}`,
+      `Nticket.txt`,
+      `ldfA001${host}`,
+    ].join('\r\n') + '\r\n',
+  );
+
+  const socket = new Socket();
+  // Persistent error promise: if the socket errors at any point — even
+  // during a `socket.write` we're not awaiting — every step below will
+  // reject promptly via Promise.race.
+  let socketErr: Error | null = null;
+  socket.on('error', (e) => {
+    socketErr = e instanceof Error ? e : new Error(String(e));
   });
+
+  const guard = <T>(p: Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const check = setInterval(() => {
+        if (socketErr) {
+          clearInterval(check);
+          reject(socketErr);
+        }
+      }, 10);
+      p.then(
+        (v) => {
+          clearInterval(check);
+          resolve(v);
+        },
+        (e) => {
+          clearInterval(check);
+          reject(e);
+        },
+      );
+    });
+
+  const connect = () =>
+    guard(
+      new Promise<void>((resolve, reject) => {
+        const t = setTimeout(
+          () => reject(new Error('LPR connect timeout')),
+          5000,
+        );
+        socket.connect(port, ip, () => {
+          clearTimeout(t);
+          resolve();
+        });
+      }),
+    );
+
+  const write = (buf: Buffer) =>
+    guard(
+      new Promise<void>((resolve, reject) => {
+        socket.write(buf, (err) => (err ? reject(err) : resolve()));
+      }),
+    );
+
+  const readAck = () =>
+    guard(
+      new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('LPR ack timeout')), 5000);
+        socket.once('data', (b) => {
+          clearTimeout(t);
+          if (b[0] === 0) resolve();
+          else reject(new Error('LPR NACK'));
+        });
+      }),
+    );
+
+  try {
+    await connect();
+    // Step 1: announce the queue.
+    await write(Buffer.from(`\x02 ${queue}\n`));
+    await readAck();
+    // Step 2: control file.
+    await write(Buffer.from(`\x02 ${control.length} ${cfName}\n`));
+    await write(control);
+    await write(Buffer.from([0x00]));
+    await readAck();
+    // Step 3: data file.
+    await write(Buffer.from(`\x03 ${data.length} ${dfName}\n`));
+    await write(data);
+    await write(Buffer.from([0x00]));
+    await readAck();
+    socket.end();
+  } finally {
+    // Belt-and-braces: even if `socket.end()` was called above, destroy
+    // ensures the file descriptor is released immediately on any throw.
+    socket.destroy();
+  }
 }
 
 function padRight(s: string, len: number): string {

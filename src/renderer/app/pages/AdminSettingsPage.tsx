@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { UpdateStatusDTO } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
+import FloorCanvas from '../components/FloorCanvas';
+import { useSessionStore } from '../../stores/session';
+import { useAdminSessionStore } from '../../stores/adminSession';
 
 type MemoryStats = {
   current: { heapUsed: number; rss: number; timestamp: number };
@@ -69,7 +72,10 @@ function IconWrap({ children }: { children: any }) {
 }
 
 function SectionIcon({ k }: { k: Section['key'] }) {
-  const common = { className: 'w-4 h-4 opacity-90', 'aria-hidden': true } as any;
+  const common = {
+    className: 'w-4 h-4 opacity-90',
+    'aria-hidden': true,
+  } as any;
   if (k === 'printer')
     return (
       <IconWrap>
@@ -319,7 +325,7 @@ export default function AdminSettingsPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <SectionIcon k={s.key} />
-                  <span>{s.label}</span>
+                    <span>{s.label}</span>
                   </div>
                   <ChevronRight />
                 </div>
@@ -622,7 +628,7 @@ function BillingSettings() {
           <div className="font-semibold">Billing</div>
           <div className="text-xs opacity-70">
             Manage your POS subscription and keep the system active.
-        </div>
+          </div>
         </div>
         <button
           className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
@@ -726,6 +732,12 @@ function PreferencesSettings() {
   const [requireMgrVoid, setRequireMgrVoid] = useState(true);
   const [requireMgrServiceRemoval, setRequireMgrServiceRemoval] =
     useState(true);
+  const [autoCloseShiftEnabled, setAutoCloseShiftEnabled] = useState(false);
+  const [autoCloseShiftHours, setAutoCloseShiftHours] = useState<12 | 24>(12);
+  const [reservationNoShowEnabled, setReservationNoShowEnabled] =
+    useState(false);
+  const [reservationNoShowMinutes, setReservationNoShowMinutes] =
+    useState<number>(20);
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
@@ -750,6 +762,19 @@ function PreferencesSettings() {
         setRequireMgrServiceRemoval(
           approvals.requireManagerPinForServiceChargeRemoval !== false,
         );
+        const acs = (s as any)?.preferences?.autoCloseShift || {};
+        setAutoCloseShiftEnabled(Boolean(acs.enabled));
+        const h = Number(acs.hours);
+        setAutoCloseShiftHours(h === 24 ? 24 : 12);
+        const rns = (s as any)?.preferences?.reservationAutoNoShow || {};
+        setReservationNoShowEnabled(Boolean(rns.enabled));
+        const noShowMin = Number(rns.minutes);
+        // Stored value is clamped to a safe range on save, but be defensive here.
+        setReservationNoShowMinutes(
+          Number.isFinite(noShowMin) && noShowMin >= 5 && noShowMin <= 240
+            ? Math.round(noShowMin)
+            : 20,
+        );
       } finally {
         setLoading(false);
       }
@@ -770,6 +795,17 @@ function PreferencesSettings() {
       setStatus('Invalid amount.');
       return;
     }
+    const noShowMins = Math.max(
+      5,
+      Math.min(240, Math.round(Number(reservationNoShowMinutes) || 0)),
+    );
+    if (
+      reservationNoShowEnabled &&
+      (!Number.isFinite(noShowMins) || noShowMins < 5)
+    ) {
+      setStatus('No-show grace must be at least 5 minutes.');
+      return;
+    }
     await window.api.settings.update({
       currency: cur,
       security: {
@@ -782,6 +818,14 @@ function PreferencesSettings() {
       preferences: {
         vatEnabled,
         serviceCharge: { enabled, mode, value: n },
+        autoCloseShift: {
+          enabled: autoCloseShiftEnabled,
+          hours: autoCloseShiftHours,
+        },
+        reservationAutoNoShow: {
+          enabled: reservationNoShowEnabled,
+          minutes: noShowMins,
+        },
       },
     } as any);
     setStatus('Saved.');
@@ -801,19 +845,6 @@ function PreferencesSettings() {
               3-letter ISO code like EUR, QAR, USD.
             </div>
             <div className="grid grid-cols-3 gap-2">
-              <input
-                className="col-span-2 bg-gray-700 rounded px-3 py-2 uppercase"
-                value={currency}
-                onChange={(e) =>
-                  setCurrency(
-                    e.target.value
-                      .toUpperCase()
-                      .replace(/[^A-Z]/g, '')
-                      .slice(0, 3),
-                  )
-                }
-                placeholder="EUR"
-              />
               <select
                 className="bg-gray-700 rounded px-3 py-2"
                 value={currency}
@@ -841,7 +872,7 @@ function PreferencesSettings() {
                 <div>
                   <div className="text-sm">
                     Require manager PIN for discounts
-                </div>
+                  </div>
                   <div className="text-xs opacity-70">
                     Any discount at payment requires approval.
                   </div>
@@ -857,7 +888,7 @@ function PreferencesSettings() {
                   <div className="text-sm">Require manager PIN for voids</div>
                   <div className="text-xs opacity-70">
                     Voiding items/tickets requires approval.
-                </div>
+                  </div>
                 </div>
                 <input
                   type="checkbox"
@@ -869,7 +900,7 @@ function PreferencesSettings() {
                 <div>
                   <div className="text-sm">
                     Require manager PIN to remove service charge
-                </div>
+                  </div>
                   <div className="text-xs opacity-70">
                     Removing service charge on a ticket requires approval.
                   </div>
@@ -899,6 +930,115 @@ function PreferencesSettings() {
                 onChange={(e) => setVatEnabled(e.target.checked)}
               />
             </label>
+          </div>
+          <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
+            <div className="font-medium mb-1">Auto-close waiter shifts</div>
+            <div className="text-xs opacity-70 mb-3">
+              Automatically close a waiter&apos;s shift if it stays open for too
+              long. Shifts are only auto-closed when the waiter has{' '}
+              <span className="opacity-90">no open tickets</span> — open tickets
+              always block the auto-close.
+            </div>
+            <label className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <div className="text-sm">Enable auto-close</div>
+                <div className="text-xs opacity-70">
+                  Runs in the background every 15 minutes.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={autoCloseShiftEnabled}
+                onChange={(e) => setAutoCloseShiftEnabled(e.target.checked)}
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={!autoCloseShiftEnabled}
+                onClick={() => setAutoCloseShiftHours(12)}
+                className={`px-3 py-2 rounded ${
+                  autoCloseShiftHours === 12
+                    ? 'bg-blue-600'
+                    : 'bg-gray-700 hover:bg-gray-600'
+                } ${!autoCloseShiftEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                12 hours
+              </button>
+              <button
+                type="button"
+                disabled={!autoCloseShiftEnabled}
+                onClick={() => setAutoCloseShiftHours(24)}
+                className={`px-3 py-2 rounded ${
+                  autoCloseShiftHours === 24
+                    ? 'bg-blue-600'
+                    : 'bg-gray-700 hover:bg-gray-600'
+                } ${!autoCloseShiftEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                24 hours
+              </button>
+            </div>
+          </div>
+          <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
+            <div className="font-medium mb-1">Auto no-show reservations</div>
+            <div className="text-xs opacity-70 mb-3">
+              Automatically mark a <span className="opacity-90">BOOKED</span>{' '}
+              reservation as <span className="opacity-90">NO SHOW</span> after a
+              grace period past its start time. Frees the table on the
+              reservation floor while keeping the record on the List view. Only
+              affects reservations that haven&apos;t been seated, cancelled or
+              completed.
+            </div>
+            <label className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <div className="text-sm">Enable auto no-show</div>
+                <div className="text-xs opacity-70">
+                  Runs in the background every minute.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={reservationNoShowEnabled}
+                onChange={(e) => setReservationNoShowEnabled(e.target.checked)}
+              />
+            </label>
+            <div className="grid grid-cols-3 gap-2 mb-2">
+              {[10, 15, 20, 30, 45, 60].map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  disabled={!reservationNoShowEnabled}
+                  onClick={() => setReservationNoShowMinutes(p)}
+                  className={`px-3 py-2 rounded text-sm ${
+                    reservationNoShowMinutes === p
+                      ? 'bg-blue-600'
+                      : 'bg-gray-700 hover:bg-gray-600'
+                  } ${!reservationNoShowEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  {p} min
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center justify-between gap-3 mt-2">
+              <div className="text-sm">Custom grace (minutes)</div>
+              <input
+                type="number"
+                min={5}
+                max={240}
+                step={5}
+                disabled={!reservationNoShowEnabled}
+                value={reservationNoShowMinutes}
+                onChange={(e) =>
+                  setReservationNoShowMinutes(
+                    Math.max(5, Math.min(240, Number(e.target.value) || 0)),
+                  )
+                }
+                className={`w-24 bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-right ${!reservationNoShowEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+              />
+            </label>
+            <div className="text-[11px] opacity-60 mt-1">
+              Range: 5–240 minutes.
+            </div>
           </div>
           <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
             <div className="font-medium mb-1">Service charge</div>
@@ -1130,7 +1270,9 @@ function BackupsSettings() {
                       setBusy(`upload:${b.name}`);
                       setStatus(null);
                       try {
-                        const r = await (window.api as any).backups.uploadToCloud({ name: b.name });
+                        const r = await (
+                          window.api as any
+                        ).backups.uploadToCloud({ name: b.name });
                         if (!r?.ok) setStatus(r?.error || 'Upload failed');
                         else setStatus(`Uploaded ${b.name} to cloud.`);
                       } catch (e: any) {
@@ -1147,31 +1289,31 @@ function BackupsSettings() {
                   className="px-3 py-2 rounded bg-rose-700 hover:bg-rose-800 disabled:opacity-60"
                   disabled={busy != null}
                   onClick={async () => {
-                  const ok = confirm(
-                    `Restore backup ${b.name}?\n\nThis will overwrite the current database and restart the app.`,
-                  );
-                  if (!ok) return;
-                  setBusy(`restore:${b.name}`);
-                  setStatus(null);
-                  try {
-                    const r = await (window.api as any).backups.restore({
-                      name: b.name,
-                    });
-                    if (!r?.ok) setStatus(r?.error || 'Restore failed');
-                    else if (r?.devRestartRequired)
-                      setStatus(
-                        'Restored. App will close now (dev mode). Please run "npm run dev" again.',
-                      );
-                    else setStatus('Restoring…');
-                  } catch (e: any) {
-                    setStatus(e?.message || 'Restore failed');
-                  }                   finally {
-                    setBusy(null);
-                  }
-                }}
-              >
-                Restore
-              </button>
+                    const ok = confirm(
+                      `Restore backup ${b.name}?\n\nThis will overwrite the current database and restart the app.`,
+                    );
+                    if (!ok) return;
+                    setBusy(`restore:${b.name}`);
+                    setStatus(null);
+                    try {
+                      const r = await (window.api as any).backups.restore({
+                        name: b.name,
+                      });
+                      if (!r?.ok) setStatus(r?.error || 'Restore failed');
+                      else if (r?.devRestartRequired)
+                        setStatus(
+                          'Restored. App will close now (dev mode). Please run "npm run dev" again.',
+                        );
+                      else setStatus('Restoring…');
+                    } catch (e: any) {
+                      setStatus(e?.message || 'Restore failed');
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  Restore
+                </button>
               </div>
             </div>
           ))}
@@ -1349,8 +1491,18 @@ function AddRouteModal({
             onClick={onClose}
             aria-label="Close"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-              <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="w-4 h-4"
+            >
+              <path
+                d="M6 6l12 12M18 6 6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
             </svg>
           </button>
         </div>
@@ -1376,7 +1528,9 @@ function AddRouteModal({
             <select
               className="w-full bg-gray-700 rounded px-3 py-2"
               value={printerId}
-              onChange={(e) => setPrinterId(String(e.target.value || 'default'))}
+              onChange={(e) =>
+                setPrinterId(String(e.target.value || 'default'))
+              }
               disabled={!routingEnabled}
             >
               {enabledProfiles.map((p) => (
@@ -1435,9 +1589,9 @@ function PrinterSettings() {
   // Single fallback printer for ORDER items that don't match a category route.
   const [fallbackPrinterId, setFallbackPrinterId] = useState<string>('default');
   // Category routing (optional). Key is categoryId string (e.g. "12") for stability.
-  const [categoryRouting, setCategoryRouting] = useState<Record<string, string>>(
-    {},
-  );
+  const [categoryRouting, setCategoryRouting] = useState<
+    Record<string, string>
+  >({});
   const [menuCategories, setMenuCategories] = useState<
     Array<{ id: number; name: string }>
   >([]);
@@ -1453,9 +1607,10 @@ function PrinterSettings() {
   const [status, setStatus] = useState<string | null>(null);
 
   const ensureProfile = (p: any, idx: number): Profile => {
-    const id = String(
-      p?.id || `p${idx}-${Math.random().toString(16).slice(2, 8)}`,
-    );
+    // CORRECTNESS: previously used Math.random() which produced a different id
+    // on every render — that broke React keys and re-mounted list rows on
+    // every save/transform, dropping focus and causing reconciliation churn.
+    const id = String(p?.id || `p${idx}`);
     const mode: any =
       p?.mode ||
       (p?.serialPath ? 'SERIAL' : p?.deviceName ? 'SYSTEM' : 'NETWORK');
@@ -1485,8 +1640,8 @@ function PrinterSettings() {
       const legacy: any = (s as any)?.printer || {};
       const arr: any[] =
         Array.isArray((s as any)?.printers) && (s as any).printers.length
-        ? (s as any).printers
-        : legacy && Object.keys(legacy).length
+          ? (s as any).printers
+          : legacy && Object.keys(legacy).length
             ? [
                 {
                   id: 'default',
@@ -1495,13 +1650,15 @@ function PrinterSettings() {
                   ...legacy,
                 },
               ]
-          : [];
+            : [];
       setProfiles(arr.map((p, idx) => ensureProfile(p, idx)));
 
       const r: any = (s as any)?.printerRouting || {};
       setRoutingEnabled(Boolean(r?.enabled));
       setReceiptPrinterId(String(r?.receiptPrinterId || 'default'));
-      setFallbackPrinterId(String(r?.fallbackPrinterId || r?.station?.ALL || 'default'));
+      setFallbackPrinterId(
+        String(r?.fallbackPrinterId || r?.station?.ALL || 'default'),
+      );
       // Category routing: allow routing by the *actual* menu categories.
       // Storage format: mapping of categoryId (string) -> printerProfileId.
       const rawCats = (await window.api.menu
@@ -1578,14 +1735,20 @@ function PrinterSettings() {
   }, [menuCategories]);
 
   const routedEntries = useMemo(() => {
-    const out: Array<{ key: string; categoryId: number | null; label: string; printerId: string }> = [];
+    const out: Array<{
+      key: string;
+      categoryId: number | null;
+      label: string;
+      printerId: string;
+    }> = [];
     for (const [k, v] of Object.entries(categoryRouting || {})) {
       const printerId = String(v || '').trim();
       if (!printerId) continue;
       const categoryId = /^\d+$/.test(k) ? Number(k) : null;
       const label =
         categoryId != null
-          ? categoryNameById.get(categoryId) || `Category #${categoryId} (missing)`
+          ? categoryNameById.get(categoryId) ||
+            `Category #${categoryId} (missing)`
           : `Category key: ${k}`;
       out.push({ key: k, categoryId, label, printerId });
     }
@@ -1610,7 +1773,7 @@ function PrinterSettings() {
   return (
     <div>
       <div className="text-lg font-semibold mb-3">Printers</div>
-      
+
       {status && <div className="text-xs text-amber-200 mb-3">{status}</div>}
       <div className="bg-gray-800/40 border border-gray-700 rounded p-3 mb-4">
         <div className="flex items-center justify-between">
@@ -1625,7 +1788,8 @@ function PrinterSettings() {
           </button>
         </div>
         <div className="text-xs opacity-70 mb-3">
-          Enable routing and optionally route categories to specific printers. Categories not routed will print to the fallback printer.
+          Enable routing and optionally route categories to specific printers.
+          Categories not routed will print to the fallback printer.
         </div>
 
         <label className="flex items-center justify-between gap-3 mb-3">
@@ -1665,7 +1829,7 @@ function PrinterSettings() {
         {routedEntries.length === 0 ? (
           <div className="text-xs opacity-70">
             No category routes yet. Station routing will be used.
-        </div>
+          </div>
         ) : (
           <div className="divide-y divide-gray-700 border border-gray-700 rounded overflow-hidden">
             {routedEntries.map((r) => (
@@ -1674,10 +1838,11 @@ function PrinterSettings() {
                   <div className="text-sm font-medium truncate">{r.label}</div>
                   {r.categoryId == null && (
                     <div className="text-xs opacity-60">
-                      Unknown key stored in settings. You can remove it if not needed.
-      </div>
+                      Unknown key stored in settings. You can remove it if not
+                      needed.
+                    </div>
                   )}
-        </div>
+                </div>
                 <select
                   className="bg-gray-700 rounded px-3 py-2"
                   value={r.printerId}
@@ -1719,7 +1884,7 @@ function PrinterSettings() {
                     />
                   </svg>
                 </button>
-        </div>
+              </div>
             ))}
           </div>
         )}
@@ -1733,7 +1898,10 @@ function PrinterSettings() {
           onAdd={(catId, printerId) => {
             const cid = String(catId || '').trim();
             if (!cid) return;
-            setCategoryRouting((m) => ({ ...(m || {}), [cid]: String(printerId || 'default') }));
+            setCategoryRouting((m) => ({
+              ...(m || {}),
+              [cid]: String(printerId || 'default'),
+            }));
             setShowAddRouteModal(false);
           }}
           onClose={() => setShowAddRouteModal(false)}
@@ -1848,6 +2016,51 @@ function PrinterProfileCard({
   onRefreshSerial: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Local test-print feedback. We deliberately keep it in the card (not the
+  // parent) so each profile has its own independent status line.
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    msg: string;
+  } | null>(null);
+
+  async function runTestPrint() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const fn = (window.api.settings as any).testPrintProfile as
+        | ((
+            profile: PrinterProfile,
+          ) => Promise<{ ok: boolean; error?: string }>)
+        | undefined;
+      if (typeof fn !== 'function') {
+        setTestResult({
+          ok: false,
+          msg: 'Test-print not available in this build. Restart the app after upgrading.',
+        });
+        return;
+      }
+      const r = await fn(p);
+      if (r?.ok) {
+        setTestResult({
+          ok: true,
+          msg: 'Test page sent — check the printer.',
+        });
+      } else {
+        setTestResult({
+          ok: false,
+          msg: r?.error || 'Test print failed.',
+        });
+      }
+    } catch (e: any) {
+      setTestResult({
+        ok: false,
+        msg: String(e?.message || e || 'Test print failed.'),
+      });
+    } finally {
+      setTesting(false);
+    }
+  }
 
   const mode = p.mode || 'NETWORK';
   const modeLabel =
@@ -2080,6 +2293,39 @@ function PrinterProfileCard({
               </div>
             </div>
           )}
+
+          {/* Test print: sends a "Hello, world!" ESC/POS slip directly to the
+              CURRENT (in-memory) profile so admins can validate config
+              before saving. Disabled when the profile lacks a destination. */}
+          <div className="pt-2 border-t border-gray-700/50">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                disabled={
+                  testing ||
+                  (mode === 'NETWORK' && !p.ip) ||
+                  (mode === 'SERIAL' && !p.serialPath)
+                }
+                className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-semibold disabled:opacity-50"
+                onClick={runTestPrint}
+              >
+                {testing ? 'Printing…' : 'Test print'}
+              </button>
+              <span className="text-[11px] opacity-60">
+                Sends a Hello-World slip with the values currently shown above
+                (no save needed).
+              </span>
+            </div>
+            {testResult && (
+              <div
+                className={`mt-2 text-xs ${
+                  testResult.ok ? 'text-emerald-300' : 'text-rose-300'
+                }`}
+              >
+                {testResult.msg}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -2088,6 +2334,10 @@ function PrinterProfileCard({
 
 function AreasSettings() {
   const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
+  const [editingArea, setEditingArea] = useState<{
+    name: string;
+    count: number;
+  } | null>(null);
   useEffect(() => {
     (async () => {
       const s = await window.api.settings.get();
@@ -2108,11 +2358,17 @@ function AreasSettings() {
         </button>
       </div>
 
+      <div className="text-xs opacity-70 mb-3">
+        The floor layout is shared across every waiter and host device. Use{' '}
+        <span className="text-emerald-300">Edit layout</span> to arrange tables
+        and shapes — your changes appear instantly on every connected device.
+      </div>
+
       <div className="space-y-2">
         {areas.map((a, idx) => (
-          <div key={idx} className="flex items-center gap-3">
+          <div key={idx} className="flex items-center gap-3 flex-wrap">
             <input
-              className="bg-gray-700 rounded px-3 py-2 flex-1"
+              className="bg-gray-700 rounded px-3 py-2 flex-1 min-w-0"
               value={a.name}
               onChange={(e) =>
                 setAreas((arr) =>
@@ -2122,19 +2378,21 @@ function AreasSettings() {
                 )
               }
             />
-            <input
-              className="w-24 bg-gray-700 rounded px-3 py-2"
-              type="number"
-              min={0}
-              value={a.count}
-              onChange={(e) =>
-                setAreas((arr) =>
-                  arr.map((x, i) =>
-                    i === idx ? { ...x, count: Number(e.target.value) } : x,
-                  ),
-                )
-              }
-            />
+            <button
+              className="px-3 py-2 rounded bg-blue-700 hover:bg-blue-600 text-sm whitespace-nowrap"
+              type="button"
+              onClick={() => {
+                if (!a.name) {
+                  toast.error(
+                    'Name the area first, then save it, before editing the layout.',
+                  );
+                  return;
+                }
+                setEditingArea({ name: a.name, count: a.count });
+              }}
+            >
+              Edit layout
+            </button>
             <button
               className="w-10 h-10 rounded bg-rose-700 hover:bg-rose-800 active:bg-rose-900 flex items-center justify-center"
               onClick={() => setAreas((arr) => arr.filter((_, i) => i !== idx))}
@@ -2163,10 +2421,80 @@ function AreasSettings() {
             className="mt-2 px-3 py-2 rounded bg-emerald-700 w-full"
             onClick={async () => {
               await window.api.settings.update({ tableAreas: areas });
+              toast.success('Table areas saved.');
             }}
           >
             Save Areas
           </button>
+        </div>
+      </div>
+
+      {editingArea && (
+        <AreaLayoutEditorModal
+          area={editingArea.name}
+          defaultCount={editingArea.count || 8}
+          onClose={() => setEditingArea(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal that hosts the FloorCanvas in editable mode for a single area.
+// The canvas writes to the shared `layout:global:<area>` key on the
+// server; every other connected client receives a `layout:changed`
+// broadcast and refetches automatically — see `broadcastLayoutChanged`
+// in src/main/services/realtime.ts.
+function AreaLayoutEditorModal({
+  area,
+  defaultCount,
+  onClose,
+}: {
+  area: string;
+  defaultCount: number;
+  onClose: () => void;
+}) {
+  // FloorCanvas needs *some* userId for legacy IPC compatibility but the
+  // server now ignores it (the layout is shared). Use the admin's id if
+  // available, otherwise the current POS user's, otherwise 0.
+  const adminUser = useAdminSessionStore((s) => s.user);
+  const posUser = useSessionStore((s) => s.user);
+  const userId = Number(adminUser?.id || posUser?.id || 0);
+  const [editable, setEditable] = useState(true);
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-3 sm:p-6"
+      onClick={onClose}
+    >
+      <div
+        className="bg-gray-800 border border-gray-700 rounded-lg shadow-2xl w-full max-w-6xl flex flex-col max-h-[92vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-3">
+          <div className="text-base font-semibold flex-1 truncate">
+            Layout · {area}
+          </div>
+          <button
+            type="button"
+            className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+            onClick={onClose}
+          >
+            Done
+          </button>
+        </div>
+        <div className="p-3 sm:p-4 overflow-auto">
+          <FloorCanvas
+            userId={userId}
+            area={area}
+            editable={editable}
+            onEditableChange={setEditable}
+            defaultCount={defaultCount}
+          />
+          <div className="mt-3 text-xs opacity-70">
+            Changes save to the shared layout when you press
+            <span className="mx-1 text-blue-300">Save layout</span>and appear
+            immediately on every waiter and host device.
+          </div>
         </div>
       </div>
     </div>
@@ -2458,7 +2786,7 @@ function LanSettings() {
     };
     return (
       (list || [])
-      .filter(Boolean)
+        .filter(Boolean)
         .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0] || ''
     );
   }
@@ -2604,6 +2932,7 @@ function MemoryMonitorSection() {
 
   useEffect(() => {
     let cancelled = false;
+    let interval: number | null = null;
     const loadStats = async () => {
       try {
         const data = await window.api.admin.getMemoryStats();
@@ -2613,11 +2942,31 @@ function MemoryMonitorSection() {
       }
     };
 
-    loadStats();
-    const interval = setInterval(loadStats, 5000); // Refresh every 5 seconds
+    const start = () => {
+      if (interval != null) return;
+      loadStats();
+      interval = window.setInterval(loadStats, 5000);
+    };
+    const stop = () => {
+      if (interval != null) {
+        window.clearInterval(interval);
+        interval = null;
+      }
+    };
+
+    // PERF: pause polling when the admin tab is hidden so we don't spend
+    // CPU / IPC bandwidth refreshing memory stats nobody is looking at.
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') stop();
+      else start();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    if (document.visibilityState !== 'hidden') start();
+
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+      stop();
     };
   }, []);
 
@@ -2625,9 +2974,13 @@ function MemoryMonitorSection() {
     setExporting(true);
     try {
       const path = await window.api.admin.exportMemorySnapshot();
-      toast.success(`Memory snapshot exported to: ${path}`, { title: 'Exported' });
+      toast.success(`Memory snapshot exported to: ${path}`, {
+        title: 'Exported',
+      });
     } catch (e: any) {
-      toast.error(`Failed to export: ${e?.message || 'Unknown error'}`, { title: 'Export failed' });
+      toast.error(`Failed to export: ${e?.message || 'Unknown error'}`, {
+        title: 'Export failed',
+      });
     } finally {
       setExporting(false);
     }

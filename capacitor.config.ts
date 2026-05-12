@@ -11,7 +11,17 @@ const config: CapacitorConfig = {
   webDir: 'dist/mobile',
   bundledWebRuntime: false,
   ios: {
-    contentInset: 'always',
+    // Let the WebView extend edge-to-edge (under the notch and home
+    // indicator) so the gray-900 page background paints the entire screen.
+    // The CSS in src/renderer/styles/index.css exposes
+    // `env(safe-area-inset-*)` as utility classes (.safe-pt, .safe-pb, …)
+    // so individual screens can still avoid drawing critical content
+    // behind the status bar / home indicator.
+    contentInset: 'never',
+    // Match the WebView's native background so any momentary gap during
+    // rotation, keyboard show/hide or splash transition is also dark
+    // (otherwise iOS draws white behind the WebView).
+    backgroundColor: '#111827',
     // Allow plain http to LAN backends (self-signed / local IPs).
     // For production you should ship a valid HTTPS endpoint and remove this.
     limitsNavigationsToAppBoundDomains: false,

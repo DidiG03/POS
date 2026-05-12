@@ -106,7 +106,15 @@ export default function ClockPage() {
               setErr(null);
               setBusy('out');
               try {
-                await window.api.shifts.clockOut(user.id);
+                const r: any = await window.api.shifts.clockOut(user.id);
+                // Server may now respond with a structured rejection
+                // when the waiter still owns open tables — surface a
+                // clear message and abort the logout so they don't
+                // walk away with their tables stranded.
+                if (r && typeof r === 'object' && r.ok === false) {
+                  setErr(String(r.error || 'You still have open tables.'));
+                  return;
+                }
                 // After clock out, log them out so they can't access anything else.
                 setUser(null);
                 navigate('/');

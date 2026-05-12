@@ -1,6 +1,6 @@
 /**
  * Memory monitoring utility for detecting memory leaks
- * 
+ *
  * This service helps identify memory leaks by:
  * - Tracking memory usage over time
  * - Taking heap snapshots
@@ -74,7 +74,7 @@ export function startMemoryMonitoring(intervalMs = 60000): void {
     const snapshot = takeMemorySnapshot();
     const memMB = (snapshot.heapUsed / 1024 / 1024).toFixed(2);
     const rssMB = (snapshot.rss / 1024 / 1024).toFixed(2);
-    
+
     console.log(`[Memory Monitor] Heap: ${memMB}MB | RSS: ${rssMB}MB`);
 
     // Check for potential memory leak (if memory grew > 50MB in last 10 snapshots)
@@ -87,17 +87,25 @@ export function startMemoryMonitoring(intervalMs = 60000): void {
 
       if (growthMB > 50) {
         console.warn(
-          `[Memory Monitor] ⚠️ Potential memory leak detected! Growth: ${growthMB.toFixed(2)}MB over last 10 checks`
+          `[Memory Monitor] ⚠️ Potential memory leak detected! Growth: ${growthMB.toFixed(2)}MB over last 10 checks`,
         );
-        captureException(new Error('Potential memory leak detected'), {
-          memoryGrowth: growthMB,
-          currentHeap: newest.heapUsed,
-          previousHeap: oldest.heapUsed,
-        });
+        // Throttle Sentry: at most one capture per hour to avoid event spam
+        // when memory legitimately stays high (heavy report exports, etc.).
+        const nowTs = Date.now();
+        if (nowTs - lastLeakReportAt > 60 * 60 * 1000) {
+          lastLeakReportAt = nowTs;
+          captureException(new Error('Potential memory leak detected'), {
+            memoryGrowth: growthMB,
+            currentHeap: newest.heapUsed,
+            previousHeap: oldest.heapUsed,
+          });
+        }
       }
     }
   }, intervalMs);
 }
+
+let lastLeakReportAt = 0;
 
 /**
  * Stop memory monitoring
@@ -121,15 +129,17 @@ export function getMemoryStats(): {
   peak: { heapUsed: number; rss: number; timestamp: number };
   trend: 'increasing' | 'decreasing' | 'stable';
 } {
-  const current = memorySnapshots[memorySnapshots.length - 1] || takeMemorySnapshot();
+  const current =
+    memorySnapshots[memorySnapshots.length - 1] || takeMemorySnapshot();
   const recent = memorySnapshots.slice(-20); // Last 20 snapshots
 
-  const avgHeap = recent.reduce((sum, s) => sum + s.heapUsed, 0) / recent.length;
+  const avgHeap =
+    recent.reduce((sum, s) => sum + s.heapUsed, 0) / recent.length;
   const avgRss = recent.reduce((sum, s) => sum + s.rss, 0) / recent.length;
 
   const peak = memorySnapshots.reduce(
     (max, s) => (s.heapUsed > max.heapUsed ? s : max),
-    memorySnapshots[0] || current
+    memorySnapshots[0] || current,
   );
 
   // Determine trend (compare last 5 vs previous 5)
@@ -185,9 +195,9 @@ export async function exportMemorySnapshot(filename?: string): Promise<string> {
         })),
       },
       null,
-      2
+      2,
     ),
-    'utf-8'
+    'utf-8',
   );
 
   console.log(`[Memory Monitor] Snapshot exported to: ${filePath}`);
@@ -205,7 +215,9 @@ export function clearMemorySnapshots(): void {
 /**
  * Get memory usage as human-readable string
  */
-export function formatMemoryUsage(usage: NodeJS.MemoryUsage = getMemoryUsage()): string {
+export function formatMemoryUsage(
+  usage: NodeJS.MemoryUsage = getMemoryUsage(),
+): string {
   return {
     heapUsed: `${(usage.heapUsed / 1024 / 1024).toFixed(2)} MB`,
     heapTotal: `${(usage.heapTotal / 1024 / 1024).toFixed(2)} MB`,

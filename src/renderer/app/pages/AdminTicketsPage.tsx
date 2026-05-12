@@ -3,7 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { computeDateRange, type DateRangePreset } from '@shared/dateRange';
 
-type Row = { id: number; name: string; active: boolean; tickets: number };
+type Row = {
+  id: number;
+  name: string;
+  active: boolean;
+  tickets: number;
+  transfersIn: number;
+};
 
 export default function AdminTicketsPage() {
   const navigate = useNavigate();
@@ -19,7 +25,11 @@ export default function AdminTicketsPage() {
       setRows([]);
       return;
     }
-    const { startIso, endIso } = computeDateRange(range, customStart, customEnd);
+    const { startIso, endIso } = computeDateRange(
+      range,
+      customStart,
+      customEnd,
+    );
     const data = await window.api.admin.listTicketCounts({ startIso, endIso });
     setRows(data);
   }
@@ -54,9 +64,21 @@ export default function AdminTicketsPage() {
         </select>
         {range === 'custom' && (
           <>
-            <input type="date" className="bg-gray-700 rounded px-3 py-2" value={customStart} onChange={(e) => setCustomStart(e.target.value)} />
-            <input type="date" className="bg-gray-700 rounded px-3 py-2" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} />
-            <button className="px-3 py-2 rounded bg-gray-700" onClick={load}>Apply</button>
+            <input
+              type="date"
+              className="bg-gray-700 rounded px-3 py-2"
+              value={customStart}
+              onChange={(e) => setCustomStart(e.target.value)}
+            />
+            <input
+              type="date"
+              className="bg-gray-700 rounded px-3 py-2"
+              value={customEnd}
+              onChange={(e) => setCustomEnd(e.target.value)}
+            />
+            <button className="px-3 py-2 rounded bg-gray-700" onClick={load}>
+              Apply
+            </button>
           </>
         )}
       </div>
@@ -68,16 +90,32 @@ export default function AdminTicketsPage() {
               key={r.id}
               className="w-full bg-gray-700 rounded px-3 py-2 flex items-center justify-between"
               onClick={async () => {
-                const { startIso, endIso } = computeDateRange(range, customStart, customEnd);
-                navigate(`/admin/tickets/${r.id}?start=${encodeURIComponent(startIso || '')}&end=${encodeURIComponent(endIso || '')}&name=${encodeURIComponent(r.name)}`);
+                const { startIso, endIso } = computeDateRange(
+                  range,
+                  customStart,
+                  customEnd,
+                );
+                navigate(
+                  `/admin/tickets/${r.id}?start=${encodeURIComponent(startIso || '')}&end=${encodeURIComponent(endIso || '')}&name=${encodeURIComponent(r.name)}`,
+                );
               }}
             >
               <div className="flex items-center gap-3">
-                <span className={`inline-block w-2 h-2 rounded-full ${r.active ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                <span
+                  className={`inline-block w-2 h-2 rounded-full ${r.active ? 'bg-emerald-500' : 'bg-gray-400'}`}
+                />
                 <span>{r.name}</span>
               </div>
               <div className="flex items-center gap-2 text-sm opacity-80">
                 <span>{r.tickets} tickets</span>
+                {r.transfersIn > 0 && (
+                  <span
+                    className="inline-flex items-center text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border bg-indigo-900/60 border-indigo-700 text-indigo-100"
+                    title={`${r.transfersIn} ticket${r.transfersIn === 1 ? '' : 's'} received via table transfer in this period`}
+                  >
+                    {r.transfersIn} transferred
+                  </span>
+                )}
                 <span>›</span>
               </div>
             </button>
@@ -87,5 +125,3 @@ export default function AdminTicketsPage() {
     </div>
   );
 }
-
-

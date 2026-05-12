@@ -5,6 +5,7 @@ import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
 import { logTicket } from '../../api';
+import { tryOrQueue } from '../../utils/offlineQueue';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
@@ -26,8 +27,30 @@ type MenuCategoryDTO = {
   name: string;
   sortOrder: number;
   active: boolean;
+  // Hex string set in Admin → Menu, e.g. "#10b981". Falls back to a
+  // neutral slate background when the admin hasn't picked one yet.
+  color?: string | null;
   items: MenuItemDTO[];
 };
+
+/**
+ * Pick a readable foreground (white vs near-black) for an arbitrary
+ * background hex via perceptual luminance. Keeps the price + name
+ * legible whether the admin assigned a bright yellow or a dark navy.
+ */
+function readableTextColor(hex?: string | null): string {
+  const m = String(hex || '').match(/^#?([0-9a-f]{6})$/i);
+  if (!m) return '#ffffff';
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 0xff;
+  const g = (n >> 8) & 0xff;
+  const b = n & 0xff;
+  // Rec. 601 luma — fast and good enough for UI contrast picks.
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.6 ? '#0f172a' : '#ffffff';
+}
+
+const FALLBACK_TILE_BG = '#065f46'; // emerald-800 — matches the prior look
 
 export default function OrderPage() {
   const [categories, setCategories] = useState<MenuCategoryDTO[]>([]);
@@ -102,7 +125,11 @@ export default function OrderPage() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const suppressFreeOnEmptyRef = useRef(false);
   const initialRenderRef = useRef(true);
-  /** Incremented on every void; background effects use it to cancel stale fetches */
+  /**
+   * Incremented on every void AND on every table switch; background effects
+   * use it to cancel stale fetches so a slow response from a previous table
+   * cannot overwrite state for the table the user is currently viewing.
+   */
   const hydrateGenRef = useRef(0);
   /** Set when we send or are about to send; prevents overwriting with empty during server sync delay */
   const lastSendAtRef = useRef(0);
@@ -132,6 +159,9 @@ export default function OrderPage() {
   const [transferUsers, setTransferUsers] = useState<
     Array<{ id: number; displayName: string; role: string; active: boolean }>
   >([]);
+  const [onShiftUserIds, setOnShiftUserIds] = useState<Set<number>>(
+    () => new Set(),
+  );
   const [transferToUserId, setTransferToUserId] = useState<number | null>(null);
   const [transferToArea, setTransferToArea] = useState<string>('');
   const [transferToLabel, setTransferToLabel] = useState<string>('');
@@ -187,7 +217,8 @@ export default function OrderPage() {
         document.visibilityState === 'hidden';
       try {
         if (hidden) {
-          if (!cancelled && gen === orderPollGenRef.current) setOpenLoaded(true);
+          if (!cancelled && gen === orderPollGenRef.current)
+            setOpenLoaded(true);
           return;
         }
         const open = await window.api.tables.listOpen();
@@ -268,6 +299,14 @@ export default function OrderPage() {
     return () => window.clearInterval(t);
   }, [openedAtMs]);
 
+  // CORRECTNESS: bump the hydrate generation whenever the selected table
+  // changes. Previously hydrateGenRef was only bumped on void; a slow IPC
+  // response from a previous table could land after the user had switched and
+  // overwrite state for the new table.
+  useEffect(() => {
+    hydrateGenRef.current += 1;
+  }, [selectedTable?.area, selectedTable?.label]);
+
   // Load ticket snapshot for open tables before rendering the page (prevents empty->pop-in on refresh).
   useEffect(() => {
     let cancelled = false;
@@ -312,7 +351,9 @@ export default function OrderPage() {
             // Don't overwrite with empty — we may have just sent; server may not have synced yet
             return;
           }
-          useTicketStore.getState().hydrate({ items: [], note: latest?.note || '' });
+          useTicketStore
+            .getState()
+            .hydrate({ items: [], note: latest?.note || '' });
           // Table open but no items (opened with covers, never added items) — free it
           if (selectedTable) {
             setOpen(selectedTable.area, selectedTable.label, false);
@@ -346,7 +387,10 @@ export default function OrderPage() {
         return;
       }
       if (!isTableOpen) {
-        setCoversKnown(null);
+        // `undefined` = “table closed / not applicable”; avoids wiping an
+        // optimistic covers count while we're awaiting IPC during the
+        // open-and-send handshake (see covers modal handler).
+        setCoversKnown(undefined);
         return;
       }
       try {
@@ -396,7 +440,10 @@ export default function OrderPage() {
     error: string | null;
   }>({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
   const approvalResolveRef = useRef<
-    ((v: { userId: number; userName: string; approvalToken?: string } | null) => void) | null
+    | ((
+        v: { userId: number; userName: string; approvalToken?: string } | null,
+      ) => void)
+    | null
   >(null);
 
   function requestManagerApproval(action: string) {
@@ -565,11 +612,22 @@ export default function OrderPage() {
     return m;
   }, [categories]);
 
+  const categoryColorById = useMemo(() => {
+    const m = new Map<number, string | null>();
+    for (const c of categories as any[]) {
+      m.set(Number(c.id), c?.color ? String(c.color) : null);
+    }
+    return m;
+  }, [categories]);
+
   useEffect(() => {
     loadMenu();
   }, []);
 
-  // Prefill transfer UI when opened
+  // Prefill transfer UI when opened. We pull the user list AND the set of
+  // currently-on-shift userIds in parallel so the "To waiter" dropdown only
+  // shows colleagues who are clocked in. Server-side `transferTableLocal`
+  // re-checks this — the client filter is purely a UX hint.
   useEffect(() => {
     if (!showTransfer) return;
     if (!selectedTable) return;
@@ -577,12 +635,23 @@ export default function OrderPage() {
     setTransferToArea(selectedTable.area);
     setTransferToLabel(selectedTable.label);
     setTransferToUserId(null);
+    let cancelled = false;
     (async () => {
-      const users = await window.api.auth.listUsers().catch(() => [] as any[]);
+      const [users, openIds] = await Promise.all([
+        window.api.auth.listUsers().catch(() => [] as any[]),
+        window.api.shifts.listOpen().catch(() => [] as number[]),
+      ]);
+      if (cancelled) return;
       setTransferUsers(
         (Array.isArray(users) ? users : []).filter((u: any) => u && u.active),
       );
+      setOnShiftUserIds(
+        new Set((Array.isArray(openIds) ? openIds : []).map((n) => Number(n))),
+      );
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [showTransfer, selectedTable?.area, selectedTable?.label]);
 
   // Determine owner of the currently selected open table
@@ -653,7 +722,9 @@ export default function OrderPage() {
             // Don't overwrite with empty — we may have just sent; server may not have synced yet
             return;
           }
-          useTicketStore.getState().hydrate({ items: [], note: latest?.note || '' });
+          useTicketStore
+            .getState()
+            .hydrate({ items: [], note: latest?.note || '' });
         }
       } catch (e) {
         void e;
@@ -710,12 +781,15 @@ export default function OrderPage() {
 
   // Menu is managed by the business admin (no remote syncing).
 
-  // Owner: poll for approved requests for current table and apply to ticket
+  // Owner: poll for approved requests for current table and apply to ticket.
+  // Uses an `alive` flag so async work that resolves after unmount/cleanup
+  // does not mutate the ticket store, and reschedules only while alive.
   useEffect(() => {
     if (!user || !selectedTable) return;
     if (!isOpen(selectedTable.area, selectedTable.label)) return;
     if (ownerId == null || Number(ownerId) !== Number(user.id)) return;
-    let timer: any;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
       try {
         const rows = await window.api.requests.pollApprovedForTable(
@@ -723,8 +797,8 @@ export default function OrderPage() {
           selectedTable.area,
           selectedTable.label,
         );
+        if (!alive) return;
         if (Array.isArray(rows) && rows.length) {
-          // Merge items into current ticket
           for (const r of rows) {
             const items = Array.isArray(r.items) ? r.items : [];
             for (const it of items) {
@@ -734,7 +808,6 @@ export default function OrderPage() {
                 unitPrice: Number(it.unitPrice || 0),
                 vatRate: Number(it.vatRate || 0),
               });
-              // adjust quantity if >1
               const times = Math.max(1, Number(it.qty || 1)) - 1;
               for (let i = 0; i < times; i++) {
                 const last = useTicketStore.getState().lines.slice(-1)[0];
@@ -742,14 +815,19 @@ export default function OrderPage() {
               }
             }
           }
-          await window.api.requests.markApplied(rows.map((r: any) => r.id));
+          await window.api.requests
+            .markApplied(rows.map((r: any) => r.id))
+            .catch(() => {});
         }
       } finally {
-        timer = setTimeout(tick, 4000);
+        if (alive) timer = setTimeout(tick, 4000);
       }
     };
     tick();
-    return () => clearTimeout(timer);
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
   }, [user?.id, selectedTable?.area, selectedTable?.label, ownerId]);
 
   const shouldBlockForLoading =
@@ -759,7 +837,9 @@ export default function OrderPage() {
   if (shouldBlockForLoading) {
     return (
       <PageSpinner
-        message={openLoadError || (!openLoaded ? 'Loading tables…' : 'Loading ticket…')}
+        message={
+          openLoadError || (!openLoaded ? 'Loading tables…' : 'Loading ticket…')
+        }
       />
     );
   }
@@ -827,31 +907,74 @@ export default function OrderPage() {
           >
             Favourites
           </button>
-          {categories.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setSelectedCatId(c.id)}
-              className={`py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === c.id ? 'bg-gray-800' : 'bg-gray-900'}`}
-            >
-              {c.name}
-            </button>
-          ))}
+          {categories.map((c) => {
+            const tabColor = c.color || null;
+            const isActive = selected?.id === c.id;
+            // Tabs stay dark even when active so the category color
+            // doesn't dominate the chrome — instead we render a small
+            // dot + a thin coloured stripe along the bottom edge as a
+            // legend. The actual tiles below get the full colour
+            // treatment so the connection between "this category" and
+            // "those items" is obvious.
+            return (
+              <button
+                key={c.id}
+                onClick={() => setSelectedCatId(c.id)}
+                className={`relative py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded overflow-hidden ${
+                  isActive ? 'bg-gray-800' : 'bg-gray-900'
+                }`}
+                style={
+                  tabColor
+                    ? {
+                        boxShadow: isActive
+                          ? `inset 0 -3px 0 0 ${tabColor}`
+                          : `inset 0 -2px 0 0 ${tabColor}80`,
+                      }
+                    : undefined
+                }
+              >
+                <span className="inline-flex items-center gap-2">
+                  {tabColor ? (
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded-full"
+                      style={{ backgroundColor: tabColor }}
+                      aria-hidden
+                    />
+                  ) : null}
+                  {c.name}
+                </span>
+              </button>
+            );
+          })}
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {filteredItems.map((i: MenuItemDTO) => {
             const isFav = fav.isFav(user?.id || null, i.sku);
             const isDisabled = (i as any)?.active === false;
+            // Inherit the parent category's colour so the floor sees
+            // food and drinks as instantly distinguishable blocks.
+            // Disabled items override the colour with a neutral grey
+            // — a "this is unavailable" signal beats any branding.
+            const tileBg =
+              categoryColorById.get(Number(i.categoryId)) || FALLBACK_TILE_BG;
+            const textColor = readableTextColor(tileBg);
             return (
               <div key={i.id} className="relative">
                 <button
-                  className={`py-4 rounded text-left px-3 w-full ${
+                  className={`py-4 rounded text-left px-3 w-full transition-opacity ${
                     isDisabled
                       ? 'bg-gray-800/60 border border-gray-700 text-gray-400 cursor-not-allowed'
-                      : 'bg-emerald-800 hover:bg-emerald-700 cursor-pointer'
+                      : 'cursor-pointer hover:opacity-90'
                   }`}
+                  style={
+                    isDisabled
+                      ? undefined
+                      : { backgroundColor: tileBg, color: textColor }
+                  }
                   disabled={isDisabled || ticketSyncing || busyAction != null}
                   onClick={() => {
-                    if (isDisabled || ticketSyncing || busyAction != null) return;
+                    if (isDisabled || ticketSyncing || busyAction != null)
+                      return;
                     // If isKg, open weight keypad; otherwise add normally
                     const isKg =
                       Boolean((i as any)?.isKg) ||
@@ -892,7 +1015,13 @@ export default function OrderPage() {
                   <div className="text-sm">{i.price}</div>
                 </button>
                 <button
-                  className={`absolute top-1 right-1 text-xs px-2 py-1 rounded ${isFav ? 'bg-pink-700' : 'bg-emerald-700'} cursor-pointer`}
+                  // Translucent black backdrop so the heart stays
+                  // legible on top of any category colour (used to be
+                  // hard-coded pink/emerald and looked awful on a red
+                  // drinks tile).
+                  className={`absolute top-1 right-1 text-xs px-2 py-1 rounded cursor-pointer backdrop-blur-sm bg-black/30 hover:bg-black/50 ${
+                    isFav ? 'text-pink-300' : 'text-white/90'
+                  }`}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (user?.id) fav.toggle(user.id, i.sku);
@@ -1204,11 +1333,15 @@ export default function OrderPage() {
                         if (!selectedTable || !user?.id || !ownerId) return;
                         const staged = lines.filter((l) => l.staged);
                         if (staged.length === 0) {
-                          toast.warn('Add items (new lines) before sending a request');
+                          toast.warn(
+                            'Add items (new lines) before sending a request',
+                          );
                           return;
                         }
                         if (!connectionOk) {
-                          toast.warn('Network is slow/offline. Please wait and try again.');
+                          toast.warn(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         setBusyAction('request');
@@ -1233,7 +1366,9 @@ export default function OrderPage() {
                           setRequestLocked(true);
                           toast.success('Request sent to the owner');
                         } catch {
-                          toast.error('Request failed (network slow). Please try again.');
+                          toast.error(
+                            'Request failed (network slow). Please try again.',
+                          );
                         } finally {
                           setBusyAction(null);
                         }
@@ -1259,7 +1394,9 @@ export default function OrderPage() {
                       onClick={async () => {
                         if (busyAction != null || ticketSyncing) return;
                         if (!connectionOk) {
-                          toast.warn('Network is slow/offline. Please wait and try again.');
+                          toast.warn(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         setBusyAction('void');
@@ -1290,7 +1427,12 @@ export default function OrderPage() {
                             clear();
                             setOrderNote('');
 
-                            await window.api.tickets.voidTicket({
+                            // PR 4a: voidTicket + the table-close
+                            // sidecar both go through the queue.
+                            // Without this, voiding a ticket on a
+                            // flaky network meant the table stayed
+                            // "open" forever and the void was lost.
+                            await tryOrQueue('tickets.voidTicket', {
                               userId: user.id,
                               area: selectedTable.area,
                               tableLabel: selectedTable.label,
@@ -1306,14 +1448,22 @@ export default function OrderPage() {
                                   }
                                 : {}),
                             });
-                            // Persist free table server-side too (otherwise TablesPage refresh will re-mark it open).
-                            await window.api.tables
-                              .setOpen(
-                                selectedTable.area,
-                                selectedTable.label,
-                                false,
-                              )
-                              .catch(() => {});
+                            // Persist free table server-side too
+                            // (otherwise TablesPage refresh will
+                            // re-mark it open). Dedupe so a chain of
+                            // void/close clicks coalesces to one
+                            // eventual write.
+                            await tryOrQueue(
+                              'tables.setOpen',
+                              {
+                                area: selectedTable.area,
+                                label: selectedTable.label,
+                                open: false,
+                              },
+                              {
+                                dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                              },
+                            ).catch(() => {});
                           }
                           // When table isn't open, void button acts as "clear"
                           if (
@@ -1324,7 +1474,9 @@ export default function OrderPage() {
                             setOrderNote('');
                           }
                         } catch {
-                          toast.error('Failed to void/clear. Please try again.');
+                          toast.error(
+                            'Failed to void/clear. Please try again.',
+                          );
                         } finally {
                           setBusyAction(null);
                         }
@@ -1361,7 +1513,9 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          toast.warn('Network is slow/offline. Please wait and try again.');
+                          toast.warn(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         // Enrich log with details (table, order lines, notes, covers)
@@ -1410,7 +1564,7 @@ export default function OrderPage() {
                             : details.lines;
                           // (optional) send log
                           if (!user?.id) return; // require logged-in user to log ticket
-                          await logTicket({
+                          const logResult = await logTicket({
                             userId: user.id,
                             area: selectedTable.area,
                             tableLabel: selectedTable.label,
@@ -1418,6 +1572,34 @@ export default function OrderPage() {
                             items: details.lines,
                             note: orderNote,
                           });
+                          if (!logResult.ok) {
+                            // Server rejected — most often the table
+                            // was closed/paid by another waiter or is
+                            // owned by someone else. Don't fire the
+                            // print, refresh the open-tables map, and
+                            // surface a clean toast.
+                            toast.error(logResult.error, {
+                              title: 'Send blocked',
+                            });
+                            try {
+                              const open = await window.api.tables.listOpen();
+                              if (Array.isArray(open)) {
+                                const stillOpen = open.some(
+                                  (t: any) =>
+                                    t.area === selectedTable.area &&
+                                    t.label === selectedTable.label,
+                                );
+                                setOpen(
+                                  selectedTable.area,
+                                  selectedTable.label,
+                                  stillOpen,
+                                );
+                              }
+                            } catch {
+                              // ignore — toast is the source of truth
+                            }
+                            return;
+                          }
                           // Immediately dim and lock qty by marking all as sent (optimistic)
                           useTicketStore.getState().markAllAsSent();
                           await window.api.tickets.print({
@@ -1465,8 +1647,27 @@ export default function OrderPage() {
                               true,
                             )
                             .catch(() => {});
-                        } catch {
-                          toast.error('Send failed (network slow). Please try again.');
+                        } catch (e: any) {
+                          const raw = String(e?.message || e || '').trim();
+                          const m = raw.match(
+                            /Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s,
+                          );
+                          const detail = (m ? m[1] : raw).trim();
+                          const status = Number(e?.status || 0);
+                          const isAuth = status === 401 || status === 403;
+                          const isAbort =
+                            String(e?.name || '') === 'AbortError';
+                          const isType = e instanceof TypeError;
+                          const title = isAuth
+                            ? 'Send blocked (not signed in)'
+                            : isAbort
+                              ? 'Send timed out'
+                              : isType
+                                ? 'Can’t reach host'
+                                : 'Send failed';
+                          toast.error(detail || 'Please try again.', { title });
+                          if (typeof console !== 'undefined')
+                            console.warn('[print/ticket] failed:', e);
                         } finally {
                           setBusyAction(null);
                         }
@@ -1481,7 +1682,12 @@ export default function OrderPage() {
                     </button>
                     <button
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                      disabled={!canPay || busyAction != null || !connectionOk || ticketSyncing}
+                      disabled={
+                        !canPay ||
+                        busyAction != null ||
+                        !connectionOk ||
+                        ticketSyncing
+                      }
                       title={
                         !selectedTable
                           ? 'Select table'
@@ -1506,7 +1712,9 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          toast.warn('Network is slow/offline. Please wait and try again.');
+                          toast.warn(
+                            'Network is slow/offline. Please wait and try again.',
+                          );
                           return;
                         }
                         // Open payment modal (choose method + amount + print)
@@ -1548,16 +1756,33 @@ export default function OrderPage() {
 
       {showPayment && selectedTable && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3 sm:p-4 overflow-hidden">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl w-full sm:w-[92vw] max-w-6xl p-4 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl w-full sm:w-[92vw] max-w-6xl p-4 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] relative">
             <div className="flex items-center justify-between mb-3 shrink-0">
               <div className="text-lg font-semibold">Payment</div>
               <button
-                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={busyAction === 'pay'}
                 onClick={() => setShowPayment(false)}
               >
                 Close
               </button>
             </div>
+            {busyAction === 'pay' && (
+              <div
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm rounded-xl flex flex-col items-center justify-center gap-3 z-10"
+                role="status"
+                aria-live="polite"
+              >
+                <span
+                  className="inline-block w-10 h-10 border-4 border-white/20 border-t-emerald-400 rounded-full animate-spin"
+                  aria-hidden
+                />
+                <div className="text-base font-medium">Processing payment…</div>
+                <div className="text-xs opacity-70">
+                  Recording payment and printing receipt
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
               {/* Order summary */}
@@ -1788,12 +2013,16 @@ export default function OrderPage() {
                     </button>
                   </div>
                   <button
-                    className="w-full bg-emerald-700 hover:bg-emerald-800 rounded py-4 font-semibold"
+                    className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:bg-emerald-700/60 disabled:cursor-not-allowed rounded py-4 font-semibold flex items-center justify-center gap-2"
                     disabled={busyAction != null || !connectionOk}
                     onClick={async () => {
                       if (busyAction != null) return;
                       if (!connectionOk) return;
                       setBusyAction('pay');
+                      // Track whether we ever got far enough to need to
+                      // close the table — keeps "manager approval
+                      // cancelled" from triggering a stray close.
+                      let attemptedPayment = false;
                       try {
                         const needsDiscountApproval =
                           approvalsCfg.requireManagerPinForDiscount &&
@@ -1835,8 +2064,27 @@ export default function OrderPage() {
                           categoryId: (l as any).categoryId,
                           categoryName: (l as any).categoryName,
                         }));
-                        await window.api.tickets
-                          .print({
+                        attemptedPayment = true;
+                        // Process the payment + receipt synchronously so
+                        // the user sees a real "Processing…" state. The
+                        // IPC handler `tickets:print` is bounded:
+                        //   - On success it returns once the printer
+                        //     ACKs (sub-second).
+                        //   - On a transient failure (printer offline,
+                        //     ECONNREFUSED, EHOSTDOWN, …) it persists
+                        //     the receipt into the PR-3 retry queue and
+                        //     returns within the connect timeout
+                        //     (PRINTER_TIMEOUT_MS, default 5 s). The
+                        //     printer-station loop keeps trying for
+                        //     ~4 min after that.
+                        //   - On a permanent failure (no printer
+                        //     configured, etc.) it returns false; the
+                        //     receipt snapshot still lands in PrintJob
+                        //     for the audit trail.
+                        // Either way the await resolves quickly and the
+                        // table close below ALWAYS runs.
+                        try {
+                          await tryOrQueue('payments.record', {
                             area: selectedTable.area,
                             tableLabel: selectedTable.label,
                             covers: lastCovers ?? null,
@@ -1879,27 +2127,61 @@ export default function OrderPage() {
                               managerApprovedByName:
                                 managerApprovedBy?.userName ?? null,
                             },
-                          })
-                          .catch(() => {});
-                        setOpen(selectedTable.area, selectedTable.label, false);
-                        await window.api.tables
-                          .setOpen(
+                          });
+                        } catch {
+                          // Swallow — printer-event broadcasts surface
+                          // the error toast, and the receipt is either
+                          // already in the retry queue (transient) or
+                          // recorded in PrintJob (permanent). Don't let
+                          // a printer hiccup block the table close.
+                        }
+                      } finally {
+                        // ALWAYS close the table after a real payment
+                        // attempt, regardless of print outcome. The
+                        // payment record + retry queue have already
+                        // captured the money and the receipt; the
+                        // table must not stay locked because the
+                        // printer is offline.
+                        if (attemptedPayment) {
+                          setOpen(
                             selectedTable.area,
                             selectedTable.label,
                             false,
-                          )
-                          .catch(() => {});
-                        clear();
-                        setOrderNote('');
-                        setShowPayment(false);
-                      } catch {
-                        toast.error('Payment action failed. Please try again.');
-                      } finally {
+                          );
+                          try {
+                            await tryOrQueue(
+                              'tables.setOpen',
+                              {
+                                area: selectedTable.area,
+                                label: selectedTable.label,
+                                open: false,
+                              },
+                              {
+                                dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                              },
+                            );
+                          } catch {
+                            // queued or transient — loop will replay
+                          }
+                          clear();
+                          setOrderNote('');
+                          setShowPayment(false);
+                        }
                         setBusyAction(null);
                       }
                     }}
                   >
-                    Pay • {formatAmount(totalDue)}
+                    {busyAction === 'pay' ? (
+                      <>
+                        <span
+                          className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"
+                          aria-hidden
+                        />
+                        <span>Processing payment…</span>
+                      </>
+                    ) : (
+                      <span>Pay • {formatAmount(totalDue)}</span>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1952,32 +2234,44 @@ export default function OrderPage() {
             </div>
 
             {transferMode === 'WAITER' ? (
-              <div className="space-y-2">
-                <div className="text-sm opacity-80">Select waiter</div>
-                <select
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
-                  value={transferToUserId ?? ''}
-                  onChange={(e) =>
-                    setTransferToUserId(
-                      e.target.value ? Number(e.target.value) : null,
-                    )
-                  }
-                >
-                  <option value="">(choose waiter)</option>
-                  {transferUsers
-                    .filter((u) => u && u.active)
-                    .filter((u) => Number(u.id) !== Number(user.id))
-                    .filter((u) => String(u.role).toUpperCase() !== 'ADMIN')
-                    .map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.displayName}
+              (() => {
+                // Eligible = active, not me, not an admin, AND currently on shift.
+                const eligibleWaiters = transferUsers
+                  .filter((u) => u && u.active)
+                  .filter((u) => Number(u.id) !== Number(user.id))
+                  .filter((u) => String(u.role).toUpperCase() !== 'ADMIN')
+                  .filter((u) => onShiftUserIds.has(Number(u.id)));
+                return (
+                  <div className="space-y-2">
+                    <div className="text-sm opacity-80">Select waiter</div>
+                    <select
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
+                      value={transferToUserId ?? ''}
+                      onChange={(e) =>
+                        setTransferToUserId(
+                          e.target.value ? Number(e.target.value) : null,
+                        )
+                      }
+                      disabled={eligibleWaiters.length === 0}
+                    >
+                      <option value="">
+                        {eligibleWaiters.length === 0
+                          ? '(no other waiters on shift)'
+                          : '(choose waiter)'}
                       </option>
-                    ))}
-                </select>
-                <div className="text-xs opacity-70">
-                  The other waiter will receive a notification.
-                </div>
-              </div>
+                      {eligibleWaiters.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.displayName}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-xs opacity-70">
+                      Only waiters who are currently on shift can receive a
+                      table. They&apos;ll get a notification.
+                    </div>
+                  </div>
+                );
+              })()
             ) : (
               <div className="space-y-2">
                 <div className="text-sm opacity-80">Destination</div>
@@ -2029,7 +2323,11 @@ export default function OrderPage() {
                   setTransferBusy(true);
                   setTransferError(null);
                   try {
-                    // Block transfer if destination table is already occupied
+                    // Block transfer if destination table is already occupied.
+                    // We toast as well as set the inline error so the warning
+                    // is visible regardless of where the user is looking
+                    // (modal vs. floor view), matching how covers/void
+                    // failures are surfaced elsewhere in this page.
                     if (transferMode === 'TABLE') {
                       const destArea = transferToArea.trim();
                       const destLabel = transferToLabel.trim();
@@ -2037,16 +2335,17 @@ export default function OrderPage() {
                         destArea === selectedTable.area &&
                         destLabel === selectedTable.label
                       ) {
-                        setTransferError(
-                          'Destination is the same as the source table',
-                        );
+                        const msg =
+                          'Destination is the same as the source table';
+                        toast.warn(msg, { title: 'Transfer blocked' });
+                        setTransferError(msg);
                         setTransferBusy(false);
                         return;
                       }
                       if (isOpen(destArea, destLabel)) {
-                        setTransferError(
-                          `Table ${destArea} ${destLabel} is already occupied`,
-                        );
+                        const msg = `Table ${destArea} ${destLabel} is already occupied`;
+                        toast.error(msg, { title: 'Transfer blocked' });
+                        setTransferError(msg);
                         setTransferBusy(false);
                         return;
                       }
@@ -2067,7 +2366,17 @@ export default function OrderPage() {
                       payload,
                     );
                     if (!r || r.ok !== true) {
-                      setTransferError(String(r?.error || 'Transfer failed'));
+                      const errMsg = String(r?.error || 'Transfer failed');
+                      // Race-condition safety net: another waiter may have
+                      // opened the destination between our pre-flight check
+                      // and the server hitting the open-tables map. The
+                      // server-side error string is `Destination table X Y
+                      // is already open` — toast it loudly so it isn't
+                      // missed if the modal scrolled out of view.
+                      if (/already open|already occupied/i.test(errMsg)) {
+                        toast.error(errMsg, { title: 'Transfer blocked' });
+                      }
+                      setTransferError(errMsg);
                       return;
                     }
 
@@ -2146,36 +2455,69 @@ export default function OrderPage() {
                       setShowCovers(false);
                       return;
                     }
-                    // Just update covers (no ticket logging/printing)
-                    await window.api.covers.save(
-                      selectedTable.area,
-                      selectedTable.label,
-                      num,
-                    );
+                    // Just update covers (no ticket logging/printing).
+                    // PR 4a: dedupe so spamming the +/- buttons in
+                    // the cover-edit modal collapses to one eventual
+                    // write; queue when offline.
+                    await tryOrQueue(
+                      'covers.save',
+                      {
+                        area: selectedTable.area,
+                        label: selectedTable.label,
+                        covers: num,
+                      },
+                      {
+                        dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                      },
+                    ).catch(() => {});
                     setCoversKnown(num);
                     setShowCovers(false);
                     return;
                   }
 
-                  // openAndSend flow — set before setOpen so ticket load effect won't overwrite with empty
+                  // openAndSend flow — persist session edges BEFORE flipping
+                  // local `isOpen`. That way `covers:getLast` (session-scoped
+                  // via `tables:openAt`) can't briefly return the previous
+                  // payout's guest count while the covers UI effect races the
+                  // handshake (same class of bug as stale ticket lines).
                   lastSendAtRef.current = Date.now();
                   lastSendTableRef.current = {
                     area: selectedTable.area,
                     label: selectedTable.label,
                   };
+                  // IMPORTANT: when opening a table in cloud mode,
+                  // set "open" first so the cloud "openAt" timestamp
+                  // exists BEFORE we write covers/tickets (tooltip
+                  // uses openAt as the session start).
+                  // PR 4a: route through the queue so an offline
+                  // open-and-send still records the table-open and
+                  // covers (the ticket itself is already covered by
+                  // logTicket → 'tickets.log').
+                  await tryOrQueue(
+                    'tables.setOpen',
+                    {
+                      area: selectedTable.area,
+                      label: selectedTable.label,
+                      open: true,
+                    },
+                    {
+                      dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                    },
+                  ).catch(() => {});
+                  await tryOrQueue(
+                    'covers.save',
+                    {
+                      area: selectedTable.area,
+                      label: selectedTable.label,
+                      covers: num,
+                    },
+                    {
+                      dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                    },
+                  ).catch(() => {});
                   setCoversKnown(num);
                   setOpen(selectedTable.area, selectedTable.label, true);
                   setShowCovers(false);
-                  // IMPORTANT: when opening a table in cloud mode, set "open" first so the
-                  // cloud "openAt" timestamp exists BEFORE we write covers/tickets (tooltip uses openAt as the session start).
-                  await window.api.tables
-                    .setOpen(selectedTable.area, selectedTable.label, true)
-                    .catch(() => {});
-                  await window.api.covers.save(
-                    selectedTable.area,
-                    selectedTable.label,
-                    num,
-                  );
                   const stagedOnly = lines.filter((l) => l.staged);
                   const isFireOrder = stagedOnly.length > 0;
                   const details = {
@@ -2210,7 +2552,7 @@ export default function OrderPage() {
                     : details.lines;
                   // (optional) send log
                   if (!user?.id) return;
-                  await logTicket({
+                  const logResult = await logTicket({
                     userId: user.id,
                     area: selectedTable.area,
                     tableLabel: selectedTable.label,
@@ -2218,6 +2560,33 @@ export default function OrderPage() {
                     items: details.lines,
                     note: orderNote,
                   });
+                  if (!logResult.ok) {
+                    // Same recovery path as the regular Send button:
+                    // somebody else closed / claimed this table while
+                    // this device was on the covers modal. Toast,
+                    // resync the open-tables map, and bail before the
+                    // print fires (which would otherwise create a
+                    // ghost kitchen ticket).
+                    toast.error(logResult.error, { title: 'Send blocked' });
+                    try {
+                      const open = await window.api.tables.listOpen();
+                      if (Array.isArray(open)) {
+                        const stillOpen = open.some(
+                          (t: any) =>
+                            t.area === selectedTable.area &&
+                            t.label === selectedTable.label,
+                        );
+                        setOpen(
+                          selectedTable.area,
+                          selectedTable.label,
+                          stillOpen,
+                        );
+                      }
+                    } catch {
+                      // ignore
+                    }
+                    return;
+                  }
                   // Immediately dim and lock qty by marking all as sent (optimistic)
                   useTicketStore.getState().markAllAsSent();
                   await window.api.tickets.print({
@@ -2297,7 +2666,12 @@ export default function OrderPage() {
                   const vt = voidTarget; // capture before clearing modal
                   setVoidTarget(null);
                   try {
-                    await window.api.tickets.voidItem({
+                    // PR 4a: voidItem becomes queue-able. Same shape
+                    // as the live IPC; if we're offline, the void is
+                    // recorded for replay and the optimistic UI below
+                    // still proceeds (the line disappears for the
+                    // user; the server-side void lands on reconnect).
+                    await tryOrQueue('tickets.voidItem', {
                       userId: user.id,
                       area: selectedTable.area,
                       tableLabel: selectedTable.label,
@@ -2321,9 +2695,12 @@ export default function OrderPage() {
                     removeLine(vt.id);
                     // Re-sync ticket from server to ensure consistency
                     const latest = await window.api.tickets
-                      .getLatestForTable(selectedTable.area, selectedTable.label)
+                      .getLatestForTable(
+                        selectedTable.area,
+                        selectedTable.label,
+                      )
                       .catch(() => null as any);
-                    const remaining = (latest?.items as any[] || []).filter(
+                    const remaining = ((latest?.items as any[]) || []).filter(
                       (it: any) => !it.voided,
                     );
                     if (remaining.length) {
@@ -2333,7 +2710,9 @@ export default function OrderPage() {
                       });
                     } else {
                       // All items voided → free the table
-                      useTicketStore.getState().hydrate({ items: [], note: '' });
+                      useTicketStore
+                        .getState()
+                        .hydrate({ items: [], note: '' });
                       setOpen(selectedTable.area, selectedTable.label, false);
                       window.api.tables
                         .setOpen(selectedTable.area, selectedTable.label, false)
@@ -2509,7 +2888,8 @@ export default function OrderPage() {
                       (r as any).userName ||
                         (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager'),
                     ),
-                    approvalToken: String((r as any).approvalToken || '') || undefined,
+                    approvalToken:
+                      String((r as any).approvalToken || '') || undefined,
                   });
                   approvalResolveRef.current = null;
                 } catch (err: any) {
@@ -2575,7 +2955,8 @@ export default function OrderPage() {
                             ? 'Admin'
                             : 'Manager'),
                       ),
-                      approvalToken: String((r as any).approvalToken || '') || undefined,
+                      approvalToken:
+                        String((r as any).approvalToken || '') || undefined,
                     });
                     approvalResolveRef.current = null;
                   } catch (err: any) {

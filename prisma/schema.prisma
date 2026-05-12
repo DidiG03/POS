@@ -25,6 +25,7 @@ model User {
   twoFactorEnabled Boolean  @default(false)
   twoFactorSecret  String?
   kdsBumpedStations KdsTicketStation[] @relation("KdsBumpedBy")
+  reservationsCreated Reservation[] @relation("ReservationCreatedBy")
 }
 
 enum Role {
@@ -203,11 +204,25 @@ model DayShift {
 }
 
 model PrintJob {
-  id        Int        @id @default(autoincrement())
-  type      PrintType
+  id          Int         @id @default(autoincrement())
+  type        PrintType
   payloadJson Json
-  createdAt DateTime   @default(now())
-  status    PrintStatus @default(QUEUED)
+  createdAt   DateTime    @default(now())
+  status      PrintStatus @default(QUEUED)
+
+  // Printer-offline retry queue (PR 3).
+  // `attempts` is the number of physical print attempts already made
+  // (so the FIRST persisted RETRY row has attempts=1). `nextAttemptAt`
+  // is when the printer-station loop should pick it back up.
+  // `printerProfileId` records which destination this slip is for, so
+  // a multi-printer routed order that only failed at the kitchen
+  // doesn't re-print at the bar.
+  attempts         Int       @default(0)
+  lastError        String?
+  nextAttemptAt    DateTime?
+  printerProfileId String?
+
+  @@index([status, nextAttemptAt])
 }
 
 enum PrintType {
@@ -219,6 +234,7 @@ enum PrintType {
 
 enum PrintStatus {
   QUEUED
+  RETRY
   SENT
   FAILED
 }
@@ -342,6 +358,34 @@ model Notification {
   message    String
   readAt     DateTime?
   createdAt  DateTime          @default(now())
+}
+
+enum ReservationStatus {
+  BOOKED
+  SEATED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+model Reservation {
+  id            Int               @id @default(autoincrement())
+  area          String
+  tableLabel    String?
+  customerName  String
+  customerPhone String?
+  partySize     Int               @default(2)
+  startsAt      DateTime
+  durationMin   Int               @default(120)
+  note          String?
+  status        ReservationStatus @default(BOOKED)
+  createdBy     User              @relation("ReservationCreatedBy", fields: [createdById], references: [id])
+  createdById   Int
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([startsAt])
+  @@index([area, tableLabel, startsAt])
 }
 
 

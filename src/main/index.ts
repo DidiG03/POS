@@ -13,7 +13,14 @@ import {
   addBreadcrumb,
 } from './services/sentry';
 initSentry();
-import { coreServices } from './services/core';
+import { coreServices, withTableLock } from './services/core';
+import * as reservationsService from './services/reservations';
+import {
+  broadcastReservationsChanged,
+  broadcastTableStatusChanged,
+  broadcastTicketsChanged,
+  broadcastLayoutChanged,
+} from './services/realtime';
 import {
   LoginWithPinInputSchema,
   CreateUserInputSchema,
@@ -44,6 +51,7 @@ import {
   getOutboxStatus,
   isLikelyOfflineError,
   startOutboxLoop,
+  stopOutboxLoop,
 } from './services/offlineOutbox';
 import {
   setupAutoUpdater,
@@ -68,19 +76,23 @@ import {
   getMemoryUsage,
   formatMemoryUsage,
 } from './services/memoryMonitor';
-import {
-  buildEscposTicket,
-  buildHtmlReceipt,
-  classifyPrinterError,
-  printHtmlToSystemPrinter,
-  sendToCupsRawPrinter,
-  sendToPrinterVerbose,
-} from './print';
+import { classifyPrinterError } from './print';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
-import { startPrinterStationLoop } from './services/printerStation';
-import { transferTableLocal } from './services/tableTransfer';
+import type * as http from 'node:http';
+import type * as https from 'node:https';
+import {
+  startPrinterStationLoop,
+  stopPrinterStationLoop,
+} from './services/printerStation';
+import {
+  dispatchTicket,
+  pickActiveReceiptProfile,
+  testPrintWithProfile,
+  type DispatchResult,
+} from './services/printDispatcher';
+import { transferTableLocal, parseTransferTag } from './services/tableTransfer';
 import {
   startNotificationRetentionLoop,
   stopNotificationRetentionLoop,
@@ -92,6 +104,58 @@ import {
 } from './services/cloudSync';
 
 dotenv.config();
+
+/** Lower bound for `(area, label)` rows tied to the current POS session. */
+async function getTableSessionStartedAt(
+  area: string,
+  label: string,
+): Promise<Date | null> {
+  const openAtRow = await prisma.syncState
+    .findUnique({ where: { key: 'tables:openAt' } })
+    .catch(() => null);
+  const openAtMap = ((openAtRow?.valueJson as any) || {}) as Record<
+    string,
+    string
+  >;
+  const openAtIso = openAtMap[`${area}:${label}`];
+  if (!openAtIso) return null;
+  const sessionStart = new Date(openAtIso);
+  if (Number.isNaN(sessionStart.getTime())) return null;
+  return sessionStart;
+}
+
+/**
+ * Returns the userId of the waiter who owns the CURRENT open session
+ * for `(area, tableLabel)`, or `null` if either:
+ *   - the table has no `tables:openAt` entry (can't bound the session), or
+ *   - no `ticketLog` rows exist within the current session window.
+ *
+ * Use this for ownership checks (send / void / transfer) instead of
+ * looking at the all-time latest `ticketLog` row, because tables get
+ * reused across sessions and the historical latest row often belongs
+ * to a previous waiter from days ago. That bug surfaced as "Send
+ * blocked – Table is owned by <previous waiter>" toasts on freshly
+ * opened tables.
+ */
+async function getCurrentSessionOwnerId(
+  area: string,
+  tableLabel: string,
+): Promise<number | null> {
+  const sessionStart = await getTableSessionStartedAt(area, tableLabel);
+  if (!sessionStart) return null;
+  const last = await prisma.ticketLog
+    .findFirst({
+      where: {
+        area,
+        tableLabel,
+        createdAt: { gte: sessionStart },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { userId: true },
+    })
+    .catch(() => null);
+  return last ? Number(last.userId) : null;
+}
 
 async function cloudEnabledButMissingBusinessCode(): Promise<boolean> {
   try {
@@ -134,6 +198,7 @@ const APP_ICON_PATH = (() => {
 let mainWindow: BrowserWindow | null = null;
 let adminWindow: BrowserWindow | null = null;
 let kdsWindow: BrowserWindow | null = null;
+let reservationWindow: BrowserWindow | null = null;
 
 function broadcastPrinterEvent(payload: any) {
   try {
@@ -401,11 +466,19 @@ function createWindow() {
     mainWindow.loadFile(RENDERER_INDEX_HTML);
   }
 
-  mainWindow.webContents.on('did-fail-load', (_e, ec, ed, vu) => {
+  const onMainFailLoad = (_e: any, ec: number, ed: string, vu: string) => {
     console.error('Renderer failed load', { ec, ed, vu });
-  });
+  };
+  mainWindow.webContents.on('did-fail-load', onMainFailLoad);
 
+  const mainWcId = mainWindow.webContents.id;
   mainWindow.on('closed', () => {
+    try {
+      mainWindow?.webContents.removeListener('did-fail-load', onMainFailLoad);
+    } catch {
+      // ignore
+    }
+    cleanupSenderRateLimits(mainWcId);
     mainWindow = null;
   });
 
@@ -437,8 +510,11 @@ function createAdminWindow() {
     adminWindow.loadFile(RENDERER_INDEX_HTML, {
       hash: '/admin',
     });
+  // SECURITY/MEM: rate limits are keyed by webContents.id (event.sender.id),
+  // not BrowserWindow.id. Capture it now before the window is gone.
+  const adminWcId = adminWindow.webContents.id;
   adminWindow.on('closed', () => {
-    cleanupSenderRateLimits(adminWindow?.id || 0);
+    cleanupSenderRateLimits(adminWcId);
     adminWindow = null;
   });
 
@@ -475,32 +551,89 @@ function createKdsWindow() {
   });
 }
 
+function createReservationWindow() {
+  if (reservationWindow) {
+    reservationWindow.focus();
+    return;
+  }
+  reservationWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    backgroundColor: '#111827',
+    title: 'Reservations -  Code Orbit POS',
+    ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      preload: PRELOAD_PATH,
+    },
+  });
+  const url = process.env.ELECTRON_RENDERER_URL;
+  if (url) reservationWindow.loadURL(url + '#/reservations');
+  else
+    reservationWindow.loadFile(RENDERER_INDEX_HTML, {
+      hash: '/reservations',
+    });
+  // Match admin window: capture webContents.id for rate-limit cleanup BEFORE close.
+  const wcId = reservationWindow.webContents.id;
+  reservationWindow.on('closed', () => {
+    cleanupSenderRateLimits(wcId);
+    reservationWindow = null;
+  });
+  registerUpdateListener(reservationWindow);
+}
+
+let kdsAutoBumpTimer: NodeJS.Timeout | null = null;
+let kdsAutoBumpRunning = false;
 function startKdsAutoBumpLoop() {
+  if (kdsAutoBumpTimer) return;
   // Auto-bump stale KDS tickets so they don't sit in NEW forever (e.g. forgotten open tables).
   // Requirement: bump anything left open for > 12 hours.
   const cutoffMs = 12 * 60 * 60 * 1000;
   const intervalMs = 60 * 60 * 1000; // hourly
 
   const runOnce = async () => {
-    const ok = await ensureKdsLocalSchema().catch(() => false);
-    if (!ok) return;
-    const cutoff = new Date(Date.now() - cutoffMs);
-    const now = new Date();
+    if (kdsAutoBumpRunning) return; // overlap guard if a previous tick is still in flight
+    kdsAutoBumpRunning = true;
     try {
-      await (prisma as any).kdsTicketStation.updateMany({
-        where: { status: 'NEW', ticket: { firedAt: { lt: cutoff } } },
-        data: { status: 'DONE', bumpedAt: now },
-      });
-    } catch {
-      // ignore
+      const ok = await ensureKdsLocalSchema().catch(() => false);
+      if (!ok) return;
+      const cutoff = new Date(Date.now() - cutoffMs);
+      const now = new Date();
+      try {
+        await (prisma as any).kdsTicketStation.updateMany({
+          where: { status: 'NEW', ticket: { firedAt: { lt: cutoff } } },
+          data: { status: 'DONE', bumpedAt: now },
+        });
+      } catch {
+        // ignore
+      }
+    } finally {
+      kdsAutoBumpRunning = false;
     }
   };
 
   void runOnce();
-  setInterval(() => void runOnce(), intervalMs);
+  kdsAutoBumpTimer = setInterval(() => void runOnce(), intervalMs);
+}
+function stopKdsAutoBumpLoop() {
+  if (kdsAutoBumpTimer) {
+    clearInterval(kdsAutoBumpTimer);
+    kdsAutoBumpTimer = null;
+  }
 }
 
+let autoVoidTimer: NodeJS.Timeout | null = null;
+let autoVoidRunning = false;
+
+let autoCloseShiftsTimer: NodeJS.Timeout | null = null;
+let autoCloseShiftsRunning = false;
+
+let autoNoShowReservationsTimer: NodeJS.Timeout | null = null;
+let autoNoShowReservationsRunning = false;
 function startAutoVoidStaleTicketsLoop() {
+  if (autoVoidTimer) return;
   // Auto-void any *open* tables whose session exceeds 12 hours.
   // This helps avoid "ghost" open tickets after long downtime and keeps KDS clean.
   const cutoffMs = 12 * 60 * 60 * 1000;
@@ -508,6 +641,12 @@ function startAutoVoidStaleTicketsLoop() {
   const reason = 'Auto-void: ticket exceeded 12 hours';
 
   const runOnce = async () => {
+    if (autoVoidRunning) return; // overlap guard
+    autoVoidRunning = true;
+    // CORRECTNESS: previously referenced an undefined `cloud` symbol. Look up
+    // cloud config once per tick; in cloud mode the admin notification feed
+    // is cloud-backed, so we suppress duplicate local notifications.
+    const cloud = await getCloudConfig().catch(() => null);
     try {
       const keyOpen = 'tables:open';
       const openRow = await prisma.syncState
@@ -559,75 +698,80 @@ function startAutoVoidStaleTicketsLoop() {
         const actorUserId = Number(last?.userId || 0) || 0;
 
         // Local-first: cancel pending/approved requests for this stale table.
-          try {
-            const nowDt = new Date();
-            const rows = await prisma.ticketRequest
-              .findMany({
+        try {
+          const nowDt = new Date();
+          const rows = await prisma.ticketRequest
+            .findMany({
+              where: {
+                area,
+                tableLabel,
+                status: { in: ['PENDING', 'APPROVED'] as any },
+              },
+              select: { id: true, requesterId: true, ownerId: true },
+              take: 200,
+            } as any)
+            .catch(() => []);
+          if (rows.length) {
+            await prisma.ticketRequest
+              .updateMany({
                 where: {
                   area,
                   tableLabel,
                   status: { in: ['PENDING', 'APPROVED'] as any },
                 },
-                select: { id: true, requesterId: true, ownerId: true },
-                take: 200,
+                data: { status: 'REJECTED' as any, decidedAt: nowDt },
+              } as any)
+              .catch(() => null);
+            const msg = `Auto-cancelled add-item requests on ${area} ${tableLabel}: ticket exceeded 12 hours`;
+            const usersToNotify = new Set<number>();
+            for (const r of rows as any[]) {
+              usersToNotify.add(Number(r.requesterId));
+              usersToNotify.add(Number(r.ownerId));
+            }
+            const admins = await prisma.user
+              .findMany({
+                where: { role: 'ADMIN', active: true },
+                select: { id: true },
               } as any)
               .catch(() => []);
-            if (rows.length) {
-              await prisma.ticketRequest
-                .updateMany({
-                  where: {
-                    area,
-                    tableLabel,
-                    status: { in: ['PENDING', 'APPROVED'] as any },
-                  },
-                  data: { status: 'REJECTED' as any, decidedAt: nowDt },
-                } as any)
-                .catch(() => null);
-              const msg = `Auto-cancelled add-item requests on ${area} ${tableLabel}: ticket exceeded 12 hours`;
-              const usersToNotify = new Set<number>();
-              for (const r of rows as any[]) {
-                usersToNotify.add(Number(r.requesterId));
-                usersToNotify.add(Number(r.ownerId));
-              }
-              const admins = await prisma.user
-                .findMany({
-                  where: { role: 'ADMIN', active: true },
-                  select: { id: true },
-                } as any)
-                .catch(() => []);
-              for (const a of admins as any[]) usersToNotify.add(Number(a.id));
-              for (const uid of usersToNotify) {
-                if (!uid) continue;
-                await prisma.notification
-                  .create({
-                    data: {
-                      userId: uid,
-                      type: 'OTHER' as any,
-                      message: msg,
-                    } as any,
-                  })
-                  .catch(() => {});
-              }
+            for (const a of admins as any[]) usersToNotify.add(Number(a.id));
+            for (const uid of usersToNotify) {
+              if (!uid) continue;
+              await prisma.notification
+                .create({
+                  data: {
+                    userId: uid,
+                    type: 'OTHER' as any,
+                    message: msg,
+                  } as any,
+                })
+                .catch(() => {});
             }
-          } catch {
-            // ignore
           }
-
-        // Close table locally (open map + openAt) so UI immediately turns green.
-        try {
-          await coreServices.setTableOpen(area, tableLabel, false);
         } catch {
           // ignore
         }
+
+        // Close table locally (open map + openAt) so UI immediately turns green.
+        // Hold the per-table lock around both writes so a concurrent
+        // `tickets:log` from a stale device cannot insert between the
+        // open-map flip and the openAt cleanup.
         try {
-          delete atMap[`${area}:${tableLabel}`];
-          await prisma.syncState
-            .upsert({
-              where: { key: keyAt },
-              create: { key: keyAt, valueJson: atMap },
-              update: { valueJson: atMap },
-            })
-            .catch(() => null);
+          await withTableLock(area, tableLabel, async () => {
+            await coreServices.setTableOpen(area, tableLabel, false);
+            try {
+              delete atMap[`${area}:${tableLabel}`];
+              await prisma.syncState
+                .upsert({
+                  where: { key: keyAt },
+                  create: { key: keyAt, valueJson: atMap },
+                  update: { valueJson: atMap },
+                })
+                .catch(() => null);
+            } catch {
+              // ignore
+            }
+          });
         } catch {
           // ignore
         }
@@ -706,12 +850,307 @@ function startAutoVoidStaleTicketsLoop() {
       }
     } catch {
       // ignore
+    } finally {
+      autoVoidRunning = false;
     }
   };
 
   void runOnce();
-  setInterval(() => void runOnce(), intervalMs);
+  autoVoidTimer = setInterval(() => void runOnce(), intervalMs);
 }
+function stopAutoVoidStaleTicketsLoop() {
+  if (autoVoidTimer) {
+    clearInterval(autoVoidTimer);
+    autoVoidTimer = null;
+  }
+}
+
+// Auto-close idle waiter shifts after a configurable retention period (12h / 24h).
+// Important guarantees:
+// - Only runs when admin has enabled `preferences.autoCloseShift.enabled`.
+// - A shift is closed only when the user has NO open tickets (no open table where
+//   the latest ticket log row was written by them). This avoids losing in-progress
+//   work for staff who genuinely had a long service.
+// - The user that "closes" the shift is set to the openedById, so the ledger
+//   shows a self-clock-out (rather than spoofing an admin id we don't have).
+// - We also drop the in-memory rate-limit/security counters and emit an OTHER
+//   notification so admins can see why a shift was force-closed.
+function startAutoCloseShiftsLoop() {
+  if (autoCloseShiftsTimer) return;
+  // Check every 15 minutes — auto-close is best-effort retention, not a real-time gate.
+  const intervalMs = 15 * 60 * 1000;
+
+  const runOnce = async () => {
+    if (autoCloseShiftsRunning) return;
+    autoCloseShiftsRunning = true;
+    try {
+      const settings = await coreServices
+        .readSettings()
+        .catch(() => null as any);
+      const cfg = (settings as any)?.preferences?.autoCloseShift || {};
+      if (!cfg?.enabled) return;
+      const hoursRaw = Number(cfg?.hours ?? 0);
+      // Only allow 12 or 24 — anything else is treated as disabled to avoid
+      // an admin accidentally setting a 1-minute window via direct DB edit.
+      const hours = hoursRaw === 12 || hoursRaw === 24 ? hoursRaw : 0;
+      if (!hours) return;
+
+      const cutoffMs = hours * 60 * 60 * 1000;
+      const now = Date.now();
+
+      type OpenShiftRow = { id: number; openedAt: Date; openedById: number };
+      const openShifts: OpenShiftRow[] = await prisma.dayShift
+        .findMany({
+          where: { closedAt: null },
+          select: { id: true, openedAt: true, openedById: true },
+        })
+        .catch(() => [] as OpenShiftRow[]);
+      if (!openShifts.length) return;
+
+      const stale = openShifts.filter(
+        (s: OpenShiftRow) => now - new Date(s.openedAt).getTime() > cutoffMs,
+      );
+      if (!stale.length) return;
+
+      // Determine which open tables belong to which user (by latest ticket-log owner).
+      // Read the open-tables map once; if there are no open tables, no shift can be
+      // blocked by an "open ticket".
+      const openRow = await prisma.syncState
+        .findUnique({ where: { key: 'tables:open' } })
+        .catch(() => null);
+      const openMap = ((openRow?.valueJson as any) || {}) as Record<
+        string,
+        boolean
+      >;
+      const openTableKeys = Object.entries(openMap)
+        .filter(([, v]) => Boolean(v))
+        .map(([k]) => k);
+
+      // Map userId -> has at least one open ticket
+      const usersWithOpenTickets = new Set<number>();
+      if (openTableKeys.length) {
+        for (const key of openTableKeys) {
+          const [area, tableLabel] = String(key).split(':');
+          if (!area || !tableLabel) continue;
+          const last = await prisma.ticketLog
+            .findFirst({
+              where: { area, tableLabel },
+              orderBy: { createdAt: 'desc' },
+              select: { userId: true },
+            })
+            .catch(() => null);
+          if (last?.userId) usersWithOpenTickets.add(Number(last.userId));
+        }
+      }
+
+      const cloud = await getCloudConfig().catch(() => null);
+
+      for (const s of stale) {
+        // Hard guard: never close a shift while the user still has an open ticket.
+        if (usersWithOpenTickets.has(Number(s.openedById))) continue;
+        try {
+          await prisma.dayShift.update({
+            where: { id: s.id },
+            data: { closedAt: new Date(), closedById: s.openedById },
+          });
+          // Best-effort notification (only locally; cloud mode mirrors via its own feed).
+          if (!cloud) {
+            await prisma.notification
+              .create({
+                data: {
+                  userId: s.openedById,
+                  type: 'OTHER' as any,
+                  message: `Shift auto-closed after ${hours}h of inactivity (no open tickets).`,
+                } as any,
+              })
+              .catch(() => {});
+            const admins = await prisma.user
+              .findMany({
+                where: { role: 'ADMIN', active: true },
+                select: { id: true },
+              } as any)
+              .catch(() => [] as { id: number }[]);
+            for (const a of admins as { id: number }[]) {
+              if (Number(a.id) === Number(s.openedById)) continue;
+              await prisma.notification
+                .create({
+                  data: {
+                    userId: a.id,
+                    type: 'OTHER' as any,
+                    message: `Auto-closed shift #${s.id} (user ${s.openedById}) after ${hours}h.`,
+                  } as any,
+                })
+                .catch(() => {});
+            }
+          }
+        } catch {
+          // ignore — best effort
+        }
+      }
+    } catch {
+      // ignore — best effort
+    } finally {
+      autoCloseShiftsRunning = false;
+    }
+  };
+
+  void runOnce();
+  autoCloseShiftsTimer = setInterval(() => void runOnce(), intervalMs);
+}
+
+function stopAutoCloseShiftsLoop() {
+  if (autoCloseShiftsTimer) {
+    clearInterval(autoCloseShiftsTimer);
+    autoCloseShiftsTimer = null;
+  }
+}
+
+// Auto-mark BOOKED reservations as NO_SHOW after a configurable grace period
+// past their start time. This frees the table on the floor automatically while
+// keeping the row in the List view so the host still has a record.
+//
+// Hard guarantees:
+// - Only runs when admin has enabled `preferences.reservationAutoNoShow.enabled`.
+// - Grace minutes are clamped to [5, 240]; anything outside that disables the loop.
+// - Only BOOKED reservations are touched. SEATED/COMPLETED/CANCELLED are never
+//   transitioned (a seated guest who's still there isn't a no-show, etc).
+// - Best-effort notifications go to the reservation's creator and any active
+//   ADMIN/HOST users; failures are swallowed so a bad notification can't block
+//   the status flip.
+function startAutoNoShowReservationsLoop() {
+  if (autoNoShowReservationsTimer) return;
+  // Run every minute. The work is a single indexed query on a small table.
+  const intervalMs = 60 * 1000;
+
+  const runOnce = async () => {
+    if (autoNoShowReservationsRunning) return;
+    autoNoShowReservationsRunning = true;
+    try {
+      const settings = await coreServices
+        .readSettings()
+        .catch(() => null as any);
+      const cfg = (settings as any)?.preferences?.reservationAutoNoShow || {};
+      if (!cfg?.enabled) return;
+      const minsRaw = Number(cfg?.minutes ?? 0);
+      const minutes =
+        Number.isFinite(minsRaw) && minsRaw >= 5 && minsRaw <= 240
+          ? Math.round(minsRaw)
+          : 0;
+      if (!minutes) return;
+
+      const cutoff = new Date(Date.now() - minutes * 60_000);
+
+      type StaleRow = {
+        id: number;
+        area: string;
+        tableLabel: string | null;
+        customerName: string;
+        startsAt: Date;
+        createdById: number;
+      };
+      const stale: StaleRow[] = await prisma.reservation
+        .findMany({
+          where: {
+            status: 'BOOKED' as any,
+            startsAt: { lte: cutoff },
+          },
+          select: {
+            id: true,
+            area: true,
+            tableLabel: true,
+            customerName: true,
+            startsAt: true,
+            createdById: true,
+          },
+          take: 200,
+        })
+        .catch(() => [] as StaleRow[]);
+      if (!stale.length) return;
+
+      const ids = stale.map((r) => r.id);
+      await prisma.reservation
+        .updateMany({
+          where: {
+            id: { in: ids },
+            status: 'BOOKED' as any, // re-check to avoid races with manual updates
+          },
+          data: { status: 'NO_SHOW' as any },
+        })
+        .catch(() => null);
+
+      // Push a real-time invalidation to every client so the floor view
+      // colour and list status update without waiting for a poll/refresh.
+      for (const r of stale) {
+        try {
+          broadcastReservationsChanged({
+            kind: 'auto-no-show',
+            id: Number(r.id),
+            dateIso: new Date(r.startsAt).toISOString(),
+            area: r.area,
+            status: 'NO_SHOW',
+          });
+        } catch {
+          // ignore — best effort
+        }
+      }
+
+      // Notify creators + all active hosts/admins so the floor team sees it.
+      const cloud = await getCloudConfig().catch(() => null);
+      if (!cloud) {
+        const recipients = await prisma.user
+          .findMany({
+            where: {
+              active: true,
+              role: { in: ['ADMIN', 'HOST'] as any },
+            } as any,
+            select: { id: true },
+          })
+          .catch(() => [] as { id: number }[]);
+        const recipientIds = new Set<number>(
+          (recipients as { id: number }[]).map((u) => Number(u.id)),
+        );
+        for (const r of stale) {
+          if (r.createdById) recipientIds.add(Number(r.createdById));
+          const startedAt = new Date(r.startsAt);
+          const hh = String(startedAt.getHours()).padStart(2, '0');
+          const mm = String(startedAt.getMinutes()).padStart(2, '0');
+          const where = r.tableLabel ? `${r.area} · ${r.tableLabel}` : r.area;
+          const msg = `No-show: ${r.customerName} (${hh}:${mm} on ${where}) auto-marked after ${minutes} min grace.`;
+          for (const uid of recipientIds) {
+            await prisma.notification
+              .create({
+                data: {
+                  userId: uid,
+                  type: 'OTHER' as any,
+                  message: msg,
+                } as any,
+              })
+              .catch(() => {});
+          }
+        }
+      }
+    } catch {
+      // ignore — best effort
+    } finally {
+      autoNoShowReservationsRunning = false;
+    }
+  };
+
+  void runOnce();
+  autoNoShowReservationsTimer = setInterval(() => void runOnce(), intervalMs);
+}
+
+function stopAutoNoShowReservationsLoop() {
+  if (autoNoShowReservationsTimer) {
+    clearInterval(autoNoShowReservationsTimer);
+    autoNoShowReservationsTimer = null;
+  }
+}
+
+let apiServers: {
+  http: http.Server | null;
+  https: https.Server | null;
+} | null = null;
 
 app.whenReady().then(async () => {
   // Set macOS dock icon (BrowserWindow icon doesn't affect dock on macOS)
@@ -719,14 +1158,32 @@ app.whenReady().then(async () => {
     try {
       const { nativeImage } = await import('electron');
       const img = nativeImage.createFromPath(APP_ICON_PATH);
-      if (!img.isEmpty()) app.dock.setIcon(img);
+      if (!img.isEmpty()) app.dock?.setIcon(img);
     } catch {
       // ignore — dock icon stays default
     }
   }
   createWindow();
   setupAutoUpdater();
-  await startApiServer();
+  apiServers = await startApiServer();
+  // Advertise the LAN API server on mDNS so the standalone KDS app
+  // (and future LAN waiter apps) can auto-discover the POS host. Pure
+  // JS implementation — no native deps, safe to fail.
+  try {
+    const { startMdnsAdvertiser } = await import('./services/mdnsAdvertiser');
+    const settings = await coreServices.readSettings().catch(() => ({}) as any);
+    const businessCode = String(
+      (settings as any)?.cloud?.businessCode || '',
+    ).trim();
+    void startMdnsAdvertiser({
+      httpPort: 3333,
+      httpsPort: 3443,
+      appVersion: app.getVersion(),
+      businessCode,
+    });
+  } catch {
+    // ignore — discovery is a convenience, not required
+  }
   // In cloud mode, also act as an on-prem Printer Station (pull queued print jobs and print locally).
   startPrinterStationLoop();
   // Offline outbox: retry queued cloud writes when connectivity returns.
@@ -737,6 +1194,10 @@ app.whenReady().then(async () => {
   startKdsAutoBumpLoop();
   // Tickets: auto-void stale open tables after 12 hours + notify.
   startAutoVoidStaleTicketsLoop();
+  // Shifts: optional auto-close idle waiter shifts (12h / 24h) when no open tickets.
+  startAutoCloseShiftsLoop();
+  // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
+  startAutoNoShowReservationsLoop();
   // Memory monitoring: track memory usage to detect leaks (runs every minute)
   if (
     process.env.NODE_ENV !== 'production' ||
@@ -754,10 +1215,60 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
+let isShuttingDown = false;
+app.on('before-quit', async (event) => {
+  // Allow Electron to call this multiple times; only do real work once.
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  // Always synchronously cancel timers/listeners that don't need to await anything.
   cleanupUpdater();
   stopMemoryMonitoring();
   stopNotificationRetentionLoop();
+  stopKdsAutoBumpLoop();
+  stopAutoVoidStaleTicketsLoop();
+  stopAutoCloseShiftsLoop();
+  stopAutoNoShowReservationsLoop();
+  stopPrinterStationLoop();
+  stopOutboxLoop();
+  try {
+    const { stopMdnsAdvertiser } = await import('./services/mdnsAdvertiser');
+    await stopMdnsAdvertiser();
+  } catch {
+    // ignore
+  }
+  try {
+    // Lazy import to avoid a circular reference at module load.
+    const sec = await import('./services/security');
+    sec.stopRateLimitSweeper?.();
+  } catch {
+    // ignore
+  }
+
+  // Async work below — defer the actual quit until our cleanup completes so we
+  // don't leave open SQLite handles / TCP listeners.
+  event.preventDefault();
+  try {
+    await Promise.race([
+      Promise.all([
+        new Promise<void>((resolve) => {
+          if (!apiServers?.http) return resolve();
+          apiServers.http.close(() => resolve());
+        }),
+        new Promise<void>((resolve) => {
+          if (!apiServers?.https) return resolve();
+          apiServers.https.close(() => resolve());
+        }),
+        prisma.$disconnect().catch(() => undefined),
+      ]),
+      // Don't block quit forever if something is stuck.
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch {
+    // ignore — we are quitting anyway
+  } finally {
+    app.exit(0);
+  }
 });
 
 // Updater IPC handlers
@@ -851,7 +1362,7 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
             businessCode: cfg.businessCode,
             pin,
             userId: cloudUserId,
-          }
+          },
         );
         if (loginRes?.token && loginRes?.user) {
           const session = {
@@ -862,11 +1373,7 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
           };
           setCloudSession(session);
           setCloudSessionForSender(_e.sender.id, session);
-          await syncFromCloudAfterLogin(
-            loginRes.token,
-            loginRes.user.id,
-            pin
-          );
+          await syncFromCloudAfterLogin(loginRes.token, loginRes.user.id, pin);
           const userData = {
             id: user.id,
             displayName: user.displayName,
@@ -875,7 +1382,11 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
             createdAt: user.createdAt.toISOString(),
           };
           setSentryUser(user.id, user.displayName, user.role);
-          addBreadcrumb('User logged in via cloud (synced to local)', 'auth', 'info');
+          addBreadcrumb(
+            'User logged in via cloud (synced to local)',
+            'auth',
+            'info',
+          );
           return userData;
         }
       } catch {
@@ -903,11 +1414,17 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
   // Map is attached to global to avoid duplicate instances in dev reloads.
   const g: any = globalThis as any;
   if (!g.__mgrPinFailBySender) g.__mgrPinFailBySender = new Map();
-  const failMap: Map<number, { count: number; resetAt: number; lastAlertAt: number }> =
-    g.__mgrPinFailBySender;
+  const failMap: Map<
+    number,
+    { count: number; resetAt: number; lastAlertAt: number }
+  > = g.__mgrPinFailBySender;
   const cur = failMap.get(senderId);
   if (!cur || cur.resetAt <= now) {
-    failMap.set(senderId, { count: 0, resetAt: now + windowMinutes * 60 * 1000, lastAlertAt: cur?.lastAlertAt || 0 });
+    failMap.set(senderId, {
+      count: 0,
+      resetAt: now + windowMinutes * 60 * 1000,
+      lastAlertAt: cur?.lastAlertAt || 0,
+    });
   }
   // Local-first: always use local DB for manager PIN verification
   const admins = await prisma.user
@@ -947,12 +1464,23 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
   const st = failMap.get(senderId)!;
   st.count += 1;
   failMap.set(senderId, st);
-  if (st.count >= threshold && (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)) {
+  if (
+    st.count >= threshold &&
+    (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)
+  ) {
     const msg =
       `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes. ` +
       `This can be normal (mistyped PINs); please review if unexpected.`;
     for (const a of admins as any[]) {
-      await prisma.notification.create({ data: { userId: (a as any).id, type: 'SECURITY' as any, message: msg } as any }).catch(() => {});
+      await prisma.notification
+        .create({
+          data: {
+            userId: (a as any).id,
+            type: 'SECURITY' as any,
+            message: msg,
+          } as any,
+        })
+        .catch(() => {});
     }
     st.lastAlertAt = now;
     failMap.set(senderId, st);
@@ -1044,7 +1572,11 @@ ipcMain.handle('auth:listUsers', async (_e, payload) => {
     if (cfg) {
       const syncResult = await syncUsersFromCloud();
       if (syncResult.error) {
-        addBreadcrumb(`Cloud user sync failed: ${syncResult.error}`, 'auth', 'warning');
+        addBreadcrumb(
+          `Cloud user sync failed: ${syncResult.error}`,
+          'auth',
+          'warning',
+        );
       }
       users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
     }
@@ -1230,11 +1762,69 @@ ipcMain.handle('shifts:clockIn', async (_e, { userId }) => {
   };
 });
 
-ipcMain.handle('shifts:clockOut', async (_e, { userId }) => {
+ipcMain.handle('shifts:clockOut', async (_e, { userId, force }) => {
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
   if (!open) return null;
+
+  // Refuse to clock out if the waiter still has open tables under
+  // their name. Letting them go home leaves the floor with "ghost"
+  // ownership: the table appears active, but the owner is off-shift,
+  // so transfers / void approvals can't auto-find them and other
+  // waiters can't append items (post-PR ownership guard above). The
+  // `force: true` opt-in is reserved for the admin "close shift" UI
+  // and skips the check after explicit confirmation.
+  if (!force) {
+    const openTables: Array<{ area: string; label: string }> = [];
+    try {
+      const openRow = await prisma.syncState
+        .findUnique({ where: { key: 'tables:open' } })
+        .catch(() => null);
+      const openMap = ((openRow?.valueJson as any) || {}) as Record<
+        string,
+        boolean
+      >;
+      const keys = Object.entries(openMap)
+        .filter(([, v]) => Boolean(v))
+        .map(([k]) => k);
+
+      // Pull the latest ticket-log row per open table and only count
+      // those whose current owner matches the user clocking out. This
+      // is at most ~50 rows in a busy service so a sequential scan is
+      // fine; we can swap to a single GROUP BY query later if we need
+      // to.
+      for (const key of keys) {
+        const idx = key.indexOf(':');
+        if (idx <= 0) continue;
+        const area = key.slice(0, idx);
+        const label = key.slice(idx + 1);
+        const last = await prisma.ticketLog
+          .findFirst({
+            where: { area, tableLabel: label },
+            orderBy: { createdAt: 'desc' },
+            select: { userId: true },
+          })
+          .catch(() => null);
+        if (last && Number(last.userId) === Number(userId)) {
+          openTables.push({ area, label });
+        }
+      }
+    } catch {
+      // If the lookup itself fails we fall through and clock out — we
+      // never want a transient DB hiccup to trap a waiter at work.
+    }
+
+    if (openTables.length > 0) {
+      return {
+        ok: false,
+        error: `You still have ${openTables.length} open table${openTables.length === 1 ? '' : 's'}. Close or transfer them before clocking out.`,
+        code: 'OPEN_TABLES_OWNED',
+        openTables,
+      };
+    }
+  }
+
   const updated = await prisma.dayShift.update({
     where: { id: open.id },
     data: { closedAt: new Date(), closedById: userId },
@@ -1258,7 +1848,7 @@ ipcMain.handle('auth:syncStaffFromApi', async (_e, raw) => {
   const url: string =
     (raw?.url as string) ||
     process.env.STAFF_API_URL ||
-    'https:// Code Orbit-agroturizem.com/api/staff';
+    'https://code-orbit-agroturizem.com/api/staff';
   // Cache: skip network if synced within 10 minutes
   const staffLast = await prisma.syncState.findUnique({
     where: { key: 'staff:lastSync' },
@@ -1480,95 +2070,9 @@ ipcMain.handle('settings:setPrinter', async (_e, payload) => {
 ipcMain.handle('settings:testPrint', async () => {
   try {
     const settings = await readSettings();
-    const mode = (settings.printer?.mode ||
-      (settings.printer?.serialPath
-        ? 'SERIAL'
-        : settings.printer?.deviceName
-          ? 'SYSTEM'
-          : 'NETWORK')) as any;
-    if (mode === 'SYSTEM') {
-      // Default ON: most receipt printers should receive raw ESC/POS (HTML/PostScript prints as "code")
-      const raw = (settings.printer as any)?.systemRawEscpos !== false;
-      if (raw) {
-        const data = Buffer.from(
-          [
-            '\x1b@',
-            ' Code Orbit POS Test Print\n',
-            '-------------------------\n',
-            new Date().toISOString() + '\n\n',
-            '\x1dV\x41\x10',
-          ].join(''),
-          'binary',
-        );
-        const r = await sendToCupsRawPrinter({
-          deviceName: settings.printer?.deviceName,
-          data,
-        });
-        return r.ok;
-      } else {
-        const html = buildHtmlReceipt(
-          {
-            area: 'TEST',
-            tableLabel: 'USB',
-            covers: null,
-            items: [{ name: 'Test item', qty: 1, unitPrice: 1.0, vatRate: 0 }],
-            note: null,
-            userName: 'POS',
-            meta: { vatEnabled: true },
-          },
-          settings as any,
-        );
-        const r = await printHtmlToSystemPrinter({
-          html,
-          deviceName: settings.printer?.deviceName,
-          silent: settings.printer?.silent !== false,
-        });
-        return r.ok;
-      }
-    }
-    if (mode === 'SERIAL') {
-      const p = settings.printer || {};
-      const cfg = {
-        path: String((p as any).serialPath || ''),
-        baudRate: Number((p as any).baudRate || 19200),
-        dataBits: (Number((p as any).dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
-        stopBits: (Number((p as any).stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-        parity: String((p as any).parity || 'none') as any as
-          | 'none'
-          | 'even'
-          | 'odd',
-      };
-      if (!cfg.path) throw new Error('Serial port not configured');
-      const data = Buffer.from(
-        [
-          '\x1b@',
-          ' Code Orbit POS Test Print\n',
-          '-------------------------\n',
-          new Date().toISOString() + '\n\n',
-          '\x1dV\x41\x10',
-        ].join(''),
-        'binary',
-      );
-      const { sendToSerialPrinter } = await import('./serial');
-      const r = await sendToSerialPrinter(cfg as any, data);
-      return r.ok;
-    }
-    const ip = process.env.PRINTER_IP || settings.printer?.ip;
-    const port = Number(
-      process.env.PRINTER_PORT || settings.printer?.port || 9100,
-    );
-    if (!ip) throw new Error('Printer IP not configured');
-    const data = Buffer.from(
-      [
-        '\x1b@',
-        ' Code Orbit POS Test Print\n',
-        '-------------------------\n',
-        new Date().toISOString() + '\n\n',
-        '\x1dV\x41\x10',
-      ].join(''),
-      'binary',
-    );
-    const r = await sendToPrinterVerbose(ip, port, data);
+    const profile = pickActiveReceiptProfile(settings as any);
+    if (!profile) return false;
+    const r = await testPrintWithProfile(profile, settings as any);
     if (!r.ok) {
       const c = classifyPrinterError(r.error);
       broadcastPrinterEvent({
@@ -1585,104 +2089,36 @@ ipcMain.handle('settings:testPrint', async () => {
   }
 });
 
+// Test-print to a SPECIFIC profile (network/USB/serial) without
+// persisting anything. Powers the per-profile "Test print" button on
+// the Admin → Settings → Printer screen so an admin can validate
+// IP/port/USB/serial changes BEFORE saving them.
+ipcMain.handle(
+  'settings:testPrintProfile',
+  async (_evt, profile): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      if (!profile || typeof profile !== 'object') {
+        return { ok: false, error: 'Missing printer profile.' };
+      }
+      const settings = await readSettings();
+      return await testPrintWithProfile(profile, settings as any);
+    } catch (e: any) {
+      return {
+        ok: false,
+        error: String(e?.message || e || 'Test print failed'),
+      };
+    }
+  },
+);
+
 ipcMain.handle('settings:testPrintVerbose', async () => {
   try {
     const settings = await readSettings();
-    const mode = (settings.printer?.mode ||
-      (settings.printer?.serialPath
-        ? 'SERIAL'
-        : settings.printer?.deviceName
-          ? 'SYSTEM'
-          : 'NETWORK')) as any;
-    if (mode === 'SYSTEM') {
-      // Default ON: most receipt printers should receive raw ESC/POS (HTML/PostScript prints as "code")
-      const raw = (settings.printer as any)?.systemRawEscpos !== false;
-      if (raw) {
-        const data = Buffer.from(
-          [
-            '\x1b@',
-            ' Code Orbit POS Test Print\n',
-            '-------------------------\n',
-            new Date().toISOString() + '\n\n',
-            '\x1dV\x41\x10',
-          ].join(''),
-          'binary',
-        );
-        const r = await sendToCupsRawPrinter({
-          deviceName: settings.printer?.deviceName,
-          data,
-        });
-        return r.ok
-          ? { ok: true }
-          : { ok: false, error: r.error || 'CUPS raw print failed' };
-      } else {
-        const html = buildHtmlReceipt(
-          {
-            area: 'TEST',
-            tableLabel: 'USB',
-            covers: null,
-            items: [{ name: 'Test item', qty: 1, unitPrice: 1.0, vatRate: 0 }],
-            note: null,
-            userName: 'POS',
-            meta: { vatEnabled: true },
-          },
-          settings as any,
-        );
-        const r = await printHtmlToSystemPrinter({
-          html,
-          deviceName: settings.printer?.deviceName,
-          silent: settings.printer?.silent !== false,
-        });
-        return r.ok
-          ? { ok: true }
-          : { ok: false, error: r.error || 'System print failed' };
-      }
+    const profile = pickActiveReceiptProfile(settings as any);
+    if (!profile) {
+      return { ok: false, error: 'No printer configured' };
     }
-    if (mode === 'SERIAL') {
-      const p = settings.printer || {};
-      const cfg = {
-        path: String((p as any).serialPath || ''),
-        baudRate: Number((p as any).baudRate || 19200),
-        dataBits: (Number((p as any).dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
-        stopBits: (Number((p as any).stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
-        parity: String((p as any).parity || 'none') as any as
-          | 'none'
-          | 'even'
-          | 'odd',
-      };
-      if (!cfg.path) return { ok: false, error: 'Serial port not configured' };
-      const data = Buffer.from(
-        [
-          '\x1b@',
-          ' Code Orbit POS Test Print\n',
-          '-------------------------\n',
-          new Date().toISOString() + '\n\n',
-          '\x1dV\x41\x10',
-        ].join(''),
-        'binary',
-      );
-      const { sendToSerialPrinter } = await import('./serial');
-      const r = await sendToSerialPrinter(cfg as any, data);
-      return r.ok
-        ? { ok: true }
-        : { ok: false, error: r.error || 'Serial print failed' };
-    }
-    const ip = process.env.PRINTER_IP || settings.printer?.ip;
-    const port = Number(
-      process.env.PRINTER_PORT || settings.printer?.port || 9100,
-    );
-    if (!ip) return { ok: false, error: 'Printer IP not configured' };
-    const data = Buffer.from(
-      [
-        '\x1b@',
-        ' Code Orbit POS Test Print\n',
-        '-------------------------\n',
-        new Date().toISOString() + '\n\n',
-        '\x1dV\x41\x10',
-      ].join(''),
-      'binary',
-    );
-    const r = await sendToPrinterVerbose(ip, port, data);
+    const r = await testPrintWithProfile(profile, settings as any);
     if (!r.ok) {
       const c = classifyPrinterError(r.error);
       broadcastPrinterEvent({
@@ -1693,14 +2129,7 @@ ipcMain.handle('settings:testPrintVerbose', async () => {
         at: Date.now(),
       });
     }
-    return r.ok
-      ? { ok: true }
-      : {
-          ok: false,
-          error:
-            r.error ||
-            `Send failed (protocol ${process.env.PRINTER_PROTOCOL || (port === 515 ? 'LPR' : 'RAW')} to ${ip}:${port})`,
-        };
+    return r;
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Unknown error') };
   }
@@ -1732,11 +2161,65 @@ ipcMain.handle('offline:getStatus', async () => {
   return await getOutboxStatus();
 });
 
+// PR 3: expose the printer-retry queue so a future "Pending prints"
+// admin UI (or a sync-status badge) can list and cancel pending
+// retries. Read-only listing is safe to leave open; cancel requires
+// at least an admin role check at the IPC boundary so a compromised
+// renderer can't silently drop the kitchen's tickets — for now we
+// gate it behind requireAuth which already exists upstream of these
+// handlers (callers from the staff UI will pass through that path).
+ipcMain.handle('print:listRetries', async () => {
+  const rows = await prisma.printJob
+    .findMany({
+      where: { status: { in: ['RETRY', 'FAILED'] as any } },
+      orderBy: [{ status: 'asc' }, { nextAttemptAt: 'asc' }, { id: 'desc' }],
+      take: 100,
+    })
+    .catch(() => []);
+  return rows.map((r: any) => ({
+    id: Number(r.id),
+    status: String(r.status),
+    type: String(r.type),
+    attempts: Number(r.attempts || 0),
+    lastError: r.lastError ? String(r.lastError) : null,
+    nextAttemptAt: r.nextAttemptAt
+      ? new Date(r.nextAttemptAt).toISOString()
+      : null,
+    printerProfileId: r.printerProfileId ? String(r.printerProfileId) : null,
+    createdAt: new Date(r.createdAt).toISOString(),
+  }));
+});
+
+ipcMain.handle('print:cancelRetry', async (_e, payload) => {
+  const id = Number((payload as any)?.id || 0);
+  if (!id) return { ok: false, error: 'missing id' };
+  await prisma.printJob
+    .update({
+      where: { id },
+      data: {
+        status: 'FAILED' as any,
+        lastError: 'cancelled by user',
+        nextAttemptAt: null,
+      } as any,
+    })
+    .catch(() => {});
+  return { ok: true };
+});
+
 ipcMain.handle('system:openExternal', async (_e, payload) => {
   try {
     const url = String((payload as any)?.url || '').trim();
     if (!url) return false;
-    await shell.openExternal(url);
+    // SECURITY: only allow http/https/mailto. Reject file:, javascript:, custom protocols, etc.
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
+    const allowed = new Set(['http:', 'https:', 'mailto:']);
+    if (!allowed.has(parsed.protocol)) return false;
+    await shell.openExternal(parsed.toString());
     return true;
   } catch {
     return false;
@@ -1907,192 +2390,24 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     }
   }
 
+  // All the actual ESC/POS dispatch + routing lives in
+  // `printDispatcher.ts`. This handler keeps only the side effects:
+  // notifications + PrintJob history record.
   const settings = await readSettings();
-  const normalizeProfiles = (s: any) => {
-    const arr = Array.isArray(s?.printers) ? s.printers : [];
-    if (arr.length) return arr;
-    const legacy = s?.printer;
-    if (legacy && Object.keys(legacy).length)
-      return [
-        {
-          id: 'default',
-          name: 'Default printer',
-          enabled: true,
-          ...(legacy || {}),
-        },
-      ];
-    return [];
-  };
-  const pickProfile = (s: any, printerId?: string | null) => {
-    const profiles = normalizeProfiles(s).filter(
-      (p: any) => p && p.enabled !== false,
-    );
-    if (!profiles.length) return null;
-    if (printerId) {
-      const hit = profiles.find((p: any) => String(p.id) === String(printerId));
-      if (hit) return hit;
-    }
-    return profiles[0] || null;
-  };
-  const printWithProfile = async (printerProfile: any, pld: any) => {
-    const mode = (printerProfile?.mode ||
-      (printerProfile?.serialPath
-        ? 'SERIAL'
-        : printerProfile?.deviceName
-          ? 'SYSTEM'
-          : 'NETWORK')) as any;
-    if (mode === 'SYSTEM') {
-      const raw = printerProfile?.systemRawEscpos !== false;
-      if (raw) {
-        const data = buildEscposTicket(pld, settings as any);
-        return await sendToCupsRawPrinter({
-          deviceName: printerProfile?.deviceName,
-          data,
-        });
-      } else {
-        const html = buildHtmlReceipt(pld, settings as any);
-        return await printHtmlToSystemPrinter({
-          html,
-          deviceName: printerProfile?.deviceName,
-          silent: printerProfile?.silent !== false,
-        });
-      }
-    }
-    if (mode === 'SERIAL') {
-      const cfg = {
-        path: String(printerProfile?.serialPath || ''),
-        baudRate: Number(printerProfile?.baudRate || 19200),
-        dataBits: (Number(printerProfile?.dataBits || 8) === 7 ? 7 : 8) as
-          | 7
-          | 8,
-        stopBits: (Number(printerProfile?.stopBits || 1) === 2 ? 2 : 1) as
-          | 1
-          | 2,
-        parity: String(printerProfile?.parity || 'none') as any as
-          | 'none'
-          | 'even'
-          | 'odd',
-      };
-      if (!cfg.path) return { ok: false, error: 'Serial port not configured' };
-      const data = buildEscposTicket(pld, settings as any);
-      const { sendToSerialPrinter } = await import('./serial');
-      return await sendToSerialPrinter(cfg as any, data);
-    }
-    const ip = process.env.PRINTER_IP || printerProfile?.ip;
-    const port = Number(
-      process.env.PRINTER_PORT || printerProfile?.port || 9100,
-    );
-    if (!ip) return { ok: false, error: 'Printer IP not configured' };
-    const data = buildEscposTicket(pld, settings as any);
-    const r = await sendToPrinterVerbose(ip, port, data);
-    return r.ok
-      ? { ok: true }
-      : { ok: false, error: r.error || `Send failed (to ${ip}:${port})` };
-  };
-
-  const routingEnabled = Boolean((settings as any)?.printerRouting?.enabled);
-  const receiptPrinterId =
-    (settings as any)?.printerRouting?.receiptPrinterId || 'default';
-  const receiptProfile =
-    pickProfile(settings, receiptPrinterId) || pickProfile(settings, 'default');
-  if (!receiptProfile) return false;
-
   const kind = String((payload as any)?.meta?.kind || '').toUpperCase();
-  let ok = false;
-  let firstErr: string | null = null;
-  let failCount = 0;
-  if (routingEnabled && kind === 'ORDER') {
-    const routing = (settings as any)?.printerRouting || {};
-    const stationRouting = (routing?.station || {}) as any; // backward compat for fallback
-    const categoryRouting = (routing?.categories || {}) as Record<string, string>;
-    const fallbackPrinterId = String((routing as any)?.fallbackPrinterId || stationRouting?.ALL || '').trim();
-    const normKey = (s: any) =>
-      String(s ?? '')
-        .trim()
-        .toLowerCase();
-    const skus = Array.from(
-      new Set(items.map((it) => String(it?.sku || '')).filter(Boolean)),
-    );
-    const menu = skus.length
-      ? await prisma.menuItem
-          .findMany({
-            where: { sku: { in: skus } },
-            select: { sku: true, station: true, categoryId: true },
-          } as any)
-          .catch(() => [])
-      : [];
-    const bySku = new Map<string, { station?: string; categoryId?: number }>();
-    for (const m of menu as any[])
-      bySku.set(String(m.sku), {
-        station: String(m.station || ''),
-        categoryId: Number(m.categoryId),
-      });
-
-    const buckets = new Map<string, any[]>();
-    for (const it of items) {
-      const sku = String(it?.sku || '');
-      const info = sku ? bySku.get(sku) : undefined;
-      const categoryId = Number.isFinite(Number((it as any)?.categoryId))
-        ? Number((it as any).categoryId)
-        : info?.categoryId;
-      const categoryKey =
-        categoryId != null && Number.isFinite(categoryId)
-          ? String(categoryId)
-          : '';
-      const categoryNameKey = normKey((it as any)?.categoryName);
-      const printerIdByCategoryName =
-        categoryNameKey && categoryRouting[categoryNameKey]
-          ? categoryRouting[categoryNameKey]
-          : '';
-      const printerIdByCategoryId =
-        categoryKey && categoryRouting[categoryKey]
-          ? categoryRouting[categoryKey]
-          : '';
-      const printerIdByCategory =
-        printerIdByCategoryName || printerIdByCategoryId;
-      const printerId = String(printerIdByCategory || fallbackPrinterId || '').trim();
-      const groupKey = printerIdByCategory
-        ? `CAT:${categoryNameKey || categoryKey || 'unknown'}`
-        : `FB:ALL`;
-      const key = `${printerId || ''}|${groupKey}`;
-      if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key)!.push({ ...(it as any), station: 'ALL', categoryId });
-    }
-
-    let okAll = true;
-    for (const [key, groupItems] of buckets.entries()) {
-      const [printerId, group] = key.split('|');
-      const prof = pickProfile(settings, printerId) || receiptProfile;
-      const routeLabel = String(group || '').startsWith('CAT:')
-        ? String(group).slice(4)
-        : 'all';
-      const pld = {
-        ...payload,
-        items: groupItems,
-        meta: {
-          ...((payload as any)?.meta || {}),
-          kind: 'ORDER',
-          station: 'ALL',
-          hidePrices: true,
-          routeLabel,
-        },
-      };
-      const r = await printWithProfile(prof, pld);
-      if (!r.ok) {
-        okAll = false;
-        failCount++;
-        if (!firstErr) firstErr = String((r as any)?.error || 'Print failed');
-      }
-    }
-    ok = okAll;
-  } else {
-    const r = await printWithProfile(receiptProfile, payload);
-    ok = r.ok;
-    if (!ok) {
-      failCount = 1;
-      firstErr = String((r as any)?.error || 'Print failed');
-    }
-  }
+  const result: DispatchResult = await dispatchTicket(
+    payload,
+    settings as any,
+    // Persist transient failures into the RETRY queue (PR 3) so the
+    // printer-station loop can keep trying for ~4 min. The waiter
+    // still sees the immediate error toast — the queue is a quiet
+    // safety net for "actually, the kitchen printer came back 12 s
+    // later".
+    { persistRetryOnTransientFailure: true },
+  );
+  const ok = result.ok;
+  const failCount = result.failures;
+  const firstErr = result.firstError ?? null;
 
   if (!ok) {
     const c = classifyPrinterError(firstErr);
@@ -2120,7 +2435,9 @@ ipcMain.handle('tickets:print', async (_e, input) => {
       // ignore
     }
   }
-  // Also store a PrintJob record (useful for receipt history)
+  // Store a PrintJob record (useful for receipt history). SENT/FAILED
+  // here just tracks the synchronous outcome; the QUEUED status is
+  // reserved for jobs the cloud poller hasn't picked up yet.
   try {
     await prisma.printJob.create({
       data: {
@@ -2177,8 +2494,10 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
         const where: any = { area, tableLabel };
         if (since) where.createdAt = { gte: since };
         const [rows, coversRow, u] = await Promise.all([
+          // Cap per-table active ticket history. Even very long sessions rarely
+          // exceed a few hundred log rows; this prevents pathological loads.
           prisma.ticketLog
-            .findMany({ where, orderBy: { createdAt: 'asc' } })
+            .findMany({ where, orderBy: { createdAt: 'asc' }, take: 500 })
             .catch(() => [] as any[]),
           prisma.covers
             .findFirst({
@@ -2415,42 +2734,59 @@ ipcMain.handle('tables:setOpen', async (_e, input) => {
   const open = Boolean(input?.open);
   if (!area || !label) return false;
 
-  await coreServices.setTableOpen(area, label, open);
-  // Track open timestamp for current session
-  const keyAt = 'tables:openAt';
-  const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } });
-  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-  const kKey = `${area}:${label}`;
-  // IMPORTANT: do NOT reset openAt on repeated "open=true" calls.
-  if (open) {
-    if (!atMap[kKey]) atMap[kKey] = new Date().toISOString();
-  } else {
-    delete atMap[kKey];
-  }
-  await prisma.syncState.upsert({
-    where: { key: keyAt },
-    create: { key: keyAt, valueJson: atMap },
-    update: { valueJson: atMap },
-  });
-
-  // If a table is being closed, also close the active KDS order (if any).
-  if (!open) {
+  // All of these mutations belong to the same logical "session edge" for
+  // the table — `tables:open`, `tables:openAt`, and the active KDS order.
+  // We serialize them under the per-table lock used by
+  // `coreServices.setTableOpen` so a concurrent transfer / close from
+  // another device can't interleave half of one operation with half of
+  // another and leave inconsistent state behind.
+  return withTableLock(area, label, async () => {
+    await coreServices.setTableOpen(area, label, open);
+    // Push the change to every other client (other Electron windows +
+    // mobile tablets via SSE). Without this, opening / closing a table
+    // on one device would leave the others showing stale colours until
+    // the next 12-15s poll.
     try {
-      const active = await (prisma as any).kdsOrder.findFirst({
-        where: { area, tableLabel: label, closedAt: null },
-        orderBy: { openedAt: 'desc' },
-      });
-      if (active) {
-        await (prisma as any).kdsOrder.update({
-          where: { id: active.id },
-          data: { closedAt: new Date() },
-        });
-      }
+      broadcastTableStatusChanged({ area, label, open });
     } catch {
-      // ignore if KDS tables are not migrated yet
+      // ignore — best effort
     }
-  }
-  return true;
+    // Track open timestamp for current session
+    const keyAt = 'tables:openAt';
+    const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } });
+    const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
+    const kKey = `${area}:${label}`;
+    // IMPORTANT: do NOT reset openAt on repeated "open=true" calls.
+    if (open) {
+      if (!atMap[kKey]) atMap[kKey] = new Date().toISOString();
+    } else {
+      delete atMap[kKey];
+    }
+    await prisma.syncState.upsert({
+      where: { key: keyAt },
+      create: { key: keyAt, valueJson: atMap },
+      update: { valueJson: atMap },
+    });
+
+    // If a table is being closed, also close the active KDS order (if any).
+    if (!open) {
+      try {
+        const active = await (prisma as any).kdsOrder.findFirst({
+          where: { area, tableLabel: label, closedAt: null },
+          orderBy: { openedAt: 'desc' },
+        });
+        if (active) {
+          await (prisma as any).kdsOrder.update({
+            where: { id: active.id },
+            data: { closedAt: new Date() },
+          });
+        }
+      } catch {
+        // ignore if KDS tables are not migrated yet
+      }
+    }
+    return true;
+  });
 });
 
 // Local-first: always use local SyncState for open tables
@@ -2606,6 +2942,9 @@ ipcMain.handle('menu:deleteItem', async (_e, payload) => {
 
 // Admin overview - Local-first: always use local DB
 ipcMain.handle('admin:getOverview', async (_e) => {
+  const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
+  const todayEnd = new Date(new Date().setHours(23, 59, 59, 999));
+
   const [
     users,
     openShifts,
@@ -2615,6 +2954,8 @@ ipcMain.handle('admin:getOverview', async (_e) => {
     menuSync,
     staffSync,
     revenueRows,
+    coversRowsToday,
+    reservationsToday,
   ] = await Promise.all([
     prisma.user.count({ where: { active: true } }),
     prisma.dayShift.count({ where: { closedAt: null } }),
@@ -2642,15 +2983,57 @@ ipcMain.handle('admin:getOverview', async (_e) => {
       .catch(() => null),
     prisma.ticketLog
       .findMany({
-        where: {
-          createdAt: {
-            gte: new Date(new Date().setHours(0, 0, 0, 0)),
-            lte: new Date(new Date().setHours(23, 59, 59, 999)),
-          },
-        },
+        where: { createdAt: { gte: todayStart, lte: todayEnd } },
         select: { itemsJson: true },
       })
       .catch(() => []),
+    // Pull all cover writes that happened today. A waiter may save covers
+    // multiple times for the same dining session (e.g. corrected from 4 → 5),
+    // so we de-dupe per (area, label) keeping only the most recent write.
+    prisma.covers
+      .findMany({
+        where: { createdAt: { gte: todayStart, lte: todayEnd } },
+        select: { area: true, label: true, covers: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+      })
+      .catch(
+        () =>
+          [] as {
+            area: string;
+            label: string;
+            covers: number;
+            createdAt: Date;
+          }[],
+      ),
+    // Reservations for today's day-summary card on the admin overview.
+    // Lightweight query — the table is small and we only need a handful of
+    // fields. Cancelled rows are still pulled so we can show them in the
+    // status breakdown, but they're excluded from cover totals below.
+    prisma.reservation
+      .findMany({
+        where: { startsAt: { gte: todayStart, lte: todayEnd } },
+        select: {
+          status: true,
+          startsAt: true,
+          partySize: true,
+          customerName: true,
+          area: true,
+          tableLabel: true,
+        },
+        orderBy: { startsAt: 'asc' },
+        take: 1000,
+      })
+      .catch(
+        () =>
+          [] as {
+            status: string;
+            startsAt: Date;
+            partySize: number;
+            customerName: string;
+            area: string;
+            tableLabel: string | null;
+          }[],
+      ),
   ]);
   const revenueTodayNet = (revenueRows as any[]).reduce(
     (s, r) =>
@@ -2673,6 +3056,95 @@ ipcMain.handle('admin:getOverview', async (_e) => {
       ),
     0,
   );
+
+  // Sum the latest cover count per (area, label) for today so we report
+  // "guests served today" rather than the total number of cover writes.
+  const seenTables = new Set<string>();
+  let coversToday = 0;
+  for (const r of coversRowsToday as {
+    area: string;
+    label: string;
+    covers: number;
+  }[]) {
+    const k = `${r.area}|${r.label}`;
+    if (seenTables.has(k)) continue;
+    seenTables.add(k);
+    const n = Number(r.covers || 0);
+    if (Number.isFinite(n) && n > 0) coversToday += n;
+  }
+
+  // Reservations day-summary: derive everything off the single small query
+  // above so we don't fan out into multiple DB roundtrips.
+  type ResRow = {
+    status: string;
+    startsAt: Date;
+    partySize: number;
+    customerName: string;
+    area: string;
+    tableLabel: string | null;
+  };
+  const resRows = reservationsToday as ResRow[];
+  const reservationsByStatusToday: Record<string, number> = {
+    BOOKED: 0,
+    SEATED: 0,
+    COMPLETED: 0,
+    NO_SHOW: 0,
+    CANCELLED: 0,
+  };
+  let reservationsCoversToday = 0;
+  let reservationsCountedForCovers = 0;
+  let upcomingCount = 0;
+  let arrivedCount = 0; // reservations whose start time has passed today
+  let noShowCount = 0;
+  const nowMs = Date.now();
+  let nextBooked: ResRow | null = null;
+  for (const r of resRows) {
+    const status = String(r.status || 'BOOKED').toUpperCase();
+    if (
+      Object.prototype.hasOwnProperty.call(reservationsByStatusToday, status)
+    ) {
+      reservationsByStatusToday[status] += 1;
+    }
+    // Cancelled bookings shouldn't inflate covers/avg-party.
+    if (status !== 'CANCELLED') {
+      const p = Number(r.partySize || 0);
+      if (Number.isFinite(p) && p > 0) {
+        reservationsCoversToday += p;
+        reservationsCountedForCovers += 1;
+      }
+    }
+    const tMs = new Date(r.startsAt).getTime();
+    if (Number.isFinite(tMs)) {
+      if (status === 'BOOKED' && tMs > nowMs) {
+        upcomingCount += 1;
+        if (!nextBooked || tMs < new Date(nextBooked.startsAt).getTime()) {
+          nextBooked = r;
+        }
+      }
+      // No-show rate denominator: reservations whose time has already passed
+      // (BOOKED/SEATED/COMPLETED/NO_SHOW). Cancelled is excluded — it's not a
+      // service event.
+      if (
+        tMs <= nowMs &&
+        (status === 'BOOKED' ||
+          status === 'SEATED' ||
+          status === 'COMPLETED' ||
+          status === 'NO_SHOW')
+      ) {
+        arrivedCount += 1;
+        if (status === 'NO_SHOW') noShowCount += 1;
+      }
+    }
+  }
+  const reservationsAvgPartyToday =
+    reservationsCountedForCovers > 0
+      ? Math.round(
+          (reservationsCoversToday / reservationsCountedForCovers) * 10,
+        ) / 10
+      : 0;
+  const reservationsNoShowRateToday =
+    arrivedCount > 0 ? Math.round((noShowCount / arrivedCount) * 100) : 0;
+
   return {
     activeUsers: users,
     openShifts,
@@ -2685,6 +3157,22 @@ ipcMain.handle('admin:getOverview', async (_e) => {
     appVersion: process.env.npm_package_version || '0.1.0',
     revenueTodayNet,
     revenueTodayVat,
+    coversToday,
+    reservationsTotalToday: resRows.length,
+    reservationsCoversToday,
+    reservationsAvgPartyToday,
+    reservationsByStatusToday,
+    reservationsUpcomingToday: upcomingCount,
+    reservationsNoShowRateToday,
+    nextReservationToday: nextBooked
+      ? {
+          timeIso: new Date(nextBooked.startsAt).toISOString(),
+          customerName: String(nextBooked.customerName || ''),
+          partySize: Number(nextBooked.partySize || 0),
+          area: String(nextBooked.area || ''),
+          tableLabel: nextBooked.tableLabel ?? null,
+        }
+      : null,
   };
 });
 
@@ -2696,6 +3184,40 @@ ipcMain.handle('admin:openWindow', async () => {
 ipcMain.handle('kds:openWindow', async () => {
   createKdsWindow();
   return true;
+});
+
+ipcMain.handle('reservations:openWindow', async () => {
+  createReservationWindow();
+  return true;
+});
+
+// Reservations
+//
+// Authorization, validation, conflict-detection, and DTO mapping all live in
+// `services/reservations.ts` so the LAN HTTP API (used by mobile clients) and
+// the desktop IPC layer share the exact same behaviour.
+ipcMain.handle('reservations:list', async (_e, input) => {
+  return reservationsService.listReservationsForDay(input || {});
+});
+
+ipcMain.handle('reservations:listCounts', async (_e, input) => {
+  return reservationsService.listReservationCounts(input || {});
+});
+
+ipcMain.handle('reservations:create', async (_e, input) => {
+  return reservationsService.createReservation(input || {});
+});
+
+ipcMain.handle('reservations:update', async (_e, input) => {
+  return reservationsService.updateReservation(input || {});
+});
+
+ipcMain.handle('reservations:setStatus', async (_e, input) => {
+  return reservationsService.setReservationStatus(input || {});
+});
+
+ipcMain.handle('reservations:delete', async (_e, input) => {
+  return reservationsService.deleteReservation(input || {});
 });
 
 // Backups: create/list/restore (local SQLite)
@@ -2720,11 +3242,14 @@ ipcMain.handle('backups:uploadToCloud', async (_e, input) => {
   if (!pw) return { ok: false, error: 'Cloud access password not set' };
   const dir = getBackupsDir();
   const safeName = name ? String(name).replace(/[^0-9A-Za-z._-]/g, '') : '';
-  const filePath = safeName ? join(dir, safeName.endsWith('.db') ? safeName : `${safeName}.db`) : null;
+  const filePath = safeName
+    ? join(dir, safeName.endsWith('.db') ? safeName : `${safeName}.db`)
+    : null;
   let toUpload = filePath && fs.existsSync(filePath) ? filePath : null;
   if (!toUpload) {
     const created = await createDbBackupNow();
-    if (!created.ok || !created.file) return { ok: false, error: created.error || 'Backup failed' };
+    if (!created.ok || !created.file)
+      return { ok: false, error: created.error || 'Backup failed' };
     toUpload = created.file;
   }
   try {
@@ -3099,35 +3624,113 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
     // Validate items array
     if (!Array.isArray(items) || items.length === 0) return false;
 
-    // Local-first: always use local DB for tickets
-    await prisma.ticketLog.create({
-      data: {
-        userId: Number(userId),
-        area: sanitizedArea,
-        tableLabel: sanitizedTableLabel,
-        covers: sanitizedCovers,
-        itemsJson: items ?? [],
-        note: sanitizedNote,
-      },
-    });
+    // The whole "open ⇒ check ⇒ insert ⇒ KDS" sequence happens under
+    // the table lock so it can't interleave with a `tables:setOpen` or a
+    // transfer for the same table from another device.
+    return await withTableLock(sanitizedArea, sanitizedTableLabel, async () => {
+      // Refuse to append to a closed table. Without this guard a stale
+      // device could add lines to a table that has already been paid out
+      // / voided / handed off — which silently rebuilds the closed
+      // session, mis-attributes revenue, and (worst of all) reprints
+      // duplicate kitchen tickets.
+      const isOpen = await coreServices.isTableOpen(
+        sanitizedArea,
+        sanitizedTableLabel,
+      );
+      if (!isOpen) {
+        return {
+          ok: false,
+          error: `Table ${sanitizedArea} ${sanitizedTableLabel} is closed`,
+          code: 'TABLE_CLOSED',
+        };
+      }
 
-    // KDS: create station-specific ticket rows (best-effort; does not block sending).
-    try {
-      await createKdsTicketFromLog({
-        userId: Number(userId),
-        area: sanitizedArea,
-        tableLabel: sanitizedTableLabel,
-        items: items ?? [],
-        note: sanitizedNote,
+      // Anti-collision: if the latest log row IN THIS OPEN SESSION was
+      // written by a different waiter (and the actor isn't an admin),
+      // the actor is operating on a stale view — most likely both
+      // waiters tried to claim the same empty table, or this device
+      // missed a transfer broadcast. Reject so the renderer can refresh
+      // and toast a clear message instead of silently overwriting the
+      // session owner.
+      //
+      // CRITICAL: scope the lookup to the CURRENT open session via
+      // `getCurrentSessionOwnerId`. Tables get reused — without that
+      // scope, the first send by a fresh waiter who opened a
+      // previously-paid-out table would be rejected because the
+      // all-time "latest" row belongs to whoever last owned that
+      // table label (often days ago).
+      const ownerId = await getCurrentSessionOwnerId(
+        sanitizedArea,
+        sanitizedTableLabel,
+      );
+      if (ownerId !== null && ownerId !== Number(userId)) {
+        const actor = await prisma.user
+          .findUnique({ where: { id: Number(userId) } })
+          .catch(() => null);
+        const actorIsAdmin =
+          actor && String((actor as any).role || '').toUpperCase() === 'ADMIN';
+        if (!actorIsAdmin) {
+          const ownerName = await prisma.user
+            .findUnique({ where: { id: ownerId } })
+            .catch(() => null);
+          return {
+            ok: false,
+            error: `Table is owned by ${ownerName?.displayName || `waiter #${ownerId}`}`,
+            code: 'TABLE_OWNED_BY_OTHER',
+            ownerId,
+            ownerName: ownerName?.displayName || null,
+          };
+        }
+      }
+
+      // Local-first: always use local DB for tickets
+      await prisma.ticketLog.create({
+        data: {
+          userId: Number(userId),
+          area: sanitizedArea,
+          tableLabel: sanitizedTableLabel,
+          covers: sanitizedCovers,
+          itemsJson: items ?? [],
+          note: sanitizedNote,
+        },
       });
-    } catch (e: any) {
-      __kdsLastError = String(e?.message || e || 'Failed to create KDS ticket');
-      console.error('KDS create ticket failed', e);
-      captureException(e instanceof Error ? e : new Error(String(e)), {
-        context: 'tickets:log:KDS',
-      });
-    }
-    return true;
+
+      // Notify every other client so the table's waiter badge / metrics
+      // refresh in real time. Without this, a table that waiter B
+      // already had open keeps showing B's initials on every other
+      // device when waiter A appends an item — the open-set didn't
+      // change so the badge `useEffect` would not re-fetch.
+      try {
+        broadcastTicketsChanged({
+          area: sanitizedArea,
+          tableLabel: sanitizedTableLabel,
+          userId: Number(userId),
+        });
+      } catch {
+        // ignore — broadcasting is best-effort
+      }
+
+      // KDS: create station-specific ticket rows (best-effort; does not
+      // block sending).
+      try {
+        await createKdsTicketFromLog({
+          userId: Number(userId),
+          area: sanitizedArea,
+          tableLabel: sanitizedTableLabel,
+          items: items ?? [],
+          note: sanitizedNote,
+        });
+      } catch (e: any) {
+        __kdsLastError = String(
+          e?.message || e || 'Failed to create KDS ticket',
+        );
+        console.error('KDS create ticket failed', e);
+        captureException(e instanceof Error ? e : new Error(String(e)), {
+          context: 'tickets:log:KDS',
+        });
+      }
+      return { ok: true };
+    });
   } catch (error: any) {
     captureException(
       error instanceof Error ? error : new Error(String(error)),
@@ -3148,8 +3751,26 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!area || !tableLabel) return null;
+  // Scope to the current open session via `tables:openAt`. Tables get
+  // reused — without this scope, opening a table that was paid out
+  // earlier flashes the previous owner's items in the ticket panel
+  // until the next round-trip refresh, which looks broken (and was
+  // the source of the "shows the wrong order right after Send" bug).
+  // Falling back to the all-time latest only when there's no openAt
+  // entry preserves behaviour for callers that intentionally inspect
+  // historical state (e.g. tooltip code paths that pre-date sessions).
+  const atRow = await prisma.syncState
+    .findUnique({ where: { key: 'tables:openAt' } })
+    .catch(() => null);
+  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
+  const sinceIso = atMap[`${area}:${tableLabel}`];
+  const sinceParsed = sinceIso ? new Date(sinceIso) : null;
+  const since =
+    sinceParsed && Number.isFinite(sinceParsed.getTime()) ? sinceParsed : null;
+  const where: any = { area, tableLabel };
+  if (since) where.createdAt = { gte: since };
   const last = await prisma.ticketLog.findFirst({
-    where: { area, tableLabel },
+    where,
     orderBy: { createdAt: 'desc' },
   });
   if (!last) return null;
@@ -3395,32 +4016,45 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
   // Enforce admin PIN approval for voids if enabled in settings.
   // In cloud mode, pass actorRole from the renderer since cloud user IDs may not exist locally.
   const actorRoleHint = String(input?.actorRole || '').trim();
+  let actorIsAdmin = false;
   try {
     const settings: any = await readSettings();
     const requireApproval =
       settings?.security?.approvals?.requireManagerPinForVoid !== false;
-    if (requireApproval) {
-      const actor = await prisma.user
-        .findUnique({ where: { id: userId } })
+    const actor = await prisma.user
+      .findUnique({ where: { id: userId } })
+      .catch(() => null);
+    actorIsAdmin =
+      (actor && String((actor as any)?.role || '').toUpperCase() === 'ADMIN') ||
+      (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
+    if (requireApproval && !actorIsAdmin) {
+      if (!approvedByAdminId) return false;
+      const approver = await prisma.user
+        .findUnique({ where: { id: approvedByAdminId } })
         .catch(() => null);
-      const actorIsAdmin =
-        (actor && String((actor as any)?.role || '').toUpperCase() === 'ADMIN') ||
-        (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
-      if (!actorIsAdmin) {
-        if (!approvedByAdminId) return false;
-        const approver = await prisma.user
-          .findUnique({ where: { id: approvedByAdminId } })
-          .catch(() => null);
-        const approverIsAdmin =
-          approver &&
-          (approver as any).active !== false &&
-          String((approver as any).role || '').toUpperCase() === 'ADMIN';
-        if (!approverIsAdmin) return false;
-      }
+      const approverIsAdmin =
+        approver &&
+        (approver as any).active !== false &&
+        String((approver as any).role || '').toUpperCase() === 'ADMIN';
+      if (!approverIsAdmin) return false;
     }
   } catch {
     // Fail closed when approvals are on by default.
     return false;
+  }
+
+  // Ownership guard: a non-admin waiter can only void on a table they
+  // currently own (i.e. their userId matches the latest ticket-log row).
+  // Without this, a stale device could void another waiter's items
+  // after the table was transferred away — there's no money loss but
+  // it corrupts attribution and bypasses the manager-approval audit
+  // trail. Admin PIN approval still works as the override path.
+  if (!actorIsAdmin && !approvedByAdminId) {
+    // Scope to the current session — see `getCurrentSessionOwnerId`.
+    const ownerId = await getCurrentSessionOwnerId(area, tableLabel);
+    if (ownerId !== null && ownerId !== Number(userId)) {
+      return false;
+    }
   }
   const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
@@ -3477,35 +4111,50 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
 
   // Enforce admin PIN approval for voids if enabled in settings.
   const actorRoleHint = String(input?.actorRole || '').trim();
+  let actorIsAdmin = false;
   try {
     const settings: any = await readSettings();
     const requireApproval =
       settings?.security?.approvals?.requireManagerPinForVoid !== false;
-    if (requireApproval) {
-      const actor = await prisma.user
-        .findUnique({ where: { id: userId } })
+    const actor = await prisma.user
+      .findUnique({ where: { id: userId } })
+      .catch(() => null);
+    actorIsAdmin =
+      (actor && String((actor as any)?.role || '').toUpperCase() === 'ADMIN') ||
+      (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
+    if (requireApproval && !actorIsAdmin) {
+      if (!approvedByAdminId) return false;
+      const approver = await prisma.user
+        .findUnique({ where: { id: approvedByAdminId } })
         .catch(() => null);
-      const actorIsAdmin =
-        (actor && String((actor as any)?.role || '').toUpperCase() === 'ADMIN') ||
-        (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
-      if (!actorIsAdmin) {
-        if (!approvedByAdminId) return false;
-        const approver = await prisma.user
-          .findUnique({ where: { id: approvedByAdminId } })
-          .catch(() => null);
-        const approverIsAdmin =
-          approver &&
-          (approver as any).active !== false &&
-          String((approver as any).role || '').toUpperCase() === 'ADMIN';
-        if (!approverIsAdmin) return false;
-      }
+      const approverIsAdmin =
+        approver &&
+        (approver as any).active !== false &&
+        String((approver as any).role || '').toUpperCase() === 'ADMIN';
+      if (!approverIsAdmin) return false;
     }
   } catch {
     return false;
   }
-  // Local-first: close table locally
+
+  // Ownership guard — same rule as `tickets:voidItem`. Stops a stale
+  // device from wiping out a table that's been transferred away.
+  // Scoped to the current session via `getCurrentSessionOwnerId`.
+  if (!actorIsAdmin && !approvedByAdminId) {
+    const ownerId = await getCurrentSessionOwnerId(area, tableLabel);
+    if (ownerId !== null && ownerId !== Number(userId)) {
+      return false;
+    }
+  }
+  // Local-first: close table locally. Wrap in `withTableLock` so the
+  // close serializes against any in-flight `tickets:log` for the same
+  // table — without that, a stale send could slip in between our
+  // ownership check and the close, leaving a fresh row on a table the
+  // server thinks is voided/closed.
   try {
-    await coreServices.setTableOpen(area, tableLabel, false);
+    await withTableLock(area, tableLabel, async () => {
+      await coreServices.setTableOpen(area, tableLabel, false);
+    });
   } catch {
     // ignore
   }
@@ -3551,17 +4200,23 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
       },
     });
   }
-  // Close table in local open map + openAt so it becomes FREE immediately
+  // Close table in local open map + openAt so it becomes FREE immediately.
+  // Same lock rationale as the other void path: keep the open-map flip
+  // and the openAt cleanup atomic with respect to concurrent sends.
   try {
-    await coreServices.setTableOpen(area, tableLabel, false);
-    const keyAt = 'tables:openAt';
-    const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } });
-    const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-    delete atMap[`${area}:${tableLabel}`];
-    await prisma.syncState.upsert({
-      where: { key: keyAt },
-      create: { key: keyAt, valueJson: atMap },
-      update: { valueJson: atMap },
+    await withTableLock(area, tableLabel, async () => {
+      await coreServices.setTableOpen(area, tableLabel, false);
+      const keyAt = 'tables:openAt';
+      const atRow = await prisma.syncState.findUnique({
+        where: { key: keyAt },
+      });
+      const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
+      delete atMap[`${area}:${tableLabel}`];
+      await prisma.syncState.upsert({
+        where: { key: keyAt },
+        create: { key: keyAt, valueJson: atMap },
+        update: { valueJson: atMap },
+      });
     });
   } catch {
     // ignore
@@ -3595,29 +4250,119 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
     if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
   }
+  const limit = Math.min(2000, Math.max(1, Number(input?.limit || 500)));
   const rows = await prisma.ticketLog.findMany({
     where,
     orderBy: { createdAt: 'desc' },
+    take: limit,
   });
-  return rows.map((r: any) => ({
-    id: r.id,
-    area: r.area,
-    tableLabel: r.tableLabel,
-    covers: r.covers,
-    createdAt: r.createdAt.toISOString(),
-    items: r.itemsJson as any,
-    note: r.note,
-    subtotal: (r.itemsJson as any[]).reduce(
-      (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
-      0,
-    ),
-    vat: (r.itemsJson as any[]).reduce(
-      (s: number, it: any) =>
-        s +
-        Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0),
-      0,
-    ),
-  }));
+
+  // Status resolution per ticket-log row:
+  //   VOIDED  -> note explicitly contains "VOIDED" OR every item on the row is voided
+  //   ACTIVE  -> the (area, tableLabel) is currently in the `tables:open` map
+  //              AND no payment receipt has been printed for it at/after this row's time
+  //   PAID    -> otherwise (closed table without a void marker = it was paid out)
+  //
+  // We resolve PAID by looking up RECEIPT print jobs whose payload meta.kind === 'PAYMENT'.
+  // To avoid N+1, fetch once for the unique tables on screen and bucket the
+  // earliest payment timestamp per table, then compare per row.
+  const uniqueTables = Array.from(
+    new Set((rows as any[]).map((r: any) => `${r.area}|${r.tableLabel}`)),
+  );
+  const openRow = await prisma.syncState
+    .findUnique({ where: { key: 'tables:open' } })
+    .catch(() => null);
+  const openMap = ((openRow?.valueJson as any) || {}) as Record<
+    string,
+    boolean
+  >;
+
+  // Pull recent receipt print jobs and index PAYMENT timestamps per table.
+  // 1000 is a generous cap — a single day rarely produces more than a few hundred receipts.
+  const paymentsByTable = new Map<string, number[]>(); // ms timestamps, ascending
+  if (uniqueTables.length) {
+    const receiptJobs = await prisma.printJob
+      .findMany({
+        where: { type: 'RECEIPT' as any },
+        orderBy: { createdAt: 'desc' },
+        take: 1000,
+        select: { createdAt: true, payloadJson: true },
+      })
+      .catch(() => [] as { createdAt: Date; payloadJson: any }[]);
+    for (const j of receiptJobs as { createdAt: Date; payloadJson: any }[]) {
+      const p = (j.payloadJson as any) || {};
+      const meta = (p?.meta as any) || {};
+      if (String(meta?.kind || '') !== 'PAYMENT') continue;
+      const k = `${String(p.area || '')}|${String(p.tableLabel || '')}`;
+      if (!uniqueTables.includes(k)) continue;
+      const arr = paymentsByTable.get(k) || [];
+      arr.push(new Date(j.createdAt).getTime());
+      paymentsByTable.set(k, arr);
+    }
+    for (const [k, arr] of paymentsByTable) arr.sort((a, b) => a - b);
+  }
+
+  return rows.map((r: any) => {
+    const items = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
+    const noteStr = String(r.note || '').toUpperCase();
+    const allVoided =
+      items.length > 0 && items.every((it: any) => it?.voided === true);
+    const isVoided = allVoided || /\bVOIDED\b/.test(noteStr);
+
+    const tKey = `${r.area}|${r.tableLabel}`;
+    const rowMs = new Date(r.createdAt).getTime();
+    const payments = paymentsByTable.get(tKey) || [];
+    // A payment "covers" this row only if it happened at or after the row was sent.
+    const isPaid = payments.some((ms) => ms >= rowMs);
+    const isOpen = Boolean(openMap[`${r.area}:${r.tableLabel}`]);
+
+    const status: 'PAID' | 'VOIDED' | 'ACTIVE' = isVoided
+      ? 'VOIDED'
+      : isPaid
+        ? 'PAID'
+        : isOpen
+          ? 'ACTIVE'
+          : 'PAID';
+
+    // Surface the structured transfer tag so the admin UI can show a
+    // "Transferred from X" badge without re-parsing strings on the renderer.
+    const parsedTransfer = parseTransferTag(r.note);
+    const transfer = parsedTransfer
+      ? {
+          kind: parsedTransfer.kind,
+          fromUserId: parsedTransfer.fromUserId,
+          fromUserName: parsedTransfer.fromUserName,
+          fromArea: parsedTransfer.fromArea ?? null,
+          fromLabel: parsedTransfer.fromLabel ?? null,
+          toUserId: parsedTransfer.toUserId ?? null,
+          toUserName: parsedTransfer.toUserName ?? null,
+          byUserId: parsedTransfer.byUserId,
+          byUserName: parsedTransfer.byUserName,
+        }
+      : null;
+
+    return {
+      id: r.id,
+      area: r.area,
+      tableLabel: r.tableLabel,
+      covers: r.covers,
+      createdAt: r.createdAt.toISOString(),
+      items,
+      note: r.note,
+      status,
+      transfer,
+      subtotal: items.reduce(
+        (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
+        0,
+      ),
+      vat: items.reduce(
+        (s: number, it: any) =>
+          s +
+          Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0),
+        0,
+      ),
+    };
+  });
 });
 
 // Notifications IPC
@@ -3625,9 +4370,11 @@ ipcMain.handle('notifications:list', async (_e, input) => {
   const onlyUnread = Boolean(input?.onlyUnread);
   const userId = Number(input?.userId);
   if (!userId) return [];
+  const limit = Math.min(500, Math.max(1, Number(input?.limit || 100)));
   const rows = await prisma.notification.findMany({
     where: { userId, ...(onlyUnread ? { readAt: null } : {}) },
     orderBy: { createdAt: 'desc' },
+    take: limit,
   } as any);
   return rows.map((n: any) => ({
     id: n.id,
@@ -3667,11 +4414,32 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
   const openIds = new Set(openShifts.map((s: any) => s.openedById));
   const counts: Record<number, number> = {};
   for (const r of logs as any[]) counts[r.userId] = r._count.userId;
+
+  // Count transferred-in tickets per user. A transferred ticket is any
+  // ticket-log row whose note carries our `[TRANSFER ...]` tag (new or legacy).
+  // SQLite only does case-sensitive LIKE, so a single OR on the literal prefix
+  // is enough — we already prepend the tag at write time.
+  const transfersIn: Record<number, number> = {};
+  try {
+    const transferRows = await prisma.ticketLog
+      .findMany({
+        where: { ...where, note: { contains: '[TRANSFER' } },
+        select: { userId: true },
+      } as any)
+      .catch(() => [] as { userId: number }[]);
+    for (const row of transferRows as { userId: number }[]) {
+      transfersIn[row.userId] = (transfersIn[row.userId] ?? 0) + 1;
+    }
+  } catch {
+    // Best-effort metric — never block the list on it.
+  }
+
   return users.map((u: any) => ({
     id: u.id,
     name: u.displayName,
     active: openIds.has(u.id),
     tickets: counts[u.id] ?? 0,
+    transfersIn: transfersIn[u.id] ?? 0,
   }));
 });
 
@@ -3708,9 +4476,23 @@ ipcMain.handle('admin:listShifts', async (_e, input) => {
 
 ipcMain.handle('admin:listNotifications', async (_e, input) => {
   const onlyUnread = Boolean(input?.onlyUnread);
-  const limit = Number(input?.limit || 100);
+  const limit = Math.min(500, Math.max(1, Number(input?.limit || 100)));
+  // Notifications are per-recipient. The admin panel must only show rows
+  // addressed to the currently signed-in admin, otherwise it leaks every
+  // waiter's personal notification feed (approvals, "your request was
+  // approved", etc.) into the admin view.
+  const userId = Number(input?.userId || 0);
+  if (!userId) return [];
+  // Defensive: confirm the caller is actually an active admin in this DB
+  // before returning anything. The IPC isn't reachable from non-admin
+  // windows in practice, but the cost is one indexed lookup.
+  const u = await prisma.user
+    .findFirst({ where: { id: userId, active: true } as any })
+    .catch(() => null);
+  if (!u || String((u as any).role || '').toUpperCase() !== 'ADMIN') return [];
+
   const rows = await prisma.notification.findMany({
-    where: { ...(onlyUnread ? { readAt: null } : {}) },
+    where: { userId, ...(onlyUnread ? { readAt: null } : {}) },
     orderBy: { createdAt: 'desc' },
     take: limit,
     include: { user: true },
@@ -3726,9 +4508,13 @@ ipcMain.handle('admin:listNotifications', async (_e, input) => {
   }));
 });
 
-ipcMain.handle('admin:markAllNotificationsRead', async (_e) => {
+ipcMain.handle('admin:markAllNotificationsRead', async (_e, input) => {
+  // Only mark the calling admin's own notifications as read — never wipe
+  // every user's unread badge.
+  const userId = Number(input?.userId || 0);
+  if (!userId) return true;
   await prisma.notification.updateMany({
-    where: { readAt: null },
+    where: { userId, readAt: null },
     data: { readAt: new Date() },
   });
   return true;
@@ -3856,6 +4642,404 @@ ipcMain.handle('admin:getMemoryStats', async () => {
 
 ipcMain.handle('admin:exportMemorySnapshot', async () => {
   return await exportMemorySnapshot();
+});
+
+// =====================================================================
+// Admin Business Review — analytics over arbitrary periods.
+// All compute is local-first (no cloud round trip); the local SQLite DB
+// already mirrors paid/voided ticket history via TicketLog.
+// =====================================================================
+ipcMain.handle('admin:getReview', async (_e, input) => {
+  type Granularity = 'day' | 'month' | 'year';
+  const granularity: Granularity =
+    input?.granularity === 'month' || input?.granularity === 'year'
+      ? input.granularity
+      : 'day';
+
+  const parseRange = (s?: string | null, e?: string | null) => {
+    if (!s || !e) return null;
+    const start = new Date(s);
+    const end = new Date(e);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
+      return null;
+    }
+    if (start.getTime() > end.getTime()) return null;
+    return { start, end };
+  };
+
+  // Fall back to "today" when the caller didn't pass a valid range so the
+  // page can still render something useful instead of erroring out.
+  const todayRange = (): { start: Date; end: Date } => {
+    const s = new Date();
+    s.setHours(0, 0, 0, 0);
+    const e = new Date();
+    e.setHours(23, 59, 59, 999);
+    return { start: s, end: e };
+  };
+  const current =
+    parseRange(input?.currentStartIso, input?.currentEndIso) ?? todayRange();
+  const curStart = current.start;
+  const curEnd = current.end;
+
+  const compare = parseRange(input?.compareStartIso, input?.compareEndIso);
+
+  // Hard cap: don't ever load more than ~2 years of rows in one go.
+  const TWO_YEARS_MS = 2 * 365 * 24 * 60 * 60 * 1000;
+  const safeFetchRange = (s: Date, e: Date) => {
+    const span = e.getTime() - s.getTime();
+    if (span <= TWO_YEARS_MS) return { from: s, to: e, capped: false };
+    return { from: new Date(e.getTime() - TWO_YEARS_MS), to: e, capped: true };
+  };
+
+  const bucketLabel = (d: Date, g: Granularity): string => {
+    if (g === 'year') return String(d.getFullYear());
+    if (g === 'month') {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+    // day
+    return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(
+      d.getDate(),
+    ).padStart(2, '0')}`;
+  };
+  const bucketStart = (d: Date, g: Granularity): Date => {
+    const out = new Date(d);
+    if (g === 'year') {
+      out.setMonth(0, 1);
+      out.setHours(0, 0, 0, 0);
+    } else if (g === 'month') {
+      out.setDate(1);
+      out.setHours(0, 0, 0, 0);
+    } else {
+      out.setHours(0, 0, 0, 0);
+    }
+    return out;
+  };
+  const nextBucket = (d: Date, g: Granularity): Date => {
+    const out = new Date(d);
+    if (g === 'year') out.setFullYear(out.getFullYear() + 1);
+    else if (g === 'month') out.setMonth(out.getMonth() + 1);
+    else out.setDate(out.getDate() + 1);
+    return out;
+  };
+
+  type AggRow = {
+    createdAt: Date;
+    userId: number;
+    area: string;
+    tableLabel: string;
+    covers: number | null;
+    itemsJson: any;
+  };
+
+  const fetchRows = async (s: Date, e: Date): Promise<AggRow[]> => {
+    const safe = safeFetchRange(s, e);
+    return (await prisma.ticketLog
+      .findMany({
+        where: { createdAt: { gte: safe.from, lte: safe.to } },
+        select: {
+          createdAt: true,
+          userId: true,
+          area: true,
+          tableLabel: true,
+          covers: true,
+          itemsJson: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      .catch(() => [])) as unknown as AggRow[];
+  };
+
+  const summarize = (
+    rows: AggRow[],
+    s: Date,
+    e: Date,
+  ): {
+    summary: {
+      startIso: string;
+      endIso: string;
+      revenueNet: number;
+      revenueVat: number;
+      orders: number;
+      items: number;
+      covers: number;
+      avgTicket: number;
+      avgItemsPerTicket: number;
+      uniqueTables: number;
+      uniqueWaiters: number;
+      voidedTickets: number;
+    };
+    series: {
+      label: string;
+      bucketIso: string;
+      revenue: number;
+      orders: number;
+    }[];
+    waiterAgg: Map<
+      number,
+      {
+        userId: number;
+        revenue: number;
+        items: number;
+        orders: number;
+        covers: number;
+      }
+    >;
+    itemAgg: Map<string, { name: string; qty: number; revenue: number }>;
+    hourly: { hour: number; orders: number; revenue: number }[];
+    weekday: { dayOfWeek: number; orders: number; revenue: number }[];
+  } => {
+    let revenueNet = 0;
+    let revenueVat = 0;
+    let items = 0;
+    let covers = 0;
+    let voidedTickets = 0;
+    const tables = new Set<string>();
+    const waiters = new Set<number>();
+    const waiterAgg = new Map<
+      number,
+      {
+        userId: number;
+        revenue: number;
+        items: number;
+        orders: number;
+        covers: number;
+      }
+    >();
+    const itemAgg = new Map<
+      string,
+      { name: string; qty: number; revenue: number }
+    >();
+
+    // Pre-allocate buckets so the chart has a continuous x axis even when
+    // some periods are empty.
+    const seriesIndex = new Map<string, number>();
+    const series: {
+      label: string;
+      bucketIso: string;
+      revenue: number;
+      orders: number;
+    }[] = [];
+    let cursor = bucketStart(s, granularity);
+    const cap = nextBucket(bucketStart(e, granularity), granularity);
+    let guard = 0;
+    while (cursor.getTime() < cap.getTime() && guard < 5000) {
+      seriesIndex.set(cursor.toISOString(), series.length);
+      series.push({
+        label: bucketLabel(cursor, granularity),
+        bucketIso: cursor.toISOString(),
+        revenue: 0,
+        orders: 0,
+      });
+      cursor = nextBucket(cursor, granularity);
+      guard += 1;
+    }
+
+    const hourly = Array.from({ length: 24 }, (_, h) => ({
+      hour: h,
+      orders: 0,
+      revenue: 0,
+    }));
+    const weekday = Array.from({ length: 7 }, (_, d) => ({
+      dayOfWeek: d,
+      orders: 0,
+      revenue: 0,
+    }));
+
+    let orders = 0;
+    for (const r of rows) {
+      const when = new Date(r.createdAt);
+      if (when.getTime() < s.getTime() || when.getTime() > e.getTime()) {
+        continue;
+      }
+      const itemsArr = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
+      const live = itemsArr.filter((it) => !it?.voided);
+      const allVoided = itemsArr.length > 0 && live.length === 0;
+      if (allVoided) voidedTickets += 1;
+
+      let rowRevenue = 0;
+      let rowVat = 0;
+      let rowItems = 0;
+      for (const it of live) {
+        const qty = Number(it?.qty || 1);
+        const unit = Number(it?.unitPrice || 0);
+        const vatRate = Number(it?.vatRate || 0);
+        const lineNet = unit * qty;
+        rowRevenue += lineNet;
+        rowVat += lineNet * vatRate;
+        rowItems += qty;
+        const name = String(it?.name || 'Item');
+        const e2 = itemAgg.get(name) || { name, qty: 0, revenue: 0 };
+        e2.qty += qty;
+        e2.revenue += lineNet;
+        itemAgg.set(name, e2);
+      }
+
+      revenueNet += rowRevenue;
+      revenueVat += rowVat;
+      items += rowItems;
+      orders += 1;
+      const cov = Number(r.covers || 0);
+      if (Number.isFinite(cov) && cov > 0) covers += cov;
+
+      tables.add(`${r.area}|${r.tableLabel}`);
+      waiters.add(Number(r.userId));
+      const wid = Number(r.userId);
+      const w = waiterAgg.get(wid) || {
+        userId: wid,
+        revenue: 0,
+        items: 0,
+        orders: 0,
+        covers: 0,
+      };
+      w.revenue += rowRevenue;
+      w.items += rowItems;
+      w.orders += 1;
+      w.covers += Number.isFinite(cov) && cov > 0 ? cov : 0;
+      waiterAgg.set(wid, w);
+
+      hourly[when.getHours()].orders += 1;
+      hourly[when.getHours()].revenue += rowRevenue;
+      weekday[when.getDay()].orders += 1;
+      weekday[when.getDay()].revenue += rowRevenue;
+
+      const bIso = bucketStart(when, granularity).toISOString();
+      const idx = seriesIndex.get(bIso);
+      if (idx != null) {
+        series[idx].revenue += rowRevenue;
+        series[idx].orders += 1;
+      }
+    }
+
+    return {
+      summary: {
+        startIso: s.toISOString(),
+        endIso: e.toISOString(),
+        revenueNet,
+        revenueVat,
+        orders,
+        items,
+        covers,
+        avgTicket: orders > 0 ? revenueNet / orders : 0,
+        avgItemsPerTicket: orders > 0 ? items / orders : 0,
+        uniqueTables: tables.size,
+        uniqueWaiters: waiters.size,
+        voidedTickets,
+      },
+      series,
+      waiterAgg,
+      itemAgg,
+      hourly,
+      weekday,
+    };
+  };
+
+  const [curRows, cmpRows, allUsers, shifts] = await Promise.all([
+    fetchRows(curStart, curEnd),
+    compare ? fetchRows(compare.start, compare.end) : Promise.resolve([]),
+    prisma.user
+      .findMany({
+        select: { id: true, displayName: true, role: true, active: true },
+      })
+      .catch(() => []),
+    // Pull shifts that overlap the *current* period to compute hours worked.
+    prisma.dayShift
+      .findMany({
+        where: {
+          OR: [
+            { closedAt: null, openedAt: { lte: curEnd } },
+            {
+              openedAt: { lte: curEnd },
+              closedAt: { gte: curStart },
+            },
+          ],
+        },
+        select: { openedById: true, openedAt: true, closedAt: true },
+      })
+      .catch(
+        () =>
+          [] as { openedById: number; openedAt: Date; closedAt: Date | null }[],
+      ),
+  ]);
+
+  const cur = summarize(curRows, curStart, curEnd);
+  const cmp = compare ? summarize(cmpRows, compare.start, compare.end) : null;
+
+  // Hours worked per user, clipped to the current period.
+  const hoursByUser = new Map<number, number>();
+  for (const sh of shifts as any[]) {
+    const opened = new Date(sh.openedAt).getTime();
+    const closed = sh.closedAt ? new Date(sh.closedAt).getTime() : Date.now();
+    const overlapStart = Math.max(opened, curStart.getTime());
+    const overlapEnd = Math.min(closed, curEnd.getTime());
+    if (overlapEnd <= overlapStart) continue;
+    const hrs = (overlapEnd - overlapStart) / 36e5;
+    hoursByUser.set(
+      Number(sh.openedById),
+      (hoursByUser.get(Number(sh.openedById)) || 0) + hrs,
+    );
+  }
+
+  const userById = new Map<
+    number,
+    { displayName: string; role: string; active: boolean }
+  >();
+  for (const u of allUsers as any[]) {
+    userById.set(Number(u.id), {
+      displayName: String(u.displayName || `#${u.id}`),
+      role: String(u.role || ''),
+      active: Boolean(u.active),
+    });
+  }
+  // Include any waiter ids that produced revenue but aren't in the users
+  // table (deleted/synced from upstream): show them too instead of dropping.
+  const allWaiterIds = new Set<number>([...cur.waiterAgg.keys()]);
+  for (const id of allWaiterIds) {
+    if (!userById.has(id)) {
+      userById.set(id, {
+        displayName: `User #${id}`,
+        role: 'UNKNOWN',
+        active: false,
+      });
+    }
+  }
+
+  const waiters = Array.from(cur.waiterAgg.values())
+    .map((w) => {
+      const meta = userById.get(w.userId)!;
+      const hours = hoursByUser.get(w.userId) || 0;
+      return {
+        userId: w.userId,
+        name: meta.displayName,
+        role: meta.role,
+        active: meta.active,
+        orders: w.orders,
+        items: w.items,
+        revenue: w.revenue,
+        covers: w.covers,
+        avgTicket: w.orders > 0 ? w.revenue / w.orders : 0,
+        hoursWorked: Math.round(hours * 100) / 100,
+        revenuePerHour: hours > 0 ? w.revenue / hours : 0,
+      };
+    })
+    .sort((a, b) => b.revenue - a.revenue);
+
+  const topItems = Array.from(cur.itemAgg.values())
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 15);
+
+  return {
+    granularity,
+    current: cur.summary,
+    compare: cmp?.summary ?? null,
+    series: {
+      current: cur.series,
+      compare: cmp?.series ?? null,
+    },
+    topItems,
+    waiters,
+    hourly: cur.hourly,
+    weekday: cur.weekday,
+  };
 });
 
 ipcMain.handle('reports:getMyOverview', async (_e, input) => {
@@ -4025,27 +5209,101 @@ ipcMain.handle('covers:save', async (_e, { area, label, covers }) => {
 });
 
 ipcMain.handle('covers:getLast', async (_e, { area, label }) => {
+  // Scope to the current session via `tables:openAt`, mirroring
+  // `tickets:getLatestForTable`. Without this, reopening a label after
+  // payout flashes the previous guest count until refresh — the
+  // renderer `coversKnown` effect calls into here whenever `isOpen`
+  // flips true.
+  const sessionStart = await getTableSessionStartedAt(area, label);
+  const where: any = { area, label };
+  if (sessionStart) where.createdAt = { gte: sessionStart };
   const row = await prisma.covers.findFirst({
-    where: { area, label },
+    where,
     orderBy: { id: 'desc' },
   });
   return row?.covers ?? null;
 });
 
-// Layout persistence (per user, per area) via SyncState
-ipcMain.handle('layout:get', async (_e, { userId, area }) => {
-  const key = `layout:${userId}:${area}`;
-  const row = await prisma.syncState.findUnique({ where: { key } });
-  return (row?.valueJson as any)?.nodes ?? null;
+// Layout persistence via SyncState.
+//
+// As of the centralised-layout migration, every floor view (waiter,
+// host, admin) reads from a single shared key per area:
+//   layout:global:<area>
+//
+// The legacy per-user / per-scope keys are still consulted on read as a
+// migration fallback so an existing restaurant doesn't lose its tables
+// the first time it boots the new code. The first time the admin saves
+// from the new editor, the global key is written and from then on it
+// is the authoritative source for all clients.
+function globalLayoutKey(area: string): string {
+  return `layout:global:${String(area)}`;
+}
+
+async function readSharedLayoutNodes(area: string): Promise<any[] | null> {
+  if (!area) return null;
+  const globalRow = await prisma.syncState
+    .findUnique({ where: { key: globalLayoutKey(area) } })
+    .catch(() => null);
+  const globalNodes = (globalRow?.valueJson as any)?.nodes;
+  if (Array.isArray(globalNodes)) return globalNodes;
+
+  // Migration fallback: surface an existing per-user / per-scope layout
+  // for this area so admins see what waiters/hosts were already using
+  // when they open the editor for the first time. We pick the most
+  // recently updated row to favour the freshest layout. The key shape
+  // is `layout:<userId>:<area>` (waiter) or `layout:<scope>:<userId>:<area>`
+  // (host etc.) — both end with `:<area>` so a prefix scan + suffix
+  // filter is enough.
+  const candidates = await prisma.syncState
+    .findMany({
+      where: { key: { startsWith: 'layout:' } as any } as any,
+      orderBy: { updatedAt: 'desc' } as any,
+    })
+    .catch(() => [] as any[]);
+  const suffix = `:${area}`;
+  for (const row of candidates as any[]) {
+    if (typeof row?.key !== 'string') continue;
+    if (row.key === globalLayoutKey(area)) continue; // already tried
+    if (!row.key.endsWith(suffix)) continue;
+    const nodes = (row?.valueJson as any)?.nodes;
+    if (Array.isArray(nodes) && nodes.length) return nodes;
+  }
+  return null;
+}
+
+ipcMain.handle('layout:get', async (_e, { area }) => {
+  return await readSharedLayoutNodes(String(area || ''));
 });
 
-ipcMain.handle('layout:save', async (_e, { userId, area, nodes }) => {
-  const key = `layout:${userId}:${area}`;
+ipcMain.handle('layout:save', async (_e, { area, nodes, userId }) => {
+  const a = String(area || '');
+  if (!a || !Array.isArray(nodes)) return false;
+  // Require the calling user to be an active ADMIN. The shared floor
+  // layout is now centrally managed and waiters / hosts must not be
+  // able to silently overwrite it via direct IPC. The renderer hides
+  // the editor UI from non-admins; this is the second line of defence.
+  try {
+    const uid = Number(userId || 0);
+    if (!uid) return false;
+    const u = await prisma.user
+      .findUnique({ where: { id: uid } })
+      .catch(() => null);
+    if (!u || !u.active || String(u.role).toUpperCase() !== 'ADMIN') {
+      return false;
+    }
+  } catch {
+    return false;
+  }
   await prisma.syncState.upsert({
-    where: { key },
-    create: { key, valueJson: { nodes } },
+    where: { key: globalLayoutKey(a) },
+    create: { key: globalLayoutKey(a), valueJson: { nodes } },
     update: { valueJson: { nodes } },
   });
+  try {
+    broadcastLayoutChanged({ area: a });
+  } catch {
+    // best-effort
+  }
   return true;
 });
 

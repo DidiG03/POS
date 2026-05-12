@@ -23,6 +23,8 @@ const api: Api = {
     testPrint: () => ipcRenderer.invoke('settings:testPrint'),
     setPrinter: (input) => ipcRenderer.invoke('settings:setPrinter', input),
     testPrintVerbose: () => ipcRenderer.invoke('settings:testPrintVerbose'),
+    testPrintProfile: (profile) =>
+      ipcRenderer.invoke('settings:testPrintProfile', profile),
     listPrinters: () => ipcRenderer.invoke('printer:list'),
     listSerialPorts: () => ipcRenderer.invoke('printer:listSerialPorts'),
   },
@@ -61,10 +63,13 @@ const api: Api = {
         userId,
         ...(range || {}),
       }),
-    listNotifications: (input?: { onlyUnread?: boolean; limit?: number }) =>
-      ipcRenderer.invoke('admin:listNotifications', input || {}),
-    markAllNotificationsRead: () =>
-      ipcRenderer.invoke('admin:markAllNotificationsRead'),
+    listNotifications: (input?: {
+      userId?: number;
+      onlyUnread?: boolean;
+      limit?: number;
+    }) => ipcRenderer.invoke('admin:listNotifications', input || {}),
+    markAllNotificationsRead: (input?: { userId?: number }) =>
+      ipcRenderer.invoke('admin:markAllNotificationsRead', input || {}),
     getTopSellingToday: () => ipcRenderer.invoke('admin:getTopSellingToday'),
     getSalesTrends: (input: { range: 'daily' | 'weekly' | 'monthly' }) =>
       ipcRenderer.invoke('admin:getSalesTrends', input),
@@ -73,6 +78,7 @@ const api: Api = {
     getMemoryStats: () => ipcRenderer.invoke('admin:getMemoryStats'),
     exportMemorySnapshot: () =>
       ipcRenderer.invoke('admin:exportMemorySnapshot'),
+    getReview: (input) => ipcRenderer.invoke('admin:getReview', input),
   },
   kds: {
     openWindow: () => ipcRenderer.invoke('kds:openWindow'),
@@ -119,10 +125,8 @@ const api: Api = {
       q?: string;
       limit?: number;
     }) => ipcRenderer.invoke('reports:listMyPaidTickets', input),
-    listMyVoidedTickets: (input: {
-      userId: number;
-      limit?: number;
-    }) => ipcRenderer.invoke('reports:listMyVoidedTickets', input),
+    listMyVoidedTickets: (input: { userId: number; limit?: number }) =>
+      ipcRenderer.invoke('reports:listMyVoidedTickets', input),
   },
   offline: {
     getStatus: () => ipcRenderer.invoke('offline:getStatus'),
@@ -140,10 +144,10 @@ const api: Api = {
       ipcRenderer.invoke('system:openExternal', { url }),
   },
   layout: {
-    get: (userId: number, area: string) =>
-      ipcRenderer.invoke('layout:get', { userId, area }),
-    save: (userId: number, area: string, nodes: any[]) =>
-      ipcRenderer.invoke('layout:save', { userId, area, nodes }),
+    get: (userId: number, area: string, scope?: string) =>
+      ipcRenderer.invoke('layout:get', { userId, area, scope }),
+    save: (userId: number, area: string, nodes: any[], scope?: string) =>
+      ipcRenderer.invoke('layout:save', { userId, area, nodes, scope }),
   },
   covers: {
     save: (area: string, label: string, covers: number) =>
@@ -161,6 +165,11 @@ const api: Api = {
     getTableTooltip: (area: string, tableLabel: string) =>
       ipcRenderer.invoke('tickets:getTableTooltip', { area, tableLabel }),
     print: (payload: any) => ipcRenderer.invoke('tickets:print', payload),
+  },
+  print: {
+    listRetries: () => ipcRenderer.invoke('print:listRetries'),
+    cancelRetry: (id: number) =>
+      ipcRenderer.invoke('print:cancelRetry', { id }),
   },
   tables: {
     setOpen: (area: string, label: string, open: boolean) =>
@@ -207,6 +216,15 @@ const api: Api = {
     downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
     installUpdate: () => ipcRenderer.invoke('updater:installUpdate'),
   },
+  reservations: {
+    openWindow: () => ipcRenderer.invoke('reservations:openWindow'),
+    list: (input) => ipcRenderer.invoke('reservations:list', input),
+    create: (input) => ipcRenderer.invoke('reservations:create', input),
+    update: (input) => ipcRenderer.invoke('reservations:update', input),
+    delete: (input) => ipcRenderer.invoke('reservations:delete', input),
+    setStatus: (input) => ipcRenderer.invoke('reservations:setStatus', input),
+    listCounts: (input) => ipcRenderer.invoke('reservations:listCounts', input),
+  },
 };
 
 declare global {
@@ -244,6 +262,65 @@ ipcRenderer.on('updater:event', (_e, payload) => {
 ipcRenderer.on('printer:event', (_e, payload) => {
   try {
     window.dispatchEvent(new CustomEvent('printer:event', { detail: payload }));
+  } catch {
+    // ignore
+  }
+});
+
+// Reservation real-time events (main -> renderer). Fired whenever a
+// reservation is created / updated / status-changed / deleted by any
+// client (this Electron window, another Electron window, or a mobile
+// tablet via the LAN HTTP API). Reservation pages listen for this on
+// `window` and refetch their visible day.
+ipcRenderer.on('reservations:changed', (_e, payload) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('pos:reservationsChanged', { detail: payload }),
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// Table-status real-time events (main -> renderer). Fired whenever any
+// client opens or closes a table. The TablesPage listens for this on
+// `window` and updates its open-status map without waiting for the
+// 15s poll, keeping floor colours in sync across every window/tablet.
+ipcRenderer.on('tables:changed', (_e, payload) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('pos:tablesChanged', { detail: payload }),
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// Tickets real-time events (main -> renderer). Fired whenever any client
+// writes a new TicketLog row. The TablesPage listens for this and
+// re-fetches the per-table waiter badge / metrics for the affected
+// table, so when waiter A appends an item to a table that waiter B
+// already had open, every other device flips the badge to A immediately
+// instead of waiting for the next badge-refresh cycle.
+ipcRenderer.on('tickets:changed', (_e, payload) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('pos:ticketsChanged', { detail: payload }),
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// Floor-layout real-time events (main -> renderer). Fired whenever an
+// admin saves the shared floor layout for an area. Waiter and Host
+// floor pages refetch on receipt so a saved change appears on every
+// device without a refresh.
+ipcRenderer.on('layout:changed', (_e, payload) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('pos:layoutChanged', { detail: payload }),
+    );
   } catch {
     // ignore
   }

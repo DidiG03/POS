@@ -1,116 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { isClockOnlyRole } from '@shared/utils/roles';
-
-// In-app numeric keypad for PIN entry on mobile.
-//
-// The native iOS keyboard takes 1–2 s to appear on a cold simulator launch and
-// every keystroke goes through WKWebView's text-input pipeline, which adds
-// noticeable latency for short codes. Rendering a button grid in JS bypasses
-// all of that — taps land in the same React tick that paints the next dot.
-function PinKeypad({
-  pin,
-  setPin,
-  maxLength,
-  onSubmit,
-}: {
-  pin: string;
-  setPin: (next: string) => void;
-  maxLength: number;
-  onSubmit: () => void;
-}) {
-  const handleDigit = useCallback(
-    (digit: string) => {
-      if (pin.length >= maxLength) return;
-      // Light haptic feedback on real iOS devices (Capacitor exposes
-      // navigator.vibrate via its WebView shim). No-op on desktop.
-      try {
-        navigator.vibrate?.(10);
-      } catch {
-        /* ignore */
-      }
-      setPin(pin + digit);
-    },
-    [pin, maxLength, setPin],
-  );
-
-  const handleBackspace = useCallback(() => {
-    if (!pin.length) return;
-    setPin(pin.slice(0, -1));
-  }, [pin, setPin]);
-
-  // Allow physical keyboards (iPad with Smart Keyboard, browser dev) to type
-  // the PIN even though we never focus a real input.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key >= '0' && e.key <= '9') {
-        e.preventDefault();
-        handleDigit(e.key);
-      } else if (e.key === 'Backspace') {
-        e.preventDefault();
-        handleBackspace();
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        onSubmit();
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [handleDigit, handleBackspace, onSubmit]);
-
-  const dots = Array.from({ length: maxLength }, (_, i) => i < pin.length);
-  const keys: { label: string; onPress: () => void; variant?: 'digit' | 'action' }[] = [
-    { label: '1', onPress: () => handleDigit('1') },
-    { label: '2', onPress: () => handleDigit('2') },
-    { label: '3', onPress: () => handleDigit('3') },
-    { label: '4', onPress: () => handleDigit('4') },
-    { label: '5', onPress: () => handleDigit('5') },
-    { label: '6', onPress: () => handleDigit('6') },
-    { label: '7', onPress: () => handleDigit('7') },
-    { label: '8', onPress: () => handleDigit('8') },
-    { label: '9', onPress: () => handleDigit('9') },
-    { label: '⌫', onPress: handleBackspace, variant: 'action' },
-    { label: '0', onPress: () => handleDigit('0') },
-    { label: '⏎', onPress: onSubmit, variant: 'action' },
-  ];
-
-  return (
-    <div className="select-none">
-      <div
-        className="flex items-center justify-center gap-3 mb-4 h-10"
-        aria-label={`PIN, ${pin.length} of ${maxLength} digits entered`}
-        role="status"
-      >
-        {dots.map((filled, i) => (
-          <div
-            key={i}
-            className={`w-3 h-3 rounded-full transition-colors ${filled ? 'bg-emerald-400' : 'bg-gray-600'}`}
-          />
-        ))}
-      </div>
-      <div className="grid grid-cols-3 gap-2">
-        {keys.map((k) => (
-          <button
-            key={k.label}
-            type="button"
-            onClick={k.onPress}
-            className={`h-14 rounded-lg text-2xl font-semibold active:scale-95 transition-transform ${
-              k.variant === 'action'
-                ? 'bg-gray-700 hover:bg-gray-600 text-emerald-300'
-                : 'bg-gray-700 hover:bg-gray-600 text-gray-100'
-            }`}
-            // Disable iOS long-press / context menus for cleaner taps.
-            onContextMenu={(e) => e.preventDefault()}
-          >
-            {k.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export default function LoginPage() {
   const PAIRING_STORAGE_KEY = 'pos_pairing_code';
@@ -152,10 +44,25 @@ export default function LoginPage() {
       setError('Enter 4-6 digits');
       return;
     }
+    // Drop focus from the PIN/pairing input BEFORE we kick off the async
+    // login flow. Without this, the iOS soft keyboard stays up while the
+    // network call resolves and the navigation happens; when the keyboard
+    // finally collapses on the next page it triggers a separate viewport
+    // reflow that looks like the screen is jittering.
     try {
-      const codeFromInput = pairingCodeRef.current?.value?.trim().replace(/[^0-9A-Za-z]/g, '').slice(0, 12) || '';
+      const ae = document.activeElement as HTMLElement | null;
+      if (ae && typeof ae.blur === 'function') ae.blur();
+    } catch {
+      // ignore
+    }
+    try {
+      const codeFromInput =
+        pairingCodeRef.current?.value
+          ?.trim()
+          .replace(/[^0-9A-Za-z]/g, '')
+          .slice(0, 12) || '';
       const effectivePairingCode = isBrowserClient
-        ? (codeFromInput || pairingCode) || undefined
+        ? codeFromInput || pairingCode || undefined
         : undefined;
       // Tablet always sends to host; host proxies to cloud with correct userId when needed
       const user = await window.api.auth.loginWithPin(
@@ -168,7 +75,8 @@ export default function LoginPage() {
         try {
           localStorage.setItem(PAIRING_STORAGE_KEY, effectivePairingCode);
           setPairingCode(effectivePairingCode);
-          if (pairingCodeRef.current) pairingCodeRef.current.value = effectivePairingCode;
+          if (pairingCodeRef.current)
+            pairingCodeRef.current.value = effectivePairingCode;
         } catch {
           // ignore
         }
@@ -177,6 +85,16 @@ export default function LoginPage() {
         const clockOnly = isClockOnlyRole((user as any).role);
         if (isAdminContext && user.role !== 'ADMIN') {
           setError('Admin access only');
+          return;
+        }
+        // Defense-in-depth: even if a stale staff list ever included a Host,
+        // they must not be authorised through the POS login. Hosts use the
+        // Reservations window exclusively.
+        if (
+          !isAdminContext &&
+          String((user as any).role || '').toUpperCase() === 'HOST'
+        ) {
+          setError('Hosts sign in through the Reservations panel.');
           return;
         }
         // Block admin panel on browser/tablet — admin must use the desktop app
@@ -280,7 +198,10 @@ export default function LoginPage() {
         setCloudNotice(e?.message || 'Failed to load users.');
         setStaff([]);
         setOpenIds([]);
-        if (!cancelled) { setBoot({ staffLoaded: true, openLoaded: true }); setStaffLoading(false); }
+        if (!cancelled) {
+          setBoot({ staffLoaded: true, openLoaded: true });
+          setStaffLoading(false);
+        }
         return;
       }
       // Local-first: empty users means no users in database yet.
@@ -296,12 +217,22 @@ export default function LoginPage() {
         );
         setStaff([]);
         setOpenIds([]);
-        if (!cancelled) { setBoot({ staffLoaded: true, openLoaded: true }); setStaffLoading(false); }
+        if (!cancelled) {
+          setBoot({ staffLoaded: true, openLoaded: true });
+          setStaffLoading(false);
+        }
         return;
       }
       const list = isAdminContext
         ? users.filter((u) => u.role === 'ADMIN' && u.active)
-        : users.filter((u) => u.active && u.role !== 'ADMIN');
+        : // Hosts only ever sign in through the Reservations window; never
+          // expose them on the waiter/cashier POS login screen.
+          users.filter(
+            (u) =>
+              u.active &&
+              u.role !== 'ADMIN' &&
+              String(u.role || '').toUpperCase() !== 'HOST',
+          );
       if (cancelled) return;
       setStaff(list);
       setStaffLoading(false);
@@ -331,19 +262,91 @@ export default function LoginPage() {
   const [enableAdmin, setEnableAdmin] = useState(false);
 
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-gray-900 p-3 sm:p-6 overflow-hidden">
-        <div className="bg-gray-800 p-4 sm:p-6 rounded-lg w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
-        <div className="flex items-center justify-between mb-4 shrink-0">
-          <h1 className="text-xl font-semibold">
-            {isAdminContext ? 'Admin Login' : 'Select Staff'}
-          </h1>
-          {enableAdmin && !isAdminContext && !isBrowserClient && (
-            <button
-              className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
-              onClick={() => window.api.admin.openWindow()}
-            >
-              Admin
-            </button>
+    <div
+      // Pad the page by the iOS safe-area insets so the staff selection
+      // card and the PIN modal don't sit under the notch / home indicator,
+      // but keep `bg-gray-900` so the WebView still paints those zones
+      // (no black bars). `max(...)` keeps the original p-3/sm:p-6 spacing
+      // on devices without a safe area.
+      className="min-h-dvh flex items-center justify-center bg-gray-900 overflow-hidden px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+    >
+      <div className="bg-gray-800 p-4 sm:p-6 rounded-lg w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
+        <div className="flex items-center justify-between mb-4 shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* Back arrow shows only on the PIN screen so the user can
+                return to staff selection without it feeling like a modal
+                cancel. We reuse `setShowPin(false)` so all the existing
+                "leave PIN" cleanup paths stay consistent. */}
+            {showPin && (
+              <button
+                type="button"
+                aria-label="Back to staff selection"
+                title="Back"
+                onClick={() => {
+                  setShowPin(false);
+                  setPin('');
+                  setError(null);
+                }}
+                className="-ml-1 p-2 rounded hover:bg-gray-700/60 active:bg-gray-700 text-gray-200"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="w-5 h-5"
+                  aria-hidden
+                >
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              </button>
+            )}
+            <h1 className="text-xl font-semibold truncate">
+              {showPin
+                ? `Enter PIN${
+                    selectedId
+                      ? ` for ${staff.find((s) => s.id === selectedId)?.displayName ?? ''}`
+                      : ''
+                  }`
+                : isAdminContext
+                  ? 'Admin Login'
+                  : 'Select Staff'}
+            </h1>
+          </div>
+          {!showPin && !isAdminContext && (
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                onClick={async () => {
+                  // On Electron, openWindow() spawns the dedicated reservation
+                  // window. On the mobile / browser shell it returns false, in
+                  // which case we route to /reservations in the same SPA.
+                  let opened = false;
+                  try {
+                    opened = Boolean(
+                      await window.api.reservations.openWindow(),
+                    );
+                  } catch {
+                    opened = false;
+                  }
+                  if (!opened) navigate('/reservations');
+                }}
+                title="Open the Reservations panel (host login required)"
+              >
+                Reservations
+              </button>
+              {!isBrowserClient && enableAdmin && (
+                <button
+                  className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                  onClick={() => window.api.admin.openWindow()}
+                >
+                  Admin
+                </button>
+              )}
+            </div>
           )}
         </div>
         {cloudNotice && (
@@ -437,7 +440,7 @@ export default function LoginPage() {
             </div>
           </div>
         )}
-        {isAdminContext ? (
+        {!showPin && isAdminContext ? (
           <div className="flex flex-col min-h-0 flex-1">
             <div className="text-sm mb-2 opacity-80 shrink-0">Admins</div>
             <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
@@ -470,14 +473,17 @@ export default function LoginPage() {
               )}
             </div>
           </div>
-        ) : (
+        ) : !showPin && !isAdminContext ? (
           <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
             <div className="flex flex-col min-h-0">
-              <div className="text-sm mb-2 opacity-80 shrink-0">Not clocked in</div>
+              <div className="text-sm mb-2 opacity-80 shrink-0">
+                Not clocked in
+              </div>
               <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
                 {staff.length === 0 && !staffLoading && (
                   <div className="opacity-70 text-sm py-4">
-                    No staff yet. On the host: Admin → Settings → Backups → Sync from cloud.
+                    No staff yet. On the host: Admin → Settings → Backups → Sync
+                    from cloud.
                   </div>
                 )}
                 {staff
@@ -536,40 +542,34 @@ export default function LoginPage() {
               </div>
             </div>
           </div>
-        )}
+        ) : null}
         {showPin && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-3 z-50">
-            <div className="bg-gray-800 p-5 rounded w-full max-w-sm max-h-[calc(100dvh-1.5rem)] overflow-y-auto">
-              <h2 className="text-center mb-3">
-                Enter PIN for{' '}
-                {staff.find((s) => s.id === selectedId)?.displayName}
-              </h2>
-              {isBrowserClient ? (
-                // Mobile: in-app keypad — eliminates iOS keyboard latency.
-                // The same render-tick that fires the tap also paints the new
-                // dot, so there's no perceptible delay.
-                <PinKeypad
-                  pin={pin}
-                  setPin={setPin}
-                  maxLength={6}
-                  onSubmit={onSubmit}
-                />
-              ) : (
-                // Desktop (Electron): keep the native input so admins can use
-                // a physical keyboard and barcode/key-fob readers if they want.
-                <input
-                  autoFocus
-                  type="password"
-                  inputMode="numeric"
-                  placeholder="PIN"
-                  pattern="[0-9]*"
-                  maxLength={6}
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
-                  className="w-full p-3 rounded bg-gray-700 focus:outline-none"
-                  onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
-                />
-              )}
+          // Inline PIN screen — replaces the staff list inside the same
+          // card so it visually feels like a page transition, not a modal.
+          // The card frame and header stay so the user keeps the
+          // "I'm on the login page" context.
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-start pt-2 sm:pt-6">
+            <div className="w-full max-w-sm flex flex-col gap-3">
+              {/* Native numeric keyboard on every client. type="tel" gives
+                  iOS/Android a digits-only keyboard without the +/- spinners
+                  that "number" introduces. The 20px font size avoids
+                  Safari's auto-zoom on focus. */}
+              <input
+                autoFocus
+                type="tel"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                placeholder="PIN"
+                maxLength={6}
+                autoComplete="one-time-code"
+                value={pin}
+                onChange={(e) =>
+                  setPin(e.target.value.replace(/\D+/g, '').slice(0, 6))
+                }
+                className="w-full p-3 rounded bg-gray-700 focus:outline-none text-center text-2xl tracking-[0.5em] font-mono"
+                style={{ fontSize: '20px' }}
+                onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
+              />
               {isBrowserClient && (
                 <input
                   ref={pairingCodeRef}
@@ -578,33 +578,23 @@ export default function LoginPage() {
                   placeholder="Pairing code (from Admin)"
                   maxLength={12}
                   defaultValue={pairingCode}
-                  className="w-full p-3 rounded bg-gray-700 focus:outline-none mt-3"
+                  className="w-full p-3 rounded bg-gray-700 focus:outline-none"
                   onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
                 />
               )}
-              {error && (
-                <div className="text-red-400 mt-2 text-sm">{error}</div>
-              )}
-              <div className="flex gap-2 mt-4">
-                <button
-                  onClick={() => setShowPin(false)}
-                  className="flex-1 bg-gray-600 py-2 rounded"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={onSubmit}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
-                >
-                  Login
-                </button>
-              </div>
+              {error && <div className="text-red-400 text-sm">{error}</div>}
+              <button
+                onClick={onSubmit}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 py-3 rounded font-semibold"
+              >
+                Login
+              </button>
             </div>
           </div>
         )}
 
         {!isAdminContext && showShiftConfirm && pendingUser && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center">
             <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
               <h2 className="text-center mb-3">
                 Start shift for {pendingUser.displayName}?
@@ -622,6 +612,12 @@ export default function LoginPage() {
                 <button
                   className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
                   onClick={async () => {
+                    try {
+                      const ae = document.activeElement as HTMLElement | null;
+                      if (ae && typeof ae.blur === 'function') ae.blur();
+                    } catch {
+                      // ignore
+                    }
                     await window.api.shifts.clockIn(pendingUser.id);
                     setShowShiftConfirm(false);
                     setPendingUser(null);
@@ -635,7 +631,7 @@ export default function LoginPage() {
             </div>
           </div>
         )}
-        </div>
+      </div>
     </div>
   );
 }

@@ -17,8 +17,14 @@ export function authMiddleware(req: AuthedRequest, _res: Response, next: NextFun
 export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   if (!req.auth) return res.status(401).json({ error: 'unauthorized' });
   try {
-    const biz = await prisma.business.findUnique({ where: { id: req.auth.businessId } }).catch(() => null);
+    const [biz, user] = await Promise.all([
+      prisma.business.findUnique({ where: { id: req.auth.businessId } }).catch(() => null),
+      prisma.user
+        .findFirst({ where: { id: req.auth.userId, businessId: req.auth.businessId } as any })
+        .catch(() => null),
+    ]);
     if (!biz || (biz as any).active === false) return res.status(401).json({ error: 'unauthorized' });
+    if (!user || (user as any).active === false) return res.status(401).json({ error: 'unauthorized' });
   } catch {
     return res.status(401).json({ error: 'unauthorized' });
   }
