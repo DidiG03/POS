@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 
-type TicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE';
+type TicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
 
 type TransferInfo = {
   kind: 'MOVED' | 'OWNER';
@@ -101,12 +101,25 @@ function StatusBadge({ status }: { status?: TicketStatus }) {
       ? 'bg-red-900/60 border-red-700 text-red-100'
       : s === 'ACTIVE'
         ? 'bg-amber-900/60 border-amber-700 text-amber-100'
-        : 'bg-emerald-900/60 border-emerald-700 text-emerald-100';
-  const label = s === 'PAID' ? 'Paid' : s === 'VOIDED' ? 'Voided' : 'Active';
+        : s === 'TRANSFERRED'
+          ? 'bg-indigo-900/60 border-indigo-700 text-indigo-100'
+          : 'bg-emerald-900/60 border-emerald-700 text-emerald-100';
+  const label =
+    s === 'PAID'
+      ? 'Paid'
+      : s === 'VOIDED'
+        ? 'Voided'
+        : s === 'TRANSFERRED'
+          ? 'Transferred out'
+          : 'Active';
+  const tooltip =
+    s === 'TRANSFERRED'
+      ? 'This ticket was moved to another table. Revenue is counted on the destination ticket.'
+      : `Status: ${label}`;
   return (
     <span
       className={`inline-flex items-center text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border ${cls}`}
-      title={`Status: ${label}`}
+      title={tooltip}
     >
       {label}
     </span>
@@ -307,14 +320,21 @@ export default function AdminUserTicketsPage() {
       PAID: 0,
       ACTIVE: 0,
       VOIDED: 0,
+      TRANSFERRED: 0,
     };
     for (const t of tickets) {
-      subtotal += t.subtotal;
-      vat += vatEnabled ? t.vat : 0;
-      const base = t.subtotal + (vatEnabled ? t.vat : 0);
-      serviceCharge += computeServiceCharge(base, prefs);
       const s: TicketStatus = (t.status as TicketStatus) || 'PAID';
       counts[s] += 1;
+      // TRANSFERRED rows are snapshots of a session that moved to
+      // another table — the destination row in the same list already
+      // contributes the money, so we deliberately leave their
+      // subtotal / vat / service charge out of the period totals.
+      if (s !== 'TRANSFERRED') {
+        subtotal += t.subtotal;
+        vat += vatEnabled ? t.vat : 0;
+        const base = t.subtotal + (vatEnabled ? t.vat : 0);
+        serviceCharge += computeServiceCharge(base, prefs);
+      }
       if (ticketHasTransfer(t)) transfers += 1;
     }
     const grand = subtotal + vat + serviceCharge;
@@ -441,6 +461,12 @@ export default function AdminUserTicketsPage() {
           <span>{totals.counts.ACTIVE}</span>
           <StatusBadge status="VOIDED" />
           <span>{totals.counts.VOIDED}</span>
+          {totals.counts.TRANSFERRED > 0 && (
+            <>
+              <StatusBadge status="TRANSFERRED" />
+              <span>{totals.counts.TRANSFERRED}</span>
+            </>
+          )}
         </div>
         {totals.transfers > 0 && (
           <div

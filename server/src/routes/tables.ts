@@ -69,6 +69,7 @@ const TransferSchema = z.object({
   toUserId: z.number().int().positive().optional().nullable(),
   actorUserId: z.number().int().positive(),
   actorRole: z.string().optional(),
+  idempotencyKey: z.string().min(8).max(200).optional().nullable(),
 });
 
 // Transfer table: move ticket to new table and/or change owner. Always keeps same waiter when only moving table.
@@ -141,25 +142,87 @@ tablesRouter.post('/transfer', requireAuth, async (req: AuthedRequest, res) => {
   }
 
   const note = String(last.note || '');
+  const fromOwnerRow = await prisma.user
+    .findFirst({ where: { businessId: auth.businessId, id: currentOwnerId } as any })
+    .catch(() => null);
+  const fromOwnerName = String(fromOwnerRow?.displayName ?? `#${currentOwnerId}`);
+  const newOwnerNameStr = String(newOwner?.displayName ?? (toUserId != null ? `#${toUserId}` : ''));
+  const fromLoc = `${fromArea} ${fromLabel}`.trim();
   const transferTag = movingTable
-    ? `[TRANSFER] ${fromArea} ${fromLabel} → ${toArea} ${toLabel}${changingOwner ? ` (owner → ${newOwner?.displayName || toUserId})` : ''}`
-    : `[TRANSFER] owner → ${newOwner?.displayName || toUserId}`;
+    ? changingOwner
+      ? `[TRANSFER from ${fromLoc} · now ${newOwnerNameStr}]`
+      : `[TRANSFER from ${fromLoc}]`
+    : `[TRANSFER ${fromOwnerName} → ${newOwnerNameStr}]`;
   const nextNote = note ? `${note}\n${transferTag}` : transferTag;
 
   // Keep same waiter when only moving table; change owner only when explicitly transferring to another waiter
   const nextUserId = changingOwner ? Number(toUserId) : Number(currentOwnerId);
 
-  await prisma.ticketLog.create({
-    data: {
-      businessId: auth.businessId,
-      userId: nextUserId,
-      area: toArea,
-      tableLabel: toLabel,
-      covers: last.covers ?? null,
-      itemsJson: last.itemsJson as any,
-      note: nextNote,
-    } as any,
-  });
+  const transferIdem = String(input.idempotencyKey || '').trim();
+  if (transferIdem) {
+    const dup = await prisma.ticketLog
+      .findFirst({
+        where: {
+          businessId: auth.businessId,
+          idempotencyKey: transferIdem,
+        } as any,
+      })
+      .catch(() => null);
+    if (dup) return res.status(200).json({ ok: true });
+  }
+
+  let createdLog: { id: number };
+  try {
+    createdLog = await prisma.ticketLog.create({
+      data: {
+        businessId: auth.businessId,
+        userId: nextUserId,
+        area: toArea,
+        tableLabel: toLabel,
+        covers: last.covers ?? null,
+        itemsJson: last.itemsJson as any,
+        note: nextNote,
+        ...(transferIdem ? { idempotencyKey: transferIdem } : {}),
+      } as any,
+    });
+  } catch (e: any) {
+    if (e?.code === 'P2002' && transferIdem) {
+      return res.status(200).json({ ok: true });
+    }
+    throw e;
+  }
+
+  const runMovedOutTagging = async (sessionOpenAtIso?: string | null) => {
+    const movedOutTag = `[TRANSFER moved-out → ${toArea} ${toLabel}]`;
+    try {
+      const fromAtDate = sessionOpenAtIso
+        ? new Date(sessionOpenAtIso)
+        : null;
+      const sessionRows = await prisma.ticketLog.findMany({
+        where: {
+          businessId: auth.businessId,
+          area: fromArea,
+          tableLabel: fromLabel,
+          id: { not: createdLog.id },
+          ...(fromAtDate ? { createdAt: { gte: fromAtDate } } : {}),
+        } as any,
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, note: true } as any,
+      });
+      for (const r of sessionRows as unknown as {
+        id: number;
+        note: string | null;
+      }[]) {
+        if (String(r.note || '').includes('[TRANSFER moved-out')) continue;
+        const next = r.note ? `${movedOutTag}\n${r.note}` : movedOutTag;
+        await prisma.ticketLog
+          .update({ where: { id: r.id }, data: { note: next } as any })
+          .catch(() => null);
+      }
+    } catch {
+      // Best-effort
+    }
+  };
 
   if (movingTable) {
     delete openMap[fromKey];
@@ -179,6 +242,22 @@ tablesRouter.post('/transfer', requireAuth, async (req: AuthedRequest, res) => {
         update: { valueJson: atMap },
       }),
     ]);
+
+    await runMovedOutTagging(fromAt);
+
+    const cov = Number(last.covers);
+    if (Number.isFinite(cov) && cov > 0) {
+      await prisma.covers
+        .create({
+          data: {
+            businessId: auth.businessId,
+            area: toArea,
+            label: toLabel,
+            covers: Math.min(999, Math.max(1, Math.floor(cov))),
+          } as any,
+        })
+        .catch(() => null);
+    }
 
     await prisma.ticketRequest
       .updateMany({
@@ -206,6 +285,8 @@ tablesRouter.post('/transfer', requireAuth, async (req: AuthedRequest, res) => {
     } catch {
       // ignore
     }
+  } else if (changingOwner) {
+    await runMovedOutTagging(atMap[fromKey]);
   }
 
   if (changingOwner) {

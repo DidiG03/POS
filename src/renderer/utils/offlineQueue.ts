@@ -176,14 +176,9 @@ const dispatchers: Record<OfflineOp, (args: any) => Promise<void>> = {
   },
 
   'payments.record': async (a) => {
-    // Payments are recorded by sending a PAYMENT-kind print (the IPC
-    // handler also writes a PrintJob history record). NOTE: there is
-    // no idempotency key on `tickets.print` today — a network blip
-    // mid-commit could in theory double-record. In practice the queue
-    // only kicks in when the renderer is ENTIRELY offline (no IPC
-    // available), so the failure mode is "queued payload sent once
-    // when reconnected", not "sent twice during a flap". Worth
-    // revisiting if we add a real cloud HTTP path for payments.
+    // `idempotencyKey` is forwarded to `tickets.print`; the IPC handler
+    // dedupes identical keys so offline-queue retries cannot double-record
+    // a payment audit row (PrintJob).
     await window.api.tickets.print(a);
   },
 };

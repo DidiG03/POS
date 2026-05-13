@@ -2792,8 +2792,23 @@ function LanSettings() {
   }
 
   const primaryIp = pickBestLanIp(ips);
-  // Use hash routing explicitly; this is the URL we previously tested with tablets/phones.
-  const lanUrl = primaryIp ? `http://${primaryIp}:3333/renderer/#/` : '';
+  const LAN_HTTP = '3333';
+  const LAN_HTTPS = '3443';
+  // Hash routing: put setup params in ? before # so the shell reads them on first paint.
+  const staffSetupUrl = primaryIp
+    ? (() => {
+        const q = new URLSearchParams({
+          backend: primaryIp,
+          http: LAN_HTTP,
+          https: LAN_HTTPS,
+        });
+        if (requirePairingCode && pairingCode && /^\d{6}$/.test(pairingCode)) {
+          q.set('pairing', pairingCode);
+        }
+        return `http://${primaryIp}:${LAN_HTTP}/renderer/?${q.toString()}#/`;
+      })()
+    : '';
+  const lanUrl = primaryIp ? `http://${primaryIp}:${LAN_HTTP}/renderer/#/` : '';
 
   async function saveSecurity(next: {
     allowLan?: boolean;
@@ -2821,12 +2836,26 @@ function LanSettings() {
       ) : (
         <>
           <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3 opacity-80">
+              <div>
+                <div className="font-medium">App access</div>
+                <div className="text-xs opacity-70">
+                  The desktop app can always reach the POS locally. This cannot
+                  be disabled.
+                </div>
+              </div>
+              <input type="checkbox" checked readOnly disabled />
+            </div>
+
             <label className="flex items-center justify-between gap-3">
               <div>
-                <div className="font-medium">Allow tablets on LAN</div>
+                <div className="font-medium">Allow browser access</div>
                 <div className="text-xs opacity-70">
-                  Enables network access to the local API. Requires app restart
-                  to take effect.
+                  Lets waiters open the POS from a browser on the same network
+                  (tablet/phone web browsers, laptops). The installed POS app on
+                  iOS/Android always works regardless of this toggle. Takes
+                  effect immediately after saving — already-connected browsers
+                  will lose access on their next request.
                 </div>
               </div>
               <input
@@ -2840,7 +2869,8 @@ function LanSettings() {
               <div>
                 <div className="font-medium">Require pairing code</div>
                 <div className="text-xs opacity-70">
-                  Tablet logins must enter the pairing code shown here.
+                  Tablet / phone logins (browser and native app) must enter the
+                  pairing code shown below.
                 </div>
               </div>
               <input
@@ -2858,6 +2888,15 @@ function LanSettings() {
             >
               Save LAN Settings
             </button>
+
+            {!allowLan && (
+              <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700 text-xs opacity-80">
+                Browser access is disabled. The desktop app and the installed
+                iOS / Android POS app can still connect. Enable “Allow browser
+                access” above to let waiters open the POS from a regular web
+                browser too.
+              </div>
+            )}
 
             <div className="mt-4 p-3 rounded bg-gray-900/50 border border-gray-700">
               <div className="text-sm font-semibold mb-2">Pairing code</div>
@@ -2885,7 +2924,59 @@ function LanSettings() {
             </div>
 
             <div className="mt-3 p-3 rounded bg-gray-900/50 border border-gray-700">
-              <div className="text-sm font-semibold mb-2">Tablet URL</div>
+              <div className="text-sm font-semibold mb-2">
+                Tablet setup link
+              </div>
+              {staffSetupUrl ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="bg-gray-700 rounded px-3 py-2 flex-1 text-xs"
+                      value={staffSetupUrl}
+                      readOnly
+                    />
+                    <button
+                      className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 shrink-0"
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(staffSetupUrl);
+                          setStatus('Copied tablet setup link.');
+                        } catch {
+                          setStatus('Copy failed.');
+                        }
+                      }}
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <div className="text-xs opacity-70 mt-2">
+                    <span className="font-medium text-emerald-200/90">
+                      Use this on each tablet once.
+                    </span>{' '}
+                    It saves this venue&apos;s IP, ports, and pairing code in
+                    the browser so staff don&apos;t re-enter them after
+                    restarting the POS or reopening the app (same device &amp;
+                    browser).
+                  </div>
+                </>
+              ) : (
+                <div className="text-xs opacity-70">
+                  No Wi‑Fi IP detected. Connect this Mac to Wi‑Fi or Ethernet
+                  and reopen this page.
+                </div>
+              )}
+            </div>
+
+            <div
+              className={`mt-3 p-3 rounded bg-gray-900/50 border border-gray-700 ${
+                allowLan ? '' : 'opacity-50 pointer-events-none'
+              }`}
+            >
+              <div className="text-sm font-semibold mb-2">
+                Plain URL{' '}
+                <span className="text-xs opacity-60">(browser, optional)</span>
+              </div>
               {lanUrl ? (
                 <div className="flex items-center gap-2">
                   <input
@@ -2895,10 +2986,11 @@ function LanSettings() {
                   />
                   <button
                     className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+                    type="button"
                     onClick={async () => {
                       try {
                         await navigator.clipboard.writeText(lanUrl);
-                        setStatus('Copied URL.');
+                        setStatus('Copied plain URL.');
                       } catch {
                         setStatus('Copy failed.');
                       }
@@ -2914,7 +3006,10 @@ function LanSettings() {
                 </div>
               )}
               <div className="text-xs opacity-70 mt-2">
-                Open this on the tablet’s browser (same Wi‑Fi).
+                Same app without setup parameters — tablets may need to use{' '}
+                <span className="font-medium">Configure server</span> and the
+                pairing code manually unless they opened the tablet setup link
+                above first.
               </div>
             </div>
 

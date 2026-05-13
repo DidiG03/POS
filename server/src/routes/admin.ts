@@ -17,6 +17,11 @@ function requireAdmin(req: AuthedRequest) {
   return auth;
 }
 
+/** Source-session rows after a table move (same tag as local `tableTransfer.ts`). */
+function isTransferredOutNote(note: string | null | undefined): boolean {
+  return String(note || '').includes('[TRANSFER moved-out');
+}
+
 adminRouter.get('/business', requireAuth, async (req: AuthedRequest, res) => {
   const auth = requireAdmin(req);
   const biz = await prisma.business.findUnique({ where: { id: auth.businessId } });
@@ -239,8 +244,9 @@ adminRouter.get('/tickets-by-user', requireAuth, async (req: AuthedRequest, res)
   }
   const limit = Math.min(2000, Math.max(1, Number(req.query.limit || 500)));
   const rows = await prisma.ticketLog.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit });
+  const visibleRows = rows.filter((r: any) => !isTransferredOutNote(r.note));
   return res.status(200).json(
-    rows.map((r: any) => ({
+    visibleRows.map((r: any) => ({
       id: r.id,
       area: r.area,
       tableLabel: r.tableLabel,

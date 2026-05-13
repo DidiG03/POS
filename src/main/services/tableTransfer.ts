@@ -12,6 +12,8 @@ export type TransferTableInput = {
   actorUserId: number;
   /** When in cloud mode, actor may not exist in local DB; pass role from session to bypass lookup */
   actorRole?: string;
+  /** Dedupes double-submit / offline retries (stored on the new destination TicketLog row). */
+  idempotencyKey?: string | null;
 };
 
 export type TransferTableResult = { ok: true } | { ok: false; error: string };
@@ -51,21 +53,25 @@ async function writeOpenAtMap(map: Record<string, string>) {
 }
 
 /**
- * Build a parseable, human-readable transfer tag that the admin UI can extract
- * back into a structured object via {@link parseTransferTag}.
+ * Build a short, readable transfer tag (prepended to the existing note).
+ * {@link parseTransferTag} understands these plus older quoted/legacy shapes.
  *
- * Format (single line, prepended to the existing note):
- *   [TRANSFER from "<fromUser>"#<fromUserId> (<fromArea> <fromLabel>) by "<actor>"#<actorId>]
- * For ownership changes only:
- *   [TRANSFER owner "<fromUser>"#<fromUserId> -> "<toUser>"#<toUserId> by "<actor>"#<actorId>]
+ *   [TRANSFER from <Area> <Label>]
+ *   [TRANSFER from <Area> <Label> · now <NewWaiter>]  (table move + new owner)
+ *   [TRANSFER <FromName> → <ToName>]  (owner change, same table)
  *
- * Quoted fields use simple escaping (only " is escaped) and the IDs make the
- * parser deterministic even when display names contain punctuation.
+ * Destination for moved-out source rows:
+ *   [TRANSFER moved-out → <Area> <Label>]
+ *
+ * {@link TRANSFERRED_OUT_TAG_PREFIX} marks every TicketLog row of the SOURCE
+ * session at the moment a table is moved. Aggregation queries skip those
+ * rows so revenue is not double-counted. Items and covers are preserved for audit.
  */
-function escapeQuoted(s: string): string {
-  return String(s ?? '')
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"');
+export const TRANSFERRED_OUT_TAG_PREFIX = '[TRANSFER moved-out';
+
+/** Cheap substring check used by every aggregation that reads `note`. */
+export function isTransferredOutNote(note: string | null | undefined): boolean {
+  return String(note || '').includes(TRANSFERRED_OUT_TAG_PREFIX);
 }
 
 export type ParsedTransferTag = {
@@ -140,6 +146,53 @@ export function parseTransferTag(
       byUserName: o[5] ? unescapeQuoted(o[5]) : null,
       byUserId: o[6] ? Number(o[6]) : null,
     };
+  }
+
+  // Short formats: [TRANSFER from Area Label] or [TRANSFER from Area Label · now Name]
+  const simpleFrom = s.match(/\[TRANSFER from\s+([^\]]+)\]/);
+  if (simpleFrom) {
+    const inner = simpleFrom[1].trim();
+    const parts = inner.split(/\s*·\s*now\s+/);
+    const locStr = parts[0].trim();
+    const newOwnerHint = parts[1]?.trim() ?? null;
+    let fromArea: string | undefined;
+    let fromLabel: string | undefined;
+    const idx = locStr.lastIndexOf(' ');
+    if (idx > 0) {
+      fromArea = locStr.slice(0, idx);
+      fromLabel = locStr.slice(idx + 1);
+    } else {
+      fromArea = locStr;
+    }
+    return {
+      kind: 'MOVED',
+      fromUserName: null,
+      fromUserId: null,
+      fromArea,
+      fromLabel,
+      toUserName: newOwnerHint,
+      toUserId: null,
+      byUserName: null,
+      byUserId: null,
+    };
+  }
+
+  // Owner change on same table: [TRANSFER Alice → Carol]
+  const shortOwner = s.match(/\[TRANSFER\s+(.+?)\s*→\s*(.+?)\]/);
+  if (shortOwner) {
+    const fromN = shortOwner[1].trim();
+    const toN = shortOwner[2].trim();
+    if (!/^from\s+/i.test(fromN)) {
+      return {
+        kind: 'OWNER',
+        fromUserName: fromN,
+        fromUserId: null,
+        toUserName: toN,
+        toUserId: null,
+        byUserName: null,
+        byUserId: null,
+      };
+    }
   }
 
   // Legacy formats — pre-structured tag rows.
@@ -302,6 +355,14 @@ export async function transferTableLocal(
     toUserId != null && Number(toUserId) !== Number(currentOwnerId);
   if (!movingTable && !changingOwner) return { ok: true };
 
+  const transferIdem = String(input.idempotencyKey ?? '').trim();
+  if (transferIdem) {
+    const prior = await prisma.ticketLog
+      .findFirst({ where: { idempotencyKey: transferIdem } as any })
+      .catch(() => null);
+    if (prior) return { ok: true };
+  }
+
   // If moving table, ensure destination isn't already open
   const openMap = await readOpenMap();
   const fromKey = `${fromArea}:${fromLabel}`;
@@ -334,28 +395,76 @@ export async function transferTableLocal(
   const newOwnerName = newOwner ? String(newOwner.displayName) : '';
 
   // Create a new ticket snapshot that represents the transferred state.
-  // The structured tag is prepended (not appended) so it's easy for the admin
-  // UI to surface even when waiters have written their own notes.
+  // The transfer tag is prepended so waiter notes stay below it.
   const existingNote = String(last.note || '');
+  const fromLoc = `${fromArea} ${fromLabel}`.trim();
   const transferTag = movingTable
-    ? `[TRANSFER from "${escapeQuoted(fromOwnerName)}"#${currentOwnerId} (${fromArea} ${fromLabel})${changingOwner ? ` -> "${escapeQuoted(newOwnerName)}"#${toUserId}` : ''} by "${escapeQuoted(actorName)}"#${actorUserId}]`
-    : `[TRANSFER owner "${escapeQuoted(fromOwnerName)}"#${currentOwnerId} -> "${escapeQuoted(newOwnerName)}"#${toUserId} by "${escapeQuoted(actorName)}"#${actorUserId}]`;
+    ? changingOwner
+      ? `[TRANSFER from ${fromLoc} · now ${newOwnerName}]`
+      : `[TRANSFER from ${fromLoc}]`
+    : `[TRANSFER ${fromOwnerName} → ${newOwnerName}]`;
   const nextNote = existingNote
     ? `${transferTag}\n${existingNote}`
     : transferTag;
 
   // Keep same waiter when only moving table; change owner only when transferring to another waiter
   const nextUserId = changingOwner ? Number(toUserId) : Number(currentOwnerId);
-  await prisma.ticketLog.create({
-    data: {
-      userId: nextUserId,
-      area: toArea,
-      tableLabel: toLabel,
-      covers: last.covers ?? null,
-      itemsJson: last.itemsJson as any,
-      note: nextNote,
-    } as any,
-  });
+  let createdLog: { id: number };
+  try {
+    createdLog = await prisma.ticketLog.create({
+      data: {
+        userId: nextUserId,
+        area: toArea,
+        tableLabel: toLabel,
+        covers: last.covers ?? null,
+        itemsJson: last.itemsJson as any,
+        note: nextNote,
+        ...(transferIdem ? { idempotencyKey: transferIdem } : {}),
+      } as any,
+    });
+  } catch (e: any) {
+    if (e?.code === 'P2002' && transferIdem) return { ok: true };
+    throw e;
+  }
+
+  // Rows that represented the ticket before this transfer (same physical
+  // table after an owner handoff, or the source table after a move) must
+  // carry the moved-out marker so staff lists / revenue don't attribute the
+  // same sale to both waiters.
+  const prependMovedOutToPriorSessionRows = async () => {
+    const movedOutTag = `${TRANSFERRED_OUT_TAG_PREFIX} → ${toArea} ${toLabel}]`;
+    try {
+      const fromAtDate = fromAt
+        ? new Date(fromAt)
+        : (last as any)?.createdAt instanceof Date
+          ? (last as any).createdAt
+          : null;
+      const sessionRows = await prisma.ticketLog.findMany({
+        where: {
+          area: fromArea,
+          tableLabel: fromLabel,
+          id: { not: createdLog.id },
+          ...(fromAtDate ? { createdAt: { gte: fromAtDate } } : {}),
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, note: true } as any,
+      });
+      for (const r of sessionRows as { id: number; note: string | null }[]) {
+        if (isTransferredOutNote(r.note)) continue;
+        const next = r.note ? `${movedOutTag}\n${r.note}` : movedOutTag;
+        await prisma.ticketLog
+          .update({
+            where: { id: r.id },
+            data: { note: next } as any,
+          })
+          .catch(() => null);
+      }
+    } catch {
+      // Best-effort: never fail the transfer because we couldn't tag the
+      // source session. Aggregations will fall back to the existing
+      // behavior; the destination row is the source of truth.
+    }
+  };
 
   // Update open maps
   if (movingTable) {
@@ -368,6 +477,23 @@ export async function transferTableLocal(
     delete openAtMap[fromKey];
     openAtMap[toKey] = fromAt || new Date().toISOString();
     await writeOpenAtMap(openAtMap);
+
+    await prependMovedOutToPriorSessionRows();
+
+    // Mirror guest count into the `Covers` table so `covers:getLast` (used by
+    // OrderPage for pay gating / UI) matches the transferred ticket log row.
+    const cov = Number(last.covers);
+    if (Number.isFinite(cov) && cov > 0) {
+      await prisma.covers
+        .create({
+          data: {
+            area: toArea,
+            label: toLabel,
+            covers: Math.min(999, Math.max(1, Math.floor(cov))),
+          },
+        })
+        .catch(() => null);
+    }
 
     // Move pending/approved requests to new table (keep ownership logic handled separately below)
     await prisma.ticketRequest
@@ -401,6 +527,12 @@ export async function transferTableLocal(
     if (!openAtMap[fromKey] && openMap[fromKey]) {
       openAtMap[fromKey] = new Date().toISOString();
       await writeOpenAtMap(openAtMap);
+    }
+    // Owner handoff on the same table: snapshot row is `createdLog`; prior
+    // rows still have the old waiter as userId — tag them moved-out so only
+    // the colleague appears in "Tickets by staff" / revenue for this sale.
+    if (changingOwner) {
+      await prependMovedOutToPriorSessionRows();
     }
   }
 

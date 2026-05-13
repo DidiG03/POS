@@ -91,8 +91,6 @@ const ALLOWED_ENUM_VALUES_LOCAL_ONLY: Record<string, Set<string>> = {
 // Fields legitimately present only server-side.
 const ALLOWED_SERVER_ONLY: Record<string, string[]> = {
   User: ['email'],
-  PrintJob: ['idempotencyKey'],
-  TicketLog: ['idempotencyKey'],
   // Server SyncState is multi-tenant: row id + composite (businessId,key)
   // unique, while local SyncState uses `key` as the primary key directly.
   SyncState: ['id'],

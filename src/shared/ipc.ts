@@ -800,7 +800,11 @@ export interface AdminTicketDTO {
   vat: number;
   // Resolved on the main process by inspecting the ticket-log row, the
   // currently open tables map and recent payment receipts.
-  status?: 'PAID' | 'VOIDED' | 'ACTIVE';
+  // `TRANSFERRED` flags a row whose session was moved to another table
+  // (revenue lives on the destination ticket — see
+  // `TRANSFERRED_OUT_TAG_PREFIX`); the row is kept for audit purposes
+  // but excluded from PAID counts/sums.
+  status?: 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
   /**
    * If the ticket-log row was produced by a table transfer this carries the
    * structured audit info parsed from the `[TRANSFER ...]` note tag. `MOVED`
@@ -1135,6 +1139,7 @@ export const TransferTableInputSchema = z.object({
   actorUserId: z.number().int().positive(),
   /** When in cloud mode, actor may not exist in local DB; pass role from session to bypass lookup */
   actorRole: z.string().optional(),
+  idempotencyKey: z.string().min(8).max(200).optional().nullable(),
 });
 export type TransferTableInput = z.infer<typeof TransferTableInputSchema>;
 export type TransferTableResult = { ok: true } | { ok: false; error: string };

@@ -343,6 +343,28 @@ function isLoopback(remoteAddress: string | undefined) {
   return false;
 }
 
+/**
+ * True when the request is coming from the native iOS/Android shell (the
+ * Capacitor build sets `X-POS-Client: native` on every fetch, and adds
+ * `?client=native` to the SSE URL because EventSource can't carry headers).
+ * Browsers do not set this marker, so the LAN "Allow Web access" toggle
+ * continues to gate them as before.
+ *
+ * The marker is a *hint*, not authentication — pairing-code and PIN login
+ * are still required for the native app to actually do anything.
+ */
+function isNativeClient(
+  req: http.IncomingMessage,
+  parsed?: url.UrlWithParsedQuery,
+) {
+  const headerVal = req.headers['x-pos-client'];
+  const header = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+  if (String(header || '').toLowerCase() === 'native') return true;
+  const query = parsed?.query?.client;
+  const q = Array.isArray(query) ? query[0] : query;
+  return String(q || '').toLowerCase() === 'native';
+}
+
 async function issueToken(
   secret: string,
   ctx: { userId: number; role?: string },
@@ -602,6 +624,34 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return;
       }
 
+      // Live LAN gate: if web access is disabled, reject any non-loopback
+      // requests immediately. This lets the admin toggle "Allow Web access"
+      // on/off without restarting the app — the desktop app (loopback) is
+      // always allowed, while *browsers* (tablets/phones/laptops on the LAN)
+      // are blocked until the toggle is re-enabled.
+      //
+      // The native iOS/Android shell identifies itself with
+      //   `X-POS-Client: native`
+      // (or `?client=native` for SSE, which can't set custom headers via
+      // EventSource). The toggle is a browser-only gate — the native app
+      // still has its own pairing-code + login flow, so we let it through
+      // regardless of the web-access setting. Treat the marker as a hint:
+      // pairing / auth remain authoritative for who actually gets in.
+      try {
+        const remoteIp = String((req.socket as any)?.remoteAddress || '');
+        if (!isLoopback(remoteIp) && !isNativeClient(req, parsed)) {
+          const liveSettings = await coreServices.readSettings();
+          const lanEnabledLive =
+            Boolean((liveSettings as any)?.security?.allowLan) ||
+            process.env.POS_ALLOW_LAN === 'true';
+          if (!lanEnabledLive) {
+            return send(res, 403, { error: 'web access disabled' }, corsOrigin);
+          }
+        }
+      } catch {
+        // If the settings read fails, fall through to default behavior.
+      }
+
       // Active receipt-printer resolution is owned by the
       // `printDispatcher` module — see `pickActiveReceiptProfile()`.
       // Endpoints below call it directly; no helper needed here.
@@ -758,7 +808,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           const lanEnabled =
             Boolean((s as any)?.security?.allowLan) ||
             process.env.POS_ALLOW_LAN === 'true';
-          if (!lanEnabled)
+          // Native app bypasses the browser-only "Allow Web access" gate.
+          if (!lanEnabled && !isNativeClient(req, parsed))
             return send(
               res,
               403,
@@ -803,8 +854,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           const lanEnabled =
             Boolean((s as any)?.security?.allowLan) ||
             process.env.POS_ALLOW_LAN === 'true';
+          // Native app bypasses the browser-only "Allow Web access" gate,
+          // but the pairing-code check below still applies to it when
+          // pairing is required.
+          const gateForBrowsers = lanEnabled || isNativeClient(req, parsed);
           if (
-            lanEnabled &&
+            !gateForBrowsers &&
+            !isLoopback((req.socket as any)?.remoteAddress)
+          ) {
+            return send(res, 403, { error: 'web access disabled' }, corsOrigin);
+          }
+          if (
             requirePairing &&
             !isLoopback((req.socket as any)?.remoteAddress)
           ) {
@@ -1108,6 +1168,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             name: c.name,
             sortOrder: c.sortOrder,
             active: c.active,
+            color: (c as any)?.color ?? null,
             items: c.items.map((i: any) => ({
               id: i.id,
               name: i.name,
@@ -2065,6 +2126,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           toUserId,
           actorUserId,
           actorRole: auth?.role,
+          idempotencyKey:
+            String(body?.idempotencyKey ?? '').trim() || undefined,
         } as any).catch((e: any) => ({
           ok: false as const,
           error: String(e?.message || e || 'Transfer failed'),

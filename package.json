@@ -28,6 +28,7 @@
     "db:migrate": "prisma migrate dev --name init",
     "db:seed": "tsx scripts/seed.ts",
     "db:wipe": "tsx scripts/wipeLocalDb.ts",
+    "db:clean-today": "tsx scripts/cleanTodayTicketData.ts",
     "db:check-parity": "tsx scripts/checkSchemaParity.ts",
     "serial:rebuild": "node scripts/rebuildSerialport.mjs",
     "dev:mobile": "vite --config vite.mobile.config.ts",

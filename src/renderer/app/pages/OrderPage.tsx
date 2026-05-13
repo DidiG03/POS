@@ -52,6 +52,41 @@ function readableTextColor(hex?: string | null): string {
 
 const FALLBACK_TILE_BG = '#065f46'; // emerald-800 — matches the prior look
 
+/** TABLE labels from saved layout JSON (same rules as ReservationsLayout / FloorCanvas). */
+function labelsFromLayoutNodes(saved: any[] | null | undefined): string[] {
+  if (!Array.isArray(saved) || !saved.length) return [];
+  const out: string[] = [];
+  for (const n of saved) {
+    if (!n) continue;
+    const kind = n.kind;
+    if (String(kind || '').toUpperCase() === 'AREA') continue;
+    if (kind != null && kind !== '' && String(kind).toUpperCase() !== 'TABLE') {
+      continue;
+    }
+    const lab = String(n.label || '').trim();
+    if (lab) out.push(lab);
+  }
+  return out;
+}
+
+function syntheticLabelsFromAreaDefaultCount(
+  defaultTableCount: number,
+): string[] {
+  const raw = Number(defaultTableCount);
+  const n = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 8;
+  const capped = Math.max(1, Math.min(200, n));
+  return Array.from({ length: capped }, (_, i) => `T${i + 1}`);
+}
+
+function sortNaturalTableLabels(labels: string[]): string[] {
+  return [...labels].sort((a, b) => {
+    const an = Number((a.match(/\d+/) || ['0'])[0]);
+    const bn = Number((b.match(/\d+/) || ['0'])[0]);
+    if (an !== bn) return an - bn;
+    return a.localeCompare(b);
+  });
+}
+
 export default function OrderPage() {
   const [categories, setCategories] = useState<MenuCategoryDTO[]>([]);
   const [selectedCatId, setSelectedCatId] = useState<number | null>(null);
@@ -165,8 +200,59 @@ export default function OrderPage() {
   const [transferToUserId, setTransferToUserId] = useState<number | null>(null);
   const [transferToArea, setTransferToArea] = useState<string>('');
   const [transferToLabel, setTransferToLabel] = useState<string>('');
+  const [transferTableSections, setTransferTableSections] = useState<
+    { name: string; count: number }[]
+  >([]);
+  const [transferLayoutLabels, setTransferLayoutLabels] = useState<string[]>(
+    [],
+  );
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferError, setTransferError] = useState<string | null>(null);
+
+  const transferSectionNames = useMemo(() => {
+    const fromSettings = transferTableSections
+      .map((s) => String(s.name || '').trim())
+      .filter(Boolean);
+    const uniq = [...new Set(fromSettings)];
+    if (selectedTable?.area && !uniq.includes(String(selectedTable.area))) {
+      return [String(selectedTable.area), ...uniq];
+    }
+    return uniq.length
+      ? uniq
+      : selectedTable?.area
+        ? [String(selectedTable.area)]
+        : [];
+  }, [transferTableSections, selectedTable?.area]);
+
+  const transferDestTableOptions = useMemo(() => {
+    return transferLayoutLabels.filter(
+      (l) =>
+        !(
+          selectedTable &&
+          String(transferToArea) === String(selectedTable.area) &&
+          l === selectedTable.label
+        ),
+    );
+  }, [
+    transferLayoutLabels,
+    transferToArea,
+    selectedTable?.area,
+    selectedTable?.label,
+  ]);
+
+  // Keep destination section aligned with the dropdown list once settings load.
+  useEffect(() => {
+    if (!showTransfer) return;
+    if (!transferSectionNames.length) return;
+    if (!transferSectionNames.includes(String(transferToArea))) {
+      const fallback =
+        (selectedTable?.area &&
+        transferSectionNames.includes(String(selectedTable.area))
+          ? String(selectedTable.area)
+          : null) ?? transferSectionNames[0];
+      if (fallback) setTransferToArea(fallback);
+    }
+  }, [showTransfer, transferSectionNames, transferToArea, selectedTable?.area]);
 
   const isTableOpen = selectedTable
     ? isOpen(selectedTable.area, selectedTable.label)
@@ -628,18 +714,22 @@ export default function OrderPage() {
   // currently-on-shift userIds in parallel so the "To waiter" dropdown only
   // shows colleagues who are clocked in. Server-side `transferTableLocal`
   // re-checks this — the client filter is purely a UX hint.
+  // We also load `tableAreas` from settings so "To table" can use section +
+  // layout-driven table selects (no free text).
   useEffect(() => {
     if (!showTransfer) return;
     if (!selectedTable) return;
     setTransferError(null);
     setTransferToArea(selectedTable.area);
-    setTransferToLabel(selectedTable.label);
+    setTransferToLabel('');
+    setTransferLayoutLabels([]);
     setTransferToUserId(null);
     let cancelled = false;
     (async () => {
-      const [users, openIds] = await Promise.all([
+      const [users, openIds, settings] = await Promise.all([
         window.api.auth.listUsers().catch(() => [] as any[]),
         window.api.shifts.listOpen().catch(() => [] as number[]),
+        window.api.settings.get().catch(() => null as any),
       ]);
       if (cancelled) return;
       setTransferUsers(
@@ -648,11 +738,90 @@ export default function OrderPage() {
       setOnShiftUserIds(
         new Set((Array.isArray(openIds) ? openIds : []).map((n) => Number(n))),
       );
+      const list: { name: string; count: number }[] =
+        (settings?.tableAreas as any) || [];
+      setTransferTableSections(Array.isArray(list) ? list : []);
     })();
     return () => {
       cancelled = true;
     };
   }, [showTransfer, selectedTable?.area, selectedTable?.label]);
+
+  // Load TABLE labels for the chosen destination section from the saved floor
+  // layout (same source as TablesPage / reservations). Falls back to T1…N from
+  // the section default count when no layout exists yet.
+  useEffect(() => {
+    if (!showTransfer || transferMode !== 'TABLE' || !user?.id) return;
+    const areaName = String(transferToArea || '').trim();
+    if (!areaName || !selectedTable) {
+      setTransferLayoutLabels([]);
+      setTransferToLabel('');
+      return;
+    }
+
+    setTransferLayoutLabels([]);
+
+    let cancelled = false;
+    const load = async () => {
+      const meta = transferTableSections.find(
+        (a) => String(a.name) === String(areaName),
+      );
+      const count =
+        meta && Number(meta.count) > 0 && Number.isFinite(Number(meta.count))
+          ? Number(meta.count)
+          : 8;
+      const saved = await window.api.layout
+        .get(user.id, areaName)
+        .catch(() => null);
+      if (cancelled) return;
+      const fromSaved = labelsFromLayoutNodes(
+        Array.isArray(saved) ? saved : null,
+      );
+      const labels =
+        fromSaved.length > 0
+          ? sortNaturalTableLabels(fromSaved)
+          : sortNaturalTableLabels(syntheticLabelsFromAreaDefaultCount(count));
+
+      const available = labels.filter(
+        (l) =>
+          !(
+            String(areaName) === String(selectedTable.area) &&
+            l === selectedTable.label
+          ),
+      );
+
+      setTransferLayoutLabels(labels);
+      setTransferToLabel((prev) => {
+        if (prev && available.includes(prev)) return prev;
+        return available[0] ?? '';
+      });
+    };
+
+    void load();
+
+    const onLayout = (ev: any) => {
+      try {
+        const detail = (ev?.detail || {}) as { area?: string };
+        if (!detail.area || !areaName || detail.area !== areaName) return;
+        void load();
+      } catch {
+        void load();
+      }
+    };
+    window.addEventListener('pos:layoutChanged', onLayout);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pos:layoutChanged', onLayout);
+    };
+  }, [
+    showTransfer,
+    transferMode,
+    user?.id,
+    transferToArea,
+    transferTableSections,
+    selectedTable?.area,
+    selectedTable?.label,
+  ]);
 
   // Determine owner of the currently selected open table
   useEffect(() => {
@@ -2065,6 +2234,11 @@ export default function OrderPage() {
                           categoryName: (l as any).categoryName,
                         }));
                         attemptedPayment = true;
+                        const paymentIdempotencyKey =
+                          typeof globalThis.crypto !== 'undefined' &&
+                          typeof globalThis.crypto.randomUUID === 'function'
+                            ? globalThis.crypto.randomUUID()
+                            : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
                         // Process the payment + receipt synchronously so
                         // the user sees a real "Processing…" state. The
                         // IPC handler `tickets:print` is bounded:
@@ -2092,6 +2266,7 @@ export default function OrderPage() {
                             note: orderNote || null,
                             userName: user?.displayName || undefined,
                             recordOnly: !printReceipt,
+                            idempotencyKey: paymentIdempotencyKey,
                             meta: {
                               kind: 'PAYMENT',
                               userId: user?.id ?? null,
@@ -2276,21 +2451,58 @@ export default function OrderPage() {
               <div className="space-y-2">
                 <div className="text-sm opacity-80">Destination</div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <input
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
-                    value={transferToArea}
-                    onChange={(e) => setTransferToArea(e.target.value)}
-                    placeholder={selectedTable.area}
-                  />
-                  <input
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
-                    value={transferToLabel}
+                  <select
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
+                    aria-label="Destination section"
+                    value={
+                      transferSectionNames.includes(transferToArea)
+                        ? transferToArea
+                        : ''
+                    }
+                    onChange={(e) => {
+                      setTransferToArea(e.target.value);
+                      setTransferToLabel('');
+                    }}
+                    disabled={transferSectionNames.length === 0}
+                  >
+                    <option value="">
+                      {transferSectionNames.length === 0
+                        ? '(no sections in settings)'
+                        : '(choose section)'}
+                    </option>
+                    {transferSectionNames.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
+                    aria-label="Destination table"
+                    value={
+                      transferDestTableOptions.includes(transferToLabel)
+                        ? transferToLabel
+                        : ''
+                    }
                     onChange={(e) => setTransferToLabel(e.target.value)}
-                    placeholder="e.g. T12"
-                  />
-                </div>
-                <div className="text-xs opacity-70">
-                  Tip: your layout uses labels like <b>T1</b>, <b>T2</b>, etc.
+                    disabled={
+                      !String(transferToArea || '').trim() ||
+                      transferDestTableOptions.length === 0
+                    }
+                  >
+                    <option value="">
+                      {!String(transferToArea || '').trim()
+                        ? '(choose section first)'
+                        : transferDestTableOptions.length === 0
+                          ? '(no free table in this section)'
+                          : '(choose table)'}
+                    </option>
+                    {transferDestTableOptions.map((lab) => (
+                      <option key={lab} value={lab}>
+                        {lab}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
             )}
@@ -2316,7 +2528,9 @@ export default function OrderPage() {
                   !canTransfer ||
                   (transferMode === 'WAITER'
                     ? !transferToUserId
-                    : !transferToArea.trim() || !transferToLabel.trim())
+                    : !transferToArea.trim() ||
+                      !transferToLabel.trim() ||
+                      transferDestTableOptions.length === 0)
                 }
                 onClick={async () => {
                   if (!selectedTable || !user?.id) return;
@@ -2350,11 +2564,17 @@ export default function OrderPage() {
                         return;
                       }
                     }
+                    const transferIdempotencyKey =
+                      typeof globalThis.crypto !== 'undefined' &&
+                      typeof globalThis.crypto.randomUUID === 'function'
+                        ? globalThis.crypto.randomUUID()
+                        : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
                     const payload: any = {
                       fromArea: selectedTable.area,
                       fromLabel: selectedTable.label,
                       actorUserId: user.id,
                       actorRole: user.role,
+                      idempotencyKey: transferIdempotencyKey,
                     };
                     if (transferMode === 'WAITER') {
                       payload.toUserId = transferToUserId;

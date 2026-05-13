@@ -210,6 +210,9 @@ model PrintJob {
   createdAt   DateTime    @default(now())
   status      PrintStatus @default(QUEUED)
 
+  /// Dedupes client/offline retries (same key → same logical print / payment audit).
+  idempotencyKey String? @unique
+
   // Printer-offline retry queue (PR 3).
   // `attempts` is the number of physical print attempts already made
   // (so the FIRST persisted RETRY row has attempts=1). `nextAttemptAt`
@@ -293,6 +296,8 @@ model TicketLog {
   covers     Int?
   itemsJson  Json
   note       String?
+  /// Dedupes double-submit / retry on table transfer (destination row).
+  idempotencyKey String? @unique
   createdAt  DateTime @default(now())
 }
 

@@ -1,15 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSessionStore } from '../../stores/session';
 
-type TrendRange = 'daily' | 'weekly' | 'monthly';
-
 type Overview = {
   revenueTodayNet: number;
   revenueTodayVat: number;
   openOrders: number;
 };
 
-type SalesPoint = { label: string; total: number; orders: number };
+/** Same local calendar day as `ref` (default: now). */
+function isSameLocalCalendarDay(
+  iso: string | null | undefined,
+  ref: Date = new Date(),
+): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return false;
+  return (
+    d.getFullYear() === ref.getFullYear() &&
+    d.getMonth() === ref.getMonth() &&
+    d.getDate() === ref.getDate()
+  );
+}
 
 export default function ReportsPage() {
   const { user } = useSessionStore();
@@ -20,8 +31,6 @@ export default function ReportsPage() {
     qty: number;
     revenue: number;
   } | null>(null);
-  const [range, setRange] = useState<TrendRange>('daily');
-  const [points, setPoints] = useState<SalesPoint[]>([]);
   const [currency, setCurrency] = useState<string>('EUR');
   const [ticketLoading, setTicketLoading] = useState<boolean>(false);
   const [activeTickets, setActiveTickets] = useState<any[]>([]);
@@ -48,27 +57,25 @@ export default function ReportsPage() {
         if (!user?.id) {
           setOverview(null);
           setTopSelling(null);
-          setPoints([]);
           return;
         }
-        const [ov, top, trend] = await Promise.all([
+        const [ov, top] = await Promise.all([
           window.api.reports.getMyOverview(user.id),
           window.api.reports.getMyTopSellingToday(user.id),
-          window.api.reports.getMySalesTrends({ userId: user.id, range }),
         ]);
         setOverview(ov as any);
         setTopSelling(top as any);
-        setPoints((trend as any)?.points || []);
       } finally {
         setLoading(false);
       }
     })();
-  }, [range, user?.id]);
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user?.id) {
       setActiveTickets([]);
       setPaidTickets([]);
+      setVoidedTickets([]);
       return;
     }
     if (ticketsApiMissing) return;
@@ -94,9 +101,20 @@ export default function ReportsPage() {
             .catch(() => []),
         ]);
         if (!alive) return;
+        const today = new Date();
         setActiveTickets(Array.isArray(a) ? a : []);
-        setPaidTickets(Array.isArray(p) ? p : []);
-        setVoidedTickets(Array.isArray(v) ? v : []);
+        const paid = Array.isArray(p) ? p : [];
+        setPaidTickets(
+          paid.filter((t: any) =>
+            isSameLocalCalendarDay(t?.paidAt || t?.createdAt, today),
+          ),
+        );
+        const voided = Array.isArray(v) ? v : [];
+        setVoidedTickets(
+          voided.filter((t: any) =>
+            isSameLocalCalendarDay(t?.createdAt, today),
+          ),
+        );
       } catch (e: any) {
         const msg = String(e?.message || e || '');
         if (
@@ -137,26 +155,6 @@ export default function ReportsPage() {
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden pr-1">
       <div className="flex shrink-0 items-center justify-between mb-4">
         <h2 className="text-lg font-semibold">Reports</h2>
-        <div className="flex items-center gap-2">
-          <button
-            className={`px-2 py-1 rounded text-sm ${range === 'daily' ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-            onClick={() => setRange('daily')}
-          >
-            Last 14 days
-          </button>
-          <button
-            className={`px-2 py-1 rounded text-sm ${range === 'weekly' ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-            onClick={() => setRange('weekly')}
-          >
-            12 weeks
-          </button>
-          <button
-            className={`px-2 py-1 rounded text-sm ${range === 'monthly' ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-            onClick={() => setRange('monthly')}
-          >
-            12 months
-          </button>
-        </div>
       </div>
 
       {loading && (
@@ -186,26 +184,8 @@ export default function ReportsPage() {
       {!loading && (
         <div className="grid shrink-0 grid-cols-1 gap-4 lg:grid-cols-3">
           {/* <div className="lg:col-span-2 p-3 rounded bg-gray-800 border border-gray-700">
-            <div className="font-medium mb-2">Sales trend ({range})</div>
-            {points.length === 0 ? (
-              <div className="opacity-70 text-sm">No data</div>
-            ) : (
-              <ul className="space-y-2">
-                {points.map((p) => (
-                  <li key={p.label} className="flex items-center justify-between text-sm">
-                    <span className="opacity-80 w-16">{p.label}</span>
-                    <div className="flex-1 mx-3 h-2 rounded bg-gray-700 overflow-hidden">
-                      <div
-                        className="h-2 bg-blue-600"
-                        style={{ width: `${Math.min(100, Math.round((p.total / Math.max(1, Math.max(...points.map(x => x.total)))) * 100))}%` }}
-                      />
-                    </div>
-                    <span className="w-28 text-right">{fmtCurrency.format(p.total)}</span>
-                    <span className="w-16 text-right opacity-80">{p.orders} tkt</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="font-medium mb-2">Sales trend</div>
+            … re-enable with getMySalesTrends when this panel is restored …
           </div> */}
 
           {/* <div className="p-3 rounded bg-gray-800 border border-gray-700">
@@ -268,7 +248,7 @@ export default function ReportsPage() {
 
             <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">Paid tickets</div>
+                <div className="font-medium">Paid tickets (today)</div>
                 <div className="text-xs opacity-70">{paidTickets.length}</div>
               </div>
               {paidTicketsError && (
@@ -297,7 +277,9 @@ export default function ReportsPage() {
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
                 {paidTickets.length === 0 ? (
-                  <div className="text-sm opacity-70">No paid tickets yet.</div>
+                  <div className="text-sm opacity-70">
+                    No paid tickets today.
+                  </div>
                 ) : (
                   <div className="space-y-3">
                     {paidTickets.map((t: any, idx: number) => (
@@ -314,7 +296,7 @@ export default function ReportsPage() {
 
             <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">Voided tickets</div>
+                <div className="font-medium">Voided tickets (today)</div>
                 <div className="text-xs opacity-70">{voidedTickets.length}</div>
               </div>
               {voidedTicketsError && (
@@ -324,7 +306,9 @@ export default function ReportsPage() {
               )}
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
                 {voidedTickets.length === 0 ? (
-                  <div className="text-sm opacity-70">No voided tickets.</div>
+                  <div className="text-sm opacity-70">
+                    Nothing voided today.
+                  </div>
                 ) : (
                   <div className="space-y-3">
                     {voidedTickets.map((t: any, idx: number) => (

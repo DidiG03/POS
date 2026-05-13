@@ -21,6 +21,7 @@ import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
 } from './services/realtime';
+import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
 import {
   LoginWithPinInputSchema,
   CreateUserInputSchema,
@@ -92,7 +93,11 @@ import {
   testPrintWithProfile,
   type DispatchResult,
 } from './services/printDispatcher';
-import { transferTableLocal, parseTransferTag } from './services/tableTransfer';
+import {
+  transferTableLocal,
+  parseTransferTag,
+  isTransferredOutNote,
+} from './services/tableTransfer';
 import {
   startNotificationRetentionLoop,
   stopNotificationRetentionLoop,
@@ -2299,6 +2304,20 @@ ipcMain.handle('billing:createPortalSession', async (_e) => {
 
 // Print ticket over ESC/POS
 ipcMain.handle('tickets:print', async (_e, input) => {
+  const idempotencyKey = String((input as any)?.idempotencyKey ?? '').trim();
+  if (idempotencyKey) {
+    const existing = await prisma.printJob
+      .findFirst({
+        where: { idempotencyKey } as any,
+      })
+      .catch(() => null);
+    if (existing) {
+      // Same logical payment/print already recorded — retries must not
+      // duplicate notifications, audit PrintJobs, or dispatch again.
+      return true;
+    }
+  }
+
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   const items = (input?.items as any[]) || [];
@@ -2382,10 +2401,12 @@ ipcMain.handle('tickets:print', async (_e, input) => {
           type: 'RECEIPT' as any,
           payloadJson: payload,
           status: 'SENT' as any,
-        },
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        } as any,
       });
       return true;
-    } catch {
+    } catch (e: any) {
+      if (e?.code === 'P2002' && idempotencyKey) return true;
       return false;
     }
   }
@@ -2444,10 +2465,15 @@ ipcMain.handle('tickets:print', async (_e, input) => {
         type: 'RECEIPT' as any,
         payloadJson: payload,
         status: ok ? ('SENT' as any) : ('FAILED' as any),
-      },
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      } as any,
     });
-  } catch {
-    // ignore
+  } catch (e: any) {
+    if (e?.code === 'P2002' && idempotencyKey) {
+      // Concurrent identical payment — treat as success (other call won).
+    } else {
+      // ignore
+    }
   }
   return ok;
 });
@@ -2567,9 +2593,17 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
   if (!userId) return [];
 
   const listLocal = async () => {
+    // Only the ORIGINAL payment-audit row (written by `tickets:print`)
+    // has `attempts = 0`. The printer-offline retry queue persists a
+    // separate PrintJob per backoff tick via `enqueuePrintRetry` with
+    // `attempts >= 1`. Those carry the same payload (incl.
+    // `meta.kind = 'PAYMENT'`) but represent re-print attempts, not new
+    // payments — without this guard, a single payment made while the
+    // printer is offline would surface as N "paid tickets" in the
+    // waiter report.
     const jobs = await prisma.printJob
       .findMany({
-        where: { type: 'RECEIPT' as any },
+        where: { type: 'RECEIPT' as any, attempts: 0 } as any,
         orderBy: { createdAt: 'desc' },
         take: 500,
       })
@@ -2581,6 +2615,10 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
       const meta = (p?.meta as any) || {};
       if (String(meta?.kind || '') !== 'PAYMENT') continue;
       if (Number(meta?.userId || 0) !== Number(userId)) continue;
+      // Defense-in-depth: if a future migration drops the where clause
+      // or pre-PR-3 rows lack `attempts`, treat anything with
+      // attempts > 0 as a print retry, not a payment.
+      if (Number((j as any)?.attempts || 0) > 0) continue;
       const area = String(p.area || '');
       const tableLabel = String(p.tableLabel || '');
       const items = Array.isArray(p.items) ? p.items : [];
@@ -2680,6 +2718,12 @@ ipcMain.handle('reports:listMyVoidedTickets', async (_e, input) => {
 
     const out: any[] = [];
     for (const r of rows as any[]) {
+      if (Number(r.userId) !== Number(userId)) continue;
+      // Transferred-out rows carry an exact copy of the destination's
+      // items (the transfer flow duplicates `itemsJson`); skipping them
+      // here prevents voided items from being reported twice in the
+      // waiter's voided-tickets list.
+      if (isTransferredOutNote(r.note)) continue;
       const itemsAll = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
       const voidedItems = itemsAll.filter((it: any) => it?.voided === true);
       if (voidedItems.length === 0) continue;
@@ -2984,7 +3028,10 @@ ipcMain.handle('admin:getOverview', async (_e) => {
     prisma.ticketLog
       .findMany({
         where: { createdAt: { gte: todayStart, lte: todayEnd } },
-        select: { itemsJson: true },
+        // `note` is needed so we can exclude rows that were marked
+        // "moved-out" by a table transfer (the destination row carries
+        // the items now — see `isTransferredOutNote`).
+        select: { itemsJson: true, note: true } as any,
       })
       .catch(() => []),
     // Pull all cover writes that happened today. A waiter may save covers
@@ -3035,27 +3082,19 @@ ipcMain.handle('admin:getOverview', async (_e) => {
           }[],
       ),
   ]);
-  const revenueTodayNet = (revenueRows as any[]).reduce(
-    (s, r) =>
-      s +
-      (r.itemsJson as any[]).reduce(
-        (ss: number, it: any) =>
-          ss + Number(it.unitPrice) * Number(it.qty || 1),
-        0,
-      ),
-    0,
+  // Skip rows tagged as "moved-out" — their revenue is already counted
+  // on the destination table row created by the transfer flow.
+  const livingRevenueRows = (revenueRows as any[]).filter(
+    (r: any) => !isTransferredOutNote(r?.note),
   );
-  const revenueTodayVat = (revenueRows as any[]).reduce(
-    (s, r) =>
-      s +
-      (r.itemsJson as any[]).reduce(
-        (ss: number, it: any) =>
-          ss +
-          Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0),
-        0,
-      ),
-    0,
-  );
+  const revenueTodayNet = livingRevenueRows.reduce((s, r) => {
+    const { net } = sumTicketLinesNetVat(r?.itemsJson);
+    return s + net;
+  }, 0);
+  const revenueTodayVat = livingRevenueRows.reduce((s, r) => {
+    const { vat } = sumTicketLinesNetVat(r?.itemsJson);
+    return s + vat;
+  }, 0);
 
   // Sum the latest cover count per (area, label) for today so we report
   // "guests served today" rather than the total number of cover writes.
@@ -4257,6 +4296,13 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     take: limit,
   });
 
+  // Admin ticket list: hide source-session rows superseded by a table
+  // move. Those rows still exist for audit/reports but would show as a
+  // duplicate card next to the destination row (same items, two cards).
+  const visibleRows = (rows as any[]).filter(
+    (r: any) => !isTransferredOutNote(r?.note),
+  );
+
   // Status resolution per ticket-log row:
   //   VOIDED  -> note explicitly contains "VOIDED" OR every item on the row is voided
   //   ACTIVE  -> the (area, tableLabel) is currently in the `tables:open` map
@@ -4267,7 +4313,9 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
   // To avoid N+1, fetch once for the unique tables on screen and bucket the
   // earliest payment timestamp per table, then compare per row.
   const uniqueTables = Array.from(
-    new Set((rows as any[]).map((r: any) => `${r.area}|${r.tableLabel}`)),
+    new Set(
+      (visibleRows as any[]).map((r: any) => `${r.area}|${r.tableLabel}`),
+    ),
   );
   const openRow = await prisma.syncState
     .findUnique({ where: { key: 'tables:open' } })
@@ -4281,15 +4329,24 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
   // 1000 is a generous cap — a single day rarely produces more than a few hundred receipts.
   const paymentsByTable = new Map<string, number[]>(); // ms timestamps, ascending
   if (uniqueTables.length) {
+    // Same retry-row caveat as `listMyPaidTickets`: only consider
+    // original payment-audit rows (`attempts = 0`), never the per-tick
+    // re-print rows persisted by `enqueuePrintRetry` when the printer
+    // is offline.
     const receiptJobs = await prisma.printJob
       .findMany({
-        where: { type: 'RECEIPT' as any },
+        where: { type: 'RECEIPT' as any, attempts: 0 } as any,
         orderBy: { createdAt: 'desc' },
         take: 1000,
-        select: { createdAt: true, payloadJson: true },
+        select: { createdAt: true, payloadJson: true, attempts: true } as any,
       })
       .catch(() => [] as { createdAt: Date; payloadJson: any }[]);
-    for (const j of receiptJobs as { createdAt: Date; payloadJson: any }[]) {
+    for (const j of receiptJobs as {
+      createdAt: Date;
+      payloadJson: any;
+      attempts?: number;
+    }[]) {
+      if (Number(j?.attempts || 0) > 0) continue;
       const p = (j.payloadJson as any) || {};
       const meta = (p?.meta as any) || {};
       if (String(meta?.kind || '') !== 'PAYMENT') continue;
@@ -4302,12 +4359,18 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     for (const [k, arr] of paymentsByTable) arr.sort((a, b) => a - b);
   }
 
-  return rows.map((r: any) => {
+  return visibleRows.map((r: any) => {
     const items = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
     const noteStr = String(r.note || '').toUpperCase();
     const allVoided =
       items.length > 0 && items.every((it: any) => it?.voided === true);
     const isVoided = allVoided || /\bVOIDED\b/.test(noteStr);
+    // A row whose note carries the moved-out marker is a snapshot of a
+    // session that ended by being transferred elsewhere; the
+    // destination row in the same period already represents the
+    // payment. Marking it `TRANSFERRED` keeps the audit trail visible
+    // without double-counting it as PAID.
+    const isTransferredOut = isTransferredOutNote(r.note);
 
     const tKey = `${r.area}|${r.tableLabel}`;
     const rowMs = new Date(r.createdAt).getTime();
@@ -4316,13 +4379,15 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     const isPaid = payments.some((ms) => ms >= rowMs);
     const isOpen = Boolean(openMap[`${r.area}:${r.tableLabel}`]);
 
-    const status: 'PAID' | 'VOIDED' | 'ACTIVE' = isVoided
+    const status: 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED' = isVoided
       ? 'VOIDED'
-      : isPaid
-        ? 'PAID'
-        : isOpen
-          ? 'ACTIVE'
-          : 'PAID';
+      : isTransferredOut
+        ? 'TRANSFERRED'
+        : isPaid
+          ? 'PAID'
+          : isOpen
+            ? 'ACTIVE'
+            : 'PAID';
 
     // Surface the structured transfer tag so the admin UI can show a
     // "Transferred from X" badge without re-parsing strings on the renderer.
@@ -4402,8 +4467,20 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
     if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
     if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
   }
+  // Per-user ticket counts: only the rows that still represent live
+  // revenue. Rows whose session was moved to another table carry the
+  // `[TRANSFER moved-out ...]` tag and would otherwise inflate the
+  // count by 2x (source + destination).
+  const liveTicketsWhere = {
+    ...where,
+    NOT: { note: { contains: '[TRANSFER moved-out' } },
+  } as any;
   const logs = await prisma.ticketLog
-    .groupBy({ where, by: ['userId'], _count: { userId: true } } as any)
+    .groupBy({
+      where: liveTicketsWhere,
+      by: ['userId'],
+      _count: { userId: true },
+    } as any)
     .catch(() => []);
   const users = await prisma.user.findMany({
     where: { role: { not: 'ADMIN' } } as any,
@@ -4415,19 +4492,23 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
   const counts: Record<number, number> = {};
   for (const r of logs as any[]) counts[r.userId] = r._count.userId;
 
-  // Count transferred-in tickets per user. A transferred ticket is any
-  // ticket-log row whose note carries our `[TRANSFER ...]` tag (new or legacy).
-  // SQLite only does case-sensitive LIKE, so a single OR on the literal prefix
-  // is enough — we already prepend the tag at write time.
+  // Count transferred-IN tickets per user. We filter in-memory so we
+  // can require BOTH "[TRANSFER" (some variant of the tag) AND the
+  // absence of the moved-out marker — those are source rows for a
+  // transfer that happened ELSEWHERE, not tickets this waiter received.
   const transfersIn: Record<number, number> = {};
   try {
     const transferRows = await prisma.ticketLog
       .findMany({
         where: { ...where, note: { contains: '[TRANSFER' } },
-        select: { userId: true },
+        select: { userId: true, note: true },
       } as any)
-      .catch(() => [] as { userId: number }[]);
-    for (const row of transferRows as { userId: number }[]) {
+      .catch(() => [] as { userId: number; note: string | null }[]);
+    for (const row of transferRows as {
+      userId: number;
+      note: string | null;
+    }[]) {
+      if (isTransferredOutNote(row.note)) continue;
       transfersIn[row.userId] = (transfersIn[row.userId] ?? 0) + 1;
     }
   } catch {
@@ -4526,10 +4607,13 @@ ipcMain.handle('admin:getTopSellingToday', async (_e) => {
   const end = new Date(new Date().setHours(23, 59, 59, 999));
   const rows = await prisma.ticketLog.findMany({
     where: { createdAt: { gte: start, lte: end } },
-    select: { itemsJson: true },
+    // Pull `note` so transfer-out source rows can be skipped — their
+    // items already count on the destination ticket.
+    select: { itemsJson: true, note: true } as any,
   });
   const map = new Map<string, { qty: number; revenue: number }>();
   for (const r of rows) {
+    if (isTransferredOutNote((r as any).note)) continue;
     const items = (r.itemsJson as any[]) || [];
     for (const it of items) {
       const name = String(it.name || 'Item');
@@ -4602,11 +4686,14 @@ ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
     where: {
       createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to },
     },
-    select: { createdAt: true, itemsJson: true },
+    select: { createdAt: true, itemsJson: true, note: true } as any,
     orderBy: { createdAt: 'asc' },
   });
   const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
   for (const r of rows) {
+    // Source rows of a table transfer don't represent independent
+    // revenue — the destination row in this same bucket already does.
+    if (isTransferredOutNote((r as any).note)) continue;
     const when = new Date(r.createdAt);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
@@ -4729,11 +4816,15 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
     tableLabel: string;
     covers: number | null;
     itemsJson: any;
+    note: string | null;
   };
 
   const fetchRows = async (s: Date, e: Date): Promise<AggRow[]> => {
     const safe = safeFetchRange(s, e);
-    return (await prisma.ticketLog
+    // We pull `note` so the aggregation can drop rows tagged as
+    // "moved-out" by a table transfer; the destination row inside the
+    // same fetch already contributes their revenue, items and covers.
+    const rows = (await prisma.ticketLog
       .findMany({
         where: { createdAt: { gte: safe.from, lte: safe.to } },
         select: {
@@ -4743,10 +4834,12 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
           tableLabel: true,
           covers: true,
           itemsJson: true,
-        },
+          note: true,
+        } as any,
         orderBy: { createdAt: 'asc' },
       })
       .catch(() => [])) as unknown as AggRow[];
+    return rows.filter((r) => !isTransferredOutNote(r?.note));
   };
 
   const summarize = (
@@ -5050,32 +5143,22 @@ ipcMain.handle('reports:getMyOverview', async (_e, input) => {
   const rows = await prisma.ticketLog
     .findMany({
       where: { userId, createdAt: { gte: start, lte: end } },
-      select: { itemsJson: true },
+      // `note` is required to drop transferred-out source rows so the
+      // waiter's "today's revenue" matches what was actually paid.
+      select: { itemsJson: true, note: true } as any,
     })
     .catch(() => []);
-  const revenueTodayNet = rows.reduce(
-    (s: number, r: any) =>
-      s +
-      ((r.itemsJson as any[]) || []).reduce(
-        (ss: number, it: any) =>
-          ss + Number(it.unitPrice || 0) * Number(it.qty || 1),
-        0,
-      ),
-    0,
+  const liveRows = (rows as any[]).filter(
+    (r: any) => !isTransferredOutNote(r?.note),
   );
-  const revenueTodayVat = rows.reduce(
-    (s: number, r: any) =>
-      s +
-      ((r.itemsJson as any[]) || []).reduce(
-        (ss: number, it: any) =>
-          ss +
-          Number(it.unitPrice || 0) *
-            Number(it.qty || 1) *
-            Number(it.vatRate || 0),
-        0,
-      ),
-    0,
-  );
+  const revenueTodayNet = liveRows.reduce((s: number, r: any) => {
+    const { net } = sumTicketLinesNetVat(r?.itemsJson);
+    return s + net;
+  }, 0);
+  const revenueTodayVat = liveRows.reduce((s: number, r: any) => {
+    const { vat } = sumTicketLinesNetVat(r?.itemsJson);
+    return s + vat;
+  }, 0);
   // Open orders: open tables where latest ticket owner is this user.
   const openList = await prisma.syncState
     .findUnique({ where: { key: 'tables:open' } })
@@ -5108,12 +5191,14 @@ ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {
   const end = new Date(new Date().setHours(23, 59, 59, 999));
   const rows = await prisma.ticketLog.findMany({
     where: { userId, createdAt: { gte: start, lte: end } },
-    select: { itemsJson: true },
+    select: { itemsJson: true, note: true } as any,
   });
   const map = new Map<string, { qty: number; revenue: number }>();
   for (const r of rows) {
+    if (isTransferredOutNote((r as any).note)) continue;
     const items = (r.itemsJson as any[]) || [];
     for (const it of items) {
+      if (it?.voided) continue;
       const name = String(it.name || 'Item');
       const qty = Number(it.qty || 1);
       const revenue = Number(it.unitPrice || 0) * qty;
@@ -5182,19 +5267,17 @@ ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
           lte: buckets[buckets.length - 1].to,
         },
       },
-      select: { createdAt: true, itemsJson: true },
+      select: { createdAt: true, itemsJson: true, note: true } as any,
       orderBy: { createdAt: 'asc' },
     })
     .catch(() => []);
   const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
   for (const r of rows as any[]) {
+    if (isTransferredOutNote((r as any).note)) continue;
     const when = new Date(r.createdAt);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
-    const net = ((r.itemsJson as any[]) || []).reduce(
-      (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
-      0,
-    );
+    const net = sumTicketLinesNetVat(r.itemsJson).net;
     result[idx].total += net;
     result[idx].orders += 1;
   }

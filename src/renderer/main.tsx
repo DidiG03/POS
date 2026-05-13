@@ -37,6 +37,8 @@ if (!(window as any).api) {
   ).trim();
   let CLOUD_BASE = CLOUD_BASE_RAW ? CLOUD_BASE_RAW.replace(/\/+$/g, '') : '';
   let IS_CLOUD = Boolean(CLOUD_BASE);
+  // Set inside pickBackend(); true when running the Capacitor iOS/Android app.
+  let IS_NATIVE_SHELL = false;
   const BUSINESS_KEY = 'pos_business_code';
   const TOKEN_KEY_CLOUD = 'pos_cloud_token';
   const TOKEN_KEY_LOCAL = 'pos_api_token';
@@ -110,6 +112,11 @@ if (!(window as any).api) {
     const isMobileShell =
       Boolean((import.meta as any)?.env?.VITE_MOBILE_TARGET) ||
       Boolean((window as any).Capacitor);
+    // Hoist as a module-scoped flag so request helpers can mark themselves as
+    // a native client. The LAN "Allow Web access" toggle is meant to gate
+    // browsers only — the iOS/Android app uses its own pairing code + login,
+    // so we send a hint that the backend trusts to bypass the browser gate.
+    IS_NATIVE_SHELL = isMobileShell;
     const envHost = String(
       (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HOST || '',
     ).trim();
@@ -167,7 +174,9 @@ if (!(window as any).api) {
       const token = getToken();
       if (!token) return;
       if (es) stopSse();
-      const url = `${HTTP_BASE}/events?token=${encodeURIComponent(token)}`;
+      const url =
+        `${HTTP_BASE}/events?token=${encodeURIComponent(token)}` +
+        (IS_NATIVE_SHELL ? '&client=native' : '');
       es = new EventSource(url);
       es.addEventListener('tables', (ev: any) => {
         try {
@@ -336,6 +345,7 @@ if (!(window as any).api) {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(IS_NATIVE_SHELL ? { 'X-POS-Client': 'native' } : {}),
       ...(((opts?.headers as any) || {}) as any),
     };
     if (IS_CLOUD) {
@@ -389,6 +399,7 @@ if (!(window as any).api) {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(IS_NATIVE_SHELL ? { 'X-POS-Client': 'native' } : {}),
       ...(((opts?.headers as any) || {}) as any),
     };
     const timeoutMs = lanRequestTimeoutMs(path);
@@ -777,10 +788,26 @@ if (!(window as any).api) {
         return await goLan('/tables/open');
       },
       async transfer(input: any) {
-        return await goLan('/tables/transfer', {
-          method: 'POST',
-          body: JSON.stringify(input),
-        });
+        // Prefer LAN host (same logic as Electron `transferTableLocal`). When
+        // the Capacitor/phone app is off the shop Wi‑Fi, fall back to the
+        // cloud API so transfers still run server-side rules (moved-out tags,
+        // owner handoff, etc.) — see server/src/routes/tables.ts.
+        try {
+          return await goLan('/tables/transfer', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+        } catch (e: any) {
+          const isTransport =
+            e instanceof TypeError ||
+            String(e?.name || '') === 'AbortError' ||
+            Number(e?.status) === 404;
+          if (!IS_CLOUD || !isTransport) throw e;
+          return await go('/tables/transfer', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+        }
       },
     },
     covers: {
