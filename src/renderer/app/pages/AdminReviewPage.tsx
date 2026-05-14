@@ -344,7 +344,7 @@ function LineChart({
                 d={path}
                 fill="none"
                 stroke={s.color}
-                strokeWidth={2}
+                strokeWidth={1.75}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />

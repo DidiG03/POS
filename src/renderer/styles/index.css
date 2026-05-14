@@ -1,15 +1,20 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
-    Noto Sans, Ubuntu, Cantarell, Helvetica Neue, Arial, "Apple Color Emoji",
-    "Segoe UI Emoji";
+  --font-sans:
+    'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
 }
 
-html, body, #root { height: 100%; }
+html,
+body,
+#root {
+  height: 100%;
+}
 
 /* Match the app shell so iOS status bar / Android nav bar areas blend in */
-html, body {
+html,
+body {
   background-color: rgb(17 24 39); /* gray-900 */
   color: rgb(243 244 246); /* gray-100 */
 }
@@ -31,25 +36,103 @@ body {
   overscroll-behavior: none; /* prevent rubber-band drag of the whole shell */
 }
 
-button, .btn {
+button,
+.btn {
   min-height: 44px; /* comfortable touch target */
 }
 
-input, select {
+input,
+select {
   min-height: 40px;
 }
 
 @supports (-webkit-touch-callout: none) {
-  a, button { touch-action: manipulation; }
+  a,
+  button {
+    touch-action: manipulation;
+  }
 }
 
-/* Opt-in safe-area helpers */
-.safe-pt { padding-top: var(--safe-top); }
-.safe-pb { padding-bottom: var(--safe-bottom); }
-.safe-pl { padding-left: var(--safe-left); }
-.safe-pr { padding-right: var(--safe-right); }
-.safe-x  { padding-left: var(--safe-left); padding-right: var(--safe-right); }
+/* Opt-in safe-area helpers — use max(...) so desktop/Electron (insets = 0)
+   still keeps normal horizontal padding; plain env() would wipe Tailwind px-* */
+.safe-pt {
+  padding-top: max(0.5rem, var(--safe-top));
+}
+.safe-pb {
+  padding-bottom: max(0.5rem, var(--safe-bottom));
+}
+.safe-pl {
+  padding-left: max(0.75rem, var(--safe-left));
+}
+.safe-pr {
+  padding-right: max(0.75rem, var(--safe-right));
+}
+.safe-x {
+  padding-left: max(0.75rem, var(--safe-left));
+  padding-right: max(0.75rem, var(--safe-right));
+}
+
+@media (min-width: 640px) {
+  .safe-pt {
+    padding-top: max(0.75rem, var(--safe-top));
+  }
+  .safe-pb {
+    padding-bottom: max(1rem, var(--safe-bottom));
+  }
+  .safe-pl {
+    padding-left: max(1rem, var(--safe-left));
+  }
+  .safe-pr {
+    padding-right: max(1rem, var(--safe-right));
+  }
+  .safe-x {
+    padding-left: max(1rem, var(--safe-left));
+    padding-right: max(1rem, var(--safe-right));
+  }
+}
 
 /* Hide native scrollbars on horizontal pill rows on mobile */
-.no-scrollbar { scrollbar-width: none; }
-.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* POS chrome — shared typography rhythm, nav pills, icons (staff + admin shells) */
+@layer components {
+  .pos-nav-link {
+    @apply inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/75 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800;
+  }
+  .pos-nav-link--active {
+    @apply bg-gray-700/90 text-gray-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)];
+  }
+  .pos-nav-link--idle {
+    @apply text-gray-300 hover:bg-gray-700/45 hover:text-white;
+  }
+  .pos-icon {
+    @apply size-[18px] shrink-0 text-current;
+  }
+  .pos-icon-btn {
+    @apply relative inline-flex items-center justify-center rounded-lg p-2 text-gray-200 transition-colors duration-150;
+    @apply hover:bg-gray-700/55 hover:text-white;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/75 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800;
+  }
+  .pos-status-chip {
+    @apply inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium tabular-nums leading-snug;
+  }
+  .pos-danger-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium bg-red-700 text-white transition-colors duration-150;
+    @apply hover:bg-red-600;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/80 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800;
+  }
+  .pos-signout-btn {
+    @apply inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150;
+    @apply border border-rose-600/55 bg-rose-950/35 text-rose-50 hover:bg-rose-900/45 hover:border-rose-500/65;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800;
+  }
+  .pos-surface-panel {
+    @apply rounded-xl border border-gray-700/85 bg-gray-800 shadow-lg shadow-black/25;
+  }
+}

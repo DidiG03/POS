@@ -33,6 +33,8 @@ export interface SettingsDTO {
   currency: string;
   defaultVatRate: number;
   preferences?: {
+    /** UI locale for the venue (`sq` = Albanian). Stored for consistency; translations can grow over time. */
+    language?: 'en' | 'sq';
     vatEnabled?: boolean;
     serviceCharge?: {
       enabled?: boolean;

@@ -8,6 +8,7 @@ import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { useReservationSessionStore } from './stores/reservationSession';
 import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   isClockOnlyRole,
   canSeeReportsOnMobile,
@@ -45,7 +46,8 @@ const ReservationsListPage = React.lazy(
 );
 
 function SuspenseFallback() {
-  return <PageSpinner message="Loading…" />;
+  const { t } = useTranslation();
+  return <PageSpinner message={t('routes.loading')} />;
 }
 
 function withSuspense(el: React.ReactElement) {

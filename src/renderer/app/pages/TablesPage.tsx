@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useNavigate } from 'react-router-dom';
@@ -100,6 +101,7 @@ function nextAreaId(cur: LayoutNode[] | null): number {
 }
 
 export default function TablesPage() {
+  const { t } = useTranslation();
   const [area, setArea] = useState<string>('Main Hall');
   // Seed with sensible defaults so the area pills + layout fetch
   // work immediately on mobile, even before `/settings` resolves.
@@ -372,7 +374,6 @@ export default function TablesPage() {
       .filter(isTableNode)
       .filter((n) => isOpenFn(area, n.label))
       .map((n) => n.label);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, area, openMapKey]);
 
   // Load ticket owners for open tables — only re-runs when the set of open labels changes
@@ -1004,13 +1005,13 @@ export default function TablesPage() {
           in a single horizontally-scrollable row. */}
       <div className="flex items-center justify-between gap-2">
         <h2 className="hidden sm:block text-lg font-semibold whitespace-nowrap">
-          Tables – {area}
+          {t('tables.title', { area })}
         </h2>
         <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 sm:mx-0 sm:px-0 flex-1 sm:flex-initial">
           {areas.map((a) => (
             <button
               key={a.name}
-              className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap min-h-0 transition-colors ${
+              className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap min-h-0 transition-colors duration-150 ${
                 area === a.name
                   ? 'bg-emerald-700 text-white'
                   : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
@@ -1027,7 +1028,7 @@ export default function TablesPage() {
               className={`px-3 py-1.5 rounded text-sm min-h-0 ${editable ? 'bg-amber-700' : 'bg-gray-700'} cursor-pointer`}
               onClick={() => setEditable((v) => !v)}
             >
-              {editable ? 'Editing…' : 'Edit layout'}
+              {editable ? t('tables.editing') : t('tables.editLayout')}
             </button>
             {editable && (
               <button
@@ -1052,7 +1053,7 @@ export default function TablesPage() {
                   });
                 }}
               >
-                + Area
+                {t('tables.addArea')}
               </button>
             )}
             {editable && (
@@ -1064,7 +1065,7 @@ export default function TablesPage() {
                   setEditable(false);
                 }}
               >
-                Save
+                {t('common.save')}
               </button>
             )}
           </div>
@@ -1076,22 +1077,17 @@ export default function TablesPage() {
         className={`w-full flex-1 min-h-0 rounded bg-gray-800 relative ${
           editable ? 'overflow-auto' : 'overflow-hidden touch-none'
         }`}
-        // Background grid rendered DIRECTLY on the canvas so it always
-        // covers the full visible area regardless of any inner transforms.
-        style={{
-          backgroundImage:
-            'linear-gradient(to right, rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.08) 1px, transparent 1px)',
-          backgroundSize: '40px 40px',
-        }}
       >
         {!editable && isZoomed && (
           <button
             type="button"
             onClick={resetZoom}
             className="absolute top-2 right-2 z-20 px-2.5 py-1.5 rounded-full bg-gray-900/80 backdrop-blur text-xs font-semibold text-white border border-white/10 shadow-lg active:scale-95"
-            title="Reset zoom"
+            title={t('tables.resetZoom')}
           >
-            {Math.round(userZoom.scale * 100)}% • Reset
+            {t('tables.resetZoomPct', {
+              pct: Math.round(userZoom.scale * 100),
+            })}
           </button>
         )}
 
@@ -1147,17 +1143,17 @@ export default function TablesPage() {
               />
             ))}
 
-            {nodes?.filter(isTableNode).map((t) => (
+            {nodes?.filter(isTableNode).map((tableNode) => (
               <MemoDraggableCircle
-                key={t.id}
-                node={t}
+                key={tableNode.id}
+                node={tableNode}
                 editable={editable}
                 area={area}
                 onMove={handleNodeMove}
                 onClick={handleTableClick}
                 colorClass={(() => {
-                  if (!isOpenFn(area, t.label)) return GREEN;
-                  const ownerId = ownerByTable[`${area}:${t.label}`];
+                  if (!isOpenFn(area, tableNode.label)) return GREEN;
+                  const ownerId = ownerByTable[`${area}:${tableNode.label}`];
                   const uid = user?.id;
                   const singleWaiter = Object.keys(userMap).length <= 1;
                   // RED = my table, ORANGE = other waiter's table
@@ -1171,21 +1167,25 @@ export default function TablesPage() {
                   return ORANGE;
                 })()}
                 badge={
-                  isOpenFn(area, t.label)
-                    ? initialsByTable[`${area}:${t.label}`]
+                  isOpenFn(area, tableNode.label)
+                    ? initialsByTable[`${area}:${tableNode.label}`]
                     : undefined
                 }
                 ownerName={
-                  (ownerByTable[`${area}:${t.label}`] &&
-                    userMap[ownerByTable[`${area}:${t.label}`]]) ||
+                  (ownerByTable[`${area}:${tableNode.label}`] &&
+                    userMap[ownerByTable[`${area}:${tableNode.label}`]]) ||
                   undefined
                 }
-                statusText={isOpenFn(area, t.label) ? 'OPEN' : 'FREE'}
+                statusText={
+                  isOpenFn(area, tableNode.label)
+                    ? t('tables.statusOpen')
+                    : t('tables.statusFree')
+                }
                 viewMode={viewMode}
                 metricText={(() => {
-                  const k = `${area}:${t.label}`;
+                  const k = `${area}:${tableNode.label}`;
                   const m = metricsByTable[k];
-                  if (!isOpenFn(area, t.label)) return null;
+                  if (!isOpenFn(area, tableNode.label)) return null;
                   if (viewMode === 'covers')
                     return m ? String(m.covers ?? '—') : '…';
                   if (viewMode === 'revenue')
@@ -1209,28 +1209,28 @@ export default function TablesPage() {
         <ModeButton
           active={viewMode === 'occupied'}
           onClick={() => setViewMode('occupied')}
-          label="Occupied"
+          label={t('tables.modeOccupied')}
         >
           <IconUsers />
         </ModeButton>
         <ModeButton
           active={viewMode === 'covers'}
           onClick={() => setViewMode('covers')}
-          label="Covers"
+          label={t('tables.modeCovers')}
         >
           <IconCovers />
         </ModeButton>
         <ModeButton
           active={viewMode === 'revenue'}
           onClick={() => setViewMode('revenue')}
-          label="Revenue"
+          label={t('tables.modeRevenue')}
         >
           <IconMoney />
         </ModeButton>
         <ModeButton
           active={viewMode === 'time'}
           onClick={() => setViewMode('time')}
-          label="Time"
+          label={t('tables.modeTime')}
         >
           <IconClock />
         </ModeButton>
@@ -1630,6 +1630,7 @@ function DraggableCircle({
   viewMode?: ViewMode;
   metricText?: string | null;
 }) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement | null>(null);
   const [tooltip, setTooltip] = useState<{
     covers: number | null;
@@ -1798,7 +1799,7 @@ function DraggableCircle({
         transformOrigin: 'center',
       }}
       title={`${node.label} • ${statusText || node.status}${
-        node.seats ? ` • seats ${node.seats}` : ''
+        node.seats ? t('tables.titleSeatsFragment', { count: node.seats }) : ''
       }`}
       onClick={() => {
         if (Date.now() < suppressClickUntilRef.current) return;
@@ -1823,7 +1824,9 @@ function DraggableCircle({
         ) : (
           metricText && (
             <span className="mt-0.5 text-[10px] font-semibold px-1 py-0.5 rounded bg-black/40 max-w-[80px] text-center leading-[1.05] break-words">
-              {viewMode === 'covers' ? `P: ${metricText}` : metricText}
+              {viewMode === 'covers'
+                ? t('tables.coversChip', { val: metricText })
+                : metricText}
             </span>
           )
         )}
@@ -1838,15 +1841,19 @@ function DraggableCircle({
       {showTip && tooltip && (
         <div className="absolute top-18 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-black/80 text-white px-2 py-1 rounded shadow">
           {ownerName && <div>{ownerName}</div>}
-          <div>Guests: {tooltip.covers ?? '-'}</div>
           <div>
-            Since:{' '}
+            {t('tables.tooltipGuestsLine', {
+              val: tooltip.covers ?? '-',
+            })}
+          </div>
+          <div>
+            {t('tables.tooltipSince')}{' '}
             {tooltip.firstAt
               ? new Date(tooltip.firstAt).toLocaleTimeString()
               : '-'}
           </div>
           <div>
-            Total:{' '}
+            {t('tables.tooltipTotal')}{' '}
             {tooltip.total.toFixed ? tooltip.total.toFixed(2) : tooltip.total}
           </div>
         </div>
@@ -1872,7 +1879,7 @@ function ModeButton({
 }) {
   return (
     <button
-      className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 rounded transition-colors min-h-0 ${
+      className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 rounded-lg transition-colors duration-150 min-h-0 ${
         active
           ? 'bg-emerald-600/90 text-white shadow-sm'
           : 'bg-gray-900/40 text-gray-200 hover:bg-gray-700/60'
@@ -1890,11 +1897,17 @@ function ModeButton({
 
 function IconUsers() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className="pos-icon"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
       <path
         d="M16 11a4 4 0 1 0-8 0 4 4 0 0 0 8 0ZM4 20a7 7 0 0 1 16 0"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -1903,17 +1916,23 @@ function IconUsers() {
 
 function IconCovers() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className="pos-icon"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
       <path
         d="M12 12a4 4 0 1 0-8 0 4 4 0 0 0 8 0ZM2 22a7 7 0 0 1 14 0"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M20 8a3 3 0 1 0-6 0 3 3 0 0 0 6 0ZM13.5 22a6 6 0 0 1 8.5-5.5"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -1922,17 +1941,23 @@ function IconCovers() {
 
 function IconMoney() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className="pos-icon"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
       <path
         d="M7 7h10a4 4 0 0 1 0 8H9a3 3 0 0 0 0 6h8"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M12 3v18"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -1941,16 +1966,22 @@ function IconMoney() {
 
 function IconClock() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className="pos-icon"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
       <path
         d="M12 22a10 10 0 1 0-10-10 10 10 0 0 0 10 10Z"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
       />
       <path
         d="M12 6v6l4 2"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

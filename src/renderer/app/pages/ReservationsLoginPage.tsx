@@ -185,7 +185,7 @@ export default function ReservationsLoginPage() {
         paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)',
       }}
     >
-      <div className="w-full max-w-3xl bg-gray-800 rounded-lg shadow-xl p-4 sm:p-6">
+      <div className="w-full max-w-3xl pos-surface-panel p-5 sm:p-6">
         <div className="flex items-start justify-between gap-3 mb-6">
           <div className="flex items-start gap-3 min-w-0">
             {/* Back arrow returns to the staff login. Only shown on the
@@ -201,17 +201,17 @@ export default function ReservationsLoginPage() {
                 aria-label="Back to staff login"
                 title="Back"
                 onClick={() => navigate('/', { replace: true })}
-                className="shrink-0 -ml-1 p-2 rounded hover:bg-gray-700/60 active:bg-gray-700 text-gray-200"
+                className="pos-icon-btn shrink-0 -ml-1 cursor-pointer text-gray-200"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2"
+                  strokeWidth="1.75"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="w-5 h-5"
+                  className="pos-icon"
                   aria-hidden
                 >
                   <path d="M15 18l-6-6 6-6" />

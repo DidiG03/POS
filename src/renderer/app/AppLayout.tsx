@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../stores/session';
 import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
@@ -13,25 +14,25 @@ function IconTables() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
-      className="w-4 h-4"
+      className="pos-icon"
       aria-hidden
     >
       <path
         d="M4 7h16v6H4V7Z"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinejoin="round"
       />
       <path
         d="M7 13v7M17 13v7"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M9 4h6"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -44,20 +45,41 @@ function IconReports() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
-      className="w-4 h-4"
+      className="pos-icon"
       aria-hidden
     >
       <path
         d="M6 3h12v18H6V3Z"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinejoin="round"
       />
       <path
         d="M9 7h6M9 11h6M9 15h4"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconClock() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="pos-icon"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
+      <path
+        d="M12 7v5l3 2"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -69,19 +91,19 @@ function IconLogout() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
-      className="w-4 h-4"
+      className="pos-icon"
       aria-hidden
     >
       <path
         d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinejoin="round"
       />
       <path
         d="M13 12H3m0 0 3-3M3 12l3 3"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -90,6 +112,7 @@ function IconLogout() {
 }
 
 export default function AppLayout() {
+  const { t } = useTranslation();
   const { user, setUser } = useSessionStore();
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -110,7 +133,7 @@ export default function AppLayout() {
   const [billingCheckedAt, setBillingCheckedAt] = useState<number>(0);
 
   const forceLogout = useCallback(
-    (reason = 'Logged out') => {
+    (reason = t('common.loggedOut')) => {
       // Centralized logout so browser clients also clear tokens + SSE (via renderer/main.tsx handler).
       try {
         window.dispatchEvent(
@@ -131,7 +154,7 @@ export default function AppLayout() {
         // ignore
       }
     },
-    [navigate, setUser],
+    [navigate, setUser, t],
   );
 
   const handleNotifCount = useCallback((n: number) => {
@@ -286,11 +309,10 @@ export default function AppLayout() {
         <div className="fixed inset-0 bg-black/70 z-[9999] flex items-center justify-center p-4">
           <div className="w-full max-w-md rounded bg-gray-900 border border-gray-700 p-5">
             <div className="font-semibold text-lg">
-              POS paused — payment required
+              {t('layout.billingPausedTitle')}
             </div>
             <div className="mt-2 text-sm opacity-80">
-              Your subscription payment is overdue or inactive. The POS is
-              locked until an admin completes payment.
+              {t('layout.billingPausedBody')}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -303,19 +325,21 @@ export default function AppLayout() {
                 }}
                 type="button"
               >
-                Open Admin Billing
+                {t('layout.openAdminBilling')}
               </button>
               <button
                 className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
                 onClick={() => window.location.reload()}
                 type="button"
               >
-                Retry
+                {t('common.retry')}
               </button>
             </div>
             {billingCheckedAt > 0 && (
               <div className="mt-3 text-xs opacity-60">
-                Last checked: {new Date(billingCheckedAt).toLocaleTimeString()}
+                {t('common.lastChecked', {
+                  time: new Date(billingCheckedAt).toLocaleTimeString(),
+                })}
               </div>
             )}
           </div>
@@ -323,8 +347,7 @@ export default function AppLayout() {
       )}
       {isBrowserClient && (!netOk || !backendOk) && (
         <div className="bg-amber-600 text-black text-xs px-4 py-2">
-          Network is slow/offline. Please wait — actions like Send/Pay may be
-          disabled to prevent mistakes.
+          {t('layout.networkBanner')}
         </div>
       )}
       <header
@@ -332,9 +355,9 @@ export default function AppLayout() {
         // safe-area-top inset (notch / status-bar). We use `max(...)` so
         // the header keeps its normal vertical breathing room on devices
         // without a notch, but grows to clear the status bar on iPhones.
-        // Horizontal `safe-x` keeps content out of the rounded corners /
-        // landscape notch area.
-        className="bg-gray-800 px-3 sm:px-4 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-2"
+        // Horizontal inset: `.safe-x` (see index.css) uses max(px, env(...))
+        // so desktop keeps padding; raw env() alone was overriding px-* with 0.
+        className="bg-gray-800 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-2 sm:gap-3"
       >
         <div className="flex items-center gap-2 min-w-0 justify-start flex-1 sm:flex-initial">
           <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
@@ -351,17 +374,16 @@ export default function AppLayout() {
                       const { openMap } = useTableStatus.getState();
                       const anyOpen = Object.values(openMap).some(Boolean);
                       if (anyOpen) {
-                        toast.warn(
-                          "You can't clock out while you still have open tables. Please close all open orders first.",
-                          { title: 'Cannot clock out' },
-                        );
+                        toast.warn(t('layout.clockOutBlockedBody'), {
+                          title: t('layout.clockOutBlockedTitle'),
+                        });
                         return;
                       }
                     }
                     setConfirmModal(true);
                   }}
                 >
-                  Clock out
+                  {t('layout.clockOut')}
                 </button>
               )}
               {confirmModal && (
@@ -369,7 +391,7 @@ export default function AppLayout() {
                   <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
                     <div className="flex items-center justify-between mb-3">
                       <h2 className="text-center">
-                        Are you sure you want to clock out?
+                        {t('layout.clockOutConfirmTitle')}
                       </h2>
                       <button
                         onClick={() => setConfirmModal(false)}
@@ -391,19 +413,16 @@ export default function AppLayout() {
                         // can finish/transfer the table.
                         if (r && typeof r === 'object' && r.ok === false) {
                           window.alert(
-                            String(
-                              r.error ||
-                                'You still have open tables. Close or transfer them first.',
-                            ),
+                            String(r.error || t('layout.clockOutOpenTables')),
                           );
                           setConfirmModal(false);
                           return;
                         }
                         setHasOpen(false);
-                        forceLogout('Clocked out');
+                        forceLogout(t('common.clockedOut'));
                       }}
                     >
-                      Clock out
+                      {t('layout.clockOut')}
                     </button>
                   </div>
                 </div>
@@ -417,67 +436,69 @@ export default function AppLayout() {
             already gate role-restricted routes via RequireReportsAccess /
             RequireKdsAccess in routes.tsx. */}
         <div className="hidden sm:flex items-center justify-center min-w-0">
-          <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap">
             {!isWaiter && (
               <NavLink
                 to="/app/clock"
                 className={({ isActive }) =>
-                  isActive ? 'underline' : 'hover:underline'
+                  `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
                 }
+                title={t('layout.clock')}
               >
-                Clock
+                <IconClock />
+                <span>{t('layout.clock')}</span>
               </NavLink>
             )}
             {!clockOnly && (
               <NavLink
                 to="/app/tables"
                 className={({ isActive }) =>
-                  `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+                  `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
                 }
-                title="Tables"
+                title={t('layout.tables')}
               >
                 <IconTables />
-                <span>Tables</span>
+                <span>{t('layout.tables')}</span>
               </NavLink>
             )}
             {showReportsTab && (
               <NavLink
                 to="/app/reports"
                 className={({ isActive }) =>
-                  `px-2 py-1 rounded flex items-center gap-1.5 ${isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'}`
+                  `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
                 }
-                title="Reports"
+                title={t('layout.reports')}
               >
                 <IconReports />
-                <span>Reports</span>
+                <span>{t('layout.reports')}</span>
               </NavLink>
             )}
           </div>
         </div>
 
-        <nav className="flex items-center gap-1.5 sm:gap-3 min-w-0 justify-end">
+        <nav className="flex items-center gap-2 sm:gap-3 min-w-0 justify-end">
           {user && (
             <div
-              className={`hidden sm:flex text-xs px-2 py-1 rounded border items-center gap-1.5 ${
+              className={`pos-status-chip hidden sm:flex ${
                 !syncOk
-                  ? 'bg-rose-900/30 border-rose-800 text-rose-100'
+                  ? 'border-rose-800 bg-rose-900/30 text-rose-100'
                   : queued > 0
-                    ? 'bg-amber-900/30 border-amber-800 text-amber-100'
-                    : 'bg-emerald-900/30 border-emerald-800 text-emerald-100'
+                    ? 'border-amber-800 bg-amber-900/30 text-amber-100'
+                    : 'border-emerald-800 bg-emerald-900/30 text-emerald-100'
               }`}
               title={
                 !syncOk
-                  ? 'Offline / cannot reach host'
+                  ? t('common.offlineCannotReach')
                   : queued > 0
-                    ? 'Syncing queued actions'
-                    : 'All synced'
+                    ? t('common.syncingQueued')
+                    : t('common.allSynced')
               }
             >
               {!syncOk
-                ? 'Offline'
+                ? t('layout.syncIndicatorOffline')
                 : queued > 0
-                  ? `Syncing (${queued})`
-                  : 'Online'}
+                  ? t('layout.syncIndicatorSyncing', { count: queued })
+                  : t('layout.syncIndicatorOnline')}
             </div>
           )}
           {/* Mobile: just a colored dot. */}
@@ -492,17 +513,17 @@ export default function AppLayout() {
               }`}
               aria-label={
                 !syncOk
-                  ? 'Offline'
+                  ? t('common.offline')
                   : queued > 0
-                    ? `Syncing ${queued}`
-                    : 'Online'
+                    ? t('common.syncing', { count: queued })
+                    : t('common.online')
               }
               title={
                 !syncOk
-                  ? 'Offline / cannot reach host'
+                  ? t('common.offlineCannotReach')
                   : queued > 0
-                    ? 'Syncing queued actions'
-                    : 'All synced'
+                    ? t('common.syncingQueued')
+                    : t('common.allSynced')
               }
             />
           )}
@@ -517,8 +538,8 @@ export default function AppLayout() {
             }}
           >
             <button
-              className="p-2 rounded hover:bg-gray-700 cursor-pointer min-h-0"
-              aria-label="Notifications"
+              className="pos-icon-btn cursor-pointer"
+              aria-label={t('common.notifications')}
               onClick={() => setShowNotifications((v) => !v)}
               type="button"
             >
@@ -526,7 +547,7 @@ export default function AppLayout() {
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 24 24"
                 fill="currentColor"
-                className="w-5 h-5"
+                className="pos-icon"
               >
                 <path d="M12 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 006 14h12a1 1 0 00.707-1.707L18 11.586V8a6 6 0 00-6-6zm0 20a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
               </svg>
@@ -543,7 +564,9 @@ export default function AppLayout() {
               >
                 <div className="p-3 text-sm">
                   <div className="flex items-center justify-between mb-2">
-                    <div className="font-semibold">Notifications</div>
+                    <div className="font-semibold">
+                      {t('common.notifications')}
+                    </div>
                     {user && unreadCount > 0 && (
                       <button
                         className="text-xs text-blue-400 hover:underline"
@@ -555,7 +578,7 @@ export default function AppLayout() {
                         }}
                         type="button"
                       >
-                        Mark all as read
+                        {t('common.markAllRead')}
                       </button>
                     )}
                   </div>
@@ -565,7 +588,9 @@ export default function AppLayout() {
                       onCount={handleNotifCount}
                     />
                   ) : (
-                    <div className="opacity-70">No notifications</div>
+                    <div className="opacity-70">
+                      {t('common.noNotifications')}
+                    </div>
                   )}
                   {user && <OwnerRequests userId={user.id} />}
                 </div>
@@ -575,20 +600,20 @@ export default function AppLayout() {
 
           {user && (
             <button
-              className="ml-1 px-2 sm:px-3 py-1.5 rounded bg-red-700 hover:bg-red-800 cursor-pointer text-sm flex items-center gap-2 min-h-0"
+              className="pos-danger-btn ml-0.5 cursor-pointer"
               onClick={() => {
-                forceLogout('Logged out');
+                forceLogout(t('common.loggedOut'));
               }}
               type="button"
-              title="Logout"
-              aria-label="Logout"
+              title={t('common.logout')}
+              aria-label={t('common.logout')}
             >
               <IconLogout />
             </button>
           )}
         </nav>
       </header>
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden p-2 sm:p-4 safe-pb safe-x">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden py-2 sm:py-4 safe-pb safe-x">
         <div className="flex min-h-0 flex-1 flex-col">
           <Outlet />
         </div>
@@ -606,6 +631,7 @@ function NotificationsList({
   userId: number;
   onCount: (n: number) => void;
 }) {
+  const { t } = useTranslation();
   const [items, setItems] = useState<
     {
       id: number;
@@ -634,17 +660,19 @@ function NotificationsList({
     (n) => !/requested to add items/i.test(n.message),
   );
   if (!filtered.length)
-    return <div className="opacity-70">No notifications</div>;
+    return <div className="opacity-70">{t('common.noNotifications')}</div>;
   return (
     <ul className="max-h-72 overflow-auto space-y-2">
       {filtered.map((n) => (
         <li key={n.id} className="p-2 rounded bg-gray-700/60">
           <div className="flex items-center justify-between">
             <span className="text-xs opacity-70">
-              {formatNotificationTimestamp(n.createdAt)}
+              {formatNotificationTimestamp(n.createdAt, t)}
             </span>
             {!n.readAt && (
-              <span className="text-[10px] bg-blue-600 rounded px-1">New</span>
+              <span className="text-[10px] bg-blue-600 rounded px-1">
+                {t('common.newBadge')}
+              </span>
             )}
           </div>
           <div className="mt-1">{n.message}</div>
@@ -655,6 +683,7 @@ function NotificationsList({
 }
 
 function OwnerRequests({ userId }: { userId: number }) {
+  const { t } = useTranslation();
   const [rows, setRows] = useState<
     Array<{
       id: number;
@@ -679,16 +708,20 @@ function OwnerRequests({ userId }: { userId: number }) {
   if (!rows.length) return null;
   return (
     <div className="mt-3 border-t border-gray-700 pt-2 max-h-64 overflow-auto">
-      <div className="text-xs opacity-70 mb-1">Order requests</div>
+      <div className="text-xs opacity-70 mb-1">{t('layout.orderRequests')}</div>
       <ul className="space-y-2">
         {rows.map((r) => (
           <li key={r.id} className="p-2 rounded bg-gray-700/60">
             <div className="flex items-center justify-between">
               <div className="text-sm font-medium">
-                {r.area} {r.tableLabel} – Request #{r.id}
+                {t('layout.requestNumber', {
+                  area: r.area,
+                  table: r.tableLabel,
+                  id: r.id,
+                })}
               </div>
               <span className="text-xs opacity-70">
-                {formatNotificationTimestamp(r.createdAt)}
+                {formatNotificationTimestamp(r.createdAt, t)}
               </span>
             </div>
             {r.note && <div className="text-xs opacity-70 mt-1">{r.note}</div>}
@@ -697,12 +730,13 @@ function OwnerRequests({ userId }: { userId: number }) {
                 <ul className="list-disc ml-4 space-y-0.5">
                   {r.items.map((it: any, idx: number) => (
                     <li key={idx}>
-                      {String(it.name || 'Item')} ×{Number(it.qty || 1)}
+                      {String(it.name || t('common.item'))} ×
+                      {Number(it.qty || 1)}
                     </li>
                   ))}
                 </ul>
               ) : (
-                <div className="opacity-70">No items</div>
+                <div className="opacity-70">{t('common.noItems')}</div>
               )}
             </div>
             <div className="mt-2 flex gap-2">
@@ -715,7 +749,7 @@ function OwnerRequests({ userId }: { userId: number }) {
                   setRows((prev) => prev.filter((x) => x.id !== r.id));
                 }}
               >
-                Prano
+                {t('common.approve')}
               </button>
               <button
                 className="px-2 py-1 bg-rose-700 rounded"
@@ -726,7 +760,7 @@ function OwnerRequests({ userId }: { userId: number }) {
                   setRows((prev) => prev.filter((x) => x.id !== r.id));
                 }}
               >
-                Refuzo
+                {t('common.reject')}
               </button>
             </div>
           </li>
@@ -736,7 +770,10 @@ function OwnerRequests({ userId }: { userId: number }) {
   );
 }
 
-function formatNotificationTimestamp(iso: string): string {
+function formatNotificationTimestamp(
+  iso: string,
+  tr: (key: string, opt?: Record<string, unknown>) => string,
+): string {
   const createdAt = new Date(iso).getTime();
   const now = Date.now();
   const diffMs = Math.max(0, now - createdAt);
@@ -747,15 +784,15 @@ function formatNotificationTimestamp(iso: string): string {
 
   if (diffMs < hourMs) {
     const minutes = Math.max(1, Math.floor(diffMs / minuteMs));
-    return `${minutes}m ago`;
+    return tr('time.minutesAgo', { count: minutes });
   }
   if (diffMs < dayMs) {
     const hours = Math.max(1, Math.floor(diffMs / hourMs));
-    return `${hours}h ago`;
+    return tr('time.hoursAgo', { count: hours });
   }
   if (diffMs < weekMs) {
     const days = Math.max(1, Math.floor(diffMs / dayMs));
-    return `${days}d ago`;
+    return tr('time.daysAgo', { count: days });
   }
 
   const d = new Date(iso);

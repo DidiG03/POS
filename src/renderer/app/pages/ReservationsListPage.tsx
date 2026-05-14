@@ -108,9 +108,20 @@ export default function ReservationsListPage() {
         void reload();
       }
     };
+    // Foreground refresh: if SSE missed updates while the tablet was asleep
+    // (Android background kill, iOS bfcache), refetch the visible day as
+    // soon as the user returns to the panel.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void reload();
+    };
     window.addEventListener('pos:reservationsChanged', onChanged);
-    return () =>
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
       window.removeEventListener('pos:reservationsChanged', onChanged);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [reload, date]);
 
   const sorted = useMemo(

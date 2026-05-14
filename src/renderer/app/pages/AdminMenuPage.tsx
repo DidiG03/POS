@@ -42,19 +42,19 @@ function IconRefresh() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
-      className="w-4 h-4"
+      className="pos-icon"
       aria-hidden
     >
       <path
         d="M20 12a8 8 0 1 1-2.34-5.66"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M20 4v6h-6"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -68,13 +68,13 @@ function IconX() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
-      className="w-4 h-4"
+      className="pos-icon"
       aria-hidden
     >
       <path
         d="M6 6l12 12M18 6 6 18"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -87,19 +87,19 @@ function IconPencil() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
-      className="w-4 h-4"
+      className="pos-icon"
       aria-hidden
     >
       <path
         d="M12 20h9"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinejoin="round"
       />
     </svg>
@@ -112,38 +112,38 @@ function IconTrash() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
-      className="w-4 h-4"
+      className="pos-icon"
       aria-hidden
     >
       <path
         d="M3 6h18"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M8 6V4h8v2"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M6 6l1 16h10l1-16"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinejoin="round"
       />
       <path
         d="M10 11v6"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M14 11v6"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -186,7 +186,9 @@ function Modal({
           <div className="min-w-0">
             <div className="font-semibold truncate">{title}</div>
             {subtitle !== undefined ? (
-              subtitle && <div className="text-xs opacity-70 mt-0.5">{subtitle}</div>
+              subtitle && (
+                <div className="text-xs opacity-70 mt-0.5">{subtitle}</div>
+              )
             ) : (
               <div className="text-xs opacity-70 mt-0.5">
                 Update details, then save changes.
@@ -279,7 +281,6 @@ export default function AdminMenuPage() {
   const [newCatColor, setNewCatColor] = useState<string>('#22c55e');
 
   const [showAddItem, setShowAddItem] = useState(false);
-  
 
   async function withSaving<T>(label: string, fn: () => Promise<T>) {
     setSaving(label);
@@ -477,7 +478,6 @@ export default function AdminMenuPage() {
                       {selected.items?.length || 0} items
                     </div>
                   </div>
-
 
                   {selected.items.length === 0 ? (
                     <div className="opacity-70 text-sm">No items yet.</div>
@@ -885,11 +885,14 @@ function ItemRow({
         title={active ? undefined : 'Disabled: hidden from waiter menu'}
       >
         <div className="flex-1 min-w-0">
-          <div className={`font-medium truncate ${active ? '' : 'line-through text-gray-400'}`}>
+          <div
+            className={`font-medium truncate ${active ? '' : 'line-through text-gray-400'}`}
+          >
             {item.name}
           </div>
           <div className="text-[10px] opacity-50 mt-0.5">
-            {stationLabel} · VAT {item.vatRate} {item.isKg ? ' · kg' : ''} · SKU: {item.sku}
+            {stationLabel} · VAT {item.vatRate} {item.isKg ? ' · kg' : ''} ·
+            SKU: {item.sku}
           </div>
         </div>
         <div className="text-sm font-semibold tabular-nums whitespace-nowrap">

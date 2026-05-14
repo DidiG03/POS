@@ -6,6 +6,10 @@ import {
 } from '../stores/reservationSession';
 import ReservationEditor from './components/ReservationEditor';
 import WalkInDialog from './components/WalkInDialog';
+import {
+  dispatchReservationsChanged,
+  type ReservationsChangedKind,
+} from '../utils/reservationEvents';
 import type { ReservationDTO } from '@shared/ipc';
 
 export type ReservationsContext = {
@@ -22,6 +26,20 @@ export type ReservationsContext = {
   freeTableLabels: string[];
   openEditor: (initial?: Partial<ReservationDTO> | null) => void;
   openWalkIn: () => void;
+  /**
+   * Same-device refresh signal. The Floor and List pages already react to
+   * `pos:reservationsChanged` (SSE/IPC from other devices), but when the
+   * tablet that *made* the change is offline-from-SSE (Android often kills
+   * the EventSource when the WebView backgrounds), the broadcast loop never
+   * round-trips. Pages and embedded dialogs call this helper after a
+   * successful mutation so the local view refreshes immediately without
+   * waiting on the broadcast.
+   */
+  notifyReservationsChanged: (
+    kind: ReservationsChangedKind,
+    dateIso?: string | null,
+    area?: string | null,
+  ) => void;
 };
 
 function startOfLocalDay(d: Date): Date {
@@ -124,6 +142,21 @@ export default function ReservationsLayout() {
     setEditorOpen(true);
   }, []);
   const openWalkIn = useCallback(() => setWalkInOpen(true), []);
+
+  const notifyReservationsChanged = useCallback(
+    (
+      kind: ReservationsChangedKind,
+      dateIso?: string | null,
+      areaName?: string | null,
+    ) => {
+      dispatchReservationsChanged({
+        kind,
+        dateIso: dateIso ?? date.toISOString(),
+        area: areaName ?? area ?? null,
+      });
+    },
+    [date, area],
+  );
 
   /** Table labels for `areaName`: saved layout nodes, else same synthetic T1…N as FloorCanvas. */
   const loadLayoutTableLabels = useCallback(
@@ -273,6 +306,7 @@ export default function ReservationsLayout() {
       freeTableLabels,
       openEditor,
       openWalkIn,
+      notifyReservationsChanged,
     }),
     [
       me,
@@ -285,6 +319,7 @@ export default function ReservationsLayout() {
       freeTableLabels,
       openEditor,
       openWalkIn,
+      notifyReservationsChanged,
     ],
   );
 
@@ -296,9 +331,7 @@ export default function ReservationsLayout() {
   return (
     <div
       className="min-h-dvh flex flex-col bg-gray-900 text-gray-100"
-      // Respect iOS notch / Android system bars when running in Capacitor.
       style={{
-        paddingTop: 'env(safe-area-inset-top)',
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
@@ -309,7 +342,7 @@ export default function ReservationsLayout() {
         // Same approach as the staff AppLayout: own the safe-area-top
         // inset so the header clears the iPhone status bar / notch
         // without ever exposing the black native view background.
-        className="bg-gray-800 px-3 sm:px-4 pb-2 sm:pb-3 pt-[max(0.5rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex flex-col gap-2 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:gap-2 sm:items-center"
+        className="bg-gray-800 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex flex-col gap-2 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:gap-2 sm:items-center"
       >
         <div className="flex items-center justify-between gap-3 min-w-0 sm:justify-start">
           <div className="flex items-center gap-2 min-w-0">
@@ -320,7 +353,7 @@ export default function ReservationsLayout() {
           </div>
           <button
             type="button"
-            className="sm:hidden px-3 py-1.5 rounded bg-rose-700 hover:bg-rose-600 text-sm"
+            className="sm:hidden pos-signout-btn"
             onClick={signOut}
             title="Sign out"
           >
@@ -328,14 +361,12 @@ export default function ReservationsLayout() {
           </button>
         </div>
 
-        <nav className="text-sm grid grid-cols-2 gap-1 sm:flex sm:items-center sm:gap-2 sm:justify-center">
+        <nav className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:justify-center sm:gap-2">
           <NavLink
             to="/reservations/app"
             end
             className={({ isActive }) =>
-              `px-3 py-2 sm:py-1.5 rounded text-center ${
-                isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'
-              }`
+              `pos-nav-link justify-center ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'} w-full`
             }
           >
             Floor
@@ -343,9 +374,7 @@ export default function ReservationsLayout() {
           <NavLink
             to="/reservations/app/list"
             className={({ isActive }) =>
-              `px-3 py-2 sm:py-1.5 rounded text-center ${
-                isActive ? 'bg-gray-700/70' : 'hover:bg-gray-700/50'
-              }`
+              `pos-nav-link justify-center ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'} w-full`
             }
           >
             List
@@ -355,7 +384,7 @@ export default function ReservationsLayout() {
         <div className="hidden sm:flex items-center gap-2 justify-end">
           <button
             type="button"
-            className="px-3 py-1.5 rounded bg-rose-700 hover:bg-rose-600 text-sm"
+            className="hidden sm:inline-flex pos-signout-btn"
             onClick={signOut}
             title="Sign out"
           >
@@ -367,12 +396,12 @@ export default function ReservationsLayout() {
       {/* Day / area / actions bar.
           On phones the buttons drop to their own full-width row at the
           bottom so they're easy to tap; on desktop everything sits inline. */}
-      <div className="bg-gray-850 border-b border-gray-700 px-3 sm:px-4 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap sm:gap-2">
+      <div className="border-b border-gray-700 bg-gray-800 py-2 safe-x flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap sm:gap-2">
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => goRelativeDays(-1)}
-            className="w-9 h-9 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center text-lg"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 text-lg leading-none text-gray-100 transition-colors hover:bg-gray-700"
             title="Previous day"
             aria-label="Previous day"
           >
@@ -388,12 +417,12 @@ export default function ReservationsLayout() {
               setDate(new Date(y, m - 1, d));
             }}
             // 16px font-size avoids the auto-zoom Safari triggers on smaller text.
-            className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-base sm:text-sm cursor-pointer hover:bg-gray-700"
+            className="cursor-pointer rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-base hover:bg-gray-700 sm:text-sm"
           />
           <button
             type="button"
             onClick={() => goRelativeDays(1)}
-            className="w-9 h-9 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center text-lg"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 text-lg leading-none text-gray-100 transition-colors hover:bg-gray-700"
             title="Next day"
             aria-label="Next day"
           >
@@ -402,7 +431,7 @@ export default function ReservationsLayout() {
           <button
             type="button"
             onClick={() => setDate(new Date())}
-            className="px-3 py-2 sm:py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-sm"
+            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm transition-colors hover:bg-gray-700 sm:py-1.5"
           >
             Today
           </button>
@@ -413,7 +442,7 @@ export default function ReservationsLayout() {
           <select
             value={area}
             onChange={(e) => setArea(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded px-3 py-2 sm:py-1.5 text-base sm:text-sm flex-1 sm:flex-initial sm:max-w-none"
+            className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-base hover:bg-gray-700 sm:flex-initial sm:py-1.5 sm:text-sm"
           >
             {areas.length === 0 && <option value="">(no areas)</option>}
             {areas.map((a) => (
@@ -461,11 +490,14 @@ export default function ReservationsLayout() {
           actorId={me.id}
           tableLabels={tableLabels}
           freeTableLabels={freeTableLabels}
-          // SSE refreshes both the Floor and List pages automatically — the
-          // dialog only needs to close itself, no parent reload.
-          onSeated={() => {
-            /* no-op: pos:reservationsChanged drives refresh */
-          }}
+          // Refresh the local pages immediately. The service broadcasts the
+          // same event to every other client via SSE/IPC — we just don't
+          // wait on that round-trip for the device that made the change,
+          // because EventSource can be silently down (Android background
+          // kill, transient Wi-Fi blip, etc.).
+          onSeated={(r) =>
+            notifyReservationsChanged('created', r.startsAt, r.area)
+          }
         />
       )}
 
@@ -478,12 +510,10 @@ export default function ReservationsLayout() {
           areas={areas}
           getTableLabelsForArea={loadLayoutTableLabels}
           actorId={me.id}
-          onSaved={() => {
-            /* no-op: pos:reservationsChanged drives refresh */
-          }}
-          onDeleted={() => {
-            /* no-op: pos:reservationsChanged drives refresh */
-          }}
+          onSaved={(r) =>
+            notifyReservationsChanged('updated', r.startsAt, r.area)
+          }
+          onDeleted={() => notifyReservationsChanged('deleted')}
         />
       )}
     </div>

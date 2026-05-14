@@ -3,6 +3,7 @@ import { useTicketStore } from '../../stores/ticket';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { logTicket } from '../../api';
 import { tryOrQueue } from '../../utils/offlineQueue';
@@ -88,6 +89,7 @@ function sortNaturalTableLabels(labels: string[]): string[] {
 }
 
 export default function OrderPage() {
+  const { t } = useTranslation();
   const [categories, setCategories] = useState<MenuCategoryDTO[]>([]);
   const [selectedCatId, setSelectedCatId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
@@ -316,9 +318,7 @@ export default function OrderPage() {
         void e;
         if (!cancelled && gen === orderPollGenRef.current) {
           setOpenLoaded(true);
-          setOpenLoadError(
-            'Loading occupied tables… (slow/offline network). Retrying…',
-          );
+          setOpenLoadError('occ_tables_slow');
         }
       }
     };
@@ -661,14 +661,14 @@ export default function OrderPage() {
         .filter((i) => favouriteSkus.includes(i.sku));
       return {
         id: -1,
-        name: 'Favourites',
+        name: t('order.favourites'),
         sortOrder: -999,
         active: true,
         items,
       } as any;
     }
     return categories.find((c) => c.id === selectedCatId) ?? categories[0];
-  }, [categories, selectedCatId, favouriteSkus]);
+  }, [categories, selectedCatId, favouriteSkus, t]);
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1007,7 +1007,11 @@ export default function OrderPage() {
     return (
       <PageSpinner
         message={
-          openLoadError || (!openLoaded ? 'Loading tables…' : 'Loading ticket…')
+          openLoadError
+            ? t(`order.loadErrors.${openLoadError}`)
+            : !openLoaded
+              ? t('order.loadingTables')
+              : t('order.loadingTicket')
         }
       />
     );
@@ -1016,43 +1020,45 @@ export default function OrderPage() {
   return (
     <div className="h-full min-h-0 flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3">
       {/* Mobile: switch between Menu and Ticket to avoid cramped 3-column layout */}
-      <div className="md:hidden bg-gray-800/70 border border-gray-700 rounded-lg p-2 flex items-center gap-2">
+      <div className="md:hidden pos-surface-panel p-2 flex items-center gap-2">
         <button
-          className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer text-gray-100 min-h-0 shrink-0"
+          className="pos-icon-btn shrink-0 cursor-pointer text-gray-100"
           onClick={() => navigate('/app/tables')}
           type="button"
-          aria-label="Back to tables"
-          title="Back to tables"
+          aria-label={t('order.backToTables')}
+          title={t('order.backToTables')}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 24 24"
             fill="none"
-            className="w-5 h-5"
+            className="pos-icon"
             aria-hidden="true"
           >
             <path
               d="M15 6l-6 6 6 6"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth="1.75"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
           </svg>
         </button>
         <button
-          className={`flex-1 py-2 rounded ${mobilePane === 'menu' ? 'bg-emerald-700' : 'bg-gray-700'}`}
+          className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition-colors duration-150 ${mobilePane === 'menu' ? 'bg-emerald-700 text-white' : 'bg-gray-700/90 text-gray-100 hover:bg-gray-600'}`}
           onClick={() => setMobilePane('menu')}
           type="button"
         >
-          Menu
+          {t('order.menu')}
         </button>
         <button
-          className={`flex-1 py-2 rounded ${mobilePane === 'ticket' ? 'bg-emerald-700' : 'bg-gray-700'}`}
+          className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition-colors duration-150 ${mobilePane === 'ticket' ? 'bg-emerald-700 text-white' : 'bg-gray-700/90 text-gray-100 hover:bg-gray-600'}`}
           onClick={() => setMobilePane('ticket')}
           type="button"
         >
-          Ticket{lines.length ? ` (${lines.length})` : ''}
+          {lines.length
+            ? t('order.ticketCount', { count: lines.length })
+            : t('order.ticket')}
         </button>
       </div>
 
@@ -1061,8 +1067,8 @@ export default function OrderPage() {
       >
         <div className="flex gap-2 mb-3">
           <input
-            placeholder="Search menu..."
-            className="w-full p-2 bg-gray-700 rounded"
+            placeholder={t('order.searchMenu')}
+            className="w-full rounded-lg bg-gray-700 p-2 transition-colors placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-600/50"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -1074,7 +1080,7 @@ export default function OrderPage() {
             onClick={() => setSelectedCatId(-1)}
             className={`py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === -1 ? 'bg-gray-800' : 'bg-gray-900'}`}
           >
-            Favourites
+            {t('order.favourites')}
           </button>
           {categories.map((c) => {
             const tabColor = c.color || null;
@@ -1195,7 +1201,11 @@ export default function OrderPage() {
                     e.stopPropagation();
                     if (user?.id) fav.toggle(user.id, i.sku);
                   }}
-                  title={isFav ? 'Remove from favourites' : 'Add to favourites'}
+                  title={
+                    isFav
+                      ? t('order.favouriteRemoveTitle')
+                      : t('order.favouriteAddTitle')
+                  }
                 >
                   {isFav ? '♥' : '♡'}
                 </button>
@@ -1211,7 +1221,9 @@ export default function OrderPage() {
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold flex items-center gap-2">
             <span>
-              Ticket {selectedTable ? `- ${selectedTable.label}` : ''}
+              {selectedTable
+                ? t('order.ticketHeader', { label: selectedTable.label })
+                : t('order.ticket')}
             </span>
             {selectedTable &&
               isOpen(selectedTable.area, selectedTable.label) &&
@@ -1227,9 +1239,9 @@ export default function OrderPage() {
                 type="button"
                 className="bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded border border-indigo-500 text-sm"
                 onClick={() => setShowTransfer(true)}
-                title="Transfer this table to another waiter or table number"
+                title={t('order.transferTitle')}
               >
-                Transfer
+                {t('order.transfer')}
               </button>
             )}
             {selectedTable &&
@@ -1250,13 +1262,13 @@ export default function OrderPage() {
                   disabled={!canEditCovers}
                   title={
                     canEditCovers
-                      ? 'Edit guests (covers)'
-                      : "You can't change covers on a table you don't own"
+                      ? t('order.editCovers')
+                      : t('order.editCoversBlocked')
                   }
                   aria-label={
                     canEditCovers
-                      ? 'Edit guests (covers)'
-                      : 'Edit guests disabled — you do not own this table'
+                      ? t('order.editCovers')
+                      : t('order.editCoversAriaBlocked')
                   }
                 >
                   <ForkKnifeIcon />
@@ -1273,20 +1285,20 @@ export default function OrderPage() {
               variant="overlay"
               message={
                 ticketSyncing
-                  ? 'Syncing ticket…'
+                  ? t('order.syncingTicket')
                   : busyAction === 'send'
-                    ? 'Sending order…'
+                    ? t('order.sendingOrder')
                     : busyAction === 'void'
-                      ? 'Voiding…'
+                      ? t('order.voiding')
                       : busyAction === 'pay'
-                        ? 'Processing payment…'
-                        : 'Please wait…'
+                        ? t('order.processingPayment')
+                        : t('order.pleaseWait')
               }
             />
           )}
           <div className="space-y-2">
             {lines.length === 0 ? (
-              <div className="text-sm opacity-60">Select items to add…</div>
+              <div className="text-sm opacity-60">{t('order.selectItems')}</div>
             ) : (
               lines.map((l) => {
                 const showRequestOnly = Boolean(
@@ -1349,7 +1361,7 @@ export default function OrderPage() {
                           </>
                         ) : (
                           <div className="w-6 text-center text-gray-400">
-                            QTY:{l.qty}
+                            {t('common.qty')}:{l.qty}
                           </div>
                         )}
                         <div
@@ -1393,7 +1405,7 @@ export default function OrderPage() {
                                   note: l.note,
                                 })
                               }
-                              title="Void"
+                              title={t('order.voidTitle')}
                             >
                               A
                             </button>
@@ -1419,7 +1431,7 @@ export default function OrderPage() {
                     </div>
                     <input
                       className={`mt-2 w-full rounded px-2 py-1 text-sm placeholder:text-gray-300 ${dimmed && !(showRequestOnly && l.staged) ? 'bg-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-600'}`}
-                      placeholder="Add note (e.g., No onion, extra cheese)"
+                      placeholder={t('order.lineNotePlaceholder')}
                       value={l.note ?? ''}
                       disabled={Boolean(
                         dimmed && !(showRequestOnly && l.staged),
@@ -1440,7 +1452,7 @@ export default function OrderPage() {
           <div className="space-y-3 text-sm">
             <div>
               <label className="block text-xs mb-1 opacity-70">
-                Order notes
+                {t('order.orderNotes')}
               </label>
               {(() => {
                 const requestOnly = Boolean(
@@ -1460,7 +1472,7 @@ export default function OrderPage() {
                   <textarea
                     className={`w-full rounded px-2 py-2 text-sm ${disabled ? 'bg-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-700'}`}
                     rows={2}
-                    placeholder="e.g., allergies, special instructions, table notes"
+                    placeholder={t('order.orderNotesPlaceholder')}
                     value={orderNote}
                     disabled={disabled}
                     onChange={(e) => setOrderNote(e.target.value)}
@@ -1502,15 +1514,11 @@ export default function OrderPage() {
                         if (!selectedTable || !user?.id || !ownerId) return;
                         const staged = lines.filter((l) => l.staged);
                         if (staged.length === 0) {
-                          toast.warn(
-                            'Add items (new lines) before sending a request',
-                          );
+                          toast.warn(t('order.requestAddBefore'));
                           return;
                         }
                         if (!connectionOk) {
-                          toast.warn(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn(t('order.networkSlow'));
                           return;
                         }
                         setBusyAction('request');
@@ -1533,11 +1541,9 @@ export default function OrderPage() {
                             note: null,
                           });
                           setRequestLocked(true);
-                          toast.success('Request sent to the owner');
+                          toast.success(t('order.requestSent'));
                         } catch {
-                          toast.error(
-                            'Request failed (network slow). Please try again.',
-                          );
+                          toast.error(t('order.requestFailed'));
                         } finally {
                           setBusyAction(null);
                         }
@@ -1545,8 +1551,8 @@ export default function OrderPage() {
                       type="button"
                     >
                       {busyAction === 'request'
-                        ? 'Sending…'
-                        : 'Request to add items'}
+                        ? t('order.sending')
+                        : t('order.requestAddItems')}
                     </button>
                   );
                 }
@@ -1563,9 +1569,7 @@ export default function OrderPage() {
                       onClick={async () => {
                         if (busyAction != null || ticketSyncing) return;
                         if (!connectionOk) {
-                          toast.warn(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn(t('order.networkSlow'));
                           return;
                         }
                         setBusyAction('void');
@@ -1582,7 +1586,7 @@ export default function OrderPage() {
                             } | null = null;
                             if (approvalsCfg.requireManagerPinForVoid) {
                               const approved = await requestAdminApproval(
-                                'Admin PIN required to void ticket',
+                                t('order.approvalVoidTicket'),
                               );
                               if (!approved) return;
                               approvedByAdmin = approved;
@@ -1643,9 +1647,7 @@ export default function OrderPage() {
                             setOrderNote('');
                           }
                         } catch {
-                          toast.error(
-                            'Failed to void/clear. Please try again.',
-                          );
+                          toast.error(t('order.voidClearFailed'));
                         } finally {
                           setBusyAction(null);
                         }
@@ -1653,11 +1655,11 @@ export default function OrderPage() {
                       type="button"
                     >
                       {busyAction === 'void'
-                        ? 'Voiding…'
+                        ? t('order.voidingBtn')
                         : selectedTable &&
                             isOpen(selectedTable.area, selectedTable.label)
-                          ? 'Void Ticket'
-                          : 'Clear'}
+                          ? t('order.voidTicket')
+                          : t('order.clear')}
                     </button>
                     <button
                       className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
@@ -1682,9 +1684,7 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          toast.warn(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn(t('order.networkSlow'));
                           return;
                         }
                         // Enrich log with details (table, order lines, notes, covers)
@@ -1748,15 +1748,15 @@ export default function OrderPage() {
                             // print, refresh the open-tables map, and
                             // surface a clean toast.
                             toast.error(logResult.error, {
-                              title: 'Send blocked',
+                              title: t('order.toastSendBlocked'),
                             });
                             try {
                               const open = await window.api.tables.listOpen();
                               if (Array.isArray(open)) {
                                 const stillOpen = open.some(
-                                  (t: any) =>
-                                    t.area === selectedTable.area &&
-                                    t.label === selectedTable.label,
+                                  (tbl: any) =>
+                                    tbl.area === selectedTable.area &&
+                                    tbl.label === selectedTable.label,
                                 );
                                 setOpen(
                                   selectedTable.area,
@@ -1828,13 +1828,15 @@ export default function OrderPage() {
                             String(e?.name || '') === 'AbortError';
                           const isType = e instanceof TypeError;
                           const title = isAuth
-                            ? 'Send blocked (not signed in)'
+                            ? t('order.toastSendBlockedSignedOut')
                             : isAbort
-                              ? 'Send timed out'
+                              ? t('order.toastSendTimedOut')
                               : isType
-                                ? 'Can’t reach host'
-                                : 'Send failed';
-                          toast.error(detail || 'Please try again.', { title });
+                                ? t('order.toastCantReachHost')
+                                : t('order.toastSendFailed');
+                          toast.error(detail || t('order.toastTryAgain'), {
+                            title,
+                          });
                           if (typeof console !== 'undefined')
                             console.warn('[print/ticket] failed:', e);
                         } finally {
@@ -1844,10 +1846,10 @@ export default function OrderPage() {
                       type="button"
                     >
                       {busyAction === 'send'
-                        ? 'Sending…'
+                        ? t('order.sendingOrder')
                         : lines.some((l) => l.staged)
-                          ? 'Send Order'
-                          : 'Print Ticket'}
+                          ? t('order.sendOrder')
+                          : t('order.printTicket')}
                     </button>
                     <button
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
@@ -1859,19 +1861,19 @@ export default function OrderPage() {
                       }
                       title={
                         !selectedTable
-                          ? 'Select table'
+                          ? t('order.selectTable')
                           : lines.length === 0
-                            ? 'Add items'
+                            ? t('order.addItems')
                             : !isTableOpen
-                              ? 'Send the order and set guests before payment'
+                              ? t('order.sendAndGuests')
                               : hasUnsentItems
-                                ? 'Send the order before payment'
+                                ? t('order.sendBeforePay')
                                 : typeof coversKnown !== 'number' ||
                                     coversKnown <= 0
-                                  ? 'Set guests before payment'
+                                  ? t('order.setGuestsBeforePay')
                                   : !connectionOk
-                                    ? 'Network is slow/offline — wait before paying'
-                                    : 'Pay'
+                                    ? t('order.networkWaitPay')
+                                    : t('order.pay')
                       }
                       onClick={async () => {
                         if (busyAction != null) return;
@@ -1881,9 +1883,7 @@ export default function OrderPage() {
                           return;
                         }
                         if (!connectionOk) {
-                          toast.warn(
-                            'Network is slow/offline. Please wait and try again.',
-                          );
+                          toast.warn(t('order.networkSlow'));
                           return;
                         }
                         // Open payment modal (choose method + amount + print)
@@ -1913,7 +1913,9 @@ export default function OrderPage() {
                       }}
                       type="button"
                     >
-                      {busyAction === 'pay' ? 'Paying…' : 'Pay'}
+                      {busyAction === 'pay'
+                        ? t('order.paying')
+                        : t('order.pay')}
                     </button>
                   </>
                 );
@@ -1927,13 +1929,13 @@ export default function OrderPage() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3 sm:p-4 overflow-hidden">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-full sm:w-[92vw] max-w-6xl p-4 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] relative">
             <div className="flex items-center justify-between mb-3 shrink-0">
-              <div className="text-lg font-semibold">Payment</div>
+              <div className="text-lg font-semibold">{t('order.payment')}</div>
               <button
                 className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={busyAction === 'pay'}
                 onClick={() => setShowPayment(false)}
               >
-                Close
+                {t('common.close')}
               </button>
             </div>
             {busyAction === 'pay' && (
@@ -1946,9 +1948,11 @@ export default function OrderPage() {
                   className="inline-block w-10 h-10 border-4 border-white/20 border-t-emerald-400 rounded-full animate-spin"
                   aria-hidden
                 />
-                <div className="text-base font-medium">Processing payment…</div>
+                <div className="text-base font-medium">
+                  {t('order.processingPaymentOverlay')}
+                </div>
                 <div className="text-xs opacity-70">
-                  Recording payment and printing receipt
+                  {t('order.recordingPayment')}
                 </div>
               </div>
             )}
@@ -1956,27 +1960,31 @@ export default function OrderPage() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
               {/* Order summary */}
               <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
-                <div className="text-sm opacity-80 mb-2">Order summary</div>
+                <div className="text-sm opacity-80 mb-2">
+                  {t('order.orderSummary')}
+                </div>
                 <div className="text-xs opacity-60 mb-2">
-                  Select the guests for payment
+                  {t('order.selectGuestsPayment')}
                 </div>
                 <div className="flex gap-2 mb-3">
                   <button
                     className="flex-1 bg-gray-700 rounded py-2 text-sm opacity-70"
                     disabled
                   >
-                    Covers
+                    {t('common.covers')}
                   </button>
                 </div>
                 <div className="flex-1 overflow-auto space-y-2">
                   <div className="bg-gray-700/60 rounded p-3 flex items-center justify-between">
                     <div>
                       <div className="text-sm font-medium">
-                        Table {selectedTable.label}
+                        {t('common.table')} {selectedTable.label}
                       </div>
                       <div className="text-xs opacity-70">
-                        Covers:{' '}
-                        {typeof coversKnown === 'number' ? coversKnown : '—'}
+                        {t('common.coversWithVal', {
+                          val:
+                            typeof coversKnown === 'number' ? coversKnown : '—',
+                        })}
                       </div>
                     </div>
                     <div className="text-sm font-semibold">
@@ -1985,7 +1993,7 @@ export default function OrderPage() {
                   </div>
                 </div>
                 <div className="mt-3 text-sm opacity-80 flex justify-between">
-                  <span>Total</span>
+                  <span>{t('common.total')}</span>
                   <span className="font-semibold">
                     {formatAmount(totals.total)}
                   </span>
@@ -1995,21 +2003,25 @@ export default function OrderPage() {
               {/* Payment methods */}
               <div className="bg-gray-800 rounded-lg p-3 min-h-[280px]">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-sm opacity-80">Payment methods</div>
+                  <div className="text-sm opacity-80">
+                    {t('order.paymentMethods')}
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <PayMethodButton
                     active={paymentMethod === 'CASH'}
                     onClick={() => setPaymentMethod('CASH')}
-                    label="Cash"
+                    label={t('order.cash')}
                   >
                     <IconCash />
                   </PayMethodButton>
-                  <div className="text-xs opacity-60 mt-3">Cards</div>
+                  <div className="text-xs opacity-60 mt-3">
+                    {t('order.cards')}
+                  </div>
                   <PayMethodButton
                     active={paymentMethod === 'CARD'}
                     onClick={() => setPaymentMethod('CARD')}
-                    label="Card"
+                    label={t('order.card')}
                   >
                     <IconCard />
                   </PayMethodButton>
@@ -2025,7 +2037,7 @@ export default function OrderPage() {
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-sm opacity-80 flex items-center gap-2">
                     <IconReceipt />
-                    Payment amount
+                    {t('order.paymentAmount')}
                   </div>
                   <div className="text-sm font-semibold">
                     {formatAmount(totalDue)}
@@ -2060,7 +2072,9 @@ export default function OrderPage() {
                 {serviceChargeCfg.enabled && (
                   <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
                     <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-medium">Service charge</div>
+                      <div className="text-sm font-medium">
+                        {t('common.serviceCharge')}
+                      </div>
                       <div className="text-xs opacity-70">
                         {applyServiceCharge && serviceChargeAmount > 0
                           ? `+ ${formatAmount(serviceChargeAmount)}`
@@ -2069,7 +2083,7 @@ export default function OrderPage() {
                     </div>
                     <label className="flex items-center justify-between gap-3">
                       <div className="text-sm opacity-80">
-                        Apply service charge
+                        {t('order.applyServiceCharge')}
                       </div>
                       <input
                         type="checkbox"
@@ -2080,7 +2094,7 @@ export default function OrderPage() {
                       />
                     </label>
                     <div className="text-xs opacity-70 mt-2">
-                      Config:{' '}
+                      {t('order.config')}:{' '}
                       {serviceChargeCfg.mode === 'PERCENT'
                         ? `${serviceChargeCfg.value}%`
                         : `${serviceChargeCfg.value}`}
@@ -2089,7 +2103,9 @@ export default function OrderPage() {
                 )}
                 <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
                   <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm font-medium">Discount</div>
+                    <div className="text-sm font-medium">
+                      {t('common.discount')}
+                    </div>
                     <div className="text-xs opacity-70">
                       {discountAmount > 0
                         ? `- ${formatAmount(discountAmount)}`
@@ -2122,10 +2138,10 @@ export default function OrderPage() {
                       className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm"
                       placeholder={
                         discountType === 'PERCENT'
-                          ? 'e.g. 10'
+                          ? t('order.discountPlaceholderPercent')
                           : discountType === 'AMOUNT'
-                            ? 'e.g. 5.00'
-                            : 'Select type'
+                            ? t('order.discountPlaceholderAmount')
+                            : t('order.discountPlaceholderType')
                       }
                       value={discountValue}
                       disabled={discountType === 'NONE'}
@@ -2134,13 +2150,13 @@ export default function OrderPage() {
                   </div>
                   <input
                     className="w-full bg-gray-700 rounded px-2 py-2 text-sm"
-                    placeholder="Reason (optional)"
+                    placeholder={t('order.discountReason')}
                     value={discountReason}
                     onChange={(e) => setDiscountReason(e.target.value)}
                   />
                   {discountAmount > 0 && (
                     <div className="text-xs opacity-70 mt-2 flex items-center justify-between">
-                      <span>Total after discount</span>
+                      <span>{t('order.totalAfterDiscount')}</span>
                       <span className="font-semibold">
                         {formatAmount(totalDue)}
                       </span>
@@ -2161,23 +2177,32 @@ export default function OrderPage() {
                       return null;
                     return (
                       <div className="mb-2 text-xs text-amber-200 opacity-90">
-                        Manager PIN required to complete this payment.
+                        {t('order.managerPinPayment')}
                       </div>
                     );
                   })()}
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <IconPrinter />
-                      <span className="text-sm">Print receipt</span>
+                      <span className="text-sm">{t('order.printReceipt')}</span>
                     </div>
                     <button
                       type="button"
-                      className={`w-12 h-7 rounded-full relative ${printReceipt ? 'bg-blue-600' : 'bg-gray-700'}`}
+                      role="switch"
+                      aria-checked={printReceipt}
+                      className={`relative h-8 w-14 shrink-0 rounded-full transition-colors duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 ${
+                        printReceipt ? 'bg-blue-600' : 'bg-gray-700'
+                      }`}
                       onClick={() => setPrintReceipt((v) => !v)}
-                      aria-label="Toggle print receipt"
+                      aria-label={t('order.togglePrintReceipt')}
                     >
                       <span
-                        className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${printReceipt ? 'left-6' : 'left-1'}`}
+                        aria-hidden
+                        className={`pointer-events-none absolute top-1/2 size-[1.375rem] -translate-y-1/2 rounded-full bg-white shadow-md ring-1 ring-black/15 transition-[left] duration-200 ease-out ${
+                          printReceipt
+                            ? 'left-[calc(100%-1.375rem-5px)]'
+                            : 'left-[5px]'
+                        }`}
                       />
                     </button>
                   </div>
@@ -2211,10 +2236,10 @@ export default function OrderPage() {
                         ) {
                           managerApprovedBy = await requestManagerApproval(
                             needsDiscountApproval && needsServiceRemovalApproval
-                              ? 'Approve discount & service charge removal'
+                              ? t('order.approveDiscountAndSc')
                               : needsDiscountApproval
-                                ? 'Approve discount'
-                                : 'Approve service charge removal',
+                                ? t('order.approveDiscount')
+                                : t('order.approveScRemoval'),
                           );
                           if (!managerApprovedBy) return;
                         }
@@ -2352,10 +2377,14 @@ export default function OrderPage() {
                           className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"
                           aria-hidden
                         />
-                        <span>Processing payment…</span>
+                        <span>{t('order.processingPaymentOverlay')}</span>
                       </>
                     ) : (
-                      <span>Pay • {formatAmount(totalDue)}</span>
+                      <span>
+                        {t('order.payWithTotal', {
+                          amount: formatAmount(totalDue),
+                        })}
+                      </span>
                     )}
                   </button>
                 </div>
@@ -2369,17 +2398,19 @@ export default function OrderPage() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-lg p-4">
             <div className="flex items-center justify-between mb-3">
-              <div className="text-lg font-semibold">Transfer table</div>
+              <div className="text-lg font-semibold">
+                {t('order.transferTable')}
+              </div>
               <button
                 className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
                 onClick={() => setShowTransfer(false)}
               >
-                Close
+                {t('common.close')}
               </button>
             </div>
 
             <div className="text-sm opacity-80 mb-3">
-              From:{' '}
+              {t('order.from')}:{' '}
               <b>
                 {selectedTable.area} {selectedTable.label}
               </b>
@@ -2394,7 +2425,7 @@ export default function OrderPage() {
                 }}
                 type="button"
               >
-                To waiter
+                {t('order.toWaiter')}
               </button>
               <button
                 className={`flex-1 py-2 rounded ${transferMode === 'TABLE' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
@@ -2404,7 +2435,7 @@ export default function OrderPage() {
                 }}
                 type="button"
               >
-                To table
+                {t('order.toTable')}
               </button>
             </div>
 
@@ -2418,7 +2449,9 @@ export default function OrderPage() {
                   .filter((u) => onShiftUserIds.has(Number(u.id)));
                 return (
                   <div className="space-y-2">
-                    <div className="text-sm opacity-80">Select waiter</div>
+                    <div className="text-sm opacity-80">
+                      {t('order.selectWaiter')}
+                    </div>
                     <select
                       className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
                       value={transferToUserId ?? ''}
@@ -2431,8 +2464,8 @@ export default function OrderPage() {
                     >
                       <option value="">
                         {eligibleWaiters.length === 0
-                          ? '(no other waiters on shift)'
-                          : '(choose waiter)'}
+                          ? t('order.noWaitersOnShift')
+                          : t('order.chooseWaiter')}
                       </option>
                       {eligibleWaiters.map((u) => (
                         <option key={u.id} value={u.id}>
@@ -2441,19 +2474,20 @@ export default function OrderPage() {
                       ))}
                     </select>
                     <div className="text-xs opacity-70">
-                      Only waiters who are currently on shift can receive a
-                      table. They&apos;ll get a notification.
+                      {t('order.waiterShiftHint')}
                     </div>
                   </div>
                 );
               })()
             ) : (
               <div className="space-y-2">
-                <div className="text-sm opacity-80">Destination</div>
+                <div className="text-sm opacity-80">
+                  {t('order.destination')}
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <select
                     className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
-                    aria-label="Destination section"
+                    aria-label={t('order.destinationAriaSection')}
                     value={
                       transferSectionNames.includes(transferToArea)
                         ? transferToArea
@@ -2467,8 +2501,8 @@ export default function OrderPage() {
                   >
                     <option value="">
                       {transferSectionNames.length === 0
-                        ? '(no sections in settings)'
-                        : '(choose section)'}
+                        ? t('order.noSections')
+                        : t('order.chooseSection')}
                     </option>
                     {transferSectionNames.map((name) => (
                       <option key={name} value={name}>
@@ -2478,7 +2512,7 @@ export default function OrderPage() {
                   </select>
                   <select
                     className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
-                    aria-label="Destination table"
+                    aria-label={t('order.destinationAriaTable')}
                     value={
                       transferDestTableOptions.includes(transferToLabel)
                         ? transferToLabel
@@ -2492,10 +2526,10 @@ export default function OrderPage() {
                   >
                     <option value="">
                       {!String(transferToArea || '').trim()
-                        ? '(choose section first)'
+                        ? t('order.chooseSectionFirst')
                         : transferDestTableOptions.length === 0
-                          ? '(no free table in this section)'
-                          : '(choose table)'}
+                          ? t('order.noFreeTable')
+                          : t('order.chooseTable')}
                     </option>
                     {transferDestTableOptions.map((lab) => (
                       <option key={lab} value={lab}>
@@ -2519,7 +2553,7 @@ export default function OrderPage() {
                 onClick={() => setShowTransfer(false)}
                 disabled={transferBusy}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60"
@@ -2549,16 +2583,18 @@ export default function OrderPage() {
                         destArea === selectedTable.area &&
                         destLabel === selectedTable.label
                       ) {
-                        const msg =
-                          'Destination is the same as the source table';
-                        toast.warn(msg, { title: 'Transfer blocked' });
+                        const msg = t('order.destinationSame');
+                        toast.warn(msg, { title: t('order.transferBlocked') });
                         setTransferError(msg);
                         setTransferBusy(false);
                         return;
                       }
                       if (isOpen(destArea, destLabel)) {
-                        const msg = `Table ${destArea} ${destLabel} is already occupied`;
-                        toast.error(msg, { title: 'Transfer blocked' });
+                        const msg = t('order.destinationOccupied', {
+                          area: destArea,
+                          label: destLabel,
+                        });
+                        toast.error(msg, { title: t('order.transferBlocked') });
                         setTransferError(msg);
                         setTransferBusy(false);
                         return;
@@ -2586,7 +2622,9 @@ export default function OrderPage() {
                       payload,
                     );
                     if (!r || r.ok !== true) {
-                      const errMsg = String(r?.error || 'Transfer failed');
+                      const errMsg = String(
+                        r?.error || t('order.transferFailedGeneric'),
+                      );
                       // Race-condition safety net: another waiter may have
                       // opened the destination between our pre-flight check
                       // and the server hitting the open-tables map. The
@@ -2594,7 +2632,9 @@ export default function OrderPage() {
                       // is already open` — toast it loudly so it isn't
                       // missed if the modal scrolled out of view.
                       if (/already open|already occupied/i.test(errMsg)) {
-                        toast.error(errMsg, { title: 'Transfer blocked' });
+                        toast.error(errMsg, {
+                          title: t('order.transferBlocked'),
+                        });
                       }
                       setTransferError(errMsg);
                       return;
@@ -2624,14 +2664,16 @@ export default function OrderPage() {
                     setShowTransfer(false);
                   } catch (e: any) {
                     setTransferError(
-                      String(e?.message || e || 'Transfer failed'),
+                      String(
+                        e?.message || e || t('order.transferFailedGeneric'),
+                      ),
                     );
                   } finally {
                     setTransferBusy(false);
                   }
                 }}
               >
-                {transferBusy ? 'Transferring…' : 'Confirm'}
+                {transferBusy ? t('order.transferring') : t('order.confirm')}
               </button>
             </div>
           </div>
@@ -2642,8 +2684,9 @@ export default function OrderPage() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
           <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
             <h3 className="text-center mb-2">
-              {coversMode === 'editOnly' ? 'Edit guests' : 'Guests for table'}{' '}
-              {selectedTable.label}
+              {coversMode === 'editOnly'
+                ? `${t('order.coversEditTitle')} ${selectedTable.label}`
+                : `${t('order.coversOpenTitle')} ${selectedTable.label}`}
             </h3>
             <input
               autoFocus
@@ -2658,7 +2701,7 @@ export default function OrderPage() {
                 className="flex-1 bg-gray-600 py-2 rounded"
                 onClick={() => setShowCovers(false)}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
@@ -2668,10 +2711,9 @@ export default function OrderPage() {
                   if (coversMode === 'editOnly') {
                     // Defense-in-depth: ownership rule for cover edits.
                     if (!canEditCovers) {
-                      toast.warn(
-                        "You can't change covers on a table you don't own.",
-                        { title: 'Not allowed' },
-                      );
+                      toast.warn(t('order.coversNotAllowed'), {
+                        title: t('order.notAllowed'),
+                      });
                       setShowCovers(false);
                       return;
                     }
@@ -2787,14 +2829,16 @@ export default function OrderPage() {
                     // resync the open-tables map, and bail before the
                     // print fires (which would otherwise create a
                     // ghost kitchen ticket).
-                    toast.error(logResult.error, { title: 'Send blocked' });
+                    toast.error(logResult.error, {
+                      title: t('order.toastSendBlocked'),
+                    });
                     try {
                       const open = await window.api.tables.listOpen();
                       if (Array.isArray(open)) {
                         const stillOpen = open.some(
-                          (t: any) =>
-                            t.area === selectedTable.area &&
-                            t.label === selectedTable.label,
+                          (tbl: any) =>
+                            tbl.area === selectedTable.area &&
+                            tbl.label === selectedTable.label,
                         );
                         setOpen(
                           selectedTable.area,
@@ -2842,7 +2886,7 @@ export default function OrderPage() {
                     .catch(() => {});
                 }}
               >
-                Konfirmo
+                {t('order.confirm')}
               </button>
             </div>
           </div>
@@ -2852,17 +2896,21 @@ export default function OrderPage() {
       {voidTarget && selectedTable && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
           <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
-            <h3 className="text-center mb-2">Void item?</h3>
+            <h3 className="text-center mb-2">{t('order.voidItemTitle')}</h3>
             <p className="text-sm opacity-80 text-center mb-4">
-              {voidTarget.name} ×{voidTarget.qty} on {selectedTable.area} •{' '}
-              {selectedTable.label}
+              {t('order.voidItemBody', {
+                name: voidTarget.name,
+                qty: voidTarget.qty,
+                area: selectedTable.area,
+                label: selectedTable.label,
+              })}
             </p>
             <div className="flex gap-2 mt-2">
               <button
                 className="flex-1 bg-gray-600 py-2 rounded"
                 onClick={() => setVoidTarget(null)}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 className="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded disabled:opacity-60"
@@ -2876,7 +2924,7 @@ export default function OrderPage() {
                   } | null = null;
                   if (approvalsCfg.requireManagerPinForVoid) {
                     const approved = await requestAdminApproval(
-                      'Admin PIN required to void item',
+                      t('order.approvalVoidItem'),
                     );
                     if (!approved) return;
                     approvedByAdmin = approved;
@@ -2939,13 +2987,13 @@ export default function OrderPage() {
                         .catch(() => {});
                     }
                   } catch {
-                    toast.error('Failed to void item. Please try again.');
+                    toast.error(t('order.voidItemFailed'));
                   } finally {
                     setTicketSyncing(false);
                   }
                 }}
               >
-                Konfirmo Anullimin
+                {t('order.voidConfirm')}
               </button>
             </div>
           </div>
@@ -2955,7 +3003,7 @@ export default function OrderPage() {
       {weightModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
           <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
-            <h3 className="text-center mb-2">Enter weight (kg or g)</h3>
+            <h3 className="text-center mb-2">{t('order.weightTitle')}</h3>
             <div className="mb-2 text-center opacity-80">
               {weightModal.name}
             </div>
@@ -2987,7 +3035,7 @@ export default function OrderPage() {
                 className="bg-gray-700 py-2 rounded"
                 onClick={() => setWeightInput('')}
               >
-                Clear
+                {t('order.clear')}
               </button>
             </div>
             <div className="flex gap-2 mb-3">
@@ -3006,7 +3054,7 @@ export default function OrderPage() {
             </div>
             <input
               className="w-full bg-gray-700 rounded px-2 py-2 text-center mb-3"
-              placeholder="e.g., 0.35 kg or 350 g"
+              placeholder={t('order.weightPlaceholder')}
               value={weightInput}
               onChange={(e) => setWeightInput(e.target.value)}
             />
@@ -3015,7 +3063,7 @@ export default function OrderPage() {
                 className="flex-1 bg-gray-600 py-2 rounded"
                 onClick={() => setWeightModal(null)}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
@@ -3044,7 +3092,7 @@ export default function OrderPage() {
                   setWeightInput('');
                 }}
               >
-                Konfirmo
+                {t('order.confirm')}
               </button>
             </div>
           </div>
@@ -3056,8 +3104,8 @@ export default function OrderPage() {
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-sm p-5">
             <div className="text-lg font-semibold mb-1">
               {approvalModal.kind === 'ADMIN'
-                ? 'Admin approval'
-                : 'Manager approval'}
+                ? t('order.adminApproval')
+                : t('order.managerApproval')}
             </div>
             <div className="text-sm opacity-70 mb-3">
               {approvalModal.action}
@@ -3069,8 +3117,8 @@ export default function OrderPage() {
               className="w-full bg-gray-700 rounded px-3 py-2"
               placeholder={
                 approvalModal.kind === 'ADMIN'
-                  ? 'Enter admin PIN'
-                  : 'Enter manager PIN'
+                  ? t('order.enterAdminPin')
+                  : t('order.enterManagerPin')
               }
               value={approvalModal.pin}
               onChange={(e) =>
@@ -3090,8 +3138,8 @@ export default function OrderPage() {
                       ...s,
                       error:
                         approvalModal.kind === 'ADMIN'
-                          ? 'Invalid admin PIN.'
-                          : 'Invalid manager PIN.',
+                          ? t('order.invalidAdminPin')
+                          : t('order.invalidManagerPin'),
                     }));
                     return;
                   }
@@ -3106,7 +3154,9 @@ export default function OrderPage() {
                     userId: Number((r as any).userId || 0),
                     userName: String(
                       (r as any).userName ||
-                        (approvalModal.kind === 'ADMIN' ? 'Admin' : 'Manager'),
+                        (approvalModal.kind === 'ADMIN'
+                          ? t('common.admin')
+                          : t('common.manager')),
                     ),
                     approvalToken:
                       String((r as any).approvalToken || '') || undefined,
@@ -3116,8 +3166,8 @@ export default function OrderPage() {
                   const status = Number(err?.status || 0);
                   const msg =
                     status === 401 || status === 403
-                      ? 'Session expired. Please log in again.'
-                      : 'Could not verify PIN (offline/host unreachable). Please try again.';
+                      ? t('order.sessionExpiredLogin')
+                      : t('order.verifyPinFailed');
                   setApprovalModal((s) => ({ ...s, error: msg }));
                 }
               }}
@@ -3142,7 +3192,7 @@ export default function OrderPage() {
                   approvalResolveRef.current = null;
                 }}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 className="flex-1 bg-emerald-700 hover:bg-emerald-800 py-2 rounded"
@@ -3155,8 +3205,8 @@ export default function OrderPage() {
                         ...s,
                         error:
                           approvalModal.kind === 'ADMIN'
-                            ? 'Invalid admin PIN.'
-                            : 'Invalid manager PIN.',
+                            ? t('order.invalidAdminPin')
+                            : t('order.invalidManagerPin'),
                       }));
                       return;
                     }
@@ -3172,8 +3222,8 @@ export default function OrderPage() {
                       userName: String(
                         (r as any).userName ||
                           (approvalModal.kind === 'ADMIN'
-                            ? 'Admin'
-                            : 'Manager'),
+                            ? t('common.admin')
+                            : t('common.manager')),
                       ),
                       approvalToken:
                         String((r as any).approvalToken || '') || undefined,
@@ -3183,13 +3233,13 @@ export default function OrderPage() {
                     const status = Number(err?.status || 0);
                     const msg =
                       status === 401 || status === 403
-                        ? 'Session expired. Please log in again.'
-                        : 'Could not verify PIN (offline/host unreachable). Please try again.';
+                        ? t('order.sessionExpiredLogin')
+                        : t('order.verifyPinFailed');
                     setApprovalModal((s) => ({ ...s, error: msg }));
                   }
                 }}
               >
-                Approve
+                {t('common.approve')}
               </button>
             </div>
           </div>
@@ -3198,26 +3248,25 @@ export default function OrderPage() {
     </div>
   );
 }
-
 function ForkKnifeIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
       <path
         d="M6 2v8M9 2v8M6 6h3M7.5 10v12"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M15 2v9c0 1.5 1 2 2 2v11"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M15 6h4"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -3250,11 +3299,11 @@ function PayMethodButton({
 function IconCash() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="2" />
+      <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="1.75" />
       <path
         d="M7 12h4"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -3263,12 +3312,12 @@ function IconCash() {
 function IconCard() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="2" />
-      <path d="M3 10h18" stroke="currentColor" strokeWidth="2" />
+      <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="1.75" />
+      <path d="M3 10h18" stroke="currentColor" strokeWidth="1.75" />
       <path
         d="M7 15h4"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -3280,13 +3329,13 @@ function IconReceipt() {
       <path
         d="M6 2h12v20l-2-1-2 1-2-1-2 1-2-1-2 1V2Z"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinejoin="round"
       />
       <path
         d="M9 7h6M9 11h6M9 15h6"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -3295,18 +3344,18 @@ function IconReceipt() {
 function IconPrinter() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M6 9V3h12v6" stroke="currentColor" strokeWidth="2" />
-      <path d="M6 17h12v4H6v-4Z" stroke="currentColor" strokeWidth="2" />
+      <path d="M6 9V3h12v6" stroke="currentColor" strokeWidth="1.75" />
+      <path d="M6 17h12v4H6v-4Z" stroke="currentColor" strokeWidth="1.75" />
       <path
         d="M6 10H5a3 3 0 0 0-3 3v4h4"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
       <path
         d="M18 10h1a3 3 0 0 1 3 3v4h-4"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.75"
         strokeLinecap="round"
       />
     </svg>
@@ -3330,6 +3379,7 @@ function TicketTotals({
   applyServiceCharge: boolean;
   serviceChargeAmount: number;
 }) {
+  const { t } = useTranslation();
   const formatAmount = useMemo(() => makeFormatAmount(), []);
   const totalWithService = Math.max(
     0,
@@ -3338,32 +3388,32 @@ function TicketTotals({
   return (
     <>
       <div className="flex justify-between">
-        <span>Subtotal</span>
+        <span>{t('common.subtotal')}</span>
         <span> {formatAmount(totals.subtotal)}</span>
       </div>
       {vatEnabled ? (
         <div className="flex justify-between">
-          <span>VAT</span>
+          <span>{t('common.vat')}</span>
           <span> {formatAmount(totals.vat)}</span>
         </div>
       ) : (
         <div className="flex justify-between">
-          <span>VAT</span>
-          <span className="opacity-70">Disabled</span>
+          <span>{t('common.vat')}</span>
+          <span className="opacity-70">{t('common.vatDisabled')}</span>
         </div>
       )}
       {serviceChargeCfg.enabled && (
         <div className="flex justify-between">
-          <span>Service charge</span>
+          <span>{t('common.serviceCharge')}</span>
           {applyServiceCharge ? (
             <span> {formatAmount(serviceChargeAmount)}</span>
           ) : (
-            <span className="opacity-70">Removed</span>
+            <span className="opacity-70">{t('common.removed')}</span>
           )}
         </div>
       )}
       <div className="flex justify-between font-semibold">
-        <span>Total</span>
+        <span>{t('common.total')}</span>
         <span> {formatAmount(totalWithService)}</span>
       </div>
     </>

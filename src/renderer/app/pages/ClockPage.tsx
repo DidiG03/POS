@@ -27,7 +27,7 @@ export default function ClockPage() {
 
   return (
     <div className="h-full min-h-0 flex items-center justify-center">
-      <div className="w-full max-w-xl bg-gray-800 border border-gray-700 rounded-xl p-5">
+      <div className="w-full max-w-xl pos-surface-panel p-5 sm:p-6">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
             <div className="text-lg font-semibold">Clock in / out</div>
@@ -40,7 +40,7 @@ export default function ClockPage() {
             </div>
           </div>
           <button
-            className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+            className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
             onClick={() => navigate('/')}
             type="button"
           >
@@ -60,7 +60,7 @@ export default function ClockPage() {
               </div>
             </div>
             <button
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+              className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
               onClick={refresh}
               type="button"
             >
@@ -77,7 +77,7 @@ export default function ClockPage() {
 
         <div className="flex gap-3">
           <button
-            className="flex-1 py-3 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60"
+            className="flex-1 rounded-lg bg-emerald-700 py-3 text-base font-semibold text-white transition-colors hover:bg-emerald-600 disabled:opacity-60"
             disabled={busy != null || isOpen}
             onClick={async () => {
               if (!user?.id) return;
@@ -97,7 +97,7 @@ export default function ClockPage() {
             {busy === 'in' ? 'Clocking in…' : 'Clock in'}
           </button>
           <button
-            className="flex-1 py-3 rounded bg-rose-700 hover:bg-rose-600 disabled:opacity-60"
+            className="flex-1 rounded-lg bg-rose-700 py-3 text-base font-semibold text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
             disabled={busy != null || !isOpen}
             onClick={async () => {
               if (!user?.id) return;

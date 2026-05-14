@@ -115,7 +115,7 @@ function badgeForReservation(rs: ReservationDTO[] | undefined): string | null {
 
 export default function ReservationsFloorPage() {
   const ctx = useOutletContext<ReservationsContext>();
-  const { me, area, date, openEditor } = ctx;
+  const { me, area, date, openEditor, notifyReservationsChanged } = ctx;
   const [reservations, setReservations] = useState<ReservationDTO[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -180,9 +180,20 @@ export default function ReservationsFloorPage() {
         void reload();
       }
     };
+    // Visibility / focus: when the tablet was backgrounded for longer than
+    // the SSE health watchdog could ride out, we may have missed events
+    // entirely. A best-effort refresh on resume keeps the floor honest.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void reload();
+    };
     window.addEventListener('pos:reservationsChanged', onChanged);
-    return () =>
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
       window.removeEventListener('pos:reservationsChanged', onChanged);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [reload, date, area]);
 
   const reservationsByLabel = useMemo(() => {
@@ -230,11 +241,19 @@ export default function ReservationsFloorPage() {
     setSheetBusyId(r.id);
     setSheetError(null);
     try {
-      await window.api.reservations.setStatus({
+      const updated = await window.api.reservations.setStatus({
         id: r.id,
         actorId: me.id,
         status,
       });
+      // Refresh this device immediately (and re-broadcast for any same-window
+      // listeners). SSE will still notify other devices via the main-process
+      // broadcast inside the service.
+      notifyReservationsChanged(
+        'status',
+        updated?.startsAt || r.startsAt,
+        updated?.area || r.area,
+      );
       await reload();
     } catch (e) {
       setSheetError(cleanIpcMessage(e));

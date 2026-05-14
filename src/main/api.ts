@@ -552,7 +552,11 @@ function setSecurityHeaders(
     );
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Idempotency-Key',
+      // `X-POS-Client` is set by the Capacitor iOS/Android shell so the
+      // backend can recognise the native app and bypass the browser-only
+      // "Allow Web access" gate. The WebView's CORS preflight will refuse
+      // to send the actual request unless this header is listed here.
+      'Content-Type, Authorization, Idempotency-Key, X-POS-Client',
     );
     res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
   }
@@ -744,7 +748,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         (pathname.startsWith('/@') ||
           pathname.startsWith('/node_modules/') ||
           pathname.startsWith('/src/') ||
-          /\.(tsx?|jsx?|css|mjs|vue|svelte|wasm)(\?.*)?$/.test(pathname));
+          /\.(tsx?|jsx?|css|mjs|json|vue|svelte|wasm)(\?.*)?$/.test(pathname));
       if (isViteDevResource) {
         try {
           const upstreamUrl = new URL(
@@ -752,18 +756,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             RENDERER_ORIGIN,
           ).toString();
           const upstream = await fetch(upstreamUrl);
-          if (upstream.ok) {
-            const buf = new Uint8Array(await upstream.arrayBuffer());
-            const ct =
-              upstream.headers.get('content-type') || getContentType(pathname);
-            const headers: Record<string, string> = { 'Content-Type': ct };
-            if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
-            res.writeHead(upstream.status, headers);
-            res.end(Buffer.from(buf));
-            return;
-          }
+          const buf = new Uint8Array(await upstream.arrayBuffer());
+          const ct =
+            upstream.headers.get('content-type') || getContentType(pathname);
+          const headers: Record<string, string> = { 'Content-Type': ct };
+          if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
+          res.writeHead(upstream.status, headers);
+          res.end(Buffer.from(buf));
+          return;
         } catch {
-          // fall through to normal API handling
+          return send(
+            res,
+            502,
+            {
+              error: 'vite_dev_unreachable',
+              message:
+                'Renderer dev server proxy failed — is Vite running? For tablets / LAN browsers use a production POS build so /renderer serves dist/renderer without Vite.',
+            },
+            corsOrigin,
+          );
         }
       }
 

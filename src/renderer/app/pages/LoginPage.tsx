@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { isClockOnlyRole } from '@shared/utils/roles';
 
 export default function LoginPage() {
+  const { t, i18n } = useTranslation();
   const PAIRING_STORAGE_KEY = 'pos_pairing_code';
   const pairingCodeRef = useRef<HTMLInputElement>(null);
   const [pin, setPin] = useState('');
@@ -41,7 +43,7 @@ export default function LoginPage() {
   const onSubmit = async () => {
     setError(null);
     if (pin.length < 4) {
-      setError('Enter 4-6 digits');
+      setError(t('login.pinTooShort'));
       return;
     }
     // Drop focus from the PIN/pairing input BEFORE we kick off the async
@@ -84,7 +86,7 @@ export default function LoginPage() {
       if (user) {
         const clockOnly = isClockOnlyRole((user as any).role);
         if (isAdminContext && user.role !== 'ADMIN') {
-          setError('Admin access only');
+          setError(t('login.adminOnly'));
           return;
         }
         // Defense-in-depth: even if a stale staff list ever included a Host,
@@ -94,12 +96,12 @@ export default function LoginPage() {
           !isAdminContext &&
           String((user as any).role || '').toUpperCase() === 'HOST'
         ) {
-          setError('Hosts sign in through the Reservations panel.');
+          setError(t('login.hostsReservations'));
           return;
         }
         // Block admin panel on browser/tablet — admin must use the desktop app
         if (isBrowserClient && isAdminContext) {
-          setError('Admin panel is not available on tablets');
+          setError(t('login.adminNoTablet'));
           return;
         }
         // Admin goes straight to admin shell (Electron only)
@@ -122,7 +124,7 @@ export default function LoginPage() {
         navigate(
           isKdsContext ? '/kds' : clockOnly ? '/app/clock' : '/app/tables',
         );
-      } else setError('Invalid PIN');
+      } else setError(t('login.invalidPin'));
     } catch (e: any) {
       console.error(e);
       const msg = String(e?.message || e || '');
@@ -135,12 +137,10 @@ export default function LoginPage() {
         }
         setPairingCode('');
         if (pairingCodeRef.current) pairingCodeRef.current.value = '';
-        setError(
-          'Pairing code required (ask the manager / Admin → Settings → LAN / Tablets).',
-        );
+        setError(t('login.pairingRequired'));
         return;
       }
-      setError('Login failed');
+      setError(t('login.loginFailed'));
     }
   };
 
@@ -195,7 +195,7 @@ export default function LoginPage() {
           includeAdmins: isAdminContext,
         });
       } catch (e: any) {
-        setCloudNotice(e?.message || 'Failed to load users.');
+        setCloudNotice(e?.message || t('login.loadUsersFailed'));
         setStaff([]);
         setOpenIds([]);
         if (!cancelled) {
@@ -207,13 +207,11 @@ export default function LoginPage() {
       // Local-first: empty users means no users in database yet.
       if (Array.isArray(users) && users.length === 0) {
         const cloudHint =
-          backendUrl && businessCode
-            ? ' If using cloud, try Sync from cloud in Settings → Backups.'
-            : '';
+          backendUrl && businessCode ? t('login.cloudHint') : '';
         setCloudNotice(
           isAdminContext
-            ? `No admin users yet. Create the first admin in Settings or run db:seed.${cloudHint}`
-            : `No staff users yet. Ask an Admin to add staff members in the Admin panel.${cloudHint}`,
+            ? t('login.noAdminUsers', { cloudHint })
+            : t('login.noStaffUsers', { cloudHint }),
         );
         setStaff([]);
         setOpenIds([]);
@@ -257,7 +255,7 @@ export default function LoginPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadNonce, isAdminContext]);
+  }, [reloadNonce, isAdminContext, i18n.language, t]);
 
   const [enableAdmin, setEnableAdmin] = useState(false);
 
@@ -270,7 +268,7 @@ export default function LoginPage() {
       // on devices without a safe area.
       className="min-h-dvh flex items-center justify-center bg-gray-900 overflow-hidden px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
     >
-      <div className="bg-gray-800 p-4 sm:p-6 rounded-lg w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
+      <div className="pos-surface-panel p-5 sm:p-6 w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
         <div className="flex items-center justify-between mb-4 shrink-0 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             {/* Back arrow shows only on the PIN screen so the user can
@@ -280,24 +278,24 @@ export default function LoginPage() {
             {showPin && (
               <button
                 type="button"
-                aria-label="Back to staff selection"
-                title="Back"
+                aria-label={t('login.backToStaff')}
+                title={t('common.back')}
                 onClick={() => {
                   setShowPin(false);
                   setPin('');
                   setError(null);
                 }}
-                className="-ml-1 p-2 rounded hover:bg-gray-700/60 active:bg-gray-700 text-gray-200"
+                className="pos-icon-btn -ml-1 cursor-pointer text-gray-200"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2"
+                  strokeWidth="1.75"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="w-5 h-5"
+                  className="pos-icon"
                   aria-hidden
                 >
                   <path d="M15 18l-6-6 6-6" />
@@ -306,20 +304,22 @@ export default function LoginPage() {
             )}
             <h1 className="text-xl font-semibold truncate">
               {showPin
-                ? `Enter PIN${
-                    selectedId
-                      ? ` for ${staff.find((s) => s.id === selectedId)?.displayName ?? ''}`
-                      : ''
-                  }`
+                ? selectedId
+                  ? t('login.enterPinFor', {
+                      name:
+                        staff.find((s) => s.id === selectedId)?.displayName ??
+                        '',
+                    })
+                  : t('login.enterPin')
                 : isAdminContext
-                  ? 'Admin Login'
-                  : 'Select Staff'}
+                  ? t('login.adminLogin')
+                  : t('login.selectStaff')}
             </h1>
           </div>
           {!showPin && !isAdminContext && (
             <div className="flex items-center gap-2 shrink-0">
               <button
-                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
                 onClick={async () => {
                   // On Electron, openWindow() spawns the dedicated reservation
                   // window. On the mobile / browser shell it returns false, in
@@ -334,16 +334,16 @@ export default function LoginPage() {
                   }
                   if (!opened) navigate('/reservations');
                 }}
-                title="Open the Reservations panel (host login required)"
+                title={t('login.reservationsTitle')}
               >
-                Reservations
+                {t('login.reservations')}
               </button>
               {!isBrowserClient && enableAdmin && (
                 <button
-                  className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                  className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
                   onClick={() => window.api.admin.openWindow()}
                 >
-                  Admin
+                  {t('common.admin')}
                 </button>
               )}
             </div>
@@ -356,15 +356,16 @@ export default function LoginPage() {
         )}
         {isAdminContext && adminBusinessCodeMode && (
           <div className="mb-4 p-3 rounded border border-gray-700 bg-gray-800/40">
-            <div className="text-sm font-medium mb-2">Business code</div>
+            <div className="text-sm font-medium mb-2">
+              {t('login.businessCodeTitle')}
+            </div>
             <div className="text-xs opacity-70 mb-2">
-              Enter your business code to load admin users. After it works, this
-              prompt will disappear.
+              {t('login.businessCodeHelp')}
             </div>
             <div className="flex gap-2">
               <input
                 className="bg-gray-700 rounded px-3 py-2 flex-1"
-                placeholder="Business code (e.g.  Code Orbit)"
+                placeholder={t('login.businessCodePlaceholder')}
                 value={adminBusinessCode}
                 onChange={(e) =>
                   setAdminBusinessCode(
@@ -377,12 +378,12 @@ export default function LoginPage() {
               />
             </div>
             <div className="text-xs opacity-70 mt-3 mb-2">
-              Business password (provided by provider)
+              {t('login.businessPasswordLabel')}
             </div>
             <div className="flex gap-2">
               <input
                 className="bg-gray-700 rounded px-3 py-2 flex-1"
-                placeholder="Business password"
+                placeholder={t('login.businessPasswordPlaceholder')}
                 value={adminBusinessPassword}
                 onChange={(e) => setAdminBusinessPassword(e.target.value)}
                 type="password"
@@ -397,7 +398,7 @@ export default function LoginPage() {
                 }
                 onClick={async () => {
                   setError(null);
-                  setCloudNotice('Checking Business code…');
+                  setCloudNotice(t('login.checkingCode'));
                   setUsingCode(true);
                   try {
                     await window.api.settings.update({
@@ -415,17 +416,15 @@ export default function LoginPage() {
                     setStaff(admins);
                     if (!admins.length) {
                       setAdminBusinessCodeMode(true);
-                      setError('Invalid Business code or Business password.');
-                      setCloudNotice(
-                        'Invalid Business code or Business password.',
-                      );
+                      setError(t('login.invalidBusinessCode'));
+                      setCloudNotice(t('login.invalidBusinessCode'));
                     } else {
                       setAdminBusinessCodeMode(false);
                       setCloudNotice(null);
                     }
                   } catch (e: any) {
                     const msg = String(
-                      e?.message || 'Failed to set business code',
+                      e?.message || t('login.setBusinessCodeFailed'),
                     );
                     setError(msg);
                     setCloudNotice(msg);
@@ -435,14 +434,16 @@ export default function LoginPage() {
                   }
                 }}
               >
-                {usingCode ? 'Checking…' : 'Use code'}
+                {usingCode ? t('login.checking') : t('login.useCode')}
               </button>
             </div>
           </div>
         )}
         {!showPin && isAdminContext ? (
           <div className="flex flex-col min-h-0 flex-1">
-            <div className="text-sm mb-2 opacity-80 shrink-0">Admins</div>
+            <div className="text-sm mb-2 opacity-80 shrink-0">
+              {t('login.admins')}
+            </div>
             <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
               {staff.map((s) => (
                 <button
@@ -468,7 +469,9 @@ export default function LoginPage() {
               ))}
               {staff.length === 0 && (
                 <div className="opacity-70 text-sm">
-                  {staffLoading ? 'Loading staff…' : 'No admin users'}
+                  {staffLoading
+                    ? t('login.loadingStaff')
+                    : t('login.noAdminUsersShort')}
                 </div>
               )}
             </div>
@@ -477,13 +480,12 @@ export default function LoginPage() {
           <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
             <div className="flex flex-col min-h-0">
               <div className="text-sm mb-2 opacity-80 shrink-0">
-                Not clocked in
+                {t('login.notClockedIn')}
               </div>
               <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
                 {staff.length === 0 && !staffLoading && (
                   <div className="opacity-70 text-sm py-4">
-                    No staff yet. On the host: Admin → Settings → Backups → Sync
-                    from cloud.
+                    {t('login.noStaffSync')}
                   </div>
                 )}
                 {staff
@@ -513,7 +515,9 @@ export default function LoginPage() {
               </div>
             </div>
             <div className="flex flex-col min-h-0">
-              <div className="text-sm mb-2 opacity-80 shrink-0">Clocked in</div>
+              <div className="text-sm mb-2 opacity-80 shrink-0">
+                {t('login.clockedIn')}
+              </div>
               <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
                 {staff
                   .filter((s) => openIds.includes(s.id))
@@ -559,7 +563,7 @@ export default function LoginPage() {
                 type="tel"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                placeholder="PIN"
+                placeholder={t('login.pinPlaceholder')}
                 maxLength={6}
                 autoComplete="one-time-code"
                 value={pin}
@@ -575,7 +579,7 @@ export default function LoginPage() {
                   ref={pairingCodeRef}
                   type="text"
                   inputMode="numeric"
-                  placeholder="Pairing code (from Admin)"
+                  placeholder={t('login.pairingPlaceholder')}
                   maxLength={12}
                   defaultValue={pairingCode}
                   className="w-full p-3 rounded bg-gray-700 focus:outline-none"
@@ -585,9 +589,9 @@ export default function LoginPage() {
               {error && <div className="text-red-400 text-sm">{error}</div>}
               <button
                 onClick={onSubmit}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 py-3 rounded font-semibold"
+                className="w-full rounded-lg bg-emerald-600 py-3 text-base font-semibold text-white transition-colors hover:bg-emerald-700"
               >
-                Login
+                {t('login.loginSubmit')}
               </button>
             </div>
           </div>
@@ -595,22 +599,24 @@ export default function LoginPage() {
 
         {!isAdminContext && showShiftConfirm && pendingUser && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center">
-            <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
+            <div className="pos-surface-panel p-5 w-full max-w-sm">
               <h2 className="text-center mb-3">
-                Start shift for {pendingUser.displayName}?
+                {t('login.startShiftTitle', {
+                  name: pendingUser.displayName,
+                })}
               </h2>
               <div className="flex gap-2 mt-2">
                 <button
-                  className="flex-1 bg-gray-600 py-2 rounded"
+                  className="flex-1 rounded-lg bg-gray-600 py-2.5 text-sm font-medium transition-colors hover:bg-gray-500"
                   onClick={() => {
                     setShowShiftConfirm(false);
                     setPendingUser(null);
                   }}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </button>
                 <button
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
+                  className="flex-1 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700"
                   onClick={async () => {
                     try {
                       const ae = document.activeElement as HTMLElement | null;
@@ -625,7 +631,7 @@ export default function LoginPage() {
                     navigate(isKdsContext ? '/kds' : '/app/tables');
                   }}
                 >
-                  Confirm
+                  {t('common.confirm')}
                 </button>
               </div>
             </div>

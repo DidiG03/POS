@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 
 type Overview = {
@@ -23,6 +24,7 @@ function isSameLocalCalendarDay(
 }
 
 export default function ReportsPage() {
+  const { t } = useTranslation();
   const { user } = useSessionStore();
   const [loading, setLoading] = useState<boolean>(true);
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -126,20 +128,20 @@ export default function ReportsPage() {
           setTicketsApiMissing(true);
         } else {
           // We don't know which one failed (Promise.all), show the message in both panels for visibility.
-          setActiveTicketsError(msg || 'Failed to load active tickets');
-          setPaidTicketsError(msg || 'Failed to load paid tickets');
+          setActiveTicketsError(msg || t('reports.failedActive'));
+          setPaidTicketsError(msg || t('reports.failedPaid'));
         }
       } finally {
         if (alive) setTicketLoading(false);
       }
     };
     void load();
-    const t = setInterval(load, 20000);
+    const refreshTimer = setInterval(load, 20000);
     return () => {
       alive = false;
-      clearInterval(t);
+      clearInterval(refreshTimer);
     };
-  }, [user?.id, paidQuery, paidLimit, ticketsApiMissing]);
+  }, [user?.id, paidQuery, paidLimit, ticketsApiMissing, t]);
 
   const fmtCurrency = useMemo(
     () =>
@@ -154,30 +156,31 @@ export default function ReportsPage() {
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden pr-1">
       <div className="flex shrink-0 items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">Reports</h2>
+        <h2 className="text-lg font-semibold">{t('reports.title')}</h2>
       </div>
 
       {loading && (
-        <div className="shrink-0 opacity-70">Loading statistics…</div>
+        <div className="shrink-0 opacity-70">{t('reports.loadingStats')}</div>
       )}
 
       {!loading && !user && (
-        <div className="shrink-0 opacity-70">
-          Please log in to view your statistics.
-        </div>
+        <div className="shrink-0 opacity-70">{t('reports.loginToView')}</div>
       )}
 
       {!loading && user && overview && (
         <div className="mb-6 grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <StatCard
-            title="Revenue (today, net)"
+            title={t('reports.revenueTodayNet')}
             value={fmtCurrency.format(overview.revenueTodayNet || 0)}
           />
           <StatCard
-            title="VAT (today)"
+            title={t('reports.vatToday')}
             value={fmtCurrency.format(overview.revenueTodayVat || 0)}
           />
-          <StatCard title="Open orders" value={String(overview.openOrders)} />
+          <StatCard
+            title={t('reports.openOrders')}
+            value={String(overview.openOrders)}
+          />
         </div>
       )}
 
@@ -207,37 +210,41 @@ export default function ReportsPage() {
       {user && (
         <section className="flex min-h-0 flex-1 flex-col">
           <div className="mb-3 flex shrink-0 items-center justify-between">
-            <div className="text-base font-semibold">Tickets</div>
+            <div className="text-base font-semibold">
+              {t('reports.tickets')}
+            </div>
             <div className="text-xs opacity-70">
               {ticketsApiMissing
-                ? 'Update required (restart POS)'
+                ? t('reports.updateRequired')
                 : ticketLoading
-                  ? 'Refreshing…'
-                  : 'Auto refresh: 20s'}
+                  ? t('reports.refreshing')
+                  : t('reports.autoRefresh')}
             </div>
           </div>
 
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-3 lg:grid-rows-1 lg:items-stretch [&>*]:min-h-0 lg:[&>*]:max-h-full">
             <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">Active tickets</div>
+                <div className="font-medium">{t('reports.activeTickets')}</div>
                 <div className="text-xs opacity-70">{activeTickets.length}</div>
               </div>
               {activeTicketsError && (
                 <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
-                  Active tickets error:{' '}
+                  {t('reports.activeTicketsError')}{' '}
                   <span className="font-semibold">{activeTicketsError}</span>
                 </div>
               )}
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
                 {activeTickets.length === 0 ? (
-                  <div className="text-sm opacity-70">No active tickets.</div>
+                  <div className="text-sm opacity-70">
+                    {t('reports.noActiveTickets')}
+                  </div>
                 ) : (
                   <div className="space-y-3">
-                    {activeTickets.map((t: any, idx: number) => (
+                    {activeTickets.map((rec: any, idx: number) => (
                       <ReceiptCard
-                        key={`${t.area}:${t.tableLabel}:${t.createdAt}:${idx}`}
-                        ticket={t}
+                        key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+                        ticket={rec}
                         fmtCurrency={fmtCurrency}
                       />
                     ))}
@@ -248,19 +255,19 @@ export default function ReportsPage() {
 
             <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">Paid tickets (today)</div>
+                <div className="font-medium">{t('reports.paidToday')}</div>
                 <div className="text-xs opacity-70">{paidTickets.length}</div>
               </div>
               {paidTicketsError && (
                 <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
-                  Paid tickets error:{' '}
+                  {t('reports.paidTicketsError')}{' '}
                   <span className="font-semibold">{paidTicketsError}</span>
                 </div>
               )}
               <div className="mb-3 flex shrink-0 items-center gap-2">
                 <input
                   className="flex-1 rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm"
-                  placeholder="Search: table, waiter, item…"
+                  placeholder={t('reports.searchPlaceholder')}
                   value={paidQuery}
                   onChange={(e) => setPaidQuery(e.target.value)}
                 />
@@ -278,14 +285,14 @@ export default function ReportsPage() {
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
                 {paidTickets.length === 0 ? (
                   <div className="text-sm opacity-70">
-                    No paid tickets today.
+                    {t('reports.noPaidToday')}
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {paidTickets.map((t: any, idx: number) => (
+                    {paidTickets.map((rec: any, idx: number) => (
                       <ReceiptCard
-                        key={`${t.area}:${t.tableLabel}:${t.createdAt}:${idx}`}
-                        ticket={t}
+                        key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+                        ticket={rec}
                         fmtCurrency={fmtCurrency}
                       />
                     ))}
@@ -296,7 +303,7 @@ export default function ReportsPage() {
 
             <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">Voided tickets (today)</div>
+                <div className="font-medium">{t('reports.voidedToday')}</div>
                 <div className="text-xs opacity-70">{voidedTickets.length}</div>
               </div>
               {voidedTicketsError && (
@@ -307,14 +314,14 @@ export default function ReportsPage() {
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
                 {voidedTickets.length === 0 ? (
                   <div className="text-sm opacity-70">
-                    Nothing voided today.
+                    {t('reports.nothingVoided')}
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {voidedTickets.map((t: any, idx: number) => (
+                    {voidedTickets.map((rec: any, idx: number) => (
                       <VoidedReceiptCard
-                        key={`void-${t.area}:${t.tableLabel}:${t.createdAt}:${idx}`}
-                        ticket={t}
+                        key={`void-${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+                        ticket={rec}
                         fmtCurrency={fmtCurrency}
                       />
                     ))}
@@ -345,6 +352,7 @@ function ReceiptCard({
   ticket: any;
   fmtCurrency: Intl.NumberFormat;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState<boolean>(false);
   const items = Array.isArray(ticket?.items) ? ticket.items : [];
   const createdAt = ticket?.paidAt || ticket?.createdAt;
@@ -359,17 +367,17 @@ function ReceiptCard({
   const discountAmount = Number(ticket?.discountAmount || 0);
   const hasDiscount = Number.isFinite(discountAmount) && discountAmount > 0;
   const discountLabel = (() => {
-    const t = String(ticket?.discountType || '').toUpperCase();
+    const dm = String(ticket?.discountType || '').toUpperCase();
     const v = ticket?.discountValue;
-    if (t === 'PERCENT' && Number.isFinite(Number(v))) return `${Number(v)}%`;
-    if (t === 'AMOUNT' && Number.isFinite(Number(v)))
+    if (dm === 'PERCENT' && Number.isFinite(Number(v))) return `${Number(v)}%`;
+    if (dm === 'AMOUNT' && Number.isFinite(Number(v)))
       return fmtCurrency.format(Number(v));
     return null;
   })();
   const serviceLabel = (() => {
-    const t = String(ticket?.serviceChargeMode || '').toUpperCase();
+    const sm = String(ticket?.serviceChargeMode || '').toUpperCase();
     const v = ticket?.serviceChargeValue;
-    if (t === 'PERCENT' && Number.isFinite(Number(v))) return `${Number(v)}%`;
+    if (sm === 'PERCENT' && Number.isFinite(Number(v))) return `${Number(v)}%`;
     return null;
   })();
 
@@ -381,14 +389,23 @@ function ReceiptCard({
       >
         <div>
           <div className="font-semibold text-sm">
-            {ticket?.area ? `${ticket.area} • ` : ''}Table {ticket?.tableLabel}
+            {ticket?.area ? `${ticket.area} • ` : ''}
+            {t('reports.receiptTable', {
+              label: String(ticket?.tableLabel ?? ''),
+            })}
             <span className="ml-2 text-xs font-normal text-gray-600">
-              {ticket?.kind === 'PAID' ? 'Paid' : 'Active'}
+              {ticket?.kind === 'PAID' ? t('common.paid') : t('common.active')}
             </span>
           </div>
           <div className="text-xs text-gray-600">
-            {ticket?.userName ? `Waiter: ${ticket.userName}` : 'Waiter: —'}
-            {ticket?.covers != null ? ` • Covers: ${ticket.covers}` : ''}
+            {ticket?.userName
+              ? t('common.waiterWithName', {
+                  name: String(ticket.userName),
+                })
+              : `${t('common.waiter')}: —`}
+            {ticket?.covers != null
+              ? ` • ${t('common.covers')}: ${ticket.covers}`
+              : ''}
           </div>
         </div>
         <div className="text-xs text-gray-600 whitespace-nowrap">
@@ -400,18 +417,19 @@ function ReceiptCard({
         <div className="px-3 py-2 font-mono">
           {ticket?.note ? (
             <div className="text-xs mb-2">
-              <span className="font-semibold">Note:</span> {String(ticket.note)}
+              <span className="font-semibold">{t('common.note')}:</span>{' '}
+              {String(ticket.note)}
             </div>
           ) : null}
 
           <div className="border-t border-gray-200 pt-2">
             {items.length === 0 ? (
-              <div className="text-xs text-gray-600">No items</div>
+              <div className="text-xs text-gray-600">{t('common.noItems')}</div>
             ) : (
               <div className="space-y-1">
                 {items.map((it: any, idx: number) => {
                   const qty = Number(it?.qty || 1);
-                  const name = String(it?.name || 'Item');
+                  const name = String(it?.name || t('common.item'));
                   const unit = Number(it?.unitPrice || 0);
                   const line = unit * qty;
                   return (
@@ -425,7 +443,7 @@ function ReceiptCard({
                           <div className="break-words">{name}</div>
                         </div>
                         <div className="text-[11px] text-gray-600">
-                          {fmtCurrency.format(unit)} each
+                          {fmtCurrency.format(unit)} {t('common.each')}
                         </div>
                       </div>
                       <div className="whitespace-nowrap">
@@ -440,19 +458,19 @@ function ReceiptCard({
 
           <div className="border-t border-gray-200 mt-2 pt-2 text-xs space-y-1">
             <div className="flex justify-between">
-              <span className="text-gray-700">Subtotal</span>
+              <span className="text-gray-700">{t('common.subtotal')}</span>
               <span className="font-semibold">
                 {fmtCurrency.format(Number(ticket?.subtotal || 0))}
               </span>
             </div>
             {ticket?.vatEnabled === false ? (
               <div className="flex justify-between">
-                <span className="text-gray-700">VAT</span>
-                <span className="opacity-70">Disabled</span>
+                <span className="text-gray-700">{t('common.vat')}</span>
+                <span className="opacity-70">{t('common.vatDisabled')}</span>
               </div>
             ) : (
               <div className="flex justify-between">
-                <span className="text-gray-700">VAT</span>
+                <span className="text-gray-700">{t('common.vat')}</span>
                 <span className="font-semibold">
                   {fmtCurrency.format(Number(ticket?.vat || 0))}
                 </span>
@@ -461,7 +479,8 @@ function ReceiptCard({
             {hasServiceCharge && (
               <div className="flex justify-between">
                 <span className="text-gray-700">
-                  Service charge{serviceLabel ? ` (${serviceLabel})` : ''}
+                  {t('common.serviceCharge')}
+                  {serviceLabel ? ` (${serviceLabel})` : ''}
                 </span>
                 <span className="font-semibold">
                   {fmtCurrency.format(serviceChargeAmount)}
@@ -471,7 +490,8 @@ function ReceiptCard({
             {hasDiscount && (
               <div className="flex justify-between">
                 <span className="text-gray-700">
-                  Discount{discountLabel ? ` (${discountLabel})` : ''}
+                  {t('common.discount')}
+                  {discountLabel ? ` (${discountLabel})` : ''}
                 </span>
                 <span className="font-semibold">
                   -{fmtCurrency.format(discountAmount)}
@@ -480,7 +500,9 @@ function ReceiptCard({
             )}
             <div className="flex justify-between text-sm">
               <span className="font-semibold">
-                {hasDiscount ? 'Total (after discount)' : 'Total'}
+                {hasDiscount
+                  ? t('reports.totalAfterDiscountReceipt')
+                  : t('common.total')}
               </span>
               <span className="font-semibold">
                 {fmtCurrency.format(Number(ticket?.total || 0))}
@@ -500,8 +522,10 @@ function VoidedReceiptCard({
   ticket: any;
   fmtCurrency: Intl.NumberFormat;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState<boolean>(false);
   const items = Array.isArray(ticket?.items) ? ticket.items : [];
+  const voidCount = Number(ticket?.voidedCount || items.length || 0);
   const when = ticket?.createdAt ? new Date(ticket.createdAt) : null;
   const isFullVoid = ticket?.kind === 'VOIDED_TICKET';
 
@@ -513,18 +537,29 @@ function VoidedReceiptCard({
       >
         <div>
           <div className="font-semibold text-sm flex items-center gap-2">
-            {ticket?.area ? `${ticket.area} • ` : ''}Table {ticket?.tableLabel}
+            {ticket?.area ? `${ticket.area} • ` : ''}
+            {t('reports.receiptTable', {
+              label: String(ticket?.tableLabel ?? ''),
+            })}
             <span
               className={`text-xs font-normal px-2 py-0.5 rounded ${isFullVoid ? 'bg-rose-700/60 text-rose-100' : 'bg-amber-700/60 text-amber-100'}`}
             >
               {isFullVoid
-                ? 'Fully voided'
-                : `${ticket?.voidedCount || items.length} item${(ticket?.voidedCount || items.length) > 1 ? 's' : ''} voided`}
+                ? t('common.fullyVoided')
+                : voidCount === 1
+                  ? t('reports.voidedOneItem', { count: voidCount })
+                  : t('reports.voidedManyItems', { count: voidCount })}
             </span>
           </div>
           <div className="text-xs text-gray-400">
-            {ticket?.userName ? `Waiter: ${ticket.userName}` : 'Waiter: —'}
-            {ticket?.covers != null ? ` • Covers: ${ticket.covers}` : ''}
+            {ticket?.userName
+              ? t('common.waiterWithName', {
+                  name: String(ticket.userName),
+                })
+              : `${t('common.waiter')}: —`}
+            {ticket?.covers != null
+              ? ` • ${t('common.covers')}: ${ticket.covers}`
+              : ''}
           </div>
         </div>
         <div className="text-xs text-gray-400 whitespace-nowrap">
@@ -536,18 +571,19 @@ function VoidedReceiptCard({
         <div className="px-3 py-2 font-mono">
           {ticket?.note ? (
             <div className="text-xs mb-2">
-              <span className="font-semibold">Note:</span> {String(ticket.note)}
+              <span className="font-semibold">{t('common.note')}:</span>{' '}
+              {String(ticket.note)}
             </div>
           ) : null}
 
           <div className="border-t border-rose-800/40 pt-2">
             {items.length === 0 ? (
-              <div className="text-xs text-gray-400">No items</div>
+              <div className="text-xs text-gray-400">{t('common.noItems')}</div>
             ) : (
               <div className="space-y-1">
                 {items.map((it: any, idx: number) => {
                   const qty = Number(it?.qty || 1);
-                  const name = String(it?.name || 'Item');
+                  const name = String(it?.name || t('common.item'));
                   const unit = Number(it?.unitPrice || 0);
                   const line = unit * qty;
                   return (
@@ -565,7 +601,7 @@ function VoidedReceiptCard({
                           </div>
                         </div>
                         <div className="text-[11px] text-gray-500">
-                          {fmtCurrency.format(unit)} each
+                          {fmtCurrency.format(unit)} {t('common.each')}
                         </div>
                       </div>
                       <div className="whitespace-nowrap line-through opacity-70">
@@ -580,7 +616,7 @@ function VoidedReceiptCard({
 
           <div className="border-t border-rose-800/40 mt-2 pt-2 text-xs">
             <div className="flex justify-between">
-              <span className="text-gray-400">Voided total</span>
+              <span className="text-gray-400">{t('common.voidedTotal')}</span>
               <span className="font-semibold text-rose-300">
                 {fmtCurrency.format(Number(ticket?.subtotal || 0))}
               </span>

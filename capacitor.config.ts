@@ -31,7 +31,14 @@ const config: CapacitorConfig = {
     allowMixedContent: true,
   },
   server: {
-    androidScheme: 'https',
+    // Serve the local app over `http://localhost` on Android instead of
+    // `https://localhost`. Without this, the WebView is in an HTTPS context
+    // and every fetch to a plain-HTTP LAN backend (e.g. http://192.168.x.x:3333)
+    // is treated as *active mixed content* and silently blocked — even with
+    // `usesCleartextTraffic="true"` and `allowMixedContent: true`. POS over
+    // a LAN intentionally uses HTTP (no public TLS cert on the host), so
+    // matching the scheme is the simplest, most reliable fix.
+    androidScheme: 'http',
     // When CAP_SERVER_URL is set, the app loads from the dev server instead
     // of the bundled webDir. Useful for hot-reload during development.
     ...(devServerUrl

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { UpdateStatusDTO } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
 import FloorCanvas from '../components/FloorCanvas';
@@ -51,7 +52,7 @@ function ChevronRight() {
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="currentColor"
-      className="w-4 h-4 opacity-70"
+      className="pos-icon opacity-70"
       aria-hidden
     >
       <path
@@ -73,7 +74,7 @@ function IconWrap({ children }: { children: any }) {
 
 function SectionIcon({ k }: { k: Section['key'] }) {
   const common = {
-    className: 'w-4 h-4 opacity-90',
+    className: 'pos-icon opacity-90',
     'aria-hidden': true,
   } as any;
   if (k === 'printer')
@@ -83,13 +84,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M7 8V4h10v4M7 17h10v3H7v-3Z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinejoin="round"
           />
           <path
             d="M6 17H5a3 3 0 0 1-3-3v-2a4 4 0 0 1 4-4h12a4 4 0 0 1 4 4v2a3 3 0 0 1-3 3h-1"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinejoin="round"
           />
         </svg>
@@ -102,13 +103,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M4 6h16M4 12h16M4 18h16"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
           />
           <path
             d="M7 6v12M17 6v12"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
             opacity="0.7"
           />
@@ -122,13 +123,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M4 5h16v10H4V5Z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinejoin="round"
           />
           <path
             d="M8 19h8M12 15v4"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
           />
         </svg>
@@ -141,13 +142,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M4 7h10M18 7h2M4 17h2M10 17h10"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
           />
           <path
             d="M14 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM10 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
           />
         </svg>
       </IconWrap>
@@ -159,13 +160,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M20 7.5A4.5 4.5 0 0 0 11.6 5 4 4 0 0 0 4 8.5C4 11 6 13 8.5 13H19a3 3 0 0 0 1-5.5Z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinejoin="round"
           />
           <path
             d="M12 12v7m0 0-3-3m3 3 3-3"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
@@ -179,13 +180,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M7 7h10v10H7V7Z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinejoin="round"
           />
           <path
             d="M4 10h2M4 14h2M18 10h2M18 14h2M10 4v2M14 4v2M10 18v2M14 18v2"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
             opacity="0.8"
           />
@@ -199,13 +200,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M20 17.5a4.5 4.5 0 0 0-2.8-8.4A5 5 0 0 0 7.3 8.3 4 4 0 0 0 8 16h11.5A3.5 3.5 0 0 0 20 17.5Z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinejoin="round"
           />
           <path
             d="M12 11v6m0 0 2-2m-2 2-2-2"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
@@ -219,13 +220,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M20 12a8 8 0 1 1-2.34-5.66"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
           />
           <path
             d="M20 4v6h-6"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
@@ -239,19 +240,19 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M3 7h18v10H3V7Z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinejoin="round"
           />
           <path
             d="M3 10h18"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
           />
           <path
             d="M7 14h4"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
           />
         </svg>
@@ -270,13 +271,13 @@ function SectionIcon({ k }: { k: Section['key'] }) {
           <path
             d="M8.5 15.5a5 5 0 0 1 7 0"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
           />
           <path
             d="M5 12a10 10 0 0 1 14 0"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.75"
             strokeLinecap="round"
             opacity="0.8"
           />
@@ -290,7 +291,7 @@ function SectionIcon({ k }: { k: Section['key'] }) {
         <path
           d="M12 17v-5"
           stroke="currentColor"
-          strokeWidth="2"
+          strokeWidth="1.75"
           strokeLinecap="round"
         />
         <path
@@ -302,7 +303,7 @@ function SectionIcon({ k }: { k: Section['key'] }) {
         <path
           d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
           stroke="currentColor"
-          strokeWidth="2"
+          strokeWidth="1.75"
         />
       </svg>
     </IconWrap>
@@ -724,6 +725,7 @@ function BillingSettings() {
 function PreferencesSettings() {
   const [loading, setLoading] = useState(true);
   const [currency, setCurrency] = useState<string>('EUR');
+  const [language, setLanguage] = useState<'en' | 'sq'>('en');
   const [vatEnabled, setVatEnabled] = useState(true);
   const [enabled, setEnabled] = useState(false);
   const [mode, setMode] = useState<'PERCENT' | 'AMOUNT'>('PERCENT');
@@ -739,6 +741,7 @@ function PreferencesSettings() {
   const [reservationNoShowMinutes, setReservationNoShowMinutes] =
     useState<number>(20);
   const [status, setStatus] = useState<string | null>(null);
+  const { t } = useTranslation();
 
   useEffect(() => {
     (async () => {
@@ -750,6 +753,15 @@ function PreferencesSettings() {
             .trim()
             .toUpperCase() || 'EUR';
         setCurrency(cur);
+        const lang = String(
+          (s as any)?.preferences?.language || 'en',
+        ).toLowerCase();
+        setLanguage(lang === 'sq' ? 'sq' : 'en');
+        try {
+          document.documentElement.lang = lang === 'sq' ? 'sq' : 'en';
+        } catch {
+          // ignore non-browser
+        }
         setVatEnabled((s as any)?.preferences?.vatEnabled !== false);
         const sc = (s as any)?.preferences?.serviceCharge || {};
         setEnabled(Boolean(sc.enabled));
@@ -787,12 +799,12 @@ function PreferencesSettings() {
       .trim()
       .toUpperCase();
     if (!/^[A-Z]{3}$/.test(cur)) {
-      setStatus('Currency must be a 3-letter ISO code (e.g. EUR, QAR, USD).');
+      setStatus(t('preferences.currencyInvalid'));
       return;
     }
     const n = Number(String(value).replace(',', '.'));
     if (!Number.isFinite(n) || n < 0) {
-      setStatus('Invalid amount.');
+      setStatus(t('preferences.invalidAmount'));
       return;
     }
     const noShowMins = Math.max(
@@ -803,7 +815,7 @@ function PreferencesSettings() {
       reservationNoShowEnabled &&
       (!Number.isFinite(noShowMins) || noShowMins < 5)
     ) {
-      setStatus('No-show grace must be at least 5 minutes.');
+      setStatus(t('preferences.noShowGrace'));
       return;
     }
     await window.api.settings.update({
@@ -816,6 +828,7 @@ function PreferencesSettings() {
         },
       },
       preferences: {
+        language,
         vatEnabled,
         serviceCharge: { enabled, mode, value: n },
         autoCloseShift: {
@@ -828,21 +841,34 @@ function PreferencesSettings() {
         },
       },
     } as any);
-    setStatus('Saved.');
+    try {
+      document.documentElement.lang = language === 'sq' ? 'sq' : 'en';
+    } catch {
+      // ignore
+    }
+    try {
+      window.dispatchEvent(
+        new CustomEvent('pos:localeChanged', {
+          detail: { lng: language },
+        }),
+      );
+    } catch {
+      // ignore non-browser
+    }
+    setStatus(t('preferences.saved'));
   }
 
   return (
     <div>
-      <div className="text-lg font-semibold mb-3">Preferences</div>
+      <div className="text-lg font-semibold mb-3">{t('preferences.title')}</div>
       {loading ? (
-        <div className="opacity-70">Loading…</div>
+        <div className="opacity-70">{t('common.loading')}</div>
       ) : (
         <div className="space-y-4">
           <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
-            <div className="font-medium mb-1">Currency</div>
+            <div className="font-medium mb-1">{t('preferences.currency')}</div>
             <div className="text-xs opacity-70 mb-3">
-              Currency used across the POS (tickets, reports, receipts). Use a
-              3-letter ISO code like EUR, QAR, USD.
+              {t('preferences.currencyHelp')}
             </div>
             <div className="grid grid-cols-3 gap-2">
               <select
@@ -860,6 +886,23 @@ function PreferencesSettings() {
                 <option value="ALL">ALL</option>
               </select>
             </div>
+          </div>
+          <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
+            <div className="font-medium mb-1">{t('preferences.languages')}</div>
+            <div className="text-xs opacity-70 mb-3">
+              {t('preferences.languagesHelp')}
+            </div>
+            <select
+              className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+              value={language}
+              onChange={(e) =>
+                setLanguage(e.target.value === 'sq' ? 'sq' : 'en')
+              }
+              aria-label={t('preferences.languages')}
+            >
+              <option value="en">{t('preferences.langEnglish')}</option>
+              <option value="sq">{t('preferences.langAlbanian')}</option>
+            </select>
           </div>
           <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
             <div className="font-medium mb-1">Approvals (anti-theft)</div>
@@ -1495,12 +1538,12 @@ function AddRouteModal({
               xmlns="http://www.w3.org/2000/svg"
               viewBox="0 0 24 24"
               fill="none"
-              className="w-4 h-4"
+              className="pos-icon"
             >
               <path
                 d="M6 6l12 12M18 6 6 18"
                 stroke="currentColor"
-                strokeWidth="2"
+                strokeWidth="1.75"
                 strokeLinecap="round"
               />
             </svg>
@@ -1873,13 +1916,13 @@ function PrinterSettings() {
                     xmlns="http://www.w3.org/2000/svg"
                     viewBox="0 0 24 24"
                     fill="none"
-                    className="w-4 h-4"
+                    className="pos-icon"
                     aria-hidden
                   >
                     <path
                       d="M6 6l12 12M18 6 6 18"
                       stroke="currentColor"
-                      strokeWidth="2"
+                      strokeWidth="1.75"
                       strokeLinecap="round"
                     />
                   </svg>
@@ -2134,13 +2177,13 @@ function PrinterProfileCard({
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 24 24"
                 fill="none"
-                className="w-4 h-4"
+                className="pos-icon"
                 aria-hidden
               >
                 <path
                   d="M6 6l12 12M18 6 6 18"
                   stroke="currentColor"
-                  strokeWidth="2"
+                  strokeWidth="1.75"
                   strokeLinecap="round"
                 />
               </svg>
@@ -2403,13 +2446,13 @@ function AreasSettings() {
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 24 24"
                 fill="none"
-                className="w-4 h-4"
+                className="pos-icon"
                 aria-hidden
               >
                 <path
                   d="M6 6l12 12M18 6 6 18"
                   stroke="currentColor"
-                  strokeWidth="2"
+                  strokeWidth="1.75"
                   strokeLinecap="round"
                 />
               </svg>

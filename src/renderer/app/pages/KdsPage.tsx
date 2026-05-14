@@ -101,7 +101,11 @@ export default function KdsPage() {
 
     const loadTickets = async () => {
       if (!alive) return;
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      )
+        return;
       if (errRef.current) setErr(null);
       try {
         const rows = (await window.api.kds.listTickets({
@@ -121,7 +125,11 @@ export default function KdsPage() {
 
     const loadDebug = async () => {
       if (!alive) return;
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      )
+        return;
       const dbg = await window.api.kds.debug().catch(() => null);
       if (!alive) return;
       setDebug(dbg);
@@ -143,7 +151,11 @@ export default function KdsPage() {
     };
 
     const onVis = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') stop();
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      )
+        stop();
       else start();
     };
 
@@ -196,7 +208,7 @@ export default function KdsPage() {
         <div className="flex items-center gap-2">
           {user ? (
             <button
-              className="px-3 py-2 rounded bg-gray-900 hover:bg-gray-800 border border-gray-800 text-sm"
+              className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-800"
               onClick={() => {
                 setUser(null);
                 try {
@@ -211,7 +223,7 @@ export default function KdsPage() {
             </button>
           ) : (
             <button
-              className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 border border-emerald-600 text-sm"
+              className="rounded-lg border border-emerald-600 bg-emerald-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-800"
               onClick={() => {
                 try {
                   window.location.hash = '#/';
@@ -224,11 +236,11 @@ export default function KdsPage() {
               Login
             </button>
           )}
-          <div className="flex rounded overflow-hidden border border-gray-800">
+          <div className="flex overflow-hidden rounded-lg border border-gray-800">
             {enabledStations.map((st) => (
               <button
                 key={st}
-                className={`px-3 py-2 text-sm ${station === st ? 'bg-gray-800' : 'bg-gray-900 hover:bg-gray-800'}`}
+                className={`px-3 py-2 text-sm font-medium transition-colors duration-150 ${station === st ? 'bg-gray-800 text-white' : 'bg-gray-900 text-gray-200 hover:bg-gray-800'}`}
                 onClick={() => setStation(st)}
               >
                 {st === 'KITCHEN'
@@ -240,15 +252,15 @@ export default function KdsPage() {
             ))}
           </div>
 
-          <div className="flex rounded overflow-hidden border border-gray-800">
+          <div className="flex overflow-hidden rounded-lg border border-gray-800">
             <button
-              className={`px-3 py-2 text-sm ${tab === 'NEW' ? 'bg-emerald-700' : 'bg-gray-900 hover:bg-gray-800'}`}
+              className={`px-3 py-2 text-sm font-semibold transition-colors duration-150 ${tab === 'NEW' ? 'bg-emerald-700 text-white' : 'bg-gray-900 text-gray-200 hover:bg-gray-800'}`}
               onClick={() => setTab('NEW')}
             >
               NEW
             </button>
             <button
-              className={`px-3 py-2 text-sm ${tab === 'DONE' ? 'bg-gray-800' : 'bg-gray-900 hover:bg-gray-800'}`}
+              className={`px-3 py-2 text-sm font-medium transition-colors duration-150 ${tab === 'DONE' ? 'bg-gray-800 text-white' : 'bg-gray-900 text-gray-200 hover:bg-gray-800'}`}
               onClick={() => setTab('DONE')}
             >
               Done

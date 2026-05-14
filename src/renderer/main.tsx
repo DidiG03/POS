@@ -10,6 +10,10 @@ import { useReservationSessionStore } from './stores/reservationSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from './components/Toaster';
 import { initMobileShell } from './utils/mobileShell';
+import './i18n/config';
+import { I18nextProvider, useTranslation } from 'react-i18next';
+import i18n from './i18n/config';
+import { LocaleSync } from './i18n/LocaleSync';
 // PWA registration disabled for desktop build
 
 void initMobileShell();
@@ -140,7 +144,8 @@ if (!(window as any).api) {
   const { host, httpPort, httpsPort } = pickBackend();
   const HTTPS_BASE = `https://${host}:${httpsPort}`;
   const HTTP_BASE = `http://${host}:${httpPort}`;
-  const CLIENT_TIMEOUT_MS = 5000;
+  /** Tablets on LAN Wi‑Fi often need more than 5s; desktops stay snappy. */
+  const CLIENT_TIMEOUT_MS = IS_NATIVE_SHELL ? 12_000 : 5_000;
   /** `/print/*` hits the host, then TCP to the printer — 5s is too tight on Wi‑Fi tablets. */
   const LAN_PRINT_TIMEOUT_MS = 45_000;
 
@@ -158,9 +163,47 @@ if (!(window as any).api) {
     }
   }
 
-  // Simple SSE client for real-time updates
+  // Resilient SSE client for real-time updates.
+  //
+  // EventSource auto-reconnects on transport errors, but it doesn't help when
+  // the WebView is suspended (Android background kill, iOS tab freezing) or
+  // when the user roams between Wi-Fi APs and the existing socket goes silent
+  // without raising `error`. We layer three safety nets on top of the native
+  // retry:
+  //   1. Manual reconnect with exponential backoff when `error` fires while
+  //      the connection is in a non-OPEN state. EventSource's built-in retry
+  //      can stall after a closed socket if it never received `retry:`.
+  //   2. Force-reconnect when the document becomes visible again, the device
+  //      goes back online, or the page is restored from bfcache. These are
+  //      the realistic ways SSE dies silently on a real tablet.
+  //   3. A periodic health ping (closed/CONNECTING for > 30s ⇒ reconnect)
+  //      so we never sit on a half-open socket indefinitely.
   let es: EventSource | null = null;
+  let sseReconnectTimer: number | null = null;
+  let sseHealthTimer: number | null = null;
+  let sseBackoffMs = 1000;
+  const SSE_MAX_BACKOFF_MS = 30_000;
+  const SSE_HEALTH_INTERVAL_MS = 15_000;
+  const SSE_STALL_THRESHOLD_MS = 30_000;
+  let lastSseEventAt = 0;
+
   const stopSse = () => {
+    try {
+      if (sseReconnectTimer != null) {
+        window.clearTimeout(sseReconnectTimer);
+        sseReconnectTimer = null;
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (sseHealthTimer != null) {
+        window.clearInterval(sseHealthTimer);
+        sseHealthTimer = null;
+      }
+    } catch {
+      // ignore
+    }
     try {
       if (es) es.close();
     } catch {
@@ -168,16 +211,82 @@ if (!(window as any).api) {
     }
     es = null;
   };
+
+  const scheduleSseReconnect = () => {
+    if (sseReconnectTimer != null) return;
+    const delay = sseBackoffMs;
+    sseBackoffMs = Math.min(SSE_MAX_BACKOFF_MS, sseBackoffMs * 2);
+    sseReconnectTimer = window.setTimeout(() => {
+      sseReconnectTimer = null;
+      startSse();
+    }, delay);
+  };
+
+  const handleSseEvent = (eventName: string, payload: unknown) => {
+    lastSseEventAt = Date.now();
+    // Any incoming message proves the socket is healthy — reset backoff
+    // so a future drop reconnects fast instead of compounding from the
+    // last failure window.
+    sseBackoffMs = 1000;
+    try {
+      window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+    } catch {
+      // ignore — listener fan-out is best-effort
+    }
+  };
+
   const startSse = () => {
     try {
-      if (IS_CLOUD) return; // cloud mode uses polling for now
+      // Cloud mode currently still uses polling; even so, we keep this
+      // function callable so the cloud-detection block at the bottom can
+      // trigger a (no-op) call without crashing.
+      if (IS_CLOUD) {
+        stopSse();
+        return;
+      }
       const token = getToken();
-      if (!token) return;
-      if (es) stopSse();
+      if (!token) {
+        // No session yet — close any zombie connection and wait for login
+        // to call us again.
+        stopSse();
+        return;
+      }
+      // Tear down the previous EventSource before opening a new one. We do
+      // this unconditionally so a `startSse()` triggered by a visibility
+      // change reliably replaces a half-open socket.
+      if (es) {
+        try {
+          es.close();
+        } catch {
+          // ignore
+        }
+        es = null;
+      }
       const url =
         `${HTTP_BASE}/events?token=${encodeURIComponent(token)}` +
         (IS_NATIVE_SHELL ? '&client=native' : '');
       es = new EventSource(url);
+      lastSseEventAt = Date.now();
+
+      es.addEventListener('open', () => {
+        lastSseEventAt = Date.now();
+        sseBackoffMs = 1000;
+      });
+
+      es.addEventListener('error', () => {
+        // The browser's built-in retry is opaque and inconsistent across
+        // platforms (especially Android WebView). Drop the socket and
+        // reschedule with our own backoff so we always recover.
+        const state = es?.readyState;
+        if (state === 2 /* CLOSED */ || !es) {
+          stopSse();
+          scheduleSseReconnect();
+          return;
+        }
+        // CONNECTING: let the browser try once; if it still hasn't reopened
+        // by the next health tick, the watchdog will force a reconnect.
+      });
+
       es.addEventListener('tables', (ev: any) => {
         try {
           const data = JSON.parse(ev.data || '{}');
@@ -185,17 +294,8 @@ if (!(window as any).api) {
           if (area && label && typeof open === 'boolean') {
             const store = (window as any).__tableStatusStore__;
             if (store && store.setOpen) store.setOpen(area, label, open);
-            // Also surface as a window event so any future listener (or
-            // a TablesPage that mounts after this update arrives) gets a
-            // chance to react via the same channel as the IPC bridge.
-            try {
-              window.dispatchEvent(
-                new CustomEvent('pos:tablesChanged', { detail: data }),
-              );
-            } catch {
-              // ignore
-            }
           }
+          handleSseEvent('pos:tablesChanged', data);
         } catch (e) {
           void e;
         }
@@ -207,9 +307,7 @@ if (!(window as any).api) {
       es.addEventListener('reservations', (ev: any) => {
         try {
           const data = JSON.parse(ev.data || '{}');
-          window.dispatchEvent(
-            new CustomEvent('pos:reservationsChanged', { detail: data }),
-          );
+          handleSseEvent('pos:reservationsChanged', data);
         } catch (e) {
           void e;
         }
@@ -222,9 +320,7 @@ if (!(window as any).api) {
       es.addEventListener('ticket', (ev: any) => {
         try {
           const data = JSON.parse(ev.data || '{}');
-          window.dispatchEvent(
-            new CustomEvent('pos:ticketsChanged', { detail: data }),
-          );
+          handleSseEvent('pos:ticketsChanged', data);
         } catch (e) {
           void e;
         }
@@ -233,17 +329,59 @@ if (!(window as any).api) {
       es.addEventListener('layout', (ev: any) => {
         try {
           const data = JSON.parse(ev.data || '{}');
-          window.dispatchEvent(
-            new CustomEvent('pos:layoutChanged', { detail: data }),
-          );
+          handleSseEvent('pos:layoutChanged', data);
         } catch (e) {
           void e;
         }
       });
+
+      // Watchdog: if the socket hasn't received anything for a long time
+      // AND isn't OPEN, force a reconnect. We accept the (small) cost of
+      // an extra ping cycle to guarantee real-time stays real.
+      if (sseHealthTimer == null) {
+        sseHealthTimer = window.setInterval(() => {
+          if (!es) {
+            scheduleSseReconnect();
+            return;
+          }
+          const since = Date.now() - lastSseEventAt;
+          const stalled = since > SSE_STALL_THRESHOLD_MS;
+          const open = es.readyState === 1; /* OPEN */
+          if (!open && stalled) {
+            stopSse();
+            scheduleSseReconnect();
+          }
+        }, SSE_HEALTH_INTERVAL_MS);
+      }
     } catch (e) {
       void e;
+      scheduleSseReconnect();
     }
   };
+
+  const ensureSse = () => {
+    // Called from foreground / online / pageshow listeners. If the socket
+    // is missing or not OPEN, restart it with a fresh backoff so we don't
+    // wait the full timeout the user just slept through.
+    if (IS_CLOUD) return;
+    const token = getToken();
+    if (!token) return;
+    if (!es) {
+      sseBackoffMs = 1000;
+      if (sseReconnectTimer != null) {
+        window.clearTimeout(sseReconnectTimer);
+        sseReconnectTimer = null;
+      }
+      startSse();
+      return;
+    }
+    if (es.readyState !== 1 /* OPEN */) {
+      sseBackoffMs = 1000;
+      stopSse();
+      startSse();
+    }
+  };
+
   startSse();
 
   // Ensure "manual logout" clears the browser token + closes SSE.
@@ -259,6 +397,20 @@ if (!(window as any).api) {
     });
     window.addEventListener('beforeunload', stopSse);
     window.addEventListener('pagehide', stopSse);
+    // Foreground / connectivity recovery: the three signals that reliably
+    // fire when a real device wakes the WebView back up. Each one forces a
+    // fresh SSE handshake so backgrounded tablets catch up the moment the
+    // user looks at the panel again.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') ensureSse();
+    });
+    window.addEventListener('focus', () => ensureSse());
+    window.addEventListener('online', () => ensureSse());
+    // bfcache restore (iOS, modern Chromium) — `pageshow.persisted === true`
+    // means the page was resurrected from cache with all timers paused.
+    window.addEventListener('pageshow', (ev: any) => {
+      if (ev && ev.persisted) ensureSse();
+    });
   } catch {
     // ignore
   }
@@ -456,6 +608,23 @@ if (!(window as any).api) {
         setBusinessCode(businessCode);
       }
       (window as any).__CLOUD_CLIENT__ = Boolean(IS_CLOUD);
+
+      // The initial `startSse()` ran with the env-derived IS_CLOUD value;
+      // if the host's settings actually flip us into (or out of) cloud
+      // mode, restart SSE so we either tear it down (cloud uses polling)
+      // or finally open it (local mode that the env flag missed).
+      try {
+        if (wasCloud !== IS_CLOUD) {
+          if (IS_CLOUD) {
+            stopSse();
+          } else {
+            sseBackoffMs = 1000;
+            ensureSse();
+          }
+        }
+      } catch {
+        // ignore — best-effort, the foreground listener will retry
+      }
 
       // If we just switched into cloud mode, clear any stale local persisted sessions (local DB users)
       // and notify the UI to reload login/user lists.
@@ -1071,6 +1240,7 @@ function BootScreen({
   canRetry?: boolean;
   onRetry?: () => void;
 }) {
+  const { t } = useTranslation();
   const isBrowser =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
@@ -1124,7 +1294,7 @@ function BootScreen({
         )}
         {isBrowser && (
           <div className="text-xs text-gray-500 text-center">
-            Backend:{' '}
+            {t('boot.backendLabel')}
             <span className="font-mono">
               {backend.host}:{backend.httpPort}
             </span>
@@ -1137,7 +1307,7 @@ function BootScreen({
                 className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
                 onClick={onRetry}
               >
-                Retry
+                {t('common.retry')}
               </button>
             )}
             {isBrowser && (
@@ -1146,7 +1316,7 @@ function BootScreen({
                 onClick={() => setShowSetup(true)}
                 type="button"
               >
-                Configure server
+                {t('boot.configureServer')}
               </button>
             )}
           </div>
@@ -1185,6 +1355,7 @@ function BackendSetupModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation();
   const [host, setHost] = useState(initial.host);
   const [httpPort, setHttpPort] = useState(initial.httpPort);
   const [httpsPort, setHttpsPort] = useState(initial.httpsPort);
@@ -1222,11 +1393,11 @@ function BackendSetupModal({
     setError(null);
     const trimmedHost = host.trim();
     if (!isValidHost(trimmedHost)) {
-      setError('Enter a valid IP address or hostname');
+      setError(t('server.invalidHost'));
       return;
     }
     if (!isValidPort(httpPort) || !isValidPort(httpsPort)) {
-      setError('Ports must be numbers between 1 and 65535');
+      setError(t('server.invalidPorts'));
       return;
     }
     setSaving(true);
@@ -1240,7 +1411,7 @@ function BackendSetupModal({
       else localStorage.removeItem('pos_backend_https');
       onSaved();
     } catch (e: any) {
-      setError(e?.message || 'Failed to save settings');
+      setError(e?.message || t('server.saveFailed'));
       setSaving(false);
     }
   }
@@ -1252,7 +1423,7 @@ function BackendSetupModal({
       localStorage.removeItem('pos_backend_https');
       onSaved();
     } catch (e: any) {
-      setError(e?.message || 'Failed to clear settings');
+      setError(e?.message || t('server.clearFailed'));
     }
   }
 
@@ -1270,7 +1441,7 @@ function BackendSetupModal({
         className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
       >
         <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
-          <div className="font-semibold">POS server</div>
+          <div className="font-semibold">{t('server.title')}</div>
           <button
             type="button"
             className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
@@ -1281,12 +1452,12 @@ function BackendSetupModal({
               xmlns="http://www.w3.org/2000/svg"
               viewBox="0 0 24 24"
               fill="none"
-              className="w-4 h-4"
+              className="pos-icon"
             >
               <path
                 d="M6 6l12 12M18 6 6 18"
                 stroke="currentColor"
-                strokeWidth="2"
+                strokeWidth="1.75"
                 strokeLinecap="round"
               />
             </svg>
@@ -1294,17 +1465,16 @@ function BackendSetupModal({
         </div>
         <div className="p-4 space-y-4">
           <div className="text-xs text-gray-400">
-            Make sure your phone is on the same Wi-Fi as the POS computer. On
-            the POS computer, run{' '}
-            <span className="font-mono">ipconfig getifaddr en0</span> (Mac) or{' '}
-            <span className="font-mono">ipconfig</span> (Windows) to find its
-            IP.
+            {t('server.wifiHint', {
+              macCmd: 'ipconfig getifaddr en0',
+              winCmd: 'ipconfig',
+            })}
           </div>
           <label className="block text-sm">
-            <div className="opacity-80 mb-1">Host (IP or name)</div>
+            <div className="opacity-80 mb-1">{t('server.hostLabel')}</div>
             <input
               className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
-              placeholder="e.g. 192.168.1.42 or pos-hall.local"
+              placeholder={t('server.hostPlaceholder')}
               value={host}
               onChange={(e) => setHost(e.target.value)}
               autoCapitalize="none"
@@ -1317,7 +1487,7 @@ function BackendSetupModal({
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-sm">
-              <div className="opacity-80 mb-1">HTTP port</div>
+              <div className="opacity-80 mb-1">{t('server.httpPort')}</div>
               <input
                 className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
                 placeholder="3333"
@@ -1329,7 +1499,7 @@ function BackendSetupModal({
               />
             </label>
             <label className="block text-sm">
-              <div className="opacity-80 mb-1">HTTPS port</div>
+              <div className="opacity-80 mb-1">{t('server.httpsPort')}</div>
               <input
                 className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
                 placeholder="3443"
@@ -1349,22 +1519,22 @@ function BackendSetupModal({
               disabled={saving}
               onClick={() => void handleSave()}
             >
-              {saving ? 'Saving…' : 'Save & reload'}
+              {saving ? t('common.saving') : t('server.saveReload')}
             </button>
             <button
               className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
               type="button"
               onClick={handleClear}
-              title="Forget saved server and use auto-detection"
+              title={t('server.resetTitle')}
             >
-              Reset
+              {t('server.reset')}
             </button>
             <button
               className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
               type="button"
               onClick={onClose}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -1374,16 +1544,18 @@ function BackendSetupModal({
 }
 
 function Root() {
+  const { t } = useTranslation();
   const [ready, setReady] = useState(false);
-  const [msg, setMsg] = useState('Starting POS…');
+  const [msg, setMsg] = useState(() => t('boot.starting'));
   const [detail, setDetail] = useState<string | undefined>(undefined);
   const [nonce, setNonce] = useState(0);
+  const [backendUnreachable, setBackendUnreachable] = useState(false);
 
   useEffect(() => {
     const onForce = (ev: any) => {
       const reason = ev?.detail?.reason
         ? String(ev.detail.reason)
-        : 'Session expired';
+        : t('boot.sessionExpired');
       const h = String(window?.location?.hash || '');
       const isAdmin = h.startsWith('#/admin');
       const isReservations = h.startsWith('#/reservations');
@@ -1414,12 +1586,12 @@ function Root() {
         // ignore
       }
       // Optional: show a short hint on boot screen (if it appears)
-      setMsg('Please login again');
+      setMsg(t('boot.loginAgain'));
       setDetail(reason);
     };
     window.addEventListener('pos:forceLogout', onForce as any);
     return () => window.removeEventListener('pos:forceLogout', onForce as any);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     // Session expiry for Electron (persisted zustand sessions).
@@ -1442,7 +1614,7 @@ function Root() {
         try {
           window.dispatchEvent(
             new CustomEvent('pos:forceLogout', {
-              detail: { reason: 'Session expired' },
+              detail: { reason: t('boot.sessionExpired') },
             }),
           );
         } catch {
@@ -1451,22 +1623,37 @@ function Root() {
       }
     };
     tick();
-    const t = window.setInterval(tick, 60 * 1000);
-    return () => window.clearInterval(t);
-  }, []);
+    const intervalId = window.setInterval(tick, 60 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, [t]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setReady(false);
-      setMsg('Connecting to POS backend…');
+      setBackendUnreachable(false);
+      setMsg(t('boot.connecting'));
       setDetail(undefined);
       // Retry with exponential backoff. This prevents random "failed fetch" errors on slow networks.
       for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
         try {
-          if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-            setMsg('You are offline');
-            setDetail('Connect to Wi‑Fi/LAN and we will retry automatically.');
+          // Android tablets (Samsung especially) often report navigator.onLine
+          // false until the OS "validates" internet access — LAN-only setups
+          // never satisfy that check, which blocks POS before fetch() runs.
+          const capacitor =
+            typeof window !== 'undefined' ? (window as any).Capacitor : null;
+          const isNativeCaps =
+            Boolean(capacitor?.isNativePlatform?.()) ||
+            Boolean(
+              capacitor?.getPlatform?.() && capacitor.getPlatform() !== 'web',
+            );
+          if (
+            !isNativeCaps &&
+            typeof navigator !== 'undefined' &&
+            navigator.onLine === false
+          ) {
+            setMsg(t('boot.offline'));
+            setDetail(t('boot.offlineDetail'));
             await sleep(750);
             continue;
           }
@@ -1477,7 +1664,8 @@ function Root() {
           await (window as any).api.auth.listUsers();
           if (cancelled) return;
           setReady(true);
-          setMsg('Starting POS…');
+          setBackendUnreachable(false);
+          setMsg(t('boot.starting'));
           setDetail(undefined);
           // After backend is confirmed, run offline sync (safe for Electron + browser)
           offlineQueue.sync().catch(() => {});
@@ -1486,29 +1674,32 @@ function Root() {
           void e;
           const baseDelay = 250;
           const delay = Math.min(5000, baseDelay * Math.pow(2, attempt));
-          setMsg('Connecting to POS backend…');
-          setDetail(`Retrying in ${Math.round(delay / 100) / 10}s`);
+          setMsg(t('boot.connecting'));
+          setDetail(
+            t('boot.retryingIn', {
+              seconds: Math.round(delay / 100) / 10,
+            }),
+          );
           await sleep(delay);
         }
       }
       if (!cancelled) {
-        setMsg('Cannot reach POS backend');
-        setDetail(
-          'Check that the host PC is running and you are on the same Wi‑Fi.',
-        );
+        setBackendUnreachable(true);
+        setMsg(t('boot.cannotReach'));
+        setDetail(t('boot.cannotReachDetail'));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [nonce]);
+  }, [nonce, t]);
 
   if (!ready) {
     return (
       <BootScreen
         message={msg}
         detail={detail}
-        canRetry={msg === 'Cannot reach POS backend'}
+        canRetry={backendUnreachable}
         onRetry={() => setNonce((n) => n + 1)}
       />
     );
@@ -1518,9 +1709,13 @@ function Root() {
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <Root />
-      <Toaster />
-    </ErrorBoundary>
+    <I18nextProvider i18n={i18n}>
+      <LocaleSync>
+        <ErrorBoundary>
+          <Root />
+          <Toaster />
+        </ErrorBoundary>
+      </LocaleSync>
+    </I18nextProvider>
   </React.StrictMode>,
 );
