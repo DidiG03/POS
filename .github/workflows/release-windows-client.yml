@@ -95,8 +95,45 @@ jobs:
 
           CANONICAL_POS="dist/Code-Orbit-POS-Setup-${VERSION}.exe"
           CANONICAL_KDS="dist-installers/kds/Code-Orbit-KDS-Setup-${VERSION}.exe"
+          CANONICAL_POS_NAME="Code-Orbit-POS-Setup-${VERSION}.exe"
+          CANONICAL_KDS_NAME="Code-Orbit-KDS-Setup-${VERSION}.exe"
           cp "$POS_EXE" "$CANONICAL_POS"
           cp "$KDS_EXE" "$CANONICAL_KDS"
+
+          # electron-builder emits `latest.yml` for POS but not `latest-kds.yml`
+          # when building with `--publish never` and a custom KDS channel.
+          write_update_yml() {
+            local exe_path="$1"
+            local yml_path="$2"
+            local artifact_name="$3"
+            node -e "
+              const fs = require('fs');
+              const crypto = require('crypto');
+              const exePath = process.argv[1];
+              const ymlPath = process.argv[2];
+              const version = process.argv[3];
+              const artifactName = process.argv[4];
+              const data = fs.readFileSync(exePath);
+              const sha512 = crypto.createHash('sha512').update(data).digest('base64');
+              const yml = [
+                'version: ' + version,
+                'files:',
+                '  - url: ' + artifactName,
+                '    sha512: ' + sha512,
+                '    size: ' + data.length,
+                'path: ' + artifactName,
+                'sha512: ' + sha512,
+                \"releaseDate: '\" + new Date().toISOString() + \"'\",
+                '',
+              ].join('\\n');
+              fs.writeFileSync(ymlPath, yml);
+            " "$exe_path" "$yml_path" "$VERSION" "$artifact_name"
+          }
+
+          if [[ ! -f dist/latest.yml ]]; then
+            write_update_yml "$CANONICAL_POS" dist/latest.yml "$CANONICAL_POS_NAME"
+          fi
+          write_update_yml "$CANONICAL_KDS" dist-installers/kds/latest-kds.yml "$CANONICAL_KDS_NAME"
 
           NOTES="Windows client installers for Code Orbit POS ${VERSION} and Code Orbit KDS ${VERSION}."
           if gh release view "$TAG" >/dev/null 2>&1; then
