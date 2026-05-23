@@ -446,7 +446,11 @@ export default function OrderPage() {
           useTicketStore
             .getState()
             .hydrate({ items: items as any, note: latest?.note || '' });
-          if (activeTicketItems(items).length === 0 && selectedTable) {
+          if (
+            activeTicketItems(items as Array<{ voided?: boolean }>).length ===
+              0 &&
+            selectedTable
+          ) {
             setOpen(selectedTable.area, selectedTable.label, false);
             window.api.tables
               .setOpen(selectedTable.area, selectedTable.label, false)
@@ -957,7 +961,10 @@ export default function OrderPage() {
           );
           if (gen !== hydrateGenRef.current) return;
           const items = Array.isArray(latest?.items) ? latest!.items : [];
-          if (items.length && activeTicketItems(items).length > 0) {
+          if (
+            items.length &&
+            activeTicketItems(items as Array<{ voided?: boolean }>).length > 0
+          ) {
             // Rehydrate and keep table open
             useTicketStore
               .getState()

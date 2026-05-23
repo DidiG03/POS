@@ -82,7 +82,12 @@ export async function formatKdsTicketListRows(
           select: { id: true, displayName: true },
         })
       : [];
-  const waiterById = new Map(users.map((u) => [u.id, u.displayName] as const));
+  const waiterById = new Map(
+    users.map(
+      (u: { id: number; displayName: string }) =>
+        [u.id, u.displayName] as const,
+    ),
+  );
 
   return (rows as any[])
     .map((r: any) => {
