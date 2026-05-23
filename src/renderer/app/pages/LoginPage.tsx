@@ -156,6 +156,9 @@ export default function LoginPage() {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [adminBusinessPassword, setAdminBusinessPassword] = useState('');
   const [usingCode, setUsingCode] = useState(false);
+  const [firstAdminName, setFirstAdminName] = useState('');
+  const [firstAdminPin, setFirstAdminPin] = useState('');
+  const [creatingFirstAdmin, setCreatingFirstAdmin] = useState(false);
 
   useEffect(() => {
     const onCloud = () => setReloadNonce((n) => n + 1);
@@ -180,7 +183,6 @@ export default function LoginPage() {
       }
       // Local-first: always load from local DB. Cloud settings are for backup only.
       setCloudNotice(null);
-      if (isAdminContext) setAdminBusinessCodeMode(false);
 
       let users: any[] = [];
       try {
@@ -200,14 +202,22 @@ export default function LoginPage() {
           backendUrl && businessCode ? t('login.cloudHint') : '';
         setCloudNotice(
           isAdminContext
-            ? t('login.noAdminUsers', { cloudHint })
+            ? backendUrl
+              ? t('login.noAdminUsersCloud')
+              : t('login.noAdminUsersLocal')
             : t('login.noStaffUsers', { cloudHint }),
         );
+        if (isAdminContext && backendUrl) {
+          setAdminBusinessCodeMode(true);
+        } else if (isAdminContext) {
+          setAdminBusinessCodeMode(false);
+        }
         setStaff([]);
         setOpenIds([]);
         if (!cancelled) setStaffLoading(false);
         return;
       }
+      if (isAdminContext) setAdminBusinessCodeMode(false);
       const list = isAdminContext
         ? users.filter((u) => u.role === 'ADMIN' && u.active)
         : // Hosts only ever sign in through the Reservations window; never
@@ -418,6 +428,69 @@ export default function LoginPage() {
                 }}
               >
                 {usingCode ? t('login.checking') : t('login.useCode')}
+              </button>
+            </div>
+          </div>
+        )}
+        {isAdminContext && !showPin && !staffLoading && staff.length === 0 && (
+          <div className="mb-4 p-3 rounded border border-gray-700 bg-gray-800/40">
+            <div className="text-sm font-medium mb-2">
+              {t('login.firstAdminTitle')}
+            </div>
+            <div className="text-xs opacity-70 mb-3">
+              {t('login.firstAdminHelp')}
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                className="bg-gray-700 rounded px-3 py-2 flex-1"
+                placeholder={t('login.firstAdminNamePlaceholder')}
+                value={firstAdminName}
+                onChange={(e) => setFirstAdminName(e.target.value)}
+                autoComplete="off"
+              />
+              <input
+                className="bg-gray-700 rounded px-3 py-2 sm:w-40"
+                placeholder={t('login.firstAdminPinPlaceholder')}
+                value={firstAdminPin}
+                onChange={(e) =>
+                  setFirstAdminPin(
+                    e.target.value.replace(/\D/g, '').slice(0, 8),
+                  )
+                }
+                inputMode="numeric"
+                autoComplete="off"
+              />
+              <button
+                className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
+                disabled={
+                  creatingFirstAdmin ||
+                  firstAdminName.trim().length < 2 ||
+                  firstAdminPin.length < 4
+                }
+                onClick={async () => {
+                  setError(null);
+                  setCreatingFirstAdmin(true);
+                  try {
+                    await window.api.auth.createUser({
+                      displayName: firstAdminName.trim(),
+                      role: 'ADMIN',
+                      pin: firstAdminPin,
+                      active: true,
+                    } as any);
+                    setCloudNotice(t('login.firstAdminCreated'));
+                    setFirstAdminName('');
+                    setFirstAdminPin('');
+                    setReloadNonce((n) => n + 1);
+                  } catch (e: any) {
+                    setError(e?.message || t('login.firstAdminCreateFailed'));
+                  } finally {
+                    setCreatingFirstAdmin(false);
+                  }
+                }}
+              >
+                {creatingFirstAdmin
+                  ? t('login.firstAdminCreating')
+                  : t('login.firstAdminCreate')}
               </button>
             </div>
           </div>
