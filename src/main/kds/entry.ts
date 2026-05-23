@@ -19,6 +19,12 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 import { attachKdsBumpBarInput } from './bumpBarInput';
+import {
+  cleanup as cleanupUpdater,
+  registerUpdateListener,
+  setupAutoUpdater,
+  updaterHandlers,
+} from '../updater';
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -89,6 +95,22 @@ function loadHash(win: BrowserWindow, hash: '/kds' | '/kds-setup'): void {
   }
 }
 
+function ensurePackagedDefaults() {
+  try {
+    if (!app.isPackaged) return;
+    if (!String(process.env.GITHUB_OWNER || '').trim()) {
+      process.env.GITHUB_OWNER = 'DidiG03';
+    }
+    if (!String(process.env.GITHUB_REPO || '').trim()) {
+      process.env.GITHUB_REPO = 'POS';
+    }
+  } catch {
+    // ignore
+  }
+}
+
+ensurePackagedDefaults();
+
 function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.focus();
@@ -111,6 +133,7 @@ function createWindow(): void {
     },
   });
   attachKdsBumpBarInput(mainWindow);
+  registerUpdateListener(mainWindow);
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   // Dedicated kitchen display: keep focus on the KDS window for the bump bar.
   mainWindow.on('blur', () => {
@@ -127,6 +150,19 @@ function createWindow(): void {
 }
 
 // --- IPC: setup / discovery / connection test --------------------------------
+
+ipcMain.handle('updater:getStatus', async () =>
+  updaterHandlers.getUpdateStatus(),
+);
+ipcMain.handle('updater:checkForUpdates', async () =>
+  updaterHandlers.checkForUpdates(),
+);
+ipcMain.handle('updater:downloadUpdate', async () =>
+  updaterHandlers.downloadUpdate(),
+);
+ipcMain.handle('updater:installUpdate', async () =>
+  updaterHandlers.installUpdate(),
+);
 
 ipcMain.handle('kdsApp:getConfig', () => readConfig());
 
@@ -148,9 +184,9 @@ ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
   if (!cfg.host) throw new Error('Host is required');
   writeConfig(cfg);
   if (mainWindow && !mainWindow.isDestroyed()) {
+    // Navigate to KDS — this reloads preload so `__POS_HOST__` picks up
+    // the saved config. Do not call reload() separately (race with loadHash).
     loadHash(mainWindow, '/kds');
-    // Re-read kds.config.json in preload (`__POS_HOST__`) and re-resolve HTTP base.
-    mainWindow.webContents.reload();
   }
   return cfg;
 });
@@ -254,6 +290,7 @@ app.whenReady().then(() => {
   } catch {
     // ignore
   }
+  setupAutoUpdater({ channel: 'kds' });
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -261,5 +298,6 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  cleanupUpdater();
   if (process.platform !== 'darwin') app.quit();
 });

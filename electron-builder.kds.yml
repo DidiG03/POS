@@ -48,7 +48,7 @@ files:
   - '!**/node_modules/serialport/**'
   - '!**/node_modules/@serialport/**'
   - '!**/node_modules/@sentry/**'
-  - '!**/node_modules/electron-updater/**'
+  - node_modules/electron-updater/**
 
 # No `extraResources` block — KDS doesn't need seed.db or unpacked
 # Prisma engines.

@@ -9,6 +9,7 @@ import { useAdminSessionStore } from './stores/adminSession';
 import { useReservationSessionStore } from './stores/reservationSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from './components/Toaster';
+import { UpdateNotification } from './components/UpdateNotification';
 import { initMobileShell } from './utils/mobileShell';
 import './i18n/config';
 import { I18nextProvider, useTranslation } from 'react-i18next';
@@ -1223,6 +1224,14 @@ if (!(window as any).api) {
   (window as any).__CLOUD_CLIENT__ = Boolean(IS_CLOUD);
 }
 
+// Standalone KDS app: bridge auto-updater IPC exposed by preload.
+if ((window as any).__KDS_APP__ && (window as any).kdsApp?.updater) {
+  (window as any).api = {
+    ...((window as any).api || {}),
+    updater: (window as any).kdsApp.updater,
+  };
+}
+
 const router = createHashRouter(routes);
 
 function sleep(ms: number) {
@@ -1670,7 +1679,24 @@ function Root() {
           // Minimal "backend is ready" checks. KDS only needs the kitchen API;
           // waiter tablets need settings + the staff directory.
           if (isKdsApp) {
-            await (window as any).api.kds.debug();
+            const kdsApp = (window as any).kdsApp as
+              | {
+                  testConnection?: (input: {
+                    host: string;
+                    httpPort: number;
+                  }) => Promise<{ ok: boolean; error?: string }>;
+                }
+              | undefined;
+            const backend = resolveBackendHost();
+            if (kdsApp?.testConnection) {
+              const r = await kdsApp.testConnection({
+                host: backend.host,
+                httpPort: Number(backend.httpPort) || 3333,
+              });
+              if (!r.ok) throw new Error(r.error || 'KDS host unreachable');
+            } else {
+              await (window as any).api.kds.debug();
+            }
           } else {
             await (window as any).api.settings.get();
             await (window as any).api.auth.listUsers();
@@ -1727,7 +1753,12 @@ function Root() {
       />
     );
   }
-  return <RouterProvider router={router} />;
+  return (
+    <>
+      <RouterProvider router={router} />
+      {(window as any).__KDS_APP__ ? <UpdateNotification /> : null}
+    </>
+  );
 }
 
 createRoot(document.getElementById('root')!).render(

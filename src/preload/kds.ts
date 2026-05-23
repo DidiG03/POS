@@ -35,6 +35,13 @@ type TestResult = { ok: true; body?: any } | { ok: false; error: string };
 
 type KdsBumpBarAction = import('@shared/kdsBumpBar').KdsBumpBarAction;
 
+const updater = {
+  getUpdateStatus: () => ipcRenderer.invoke('updater:getStatus'),
+  checkForUpdates: () => ipcRenderer.invoke('updater:checkForUpdates'),
+  downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
+  installUpdate: () => ipcRenderer.invoke('updater:installUpdate'),
+};
+
 const kdsApp = {
   getConfig: (): Promise<KdsConfig | null> =>
     ipcRenderer.invoke('kdsApp:getConfig'),
@@ -54,10 +61,19 @@ const kdsApp = {
       ipcRenderer.removeListener('kds:bumpBarAction', handler);
     };
   },
+  updater,
 };
 
 contextBridge.exposeInMainWorld('kdsApp', kdsApp);
 contextBridge.exposeInMainWorld('__KDS_APP__', true);
+
+ipcRenderer.on('updater:event', (_e, payload) => {
+  try {
+    window.dispatchEvent(new CustomEvent('updater:event', { detail: payload }));
+  } catch {
+    // ignore
+  }
+});
 
 // Hydrate `__POS_HOST__` synchronously so `pickBackend()` in main.tsx
 // targets the saved POS host on the first boot attempt.

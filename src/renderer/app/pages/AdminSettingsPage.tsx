@@ -444,7 +444,8 @@ function SystemUpdatesSettings() {
         <div>
           <div className="font-semibold">System Updates</div>
           <div className="text-xs opacity-70">
-            Check for new POS versions and install updates.
+            Check for new POS versions and install updates without reinstalling.
+            Kitchen displays update separately on each KDS device.
           </div>
         </div>
         <button
@@ -1456,6 +1457,13 @@ function KdsSettings() {
             }
           />
         </label>
+
+        <div className="rounded border border-gray-700 bg-gray-900/40 p-3 text-xs opacity-80">
+          KDS app updates are installed on each kitchen screen (not from this
+          POS admin panel). When a new KDS version is published, the kitchen app
+          shows a download prompt — use Install &amp; Restart there, same as POS
+          updates under System Updates.
+        </div>
 
         <button
           className="px-3 py-2 rounded bg-emerald-700 w-full"

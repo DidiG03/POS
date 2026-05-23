@@ -28,6 +28,11 @@ let updateInfo: UpdateInfo | null = null;
 let updateDownloaded = false;
 let updateCheckListeners: Set<BrowserWindow> = new Set();
 
+export type AutoUpdaterSetupOptions = {
+  /** GitHub release channel. Omit for POS (`latest.yml`); use `kds` for KDS. */
+  channel?: string;
+};
+
 function releaseDateIso(releaseDate: unknown): string | undefined {
   if (!releaseDate) return undefined;
   if (typeof releaseDate === 'string') return releaseDate;
@@ -102,7 +107,7 @@ export const updaterHandlers = {
   },
 };
 
-export function setupAutoUpdater(): void {
+export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
   if (!AUTO_UPDATE_ENABLED) {
     console.log('[AutoUpdater] Disabled (AUTO_UPDATE_ENABLED=false)');
     return;
@@ -116,14 +121,21 @@ export function setupAutoUpdater(): void {
   try {
     // Configure update server
     if (GITHUB_OWNER && GITHUB_REPO) {
-      // GitHub Releases
-      autoUpdater.setFeedURL({
+      const feed: {
+        provider: 'github';
+        owner: string;
+        repo: string;
+        channel?: string;
+      } = {
         provider: 'github',
         owner: GITHUB_OWNER,
         repo: GITHUB_REPO,
-      });
+      };
+      if (options?.channel) feed.channel = options.channel;
+      autoUpdater.setFeedURL(feed);
       console.log(
-        `[AutoUpdater] Configured for GitHub: ${GITHUB_OWNER}/${GITHUB_REPO}`,
+        `[AutoUpdater] Configured for GitHub: ${GITHUB_OWNER}/${GITHUB_REPO}` +
+          (options?.channel ? ` (channel: ${options.channel})` : ''),
       );
     } else if (UPDATE_SERVER_URL) {
       // Custom update server
