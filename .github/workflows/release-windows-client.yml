@@ -1,0 +1,110 @@
+name: Release Windows Client
+
+# Builds POS + KDS Windows installers and uploads them to GitHub Releases
+# (the public download page), not workflow artifacts.
+#
+# Trigger:
+#   - Push tag `v0.2.0` (or any v* tag matching package.json version)
+#   - Manual run from Actions → "Run workflow"
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.2.0). Defaults to v{package.json version}.'
+        required: false
+        default: ''
+
+concurrency:
+  group: release-windows-client
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build + publish Windows installers
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm db:generate
+
+      - name: Typecheck (full tree)
+        run: pnpm typecheck
+
+      - name: Prepare Prisma runtime files for Electron packaging
+        run: pnpm prisma:prepare-electron
+
+      - name: Build seeded SQLite DB
+        run: pnpm db:seedfile
+
+      - name: Rebuild native modules for Electron (serialport)
+        run: pnpm serial:rebuild
+
+      - name: Build POS bundle + Windows installer
+        run: |
+          pnpm build
+          pnpm exec electron-builder --win nsis --publish never
+
+      - name: Build KDS bundle + Windows installer
+        run: |
+          pnpm build:kds
+          pnpm exec electron-builder --config electron-builder.kds.yml --win nsis --publish never
+
+      - name: Publish to GitHub Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="${INPUT_TAG:-v${VERSION}}"
+          TITLE="${TAG#v}"
+
+          POS_EXE=$(ls dist/*.exe | head -1)
+          KDS_EXE=$(ls dist-installers/kds/*.exe | head -1)
+          if [[ ! -f "$POS_EXE" ]]; then
+            echo "::error::Missing POS installer in dist/"
+            exit 1
+          fi
+          if [[ ! -f "$KDS_EXE" ]]; then
+            echo "::error::Missing KDS installer in dist-installers/kds/"
+            exit 1
+          fi
+
+          NOTES="Windows client installers for Code Orbit POS ${VERSION} and Code Orbit KDS ${VERSION}."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Updating existing release $TAG"
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES"
+          fi
+
+          UPLOAD=( "$POS_EXE" "$KDS_EXE" )
+          shopt -s nullglob
+          UPLOAD+=( dist/latest*.yml dist-installers/kds/latest*.yml )
+          shopt -u nullglob
+
+          gh release upload "$TAG" "${UPLOAD[@]}" --clobber
+
+          echo "Published to https://github.com/${{ github.repository }}/releases/tag/${TAG}"
