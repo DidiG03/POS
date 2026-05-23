@@ -3,6 +3,11 @@ import path from 'node:path';
 import Module from 'node:module';
 import fs from 'node:fs';
 
+/** `@types/node` omits this internal resolver hook used after mutating `NODE_PATH`. */
+type ModuleConstructorWithInitPaths = typeof Module & {
+  _initPaths(): void;
+};
+
 /**
  * Electron + Prisma + pnpm packaging fix.
  *
@@ -26,7 +31,7 @@ function ensurePrismaModulePath() {
         path.delimiter,
       );
       // Recompute Node's global search paths.
-      Module._initPaths();
+      (Module as ModuleConstructorWithInitPaths)._initPaths();
     }
   } catch {
     // ignore (best-effort)

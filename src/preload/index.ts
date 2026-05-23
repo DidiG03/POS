@@ -92,12 +92,19 @@ const api: Api = {
       ticketId: number;
       userId?: number;
     }) => ipcRenderer.invoke('kds:bump', input),
+    recall: (input: {
+      station: 'KITCHEN' | 'BAR' | 'DESSERT';
+      ticketId?: number;
+      itemIdx?: number;
+    }) => ipcRenderer.invoke('kds:recall', input),
     bumpItem: (input: {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';
       ticketId: number;
       itemIdx: number;
       userId?: number;
     }) => ipcRenderer.invoke('kds:bumpItem', input),
+    clearDone: (input: { station: 'KITCHEN' | 'BAR' | 'DESSERT' }) =>
+      ipcRenderer.invoke('kds:clearDone', input),
     debug: () => ipcRenderer.invoke('kds:debug'),
   },
   backups: {

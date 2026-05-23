@@ -14,6 +14,13 @@ import './i18n/config';
 import { I18nextProvider, useTranslation } from 'react-i18next';
 import i18n from './i18n/config';
 import { LocaleSync } from './i18n/LocaleSync';
+import {
+  getHttpBase,
+  getHttpsBase,
+  persistKdsBackendHost,
+  resolveBackendHost,
+  syncBackendHostToLocalStorage,
+} from './utils/backendHost';
 // PWA registration disabled for desktop build
 
 void initMobileShell();
@@ -85,65 +92,25 @@ if (!(window as any).api) {
   };
 
   const pickBackend = () => {
-    // Standalone KDS app: the preload (`src/preload/kds.ts`) injects the
-    // saved POS host as `window.__POS_HOST__`. Honor it before any other
-    // resolution so a freshly-installed KDS hits the right host without
-    // touching localStorage.
-    const injected = (window as any).__POS_HOST__ as
-      | {
-          host?: string;
-          httpPort?: number | string;
-          httpsPort?: number | string | null;
-        }
-      | undefined;
-    if (injected && typeof injected.host === 'string' && injected.host.trim()) {
-      return {
-        host: injected.host.trim(),
-        httpPort: String(injected.httpPort || 3333),
-        httpsPort: String(injected.httpsPort || 3443),
-      };
+    // Side effects for URL params + mobile shell detection; resolution lives in
+    // `resolveBackendHost()` so every HTTP call uses the same host source.
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const backParam = params.get('backend');
+      const httpParam = params.get('http');
+      const httpsParam = params.get('https');
+      if (backParam) localStorage.setItem('pos_backend_host', backParam);
+      if (httpParam) localStorage.setItem('pos_backend_http', httpParam);
+      if (httpsParam) localStorage.setItem('pos_backend_https', httpsParam);
+    } catch {
+      // ignore
     }
-    const params = new URLSearchParams(window.location.search);
-    const backParam = params.get('backend'); // e.g., 192.168.1.50
-    const httpParam = params.get('http'); // e.g., 3333
-    const httpsParam = params.get('https'); // e.g., 3443
-    if (backParam) localStorage.setItem('pos_backend_host', backParam);
-    if (httpParam) localStorage.setItem('pos_backend_http', httpParam);
-    if (httpsParam) localStorage.setItem('pos_backend_https', httpsParam);
-    // Inside Capacitor (iOS/Android WebView) window.location.hostname is
-    // "localhost" / capacitor-scheme, so we cannot use it as a fallback.
-    // Use VITE_DEFAULT_BACKEND_HOST baked at build time instead.
-    const isMobileShell =
+    IS_NATIVE_SHELL =
       Boolean((import.meta as any)?.env?.VITE_MOBILE_TARGET) ||
       Boolean((window as any).Capacitor);
-    // Hoist as a module-scoped flag so request helpers can mark themselves as
-    // a native client. The LAN "Allow Web access" toggle is meant to gate
-    // browsers only — the iOS/Android app uses its own pairing code + login,
-    // so we send a hint that the backend trusts to bypass the browser gate.
-    IS_NATIVE_SHELL = isMobileShell;
-    const envHost = String(
-      (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HOST || '',
-    ).trim();
-    const envHttp = String(
-      (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HTTP || '',
-    ).trim();
-    const envHttps = String(
-      (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HTTPS || '',
-    ).trim();
-    const host =
-      localStorage.getItem('pos_backend_host') ||
-      envHost ||
-      (isMobileShell ? '' : window.location.hostname) ||
-      'localhost';
-    const httpPort =
-      localStorage.getItem('pos_backend_http') || envHttp || '3333';
-    const httpsPort =
-      localStorage.getItem('pos_backend_https') || envHttps || '3443';
-    return { host, httpPort, httpsPort };
+    return resolveBackendHost();
   };
-  const { host, httpPort, httpsPort } = pickBackend();
-  const HTTPS_BASE = `https://${host}:${httpsPort}`;
-  const HTTP_BASE = `http://${host}:${httpPort}`;
+  pickBackend();
   /** Tablets on LAN Wi‑Fi often need more than 5s; desktops stay snappy. */
   const CLIENT_TIMEOUT_MS = IS_NATIVE_SHELL ? 12_000 : 5_000;
   /** `/print/*` hits the host, then TCP to the printer — 5s is too tight on Wi‑Fi tablets. */
@@ -263,7 +230,7 @@ if (!(window as any).api) {
         es = null;
       }
       const url =
-        `${HTTP_BASE}/events?token=${encodeURIComponent(token)}` +
+        `${getHttpBase()}/events?token=${encodeURIComponent(token)}` +
         (IS_NATIVE_SHELL ? '&client=native' : '');
       es = new EventSource(url);
       lastSseEventAt = Date.now();
@@ -513,7 +480,10 @@ if (!(window as any).api) {
     } else {
       // Prefer HTTP first to avoid self-signed cert warnings in browsers, then fallback to HTTPS
       try {
-        const r = await fetchWithRetry(HTTP_BASE + path, { ...opts, headers });
+        const r = await fetchWithRetry(getHttpBase() + path, {
+          ...opts,
+          headers,
+        });
         if (!r.ok) {
           if (r.status === 401 || r.status === 403)
             forceLogout('Session expired');
@@ -525,7 +495,7 @@ if (!(window as any).api) {
       } catch (e: any) {
         // Only fall back to HTTPS when HTTP failed due to network/timeouts.
         if (!isRetryableNetworkError(e)) throw e;
-        const r2 = await fetchWithRetry(HTTPS_BASE + path, {
+        const r2 = await fetchWithRetry(getHttpsBase() + path, {
           ...opts,
           headers,
         });
@@ -558,7 +528,7 @@ if (!(window as any).api) {
     // Prefer HTTP first to avoid self-signed cert warnings in browsers, then fallback to HTTPS
     try {
       const r = await fetchWithRetry(
-        HTTP_BASE + path,
+        getHttpBase() + path,
         { ...opts, headers },
         2,
         timeoutMs,
@@ -575,7 +545,7 @@ if (!(window as any).api) {
     } catch (e: any) {
       if (!isRetryableNetworkError(e)) throw e;
       const r2 = await fetchWithRetry(
-        HTTPS_BASE + path,
+        getHttpsBase() + path,
         { ...opts, headers },
         2,
         timeoutMs,
@@ -1049,6 +1019,36 @@ if (!(window as any).api) {
         });
         return Boolean((r as any)?.ok ?? true);
       },
+      async recall(input: any) {
+        const station = String(input?.station || 'KITCHEN').toUpperCase();
+        const ticketId =
+          input?.ticketId != null ? Number(input.ticketId) : undefined;
+        const itemIdx =
+          input?.itemIdx != null ? Number(input.itemIdx) : undefined;
+        const body: Record<string, unknown> = { station };
+        if (ticketId) body.ticketId = ticketId;
+        if (itemIdx != null && Number.isFinite(itemIdx)) body.itemIdx = itemIdx;
+        const r = await goLan('/kds/recall', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        return {
+          ok: Boolean((r as any)?.ok),
+          ticketId: (r as any)?.ticketId ?? null,
+          itemRecalled: Boolean((r as any)?.itemRecalled),
+        };
+      },
+      async clearDone(input: any) {
+        const station = String(input?.station || 'KITCHEN').toUpperCase();
+        const r = await goLan('/kds/clear-done', {
+          method: 'POST',
+          body: JSON.stringify({ station }),
+        });
+        return {
+          ok: Boolean((r as any)?.ok),
+          purgedDoneRows: Number((r as any)?.purgedDoneRows || 0),
+        };
+      },
       async bumpItem(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();
         const ticketId = Number(input?.ticketId || 0);
@@ -1244,27 +1244,12 @@ function BootScreen({
   const isBrowser =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
+  const isKdsApp =
+    typeof window !== 'undefined' && Boolean((window as any).__KDS_APP__);
+  const showLanSetup = isBrowser || isKdsApp;
   const [showSetup, setShowSetup] = useState(false);
   const [setupNonce, setSetupNonce] = useState(0);
-  const backend = useMemo(() => {
-    try {
-      const host =
-        localStorage.getItem('pos_backend_host') ||
-        window.location.hostname ||
-        'localhost';
-      const httpPort = localStorage.getItem('pos_backend_http') || '3333';
-      const httpsPort = localStorage.getItem('pos_backend_https') || '3443';
-      return { host, httpPort, httpsPort };
-    } catch {
-      return {
-        host: window.location.hostname || 'localhost',
-        httpPort: '3333',
-        httpsPort: '3443',
-      };
-    }
-    // setupNonce forces a re-read after the user saves new settings.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setupNonce]);
+  const backend = useMemo(() => resolveBackendHost(), [setupNonce]);
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100 px-6">
       <div className="flex flex-col items-center gap-4 w-full max-w-md">
@@ -1292,7 +1277,7 @@ function BootScreen({
         {detail && (
           <div className="text-xs text-gray-500 text-center">{detail}</div>
         )}
-        {isBrowser && (
+        {showLanSetup && (
           <div className="text-xs text-gray-500 text-center">
             {t('boot.backendLabel')}
             <span className="font-mono">
@@ -1300,7 +1285,7 @@ function BootScreen({
             </span>
           </div>
         )}
-        {(canRetry || isBrowser) && (
+        {(canRetry || showLanSetup) && (
           <div className="mt-2 flex flex-wrap items-center gap-2 justify-center">
             {canRetry && onRetry && (
               <button
@@ -1310,10 +1295,20 @@ function BootScreen({
                 {t('common.retry')}
               </button>
             )}
-            {isBrowser && (
+            {showLanSetup && (
               <button
                 className="px-4 py-2 rounded bg-indigo-700 hover:bg-indigo-600 text-sm"
-                onClick={() => setShowSetup(true)}
+                onClick={() => {
+                  if (isKdsApp) {
+                    try {
+                      window.location.hash = '#/kds-setup';
+                    } catch {
+                      setShowSetup(true);
+                    }
+                    return;
+                  }
+                  setShowSetup(true);
+                }}
                 type="button"
               >
                 {t('boot.configureServer')}
@@ -1402,13 +1397,18 @@ function BackendSetupModal({
     }
     setSaving(true);
     try {
-      localStorage.setItem('pos_backend_host', trimmedHost);
-      if (httpPort.trim())
-        localStorage.setItem('pos_backend_http', httpPort.trim());
-      else localStorage.removeItem('pos_backend_http');
-      if (httpsPort.trim())
-        localStorage.setItem('pos_backend_https', httpsPort.trim());
-      else localStorage.removeItem('pos_backend_https');
+      const port = Number(httpPort.trim() || '3333') || 3333;
+      const isKdsApp =
+        typeof window !== 'undefined' && Boolean((window as any).__KDS_APP__);
+      if (isKdsApp) {
+        await persistKdsBackendHost({ host: trimmedHost, httpPort: port });
+        return;
+      }
+      syncBackendHostToLocalStorage({
+        host: trimmedHost,
+        httpPort: httpPort.trim() || '3333',
+        httpsPort: httpsPort.trim() || '3443',
+      });
       onSaved();
     } catch (e: any) {
       setError(e?.message || t('server.saveFailed'));
@@ -1630,12 +1630,22 @@ function Root() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const isKdsApp = Boolean((window as any).__KDS_APP__);
+      const onKdsSetup =
+        isKdsApp &&
+        String(window.location.hash || '').startsWith('#/kds-setup');
+      if (onKdsSetup) {
+        setReady(true);
+        return;
+      }
+
       setReady(false);
       setBackendUnreachable(false);
       setMsg(t('boot.connecting'));
       setDetail(undefined);
+      const maxAttempts = isKdsApp ? 3 : 12;
       // Retry with exponential backoff. This prevents random "failed fetch" errors on slow networks.
-      for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
+      for (let attempt = 0; attempt < maxAttempts && !cancelled; attempt++) {
         try {
           // Android tablets (Samsung especially) often report navigator.onLine
           // false until the OS "validates" internet access — LAN-only setups
@@ -1657,11 +1667,14 @@ function Root() {
             await sleep(750);
             continue;
           }
-          // Minimal "backend is ready" checks:
-          // 1) settings (proves API is responsive)
-          // 2) users list (proves DB is responsive)
-          await (window as any).api.settings.get();
-          await (window as any).api.auth.listUsers();
+          // Minimal "backend is ready" checks. KDS only needs the kitchen API;
+          // waiter tablets need settings + the staff directory.
+          if (isKdsApp) {
+            await (window as any).api.kds.debug();
+          } else {
+            await (window as any).api.settings.get();
+            await (window as any).api.auth.listUsers();
+          }
           if (cancelled) return;
           setReady(true);
           setBackendUnreachable(false);
@@ -1684,6 +1697,16 @@ function Root() {
         }
       }
       if (!cancelled) {
+        const isKdsApp = Boolean((window as any).__KDS_APP__);
+        if (isKdsApp) {
+          try {
+            window.location.hash = '#/kds-setup';
+          } catch {
+            // ignore
+          }
+          setReady(true);
+          return;
+        }
         setBackendUnreachable(true);
         setMsg(t('boot.cannotReach'));
         setDetail(t('boot.cannotReachDetail'));

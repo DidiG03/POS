@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PageSpinner } from '../../components/PageSpinner';
+import {
+  IconWarningTriangle,
+  normalizeStock,
+  type StockLevel,
+} from '../../components/StockAvailabilityPanel';
 
 type MenuItem = {
   id: number;
@@ -11,6 +16,8 @@ type MenuItem = {
   categoryId: number;
   isKg?: boolean;
   station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+  stockLevel?: 'OK' | 'LOW' | 'OUT';
+  stockRemaining?: number | null;
 };
 
 type MenuCategory = {
@@ -866,11 +873,14 @@ function ItemRow({
     isKg?: boolean;
     station?: 'KITCHEN' | 'BAR' | 'DESSERT';
     active?: boolean;
+    stockLevel?: StockLevel;
+    stockRemaining?: number | null;
   }) => Promise<any>;
   onDelete: () => Promise<any>;
 }) {
   const [editing, setEditing] = useState(false);
   const active = Boolean(item.active);
+  const stock = normalizeStock(item.stockLevel);
   const stationLabel =
     item.station === 'BAR'
       ? 'Bar'
@@ -903,6 +913,23 @@ function ItemRow({
         >
           {active ? 'On' : 'Off'}
         </span>
+        {stock === 'LOW' && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-200 border border-amber-700/50 inline-flex items-center gap-0.5">
+            <IconWarningTriangle className="w-3 h-3 text-amber-300" />
+            Low
+            {item.stockRemaining != null &&
+            Number.isFinite(Number(item.stockRemaining)) ? (
+              <span className="tabular-nums opacity-90">
+                · {Math.max(0, Math.floor(Number(item.stockRemaining)))}
+              </span>
+            ) : null}
+          </span>
+        )}
+        {stock === 'OUT' && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-900/50 text-rose-200 border border-rose-800/60">
+            Out
+          </span>
+        )}
         <button
           type="button"
           className="w-8 h-8 rounded bg-transparent hover:bg-gray-700 flex items-center justify-center disabled:opacity-60 cursor-pointer"
@@ -955,6 +982,8 @@ function EditItemModal({
     isKg?: boolean;
     station?: 'KITCHEN' | 'BAR' | 'DESSERT';
     active?: boolean;
+    stockLevel?: StockLevel;
+    stockRemaining?: number | null;
   }) => Promise<any>;
   onClose: () => void;
 }) {
@@ -966,8 +995,47 @@ function EditItemModal({
     (item.station as any) || 'KITCHEN',
   );
   const [active, setActive] = useState(Boolean(item.active));
+  const [stockLevel, setStockLevel] = useState<StockLevel>(
+    normalizeStock(item.stockLevel),
+  );
+  const [stockQty, setStockQty] = useState(() =>
+    item.stockRemaining != null && Number.isFinite(Number(item.stockRemaining))
+      ? String(Math.max(1, Math.floor(Number(item.stockRemaining))))
+      : '10',
+  );
 
-  const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
+  useEffect(() => {
+    setName(item.name);
+    setPrice(String(item.price));
+    setVat(String(item.vatRate ?? 0.2));
+    setIsKg(Boolean(item.isKg));
+    setStation(((item.station as any) || 'KITCHEN') as any);
+    setActive(Boolean(item.active));
+    setStockLevel(normalizeStock(item.stockLevel));
+    setStockQty(
+      item.stockRemaining != null &&
+        Number.isFinite(Number(item.stockRemaining))
+        ? String(Math.max(1, Math.floor(Number(item.stockRemaining))))
+        : '10',
+    );
+  }, [
+    item.id,
+    item.name,
+    item.price,
+    item.vatRate,
+    item.isKg,
+    item.station,
+    item.active,
+    item.stockLevel,
+    item.stockRemaining,
+  ]);
+
+  const stockQtyNum = parseInt(String(stockQty).trim(), 10);
+  const stockQtyOk =
+    stockLevel !== 'LOW' || (Number.isFinite(stockQtyNum) && stockQtyNum >= 1);
+
+  const canSubmit =
+    name.trim().length > 0 && price.length > 0 && !disabled && stockQtyOk;
 
   return (
     <Modal title={`Edit: ${item.name}`} onClose={onClose}>
@@ -1023,44 +1091,94 @@ function EditItemModal({
               <option value="DESSERT">Dessert</option>
             </select>
           </div>
-          <div className="flex flex-col gap-3 justify-end pb-1">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={isKg}
-                onChange={(e) => setIsKg(e.target.checked)}
-                disabled={disabled}
-              />
-              Sold by kg
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={active}
-                onChange={(e) => setActive(e.target.checked)}
-                disabled={disabled}
-              />
-              <span className={active ? '' : 'text-rose-300'}>
-                {active ? 'Enabled' : 'Disabled'}
-              </span>
-            </label>
+          <div>
+            <div className="text-xs opacity-70 mb-1">Waiter availability</div>
+            <select
+              className="bg-gray-700 rounded px-3 py-2 w-full"
+              value={stockLevel}
+              onChange={(e) => setStockLevel(e.target.value as StockLevel)}
+              disabled={disabled}
+            >
+              <option value="OK">In stock</option>
+              <option value="LOW">Low stock (warning)</option>
+              <option value="OUT">Out of stock (unavailable)</option>
+            </select>
           </div>
+        </div>
+
+        {stockLevel === 'LOW' && (
+          <div>
+            <div className="text-xs opacity-70 mb-1">How many left (today)</div>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+              value={stockQty}
+              onChange={(e) => setStockQty(e.target.value)}
+              disabled={disabled}
+            />
+            <p className="text-[10px] opacity-55 mt-1">
+              Each kitchen send reduces this count. At 0 the item becomes out of
+              stock. Resets after midnight.
+            </p>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-3 pb-1">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={isKg}
+              onChange={(e) => setIsKg(e.target.checked)}
+              disabled={disabled}
+            />
+            Sold by kg
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={active}
+              onChange={(e) => setActive(e.target.checked)}
+              disabled={disabled}
+            />
+            <span className={active ? '' : 'text-rose-300'}>
+              {active ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
         </div>
 
         <div className="flex justify-end pt-2">
           <button
             className="w-full px-5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium"
             disabled={!canSubmit}
-            onClick={() =>
-              onSave({
+            onClick={() => {
+              const patch: {
+                name: string;
+                price: number;
+                vatRate: number;
+                isKg: boolean;
+                station: 'KITCHEN' | 'BAR' | 'DESSERT';
+                active: boolean;
+                stockLevel: StockLevel;
+                stockRemaining?: number | null;
+              } = {
                 name: name.trim(),
                 price: Number(price || 0),
                 vatRate: Number(vat || 0),
                 isKg,
                 station,
                 active,
-              })
-            }
+                stockLevel,
+              };
+              if (stockLevel === 'LOW') {
+                patch.stockRemaining = Math.max(
+                  1,
+                  Math.floor(stockQtyNum || 1),
+                );
+              }
+              return onSave(patch);
+            }}
             type="button"
           >
             Save Changes

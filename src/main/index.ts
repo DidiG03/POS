@@ -40,17 +40,11 @@ import {
   cloudJson,
   getCloudAccessPassword,
   getCloudConfig,
-  getCloudSessionUserId,
-  hasCloudSession,
-  hasCloudSessionForSender,
   setCloudSession,
   setCloudSessionForSender,
-  setCloudToken,
 } from './services/cloud';
 import {
-  enqueueOutbox,
   getOutboxStatus,
-  isLikelyOfflineError,
   startOutboxLoop,
   stopOutboxLoop,
 } from './services/offlineOutbox';
@@ -79,6 +73,12 @@ import {
 } from './services/memoryMonitor';
 import { classifyPrinterError } from './print';
 import { prisma } from '@db/client';
+import type { Prisma } from '@prisma/client';
+import {
+  expireStaleMenuStock,
+  consumeMenuStockForTicketLines,
+  localCalendarDateKey,
+} from './services/menuStock';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import type * as http from 'node:http';
@@ -107,6 +107,16 @@ import {
   syncFromCloudAfterLogin,
   syncFromCloudManual,
 } from './services/cloudSync';
+import { formatKdsTicketListRows } from './services/kdsList';
+import {
+  kdsStationListWhere,
+  purgeKdsDoneTicketsForStation,
+  startKdsRetentionLoop,
+} from './services/kdsRetention';
+import {
+  recallKdsTicket,
+  bumpAllStationItemsInJson,
+} from './services/kdsRecall';
 
 dotenv.config();
 
@@ -160,17 +170,6 @@ async function getCurrentSessionOwnerId(
     })
     .catch(() => null);
   return last ? Number(last.userId) : null;
-}
-
-async function cloudEnabledButMissingBusinessCode(): Promise<boolean> {
-  try {
-    const s = await coreServices.readSettings().catch(() => null as any);
-    const backendUrl = String((s as any)?.cloud?.backendUrl || '').trim();
-    const businessCode = String((s as any)?.cloud?.businessCode || '').trim();
-    return Boolean(backendUrl && !businessCode);
-  } catch {
-    return false;
-  }
 }
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
@@ -369,11 +368,6 @@ async function restoreDbBackup(
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Restore failed') };
   }
-}
-
-function shouldForceLogoutOnError(e: any) {
-  const msg = String(e?.message || e || '').toLowerCase();
-  return msg.includes('unauthorized') || msg.includes('not logged in');
 }
 
 function forceLogoutSender(sender: any, reason: string) {
@@ -1195,6 +1189,7 @@ app.whenReady().then(async () => {
   startOutboxLoop();
   // Notifications: automatically delete notifications older than 1 week (DB retention).
   startNotificationRetentionLoop(prisma, { days: 7 });
+  startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
   // KDS: auto-bump stale tickets after 12 hours.
   startKdsAutoBumpLoop();
   // Tickets: auto-void stale open tables after 12 hours + notify.
@@ -2858,8 +2853,16 @@ ipcMain.handle('tables:transfer', async (_e, payload) => {
 
 // Menu syncing from remote URL removed: business admins manage menu directly.
 
+function normalizeMenuStockLevel(raw: unknown): 'OK' | 'LOW' | 'OUT' {
+  const s = String(raw ?? 'OK').toUpperCase();
+  if (s === 'LOW') return 'LOW';
+  if (s === 'OUT') return 'OUT';
+  return 'OK';
+}
+
 // Local-first: always use local DB for menu
 ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
+  await expireStaleMenuStock(prisma);
   const cats = await prisma.category.findMany({
     where: { active: true },
     orderBy: { sortOrder: 'asc' },
@@ -2882,6 +2885,11 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
       categoryId: i.categoryId,
       isKg: Boolean((i as any)?.isKg),
       station: String((i as any)?.station || 'KITCHEN'),
+      stockLevel: normalizeMenuStockLevel((i as any)?.stockLevel),
+      stockRemaining:
+        i.stockRemaining != null && Number.isFinite(Number(i.stockRemaining))
+          ? Number(i.stockRemaining)
+          : null,
     })),
   }));
 });
@@ -2945,6 +2953,9 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
       ...(typeof (input as any).station === 'string'
         ? { station: String((input as any).station).toUpperCase() }
         : {}),
+      ...(typeof input.stockLevel === 'string'
+        ? { stockLevel: normalizeMenuStockLevel(input.stockLevel) }
+        : {}),
     } as any,
   });
   return { id: created.id, sku: created.sku };
@@ -2952,25 +2963,80 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
 
 ipcMain.handle('menu:updateItem', async (_e, payload) => {
   const input = UpdateMenuItemInputSchema.parse(payload);
+  await expireStaleMenuStock(prisma);
+
+  const existing = await prisma.menuItem.findUnique({
+    where: { id: input.id },
+  });
+  if (!existing) throw new Error('Menu item not found');
+
+  const today = localCalendarDateKey();
+  const curLevel = normalizeMenuStockLevel((existing as any)?.stockLevel);
+
+  const data: Record<string, unknown> = {
+    ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
+    ...(typeof input.price === 'number' ? { price: input.price } : {}),
+    ...(typeof (input as any).vatRate === 'number'
+      ? { vatRate: (input as any).vatRate }
+      : {}),
+    ...(typeof input.active === 'boolean' ? { active: input.active } : {}),
+    ...(typeof (input as any).isKg === 'boolean'
+      ? { isKg: (input as any).isKg }
+      : {}),
+    ...(typeof input.categoryId === 'number'
+      ? { categoryId: input.categoryId }
+      : {}),
+    ...(typeof (input as any).station === 'string'
+      ? { station: String((input as any).station).toUpperCase() }
+      : {}),
+  };
+
+  const stockRemainingIn = (input as any).stockRemaining as
+    | number
+    | null
+    | undefined;
+  const stockLevelIn =
+    typeof input.stockLevel === 'string'
+      ? normalizeMenuStockLevel(input.stockLevel)
+      : undefined;
+
+  const touchesQtyOnly =
+    stockLevelIn === undefined &&
+    stockRemainingIn !== undefined &&
+    curLevel === 'LOW';
+
+  if (stockLevelIn !== undefined || touchesQtyOnly) {
+    const nextLevel = stockLevelIn ?? curLevel;
+
+    if (nextLevel === 'OK') {
+      data.stockLevel = 'OK';
+      data.stockRemaining = null;
+      data.stockDay = null;
+    } else if (nextLevel === 'OUT') {
+      data.stockLevel = 'OUT';
+      data.stockRemaining = null;
+      data.stockDay = today;
+    } else {
+      let rem: number | null = null;
+      if (stockRemainingIn !== undefined && stockRemainingIn !== null) {
+        rem = Math.floor(Number(stockRemainingIn));
+      } else if (existing.stockRemaining != null) {
+        rem = existing.stockRemaining;
+      }
+      if (rem == null || rem < 1) {
+        throw new Error(
+          'Low stock requires “how many left” as a whole number ≥ 1.',
+        );
+      }
+      data.stockLevel = 'LOW';
+      data.stockRemaining = rem;
+      data.stockDay = today;
+    }
+  }
+
   await prisma.menuItem.update({
     where: { id: input.id },
-    data: {
-      ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
-      ...(typeof input.price === 'number' ? { price: input.price } : {}),
-      ...(typeof (input as any).vatRate === 'number'
-        ? { vatRate: (input as any).vatRate }
-        : {}),
-      ...(typeof input.active === 'boolean' ? { active: input.active } : {}),
-      ...(typeof (input as any).isKg === 'boolean'
-        ? { isKg: (input as any).isKg }
-        : {}),
-      ...(typeof input.categoryId === 'number'
-        ? { categoryId: input.categoryId }
-        : {}),
-      ...(typeof (input as any).station === 'string'
-        ? { station: String((input as any).station).toUpperCase() }
-        : {}),
-    } as any,
+    data: data as any,
   });
   return true;
 });
@@ -3345,6 +3411,7 @@ async function createKdsTicketFromLog(input: {
   area: string;
   tableLabel: string;
   items: any[];
+  fireItems?: any[];
   note?: string | null;
 }) {
   const okSchema = await ensureKdsLocalSchema();
@@ -3353,7 +3420,14 @@ async function createKdsTicketFromLog(input: {
   const stations = Array.from(enabled);
   const fallbackStation = stations[0] || 'KITCHEN';
 
-  const lines = Array.isArray(input.items) ? input.items : [];
+  const rawLines = Array.isArray(input.fireItems)
+    ? input.fireItems
+    : Array.isArray(input.items)
+      ? input.items
+      : [];
+  if (rawLines.length === 0) return null;
+
+  const lines = rawLines;
   const skus = Array.from(
     new Set(
       lines
@@ -3452,6 +3526,45 @@ async function createKdsTicketFromLog(input: {
           openedAt: now,
         },
       });
+    }
+
+    const existingTicket = await tx.kdsTicket.findFirst({
+      where: {
+        orderId: order.id,
+        stations: { some: { status: 'NEW' } },
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    if (existingTicket) {
+      const prev = Array.isArray(existingTicket.itemsJson)
+        ? (existingTicket.itemsJson as any[])
+        : [];
+      const merged = [...prev, ...decorated];
+      await tx.kdsTicket.update({
+        where: { id: existingTicket.id },
+        data: { itemsJson: merged },
+      });
+      for (const st of usedStations) {
+        const row = await tx.kdsTicketStation.findFirst({
+          where: { ticketId: existingTicket.id, station: st },
+        });
+        if (!row) {
+          await tx.kdsTicketStation.create({
+            data: { ticketId: existingTicket.id, station: st, status: 'NEW' },
+          });
+        } else if (String(row.status || '').toUpperCase() !== 'NEW') {
+          await tx.kdsTicketStation.update({
+            where: { id: row.id },
+            data: {
+              status: 'NEW',
+              bumpedAt: null,
+              bumpedById: null,
+            },
+          });
+        }
+      }
+      return { orderNo: order.orderNo, ticketId: existingTicket.id };
     }
 
     const ticket = await tx.kdsTicket.create({
@@ -3570,22 +3683,10 @@ async function applyKdsVoidItem(input: {
       });
       if (!order) return;
 
-      // Only set bumpedById if the user exists locally (cloud user ids may not).
-      let safeBumpedById: number | null = null;
-      try {
-        const u = await tx.user.findUnique({
-          where: { id: Number(input.userId) },
-        });
-        safeBumpedById = u ? Number(input.userId) : null;
-      } catch {
-        safeBumpedById = null;
-      }
-
       const tickets = await tx.kdsTicket.findMany({
         where: { orderId: order.id },
         orderBy: { id: 'asc' },
       });
-      const now = new Date();
       for (const t of tickets) {
         const itemsAll = Array.isArray(t.itemsJson)
           ? (t.itemsJson as any[])
@@ -3607,28 +3708,7 @@ async function applyKdsVoidItem(input: {
             data: { itemsJson: nextItems },
           });
 
-          // For each station on this ticket: if no remaining non-voided items, mark station DONE.
-          const stations = await tx.kdsTicketStation.findMany({
-            where: { ticketId: t.id },
-          });
-          for (const stRow of stations) {
-            const station = String(stRow.station || '').toUpperCase();
-            const remaining = nextItems.filter(
-              (it: any) =>
-                !it?.voided &&
-                String(it?.station || '').toUpperCase() === station,
-            );
-            if (remaining.length === 0) {
-              await tx.kdsTicketStation.updateMany({
-                where: { ticketId: t.id, station, status: 'NEW' },
-                data: {
-                  status: 'DONE',
-                  bumpedAt: now,
-                  ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}),
-                },
-              });
-            }
-          }
+          // Keep the ticket on NEW so voided lines stay visible (struck through) until bumped.
         }
       }
     });
@@ -3723,15 +3803,31 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
       }
 
       // Local-first: always use local DB for tickets
-      await prisma.ticketLog.create({
-        data: {
-          userId: Number(userId),
-          area: sanitizedArea,
-          tableLabel: sanitizedTableLabel,
-          covers: sanitizedCovers,
-          itemsJson: items ?? [],
-          note: sanitizedNote,
-        },
+      const stockConsumeLines = Array.isArray(
+        (payload as any)?.stockConsumeLines,
+      )
+        ? ((payload as any).stockConsumeLines as {
+            sku?: string;
+            qty?: number;
+          }[])
+        : [];
+      const kdsFireItems = Array.isArray((payload as any)?.kdsFireItems)
+        ? ((payload as any).kdsFireItems as any[])
+        : undefined;
+
+      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        await expireStaleMenuStock(tx);
+        await tx.ticketLog.create({
+          data: {
+            userId: Number(userId),
+            area: sanitizedArea,
+            tableLabel: sanitizedTableLabel,
+            covers: sanitizedCovers,
+            itemsJson: items ?? [],
+            note: sanitizedNote,
+          },
+        });
+        await consumeMenuStockForTicketLines(tx, stockConsumeLines);
       });
 
       // Notify every other client so the table's waiter badge / metrics
@@ -3757,6 +3853,7 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
           area: sanitizedArea,
           tableLabel: sanitizedTableLabel,
           items: items ?? [],
+          fireItems: kdsFireItems,
           note: sanitizedNote,
         });
       } catch (e: any) {
@@ -3815,7 +3912,7 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
   if (!last) return null;
   const items = Array.isArray(last.itemsJson) ? (last.itemsJson as any[]) : [];
   return {
-    items: items.filter((it: any) => !it?.voided) as any,
+    items: items as any,
     note: last.note ?? null,
     covers: last.covers ?? null,
     createdAt: last.createdAt.toISOString(),
@@ -3891,7 +3988,7 @@ ipcMain.handle('kds:listTickets', async (_e, input) => {
   await ensureKdsLocalSchema();
   try {
     const rows = await (prisma as any).kdsTicketStation.findMany({
-      where: { station, status },
+      where: kdsStationListWhere(station, status),
       include: { ticket: { include: { order: true } } },
       orderBy:
         status === 'NEW'
@@ -3900,33 +3997,7 @@ ipcMain.handle('kds:listTickets', async (_e, input) => {
       take: limit,
     });
 
-    return (rows as any[])
-      .map((r: any) => {
-        const t = r.ticket;
-        const o = t?.order;
-        const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
-        const items = itemsAll
-          .map((it: any, idx: number) => ({ ...it, _idx: idx }))
-          .filter(
-            (it: any) =>
-              String(it?.station || '').toUpperCase() === station &&
-              !it?.voided,
-          )
-          .filter((it: any) => (status === 'NEW' ? !it?.bumped : true));
-        // In NEW view, hide station cards that have no remaining items (e.g., everything was voided).
-        if (status === 'NEW' && items.length === 0) return null;
-        return {
-          ticketId: t?.id,
-          orderNo: o?.orderNo,
-          area: o?.area,
-          tableLabel: o?.tableLabel,
-          firedAt: t?.firedAt?.toISOString?.() ?? null,
-          note: t?.note ?? null,
-          items,
-          bumpedAt: r?.bumpedAt?.toISOString?.() ?? null,
-        };
-      })
-      .filter(Boolean);
+    return await formatKdsTicketListRows(rows, station, status);
   } catch {
     return [];
   }
@@ -3974,11 +4045,26 @@ ipcMain.handle('kds:bump', async (_e, input) => {
 
   await ensureKdsLocalSchema();
   try {
+    const now = new Date();
+    const bumpedAt = now.toISOString();
+    const ticket = await (prisma as any).kdsTicket
+      .findUnique({ where: { id: ticketId } })
+      .catch(() => null);
+    if (ticket) {
+      const itemsAll: any[] = Array.isArray(ticket.itemsJson)
+        ? ticket.itemsJson
+        : [];
+      const nextItems = bumpAllStationItemsInJson(itemsAll, station, bumpedAt);
+      await (prisma as any).kdsTicket.update({
+        where: { id: ticketId },
+        data: { itemsJson: nextItems },
+      });
+    }
     const updated = await (prisma as any).kdsTicketStation.updateMany({
       where: { ticketId, station, status: 'NEW' },
       data: {
         status: 'DONE',
-        bumpedAt: new Date(),
+        bumpedAt: now,
         ...(bumpedById ? { bumpedById } : {}),
       },
     });
@@ -3986,6 +4072,23 @@ ipcMain.handle('kds:bump', async (_e, input) => {
   } catch {
     return false;
   }
+});
+
+ipcMain.handle('kds:recall', async (_e, input) => {
+  await ensureKdsLocalSchema();
+  return recallKdsTicket(prisma, {
+    station: String((input as any)?.station || 'KITCHEN'),
+    ticketId: (input as any)?.ticketId,
+    itemIdx: (input as any)?.itemIdx,
+  });
+});
+
+ipcMain.handle('kds:clearDone', async (_e, input) => {
+  await ensureKdsLocalSchema();
+  return purgeKdsDoneTicketsForStation(
+    prisma,
+    String((input as any)?.station || 'KITCHEN'),
+  );
 });
 
 ipcMain.handle('kds:bumpItem', async (_e, input) => {
@@ -4356,7 +4459,7 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
       arr.push(new Date(j.createdAt).getTime());
       paymentsByTable.set(k, arr);
     }
-    for (const [k, arr] of paymentsByTable) arr.sort((a, b) => a - b);
+    for (const [, arr] of paymentsByTable) arr.sort((a, b) => a - b);
   }
 
   return visibleRows.map((r: any) => {

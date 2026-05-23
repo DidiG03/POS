@@ -79,6 +79,7 @@ const SHARED_ENUMS = [
 // Fields legitimately present only locally (Electron-only behavior).
 const ALLOWED_LOCAL_ONLY: Record<string, string[]> = {
   User: ['twoFactorEnabled', 'twoFactorSecret'],
+  MenuItem: ['stockLevel', 'stockRemaining', 'stockDay'],
   // Printer-offline retry queue lives only on the LAN POS host (SQLite).
   PrintJob: ['attempts', 'lastError', 'nextAttemptAt', 'printerProfileId'],
 };

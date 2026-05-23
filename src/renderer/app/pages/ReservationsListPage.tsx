@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import type { ReservationsContext } from '../ReservationsLayout';
 import type { ReservationDTO, ReservationStatus } from '@shared/ipc';
+import { reservationStatusLabel } from '../../utils/reservationLabels';
 
 const STATUS_BADGE: Record<ReservationStatus, string> = {
   BOOKED: 'bg-amber-900/60 border-amber-700 text-amber-100',
@@ -12,11 +14,12 @@ const STATUS_BADGE: Record<ReservationStatus, string> = {
 };
 
 function StatusChip({ status }: { status: ReservationStatus }) {
+  const { t } = useTranslation();
   return (
     <span
       className={`inline-flex items-center text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border ${STATUS_BADGE[status]}`}
     >
-      {status.replace('_', ' ')}
+      {reservationStatusLabel(t, status)}
     </span>
   );
 }
@@ -44,8 +47,9 @@ function digits(s: string | null | undefined): string {
 }
 
 export default function ReservationsListPage() {
+  const { t } = useTranslation();
   const ctx = useOutletContext<ReservationsContext>();
-  const { me, area, date, areas, openEditor } = ctx;
+  const { date, areas, openEditor } = ctx;
   const [reservations, setReservations] = useState<ReservationDTO[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,11 +80,11 @@ export default function ReservationsListPage() {
       });
       setReservations(list);
     } catch (e: any) {
-      setError(e?.message || 'Failed to load reservations');
+      setError(e?.message || t('reservations.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [date]);
+  }, [date, t]);
 
   useEffect(() => {
     void reload();
@@ -168,16 +172,25 @@ export default function ReservationsListPage() {
     statusFilter !== '' ||
     hideClosed;
 
+  const coversLabel = t('reservations.covers', { count: totalCovers });
+
+  const summaryText = loading
+    ? t('common.loading')
+    : filtersActive
+      ? t('reservations.summaryFiltered', {
+          filtered: filtered.length,
+          total: sorted.length,
+          covers: coversLabel,
+        })
+      : t('reservations.summaryTotal', {
+          count: sorted.length,
+          covers: coversLabel,
+        });
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="text-sm opacity-80">
-          {loading
-            ? 'Loading…'
-            : filtersActive
-              ? `${filtered.length} of ${sorted.length} · ${totalCovers} cover${totalCovers === 1 ? '' : 's'}`
-              : `${sorted.length} reservation${sorted.length === 1 ? '' : 's'} · ${totalCovers} cover${totalCovers === 1 ? '' : 's'}`}
-        </div>
+        <div className="text-sm opacity-80">{summaryText}</div>
       </div>
 
       {/* Search + filters — everything fits on a single row from `sm` up.
@@ -189,7 +202,7 @@ export default function ReservationsListPage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, phone, table or note…"
+              placeholder={t('reservations.searchPlaceholder')}
               // 16px text-base avoids the iOS Safari auto-zoom on focus.
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 pr-8 text-base sm:text-sm"
             />
@@ -198,7 +211,7 @@ export default function ReservationsListPage() {
                 type="button"
                 onClick={() => setQuery('')}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1.5 rounded hover:bg-gray-700 text-xs opacity-70"
-                title="Clear search"
+                title={t('reservations.clearSearch')}
               >
                 ✕
               </button>
@@ -208,9 +221,9 @@ export default function ReservationsListPage() {
             value={areaFilter}
             onChange={(e) => setAreaFilter(e.target.value)}
             className="bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base sm:text-sm sm:shrink-0"
-            title="Filter by area"
+            title={t('reservations.filterByArea')}
           >
-            <option value="">All areas</option>
+            <option value="">{t('reservations.allAreas')}</option>
             {areas.map((a) => (
               <option key={a.name} value={a.name}>
                 {a.name}
@@ -223,12 +236,12 @@ export default function ReservationsListPage() {
               setStatusFilter(e.target.value as ReservationStatus | '')
             }
             className="bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base sm:text-sm sm:shrink-0"
-            title="Filter by status"
+            title={t('reservations.filterByStatus')}
           >
-            <option value="">Any status</option>
+            <option value="">{t('reservations.anyStatus')}</option>
             {ALL_STATUSES.map((s) => (
               <option key={s} value={s}>
-                {s.replace('_', ' ')}
+                {reservationStatusLabel(t, s)}
               </option>
             ))}
           </select>
@@ -239,7 +252,7 @@ export default function ReservationsListPage() {
               onChange={(e) => setHideClosed(e.target.checked)}
               className="w-4 h-4"
             />
-            Hide cancelled / no-show
+            {t('reservations.hideClosed')}
           </label>
           {filtersActive && (
             <button
@@ -247,7 +260,7 @@ export default function ReservationsListPage() {
               onClick={clearFilters}
               className="sm:ml-auto sm:shrink-0 px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-xs"
             >
-              Clear filters
+              {t('reservations.clearFilters')}
             </button>
           )}
         </div>
@@ -264,14 +277,14 @@ export default function ReservationsListPage() {
         {filtered.length === 0 && !loading && (
           <div className="rounded border border-gray-700 bg-gray-800 p-4 text-center text-sm opacity-70">
             {sorted.length === 0
-              ? 'No reservations for this day.'
-              : 'No reservations match the current filters.'}
+              ? t('reservations.noReservationsDay')
+              : t('reservations.noMatchFilters')}
           </div>
         )}
         {filtered.map((r) => {
-          const t = new Date(r.startsAt);
-          const hh = String(t.getHours()).padStart(2, '0');
-          const mm = String(t.getMinutes()).padStart(2, '0');
+          const when = new Date(r.startsAt);
+          const hh = String(when.getHours()).padStart(2, '0');
+          const mm = String(when.getMinutes()).padStart(2, '0');
           return (
             <button
               key={r.id}
@@ -303,7 +316,11 @@ export default function ReservationsListPage() {
               </div>
               <div className="mt-2 flex items-center gap-3 text-xs opacity-80">
                 <span>{r.area}</span>
-                <span>· Table {r.tableLabel || '—'}</span>
+                <span>
+                  {t('reservations.tablePrefix', {
+                    label: r.tableLabel || '—',
+                  })}
+                </span>
               </div>
               {r.note && (
                 <div className="mt-1 text-xs opacity-70 truncate">{r.note}</div>
@@ -318,14 +335,30 @@ export default function ReservationsListPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-900/60 text-xs uppercase tracking-wide">
             <tr>
-              <th className="text-left px-3 py-2">Time</th>
-              <th className="text-left px-3 py-2">Customer</th>
-              <th className="text-left px-3 py-2">Party</th>
-              <th className="text-left px-3 py-2">Area</th>
-              <th className="text-left px-3 py-2">Table</th>
-              <th className="text-left px-3 py-2">Status</th>
-              <th className="text-left px-3 py-2">Note</th>
-              <th className="text-right px-3 py-2">Actions</th>
+              <th className="text-left px-3 py-2">
+                {t('reservations.colTime')}
+              </th>
+              <th className="text-left px-3 py-2">
+                {t('reservations.colCustomer')}
+              </th>
+              <th className="text-left px-3 py-2">
+                {t('reservations.colParty')}
+              </th>
+              <th className="text-left px-3 py-2">
+                {t('reservations.colArea')}
+              </th>
+              <th className="text-left px-3 py-2">
+                {t('reservations.colTable')}
+              </th>
+              <th className="text-left px-3 py-2">
+                {t('reservations.colStatus')}
+              </th>
+              <th className="text-left px-3 py-2">
+                {t('reservations.colNote')}
+              </th>
+              <th className="text-right px-3 py-2">
+                {t('reservations.colActions')}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -333,21 +366,21 @@ export default function ReservationsListPage() {
               <tr>
                 <td colSpan={8} className="px-3 py-6 text-center opacity-70">
                   {sorted.length === 0
-                    ? 'No reservations for this day.'
-                    : 'No reservations match the current filters.'}
+                    ? t('reservations.noReservationsDay')
+                    : t('reservations.noMatchFilters')}
                 </td>
               </tr>
             )}
             {filtered.map((r) => {
-              const t = new Date(r.startsAt);
+              const when = new Date(r.startsAt);
               return (
                 <tr
                   key={r.id}
                   className="border-t border-gray-700/60 hover:bg-gray-700/30"
                 >
                   <td className="px-3 py-2 font-mono">
-                    {String(t.getHours()).padStart(2, '0')}:
-                    {String(t.getMinutes()).padStart(2, '0')}
+                    {String(when.getHours()).padStart(2, '0')}:
+                    {String(when.getMinutes()).padStart(2, '0')}
                   </td>
                   <td className="px-3 py-2">
                     <div className="font-medium">{r.customerName}</div>
@@ -375,7 +408,7 @@ export default function ReservationsListPage() {
                       className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs"
                       onClick={() => openEditor(r)}
                     >
-                      Edit
+                      {t('reservations.edit')}
                     </button>
                   </td>
                 </tr>

@@ -14,18 +14,39 @@ export interface TicketLine {
   categoryName?: string;
   // When true, this line was added locally in the current session (not from last logged ticket)
   staged?: boolean;
+  voided?: boolean;
 }
 
 interface TicketState {
   lines: TicketLine[];
   orderNote: string;
-  addItem: (input: { sku: string; name: string; unitPrice: number; vatRate?: number; qty?: number; station?: 'KITCHEN' | 'BAR' | 'DESSERT'; categoryId?: number; categoryName?: string }) => void;
+  addItem: (input: {
+    sku: string;
+    name: string;
+    unitPrice: number;
+    vatRate?: number;
+    qty?: number;
+    station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+    categoryId?: number;
+    categoryName?: string;
+  }) => void;
   increment: (id: string) => void;
   decrement: (id: string) => void;
   removeLine: (id: string) => void;
+  markLineVoided: (id: string) => void;
   setLineNote: (id: string, note: string) => void;
   setOrderNote: (note: string) => void;
-  hydrate: (payload: { items: { name: string; qty: number; unitPrice: number; vatRate?: number; note?: string }[]; note?: string | null }) => void;
+  hydrate: (payload: {
+    items: {
+      name: string;
+      qty: number;
+      unitPrice: number;
+      vatRate?: number;
+      note?: string;
+      voided?: boolean;
+    }[];
+    note?: string | null;
+  }) => void;
   clear: () => void;
   markAllAsSent: () => void;
 }
@@ -33,33 +54,79 @@ interface TicketState {
 export const useTicketStore = create<TicketState>((set, _get) => ({
   lines: [],
   orderNote: '',
-  addItem: ({ sku, name, unitPrice, vatRate = 0.2, qty, station, categoryId, categoryName }) => {
+  addItem: ({
+    sku,
+    name,
+    unitPrice,
+    vatRate = 0.2,
+    qty,
+    station,
+    categoryId,
+    categoryName,
+  }) => {
     set((state) => {
       if (qty != null && Number.isFinite(qty)) {
         const id = ticketLineId(sku);
-        const line: TicketLine = { id, sku, name, unitPrice, vatRate, qty: Number(qty), staged: true, station, categoryId, categoryName };
+        const line: TicketLine = {
+          id,
+          sku,
+          name,
+          unitPrice,
+          vatRate,
+          qty: Number(qty),
+          staged: true,
+          station,
+          categoryId,
+          categoryName,
+        };
         return { lines: [...state.lines, line] };
       }
-      const existing = state.lines.find((l) => l.sku === sku && l.staged === true);
+      const existing = state.lines.find(
+        (l) => l.sku === sku && l.staged === true,
+      );
       if (existing) {
         return {
-          lines: state.lines.map((l) => (l.id === existing.id ? { ...l, qty: l.qty + 1 } : l)),
+          lines: state.lines.map((l) =>
+            l.id === existing.id ? { ...l, qty: l.qty + 1 } : l,
+          ),
         };
       }
       const id = ticketLineId(sku);
-      const line: TicketLine = { id, sku, name, unitPrice, vatRate, qty: 1, staged: true, station, categoryId, categoryName };
+      const line: TicketLine = {
+        id,
+        sku,
+        name,
+        unitPrice,
+        vatRate,
+        qty: 1,
+        staged: true,
+        station,
+        categoryId,
+        categoryName,
+      };
       return { lines: [...state.lines, line] };
     });
   },
-  increment: (id) => set((s) => ({ lines: s.lines.map((l) => (l.id === id ? { ...l, qty: l.qty + 1 } : l)) })),
+  increment: (id) =>
+    set((s) => ({
+      lines: s.lines.map((l) => (l.id === id ? { ...l, qty: l.qty + 1 } : l)),
+    })),
   decrement: (id) =>
     set((s) => ({
       lines: s.lines
         .map((l) => (l.id === id ? { ...l, qty: Math.max(0, l.qty - 1) } : l))
         .filter((l) => l.qty > 0),
     })),
-  removeLine: (id) => set((s) => ({ lines: s.lines.filter((l) => l.id !== id) })),
-  setLineNote: (id, note) => set((s) => ({ lines: s.lines.map((l) => (l.id === id ? { ...l, note } : l)) })),
+  removeLine: (id) =>
+    set((s) => ({ lines: s.lines.filter((l) => l.id !== id) })),
+  markLineVoided: (id) =>
+    set((s) => ({
+      lines: s.lines.map((l) => (l.id === id ? { ...l, voided: true } : l)),
+    })),
+  setLineNote: (id, note) =>
+    set((s) => ({
+      lines: s.lines.map((l) => (l.id === id ? { ...l, note } : l)),
+    })),
   setOrderNote: (note) => set({ orderNote: note }),
   hydrate: ({ items, note }) =>
     set(() => ({
@@ -71,12 +138,12 @@ export const useTicketStore = create<TicketState>((set, _get) => ({
         vatRate: Number(it.vatRate ?? 0),
         qty: Number(it.qty || 1),
         note: it.note,
+        voided: (it as any).voided === true,
         staged: false,
       })),
       orderNote: note || '',
     })),
   clear: () => set({ lines: [] }),
-  markAllAsSent: () => set((s) => ({ lines: s.lines.map((l) => ({ ...l, staged: false })) })),
+  markAllAsSent: () =>
+    set((s) => ({ lines: s.lines.map((l) => ({ ...l, staged: false })) })),
 }));
-
-

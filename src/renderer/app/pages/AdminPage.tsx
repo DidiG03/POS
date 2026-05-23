@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import {
+  StockAvailabilityPanel,
+  type StockPanelMenuCategory,
+} from '../../components/StockAvailabilityPanel';
+import { reservationStatusLabel } from '../../utils/reservationLabels';
 
 type Overview = {
   activeUsers: number;
@@ -115,6 +121,7 @@ function IconTrash() {
 }
 
 export default function AdminPage() {
+  const { t } = useTranslation();
   const [ov, setOv] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
   const [shifts, setShifts] = useState<AdminShift[]>([]);
@@ -165,6 +172,10 @@ export default function AdminPage() {
   const [dataSource, setDataSource] = useState<'cloud' | 'local'>('local');
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const [billingPaused, setBillingPaused] = useState(false);
+  const [stockMenuCats, setStockMenuCats] = useState<StockPanelMenuCategory[]>(
+    [],
+  );
+  const [stockSaving, setStockSaving] = useState(false);
   const me = useAdminSessionStore((s) => s.user);
   // Simplified view: hide sales trends entirely
 
@@ -188,10 +199,7 @@ export default function AdminPage() {
         if (cur) safeSet(setCurrency, cur);
         safeSet(setDataSource, 'local');
         if (backendUrl && !businessCode) {
-          safeSet(
-            setAdminNotice,
-            'Cloud is enabled but Business code is missing. Set it in Settings → Cloud (Hosted).',
-          );
+          safeSet(setAdminNotice, t('adminOverview.cloudBusinessCodeMissing'));
           safeSet(setOv, null as any);
           safeSet(setShifts, []);
           safeSet(setTopSelling, null as any);
@@ -217,7 +225,7 @@ export default function AdminPage() {
       else {
         safeSet(
           setAdminNotice,
-          (ovRes.reason as any)?.message || 'Failed to load admin overview.',
+          (ovRes.reason as any)?.message || t('adminOverview.loadFailed'),
         );
         safeSet(setOv, null as any);
       }
@@ -243,7 +251,20 @@ export default function AdminPage() {
     return () => {
       cancelled = true;
     };
-  }, [dataSource, me?.id, me?.role]);
+  }, [dataSource, me?.id, me?.role, t]);
+
+  async function refreshStockMenu() {
+    try {
+      const data = await window.api.menu.listCategoriesWithItems();
+      setStockMenuCats(data as StockPanelMenuCategory[]);
+    } catch {
+      setStockMenuCats([]);
+    }
+  }
+
+  useEffect(() => {
+    void refreshStockMenu();
+  }, []);
 
   // Removed sales trends fetch for simplified overview
   const openUserIds = useMemo(
@@ -416,29 +437,35 @@ export default function AdminPage() {
         </div>
       )}
       <div className="grid gap-4 grid-cols-1 min-[520px]:grid-cols-3 min-w-0 [&>*]:min-w-0">
-        <Stat title="Covers Today" value={ov?.coversToday ?? 0} />
-        <Stat title="Open Shifts" value={ov?.openShifts} />
-        <Stat title="Open Orders" value={ov?.openOrders} />
         <Stat
-          title="Revenue Today (net)"
+          title={t('adminOverview.coversToday')}
+          value={ov?.coversToday ?? 0}
+        />
+        <Stat title={t('adminOverview.openShifts')} value={ov?.openShifts} />
+        <Stat title={t('adminOverview.openOrders')} value={ov?.openOrders} />
+        <Stat
+          title={t('adminOverview.revenueTodayNet')}
           value={ov ? (ov.revenueTodayNet ?? 0) : null}
           kind="money"
           currency={currency}
         />
         <Stat
-          title="VAT Today"
+          title={t('adminOverview.vatToday')}
           value={ov ? (ov.revenueTodayVat ?? 0) : null}
           kind="money"
           currency={currency}
         />
         <div className="bg-gray-800 rounded p-4 min-w-0 overflow-hidden">
-          <div className="text-sm opacity-70">Top Selling Today</div>
+          <div className="text-sm opacity-70">
+            {t('adminOverview.topSellingToday')}
+          </div>
           <div className="mt-1 text-base sm:text-lg font-semibold break-words">
             {topSelling ? topSelling.name : '—'}
           </div>
           {topSelling && (
             <div className="text-sm opacity-80 mt-1 break-words">
-              Qty: {topSelling.qty} • Revenue:{' '}
+              {t('adminOverview.qty')}: {topSelling.qty} •{' '}
+              {t('adminOverview.revenue')}:{' '}
               <span className="font-semibold tabular-nums">
                 {formatMoney(topSelling.revenue, currency)}
               </span>
@@ -448,9 +475,34 @@ export default function AdminPage() {
       </div>
       <ReservationsTodayCard ov={ov} />
 
+      <div className="col-span-2 min-w-0">
+        <StockAvailabilityPanel
+          categories={stockMenuCats}
+          disabled={billingPaused || stockSaving}
+          onChangeLevel={async (itemId, stockLevel, opts) => {
+            setStockSaving(true);
+            try {
+              const payload: Record<string, unknown> = {
+                id: itemId,
+                stockLevel,
+              };
+              if (stockLevel === 'LOW' && opts?.stockRemaining != null) {
+                payload.stockRemaining = opts.stockRemaining;
+              }
+              await window.api.menu.updateItem(payload as any);
+              await refreshStockMenu();
+            } finally {
+              setStockSaving(false);
+            }
+          }}
+        />
+      </div>
+
       <div className="bg-gray-800 rounded p-4 col-span-1">
         <div className="flex items-center justify-between gap-3 mb-2">
-          <div className="text-sm opacity-70">Open Shifts</div>
+          <div className="text-sm opacity-70">
+            {t('adminOverview.openShifts')}
+          </div>
           <button
             className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
             onClick={() => {
@@ -462,12 +514,14 @@ export default function AdminPage() {
             }}
             type="button"
           >
-            View all
+            {t('adminOverview.viewAll')}
           </button>
         </div>
         <div className="grid grid-cols-2 gap-3">
           {shifts.filter((s) => s.isOpen).length === 0 && (
-            <div className="opacity-70 col-span-2">No open shifts</div>
+            <div className="opacity-70 col-span-2">
+              {t('adminOverview.noOpenShifts')}
+            </div>
           )}
           {shifts
             .filter((s) => s.isOpen)
@@ -477,9 +531,12 @@ export default function AdminPage() {
                   {s.userName}
                 </div>
                 <div className="text-xs opacity-80">
-                  Opened: {new Date(s.openedAt).toLocaleTimeString()}
+                  {t('adminOverview.opened')}:{' '}
+                  {new Date(s.openedAt).toLocaleTimeString()}
                 </div>
-                <div className="text-xs">Hours: {s.durationHours}</div>
+                <div className="text-xs">
+                  {t('adminOverview.hours')}: {s.durationHours}
+                </div>
               </div>
             ))}
         </div>
@@ -490,10 +547,15 @@ export default function AdminPage() {
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-5xl p-4">
             <div className="flex items-start justify-between gap-4 mb-3">
               <div>
-                <div className="text-lg font-semibold">Shift history</div>
+                <div className="text-lg font-semibold">
+                  {t('adminOverview.shiftHistory')}
+                </div>
                 <div className="text-xs opacity-70">
-                  Total: {shifts.length} • Open: {openShiftCount} • Closed:{' '}
-                  {closedShiftCount}
+                  {t('adminOverview.shiftTotals', {
+                    total: shifts.length,
+                    open: openShiftCount,
+                    closed: closedShiftCount,
+                  })}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -502,14 +564,14 @@ export default function AdminPage() {
                   onClick={refreshShifts}
                   type="button"
                 >
-                  Refresh
+                  {t('adminOverview.refresh')}
                 </button>
                 <button
                   className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
                   onClick={() => setShowShiftsModal(false)}
                   type="button"
                 >
-                  Close
+                  {t('common.close')}
                 </button>
               </div>
             </div>
@@ -521,14 +583,14 @@ export default function AdminPage() {
                   onClick={() => setShiftView('SHIFTS')}
                   type="button"
                 >
-                  Shifts
+                  {t('adminOverview.shifts')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftView === 'STAFF' ? 'bg-blue-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftView('STAFF')}
                   type="button"
                 >
-                  By staff
+                  {t('adminOverview.byStaff')}
                 </button>
                 <div className="w-px h-7 bg-gray-700 mx-1 hidden md:block" />
                 <button
@@ -536,62 +598,62 @@ export default function AdminPage() {
                   onClick={() => setShiftRange('TODAY')}
                   type="button"
                 >
-                  Today
+                  {t('adminOverview.today')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'YESTERDAY' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftRange('YESTERDAY')}
                   type="button"
                 >
-                  Yesterday
+                  {t('adminOverview.yesterday')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'WEEK' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftRange('WEEK')}
                   type="button"
                 >
-                  Week
+                  {t('adminOverview.week')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'MONTH' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftRange('MONTH')}
                   type="button"
                 >
-                  Month
+                  {t('adminOverview.month')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'ALL' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftRange('ALL')}
                   type="button"
                 >
-                  All time
+                  {t('adminOverview.allTime')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftFilter === 'OPEN' ? 'bg-emerald-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftFilter('OPEN')}
                   type="button"
                 >
-                  Open
+                  {t('adminOverview.open')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftFilter === 'CLOSED' ? 'bg-emerald-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftFilter('CLOSED')}
                   type="button"
                 >
-                  Closed
+                  {t('adminOverview.closed')}
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded text-sm ${shiftFilter === 'ALL' ? 'bg-emerald-700' : 'bg-gray-800 hover:bg-gray-700'}`}
                   onClick={() => setShiftFilter('ALL')}
                   type="button"
                 >
-                  All
+                  {t('adminOverview.all')}
                 </button>
               </div>
               <div className="flex-1" />
               <input
                 className="bg-gray-800 rounded px-3 py-2 text-sm w-full md:w-[320px]"
-                placeholder="Search staff, userId, shiftId…"
+                placeholder={t('adminOverview.searchShifts')}
                 value={shiftQuery}
                 onChange={(e) => setShiftQuery(e.target.value)}
               />
@@ -602,19 +664,31 @@ export default function AdminPage() {
                 <table className="w-full text-sm">
                   <thead className="text-left bg-gray-900 sticky top-0">
                     <tr className="opacity-70">
-                      <th className="py-2 px-3">Status</th>
-                      <th className="py-2 px-3">Staff</th>
-                      <th className="py-2 px-3">Opened</th>
-                      <th className="py-2 px-3">Closed</th>
-                      <th className="py-2 px-3 text-right">Hours</th>
-                      <th className="py-2 px-3 text-right">Shift ID</th>
+                      <th className="py-2 px-3">
+                        {t('adminOverview.colStatus')}
+                      </th>
+                      <th className="py-2 px-3">
+                        {t('adminOverview.colStaff')}
+                      </th>
+                      <th className="py-2 px-3">
+                        {t('adminOverview.colOpened')}
+                      </th>
+                      <th className="py-2 px-3">
+                        {t('adminOverview.colClosed')}
+                      </th>
+                      <th className="py-2 px-3 text-right">
+                        {t('adminOverview.colHours')}
+                      </th>
+                      <th className="py-2 px-3 text-right">
+                        {t('adminOverview.colShiftId')}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredShifts.length === 0 && (
                       <tr className="border-t border-gray-800">
                         <td className="py-3 px-3 opacity-70" colSpan={6}>
-                          No shifts found.
+                          {t('adminOverview.noShiftsFound')}
                         </td>
                       </tr>
                     )}
@@ -628,13 +702,15 @@ export default function AdminPage() {
                                 : 'bg-gray-800 border-gray-700 text-gray-200'
                             }`}
                           >
-                            {s.isOpen ? 'OPEN' : 'CLOSED'}
+                            {s.isOpen
+                              ? t('adminOverview.shiftOpen')
+                              : t('adminOverview.shiftClosed')}
                           </span>
                         </td>
                         <td className="py-2 px-3">
                           <div className="font-medium">{s.userName}</div>
                           <div className="text-xs opacity-70">
-                            User #{s.userId}
+                            {t('adminOverview.userNumber', { id: s.userId })}
                           </div>
                         </td>
                         <td className="py-2 px-3 opacity-90">
@@ -663,19 +739,31 @@ export default function AdminPage() {
                 <table className="w-full text-sm">
                   <thead className="text-left bg-gray-900 sticky top-0">
                     <tr className="opacity-70">
-                      <th className="py-2 px-3">Staff</th>
-                      <th className="py-2 px-3 text-right">Open</th>
-                      <th className="py-2 px-3 text-right">Closed</th>
-                      <th className="py-2 px-3">Last opened</th>
-                      <th className="py-2 px-3">Last closed</th>
-                      <th className="py-2 px-3 text-right">Total hours</th>
+                      <th className="py-2 px-3">
+                        {t('adminOverview.colStaff')}
+                      </th>
+                      <th className="py-2 px-3 text-right">
+                        {t('adminOverview.open')}
+                      </th>
+                      <th className="py-2 px-3 text-right">
+                        {t('adminOverview.closed')}
+                      </th>
+                      <th className="py-2 px-3">
+                        {t('adminOverview.colLastOpened')}
+                      </th>
+                      <th className="py-2 px-3">
+                        {t('adminOverview.colLastClosed')}
+                      </th>
+                      <th className="py-2 px-3 text-right">
+                        {t('adminOverview.colTotalHours')}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {staffShiftSummary.length === 0 && (
                       <tr className="border-t border-gray-800">
                         <td className="py-3 px-3 opacity-70" colSpan={6}>
-                          No shifts found.
+                          {t('adminOverview.noShiftsFound')}
                         </td>
                       </tr>
                     )}
@@ -702,7 +790,7 @@ export default function AdminPage() {
                           <td className="py-2 px-3">
                             <div className="font-medium">{r.userName}</div>
                             <div className="text-xs opacity-70">
-                              User #{r.userId}
+                              {t('adminOverview.userNumber', { id: r.userId })}
                             </div>
                           </td>
                           <td className="py-2 px-3 text-right font-mono">
@@ -731,7 +819,7 @@ export default function AdminPage() {
                   </tbody>
                 </table>
                 <div className="px-3 py-2 text-xs opacity-70 border-t border-gray-800">
-                  Tip: click a staff row to jump to their previous shifts.
+                  {t('adminOverview.staffRowTip')}
                 </div>
               </div>
             )}
@@ -742,10 +830,13 @@ export default function AdminPage() {
       <div className="bg-gray-800 rounded p-4 col-span-1">
         <div className="flex items-center justify-between gap-3 mb-3">
           <div>
-            <div className="text-sm opacity-70">Staff members</div>
+            <div className="text-sm opacity-70">
+              {t('adminOverview.staffMembers')}
+            </div>
             <div className="text-xs opacity-70">
-              Loaded from{' '}
-              {dataSource === 'cloud' ? 'cloud database' : 'local database'}
+              {dataSource === 'cloud'
+                ? t('adminOverview.loadedFromCloud')
+                : t('adminOverview.loadedFromLocal')}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -755,7 +846,7 @@ export default function AdminPage() {
                 checked={showAdmins}
                 onChange={(e) => setShowAdmins(e.target.checked)}
               />
-              Admins
+              {t('adminOverview.showAdmins')}
             </label>
             <label className="text-xs opacity-80 flex items-center gap-2 select-none">
               <input
@@ -763,7 +854,7 @@ export default function AdminPage() {
                 checked={showInactive}
                 onChange={(e) => setShowInactive(e.target.checked)}
               />
-              Inactive
+              {t('adminOverview.showInactive')}
             </label>
             <button
               className="px-3 py-2 rounded bg-transparent hover:bg-gray-700 text-sm disabled:opacity-60 cursor-pointer"
@@ -816,7 +907,7 @@ export default function AdminPage() {
         <div className="mb-3">
           <input
             className="w-full bg-gray-700 rounded px-3 py-2"
-            placeholder="Search by name, role, or ID…"
+            placeholder={t('adminOverview.searchStaff')}
             value={userQuery}
             onChange={(e) => setUserQuery(e.target.value)}
           />
@@ -826,20 +917,19 @@ export default function AdminPage() {
           <table className="w-full text-sm">
             <thead className="text-left opacity-70">
               <tr>
-                <th className="py-1 pr-2">ID</th>
-                <th className="py-1 pr-2">Name</th>
-                <th className="py-1 pr-2">Role</th>
-                {/* <th className="py-1 pr-2">Active</th> */}
-                <th className="py-1 pr-2">On shift</th>
-                <th className="py-1 pr-2">Created</th>
-                <th className="py-1 pr-2">Actions</th>
+                <th className="py-1 pr-2">{t('adminOverview.colId')}</th>
+                <th className="py-1 pr-2">{t('adminOverview.colName')}</th>
+                <th className="py-1 pr-2">{t('adminOverview.colRole')}</th>
+                <th className="py-1 pr-2">{t('adminOverview.colOnShift')}</th>
+                <th className="py-1 pr-2">{t('adminOverview.colCreated')}</th>
+                <th className="py-1 pr-2">{t('adminOverview.colActions')}</th>
               </tr>
             </thead>
             <tbody>
               {staffList.length === 0 && (
                 <tr className="border-t border-gray-700">
                   <td className="py-2 opacity-70" colSpan={7}>
-                    No staff found
+                    {t('adminOverview.noStaffFound')}
                   </td>
                 </tr>
               )}
@@ -854,7 +944,9 @@ export default function AdminPage() {
                   </td>
                   {/* <td className="py-1 pr-2">{u.active ? 'Yes' : 'No'}</td> */}
                   <td className="py-1 pr-2">
-                    {openUserIds.has(u.id) ? 'Yes' : 'No'}
+                    {openUserIds.has(u.id)
+                      ? t('adminOverview.yes')
+                      : t('adminOverview.no')}
                   </td>
                   <td className="py-1 pr-2 opacity-80">
                     {u.createdAt
@@ -865,7 +957,7 @@ export default function AdminPage() {
                     <div className="flex items-center gap-2">
                       <button
                         className="px-2 py-1 rounded bg-transparent hover:bg-gray-700 text-xs cursor-pointer"
-                        title="Edit name, role, PIN or active status"
+                        title={t('adminOverview.editStaffTitle')}
                         onClick={() =>
                           setEditingStaff({
                             id: u.id,
@@ -883,8 +975,8 @@ export default function AdminPage() {
                           disabled={myId === u.id}
                           title={
                             myId === u.id
-                              ? 'You cannot disable your own account'
-                              : 'Disable user'
+                              ? t('adminOverview.disableSelfTitle')
+                              : t('adminOverview.disableUserTitle')
                           }
                           onClick={async () => {
                             setStaffStatus(null);
@@ -895,18 +987,22 @@ export default function AdminPage() {
                               } as any);
                               setStaffStatus({
                                 kind: 'success',
-                                message: `Disabled ${u.displayName}.`,
+                                message: t('adminOverview.disabledUser', {
+                                  name: u.displayName,
+                                }),
                               });
                               await refreshUsers();
                             } catch (e: any) {
                               setStaffStatus({
                                 kind: 'error',
-                                message: e?.message || 'Failed to disable user',
+                                message:
+                                  e?.message ||
+                                  t('adminOverview.disableFailed'),
                               });
                             }
                           }}
                         >
-                          Disable
+                          {t('adminOverview.disable')}
                         </button>
                       ) : (
                         <button
@@ -920,18 +1016,21 @@ export default function AdminPage() {
                               } as any);
                               setStaffStatus({
                                 kind: 'success',
-                                message: `Enabled ${u.displayName}.`,
+                                message: t('adminOverview.enabledUser', {
+                                  name: u.displayName,
+                                }),
                               });
                               await refreshUsers();
                             } catch (e: any) {
                               setStaffStatus({
                                 kind: 'error',
-                                message: e?.message || 'Failed to enable user',
+                                message:
+                                  e?.message || t('adminOverview.enableFailed'),
                               });
                             }
                           }}
                         >
-                          Enable
+                          {t('adminOverview.enable')}
                         </button>
                       )}
 
@@ -940,13 +1039,16 @@ export default function AdminPage() {
                         disabled={myId === u.id}
                         title={
                           myId === u.id
-                            ? 'You cannot delete your own account'
-                            : 'Permanently delete user (only if no history)'
+                            ? t('adminOverview.deleteSelfTitle')
+                            : t('adminOverview.deleteUserTitle')
                         }
                         onClick={async () => {
                           if (myId === u.id) return;
                           const ok = window.confirm(
-                            `Permanently delete "${u.displayName}" (ID ${u.id})? This only works if they have no history.`,
+                            t('adminOverview.deleteConfirm', {
+                              name: u.displayName,
+                              id: u.id,
+                            }),
                           );
                           if (!ok) return;
                           setStaffStatus(null);
@@ -957,13 +1059,16 @@ export default function AdminPage() {
                             } as any);
                             setStaffStatus({
                               kind: 'success',
-                              message: `Deleted ${u.displayName}.`,
+                              message: t('adminOverview.deletedUser', {
+                                name: u.displayName,
+                              }),
                             });
                             await refreshUsers();
                           } catch (e: any) {
                             setStaffStatus({
                               kind: 'error',
-                              message: e?.message || 'Failed to delete user',
+                              message:
+                                e?.message || t('adminOverview.deleteFailed'),
                             });
                           }
                         }}
@@ -1000,6 +1105,7 @@ function formatMoney(amount: number, currency: string): string {
 // ---------- Reservations day-summary card ----------
 
 function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
+  const { t } = useTranslation();
   const total = ov?.reservationsTotalToday ?? 0;
   const covers = ov?.reservationsCoversToday ?? 0;
   const avg = ov?.reservationsAvgPartyToday ?? 0;
@@ -1009,15 +1115,17 @@ function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
   const next = ov?.nextReservationToday ?? null;
 
   function nextRelative(iso: string): string {
-    const t = new Date(iso).getTime();
-    if (!Number.isFinite(t)) return '';
-    const diffMs = t - Date.now();
+    const when = new Date(iso).getTime();
+    if (!Number.isFinite(when)) return '';
+    const diffMs = when - Date.now();
     const mins = Math.round(diffMs / 60_000);
-    if (mins <= 0) return 'now';
-    if (mins < 60) return `in ${mins}m`;
+    if (mins <= 0) return t('adminOverview.now');
+    if (mins < 60) return t('adminOverview.inMinutes', { mins });
     const h = Math.floor(mins / 60);
     const m = mins % 60;
-    return m === 0 ? `in ${h}h` : `in ${h}h ${m}m`;
+    return m === 0
+      ? t('adminOverview.inHours', { hours: h })
+      : t('adminOverview.inHoursMinutes', { hours: h, mins: m });
   }
 
   function openReservations() {
@@ -1028,11 +1136,16 @@ function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
     <div className="bg-gray-800 rounded p-4 col-span-1 min-w-0 overflow-hidden">
       <div className="flex items-center justify-between gap-3 mb-3 min-w-0">
         <div className="min-w-0 flex-1">
-          <div className="text-sm opacity-70">Reservations today</div>
+          <div className="text-sm opacity-70">
+            {t('adminOverview.reservationsToday')}
+          </div>
           <div className="text-xs opacity-60 break-words">
             {total === 0
-              ? 'No reservations on the books for today.'
-              : `${total} reservation${total === 1 ? '' : 's'} · ${covers} cover${covers === 1 ? '' : 's'}`}
+              ? t('adminOverview.noReservationsToday')
+              : t('adminOverview.reservationsSummary', {
+                  count: total,
+                  covers: t('reservations.covers', { count: covers }),
+                })}
           </div>
         </div>
         <button
@@ -1040,16 +1153,19 @@ function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
           onClick={openReservations}
           className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
         >
-          Open panel
+          {t('adminOverview.openPanel')}
         </button>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 min-w-0 [&>*]:min-w-0">
-        <MiniStat label="Covers" value={covers} />
-        <MiniStat label="Parties" value={total} />
-        <MiniStat label="Avg party" value={avg > 0 ? avg.toFixed(1) : '—'} />
+        <MiniStat label={t('common.covers')} value={covers} />
+        <MiniStat label={t('adminOverview.parties')} value={total} />
         <MiniStat
-          label="Upcoming"
+          label={t('adminOverview.avgParty')}
+          value={avg > 0 ? avg.toFixed(1) : '—'}
+        />
+        <MiniStat
+          label={t('adminOverview.upcoming')}
           value={upcoming}
           hint={
             upcoming > 0 && next
@@ -1061,32 +1177,32 @@ function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
 
       <div className="flex items-center gap-1.5 flex-wrap">
         <StatusPill
-          label="Booked"
+          label={reservationStatusLabel(t, 'BOOKED')}
           cls="bg-amber-900/60 border-amber-700 text-amber-100"
           value={by.BOOKED ?? 0}
         />
         <StatusPill
-          label="Seated"
+          label={reservationStatusLabel(t, 'SEATED')}
           cls="bg-rose-900/60 border-rose-700 text-rose-100"
           value={by.SEATED ?? 0}
         />
         <StatusPill
-          label="Completed"
+          label={reservationStatusLabel(t, 'COMPLETED')}
           cls="bg-emerald-900/60 border-emerald-700 text-emerald-100"
           value={by.COMPLETED ?? 0}
         />
         <StatusPill
-          label="No-show"
+          label={reservationStatusLabel(t, 'NO_SHOW')}
           cls="bg-gray-700/70 border-gray-500 text-gray-100"
           value={by.NO_SHOW ?? 0}
         />
         <StatusPill
-          label="Cancelled"
+          label={reservationStatusLabel(t, 'CANCELLED')}
           cls="bg-zinc-700/60 border-zinc-500 text-zinc-200"
           value={by.CANCELLED ?? 0}
         />
         <div className="ml-auto text-xs opacity-80">
-          No-show rate:{' '}
+          {t('adminOverview.noShowRate')}:{' '}
           <span
             className={`font-semibold ${
               noShowRate >= 25
@@ -1095,7 +1211,7 @@ function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
                   ? 'text-amber-300'
                   : 'text-emerald-300'
             }`}
-            title="No-shows divided by reservations whose start time has already passed today (Cancelled excluded)."
+            title={t('adminOverview.noShowRateTitle')}
           >
             {noShowRate}%
           </span>
@@ -1104,9 +1220,10 @@ function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
 
       {next && (
         <div className="mt-3 text-xs opacity-80 border-t border-gray-700/70 pt-2 break-words">
-          Next up: <span className="font-mono">{formatTime(next.timeIso)}</span>{' '}
-          · <span className="font-medium">{next.customerName}</span> ·{' '}
-          {next.partySize} pax ·{' '}
+          {t('adminOverview.nextUp')}:{' '}
+          <span className="font-mono">{formatTime(next.timeIso)}</span> ·{' '}
+          <span className="font-medium">{next.customerName}</span> ·{' '}
+          {next.partySize} {t('adminOverview.pax')} ·{' '}
           {next.tableLabel ? `${next.area} ${next.tableLabel}` : next.area} ·{' '}
           <span className="opacity-70">{nextRelative(next.timeIso)}</span>
         </div>
@@ -1227,6 +1344,7 @@ function AddStaffModal({
   onClose: () => void;
   onSuccess: () => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [role, setRole] = useState<StaffRole>('WAITER');
   const [pin, setPin] = useState('');
@@ -1246,11 +1364,11 @@ function AddStaffModal({
     setError(null);
     const trimmed = name.trim();
     if (!trimmed) {
-      setError('Name is required');
+      setError(t('adminOverview.nameRequired'));
       return;
     }
     if (pin.length < 4) {
-      setError('PIN must be 4-6 digits');
+      setError(t('adminOverview.pinRequired'));
       return;
     }
     setSaving(true);
@@ -1263,7 +1381,7 @@ function AddStaffModal({
       } as any);
       await onSuccess();
     } catch (e: any) {
-      setError(e?.message || 'Failed to create user');
+      setError(e?.message || t('adminOverview.createUserFailed'));
     } finally {
       setSaving(false);
     }
@@ -1275,7 +1393,7 @@ function AddStaffModal({
         type="button"
         className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
         onClick={onClose}
-        aria-label="Close modal"
+        aria-label={t('common.close')}
       />
       <div
         role="dialog"
@@ -1283,12 +1401,12 @@ function AddStaffModal({
         className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
       >
         <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
-          <div className="font-semibold">Add staff member</div>
+          <div className="font-semibold">{t('adminOverview.addStaff')}</div>
           <button
             type="button"
             className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t('common.close')}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -1308,22 +1426,21 @@ function AddStaffModal({
         <div className="p-4 space-y-4">
           {billingPaused && (
             <div className="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
-              Billing is paused. Adding staff is disabled until payment is
-              completed.
+              {t('adminOverview.billingPausedAddStaff')}
             </div>
           )}
           <label className="block text-sm">
-            <div className="opacity-80 mb-1">Full name</div>
+            <div className="opacity-80 mb-1">{t('adminOverview.fullName')}</div>
             <input
               className="w-full bg-gray-700 rounded px-3 py-2"
-              placeholder="Full name"
+              placeholder={t('adminOverview.fullName')}
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={billingPaused}
             />
           </label>
           <label className="block text-sm">
-            <div className="opacity-80 mb-1">Role</div>
+            <div className="opacity-80 mb-1">{t('adminOverview.role')}</div>
             <select
               className="w-full bg-gray-700 rounded px-3 py-2"
               value={role}
@@ -1345,10 +1462,13 @@ function AddStaffModal({
             </select>
           </label>
           <label className="block text-sm">
-            <div className="opacity-80 mb-1">PIN (4-6 digits)</div>
+            <div className="opacity-80 mb-1">
+              {t('adminOverview.pinDigits')}
+            </div>
             <input
               className="w-full bg-gray-700 rounded px-3 py-2"
-              placeholder="PIN (4-6 digits)"
+              placeholder={t('adminOverview.pinDigits')}
+              type="password"
               inputMode="numeric"
               value={pin}
               onChange={(e) =>
@@ -1364,7 +1484,7 @@ function AddStaffModal({
               onChange={(e) => setActive(e.target.checked)}
               disabled={billingPaused}
             />
-            Active
+            {t('adminOverview.active')}
           </label>
           {error && <div className="text-sm text-rose-300">{error}</div>}
           <div className="flex gap-2 pt-2">
@@ -1374,14 +1494,14 @@ function AddStaffModal({
               disabled={billingPaused || saving}
               onClick={() => void handleSubmit()}
             >
-              {saving ? 'Adding…' : 'Add'}
+              {saving ? t('adminOverview.adding') : t('adminOverview.add')}
             </button>
             <button
               className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
               type="button"
               onClick={onClose}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -1403,6 +1523,7 @@ function EditStaffModal({
   onSaved: (message: string) => Promise<void> | void;
   onError: (message: string) => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState(staff.displayName);
   const [role, setRole] = useState<StaffRole>(staff.role as StaffRole);
   const [pin, setPin] = useState('');
@@ -1429,11 +1550,11 @@ function EditStaffModal({
     setError(null);
     const trimmed = name.trim();
     if (!trimmed) {
-      setError('Name is required');
+      setError(t('adminOverview.nameRequired'));
       return;
     }
     if (pin && pin.length < 4) {
-      setError('PIN must be 4-6 digits (or leave blank to keep current)');
+      setError(t('adminOverview.pinKeepOrBlank'));
       return;
     }
     if (!dirty) {
@@ -1448,9 +1569,9 @@ function EditStaffModal({
       if (active !== staff.active) payload.active = active;
       if (pin) payload.pin = pin;
       await window.api.auth.updateUser(payload as any);
-      await onSaved(`Updated ${trimmed}.`);
+      await onSaved(t('adminOverview.updatedUser', { name: trimmed }));
     } catch (e: any) {
-      const msg = e?.message || 'Failed to update user';
+      const msg = e?.message || t('adminOverview.updateFailed');
       setError(msg);
       onError(msg);
     } finally {
@@ -1464,7 +1585,7 @@ function EditStaffModal({
         type="button"
         className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
         onClick={onClose}
-        aria-label="Close modal"
+        aria-label={t('common.close')}
       />
       <div
         role="dialog"
@@ -1473,14 +1594,13 @@ function EditStaffModal({
       >
         <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
           <div className="font-semibold">
-            Edit staff{' '}
-            <span className="opacity-60 text-sm">(ID {staff.id})</span>
+            {t('adminOverview.editStaffId', { id: staff.id })}
           </div>
           <button
             type="button"
             className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t('common.close')}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -1499,16 +1619,16 @@ function EditStaffModal({
         </div>
         <div className="p-4 space-y-4">
           <label className="block text-sm">
-            <div className="opacity-80 mb-1">Full name</div>
+            <div className="opacity-80 mb-1">{t('adminOverview.fullName')}</div>
             <input
               className="w-full bg-gray-700 rounded px-3 py-2"
-              placeholder="Full name"
+              placeholder={t('adminOverview.fullName')}
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
           </label>
           <label className="block text-sm">
-            <div className="opacity-80 mb-1">Role</div>
+            <div className="opacity-80 mb-1">{t('adminOverview.role')}</div>
             <select
               className="w-full bg-gray-700 rounded px-3 py-2"
               value={role}
@@ -1530,18 +1650,21 @@ function EditStaffModal({
             </select>
             {isSelf && staff.role === 'ADMIN' && (
               <div className="text-xs opacity-70 mt-1">
-                You can&rsquo;t change your own admin role.
+                {t('adminOverview.cantChangeOwnRole')}
               </div>
             )}
           </label>
           <label className="block text-sm">
             <div className="opacity-80 mb-1">
-              New PIN{' '}
-              <span className="opacity-60">(leave blank to keep current)</span>
+              {t('adminOverview.newPin')}{' '}
+              <span className="opacity-60">
+                {t('adminOverview.newPinHint')}
+              </span>
             </div>
             <input
               className="w-full bg-gray-700 rounded px-3 py-2"
-              placeholder="4-6 digits"
+              placeholder={t('adminOverview.pinDigitsShort')}
+              type="password"
               inputMode="numeric"
               autoComplete="new-password"
               value={pin}
@@ -1557,10 +1680,10 @@ function EditStaffModal({
               onChange={(e) => setActive(e.target.checked)}
               disabled={isSelf}
             />
-            Active
+            {t('adminOverview.active')}
             {isSelf && (
               <span className="text-xs opacity-70">
-                (you can&rsquo;t deactivate yourself)
+                {t('adminOverview.cantDeactivateSelf')}
               </span>
             )}
           </label>
@@ -1572,14 +1695,14 @@ function EditStaffModal({
               disabled={saving || !dirty}
               onClick={() => void handleSubmit()}
             >
-              {saving ? 'Saving…' : 'Save changes'}
+              {saving ? t('common.saving') : t('adminOverview.saveChanges')}
             </button>
             <button
               className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
               type="button"
               onClick={onClose}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
         </div>

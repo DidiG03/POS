@@ -1,0 +1,125 @@
+name: Release POS
+
+# Trigger:
+#   - Push a version tag like `v0.2.0` to publish POS installers.
+#   - Manual run from Actions → "Run workflow" (optional publish=false for a dry run).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to GitHub Releases (POS channel: latest)'
+        required: true
+        default: 'true'
+
+concurrency:
+  group: release-pos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build POS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: --mac
+          - os: ubuntu-latest
+            target: --linux
+          - os: windows-latest
+            target: --win
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm db:generate
+
+      - name: Typecheck (full tree)
+        run: pnpm typecheck
+
+      - name: Prepare Prisma runtime files for Electron packaging
+        run: pnpm prisma:prepare-electron
+
+      - name: Build empty migrated seed DB
+        run: pnpm db:seedfile
+
+      - name: Rebuild native modules for Electron (serialport)
+        run: pnpm serial:rebuild
+
+      - name: Build renderer/main bundles
+        run: pnpm build
+
+      - name: Build + publish installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK_SECRET: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD_SECRET: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${MAC_CSC_LINK:-}" ]]; then
+            export CSC_LINK="$MAC_CSC_LINK"
+            export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-}"
+            echo "macOS code signing: enabled"
+          else
+            unset CSC_LINK CSC_KEY_PASSWORD || true
+            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID || true
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            echo "macOS code signing: disabled (no MAC_CSC_LINK secret)"
+          fi
+          if [[ -n "${WIN_CSC_LINK_SECRET:-}" ]]; then
+            export WIN_CSC_LINK="$WIN_CSC_LINK_SECRET"
+            export WIN_CSC_KEY_PASSWORD="${WIN_CSC_KEY_PASSWORD_SECRET:-}"
+            echo "Windows code signing: enabled"
+          else
+            unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD || true
+            echo "Windows code signing: disabled (no WIN_CSC_LINK secret)"
+          fi
+          PUBLISH="always"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && \
+             [[ "${{ github.event.inputs.publish }}" == "false" ]]; then
+            PUBLISH="never"
+          fi
+          pnpm exec -- electron-builder \
+            ${{ matrix.target }} \
+            --publish "$PUBLISH"
+
+      - name: Upload installers as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pos-${{ matrix.os }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.zip
+            dist/latest*.yml
+          if-no-files-found: warn
+          retention-days: 14

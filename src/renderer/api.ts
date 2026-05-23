@@ -16,6 +16,10 @@ export interface TicketPayload {
   covers?: number | null;
   items: TicketLinePayload[];
   note?: string;
+  /** Newly fired lines only — used to decrement counted low-stock without double-counting full snapshots. */
+  stockConsumeLines?: { sku?: string; qty?: number }[];
+  /** Newly fired lines only — appended to the open KDS ticket instead of creating a duplicate card. */
+  kdsFireItems?: TicketLinePayload[];
 }
 
 /**

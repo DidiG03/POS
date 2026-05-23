@@ -33,6 +33,8 @@ type DiscoveredHost = {
 
 type TestResult = { ok: true; body?: any } | { ok: false; error: string };
 
+type KdsBumpBarAction = import('@shared/kdsBumpBar').KdsBumpBarAction;
+
 const kdsApp = {
   getConfig: (): Promise<KdsConfig | null> =>
     ipcRenderer.invoke('kdsApp:getConfig'),
@@ -45,27 +47,29 @@ const kdsApp = {
     host: string;
     httpPort: number;
   }): Promise<TestResult> => ipcRenderer.invoke('kdsApp:testConnection', input),
+  onBumpBarAction: (cb: (action: KdsBumpBarAction) => void) => {
+    const handler = (_e: unknown, action: KdsBumpBarAction) => cb(action);
+    ipcRenderer.on('kds:bumpBarAction', handler);
+    return () => {
+      ipcRenderer.removeListener('kds:bumpBarAction', handler);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('kdsApp', kdsApp);
 contextBridge.exposeInMainWorld('__KDS_APP__', true);
 
-// Hydrate `__POS_HOST__` synchronously when the page loads so the
-// renderer's `pickBackend()` polyfill picks up the saved host without
-// waiting for an IPC round-trip. We can't `await` here (preload runs
-// before the renderer), so we fire-and-forget and the renderer re-reads
-// on hash changes if it ever boots before this resolves (it won't in
-// practice — preload returns to renderer before any user code runs).
-void ipcRenderer.invoke('kdsApp:getConfig').then((cfg: KdsConfig | null) => {
-  try {
-    if (cfg && cfg.host) {
-      contextBridge.exposeInMainWorld('__POS_HOST__', {
-        host: cfg.host,
-        httpPort: cfg.httpPort,
-        httpsPort: cfg.httpsPort || null,
-      });
-    }
-  } catch {
-    // ignore
+// Hydrate `__POS_HOST__` synchronously so `pickBackend()` in main.tsx
+// targets the saved POS host on the first boot attempt.
+try {
+  const cfg = ipcRenderer.sendSync('kdsApp:getConfigSync') as KdsConfig | null;
+  if (cfg && cfg.host) {
+    contextBridge.exposeInMainWorld('__POS_HOST__', {
+      host: cfg.host,
+      httpPort: cfg.httpPort,
+      httpsPort: cfg.httpsPort || null,
+    });
   }
-});
+} catch {
+  // ignore
+}

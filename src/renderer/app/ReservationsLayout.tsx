@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   useReservationSessionStore,
   HOST_LAYOUT_SCOPE,
@@ -104,6 +105,7 @@ function isLiveStatus(s: string): boolean {
 }
 
 export default function ReservationsLayout() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const me = useReservationSessionStore((s) => s.user);
   const setUser = useReservationSessionStore((s) => s.setUser);
@@ -346,7 +348,9 @@ export default function ReservationsLayout() {
       >
         <div className="flex items-center justify-between gap-3 min-w-0 sm:justify-start">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="font-semibold whitespace-nowrap">Reservations</div>
+            <div className="font-semibold whitespace-nowrap">
+              {t('reservations.title')}
+            </div>
             <div className="opacity-70 text-xs truncate hidden xs:block sm:block">
               {me?.displayName} ({String(me?.role || '').toUpperCase()})
             </div>
@@ -355,9 +359,9 @@ export default function ReservationsLayout() {
             type="button"
             className="sm:hidden pos-signout-btn"
             onClick={signOut}
-            title="Sign out"
+            title={t('reservations.signOut')}
           >
-            Sign out
+            {t('reservations.signOut')}
           </button>
         </div>
 
@@ -369,7 +373,7 @@ export default function ReservationsLayout() {
               `pos-nav-link justify-center ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'} w-full`
             }
           >
-            Floor
+            {t('reservations.floor')}
           </NavLink>
           <NavLink
             to="/reservations/app/list"
@@ -377,7 +381,7 @@ export default function ReservationsLayout() {
               `pos-nav-link justify-center ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'} w-full`
             }
           >
-            List
+            {t('reservations.list')}
           </NavLink>
         </nav>
 
@@ -386,9 +390,9 @@ export default function ReservationsLayout() {
             type="button"
             className="hidden sm:inline-flex pos-signout-btn"
             onClick={signOut}
-            title="Sign out"
+            title={t('reservations.signOut')}
           >
-            Sign out
+            {t('reservations.signOut')}
           </button>
         </div>
       </header>
@@ -402,8 +406,8 @@ export default function ReservationsLayout() {
             type="button"
             onClick={() => goRelativeDays(-1)}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 text-lg leading-none text-gray-100 transition-colors hover:bg-gray-700"
-            title="Previous day"
-            aria-label="Previous day"
+            title={t('reservations.previousDay')}
+            aria-label={t('reservations.previousDay')}
           >
             ‹
           </button>
@@ -423,8 +427,8 @@ export default function ReservationsLayout() {
             type="button"
             onClick={() => goRelativeDays(1)}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 text-lg leading-none text-gray-100 transition-colors hover:bg-gray-700"
-            title="Next day"
-            aria-label="Next day"
+            title={t('reservations.nextDay')}
+            aria-label={t('reservations.nextDay')}
           >
             ›
           </button>
@@ -433,18 +437,22 @@ export default function ReservationsLayout() {
             onClick={() => setDate(new Date())}
             className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm transition-colors hover:bg-gray-700 sm:py-1.5"
           >
-            Today
+            {t('reservations.today')}
           </button>
         </div>
 
         <div className="flex items-center gap-2 min-w-0 sm:ml-2">
-          <span className="text-xs opacity-70 hidden sm:inline">Area</span>
+          <span className="text-xs opacity-70 hidden sm:inline">
+            {t('reservations.area')}
+          </span>
           <select
             value={area}
             onChange={(e) => setArea(e.target.value)}
             className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-base hover:bg-gray-700 sm:flex-initial sm:py-1.5 sm:text-sm"
           >
-            {areas.length === 0 && <option value="">(no areas)</option>}
+            {areas.length === 0 && (
+              <option value="">{t('reservations.noAreas')}</option>
+            )}
             {areas.map((a) => (
               <option key={a.name} value={a.name}>
                 {a.name}
@@ -462,18 +470,18 @@ export default function ReservationsLayout() {
             className="px-3 py-2 sm:py-1.5 rounded bg-rose-700 hover:bg-rose-600 text-sm font-medium disabled:opacity-60"
             onClick={openWalkIn}
             disabled={!area || !me?.id}
-            title="Create a SEATED reservation right now"
+            title={t('reservations.seatNowTitle')}
           >
-            Seat now
+            {t('reservations.seatNow')}
           </button>
           <button
             type="button"
             className="px-3 py-2 sm:py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-sm"
             onClick={() => openEditor({ area })}
             disabled={!me?.id}
-            title="Create a new reservation"
+            title={t('reservations.newReservationTitle')}
           >
-            + New reservation
+            {t('reservations.newReservation')}
           </button>
         </div>
       </div>

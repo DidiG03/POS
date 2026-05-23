@@ -14,7 +14,12 @@ import {
 const DEFAULT_SYNCED_PIN = '1234';
 const CLOUD_CAT_MAP_KEY = 'cloud:categoryMap';
 
-type CloudUser = { id: number; displayName: string; role: string; active: boolean };
+type CloudUser = {
+  id: number;
+  displayName: string;
+  role: string;
+  active: boolean;
+};
 type CloudCategory = {
   id: number;
   name: string;
@@ -52,16 +57,19 @@ export async function syncUsersFromCloud(): Promise<SyncUsersResult> {
   try {
     res = await fetch(url, {
       method: 'GET',
-      headers: accessPassword ? { 'x-business-password': accessPassword } : undefined,
+      headers: accessPassword
+        ? { 'x-business-password': accessPassword }
+        : undefined,
     });
   } catch (e: any) {
     return { count: 0, error: e?.message || 'Network error' };
   }
 
   if (!res.ok) {
-    const msg = res.status === 401 || res.status === 403
-      ? 'Check business code and access password in Settings → Log in to Cloud'
-      : res.statusText || `HTTP ${res.status}`;
+    const msg =
+      res.status === 401 || res.status === 403
+        ? 'Check business code and access password in Settings → Log in to Cloud'
+        : res.statusText || `HTTP ${res.status}`;
     return { count: 0, error: msg };
   }
 
@@ -110,7 +118,7 @@ export async function syncUsersFromCloud(): Promise<SyncUsersResult> {
  */
 export async function updateSyncedUserPin(
   cloudUserId: number,
-  verifiedPin: string
+  verifiedPin: string,
 ): Promise<boolean> {
   const externalId = String(cloudUserId);
   const user = await prisma.user.findFirst({ where: { externalId } });
@@ -139,7 +147,7 @@ export async function syncMenuFromCloud(token: string): Promise<number> {
     {
       requireAuth: true,
       extraHeaders: { Authorization: `Bearer ${token}` },
-    }
+    },
   ).catch(() => null);
 
   if (!Array.isArray(data) || data.length === 0) return 0;
@@ -158,14 +166,16 @@ export async function syncMenuFromCloud(token: string): Promise<number> {
     let localCatId = existingMap[cloudCatKey] ?? catMap[cloudCatKey];
 
     if (localCatId) {
-      await prisma.category.update({
-        where: { id: localCatId },
-        data: {
-          name: c.name,
-          sortOrder: c.sortOrder ?? 0,
-          active: c.active ?? true,
-        } as any,
-      }).catch(() => null);
+      await prisma.category
+        .update({
+          where: { id: localCatId },
+          data: {
+            name: c.name,
+            sortOrder: c.sortOrder ?? 0,
+            active: c.active ?? true,
+          } as any,
+        })
+        .catch(() => null);
     } else {
       const created = await prisma.category.create({
         data: {
@@ -181,24 +191,27 @@ export async function syncMenuFromCloud(token: string): Promise<number> {
     const items = c.items || [];
     for (const i of items) {
       const localCatIdForItem = catMap[String(i.categoryId)] ?? localCatId;
-      await prisma.menuItem.upsert({
-        where: { sku: i.sku },
-        create: {
-          name: i.name,
-          sku: i.sku,
-          categoryId: localCatIdForItem,
-          price: i.price,
-          vatRate: i.vatRate,
-          active: i.active ?? true,
-        } as any,
-        update: {
-          name: i.name,
-          categoryId: localCatIdForItem,
-          price: i.price,
-          vatRate: i.vatRate,
-          active: i.active ?? true,
-        } as any,
-      }).catch(() => null);
+      await prisma.menuItem
+        .upsert({
+          where: { sku: i.sku },
+          create: {
+            name: i.name,
+            sku: i.sku,
+            categoryId: localCatIdForItem,
+            price: i.price,
+            vatRate: i.vatRate,
+            active: i.active ?? true,
+            stockLevel: 'OK',
+          } as any,
+          update: {
+            name: i.name,
+            categoryId: localCatIdForItem,
+            price: i.price,
+            vatRate: i.vatRate,
+            active: i.active ?? true,
+          } as any,
+        })
+        .catch(() => null);
       itemCount++;
     }
   }
@@ -219,7 +232,7 @@ export async function syncMenuFromCloud(token: string): Promise<number> {
 export async function syncFromCloudAfterLogin(
   token: string,
   cloudUserId: number,
-  verifiedPin: string
+  verifiedPin: string,
 ): Promise<{ usersSynced: number; menuItemsSynced: number }> {
   const usersResult = await syncUsersFromCloud();
   const menuItemsSynced = await syncMenuFromCloud(token);
@@ -239,7 +252,12 @@ export async function syncFromCloudManual(): Promise<{
 }> {
   const cfg = await getCloudConfig();
   if (!cfg) {
-    return { usersSynced: 0, menuItemsSynced: 0, menuSynced: false, error: 'Cloud not configured' };
+    return {
+      usersSynced: 0,
+      menuItemsSynced: 0,
+      menuSynced: false,
+      error: 'Cloud not configured',
+    };
   }
 
   const usersResult = await syncUsersFromCloud();

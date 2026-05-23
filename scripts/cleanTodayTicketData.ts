@@ -11,6 +11,7 @@
  * Does NOT delete users, menu, shifts, reservations, inventory, etc.
  */
 
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../src/db/client';
 
 function dayKeyLocal(d = new Date()) {
@@ -72,7 +73,7 @@ async function main() {
     return;
   }
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const orderIds = (
       await tx.kdsOrder.findMany({
         where: { dayKey },

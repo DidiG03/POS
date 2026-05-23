@@ -15,6 +15,7 @@
  * gracefully to a manual-only form.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { persistKdsBackendHost } from '@renderer/utils/backendHost';
 
 type DiscoveredHost = {
   name?: string;
@@ -125,11 +126,10 @@ export default function KdsSetupPage() {
     setSaving(true);
     setResult(null);
     try {
-      await api.saveConfig({
-        host: host.trim(),
-        httpPort: Number(httpPort) || 3333,
-      });
-      // The main process navigates the window to #/kds on save.
+      const trimmedHost = host.trim();
+      const port = Number(httpPort) || 3333;
+      await persistKdsBackendHost({ host: trimmedHost, httpPort: port });
+      // Main process reloads the window after save.
     } catch (e: any) {
       setResult(e?.message || 'Could not save configuration.');
       setResultOk(false);

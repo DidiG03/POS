@@ -252,6 +252,10 @@ export interface MenuItemDTO {
   categoryId: number;
   isKg?: boolean;
   station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+  /** OK = normal; LOW = yellow warning; OUT = unavailable on waiter menu. */
+  stockLevel?: 'OK' | 'LOW' | 'OUT';
+  /** Whole units left today while LOW (optional legacy warning-only LOW when omitted). */
+  stockRemaining?: number | null;
 }
 
 export interface MenuCategoryDTO {
@@ -293,6 +297,8 @@ export const CreateMenuItemInputSchema = z.object({
   active: z.boolean().optional(),
   isKg: z.boolean().optional(),
   station: z.enum(['KITCHEN', 'BAR', 'DESSERT']).optional(),
+  stockLevel: z.enum(['OK', 'LOW', 'OUT']).optional(),
+  stockRemaining: z.coerce.number().int().min(0).optional().nullable(),
 });
 export type CreateMenuItemInput = z.infer<typeof CreateMenuItemInputSchema>;
 
@@ -305,6 +311,8 @@ export const UpdateMenuItemInputSchema = z.object({
   active: z.boolean().optional(),
   isKg: z.boolean().optional(),
   station: z.enum(['KITCHEN', 'BAR', 'DESSERT']).optional(),
+  stockLevel: z.enum(['OK', 'LOW', 'OUT']).optional(),
+  stockRemaining: z.coerce.number().int().min(0).optional().nullable(),
 });
 export type UpdateMenuItemInput = z.infer<typeof UpdateMenuItemInputSchema>;
 
@@ -579,6 +587,7 @@ export interface KdsTicketDTO {
   orderNo: number;
   area: string;
   tableLabel: string;
+  waiterName?: string | null;
   firedAt: string;
   bumpedAt?: string | null;
   note?: string | null;
@@ -597,12 +606,24 @@ export interface ApiKds {
     ticketId: number;
     userId?: number;
   }): Promise<boolean>;
+  recall(input: {
+    station: 'KITCHEN' | 'BAR' | 'DESSERT';
+    ticketId?: number;
+    itemIdx?: number;
+  }): Promise<{
+    ok: boolean;
+    ticketId?: number | null;
+    itemRecalled?: boolean;
+  }>;
   bumpItem(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
     ticketId: number;
     itemIdx: number;
     userId?: number;
   }): Promise<boolean>;
+  clearDone(input: {
+    station: 'KITCHEN' | 'BAR' | 'DESSERT';
+  }): Promise<{ ok: boolean; purgedDoneRows: number }>;
   debug(): Promise<any>;
 }
 
@@ -728,6 +749,31 @@ export interface MyReportsOverviewDTO {
   openOrders: number;
 }
 
+/** Voided line items / ticket rows from `reports:listMyVoidedTickets`. */
+export interface VoidedTicketReportDTO {
+  kind: 'VOIDED_TICKET' | 'VOIDED_ITEMS';
+  area: string;
+  tableLabel: string;
+  createdAt: string;
+  note: string;
+  userName?: string | null;
+  covers?: number | null;
+  items: {
+    sku?: string;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate?: number;
+    note?: string;
+    voided?: boolean;
+  }[];
+  totalItems: number;
+  voidedCount: number;
+  subtotal: number;
+  vat: number;
+  total: number;
+}
+
 export interface ApiReports {
   getMyOverview(userId: number): Promise<MyReportsOverviewDTO>;
   getMyTopSellingToday(userId: number): Promise<TopSellingDTO | null>;
@@ -741,6 +787,10 @@ export interface ApiReports {
     q?: string;
     limit?: number;
   }): Promise<ReportTicketDTO[]>;
+  listMyVoidedTickets(input: {
+    userId: number;
+    limit?: number;
+  }): Promise<VoidedTicketReportDTO[]>;
 }
 
 export interface ReportTicketDTO {

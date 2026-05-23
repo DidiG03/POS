@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import type { ReservationsContext } from '../ReservationsLayout';
 import FloorCanvas from '../components/FloorCanvas';
 import { HOST_LAYOUT_SCOPE } from '../../stores/reservationSession';
@@ -8,6 +9,7 @@ import {
   isReservationQuickStatusTooEarly,
   reservationQuickStatusUnlockHint,
 } from '../../utils/reservationStatusWindow';
+import { reservationStatusLabel } from '../../utils/reservationLabels';
 
 // Quick-action statuses surfaced in the per-table sheet.
 const QUICK_STATUSES: ReservationStatus[] = [
@@ -57,13 +59,13 @@ function formatTime(iso: string): string {
 }
 
 // Strip Electron's verbose IPC error wrapper so the user sees the friendly text.
-function cleanIpcMessage(e: any): string {
+function cleanIpcMessage(e: any, fallback: string): string {
   const raw = String(e?.message || e || '').trim();
-  if (!raw) return 'Something went wrong.';
+  if (!raw) return fallback;
   const m = raw.match(
     /Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s,
   );
-  return (m ? m[1] : raw).trim() || 'Something went wrong.';
+  return (m ? m[1] : raw).trim() || fallback;
 }
 
 function isSameLocalDay(a: Date, b: Date): boolean {
@@ -114,6 +116,7 @@ function badgeForReservation(rs: ReservationDTO[] | undefined): string | null {
 }
 
 export default function ReservationsFloorPage() {
+  const { t } = useTranslation();
   const ctx = useOutletContext<ReservationsContext>();
   const { me, area, date, openEditor, notifyReservationsChanged } = ctx;
   const [reservations, setReservations] = useState<ReservationDTO[]>([]);
@@ -149,11 +152,11 @@ export default function ReservationsFloorPage() {
       });
       setReservations(list);
     } catch (e: any) {
-      setError(e?.message || 'Failed to load reservations');
+      setError(e?.message || t('reservations.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [area, date]);
+  }, [area, date, t]);
 
   useEffect(() => {
     void reload();
@@ -256,7 +259,7 @@ export default function ReservationsFloorPage() {
       );
       await reload();
     } catch (e) {
-      setSheetError(cleanIpcMessage(e));
+      setSheetError(cleanIpcMessage(e, t('reservations.somethingWrong')));
     } finally {
       setSheetBusyId(null);
     }
@@ -277,23 +280,23 @@ export default function ReservationsFloorPage() {
       <div className="flex shrink-0 items-center gap-2 flex-wrap">
         <div className="text-sm opacity-80">
           {loading
-            ? 'Loading reservations…'
-            : `${reservations.length} reservation${
-                reservations.length === 1 ? '' : 's'
-              } in ${area || '—'}`}
+            ? t('reservations.loadingReservations')
+            : t('reservations.countInArea', {
+                count: reservations.length,
+                area: area || '—',
+              })}
         </div>
         <div className="hidden sm:flex items-center gap-3 text-xs flex-wrap sm:ml-auto">
-          <Legend cls="bg-emerald-700" label="Free" />
-          <Legend cls="bg-amber-600" label="Booked" />
-          <Legend cls="bg-blue-600" label="Soon (±30m)" />
-          <Legend cls="bg-rose-700" label="Seated" />
+          <Legend cls="bg-emerald-700" label={t('reservations.legendFree')} />
+          <Legend cls="bg-amber-600" label={t('reservations.legendBooked')} />
+          <Legend cls="bg-blue-600" label={t('reservations.legendSoon')} />
+          <Legend cls="bg-rose-700" label={t('reservations.legendSeated')} />
         </div>
       </div>
 
       {!area && (
         <div className="shrink-0 bg-amber-900/30 border border-amber-700 rounded p-3 text-sm">
-          No area configured. Ask an Admin to add at least one Table Area in
-          Settings.
+          {t('reservations.noAreaConfigured')}
         </div>
       )}
 
@@ -321,7 +324,7 @@ export default function ReservationsFloorPage() {
       {reservations.some((r) => !r.tableLabel) && (
         <div className="shrink-0 rounded border border-gray-700 bg-gray-800 p-3">
           <div className="text-xs uppercase tracking-wide opacity-70 mb-2">
-            Reservations without a table
+            {t('reservations.withoutTable')}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {reservations
@@ -362,7 +365,7 @@ export default function ReservationsFloorPage() {
                   {area}
                 </div>
                 <div className="text-lg font-semibold truncate">
-                  Table {sheetLabel}
+                  {t('reservations.tableLabel', { label: sheetLabel })}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -374,14 +377,14 @@ export default function ReservationsFloorPage() {
                     setSheetLabel(null);
                   }}
                 >
-                  + New
+                  {t('reservations.newShort')}
                 </button>
                 <button
                   type="button"
                   className="px-3 py-2 rounded hover:bg-gray-700 text-lg leading-none"
                   onClick={() => setSheetLabel(null)}
-                  title="Close"
-                  aria-label="Close"
+                  title={t('common.close')}
+                  aria-label={t('common.close')}
                 >
                   ✕
                 </button>
@@ -397,7 +400,7 @@ export default function ReservationsFloorPage() {
             <div className="flex-1 overflow-y-auto divide-y divide-gray-700/70 sm:max-h-[70vh]">
               {sheetReservations.length === 0 ? (
                 <div className="p-4 text-sm opacity-70">
-                  No reservations on this table for the selected day.
+                  {t('reservations.noReservationsOnTable')}
                 </div>
               ) : (
                 sheetReservations.map((r) => {
@@ -426,7 +429,7 @@ export default function ReservationsFloorPage() {
                             r.status,
                           )}`}
                         >
-                          {r.status.replace('_', ' ')}
+                          {reservationStatusLabel(t, r.status)}
                         </span>
                         <button
                           type="button"
@@ -437,7 +440,7 @@ export default function ReservationsFloorPage() {
                             setSheetLabel(null);
                           }}
                         >
-                          Edit
+                          {t('reservations.edit')}
                         </button>
                       </div>
 
@@ -452,6 +455,7 @@ export default function ReservationsFloorPage() {
                             const unlockAt = reservationQuickStatusUnlockHint(
                               r.startsAt,
                             );
+                            const statusLabel = reservationStatusLabel(t, s);
                             return (
                               <button
                                 key={s}
@@ -463,11 +467,15 @@ export default function ReservationsFloorPage() {
                                 onClick={() => void applyStatus(r, s)}
                                 title={
                                   tooEarly
-                                    ? `Available from ${unlockAt} (15 min before reservation)`
-                                    : `Mark as ${s.replace('_', ' ')}`
+                                    ? t('reservations.availableFrom', {
+                                        time: unlockAt,
+                                      })
+                                    : t('reservations.markAsStatus', {
+                                        status: statusLabel,
+                                      })
                                 }
                               >
-                                {s.replace('_', ' ')}
+                                {statusLabel}
                               </button>
                             );
                           },
@@ -478,9 +486,9 @@ export default function ReservationsFloorPage() {
                             disabled={busy}
                             className="px-2 py-1 rounded text-[11px] uppercase tracking-wide bg-amber-700 hover:bg-amber-600 disabled:opacity-60"
                             onClick={() => void applyStatus(r, 'BOOKED')}
-                            title="Re-open as Booked"
+                            title={t('reservations.reopenTitle')}
                           >
-                            Re-open
+                            {t('reservations.reopen')}
                           </button>
                         )}
                       </div>

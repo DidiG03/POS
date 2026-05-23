@@ -18,6 +18,8 @@ import { dirname, join, basename, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
+import { attachKdsBumpBarInput } from './bumpBarInput';
+
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
 const MAIN_RUNTIME_DIR =
@@ -92,20 +94,30 @@ function createWindow(): void {
     mainWindow.focus();
     return;
   }
+  const isProdKds = !process.env.ELECTRON_RENDERER_URL;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     backgroundColor: '#111827',
     autoHideMenuBar: true,
     show: false,
+    alwaysOnTop: isProdKds,
     webPreferences: {
       preload: PRELOAD_PATH,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      devTools: !isProdKds,
     },
   });
+  attachKdsBumpBarInput(mainWindow);
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  // Dedicated kitchen display: keep focus on the KDS window for the bump bar.
+  mainWindow.on('blur', () => {
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+    }, 150);
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -118,6 +130,12 @@ function createWindow(): void {
 
 ipcMain.handle('kdsApp:getConfig', () => readConfig());
 
+// Synchronous read for preload — `pickBackend()` runs before any async IPC
+// resolves, so the saved host must be on `window.__POS_HOST__` immediately.
+ipcMain.on('kdsApp:getConfigSync', (event) => {
+  event.returnValue = readConfig();
+});
+
 ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
   const cfg: KdsConfig = {
     host: String(payload?.host || '').trim(),
@@ -129,7 +147,11 @@ ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
   };
   if (!cfg.host) throw new Error('Host is required');
   writeConfig(cfg);
-  if (mainWindow && !mainWindow.isDestroyed()) loadHash(mainWindow, '/kds');
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    loadHash(mainWindow, '/kds');
+    // Re-read kds.config.json in preload (`__POS_HOST__`) and re-resolve HTTP base.
+    mainWindow.webContents.reload();
+  }
   return cfg;
 });
 

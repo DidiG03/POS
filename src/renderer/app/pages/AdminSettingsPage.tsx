@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { UpdateStatusDTO } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
+import { KDS_BUMP_BAR_PROGRAMMING } from '../../utils/kdsBumpBar';
 import FloorCanvas from '../components/FloorCanvas';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
@@ -1472,6 +1473,35 @@ function KdsSettings() {
         >
           Save KDS Settings
         </button>
+
+        <div className="mt-4 pt-4 border-t border-gray-800">
+          <div className="font-medium mb-1">Bump bar programming</div>
+          <div className="text-xs opacity-70 mb-3">
+            Program each physical key in PrehKeyTec WinProgrammer (or MapMyKey)
+            to send the keystroke below. USB plug-and-play — no driver needed on
+            the KDS PC.
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left opacity-70 border-b border-gray-800">
+                  <th className="py-1 pr-3">Button</th>
+                  <th className="py-1 pr-3">Keystroke</th>
+                  <th className="py-1">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {KDS_BUMP_BAR_PROGRAMMING.map((row) => (
+                  <tr key={row.button} className="border-b border-gray-900/80">
+                    <td className="py-1.5 pr-3 font-medium">{row.button}</td>
+                    <td className="py-1.5 pr-3 font-mono">{row.keystroke}</td>
+                    <td className="py-1.5 opacity-80">{row.action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
         <button
           className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 w-full"

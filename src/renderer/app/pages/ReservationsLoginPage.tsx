@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useReservationSessionStore } from '../../stores/reservationSession';
 import type { UserDTO } from '@shared/ipc';
 
@@ -12,6 +13,7 @@ type StaffEntry = Pick<UserDTO, 'id' | 'displayName' | 'role'> & {
 };
 
 export default function ReservationsLoginPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const setUser = useReservationSessionStore((s) => s.setUser);
   const sessionUser = useReservationSessionStore((s) => s.user);
@@ -71,7 +73,7 @@ export default function ReservationsLoginPage() {
           }));
         setStaff(filtered as any);
       } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'Failed to load users.');
+        if (!cancelled) setError(e?.message || t('login.loadUsersFailed'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -79,7 +81,7 @@ export default function ReservationsLoginPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
   const sortedStaff = useMemo(
     () =>
@@ -96,11 +98,11 @@ export default function ReservationsLoginPage() {
   async function submit() {
     setError(null);
     if (!selectedId) {
-      setError('Choose your name first.');
+      setError(t('reservations.chooseNameFirst'));
       return;
     }
     if (pin.length < 4) {
-      setError('Enter your PIN (4-6 digits).');
+      setError(t('login.pinTooShort'));
       return;
     }
     // Dismiss the soft keyboard before the async login + navigation so the
@@ -134,7 +136,7 @@ export default function ReservationsLoginPage() {
       );
       const role = String((user as any)?.role || '').toUpperCase();
       if (!user || (role !== 'HOST' && role !== 'ADMIN')) {
-        setError('Only Hosts or Admins can sign in here.');
+        setError(t('reservations.onlyHostAdmin'));
         setPin('');
         return;
       }
@@ -164,12 +166,10 @@ export default function ReservationsLoginPage() {
         }
         setPairingCode('');
         if (pairingCodeRef.current) pairingCodeRef.current.value = '';
-        setError(
-          'Pairing code required (ask the manager / Admin → Settings → LAN / Tablets).',
-        );
+        setError(t('login.pairingRequired'));
         setPin('');
       } else {
-        setError(msg || 'Login failed.');
+        setError(msg || t('login.loginFailed'));
         setPin('');
       }
     } finally {
@@ -188,18 +188,11 @@ export default function ReservationsLoginPage() {
       <div className="w-full max-w-3xl pos-surface-panel p-5 sm:p-6">
         <div className="flex items-start justify-between gap-3 mb-6">
           <div className="flex items-start gap-3 min-w-0">
-            {/* Back arrow returns to the staff login. Only shown on the
-                mobile/browser shell — on Electron desktop the reservation
-                panel runs in its own dedicated window, so there's no
-                staff login to go back to. We always navigate with
-                `replace` so the host login isn't kept in history,
-                otherwise the system back gesture on iOS could bounce the
-                user between the two login screens. */}
             {isBrowserClient && (
               <button
                 type="button"
-                aria-label="Back to staff login"
-                title="Back"
+                aria-label={t('reservations.backToStaffLogin')}
+                title={t('common.back')}
                 onClick={() => navigate('/', { replace: true })}
                 className="pos-icon-btn shrink-0 -ml-1 cursor-pointer text-gray-200"
               >
@@ -219,26 +212,27 @@ export default function ReservationsLoginPage() {
               </button>
             )}
             <div className="min-w-0">
-              <div className="text-2xl font-semibold">Reservations</div>
+              <div className="text-2xl font-semibold">
+                {t('reservations.title')}
+              </div>
               <div className="text-sm opacity-70">
-                Sign in as a Host or Admin to manage today&apos;s bookings.
+                {t('reservations.loginSubtitle')}
               </div>
             </div>
           </div>
         </div>
 
         {loading ? (
-          <div className="opacity-70 text-sm">Loading…</div>
+          <div className="opacity-70 text-sm">{t('common.loading')}</div>
         ) : sortedStaff.length === 0 ? (
           <div className="bg-amber-900/30 border border-amber-700 rounded p-3 text-sm">
-            No Host or Admin users yet. Ask an Admin to add a Host in the Admin
-            panel (Staff section, role: HOST).
+            {t('reservations.noHostAdminUsers')}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <div className="text-xs uppercase tracking-wide opacity-70 mb-2">
-                Who&apos;s logging in?
+                {t('reservations.whoIsLoggingIn')}
               </div>
               <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
                 {sortedStaff.map((u) => (
@@ -273,18 +267,14 @@ export default function ReservationsLoginPage() {
 
             <div>
               <div className="text-xs uppercase tracking-wide opacity-70 mb-2">
-                PIN
+                {t('login.pinPlaceholder')}
               </div>
-              {/* Native numeric keyboard. type="tel" reliably surfaces the
-                  digits-only keyboard on iOS/Android without the spinners
-                  that "number" introduces. The 20px font size keeps Safari
-                  from auto-zooming on focus. */}
               <input
                 autoFocus={!!selectedId}
-                type="tel"
+                type="password"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                placeholder="Enter PIN"
+                placeholder={t('login.enterPin')}
                 maxLength={6}
                 autoComplete="one-time-code"
                 value={pin}
@@ -298,19 +288,16 @@ export default function ReservationsLoginPage() {
                 className="w-full px-3 py-3 rounded bg-gray-900 text-center text-3xl tracking-[0.5em] font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 style={{ fontSize: '20px' }}
               />
-              {/* Pairing code input: only browser / mobile clients need it.
-                  Electron desktop opens this page in a child window of the
-                  host POS app, so the LAN guard already trusts it. */}
               {isBrowserClient && (
                 <div className="mt-3">
                   <div className="text-xs uppercase tracking-wide opacity-70 mb-2">
-                    Pairing code
+                    {t('reservations.pairingCode')}
                   </div>
                   <input
                     ref={pairingCodeRef}
                     type="text"
                     inputMode="numeric"
-                    placeholder="Pairing code (from Admin)"
+                    placeholder={t('login.pairingPlaceholder')}
                     maxLength={12}
                     defaultValue={pairingCode}
                     autoCapitalize="characters"
@@ -330,7 +317,9 @@ export default function ReservationsLoginPage() {
                 className="mt-4 w-full px-3 py-3 rounded bg-emerald-600 hover:bg-emerald-500 font-semibold disabled:opacity-50"
                 onClick={submit}
               >
-                {submitting ? 'Signing in…' : 'Sign in'}
+                {submitting
+                  ? t('reservations.signingIn')
+                  : t('reservations.signIn')}
               </button>
               {error && (
                 <div className="mt-2 text-sm text-rose-300">{error}</div>

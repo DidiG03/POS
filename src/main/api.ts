@@ -22,6 +22,16 @@ import {
 import { transferTableLocal } from './services/tableTransfer';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { getCloudConfig } from './services/cloud';
+import { formatKdsTicketListRows } from './services/kdsList';
+import {
+  kdsStationListWhere,
+  localDayStart,
+  purgeKdsDoneTicketsForStation,
+} from './services/kdsRetention';
+import {
+  recallKdsTicket,
+  bumpAllStationItemsInJson,
+} from './services/kdsRecall';
 
 async function maybeAlertSuspiciousVoidsLocal(input: {
   actorUserId: number;
@@ -1006,6 +1016,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/kds/tickets',
         '/kds/bump',
         '/kds/bump-item',
+        '/kds/recall',
+        '/kds/clear-done',
         '/kds/debug',
         '/shifts/open',
         '/settings',
@@ -1371,9 +1383,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           orderBy: { createdAt: 'desc' },
         });
         if (!last) return send(res, 200, null, corsOrigin);
-        const items = (((last.itemsJson as any) || []) as any[]).filter(
-          (it: any) => !it?.voided,
-        );
+        const items = ((last.itemsJson as any) || []) as any[];
         return send(
           res,
           200,
@@ -1406,7 +1416,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           Math.max(1, Number((parsed.query.limit as any) || 100)),
         );
         const rows = await (prisma as any).kdsTicketStation.findMany({
-          where: { station, status },
+          where: kdsStationListWhere(station, status),
           include: { ticket: { include: { order: true } } },
           orderBy:
             status === 'NEW'
@@ -1414,32 +1424,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               : { bumpedAt: 'desc' },
           take: limit,
         });
-        const out = (rows as any[])
-          .map((r: any) => {
-            const t = r.ticket;
-            const o = t?.order;
-            const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
-            const items = itemsAll
-              .map((it: any, idx: number) => ({ ...it, _idx: idx }))
-              .filter(
-                (it: any) =>
-                  String(it?.station || '').toUpperCase() === station &&
-                  !it?.voided,
-              )
-              .filter((it: any) => (status === 'NEW' ? !it?.bumped : true));
-            if (status === 'NEW' && items.length === 0) return null;
-            return {
-              ticketId: t?.id,
-              orderNo: o?.orderNo,
-              area: o?.area,
-              tableLabel: o?.tableLabel,
-              firedAt: t?.firedAt?.toISOString?.() ?? null,
-              note: t?.note ?? null,
-              items,
-              bumpedAt: r?.bumpedAt?.toISOString?.() ?? null,
-            };
-          })
-          .filter(Boolean);
+        const out = await formatKdsTicketListRows(rows, station, status);
         return send(res, 200, out, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/kds/bump') {
@@ -1449,15 +1434,51 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const st = String(station || 'KITCHEN').toUpperCase();
         const id = Number(ticketId || 0);
         if (!id) return send(res, 400, { error: 'invalid' }, corsOrigin);
+        const now = new Date();
+        const bumpedAt = now.toISOString();
+        const ticket = await (prisma as any).kdsTicket
+          .findUnique({ where: { id } })
+          .catch(() => null);
+        if (ticket) {
+          const itemsAll: any[] = Array.isArray(ticket.itemsJson)
+            ? ticket.itemsJson
+            : [];
+          const nextItems = bumpAllStationItemsInJson(itemsAll, st, bumpedAt);
+          await (prisma as any).kdsTicket.update({
+            where: { id },
+            data: { itemsJson: nextItems },
+          });
+        }
         const updated = await (prisma as any).kdsTicketStation.updateMany({
           where: { ticketId: id, station: st, status: 'NEW' },
           data: {
             status: 'DONE',
-            bumpedAt: new Date(),
+            bumpedAt: now,
             bumpedById: auth?.userId || null,
           },
         });
         return send(res, 200, { ok: Boolean(updated?.count) }, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/kds/recall') {
+        const ok = await ensureKdsLocalSchema();
+        if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
+        const { station, ticketId, itemIdx } = await parseJson(req);
+        const result = await recallKdsTicket(prisma, {
+          station: String(station || 'KITCHEN'),
+          ticketId,
+          itemIdx,
+        });
+        return send(res, 200, result, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/kds/clear-done') {
+        const ok = await ensureKdsLocalSchema();
+        if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
+        const { station } = await parseJson(req);
+        const result = await purgeKdsDoneTicketsForStation(
+          prisma,
+          String(station || 'KITCHEN'),
+        );
+        return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/kds/bump-item') {
         const ok = await ensureKdsLocalSchema();

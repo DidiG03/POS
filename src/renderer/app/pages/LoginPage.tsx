@@ -28,8 +28,6 @@ export default function LoginPage() {
   const isBrowserClient =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
-  const isCloudBrowserClient =
-    typeof window !== 'undefined' && Boolean((window as any).__CLOUD_CLIENT__);
   // Admin window/routing can be hash-based (#/admin) or path-based (/admin). Detect both.
   const isAdminContext =
     (location?.pathname || '').startsWith('/admin') ||
@@ -152,10 +150,6 @@ export default function LoginPage() {
   // The app-level BootScreen (main.tsx) already verifies the backend is alive
   // before the router renders, so we never show a second full-page spinner.
   // We track staffLoading to show a subtle inline indicator in the staff grid.
-  const [boot, setBoot] = useState<{
-    staffLoaded: boolean;
-    openLoaded: boolean;
-  }>({ staffLoaded: true, openLoaded: true });
   const [staffLoading, setStaffLoading] = useState(true);
   const { setUser } = useSessionStore();
   const { setUser: setAdminUser } = useAdminSessionStore();
@@ -172,7 +166,6 @@ export default function LoginPage() {
 
   useEffect(() => {
     let cancelled = false;
-    setBoot({ staffLoaded: false, openLoaded: isAdminContext });
     (async () => {
       const s = await window.api.settings.get();
       setEnableAdmin(s.enableAdmin ?? false);
@@ -198,10 +191,7 @@ export default function LoginPage() {
         setCloudNotice(e?.message || t('login.loadUsersFailed'));
         setStaff([]);
         setOpenIds([]);
-        if (!cancelled) {
-          setBoot({ staffLoaded: true, openLoaded: true });
-          setStaffLoading(false);
-        }
+        if (!cancelled) setStaffLoading(false);
         return;
       }
       // Local-first: empty users means no users in database yet.
@@ -215,10 +205,7 @@ export default function LoginPage() {
         );
         setStaff([]);
         setOpenIds([]);
-        if (!cancelled) {
-          setBoot({ staffLoaded: true, openLoaded: true });
-          setStaffLoading(false);
-        }
+        if (!cancelled) setStaffLoading(false);
         return;
       }
       const list = isAdminContext
@@ -234,7 +221,6 @@ export default function LoginPage() {
       if (cancelled) return;
       setStaff(list);
       setStaffLoading(false);
-      setBoot((b) => ({ ...b, staffLoaded: true }));
       if (!isAdminContext) {
         try {
           const ids = await window.api.shifts.listOpen();
@@ -244,12 +230,9 @@ export default function LoginPage() {
           void e;
           if (cancelled) return;
           setOpenIds([]);
-        } finally {
-          if (!cancelled) setBoot((b) => ({ ...b, openLoaded: true }));
         }
       } else {
         setOpenIds([]);
-        if (!cancelled) setBoot((b) => ({ ...b, openLoaded: true }));
       }
     })();
     return () => {
@@ -554,13 +537,11 @@ export default function LoginPage() {
           // "I'm on the login page" context.
           <div className="flex-1 min-h-0 flex flex-col items-center justify-start pt-2 sm:pt-6">
             <div className="w-full max-w-sm flex flex-col gap-3">
-              {/* Native numeric keyboard on every client. type="tel" gives
-                  iOS/Android a digits-only keyboard without the +/- spinners
-                  that "number" introduces. The 20px font size avoids
-                  Safari's auto-zoom on focus. */}
+              {/* Mask PIN (dots/bullets). `inputMode="numeric"` + `pattern` keep a
+                  digits-friendly keyboard on mobile. 20px font avoids Safari zoom. */}
               <input
                 autoFocus
-                type="tel"
+                type="password"
                 inputMode="numeric"
                 pattern="[0-9]*"
                 placeholder={t('login.pinPlaceholder')}

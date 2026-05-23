@@ -14,41 +14,75 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // (PrintJob create/findMany/findFirst). Default to no menu rows + a
 // stub that records every PrintJob.create so tests can inspect what
 // would have been persisted.
-const findMenuItems = vi.fn(async () => [] as any[]);
-const printJobCreate = vi.fn(async () => ({ id: 1 }) as any);
-const printJobFindMany = vi.fn(async () => [] as any[]);
-const printJobFindFirst = vi.fn(async () => null as any);
+//
+// Vitest hoists `vi.mock` factories — refs must come from `vi.hoisted`.
+const {
+  defaultSendNetwork,
+  findMenuItems,
+  printJobCreate,
+  printJobFindMany,
+  printJobFindFirst,
+  sendNetwork,
+  sendCups,
+  sendHtml,
+  buildEscpos,
+  buildHtml,
+  sendSerial,
+} = vi.hoisted(() => {
+  async function defaultSendNetwork(
+    _ip: string,
+    _port: number,
+    _buf: Buffer,
+    _opts?: { forceProtocol?: string },
+  ) {
+    return { ok: true as boolean };
+  }
+  const findMenuItems = vi.fn(async () => [] as any[]);
+  const printJobCreate = vi.fn(async (_args: unknown) => ({ id: 1 }) as any);
+  const printJobFindMany = vi.fn(async () => [] as any[]);
+  const printJobFindFirst = vi.fn(async () => null as any);
+  const sendNetwork = vi.fn(defaultSendNetwork);
+  const sendCups = vi.fn(async () => ({ ok: true }));
+  const sendHtml = vi.fn(async () => ({ ok: true }));
+  const buildEscpos = vi.fn(() => Buffer.from('ESCPOS'));
+  const buildHtml = vi.fn(() => '<html/>');
+  const sendSerial = vi.fn(async () => ({ ok: true }));
+  return {
+    defaultSendNetwork,
+    findMenuItems,
+    printJobCreate,
+    printJobFindMany,
+    printJobFindFirst,
+    sendNetwork,
+    sendCups,
+    sendHtml,
+    buildEscpos,
+    buildHtml,
+    sendSerial,
+  };
+});
+
 vi.mock('@db/client', () => ({
   prisma: {
-    menuItem: { findMany: (...args: any[]) => findMenuItems(...args) },
+    menuItem: { findMany: findMenuItems },
     printJob: {
-      create: (...args: any[]) => printJobCreate(...args),
-      findMany: (...args: any[]) => printJobFindMany(...args),
-      findFirst: (...args: any[]) => printJobFindFirst(...args),
+      create: printJobCreate,
+      findMany: printJobFindMany,
+      findFirst: printJobFindFirst,
     },
   },
 }));
 
-// `print.ts` pulls in electron's BrowserWindow — not available outside
-// the runtime. Replace the whole module with stubs we can spy on.
-const sendNetwork = vi.fn(async () => ({ ok: true }));
-const sendCups = vi.fn(async () => ({ ok: true }));
-const sendHtml = vi.fn(async () => ({ ok: true }));
-const buildEscpos = vi.fn(() => Buffer.from('ESCPOS'));
-const buildHtml = vi.fn(() => '<html/>');
 vi.mock('../print', () => ({
-  buildEscposTicket: (...a: any[]) => buildEscpos(...a),
-  buildHtmlReceipt: (...a: any[]) => buildHtml(...a),
-  printHtmlToSystemPrinter: (...a: any[]) => sendHtml(...a),
-  sendToCupsRawPrinter: (...a: any[]) => sendCups(...a),
-  sendToPrinterVerbose: (...a: any[]) => sendNetwork(...a),
+  buildEscposTicket: buildEscpos,
+  buildHtmlReceipt: buildHtml,
+  printHtmlToSystemPrinter: sendHtml,
+  sendToCupsRawPrinter: sendCups,
+  sendToPrinterVerbose: sendNetwork,
 }));
 
-// Serial transport is dynamic-imported by the dispatcher; stub the path
-// vitest resolves to.
-const sendSerial = vi.fn(async () => ({ ok: true }));
 vi.mock('../serial', () => ({
-  sendToSerialPrinter: (...a: any[]) => sendSerial(...a),
+  sendToSerialPrinter: sendSerial,
 }));
 
 import {
@@ -68,10 +102,15 @@ import {
 
 beforeEach(() => {
   findMenuItems.mockReset().mockResolvedValue([]);
-  printJobCreate.mockReset().mockResolvedValue({ id: 1 } as any);
+  printJobCreate.mockReset().mockImplementation(
+    async (_args: unknown) =>
+      ({
+        id: 1,
+      }) as any,
+  );
   printJobFindMany.mockReset().mockResolvedValue([] as any);
   printJobFindFirst.mockReset().mockResolvedValue(null as any);
-  sendNetwork.mockReset().mockResolvedValue({ ok: true });
+  sendNetwork.mockReset().mockImplementation(defaultSendNetwork);
   sendCups.mockReset().mockResolvedValue({ ok: true });
   sendHtml.mockReset().mockResolvedValue({ ok: true });
   sendSerial.mockReset().mockResolvedValue({ ok: true });
@@ -313,12 +352,12 @@ describe('printWithProfile', () => {
 
   it('retries transient ECONNREFUSED when retries=1', async () => {
     sendNetwork
-      .mockResolvedValueOnce({
+      .mockImplementationOnce(async (..._args: unknown[]) => ({
         ok: false,
         error: 'fail',
         code: 'ECONNREFUSED',
-      } as any)
-      .mockResolvedValueOnce({ ok: true });
+      }))
+      .mockImplementationOnce(async (..._args: unknown[]) => ({ ok: true }));
     const r = await printWithProfile(
       payload,
       {} as any,
@@ -336,7 +375,10 @@ describe('printWithProfile', () => {
   });
 
   it('does NOT retry non-transient errors (e.g. paper out)', async () => {
-    sendNetwork.mockResolvedValue({ ok: false, error: 'paper out' } as any);
+    sendNetwork.mockImplementation(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'paper out',
+    }));
     await printWithProfile(
       payload,
       {} as any,
@@ -530,7 +572,7 @@ describe('dispatchTicket', () => {
   });
 
   it('reports per-printer failures and a first error', async () => {
-    sendNetwork.mockImplementation(async (ip: string) =>
+    sendNetwork.mockImplementation(async (ip: string, ..._rest: unknown[]) =>
       ip === '10.0.0.2'
         ? { ok: false, error: 'kitchen offline', code: 'ECONNREFUSED' }
         : { ok: true },
@@ -717,7 +759,10 @@ describe('enqueuePrintRetry', () => {
 
 describe('dispatchTicket retry-queue integration', () => {
   it('does NOT enqueue a retry when persist flag is omitted (default off)', async () => {
-    sendNetwork.mockResolvedValue({ ok: false, error: 'ECONNREFUSED' } as any);
+    sendNetwork.mockImplementation(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'ECONNREFUSED',
+    }));
     await dispatchTicket(
       {
         area: 'A',
@@ -743,7 +788,10 @@ describe('dispatchTicket retry-queue integration', () => {
   });
 
   it('enqueues exactly one retry per failed transient destination', async () => {
-    sendNetwork.mockResolvedValue({ ok: false, error: 'ECONNREFUSED' } as any);
+    sendNetwork.mockImplementation(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'ECONNREFUSED',
+    }));
     await dispatchTicket(
       {
         area: 'A',
@@ -773,7 +821,10 @@ describe('dispatchTicket retry-queue integration', () => {
   });
 
   it('does NOT enqueue a retry for permanent (non-transient) errors', async () => {
-    sendNetwork.mockResolvedValue({ ok: false, error: 'out of paper' } as any);
+    sendNetwork.mockImplementation(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'out of paper',
+    }));
     await dispatchTicket(
       {
         area: 'A',
@@ -800,7 +851,7 @@ describe('dispatchTicket retry-queue integration', () => {
 
   it('routed ORDER: only re-enqueues the bucket whose printer failed', async () => {
     // Bar OK, kitchen offline → exactly one RETRY row, for the kitchen.
-    sendNetwork.mockImplementation(async (ip: string) =>
+    sendNetwork.mockImplementation(async (ip: string, ..._rest: unknown[]) =>
       ip === '10.0.0.2' ? { ok: false, error: 'ECONNREFUSED' } : { ok: true },
     );
     await dispatchTicket(

@@ -28,11 +28,6 @@ export default function ReportsPage() {
   const { user } = useSessionStore();
   const [loading, setLoading] = useState<boolean>(true);
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [topSelling, setTopSelling] = useState<{
-    name: string;
-    qty: number;
-    revenue: number;
-  } | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
   const [ticketLoading, setTicketLoading] = useState<boolean>(false);
   const [activeTickets, setActiveTickets] = useState<any[]>([]);
@@ -58,15 +53,10 @@ export default function ReportsPage() {
         setCurrency(cur);
         if (!user?.id) {
           setOverview(null);
-          setTopSelling(null);
           return;
         }
-        const [ov, top] = await Promise.all([
-          window.api.reports.getMyOverview(user.id),
-          window.api.reports.getMyTopSellingToday(user.id),
-        ]);
+        const ov = await window.api.reports.getMyOverview(user.id);
         setOverview(ov as any);
-        setTopSelling(top as any);
       } finally {
         setLoading(false);
       }
@@ -90,6 +80,7 @@ export default function ReportsPage() {
       try {
         setActiveTicketsError(null);
         setPaidTicketsError(null);
+        setVoidedTicketsError(null);
 
         const [a, p, v] = await Promise.all([
           window.api.reports.listMyActiveTickets(user.id),
@@ -98,9 +89,18 @@ export default function ReportsPage() {
             q: paidQuery,
             limit: paidLimit,
           }),
-          (window.api.reports as any)
-            .listMyVoidedTickets?.({ userId: user.id, limit: 40 })
-            .catch(() => []),
+          window.api.reports
+            .listMyVoidedTickets({ userId: user.id, limit: 40 })
+            .catch((err: unknown) => {
+              setVoidedTicketsError(
+                String(
+                  err instanceof Error
+                    ? err.message
+                    : err || 'Voided list failed',
+                ),
+              );
+              return [];
+            }),
         ]);
         if (!alive) return;
         const today = new Date();

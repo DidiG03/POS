@@ -1,6 +1,6 @@
 {
   "name": "code-orbit-pos",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Desktop POS for  Code Orbit Agroturizem (Electron + React + Prisma)",
   "type": "module",
@@ -21,6 +21,7 @@
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=20",
+    "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run --passWithNoTests --exclude \"tests/**\"",
     "test:ui": "playwright test",

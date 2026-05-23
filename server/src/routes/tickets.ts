@@ -201,7 +201,7 @@ ticketsRouter.get('/latest', requireAuth, async (req: AuthedRequest, res) => {
     orderBy: { createdAt: 'desc' },
   });
   if (!last) return res.status(200).json(null);
-  const items = (((last.itemsJson as any) || []) as any[]).filter((it: any) => !it?.voided);
+  const items = (((last.itemsJson as any) || []) as any[]);
   return res.status(200).json({
     items,
     note: last.note ?? null,

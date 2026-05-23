@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ReservationDTO } from '@shared/ipc';
 
 export type WalkInDialogProps = {
@@ -22,13 +23,13 @@ const QUICK_DURATIONS: { mins: number; label: string }[] = [
 ];
 
 // Strip Electron's ipcRenderer error wrapper so the user sees the real text.
-function cleanIpcMessage(e: any): string {
+function cleanIpcMessage(e: any, fallback: string): string {
   const raw = String(e?.message || e || '').trim();
-  if (!raw) return 'Something went wrong.';
+  if (!raw) return fallback;
   const m = raw.match(
     /Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s,
   );
-  return (m ? m[1] : raw).trim() || 'Something went wrong.';
+  return (m ? m[1] : raw).trim() || fallback;
 }
 
 function naturalSort(a: string, b: string): number {
@@ -47,7 +48,9 @@ export default function WalkInDialog({
   freeTableLabels,
   onSeated,
 }: WalkInDialogProps) {
-  const [name, setName] = useState('Walk-in');
+  const { t } = useTranslation();
+  const walkInDefault = t('reservations.walkInDefault');
+  const [name, setName] = useState(walkInDefault);
   const [phone, setPhone] = useState('');
   const [partySize, setPartySize] = useState<number>(2);
   const [durationMin, setDurationMin] = useState<number>(90);
@@ -59,7 +62,7 @@ export default function WalkInDialog({
   // Reset to sensible defaults each time the dialog opens.
   useEffect(() => {
     if (!open) return;
-    setName('Walk-in');
+    setName(t('reservations.walkInDefault'));
     setPhone('');
     setPartySize(2);
     setDurationMin(90);
@@ -69,7 +72,7 @@ export default function WalkInDialog({
     // Auto-pick the first free table to remove a click in the common case.
     const firstFree = [...freeTableLabels].sort(naturalSort)[0] || '';
     setTableLabel(firstFree);
-  }, [open, freeTableLabels]);
+  }, [open, freeTableLabels, t]);
 
   const tableOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -93,9 +96,9 @@ export default function WalkInDialog({
 
   async function seat() {
     setError(null);
-    const cleanName = name.trim() || 'Walk-in';
+    const cleanName = name.trim() || t('reservations.walkInDefault');
     if (!area) {
-      setError('Pick an area first.');
+      setError(t('reservations.pickAreaFirst'));
       return;
     }
     setBusy(true);
@@ -117,7 +120,7 @@ export default function WalkInDialog({
       onSeated(r);
       onClose();
     } catch (e) {
-      setError(cleanIpcMessage(e));
+      setError(cleanIpcMessage(e, t('reservations.somethingWrong')));
     } finally {
       setBusy(false);
     }
@@ -138,14 +141,16 @@ export default function WalkInDialog({
             <div className="text-xs uppercase tracking-wide opacity-70 truncate">
               {area}
             </div>
-            <div className="text-lg font-semibold">Seat a walk-in</div>
+            <div className="text-lg font-semibold">
+              {t('reservations.seatWalkIn')}
+            </div>
           </div>
           <button
             type="button"
             className="px-3 py-2 rounded hover:bg-gray-700 text-lg leading-none"
             onClick={onClose}
-            title="Close"
-            aria-label="Close"
+            title={t('common.close')}
+            aria-label={t('common.close')}
           >
             ✕
           </button>
@@ -154,17 +159,21 @@ export default function WalkInDialog({
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block">
-              <div className="text-xs opacity-70 mb-1">Name (optional)</div>
+              <div className="text-xs opacity-70 mb-1">
+                {t('reservations.nameOptional')}
+              </div>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
-                placeholder="Walk-in"
+                placeholder={t('reservations.walkInDefault')}
               />
             </label>
             <label className="block">
-              <div className="text-xs opacity-70 mb-1">Phone (optional)</div>
+              <div className="text-xs opacity-70 mb-1">
+                {t('reservations.phoneOptional')}
+              </div>
               <input
                 type="tel"
                 value={phone}
@@ -177,7 +186,9 @@ export default function WalkInDialog({
           </div>
 
           <div>
-            <div className="text-xs opacity-70 mb-1">Party size</div>
+            <div className="text-xs opacity-70 mb-1">
+              {t('reservations.partySize')}
+            </div>
             <div className="flex items-center gap-1.5 flex-wrap">
               {QUICK_PARTY.map((n) => (
                 <button
@@ -204,14 +215,16 @@ export default function WalkInDialog({
                   )
                 }
                 className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base sm:text-sm text-right"
-                title="Custom party size"
+                title={t('reservations.customPartySize')}
                 inputMode="numeric"
               />
             </div>
           </div>
 
           <div>
-            <div className="text-xs opacity-70 mb-1">Duration</div>
+            <div className="text-xs opacity-70 mb-1">
+              {t('reservations.duration')}
+            </div>
             <div className="flex items-center gap-1.5 flex-wrap">
               {QUICK_DURATIONS.map((d) => (
                 <button
@@ -231,33 +244,36 @@ export default function WalkInDialog({
           </div>
 
           <label className="block">
-            <div className="text-xs opacity-70 mb-1">Table</div>
+            <div className="text-xs opacity-70 mb-1">{t('common.table')}</div>
             <select
               value={tableLabel}
               onChange={(e) => setTableLabel(e.target.value)}
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
             >
-              <option value="">No specific table</option>
-              {tableOptions.map((t) => (
-                <option key={t.label} value={t.label}>
-                  {t.label}
-                  {t.free ? ' · Free' : ' · Busy'}
+              <option value="">{t('reservations.noSpecificTable')}</option>
+              {tableOptions.map((tbl) => (
+                <option key={tbl.label} value={tbl.label}>
+                  {tbl.label}
+                  {tbl.free
+                    ? t('reservations.tableFreeSuffix')
+                    : t('reservations.tableBusySuffix')}
                 </option>
               ))}
             </select>
             <div className="text-[11px] opacity-60 mt-1">
-              Free tables are listed first. Seating onto a busy table may be
-              blocked by an existing reservation.
+              {t('reservations.freeTablesHint')}
             </div>
           </label>
 
           <label className="block">
-            <div className="text-xs opacity-70 mb-1">Note (optional)</div>
+            <div className="text-xs opacity-70 mb-1">
+              {t('reservations.noteOptional')}
+            </div>
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 min-h-[44px] text-base"
-              placeholder="Allergies, special seating, ..."
+              placeholder={t('reservations.noteWalkInPlaceholder')}
             />
           </label>
 
@@ -271,16 +287,16 @@ export default function WalkInDialog({
             onClick={onClose}
             disabled={busy}
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             type="button"
             className="ml-auto px-4 py-2.5 rounded bg-rose-700 hover:bg-rose-600 disabled:opacity-60 font-medium"
             onClick={seat}
             disabled={busy}
-            title="Create a SEATED reservation right now"
+            title={t('reservations.seatNowTitle')}
           >
-            {busy ? 'Seating…' : 'Seat now'}
+            {busy ? t('reservations.seating') : t('reservations.seatNow')}
           </button>
         </div>
       </div>

@@ -49,6 +49,13 @@ enum PrepStation {
   DESSERT
 }
 
+/// Waiter-facing availability (set from Admin → Menu).
+enum MenuStockLevel {
+  OK
+  LOW
+  OUT
+}
+
 enum KdsStationStatus {
   NEW
   DONE
@@ -74,6 +81,12 @@ model MenuItem {
   active     Boolean   @default(true)
   isKg       Boolean   @default(false)
   station    PrepStation @default(KITCHEN)
+  /// LOW = yellow warning on waiter menu; OUT = hidden/disabled for ordering.
+  stockLevel MenuStockLevel @default(OK)
+  /// Remaining units while LOW (decremented on kitchen send). Null = warning-only LOW (legacy).
+  stockRemaining Int?
+  /// Local calendar day (YYYY-MM-DD) when LOW/OUT was set; before midnight reset applies.
+  stockDay       String?
   recipe     RecipeComponent[]
   orderItems OrderItem[]
 }
