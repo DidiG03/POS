@@ -93,6 +93,11 @@ function ensurePackagedDefaults() {
     if (!String(process.env.ENABLE_ADMIN || '').trim()) {
       process.env.ENABLE_ADMIN = 'true';
     }
+    // Kitchen displays and tablets need the LAN HTTP API. Fresh installs
+    // otherwise advertise via mDNS but refuse connections on the LAN IP.
+    if (!String(process.env.POS_ALLOW_LAN || '').trim()) {
+      process.env.POS_ALLOW_LAN = 'true';
+    }
     // Force cloud onboarding even when env isn't configured.
     // The backend URL itself is not sensitive; secrets remain the Business password + tokens.
     if (!String(process.env.POS_CLOUD_URL || '').trim()) {

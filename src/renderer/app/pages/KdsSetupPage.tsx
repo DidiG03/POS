@@ -128,8 +128,21 @@ export default function KdsSetupPage() {
     try {
       const trimmedHost = host.trim();
       const port = Number(httpPort) || 3333;
+      const test = await api.testConnection({
+        host: trimmedHost,
+        httpPort: port,
+      });
+      if (!test.ok) {
+        setResult(
+          test.error?.includes('403') || test.error?.includes('ECONNREFUSED')
+            ? `${test.error} — On the POS host, open Admin → Settings → LAN / Tablets and turn on "Allow LAN access", then restart POS.`
+            : test.error || 'Connection failed. Click Test connection first.',
+        );
+        setResultOk(false);
+        return;
+      }
       await persistKdsBackendHost({ host: trimmedHost, httpPort: port });
-      // Main process reloads the window after save.
+      // Main process navigates to #/kds after save.
     } catch (e: any) {
       setResult(e?.message || 'Could not save configuration.');
       setResultOk(false);
