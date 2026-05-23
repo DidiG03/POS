@@ -149,4 +149,6 @@ jobs:
 
           gh release upload "$TAG" "${UPLOAD[@]}" --clobber
 
+          gh release edit "$TAG" --draft=false --latest
+
           echo "Published to https://github.com/${{ github.repository }}/releases/tag/${TAG}"
