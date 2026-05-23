@@ -82,8 +82,8 @@ jobs:
           TAG="${INPUT_TAG:-v${VERSION}}"
           TITLE="${TAG#v}"
 
-          POS_EXE=$(ls dist/*.exe | head -1)
-          KDS_EXE=$(ls dist-installers/kds/*.exe | head -1)
+          POS_EXE=$(ls dist/*Setup*.exe dist/*.exe 2>/dev/null | head -1)
+          KDS_EXE=$(ls dist-installers/kds/*Setup*.exe dist-installers/kds/*.exe 2>/dev/null | head -1)
           if [[ ! -f "$POS_EXE" ]]; then
             echo "::error::Missing POS installer in dist/"
             exit 1
@@ -93,6 +93,11 @@ jobs:
             exit 1
           fi
 
+          CANONICAL_POS="dist/Code-Orbit-POS-Setup-${VERSION}.exe"
+          CANONICAL_KDS="dist-installers/kds/Code-Orbit-KDS-Setup-${VERSION}.exe"
+          cp "$POS_EXE" "$CANONICAL_POS"
+          cp "$KDS_EXE" "$CANONICAL_KDS"
+
           NOTES="Windows client installers for Code Orbit POS ${VERSION} and Code Orbit KDS ${VERSION}."
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Updating existing release $TAG"
@@ -100,7 +105,7 @@ jobs:
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES"
           fi
 
-          UPLOAD=( "$POS_EXE" "$KDS_EXE" )
+          UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" )
           shopt -s nullglob
           UPLOAD+=( dist/latest*.yml dist-installers/kds/latest*.yml )
           shopt -u nullglob

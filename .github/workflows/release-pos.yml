@@ -29,12 +29,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Windows POS + KDS are built by release-windows-client.yml.
           - os: macos-latest
             target: --mac
           - os: ubuntu-latest
             target: --linux
-          - os: windows-latest
-            target: --win
 
     steps:
       - name: Checkout
