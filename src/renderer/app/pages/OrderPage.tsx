@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTicketStore } from '../../stores/ticket';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
@@ -54,6 +54,31 @@ function readableTextColor(hex?: string | null): string {
 }
 
 const FALLBACK_TILE_BG = '#065f46'; // emerald-800 — matches the prior look
+const FAVOURITES_CAT_ID = -1;
+const COMMENTS_CAT_ID = -2;
+const COMMENT_TILE_BG = '#475569'; // slate-600 — distinct from menu categories
+const COMMENT_CUSTOM_BTN_BG = '#047857'; // emerald-700 — matches POS action green
+
+function mergeNoteFragment(existing: string, fragment: string): string {
+  const base = String(existing || '').trim();
+  const text = String(fragment || '').trim();
+  if (!text) return base;
+  if (!base) return text;
+  const parts = base.split(/[,;]\s*/).map((p) => p.trim().toLowerCase());
+  if (parts.includes(text.toLowerCase())) return base;
+  return `${base}, ${text}`;
+}
+
+function lineAcceptsComment(
+  line: { voided?: boolean; staged?: boolean },
+  ticketOpen: boolean,
+  requestOnly: boolean,
+): boolean {
+  if (line.voided) return false;
+  const dimmed = ticketOpen && !line.staged;
+  if (dimmed && !(requestOnly && line.staged)) return false;
+  return true;
+}
 
 function menuItemUnavailable(item: MenuItemDTO): boolean {
   if (!item.active) return true;
@@ -136,6 +161,13 @@ export default function OrderPage() {
     vatRate: number;
   } | null>(null);
   const [weightInput, setWeightInput] = useState<string>('');
+  const [customCommentOpen, setCustomCommentOpen] = useState(false);
+  const [customCommentInput, setCustomCommentInput] = useState('');
+  const customCommentInputRef = useRef<HTMLTextAreaElement | null>(null);
+  /** Waiter-created quick buttons for the current table — not order text until tapped. */
+  const [customCommentButtonsByTable, setCustomCommentButtonsByTable] =
+    useState<Record<string, string[]>>({});
+  const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
   const { selectedTable, setPendingAction, setSelectedTable } =
     useOrderContext();
   const { setOpen, setAll, isOpen } = useTableStatus();
@@ -419,6 +451,10 @@ export default function OrderPage() {
     hydrateGenRef.current += 1;
   }, [selectedTable?.area, selectedTable?.label]);
 
+  useEffect(() => {
+    setSelectedLineId(null);
+  }, [selectedTable?.area, selectedTable?.label]);
+
   // Load ticket snapshot for open tables before rendering the page (prevents empty->pop-in on refresh).
   useEffect(() => {
     let cancelled = false;
@@ -688,22 +724,95 @@ export default function OrderPage() {
 
   const fav = useFavourites();
   const favouriteSkus = fav.list(user?.id || null);
+  const commentPresets = useMemo(() => {
+    const raw = t('order.commentPresets', { returnObjects: true });
+    if (!Array.isArray(raw)) return [];
+    return raw.map((s) => String(s || '').trim()).filter(Boolean);
+  }, [t]);
   const selected = useMemo(() => {
-    // Virtual Favourites category id: -1
-    if (selectedCatId === -1) {
+    if (selectedCatId === FAVOURITES_CAT_ID) {
       const items = categories
         .flatMap((c) => c.items)
         .filter((i) => favouriteSkus.includes(i.sku));
       return {
-        id: -1,
+        id: FAVOURITES_CAT_ID,
         name: t('order.favourites'),
         sortOrder: -999,
         active: true,
         items,
       } as any;
     }
+    if (selectedCatId === COMMENTS_CAT_ID) {
+      return {
+        id: COMMENTS_CAT_ID,
+        name: t('order.comments'),
+        sortOrder: -998,
+        active: true,
+        items: [],
+      } as any;
+    }
     return categories.find((c) => c.id === selectedCatId) ?? categories[0];
   }, [categories, selectedCatId, favouriteSkus, t]);
+
+  const appendOrderComment = useCallback(
+    (phrase: string) => {
+      const text = String(phrase || '').trim();
+      if (!text) return;
+      const ticketOpen = Boolean(
+        selectedTable && isOpen(selectedTable.area, selectedTable.label),
+      );
+      const requestOnly = Boolean(
+        ticketOpen &&
+          ownerId &&
+          user?.id != null &&
+          Number(ownerId) !== Number(user.id),
+      );
+      if (selectedLineId) {
+        const line = lines.find((l) => l.id === selectedLineId);
+        if (line && lineAcceptsComment(line, ticketOpen, requestOnly)) {
+          setLineNote(selectedLineId, mergeNoteFragment(line.note ?? '', text));
+          return;
+        }
+      }
+      setOrderNote(mergeNoteFragment(orderNote, text));
+    },
+    [
+      lines,
+      orderNote,
+      ownerId,
+      selectedLineId,
+      selectedTable,
+      setLineNote,
+      setOrderNote,
+      user?.id,
+      isOpen,
+    ],
+  );
+
+  const tableCommentKey = selectedTable
+    ? `${selectedTable.area}:${selectedTable.label}`
+    : null;
+  const customCommentButtons = tableCommentKey
+    ? (customCommentButtonsByTable[tableCommentKey] ?? [])
+    : [];
+
+  const appendCustomCommentButton = useCallback(
+    (phrase: string) => {
+      const text = String(phrase || '').trim();
+      if (!text || !tableCommentKey) return;
+      setCustomCommentButtonsByTable((prev) => {
+        const cur = prev[tableCommentKey] ?? [];
+        if (
+          cur.some((c) => c.toLowerCase() === text.toLowerCase()) ||
+          commentPresets.some((c) => c.toLowerCase() === text.toLowerCase())
+        ) {
+          return prev;
+        }
+        return { ...prev, [tableCommentKey]: [...cur, text] };
+      });
+    },
+    [tableCommentKey, commentPresets],
+  );
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1112,11 +1221,34 @@ export default function OrderPage() {
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
           {/* Favourites tab */}
           <button
-            key={-1}
-            onClick={() => setSelectedCatId(-1)}
-            className={`py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === -1 ? 'bg-gray-800' : 'bg-gray-900'}`}
+            key={FAVOURITES_CAT_ID}
+            onClick={() => setSelectedCatId(FAVOURITES_CAT_ID)}
+            className={`py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900'}`}
           >
             {t('order.favourites')}
+          </button>
+          {/* Quick comments tab */}
+          <button
+            key={COMMENTS_CAT_ID}
+            onClick={() => setSelectedCatId(COMMENTS_CAT_ID)}
+            className={`relative py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded overflow-hidden ${
+              selected?.id === COMMENTS_CAT_ID ? 'bg-gray-800' : 'bg-gray-900'
+            }`}
+            style={{
+              boxShadow:
+                selected?.id === COMMENTS_CAT_ID
+                  ? `inset 0 -3px 0 0 ${COMMENT_TILE_BG}`
+                  : `inset 0 -2px 0 0 ${COMMENT_TILE_BG}80`,
+            }}
+          >
+            <span className="inline-flex items-center gap-2">
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-full"
+                style={{ backgroundColor: COMMENT_TILE_BG }}
+                aria-hidden
+              />
+              {t('order.comments')}
+            </span>
           </button>
           {categories.map((c) => {
             const tabColor = c.color || null;
@@ -1159,7 +1291,44 @@ export default function OrderPage() {
           })}
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {filteredItems.map((i: MenuItemDTO) => {
+          {!query.trim() && selectedCatId === COMMENTS_CAT_ID ? (
+            <>
+              {[...commentPresets, ...customCommentButtons].map((phrase) => (
+                <button
+                  key={phrase}
+                  type="button"
+                  className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center"
+                  style={{
+                    backgroundColor: COMMENT_TILE_BG,
+                    color: readableTextColor(COMMENT_TILE_BG),
+                  }}
+                  disabled={ticketSyncing || busyAction != null}
+                  onClick={() => appendOrderComment(phrase)}
+                >
+                  <div className="font-medium leading-snug">{phrase}</div>
+                </button>
+              ))}
+              <button
+                type="button"
+                className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center font-medium leading-snug"
+                style={{
+                  backgroundColor: COMMENT_CUSTOM_BTN_BG,
+                  color: readableTextColor(COMMENT_CUSTOM_BTN_BG),
+                }}
+                disabled={ticketSyncing || busyAction != null}
+                onClick={() => {
+                  setCustomCommentInput('');
+                  setCustomCommentOpen(true);
+                }}
+              >
+                {t('order.writeComment')}
+              </button>
+            </>
+          ) : null}
+          {(!query.trim() && selectedCatId === COMMENTS_CAT_ID
+            ? []
+            : filteredItems
+          ).map((i: MenuItemDTO) => {
             const isFav = fav.isFav(user?.id || null, i.sku);
             const isDisabled = menuItemUnavailable(i);
             const isLow = menuItemLowStock(i);
@@ -1405,10 +1574,41 @@ export default function OrderPage() {
                 );
                 const dimmed = isTableOpen && !l.staged; // darker when already sent
                 const isVoided = l.voided === true;
+                const isSelected = selectedLineId === l.id;
+                const canSelect = lineAcceptsComment(
+                  l,
+                  isTableOpen,
+                  showRequestOnly,
+                );
                 return (
                   <div
                     key={l.id}
-                    className={`bg-gray-700 rounded px-2 py-2 ${isVoided ? 'opacity-60' : ''}`}
+                    role="button"
+                    tabIndex={canSelect ? 0 : -1}
+                    className={`bg-gray-700 rounded px-2 py-2 transition-shadow ${
+                      isVoided ? 'opacity-60' : ''
+                    } ${
+                      isSelected
+                        ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-gray-800'
+                        : canSelect
+                          ? 'cursor-pointer hover:bg-gray-600/80'
+                          : ''
+                    }`}
+                    onClick={() => {
+                      if (!canSelect) return;
+                      setSelectedLineId((prev) =>
+                        prev === l.id ? null : l.id,
+                      );
+                    }}
+                    onKeyDown={(e) => {
+                      if (!canSelect) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedLineId((prev) =>
+                          prev === l.id ? null : l.id,
+                        );
+                      }
+                    }}
                   >
                     <div className="flex items-center justify-between">
                       <div>
@@ -1434,7 +1634,10 @@ export default function OrderPage() {
                                 minHeight: '28px',
                                 padding: 0,
                               }}
-                              onClick={() => decrement(l.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                decrement(l.id);
+                              }}
                               disabled={l.qty === 1}
                             >
                               -
@@ -1449,7 +1652,10 @@ export default function OrderPage() {
                                 minHeight: '28px',
                                 padding: 0,
                               }}
-                              onClick={() => increment(l.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                increment(l.id);
+                              }}
                               disabled={l.qty >= 100}
                             >
                               +
@@ -1481,7 +1687,10 @@ export default function OrderPage() {
                                 minHeight: '28px',
                                 padding: 0,
                               }}
-                              onClick={() => removeLine(l.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeLine(l.id);
+                              }}
                             >
                               X
                             </button>
@@ -1495,7 +1704,8 @@ export default function OrderPage() {
                                 minHeight: '28px',
                                 padding: 0,
                               }}
-                              onClick={() =>
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 setVoidTarget({
                                   id: l.id,
                                   name: l.name,
@@ -1503,8 +1713,8 @@ export default function OrderPage() {
                                   unitPrice: l.unitPrice,
                                   vatRate: l.vatRate,
                                   note: l.note,
-                                })
-                              }
+                                });
+                              }}
                               title={t('order.voidTitle')}
                             >
                               A
@@ -1524,7 +1734,10 @@ export default function OrderPage() {
                             disabled={
                               (showRequestOnly && !l.staged) || isVoided
                             }
-                            onClick={() => removeLine(l.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeLine(l.id);
+                            }}
                           >
                             X
                           </button>
@@ -1544,6 +1757,7 @@ export default function OrderPage() {
                       disabled={Boolean(
                         isVoided || (dimmed && !(showRequestOnly && l.staged)),
                       )}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setLineNote(l.id, e.target.value)}
                     />
                   </div>
@@ -1839,53 +2053,51 @@ export default function OrderPage() {
                                 categoryName: (l as any).categoryName,
                               }))
                             : details.lines;
-                          // (optional) send log
-                          if (!user?.id) return; // require logged-in user to log ticket
-                          const logResult = await logTicket({
-                            userId: user.id,
-                            area: selectedTable.area,
-                            tableLabel: selectedTable.label,
-                            covers: lastCovers ?? null,
-                            items: details.lines,
-                            note: orderNote,
-                            stockConsumeLines: isFireOrder
-                              ? stagedOnly.map((l) => ({
-                                  sku: l.sku,
-                                  qty: l.qty,
-                                }))
-                              : [],
-                            kdsFireItems: printLines,
-                          });
-                          if (!logResult.ok) {
-                            // Server rejected — most often the table
-                            // was closed/paid by another waiter or is
-                            // owned by someone else. Don't fire the
-                            // print, refresh the open-tables map, and
-                            // surface a clean toast.
-                            toast.error(logResult.error, {
-                              title: t('order.toastSendBlocked'),
+                          if (!user?.id) return;
+                          if (isFireOrder) {
+                            const logResult = await logTicket({
+                              userId: user.id,
+                              area: selectedTable.area,
+                              tableLabel: selectedTable.label,
+                              covers: lastCovers ?? null,
+                              items: details.lines,
+                              note: orderNote,
+                              stockConsumeLines: stagedOnly.map((l) => ({
+                                sku: l.sku,
+                                qty: l.qty,
+                              })),
+                              kdsFireItems: printLines,
                             });
-                            try {
-                              const open = await window.api.tables.listOpen();
-                              if (Array.isArray(open)) {
-                                const stillOpen = open.some(
-                                  (tbl: any) =>
-                                    tbl.area === selectedTable.area &&
-                                    tbl.label === selectedTable.label,
-                                );
-                                setOpen(
-                                  selectedTable.area,
-                                  selectedTable.label,
-                                  stillOpen,
-                                );
+                            if (!logResult.ok) {
+                              // Server rejected — most often the table
+                              // was closed/paid by another waiter or is
+                              // owned by someone else. Don't fire the
+                              // print, refresh the open-tables map, and
+                              // surface a clean toast.
+                              toast.error(logResult.error, {
+                                title: t('order.toastSendBlocked'),
+                              });
+                              try {
+                                const open = await window.api.tables.listOpen();
+                                if (Array.isArray(open)) {
+                                  const stillOpen = open.some(
+                                    (tbl: any) =>
+                                      tbl.area === selectedTable.area &&
+                                      tbl.label === selectedTable.label,
+                                  );
+                                  setOpen(
+                                    selectedTable.area,
+                                    selectedTable.label,
+                                    stillOpen,
+                                  );
+                                }
+                              } catch {
+                                // ignore — toast is the source of truth
                               }
-                            } catch {
-                              // ignore — toast is the source of truth
+                              return;
                             }
-                            return;
+                            useTicketStore.getState().markAllAsSent();
                           }
-                          // Immediately dim and lock qty by marking all as sent (optimistic)
-                          useTicketStore.getState().markAllAsSent();
                           await window.api.tickets.print({
                             area: selectedTable.area,
                             tableLabel: selectedTable.label,
@@ -2927,54 +3139,52 @@ export default function OrderPage() {
                         categoryName: (l as any).categoryName,
                       }))
                     : details.lines;
-                  // (optional) send log
                   if (!user?.id) return;
-                  const logResult = await logTicket({
-                    userId: user.id,
-                    area: selectedTable.area,
-                    tableLabel: selectedTable.label,
-                    covers: num,
-                    items: details.lines,
-                    note: orderNote,
-                    stockConsumeLines: isFireOrder
-                      ? stagedOnly.map((l) => ({
-                          sku: l.sku,
-                          qty: l.qty,
-                        }))
-                      : [],
-                    kdsFireItems: printLines,
-                  });
-                  if (!logResult.ok) {
-                    // Same recovery path as the regular Send button:
-                    // somebody else closed / claimed this table while
-                    // this device was on the covers modal. Toast,
-                    // resync the open-tables map, and bail before the
-                    // print fires (which would otherwise create a
-                    // ghost kitchen ticket).
-                    toast.error(logResult.error, {
-                      title: t('order.toastSendBlocked'),
+                  if (isFireOrder) {
+                    const logResult = await logTicket({
+                      userId: user.id,
+                      area: selectedTable.area,
+                      tableLabel: selectedTable.label,
+                      covers: num,
+                      items: details.lines,
+                      note: orderNote,
+                      stockConsumeLines: stagedOnly.map((l) => ({
+                        sku: l.sku,
+                        qty: l.qty,
+                      })),
+                      kdsFireItems: printLines,
                     });
-                    try {
-                      const open = await window.api.tables.listOpen();
-                      if (Array.isArray(open)) {
-                        const stillOpen = open.some(
-                          (tbl: any) =>
-                            tbl.area === selectedTable.area &&
-                            tbl.label === selectedTable.label,
-                        );
-                        setOpen(
-                          selectedTable.area,
-                          selectedTable.label,
-                          stillOpen,
-                        );
+                    if (!logResult.ok) {
+                      // Same recovery path as the regular Send button:
+                      // somebody else closed / claimed this table while
+                      // this device was on the covers modal. Toast,
+                      // resync the open-tables map, and bail before the
+                      // print fires (which would otherwise create a
+                      // ghost kitchen ticket).
+                      toast.error(logResult.error, {
+                        title: t('order.toastSendBlocked'),
+                      });
+                      try {
+                        const open = await window.api.tables.listOpen();
+                        if (Array.isArray(open)) {
+                          const stillOpen = open.some(
+                            (tbl: any) =>
+                              tbl.area === selectedTable.area &&
+                              tbl.label === selectedTable.label,
+                          );
+                          setOpen(
+                            selectedTable.area,
+                            selectedTable.label,
+                            stillOpen,
+                          );
+                        }
+                      } catch {
+                        // ignore
                       }
-                    } catch {
-                      // ignore
+                      return;
                     }
-                    return;
+                    useTicketStore.getState().markAllAsSent();
                   }
-                  // Immediately dim and lock qty by marking all as sent (optimistic)
-                  useTicketStore.getState().markAllAsSent();
                   await window.api.tickets.print({
                     area: selectedTable.area,
                     tableLabel: selectedTable.label,
@@ -3110,6 +3320,62 @@ export default function OrderPage() {
                 }}
               >
                 {t('order.voidConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {customCommentOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          onClick={() => setCustomCommentOpen(false)}
+        >
+          <div
+            className="bg-gray-800 p-5 rounded w-full max-w-sm border border-gray-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-center mb-3 font-semibold">
+              {t('order.writeComment')}
+            </h3>
+            <textarea
+              ref={customCommentInputRef}
+              className="w-full bg-gray-700 rounded px-3 py-2 text-sm mb-3 min-h-[80px] resize-y placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-600/50"
+              placeholder={t('order.writeCommentPlaceholder')}
+              value={customCommentInput}
+              autoFocus
+              onChange={(e) => setCustomCommentInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  const text = customCommentInput.trim();
+                  if (!text) return;
+                  appendCustomCommentButton(text);
+                  setCustomCommentInput('');
+                  customCommentInputRef.current?.focus();
+                }
+              }}
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="flex-1 bg-gray-600 hover:bg-gray-500 py-2 rounded"
+                onClick={() => setCustomCommentOpen(false)}
+              >
+                {t('common.close')}
+              </button>
+              <button
+                type="button"
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded font-medium"
+                onClick={() => {
+                  const text = customCommentInput.trim();
+                  if (!text) return;
+                  appendCustomCommentButton(text);
+                  setCustomCommentInput('');
+                  customCommentInputRef.current?.focus();
+                }}
+              >
+                {t('order.writeCommentAdd')}
               </button>
             </div>
           </div>

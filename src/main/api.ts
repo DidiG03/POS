@@ -13,6 +13,8 @@ import {
   pickActiveReceiptProfile,
   testPrintWithProfile,
 } from './services/printDispatcher';
+import { maybeFiscalizePayment } from './services/fiscal';
+import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
   broadcastTableStatusChanged,
@@ -1389,7 +1391,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           200,
           {
             items,
-            note: last.note ?? null,
+            note: stripTransferTagsFromNote(last.note) || null,
             covers: last.covers ?? null,
             createdAt: last.createdAt.toISOString(),
             userId: last.userId,
@@ -1710,13 +1712,39 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // ignore
         }
 
+        let fiscalPayload = payload;
+        const payKind = String(payload?.meta?.kind || '').toUpperCase();
+        if (payKind === 'PAYMENT') {
+          try {
+            fiscalPayload = await maybeFiscalizePayment(
+              payload,
+              settings as any,
+              {
+                idempotencyKey:
+                  String(body?.idempotencyKey || '').trim() || undefined,
+              },
+            );
+          } catch (e: any) {
+            return send(
+              res,
+              502,
+              {
+                ok: false,
+                error: 'fiscal_failed',
+                message: String(e?.message || e),
+              },
+              corsOrigin,
+            );
+          }
+        }
+
         // Single dispatch: hands off mode selection, profile picking,
         // and ORDER/category routing to `printDispatcher`. Used to be
         // ~150 lines of mode branching here; moving it out also fixed
         // the iOS routing gap (this HTTP route now respects per-station
         // / per-category printer assignments, just like the Electron
         // path does).
-        const r = await dispatchTicket(payload, settings as any, {
+        const r = await dispatchTicket(fiscalPayload, settings as any, {
           // iOS / web waiters get the same automatic retry safety net
           // as the Electron app (PR 3).
           persistRetryOnTransientFailure: true,
@@ -2422,6 +2450,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           result.cloud = { ...result.cloud };
           delete result.cloud.accessPassword;
         }
+        if (result?.fiscal && typeof result.fiscal === 'object') {
+          result.fiscal = { ...result.fiscal };
+          if (result.fiscal.authToken) {
+            result.fiscal.authTokenConfigured = true;
+            delete result.fiscal.authToken;
+          }
+        }
         return send(res, 200, result, corsOrigin);
       }
       // Offline outbox status (for tablets / browser clients)
@@ -2438,7 +2473,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         try {
           const input = await parseJson(req);
           const merged = await coreServices.updateSettings(input);
-          return send(res, 200, merged, corsOrigin);
+          const result = { ...(merged as any) };
+          if (result?.fiscal && typeof result.fiscal === 'object') {
+            result.fiscal = { ...result.fiscal };
+            if (result.fiscal.authToken) {
+              result.fiscal.authTokenConfigured = true;
+              delete result.fiscal.authToken;
+            }
+          }
+          if (result?.cloud && typeof result.cloud === 'object') {
+            result.cloud = { ...result.cloud };
+            delete result.cloud.accessPassword;
+          }
+          return send(res, 200, result, corsOrigin);
         } catch (e) {
           void e;
           return send(

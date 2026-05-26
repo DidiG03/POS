@@ -25,6 +25,11 @@ const api: Api = {
     testPrintVerbose: () => ipcRenderer.invoke('settings:testPrintVerbose'),
     testPrintProfile: (profile) =>
       ipcRenderer.invoke('settings:testPrintProfile', profile),
+    testFiscalConnection: () =>
+      ipcRenderer.invoke('settings:testFiscalConnection'),
+    getFiscalTokenHint: () => ipcRenderer.invoke('settings:getFiscalTokenHint'),
+    testFiscalMinimalInvoice: () =>
+      ipcRenderer.invoke('settings:testFiscalMinimalInvoice'),
     listPrinters: () => ipcRenderer.invoke('printer:list'),
     listSerialPorts: () => ipcRenderer.invoke('printer:listSerialPorts'),
   },

@@ -9,6 +9,39 @@ import { spawn } from 'node:child_process';
 const ESC = Buffer.from([0x1b]);
 const GS = Buffer.from([0x1d]);
 
+function escposQrCode(
+  data: string,
+  options?: { moduleSize?: number; align?: 'left' | 'center' | 'right' },
+): Buffer {
+  const text = String(data || '');
+  const align = options?.align ?? 'center';
+  const alignByte = align === 'center' ? 49 : align === 'right' ? 50 : 48;
+  let moduleSize = options?.moduleSize;
+  if (moduleSize == null) {
+    // Long fiscal URLs need a smaller module size on 58mm paper.
+    moduleSize = text.length > 140 ? 3 : text.length > 90 ? 4 : 5;
+  }
+  moduleSize = Math.min(8, Math.max(2, Math.round(moduleSize)));
+  const d = Buffer.from(text, 'utf8');
+  const storeLen = d.length + 3;
+  const pL = storeLen & 0xff;
+  const pH = (storeLen >> 8) & 0xff;
+  return Buffer.concat([
+    // QR-specific alignment (ESC a alone does not center QR on many printers).
+    GS,
+    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x41, alignByte]),
+    GS,
+    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, moduleSize]),
+    GS,
+    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x30]),
+    GS,
+    Buffer.from([0x28, 0x6b, pL, pH, 0x31, 0x50, 0x30]),
+    d,
+    GS,
+    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]),
+  ]);
+}
+
 export type TicketPrintItem = {
   name: string;
   qty: number;
@@ -234,6 +267,44 @@ export function buildEscposTicket(
     lines.push(cmdAlign('left'));
     if (method) lines.push(escposText(`Method: ${method}\n`));
     if (approvedBy) lines.push(escposText(`Approved: ${approvedBy}\n`));
+
+    const fiscalNivf = String(meta?.fiscalNivf || '').trim();
+    const fiscalNslf = String(meta?.fiscalNslf || '').trim();
+    const fiscalLink = String(meta?.fiscalLink || '').trim();
+    if (meta?.fiscalEnabled && (fiscalNivf || fiscalNslf || fiscalLink)) {
+      const fiscalLineWidth = 32;
+      lines.push(escposText('--------------------------------\n'));
+      lines.push(cmdAlign('center'));
+      lines.push(cmdBold(true));
+      lines.push(escposText('FISKALIZUAR\n'));
+      lines.push(cmdBold(false));
+      if (fiscalNivf) {
+        for (const ln of wrapEscposText(
+          `NIVF: ${fiscalNivf}`,
+          fiscalLineWidth,
+        )) {
+          lines.push(escposText(`${ln}\n`));
+        }
+      }
+      if (fiscalNslf) {
+        for (const ln of wrapEscposText(
+          `NSLF: ${fiscalNslf}`,
+          fiscalLineWidth,
+        )) {
+          lines.push(escposText(`${ln}\n`));
+        }
+      }
+      if (fiscalLink) {
+        lines.push(escposText('\n'));
+        lines.push(cmdAlign('center'));
+        lines.push(escposQrCode(fiscalLink, { align: 'center' }));
+        lines.push(escposText('\n'));
+        for (const ln of wrapEscposText(fiscalLink, fiscalLineWidth)) {
+          lines.push(escposText(`${ln}\n`));
+        }
+      }
+      lines.push(cmdAlign('left'));
+    }
   }
 
   if (payload.note) {
@@ -334,9 +405,18 @@ export function buildHtmlReceipt(
     Number.isFinite(discountAmt) && discountAmt > 0
       ? `<div class="row"><div class="left">${safe(String(meta?.discountType || '').toUpperCase() === 'PERCENT' ? `Discount (${Number(meta?.discountValue || 0)}%)` : 'Discount')}</div><div class="right">-${safe(formatMoney(discountAmt, currency))}</div></div>`
       : '';
+  const fiscalNivf = String(meta?.fiscalNivf || '').trim();
+  const fiscalNslf = String(meta?.fiscalNslf || '').trim();
+  const fiscalLink = String(meta?.fiscalLink || '').trim();
+  const fiscalBlock =
+    kind === 'PAYMENT' &&
+    meta?.fiscalEnabled &&
+    (fiscalNivf || fiscalNslf || fiscalLink)
+      ? `<div class="sep"></div><div class="paid">FISKALIZUAR</div>${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalLink ? `<div class="small"><a href="${safe(fiscalLink)}">${safe(fiscalLink)}</a></div>` : ''}`
+      : '';
   const paidBlock =
     kind === 'PAYMENT'
-      ? `<div class="sep"></div><div class="paid">PAID</div>${meta?.method || meta?.paymentMethod ? `<div class="small">Method: ${safe(String(meta?.method || meta?.paymentMethod).toUpperCase())}</div>` : ''}`
+      ? `<div class="sep"></div><div class="paid">PAID</div>${meta?.method || meta?.paymentMethod ? `<div class="small">Method: ${safe(String(meta?.method || meta?.paymentMethod).toUpperCase())}</div>` : ''}${fiscalBlock}`
       : '';
 
   const subtitleParts: string[] = [];

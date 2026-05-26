@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { requireAuth, type AuthedRequest } from '../auth/middleware.js';
+import { buildTransferTicketNote } from '../utils/transferNote.js';
 
 export const tablesRouter = Router();
 
@@ -141,7 +142,6 @@ tablesRouter.post('/transfer', requireAuth, async (req: AuthedRequest, res) => {
     return res.status(400).json({ ok: false, error: `Destination table ${toArea} ${toLabel} is already open` });
   }
 
-  const note = String(last.note || '');
   const fromOwnerRow = await prisma.user
     .findFirst({ where: { businessId: auth.businessId, id: currentOwnerId } as any })
     .catch(() => null);
@@ -153,7 +153,7 @@ tablesRouter.post('/transfer', requireAuth, async (req: AuthedRequest, res) => {
       ? `[TRANSFER from ${fromLoc} · now ${newOwnerNameStr}]`
       : `[TRANSFER from ${fromLoc}]`
     : `[TRANSFER ${fromOwnerName} → ${newOwnerNameStr}]`;
-  const nextNote = note ? `${note}\n${transferTag}` : transferTag;
+  const nextNote = buildTransferTicketNote(transferTag, last.note);
 
   // Keep same waiter when only moving table; change owner only when explicitly transferring to another waiter
   const nextUserId = changingOwner ? Number(toUserId) : Number(currentOwnerId);

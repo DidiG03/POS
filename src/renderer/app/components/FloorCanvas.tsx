@@ -6,6 +6,11 @@
 // saved here is forward-compatible with future refactors.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  DEFAULT_TABLE_COLOR,
+  TABLE_COLOR_PALETTE,
+  resolveTableFillColor,
+} from '@shared/floorTableStyle';
 
 // Tables can render as one of three shapes. `circle` is the historical
 // default and is preserved when the saved layout doesn't include `shape`.
@@ -23,6 +28,8 @@ export type FloorTableNode = {
   w?: number;
   h?: number;
   seats?: number;
+  /** Optional CSS fill color for the table surface when free / in the editor. */
+  color?: string;
 };
 
 // Decor / fixture pieces that go behind the tables on the floor map.
@@ -192,6 +199,10 @@ function normaliseSavedNodes(saved: any[]): FloorNode[] {
           Number.isFinite(Number(n?.seats)) && Number(n.seats) > 0
             ? Number(n.seats)
             : undefined,
+        color:
+          typeof n?.color === 'string' && n.color.trim()
+            ? n.color.trim()
+            : undefined,
       } as FloorTableNode;
     });
   const areas = (saved as any[])
@@ -240,8 +251,6 @@ function nextTableLabel(cur: FloorNode[] | null): string {
   while (used.has(i)) i++;
   return `T${i}`;
 }
-
-const GREEN = 'bg-emerald-700';
 
 type ColorMap = Record<string, string>; // label -> tailwind class
 type BadgeMap = Record<string, string | null | undefined>;
@@ -793,7 +802,7 @@ export default function FloorCanvas({
           visible canvas regardless of the inner transform's scale. */}
       <div
         ref={outerRef}
-        className={`relative rounded-lg border border-gray-700 bg-gray-900 ${
+        className={`relative rounded-lg border border-gray-700 bg-black ${
           fillAvailableHeight ? 'min-h-0 flex-1' : shellStaticHeightClasses
         } ${editable ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden touch-none'}`}
         // Subtle floor grid so admins can eyeball alignment in the editor
@@ -1033,6 +1042,44 @@ function Inspector({
                   } as Partial<FloorTableNode>);
                 }}
               />
+            </div>
+            <div>
+              <div className="text-xs opacity-70 mb-1">Color</div>
+              <div className="flex flex-wrap gap-1">
+                <button
+                  type="button"
+                  title={`Default (${DEFAULT_TABLE_COLOR})`}
+                  className={`w-6 h-6 rounded border ${
+                    !node.color
+                      ? 'border-emerald-400'
+                      : 'border-gray-700 hover:border-gray-500'
+                  }`}
+                  style={{ backgroundColor: DEFAULT_TABLE_COLOR }}
+                  onClick={() =>
+                    onChange(node.id, {
+                      color: undefined,
+                    } as Partial<FloorTableNode>)
+                  }
+                />
+                {TABLE_COLOR_PALETTE.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    title={c}
+                    className={`w-6 h-6 rounded border ${
+                      node.color === c
+                        ? 'border-emerald-400'
+                        : 'border-gray-700 hover:border-gray-500'
+                    }`}
+                    style={{ backgroundColor: c }}
+                    onClick={() =>
+                      onChange(node.id, {
+                        color: c,
+                      } as Partial<FloorTableNode>)
+                    }
+                  />
+                ))}
+              </div>
             </div>
           </>
         ) : (
@@ -1682,8 +1729,13 @@ function Circle({
           everything that should be clipped to the table's shape stays
           inside this layer. */}
       <div
-        className={`relative w-full h-full ${colorClass || GREEN} flex items-center justify-center shadow-lg overflow-hidden ${ring}`}
-        style={{ borderRadius: radius }}
+        className={`relative w-full h-full ${colorClass || ''} flex items-center justify-center shadow-lg overflow-hidden ${ring}`}
+        style={{
+          borderRadius: radius,
+          ...(colorClass
+            ? {}
+            : { backgroundColor: resolveTableFillColor(node.color) }),
+        }}
       >
         <div className="flex flex-col items-center leading-none px-1">
           <span className="text-sm font-semibold">{node.label}</span>

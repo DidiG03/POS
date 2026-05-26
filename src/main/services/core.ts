@@ -92,6 +92,11 @@ function buildEnvDefaults() {
     kds: {
       enabledStations: ['KITCHEN'],
     },
+    fiscal: {
+      enabled: false,
+      provider: 'easypos',
+      baseUrl: 'http://127.0.0.1:8080',
+    },
   } as any;
 }
 
@@ -213,6 +218,16 @@ export const coreServices = {
           ...((input.preferences as any)?.reservationAutoNoShow || {}),
         },
       };
+    if (input?.fiscal) {
+      merged.fiscal = { ...(current.fiscal || {}), ...input.fiscal };
+      const nextToken = String((input.fiscal as any)?.authToken || '').trim();
+      const prevToken = String(
+        (current as any)?.fiscal?.authToken || '',
+      ).trim();
+      if (!nextToken && prevToken) {
+        merged.fiscal.authToken = prevToken;
+      }
+    }
     if (input?.cloud) {
       // Only businessCode is user-editable; backendUrl remains locked to env.
       merged.cloud = { ...(current.cloud || {}), ...(input.cloud || {}) };

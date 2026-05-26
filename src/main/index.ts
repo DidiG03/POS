@@ -94,10 +94,17 @@ import {
   type DispatchResult,
 } from './services/printDispatcher';
 import {
+  maybeFiscalizePayment,
+  testFiscalConnection,
+  getFiscalTokenHint,
+  testMinimalCloudInvoice,
+} from './services/fiscal';
+import {
   transferTableLocal,
   parseTransferTag,
   isTransferredOutNote,
 } from './services/tableTransfer';
+import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import {
   startNotificationRetentionLoop,
   stopNotificationRetentionLoop,
@@ -1947,6 +1954,13 @@ async function readSettings() {
     result.cloud = { ...result.cloud };
     delete result.cloud.accessPassword;
   }
+  if (result?.fiscal && typeof result.fiscal === 'object') {
+    result.fiscal = { ...result.fiscal };
+    if (result.fiscal.authToken) {
+      result.fiscal.authTokenConfigured = true;
+      delete result.fiscal.authToken;
+    }
+  }
   return result;
 }
 
@@ -2036,7 +2050,7 @@ ipcMain.handle('settings:update', async (_e, input) => {
       data: { active: false },
     });
   }
-  return merged;
+  return await readSettings();
 });
 
 ipcMain.handle('network:getIps', async () => {
@@ -2053,6 +2067,21 @@ ipcMain.handle('network:getIps', async () => {
   }
   // Prefer stable ordering
   return Array.from(new Set(ips)).sort((a, b) => a.localeCompare(b));
+});
+
+ipcMain.handle('settings:testFiscalConnection', async () => {
+  const settings = await coreServices.readSettings();
+  return await testFiscalConnection(settings as any);
+});
+
+ipcMain.handle('settings:getFiscalTokenHint', async () => {
+  const settings = await coreServices.readSettings();
+  return getFiscalTokenHint(settings as any);
+});
+
+ipcMain.handle('settings:testFiscalMinimalInvoice', async () => {
+  const settings = await coreServices.readSettings();
+  return await testMinimalCloudInvoice(settings as any);
 });
 
 ipcMain.handle('settings:setPrinter', async (_e, payload) => {
@@ -2321,7 +2350,7 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   if (!area || !tableLabel || items.length === 0) return false;
 
   // Local-first: print directly via local PrintJob
-  const payload = {
+  let payload = {
     area,
     tableLabel,
     covers: input?.covers ?? null,
@@ -2388,6 +2417,57 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   } catch {
     // do not block printing/logging
   }
+
+  // Use internal settings (includes fiscal auth token). `readSettings()`
+  // strips secrets before sending to the renderer.
+  const settings = await coreServices.readSettings();
+  const kind = String(meta?.kind || '').toUpperCase();
+  if (kind === 'PAYMENT') {
+    try {
+      payload = await maybeFiscalizePayment(payload, settings as any, {
+        idempotencyKey: idempotencyKey || undefined,
+      });
+      const fiscalWarning = String(
+        (payload as any)?.meta?.fiscalWarning || '',
+      ).trim();
+      if (fiscalWarning) {
+        broadcastPrinterEvent({
+          level: 'warn',
+          kind: 'fiscal',
+          message: fiscalWarning,
+          detail: fiscalWarning,
+          at: Date.now(),
+          context: { area, tableLabel, kind: 'PAYMENT' },
+        });
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || 'Fiskalizimi failed.');
+      broadcastPrinterEvent({
+        level: 'error',
+        kind: 'fiscal',
+        message: msg,
+        detail: msg,
+        at: Date.now(),
+        context: { area, tableLabel, kind: 'PAYMENT' },
+      });
+      try {
+        const uid = Number(meta?.userId || 0);
+        if (uid) {
+          await prisma.notification.create({
+            data: {
+              userId: uid,
+              type: 'OTHER' as any,
+              message: `Fiskalizimi failed on ${area} Table ${tableLabel}: ${msg}`,
+            } as any,
+          });
+        }
+      } catch {
+        // ignore
+      }
+      return false;
+    }
+  }
+
   // recordOnly = store receipt snapshot for history without printing.
   if (recordOnly) {
     try {
@@ -2409,8 +2489,6 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   // All the actual ESC/POS dispatch + routing lives in
   // `printDispatcher.ts`. This handler keeps only the side effects:
   // notifications + PrintJob history record.
-  const settings = await readSettings();
-  const kind = String((payload as any)?.meta?.kind || '').toUpperCase();
   const result: DispatchResult = await dispatchTicket(
     payload,
     settings as any,
@@ -3913,7 +3991,7 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
   const items = Array.isArray(last.itemsJson) ? (last.itemsJson as any[]) : [];
   return {
     items: items as any,
-    note: last.note ?? null,
+    note: stripTransferTagsFromNote(last.note) || null,
     covers: last.covers ?? null,
     createdAt: last.createdAt.toISOString(),
     userId: last.userId,

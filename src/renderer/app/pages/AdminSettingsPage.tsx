@@ -25,6 +25,7 @@ type Section =
   | { key: 'areas'; label: string }
   | { key: 'kds'; label: string }
   | { key: 'preferences'; label: string }
+  | { key: 'fiscal'; label: string }
   | { key: 'backups'; label: string }
   | { key: 'memory'; label: string }
   | { key: 'cloud'; label: string }
@@ -38,6 +39,7 @@ const sections: Section[] = [
   { key: 'areas', label: 'Table Areas' },
   { key: 'kds', label: 'Kitchen Display' },
   { key: 'preferences', label: 'Preferences' },
+  { key: 'fiscal', label: 'Fiskalizimi' },
   { key: 'backups', label: 'Backups' },
   { key: 'memory', label: 'Memory Monitoring' },
   { key: 'cloud', label: 'Log In to Cloud' },
@@ -150,6 +152,25 @@ function SectionIcon({ k }: { k: Section['key'] }) {
             d="M14 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM10 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"
             stroke="currentColor"
             strokeWidth="1.75"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'fiscal')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M7 3h10v18H7V3Z"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M9 7h6M9 11h6M9 15h4"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
           />
         </svg>
       </IconWrap>
@@ -341,6 +362,7 @@ export default function AdminSettingsPage() {
         {selected === 'areas' && <AreasSettings />}
         {selected === 'kds' && <KdsSettings />}
         {selected === 'preferences' && <PreferencesSettings />}
+        {selected === 'fiscal' && <FiscalSettings />}
         {selected === 'backups' && <BackupsSettings />}
         {selected === 'memory' && <MemoryMonitorSection />}
         {selected === 'cloud' && <CloudSettings />}
@@ -1137,6 +1159,475 @@ function PreferencesSettings() {
             </button>
             {status && <div className="text-xs opacity-80 mt-2">{status}</div>}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FiscalSettings() {
+  const [loading, setLoading] = useState(true);
+  const [enabled, setEnabled] = useState(false);
+  const [provider, setProvider] = useState<'easypos'>('easypos');
+  const [baseUrl, setBaseUrl] = useState('http://127.0.0.1:8080');
+  const [authToken, setAuthToken] = useState('');
+  const [authTokenConfigured, setAuthTokenConfigured] = useState(false);
+  const [integrationApp, setIntegrationApp] = useState('');
+  const [defaultOperatorId, setDefaultOperatorId] = useState('');
+  const [defaultSoldIn, setDefaultSoldIn] = useState('XPP');
+  const [cloudFallbackArticleId, setCloudFallbackArticleId] = useState('');
+  const [eurExchangeRate, setEurExchangeRate] = useState('');
+  const [status, setStatus] = useState<string | null>(null);
+  const [statusOk, setStatusOk] = useState<boolean | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testingMinimal, setTestingMinimal] = useState(false);
+  const [tokenHint, setTokenHint] = useState<{
+    configured: boolean;
+    suffix?: string;
+    tokenId?: string;
+    deviceTail?: string;
+  } | null>(null);
+  const { t } = useTranslation();
+
+  async function refreshTokenHint() {
+    const hint = await window.api.settings
+      .getFiscalTokenHint?.()
+      .catch(() => null);
+    if (hint) setTokenHint(hint);
+  }
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const s: any = await window.api.settings.get().catch(() => null);
+        const fiscal = (s as any)?.fiscal || {};
+        setEnabled(Boolean(fiscal.enabled));
+        setProvider(fiscal.provider === 'easypos' ? 'easypos' : 'easypos');
+        setBaseUrl(String(fiscal.baseUrl || 'http://127.0.0.1:8080').trim());
+        setAuthTokenConfigured(Boolean(fiscal.authTokenConfigured));
+        setAuthToken('');
+        setDefaultOperatorId(
+          String(fiscal.defaultOperatorId || '').trim() === 'gh537ez200'
+            ? 'gh537ez280'
+            : String(fiscal.defaultOperatorId || '').trim(),
+        );
+        setIntegrationApp(String(fiscal.integrationApp || '').trim());
+        setDefaultSoldIn(String(fiscal.defaultSoldIn || 'XPP').trim() || 'XPP');
+        setCloudFallbackArticleId(
+          String(fiscal.cloudFallbackArticleId || '').trim(),
+        );
+        setEurExchangeRate(
+          fiscal.eurExchangeRate != null &&
+            Number.isFinite(Number(fiscal.eurExchangeRate))
+            ? String(fiscal.eurExchangeRate)
+            : '',
+        );
+      } finally {
+        setLoading(false);
+      }
+      await refreshTokenHint();
+    })();
+  }, []);
+
+  async function save() {
+    setStatus(null);
+    setStatusOk(null);
+    const url = String(baseUrl || '')
+      .trim()
+      .replace(/\/+$/g, '');
+    const cloud = /api\.(dev\.)?easypos\.al/i.test(url);
+    if (enabled && !url) {
+      setStatusOk(false);
+      setStatus(t('fiscal.baseUrlRequired'));
+      return;
+    }
+    if (enabled && !authToken && !authTokenConfigured) {
+      setStatusOk(false);
+      setStatus(t('fiscal.authTokenRequired'));
+      return;
+    }
+    if (enabled && cloud && !String(integrationApp || '').trim()) {
+      setStatusOk(false);
+      setStatus(t('fiscal.integrationAppRequired'));
+      return;
+    }
+    if (enabled && cloud && !String(defaultOperatorId || '').trim()) {
+      setStatusOk(false);
+      setStatus(t('fiscal.operatorIdRequired'));
+      return;
+    }
+    const op = String(defaultOperatorId || '').trim();
+    if (enabled && cloud && op === 'gh537ez200') {
+      setStatusOk(false);
+      setStatus(t('fiscal.operatorIdTypo'));
+      return;
+    }
+    await window.api.settings.update({
+      fiscal: {
+        enabled,
+        provider,
+        baseUrl: url || 'http://127.0.0.1:8080',
+        ...(authToken.trim() ? { authToken: authToken.trim() } : {}),
+        integrationApp: String(integrationApp || '').trim() || undefined,
+        defaultOperatorId: String(defaultOperatorId || '').trim() || undefined,
+        defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
+        cloudFallbackArticleId:
+          String(cloudFallbackArticleId || '').trim() || undefined,
+        ...(String(eurExchangeRate || '').trim()
+          ? {
+              eurExchangeRate: Number(
+                String(eurExchangeRate).replace(',', '.'),
+              ),
+            }
+          : {}),
+      },
+    } as any);
+    const latest: any = await window.api.settings.get().catch(() => null);
+    setAuthTokenConfigured(Boolean(latest?.fiscal?.authTokenConfigured));
+    setAuthToken('');
+    setStatusOk(true);
+    setStatus(t('fiscal.saved'));
+    await refreshTokenHint();
+  }
+
+  async function testMinimalInvoice() {
+    setTestingMinimal(true);
+    setStatus(null);
+    setStatusOk(null);
+    try {
+      if (!window.api.settings.testFiscalMinimalInvoice) {
+        setStatusOk(false);
+        setStatus(t('fiscal.testMinimalUnavailable'));
+        return;
+      }
+      if (authToken.trim()) {
+        await window.api.settings.update({
+          fiscal: {
+            enabled: true,
+            provider,
+            baseUrl: String(baseUrl || '')
+              .trim()
+              .replace(/\/+$/g, ''),
+            authToken: authToken.trim(),
+            integrationApp: String(integrationApp || '').trim() || undefined,
+            defaultOperatorId:
+              String(defaultOperatorId || '').trim() || undefined,
+            defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
+            cloudFallbackArticleId:
+              String(cloudFallbackArticleId || '').trim() || undefined,
+            ...(String(eurExchangeRate || '').trim()
+              ? {
+                  eurExchangeRate: Number(
+                    String(eurExchangeRate).replace(',', '.'),
+                  ),
+                }
+              : {}),
+          },
+        } as any);
+        setAuthTokenConfigured(true);
+        setAuthToken('');
+        setEnabled(true);
+        await refreshTokenHint();
+      }
+      const r = await window.api.settings.testFiscalMinimalInvoice?.();
+      if (r?.ok) {
+        setStatusOk(true);
+        setStatus(r.message || t('fiscal.testMinimalOk'));
+      } else {
+        setStatusOk(false);
+        setStatus(r?.message || t('fiscal.testMinimalFailed'));
+      }
+    } catch (e: any) {
+      setStatusOk(false);
+      setStatus(String(e?.message || t('fiscal.testMinimalFailed')));
+    } finally {
+      setTestingMinimal(false);
+    }
+  }
+
+  async function testConnection() {
+    setTesting(true);
+    setStatus(null);
+    setStatusOk(null);
+    try {
+      if (authToken.trim()) {
+        await window.api.settings.update({
+          fiscal: {
+            enabled: true,
+            provider,
+            baseUrl: String(baseUrl || '')
+              .trim()
+              .replace(/\/+$/g, ''),
+            authToken: authToken.trim(),
+            integrationApp: String(integrationApp || '').trim() || undefined,
+            defaultOperatorId:
+              String(defaultOperatorId || '').trim() || undefined,
+            defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
+            cloudFallbackArticleId:
+              String(cloudFallbackArticleId || '').trim() || undefined,
+            ...(String(eurExchangeRate || '').trim()
+              ? {
+                  eurExchangeRate: Number(
+                    String(eurExchangeRate).replace(',', '.'),
+                  ),
+                }
+              : {}),
+          },
+        } as any);
+        setAuthTokenConfigured(true);
+        setAuthToken('');
+        setEnabled(true);
+      } else if (!enabled) {
+        await window.api.settings.update({
+          fiscal: {
+            enabled: true,
+            provider,
+            baseUrl: String(baseUrl || '')
+              .trim()
+              .replace(/\/+$/g, ''),
+            integrationApp: String(integrationApp || '').trim() || undefined,
+            defaultOperatorId:
+              String(defaultOperatorId || '').trim() || undefined,
+            defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
+            cloudFallbackArticleId:
+              String(cloudFallbackArticleId || '').trim() || undefined,
+            ...(String(eurExchangeRate || '').trim()
+              ? {
+                  eurExchangeRate: Number(
+                    String(eurExchangeRate).replace(',', '.'),
+                  ),
+                }
+              : {}),
+          },
+        } as any);
+        setEnabled(true);
+      }
+      const r = await window.api.settings.testFiscalConnection?.();
+      if (r?.ok) {
+        setStatusOk(true);
+        const key = r.messageKey ? `fiscal.${r.messageKey}` : null;
+        setStatus(
+          key && key.startsWith('fiscal.')
+            ? t(key as any)
+            : r.message || t('fiscal.testOk'),
+        );
+      } else {
+        setStatusOk(false);
+        setStatus(r?.message || t('fiscal.testFailed'));
+      }
+    } catch (e: any) {
+      setStatusOk(false);
+      setStatus(String(e?.message || t('fiscal.testFailed')));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="text-lg font-semibold mb-3">{t('fiscal.title')}</div>
+      {loading ? (
+        <div className="opacity-70">{t('common.loading')}</div>
+      ) : (
+        <div className="space-y-4">
+          <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
+            <div className="font-medium mb-1">{t('fiscal.enableTitle')}</div>
+            <div className="text-xs opacity-70 mb-3">
+              {t('fiscal.enableHelp')}
+            </div>
+            <label className="flex items-center justify-between gap-3">
+              <div className="text-sm">{t('fiscal.enableLabel')}</div>
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+              />
+            </label>
+          </div>
+
+          <div className="p-3 rounded bg-gray-900/50 border border-gray-700 space-y-3">
+            <div className="font-medium mb-1">
+              {t('fiscal.middlewareTitle')}
+            </div>
+            <div className="text-xs opacity-70">
+              {t('fiscal.middlewareHelp')}
+            </div>
+
+            <label className="block">
+              <div className="text-sm mb-1">{t('fiscal.provider')}</div>
+              <select
+                className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+                value={provider}
+                onChange={(e) =>
+                  setProvider(
+                    e.target.value === 'easypos' ? 'easypos' : 'easypos',
+                  )
+                }
+                disabled={!enabled}
+              >
+                <option value="easypos">easyPos</option>
+              </select>
+            </label>
+
+            <label className="block">
+              <div className="text-sm mb-1">{t('fiscal.baseUrl')}</div>
+              <input
+                className="bg-gray-700 rounded px-3 py-2 w-full"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="https://api.dev.easypos.al/fiscalisation-service/v1"
+                disabled={!enabled}
+              />
+              <div className="text-[11px] opacity-60 mt-1">
+                {t('fiscal.baseUrlHelp')}
+              </div>
+            </label>
+
+            <label className="block">
+              <div className="text-sm mb-1">{t('fiscal.authToken')}</div>
+              <input
+                className="bg-gray-700 rounded px-3 py-2 w-full"
+                type="password"
+                value={authToken}
+                onChange={(e) => setAuthToken(e.target.value)}
+                placeholder={
+                  authTokenConfigured
+                    ? t('fiscal.authTokenConfigured')
+                    : t('fiscal.authTokenPlaceholder')
+                }
+                disabled={!enabled}
+              />
+              {authTokenConfigured && !authToken.trim() ? (
+                <div className="text-xs text-emerald-400 mt-1">
+                  {t('fiscal.authTokenStored')}
+                </div>
+              ) : null}
+              {tokenHint?.configured ? (
+                <div className="text-xs opacity-70 mt-1">
+                  {t('fiscal.tokenHint', {
+                    suffix: tokenHint.suffix || '—',
+                    tokenId: tokenHint.tokenId || '—',
+                    deviceTail: tokenHint.deviceTail || '—',
+                  })}
+                </div>
+              ) : null}
+              <div className="text-[11px] opacity-60 mt-1">
+                {t('fiscal.tokenResyncHelp')}
+              </div>
+            </label>
+
+            <label className="block">
+              <div className="text-sm mb-1">{t('fiscal.integrationApp')}</div>
+              <input
+                className="bg-gray-700 rounded px-3 py-2 w-full"
+                value={integrationApp}
+                onChange={(e) => setIntegrationApp(e.target.value)}
+                placeholder={t('fiscal.integrationAppPlaceholder')}
+                disabled={!enabled}
+              />
+            </label>
+
+            <label className="block">
+              <div className="text-sm mb-1">{t('fiscal.operatorId')}</div>
+              <input
+                className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+                value={defaultOperatorId}
+                onChange={(e) => setDefaultOperatorId(e.target.value)}
+                placeholder={t('fiscal.operatorIdPlaceholder')}
+                disabled={!enabled}
+              />
+              <div className="text-[11px] opacity-60 mt-1">
+                {t('fiscal.operatorIdHelp')}
+              </div>
+            </label>
+
+            <label className="block">
+              <div className="text-sm mb-1">{t('fiscal.defaultSoldIn')}</div>
+              <input
+                className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+                value={defaultSoldIn}
+                onChange={(e) => setDefaultSoldIn(e.target.value)}
+                placeholder="XPP"
+                disabled={!enabled}
+              />
+              <div className="text-[11px] opacity-60 mt-1">
+                {t('fiscal.defaultSoldInHelp')}
+              </div>
+            </label>
+
+            <label className="block">
+              <div className="text-sm mb-1">
+                {t('fiscal.cloudFallbackArticleId')}
+              </div>
+              <input
+                className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+                value={cloudFallbackArticleId}
+                onChange={(e) => setCloudFallbackArticleId(e.target.value)}
+                placeholder="PROD001"
+                disabled={!enabled}
+              />
+              <div className="text-[11px] opacity-60 mt-1">
+                {t('fiscal.cloudFallbackArticleIdHelp')}
+              </div>
+            </label>
+
+            <label className="block">
+              <div className="text-sm mb-1">{t('fiscal.eurExchangeRate')}</div>
+              <input
+                className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+                value={eurExchangeRate}
+                onChange={(e) => setEurExchangeRate(e.target.value)}
+                placeholder="100.5"
+                disabled={!enabled}
+              />
+              <div className="text-[11px] opacity-60 mt-1">
+                {t('fiscal.eurExchangeRateHelp')}
+              </div>
+            </label>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                onClick={() => void testConnection()}
+                disabled={!enabled || testing || testingMinimal}
+              >
+                {testing ? t('fiscal.testing') : t('fiscal.testConnection')}
+              </button>
+              <button
+                type="button"
+                className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                onClick={() => void testMinimalInvoice()}
+                disabled={!enabled || testing || testingMinimal}
+              >
+                {testingMinimal
+                  ? t('fiscal.testingMinimal')
+                  : t('fiscal.testMinimalInvoice')}
+              </button>
+            </div>
+          </div>
+
+          <button
+            className="w-full px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800"
+            onClick={() => void save()}
+            type="button"
+          >
+            {t('fiscal.save')}
+          </button>
+          {status ? (
+            <div
+              className={`text-xs whitespace-pre-wrap break-words ${
+                statusOk === false
+                  ? 'text-red-400'
+                  : statusOk === true
+                    ? 'text-emerald-400'
+                    : 'opacity-80'
+              }`}
+            >
+              {status.replace(/ · /g, '\n')}
+            </div>
+          ) : null}
         </div>
       )}
     </div>

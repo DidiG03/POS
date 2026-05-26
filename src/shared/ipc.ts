@@ -87,6 +87,26 @@ export interface SettingsDTO {
     // NOTE: this should remain stored only on the POS host; do not expose to tablets via /settings.
     accessPassword?: string;
   };
+  /** Albanian fiskalizimi via certified middleware (e.g. easyPos). */
+  fiscal?: {
+    enabled?: boolean;
+    provider?: 'easypos';
+    /** Local: http://127.0.0.1:8080 — Cloud: https://api.dev.easypos.al/fiscalisation-service/v1 */
+    baseUrl?: string;
+    /** Stored on the POS host only; redacted from settings:get. */
+    authToken?: string;
+    /** Set by settings:get when a token is saved (renderer never sees the token). */
+    authTokenConfigured?: boolean;
+    /** Cloud API only — sent as `integration-app` header. */
+    integrationApp?: string;
+    defaultOperatorId?: string;
+    /** Unit of measure sent as soldIn (easyPos catalog must include it). */
+    defaultSoldIn?: string;
+    /** Cloud demo: force articleId from Postman (e.g. ART001) for every line. */
+    cloudFallbackArticleId?: string;
+    /** Required when POS currency is EUR — sent as currency.exRate to easyPos cloud. */
+    eurExchangeRate?: number;
+  };
 }
 
 export interface PrinterProfileDTO {
@@ -154,6 +174,12 @@ export interface TicketPrintMeta {
   serviceChargeMode?: 'PERCENT' | 'AMOUNT';
   serviceChargeValue?: number;
   serviceChargeAmount?: number;
+
+  // ---- Fiscal metadata (only when fiskalizimi is enabled) ------------
+  fiscalEnabled?: boolean;
+  fiscalNslf?: string;
+  fiscalNivf?: string;
+  fiscalLink?: string;
 }
 
 export const LoginWithPinInputSchema = z.object({
@@ -430,6 +456,19 @@ export interface ApiSettings {
       productId?: string;
     }[]
   >;
+  /** Ping the configured fiscal middleware (easyPos local API). */
+  testFiscalConnection?(): Promise<{
+    ok: boolean;
+    message?: string;
+    messageKey?: string;
+  }>;
+  getFiscalTokenHint?(): Promise<{
+    configured: boolean;
+    suffix?: string;
+    tokenId?: string;
+    deviceTail?: string;
+  }>;
+  testFiscalMinimalInvoice?(): Promise<{ ok: boolean; message?: string }>;
 }
 
 export type TestPrintResult = { ok: boolean; error?: string };

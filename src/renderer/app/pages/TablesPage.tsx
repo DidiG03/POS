@@ -7,6 +7,7 @@ import { useTableStatus } from '../../stores/tableStatus';
 import { useTicketStore } from '../../stores/ticket';
 import { formatMoneyCompact } from '../../utils/format';
 import { PageSpinner } from '../../components/PageSpinner';
+import { resolveTableFillColor } from '@shared/floorTableStyle';
 
 type TableStatus = 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED';
 type TableShape = 'circle' | 'square' | 'rect';
@@ -33,6 +34,7 @@ type TableNode = {
   w?: number;
   h?: number;
   seats?: number;
+  color?: string;
 };
 type AreaNode = {
   id: number;
@@ -48,7 +50,6 @@ type AreaNode = {
 type LayoutNode = TableNode | AreaNode;
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
 
-const GREEN = 'bg-emerald-700';
 const RED = 'bg-rose-700';
 const ORANGE = 'bg-amber-700';
 
@@ -1074,7 +1075,7 @@ export default function TablesPage() {
 
       <div
         ref={canvasRef}
-        className={`w-full flex-1 min-h-0 rounded bg-gray-800 relative ${
+        className={`w-full flex-1 min-h-0 rounded bg-black relative ${
           editable ? 'overflow-auto' : 'overflow-hidden touch-none'
         }`}
       >
@@ -1152,7 +1153,7 @@ export default function TablesPage() {
                 onMove={handleNodeMove}
                 onClick={handleTableClick}
                 colorClass={(() => {
-                  if (!isOpenFn(area, tableNode.label)) return GREEN;
+                  if (!isOpenFn(area, tableNode.label)) return undefined;
                   const ownerId = ownerByTable[`${area}:${tableNode.label}`];
                   const uid = user?.id;
                   const singleWaiter = Object.keys(userMap).length <= 1;
@@ -1782,13 +1783,16 @@ function DraggableCircle({
   return (
     <div
       ref={ref}
-      className={`absolute ${colorClass || GREEN} flex items-center justify-center shadow-lg ${editable ? 'cursor-move' : 'cursor-pointer'} select-none overflow-hidden`}
+      className={`absolute ${colorClass || ''} flex items-center justify-center shadow-lg ${editable ? 'cursor-move' : 'cursor-pointer'} select-none overflow-hidden`}
       style={{
         left: pos.x,
         top: pos.y,
         width: w,
         height: h,
         borderRadius: radius,
+        ...(colorClass
+          ? {}
+          : { backgroundColor: resolveTableFillColor(node.color) }),
         touchAction: 'none' as any,
         willChange: editable ? ('transform,left,top' as any) : undefined,
         // Counter-scale (--floor-cx / --floor-cy) keeps the shape proportional

@@ -1,4 +1,5 @@
 import { prisma } from '@db/client';
+import { buildTransferTicketNote } from '@shared/utils/transferNote';
 
 export type TransferTableInput = {
   fromArea: string;
@@ -393,19 +394,16 @@ export async function transferTableLocal(
       (isAdmin ? 'Admin' : `#${actorUserId}`),
   );
   const newOwnerName = newOwner ? String(newOwner.displayName) : '';
+  const fromLoc = `${fromArea} ${fromLabel}`.trim();
 
   // Create a new ticket snapshot that represents the transferred state.
-  // The transfer tag is prepended so waiter notes stay below it.
-  const existingNote = String(last.note || '');
-  const fromLoc = `${fromArea} ${fromLabel}`.trim();
+  // The transfer tag is stored for audit; user notes exclude prior tags.
   const transferTag = movingTable
     ? changingOwner
       ? `[TRANSFER from ${fromLoc} · now ${newOwnerName}]`
       : `[TRANSFER from ${fromLoc}]`
     : `[TRANSFER ${fromOwnerName} → ${newOwnerName}]`;
-  const nextNote = existingNote
-    ? `${transferTag}\n${existingNote}`
-    : transferTag;
+  const nextNote = buildTransferTicketNote(transferTag, last.note);
 
   // Keep same waiter when only moving table; change owner only when transferring to another waiter
   const nextUserId = changingOwner ? Number(toUserId) : Number(currentOwnerId);
