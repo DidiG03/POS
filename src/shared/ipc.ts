@@ -87,6 +87,10 @@ export interface SettingsDTO {
     // Provider-supplied shared secret used to access certain public cloud endpoints.
     // NOTE: this should remain stored only on the POS host; do not expose to tablets via /settings.
     accessPassword?: string;
+    // Admin kill switch. When true, the POS ignores the env-provided
+    // backendUrl and behaves as if no cloud is configured (local-only),
+    // even though POS_CLOUD_URL is baked in by the installer. Reversible.
+    disabled?: boolean;
   };
   /** Albanian fiskalizimi via certified middleware (e.g. easyPos). */
   fiscal?: {

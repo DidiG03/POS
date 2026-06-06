@@ -2973,6 +2973,8 @@ function CloudSettings() {
   const [showPassword, setShowPassword] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [backendUrl, setBackendUrl] = useState('');
+  const [disabled, setDisabled] = useState(false);
+  const [toggling, setToggling] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -2980,6 +2982,7 @@ function CloudSettings() {
         const s = await window.api.settings.get();
         setBackendUrl(String((s as any)?.cloud?.backendUrl || ''));
         setBusinessCode(String((s as any)?.cloud?.businessCode || ''));
+        setDisabled(Boolean((s as any)?.cloud?.disabled));
         // Never read back the stored password; user must re-enter if they want to change it.
         setAccessPassword('');
       } finally {
@@ -2990,10 +2993,58 @@ function CloudSettings() {
 
   if (loading) return <div className="opacity-70">Loading…</div>;
 
+  const toggleCloud = async (next: boolean) => {
+    setStatus(null);
+    setToggling(true);
+    try {
+      // Send only the flag so the businessCode/password validation in
+      // settings:update never runs while flipping the kill switch.
+      await window.api.settings.update({ cloud: { disabled: next } } as any);
+      setDisabled(next);
+      const s = await window.api.settings.get();
+      setBackendUrl(String((s as any)?.cloud?.backendUrl || ''));
+      setStatus(next ? 'Cloud disabled (local-only).' : 'Cloud enabled.');
+    } catch (e: any) {
+      setStatus(e?.message || 'Failed to update cloud state.');
+    } finally {
+      setToggling(false);
+    }
+  };
+
   return (
     <div>
       <div className="text-lg font-semibold mb-3">Log In to Cloud</div>
-      <div className="space-y-2">
+
+      <div className="mb-4 rounded border border-gray-700 bg-gray-800/50 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium">
+              {disabled ? 'Cloud is disabled' : 'Cloud is enabled'}
+            </div>
+            <div className="text-xs opacity-70">
+              {disabled
+                ? 'The POS runs local-only. No cloud sync or login, and the “business code missing” banner is hidden.'
+                : 'The POS uses the hosted backend when a business code is set.'}
+            </div>
+          </div>
+          <button
+            className={`shrink-0 px-3 py-2 rounded ${
+              disabled
+                ? 'bg-emerald-700 hover:bg-emerald-600'
+                : 'bg-red-700 hover:bg-red-600'
+            } disabled:opacity-60`}
+            type="button"
+            disabled={toggling}
+            onClick={() => toggleCloud(!disabled)}
+          >
+            {toggling ? 'Saving…' : disabled ? 'Enable cloud' : 'Disable cloud'}
+          </button>
+        </div>
+      </div>
+
+      <div
+        className={`space-y-2 ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
+      >
         <div className="text-xs opacity-70">
           Backend URL (managed by provider)
         </div>

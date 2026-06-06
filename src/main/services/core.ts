@@ -123,6 +123,21 @@ async function loadSettingsFromDb(): Promise<any> {
   } else {
     merged.cloud = { ...(merged.cloud || {}), backendUrl: undefined };
   }
+  // Kill switch: drop the env-provided backendUrl so every consumer (login,
+  // sync, the overview "business code missing" banner) treats the POS as
+  // local-only. Two independent sources can flip it:
+  //   • settings `cloud.disabled` — the in-app admin toggle (reversible in UI)
+  //   • env `POS_CLOUD_DISABLED=true` — operator override that wins even when
+  //     the installer baked POS_CLOUD_URL into the registry.
+  // The flag is stored separately from backendUrl, so clearing either source
+  // restores the env URL on the next read.
+  const envCloudDisabled =
+    String(process.env.POS_CLOUD_DISABLED || '')
+      .trim()
+      .toLowerCase() === 'true';
+  if (merged.cloud?.disabled || envCloudDisabled) {
+    merged.cloud = { ...(merged.cloud || {}), backendUrl: undefined };
+  }
 
   // Backward compat: if only legacy `printer` exists, expose it as a
   // single-entry `printers[]` so the new dispatcher path always sees

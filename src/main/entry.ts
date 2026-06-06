@@ -98,9 +98,14 @@ function ensurePackagedDefaults() {
     if (!String(process.env.POS_ALLOW_LAN || '').trim()) {
       process.env.POS_ALLOW_LAN = 'true';
     }
-    // Force cloud onboarding even when env isn't configured.
-    // The backend URL itself is not sensitive; secrets remain the Business password + tokens.
-    if (!String(process.env.POS_CLOUD_URL || '').trim()) {
+    // Force cloud onboarding even when env isn't configured, UNLESS the
+    // operator opted out via POS_CLOUD_DISABLED=true. The backend URL itself
+    // is not sensitive; secrets remain the Business password + tokens.
+    const cloudDisabled =
+      String(process.env.POS_CLOUD_DISABLED || '')
+        .trim()
+        .toLowerCase() === 'true';
+    if (!cloudDisabled && !String(process.env.POS_CLOUD_URL || '').trim()) {
       process.env.POS_CLOUD_URL =
         'https://pos-api-1075917751068.europe-west1.run.app';
     }
