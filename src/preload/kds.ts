@@ -15,12 +15,15 @@
 // Preload must be CommonJS-compatible. Avoid top-level ESM-only features.
 import { contextBridge, ipcRenderer } from 'electron';
 
+type KdsTheme = 'dark' | 'light';
+
 type KdsConfig = {
   host: string;
   httpPort: number;
   httpsPort?: number;
   businessCode?: string;
   station?: import('@shared/kdsStations').KdsStation;
+  theme?: KdsTheme;
 };
 
 type DiscoveredHost = {
@@ -53,6 +56,8 @@ const kdsApp = {
     station: import('@shared/kdsStations').KdsStation,
   ): Promise<import('@shared/kdsStations').KdsStation> =>
     ipcRenderer.invoke('kdsApp:saveDisplayStation', station),
+  saveDisplayTheme: (theme: KdsTheme): Promise<KdsTheme> =>
+    ipcRenderer.invoke('kdsApp:saveDisplayTheme', theme),
   resetConfig: (): Promise<boolean> => ipcRenderer.invoke('kdsApp:resetConfig'),
   discover: (): Promise<DiscoveredHost[]> =>
     ipcRenderer.invoke('kdsApp:discover'),
@@ -94,6 +99,9 @@ try {
   }
   if (cfg?.station) {
     contextBridge.exposeInMainWorld('__KDS_STATION__', cfg.station);
+  }
+  if (cfg?.theme) {
+    contextBridge.exposeInMainWorld('__KDS_THEME__', cfg.theme);
   }
 } catch {
   // ignore

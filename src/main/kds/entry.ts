@@ -34,13 +34,20 @@ const MAIN_RUNTIME_DIR =
 const PRELOAD_PATH = join(MAIN_RUNTIME_DIR, '../preload/kds.cjs');
 const RENDERER_INDEX_HTML = join(MAIN_RUNTIME_DIR, '../../renderer/index.html');
 
+type KdsTheme = 'dark' | 'light';
+
 type KdsConfig = {
   host: string;
   httpPort: number;
   httpsPort?: number;
   businessCode?: string;
   station?: KdsStation;
+  theme?: KdsTheme;
 };
+
+function parseTheme(value: unknown): KdsTheme | undefined {
+  return value === 'light' || value === 'dark' ? value : undefined;
+}
 
 function configPath(): string {
   return join(app.getPath('userData'), 'kds.config.json');
@@ -61,6 +68,7 @@ function readConfig(): KdsConfig | null {
       httpsPort,
       businessCode: j.businessCode ? String(j.businessCode) : undefined,
       station: parseKdsStation(j.station) ?? undefined,
+      theme: parseTheme(j.theme),
     };
   } catch {
     return null;
@@ -196,6 +204,10 @@ ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
       payload?.station != null
         ? (parseKdsStation(payload.station) ?? existing?.station)
         : existing?.station,
+    theme:
+      payload?.theme != null
+        ? (parseTheme(payload.theme) ?? existing?.theme)
+        : existing?.theme,
   };
   if (!cfg.host) throw new Error('Host is required');
   writeConfig(cfg);
@@ -213,6 +225,14 @@ ipcMain.handle('kdsApp:saveDisplayStation', async (_e, payload) => {
   const existing = readConfig();
   if (existing) writeConfig({ ...existing, station });
   return station;
+});
+
+ipcMain.handle('kdsApp:saveDisplayTheme', async (_e, payload) => {
+  const theme = parseTheme(payload);
+  if (!theme) throw new Error('Invalid KDS theme');
+  const existing = readConfig();
+  if (existing) writeConfig({ ...existing, theme });
+  return theme;
 });
 
 ipcMain.handle('kdsApp:resetConfig', () => {

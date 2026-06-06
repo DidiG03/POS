@@ -136,3 +136,48 @@ select {
     @apply rounded-xl border border-gray-700/85 bg-gray-800 shadow-lg shadow-black/25;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * KDS light theme
+ *
+ * The kitchen display is always-dark by default (hardcoded gray-* utilities).
+ * When the operator picks the "light" theme in KDS → Settings, the root gets
+ * `data-theme="light"`, and these scoped overrides repaint the gray palette to
+ * a light one. Descendant selectors ([data-kds-page] .bg-gray-900) outrank
+ * Tailwind's single-class utilities, so no per-element refactor is needed.
+ * Everything is scoped to [data-kds-page], so the POS/admin shells are never
+ * affected.
+ * ------------------------------------------------------------------------- */
+[data-kds-page][data-theme='light'] {
+  background-color: #f1f5f9; /* slate-100 */
+  color: #0f172a; /* slate-900 */
+}
+[data-kds-page][data-theme='light'] .bg-gray-950 {
+  background-color: #f1f5f9; /* slate-100 */
+}
+[data-kds-page][data-theme='light'] .bg-gray-900 {
+  background-color: #ffffff;
+}
+[data-kds-page][data-theme='light'] .bg-gray-800 {
+  background-color: #e2e8f0; /* slate-200 */
+}
+[data-kds-page][data-theme='light'] .bg-gray-700 {
+  background-color: #cbd5e1; /* slate-300 */
+}
+[data-kds-page][data-theme='light'] .hover\:bg-gray-800:hover {
+  background-color: #e2e8f0;
+}
+[data-kds-page][data-theme='light'] .hover\:bg-gray-700:hover {
+  background-color: #cbd5e1;
+}
+[data-kds-page][data-theme='light'] .text-gray-100,
+[data-kds-page][data-theme='light'] .text-gray-200,
+[data-kds-page][data-theme='light'] .text-gray-300 {
+  color: #0f172a; /* slate-900 */
+}
+[data-kds-page][data-theme='light'] .border-gray-950,
+[data-kds-page][data-theme='light'] .border-gray-900,
+[data-kds-page][data-theme='light'] .border-gray-800,
+[data-kds-page][data-theme='light'] .border-gray-700 {
+  border-color: #cbd5e1; /* slate-300 */
+}

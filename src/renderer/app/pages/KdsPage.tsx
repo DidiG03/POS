@@ -9,6 +9,9 @@ import {
 import {
   loadKdsDisplayStation,
   saveKdsDisplayStation,
+  loadKdsTheme,
+  saveKdsTheme,
+  type KdsTheme,
 } from '../../utils/kdsDisplayConfig';
 import {
   KDS_BUMP_BAR_PROGRAMMING,
@@ -166,6 +169,7 @@ export default function KdsPage() {
   const navigate = useNavigate();
   const initialStation = loadKdsDisplayStation();
   const [station, setStationState] = useState<Station>(initialStation);
+  const [theme, setThemeState] = useState<KdsTheme>(() => loadKdsTheme());
   const [tab, setTab] = useState<Tab>('NEW');
   const [tickets, setTickets] = useState<KdsTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -199,6 +203,10 @@ export default function KdsPage() {
     setStationState(next);
     stationRef.current = next;
     saveKdsDisplayStation(next);
+  }, []);
+  const setTheme = useCallback((next: KdsTheme) => {
+    setThemeState(next);
+    saveKdsTheme(next);
   }, []);
   useEffect(() => {
     errRef.current = err;
@@ -806,6 +814,7 @@ export default function KdsPage() {
     <div
       ref={pageRef}
       data-kds-page
+      data-theme={theme}
       tabIndex={-1}
       className="h-full min-h-screen bg-gray-950 text-gray-100 p-4 flex flex-col outline-none"
     >
@@ -892,6 +901,34 @@ export default function KdsPage() {
                     }`}
                   >
                     {label}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+            <div className="text-sm font-semibold">Theme</div>
+            <div className="text-xs opacity-70">
+              Switch the kitchen display between dark and light. Your choice is
+              saved and kept after restarts and updates.
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(['dark', 'light'] as const).map((opt) => {
+                const active = theme === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => setTheme(opt)}
+                    aria-pressed={active}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium capitalize ${
+                      active
+                        ? 'bg-emerald-700 text-white'
+                        : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
+                    }`}
+                  >
+                    {opt}
                   </button>
                 );
               })}
