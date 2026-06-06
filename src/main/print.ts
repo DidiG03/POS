@@ -93,10 +93,104 @@ export type TicketPrintPayload = {
   meta?: TicketPrintMeta;
 };
 
+export type ShiftClosePrintSummary = {
+  waiterName: string;
+  openedAtIso: string;
+  closedAtIso: string;
+  orders: number;
+  revenueNet: number;
+  revenueVat: number;
+  revenueGross: number;
+  vatEnabled: boolean;
+  byMethod: { method: string; amount: number }[];
+};
+
+export function buildEscposShiftSummary(
+  summary: ShiftClosePrintSummary,
+  settings: SettingsDTO,
+): Buffer {
+  const restaurant = settings.restaurantName || 'Restaurant';
+  const currency = settings.currency || 'EUR';
+  const opened = formatDateTime(new Date(summary.openedAtIso));
+  const closed = formatDateTime(new Date(summary.closedAtIso));
+
+  const lines: Buffer[] = [];
+  lines.push(ESC, Buffer.from('@'));
+  lines.push(cmdAlign('center'));
+  lines.push(cmdBold(true));
+  lines.push(cmdTextSize('lg'));
+  lines.push(escposText(`${restaurant}\n`));
+  lines.push(cmdTextSize('normal'));
+  lines.push(escposText('SHIFT REPORT\n'));
+  lines.push(cmdBold(false));
+  lines.push(escposText('--------------------------------\n'));
+  lines.push(cmdAlign('left'));
+  lines.push(escposText(`Waiter: ${summary.waiterName}\n`));
+  lines.push(escposText(`Opened: ${opened}\n`));
+  lines.push(escposText(`Closed: ${closed}\n`));
+  lines.push(escposText('--------------------------------\n'));
+  lines.push(
+    escposText(
+      `${padRight('Orders', 22)}${padLeft(String(summary.orders), 10)}\n`,
+    ),
+  );
+  lines.push(
+    escposText(
+      `${padRight('Net sales', 22)}${padLeft(formatMoneyEscpos(summary.revenueNet), 10)}\n`,
+    ),
+  );
+  if (summary.vatEnabled) {
+    lines.push(
+      escposText(
+        `${padRight('VAT', 22)}${padLeft(formatMoneyEscpos(summary.revenueVat), 10)}\n`,
+      ),
+    );
+  }
+  lines.push(cmdBold(true));
+  lines.push(
+    escposText(
+      `${padRight('TOTAL', 22)}${padLeft(formatMoneyEscpos(summary.revenueGross), 10)}\n`,
+    ),
+  );
+  lines.push(cmdBold(false));
+  lines.push(
+    escposText(
+      `${padRight('Currency', 22)}${padLeft(String(currency).slice(0, 3).toUpperCase(), 10)}\n`,
+    ),
+  );
+  if (summary.byMethod.length > 0) {
+    lines.push(escposText('--------------------------------\n'));
+    lines.push(escposText('By payment:\n'));
+    for (const row of summary.byMethod) {
+      lines.push(
+        escposText(
+          `${padRight(row.method, 22)}${padLeft(formatMoneyEscpos(row.amount), 10)}\n`,
+        ),
+      );
+    }
+  }
+  lines.push(escposText('\n'));
+  lines.push(cmdAlign('center'));
+  lines.push(escposText('End of shift\n'));
+  lines.push(cmdAlign('left'));
+  lines.push(escposText('\n'));
+  lines.push(GS, Buffer.from('V'), Buffer.from([0x41]), Buffer.from([0x10]));
+  return Buffer.concat(lines);
+}
+
 export function buildEscposTicket(
   payload: TicketPrintPayload,
   settings: SettingsDTO,
 ): Buffer {
+  const meta: any = payload.meta || {};
+  const kindEarly = String(meta?.kind || '').toUpperCase();
+  if (kindEarly === 'SHIFT_CLOSE' && meta?.shiftSummary) {
+    return buildEscposShiftSummary(
+      meta.shiftSummary as ShiftClosePrintSummary,
+      settings,
+    );
+  }
+
   const now = payload.printedAtIso
     ? new Date(payload.printedAtIso)
     : new Date();
@@ -112,7 +206,6 @@ export function buildEscposTicket(
   const lines: Buffer[] = [];
   lines.push(ESC, Buffer.from('@'));
 
-  const meta: any = payload.meta || {};
   const kind = String(meta?.kind || '').toUpperCase();
   const stationLabel = String(meta?.station || '').toUpperCase();
   const routeLabel = String(meta?.routeLabel || '').trim();
@@ -177,11 +270,27 @@ export function buildEscposTicket(
     const linePrice = Number(it.unitPrice || 0) * qty;
     subtotal += linePrice;
     if (vatEnabled) vat += linePrice * Number(it.vatRate || 0);
-    // 32-col layout: left 22, right 10
-    const left = `${qty} x ${String(it.name || '')}`;
-    const right = hidePrices ? '' : formatMoneyEscpos(linePrice);
-    lines.push(escposText(`${padRight(left, 22)}${padLeft(right, 10)}\n`));
-    if (it.note) lines.push(escposText(`  - ${String(it.note)}\n`));
+    if (kind === 'ORDER') {
+      lines.push(cmdTextSize('lg'));
+      lines.push(cmdBold(true));
+      const itemLine = `${qty} x ${String(it.name || '')}`;
+      for (const ln of wrapEscposText(itemLine, 16)) {
+        lines.push(escposText(`${ln}\n`));
+      }
+      lines.push(cmdBold(false));
+      lines.push(cmdTextSize('normal'));
+      if (it.note) {
+        for (const ln of wrapEscposText(`  - ${String(it.note)}`, 32)) {
+          lines.push(escposText(`${ln}\n`));
+        }
+      }
+    } else {
+      // 32-col layout: left 22, right 10
+      const left = `${qty} x ${String(it.name || '')}`;
+      const right = hidePrices ? '' : formatMoneyEscpos(linePrice);
+      lines.push(escposText(`${padRight(left, 22)}${padLeft(right, 10)}\n`));
+      if (it.note) lines.push(escposText(`  - ${String(it.note)}\n`));
+    }
   }
 
   // Totals (skip for ORDER slips)
@@ -299,9 +408,6 @@ export function buildEscposTicket(
         lines.push(cmdAlign('center'));
         lines.push(escposQrCode(fiscalLink, { align: 'center' }));
         lines.push(escposText('\n'));
-        for (const ln of wrapEscposText(fiscalLink, fiscalLineWidth)) {
-          lines.push(escposText(`${ln}\n`));
-        }
       }
       lines.push(cmdAlign('left'));
     }
@@ -309,18 +415,30 @@ export function buildEscposTicket(
 
   if (payload.note) {
     lines.push(escposText('\nNote:\n'));
-    lines.push(escposText(`${payload.note}\n`));
+    if (kind === 'ORDER') {
+      lines.push(cmdTextSize('md'));
+      lines.push(cmdBold(true));
+    }
+    for (const ln of wrapEscposText(String(payload.note), 32)) {
+      lines.push(escposText(`${ln}\n`));
+    }
+    if (kind === 'ORDER') {
+      lines.push(cmdBold(false));
+      lines.push(cmdTextSize('normal'));
+    }
   }
 
-  // Footer and cut
+  // Footer and cut (customer receipts only — kitchen ORDER slips stay minimal)
   lines.push(escposText('\n'));
-  lines.push(cmdAlign('center'));
-  lines.push(escposText('Thank you!\n'));
-  // Business contact (below Thank you)
-  if (bizEmail) lines.push(escposText(`${bizEmail}\n`));
-  if (bizWebsite) lines.push(escposText(`${bizWebsite}\n`));
-  lines.push(escposText('Powered by Code Orbit POS\n'));
-  lines.push(cmdAlign('left'));
+  if (kind !== 'ORDER') {
+    lines.push(cmdAlign('center'));
+    lines.push(escposText('Thank you!\n'));
+    // Business contact (below Thank you)
+    if (bizEmail) lines.push(escposText(`${bizEmail}\n`));
+    if (bizWebsite) lines.push(escposText(`${bizWebsite}\n`));
+    lines.push(escposText('Powered by Code Orbit POS\n'));
+    lines.push(cmdAlign('left'));
+  }
   lines.push(escposText('\n'));
   lines.push(GS, Buffer.from('V'), Buffer.from([0x41]), Buffer.from([0x10])); // partial cut
 
@@ -393,7 +511,8 @@ export function buildHtmlReceipt(
       const line = Number(it.unitPrice || 0) * qty;
       const note = it.note ? `<div class="note">- ${safe(it.note)}</div>` : '';
       const right = hidePrices ? '' : safe(formatMoney(line, currency));
-      return `<div class="row"><div class="left">${safe(`${qty} x ${it.name}`)}</div><div class="right">${right}</div></div>${note}`;
+      const rowClass = kind === 'ORDER' ? 'row orderItem' : 'row';
+      return `<div class="${rowClass}"><div class="left">${safe(`${qty} x ${it.name}`)}</div><div class="right">${right}</div></div>${note}`;
     })
     .join('\n');
 
@@ -457,6 +576,7 @@ export function buildHtmlReceipt(
       .left { flex: 1; word-break: break-word; }
       .right { min-width: 70px; text-align: right; white-space: nowrap; }
       .note { margin-left: 8px; font-size: 11px; }
+      .orderItem { font-size: 16px; font-weight: 700; line-height: 1.35; margin: 2px 0; }
       .footer { text-align: center; margin-top: 10px; }
       .paid { text-align: center; font-weight: 800; font-size: 14px; margin: 2px 0; }
     </style>
@@ -481,11 +601,15 @@ export function buildHtmlReceipt(
     ${discountLine}
     <div class="row" style="font-weight:700"><div class="left">TOTAL</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>`
     }
-    ${payload.note ? `<div class="sep"></div><div class="small">Note:</div><div class="small">${safe(payload.note)}</div>` : ''}
+    ${payload.note ? `<div class="sep"></div><div class="small">Note:</div><div class="${kind === 'ORDER' ? 'orderItem' : 'small'}">${safe(payload.note)}</div>` : ''}
     ${paidBlock}
-    <div class="footer small">Thank you!</div>
+    ${
+      kind === 'ORDER'
+        ? ''
+        : `<div class="footer small">Thank you!</div>
     ${contactHtml}
-    <div class="footer small">Powered by Code Orbit POS</div>
+    <div class="footer small">Powered by Code Orbit POS</div>`
+    }
   </body>
 </html>`;
 }

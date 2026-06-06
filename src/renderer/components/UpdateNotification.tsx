@@ -11,6 +11,13 @@ export function UpdateNotification() {
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Kiosk auto-install countdown (KDS only). `installAtMs` is the wall-clock
+  // deadline; `secondsLeft` ticks down for display.
+  const [autoInstall, setAutoInstall] = useState<{
+    version?: string;
+    installAtMs: number;
+  } | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number>(0);
 
   useEffect(() => {
     // Load initial status
@@ -40,6 +47,19 @@ export function UpdateNotification() {
           setDownloadProgress(null);
           loadStatus();
           break;
+        case 'auto-install-scheduled':
+          setDownloadProgress(null);
+          setAutoInstall({
+            version: data?.version,
+            installAtMs:
+              Number(data?.installAtMs) ||
+              Date.now() + (Number(data?.delayMs) || 60000),
+          });
+          loadStatus();
+          break;
+        case 'auto-install-deferred':
+          setAutoInstall(null);
+          break;
         case 'error':
           setIsChecking(false);
           setError(data?.message || 'Update error');
@@ -51,6 +71,30 @@ export function UpdateNotification() {
     return () =>
       window.removeEventListener('updater:event', handleEvent as EventListener);
   }, []);
+
+  // Tick the kiosk countdown once per second while an auto-install is pending.
+  useEffect(() => {
+    if (!autoInstall) {
+      setSecondsLeft(0);
+      return;
+    }
+    const tick = () =>
+      setSecondsLeft(
+        Math.max(0, Math.ceil((autoInstall.installAtMs - Date.now()) / 1000)),
+      );
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [autoInstall]);
+
+  const handleDeferAutoInstall = async () => {
+    setAutoInstall(null);
+    try {
+      await window.api.updater.deferInstall?.();
+    } catch {
+      // Best-effort: hiding the banner is enough; install-on-quit still applies.
+    }
+  };
 
   const loadStatus = async () => {
     try {
@@ -83,6 +127,45 @@ export function UpdateNotification() {
       setError(e?.message || 'Failed to install update');
     }
   };
+
+  // Kiosk auto-install countdown takes precedence: the update is already
+  // downloaded and will install itself unless staff postpone it.
+  if (autoInstall) {
+    return (
+      <div className="fixed bottom-4 right-4 bg-green-600 text-white rounded-lg shadow-lg p-4 max-w-md z-50">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1">
+            <h3 className="font-semibold mb-1">Updating automatically</h3>
+            <p className="text-sm text-green-100 mb-3">
+              {autoInstall.version
+                ? `Version ${autoInstall.version} is ready. `
+                : 'Update ready. '}
+              Restarting to install in {secondsLeft}s.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleInstall}
+                className="px-4 py-2 bg-green-700 hover:bg-green-800 rounded font-medium"
+              >
+                Install now
+              </button>
+              <button
+                onClick={handleDeferAutoInstall}
+                className="px-4 py-2 bg-green-500 hover:bg-green-600 rounded"
+              >
+                Later
+              </button>
+            </div>
+          </div>
+        </div>
+        {error && (
+          <div className="mt-2 text-xs text-red-200 bg-red-900/30 rounded p-2">
+            {error}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Don't show anything if no update and not checking
   if (!status && !isChecking) {

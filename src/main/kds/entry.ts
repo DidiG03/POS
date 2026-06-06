@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 import { attachKdsBumpBarInput } from './bumpBarInput';
+import { parseKdsStation, type KdsStation } from '@shared/kdsStations';
 import {
   cleanup as cleanupUpdater,
   registerUpdateListener,
@@ -38,6 +39,7 @@ type KdsConfig = {
   httpPort: number;
   httpsPort?: number;
   businessCode?: string;
+  station?: KdsStation;
 };
 
 function configPath(): string {
@@ -58,6 +60,7 @@ function readConfig(): KdsConfig | null {
       httpPort,
       httpsPort,
       businessCode: j.businessCode ? String(j.businessCode) : undefined,
+      station: parseKdsStation(j.station) ?? undefined,
     };
   } catch {
     return null;
@@ -163,6 +166,9 @@ ipcMain.handle('updater:downloadUpdate', async () =>
 ipcMain.handle('updater:installUpdate', async () =>
   updaterHandlers.installUpdate(),
 );
+ipcMain.handle('updater:deferInstall', async () =>
+  updaterHandlers.deferInstall(),
+);
 
 ipcMain.handle('kdsApp:getConfig', () => readConfig());
 
@@ -173,13 +179,23 @@ ipcMain.on('kdsApp:getConfigSync', (event) => {
 });
 
 ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
+  const existing = readConfig();
+  const host = String(payload?.host ?? existing?.host ?? '').trim();
   const cfg: KdsConfig = {
-    host: String(payload?.host || '').trim(),
-    httpPort: Number(payload?.httpPort) || 3333,
-    httpsPort: payload?.httpsPort ? Number(payload.httpsPort) : undefined,
-    businessCode: payload?.businessCode
-      ? String(payload.businessCode)
-      : undefined,
+    host,
+    httpPort: Number(payload?.httpPort ?? existing?.httpPort) || 3333,
+    httpsPort:
+      payload?.httpsPort != null
+        ? Number(payload.httpsPort) || undefined
+        : existing?.httpsPort,
+    businessCode:
+      payload?.businessCode != null
+        ? String(payload.businessCode)
+        : existing?.businessCode,
+    station:
+      payload?.station != null
+        ? (parseKdsStation(payload.station) ?? existing?.station)
+        : existing?.station,
   };
   if (!cfg.host) throw new Error('Host is required');
   writeConfig(cfg);
@@ -189,6 +205,14 @@ ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
     loadHash(mainWindow, '/kds');
   }
   return cfg;
+});
+
+ipcMain.handle('kdsApp:saveDisplayStation', async (_e, payload) => {
+  const station = parseKdsStation(payload);
+  if (!station) throw new Error('Invalid KDS station');
+  const existing = readConfig();
+  if (existing) writeConfig({ ...existing, station });
+  return station;
 });
 
 ipcMain.handle('kdsApp:resetConfig', () => {
@@ -290,7 +314,14 @@ app.whenReady().then(() => {
   } catch {
     // ignore
   }
-  setupAutoUpdater({ channel: 'kds' });
+  // Kitchen displays are unattended kiosks: fetch updates automatically
+  // and restart-and-install on their own (with a deferrable on-screen
+  // countdown) so "pushing an update" never means physically reinstalling.
+  setupAutoUpdater({
+    channel: 'kds',
+    autoDownload: true,
+    autoInstallOnDownloaded: true,
+  });
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

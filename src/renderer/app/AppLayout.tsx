@@ -7,33 +7,23 @@ import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
 import { toast } from '../stores/toasts';
+import { getOfflineQueueCount } from '../utils/offlineQueue';
 
 function IconTables() {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
       fill="none"
+      viewBox="0 0 24 24"
+      strokeWidth={1.5}
+      stroke="currentColor"
       className="pos-icon"
       aria-hidden
     >
       <path
-        d="M4 7h16v6H4V7Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
+        strokeLinecap="round"
         strokeLinejoin="round"
-      />
-      <path
-        d="M7 13v7M17 13v7"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M9 4h6"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
+        d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"
       />
     </svg>
   );
@@ -178,7 +168,8 @@ export default function AppLayout() {
     };
   }, [isBrowserClient]);
 
-  // Offline/sync indicator: show how many queued cloud writes exist on the host.
+  // Offline/sync indicator: browser tablets show the local IndexedDB queue;
+  // Electron host shows the cloud outbox (when configured).
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -187,9 +178,16 @@ export default function AppLayout() {
     const tick = async () => {
       if (isHidden()) return;
       try {
+        if (isBrowserClient) {
+          const count = await getOfflineQueueCount();
+          if (!cancelled) {
+            setQueued(Number.isFinite(count) ? count : 0);
+            setSyncOk(true);
+          }
+          return;
+        }
         const st = await (window.api as any).offline?.getStatus?.();
         const q = Number((st as any)?.queued || 0);
-        // Only show sync indicator if there are items ready to sync (not waiting for retry)
         if (!cancelled) {
           setQueued(Number.isFinite(q) ? q : 0);
           setSyncOk(true);
@@ -199,12 +197,37 @@ export default function AppLayout() {
       }
     };
     tick();
+    const onQueueChange = (e: Event) => {
+      if (!isBrowserClient || cancelled) return;
+      const pending = Number((e as CustomEvent)?.detail?.pending ?? 0);
+      setQueued(Number.isFinite(pending) ? pending : 0);
+      setSyncOk(true);
+    };
+    if (isBrowserClient) {
+      window.addEventListener('offline-queue:changed', onQueueChange);
+    }
     const t = window.setInterval(tick, 10000);
     return () => {
       cancelled = true;
+      if (isBrowserClient) {
+        window.removeEventListener('offline-queue:changed', onQueueChange);
+      }
       window.clearInterval(t);
     };
-  }, [user?.id]);
+  }, [user?.id, isBrowserClient]);
+
+  useEffect(() => {
+    if (!isBrowserClient) return;
+    const onDropped = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail || {};
+      const msg = String(detail.lastError || t('common.offlineActionDropped'));
+      toast.error(msg, { title: t('common.offlineActionFailed') });
+    };
+    window.addEventListener('offline-queue:dropped', onDropped);
+    return () => {
+      window.removeEventListener('offline-queue:dropped', onDropped);
+    };
+  }, [isBrowserClient, t]);
 
   useEffect(() => {
     if (!isBrowserClient) return;

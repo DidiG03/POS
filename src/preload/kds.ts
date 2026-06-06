@@ -20,6 +20,7 @@ type KdsConfig = {
   httpPort: number;
   httpsPort?: number;
   businessCode?: string;
+  station?: import('@shared/kdsStations').KdsStation;
 };
 
 type DiscoveredHost = {
@@ -40,6 +41,7 @@ const updater = {
   checkForUpdates: () => ipcRenderer.invoke('updater:checkForUpdates'),
   downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('updater:installUpdate'),
+  deferInstall: () => ipcRenderer.invoke('updater:deferInstall'),
 };
 
 const kdsApp = {
@@ -47,6 +49,10 @@ const kdsApp = {
     ipcRenderer.invoke('kdsApp:getConfig'),
   saveConfig: (cfg: KdsConfig): Promise<KdsConfig> =>
     ipcRenderer.invoke('kdsApp:saveConfig', cfg),
+  saveDisplayStation: (
+    station: import('@shared/kdsStations').KdsStation,
+  ): Promise<import('@shared/kdsStations').KdsStation> =>
+    ipcRenderer.invoke('kdsApp:saveDisplayStation', station),
   resetConfig: (): Promise<boolean> => ipcRenderer.invoke('kdsApp:resetConfig'),
   discover: (): Promise<DiscoveredHost[]> =>
     ipcRenderer.invoke('kdsApp:discover'),
@@ -85,6 +91,9 @@ try {
       httpPort: cfg.httpPort,
       httpsPort: cfg.httpsPort || null,
     });
+  }
+  if (cfg?.station) {
+    contextBridge.exposeInMainWorld('__KDS_STATION__', cfg.station);
   }
 } catch {
   // ignore

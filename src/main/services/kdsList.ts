@@ -1,4 +1,9 @@
 import { prisma } from '@db/client';
+import {
+  ALL_KDS_STATIONS,
+  kdsStationLabel,
+  type KdsStation,
+} from '@shared/kdsStations';
 
 async function getTableSessionStartedAt(
   area: string,
@@ -82,7 +87,7 @@ export async function formatKdsTicketListRows(
           select: { id: true, displayName: true },
         })
       : [];
-  const waiterById = new Map(
+  const waiterById = new Map<number, string>(
     users.map(
       (u: { id: number; displayName: string }) =>
         [u.id, u.displayName] as const,
@@ -127,4 +132,116 @@ export async function formatKdsTicketListRows(
       };
     })
     .filter(Boolean);
+}
+
+export type KdsTicketDetailDTO = {
+  ticketId: number;
+  orderNo: number;
+  area: string;
+  tableLabel: string;
+  waiterName?: string | null;
+  firedAt: string;
+  note?: string | null;
+  stations: Array<{
+    station: KdsStation | string;
+    label: string;
+    items: Array<{
+      name: string;
+      qty?: number;
+      note?: string;
+      voided?: boolean;
+      bumped?: boolean;
+      _idx?: number;
+    }>;
+  }>;
+};
+
+/** Full ticket view with every prep station's items (for bump-bar summary). */
+export async function getKdsTicketDetail(
+  ticketId: number,
+): Promise<KdsTicketDetailDTO | null> {
+  const id = Number(ticketId);
+  if (!id) return null;
+
+  const row = await (prisma as any).kdsTicket
+    .findUnique({
+      where: { id },
+      include: { order: true },
+    })
+    .catch(() => null);
+  if (!row) return null;
+
+  const o = row.order;
+  const area = String(o?.area || '');
+  const tableLabel = String(o?.tableLabel || '');
+  const tableKey = `${area}:${tableLabel}`;
+
+  const ownerId = await getSessionOwnerId(area, tableLabel);
+  const userIds = [Number(row.userId), ownerId != null ? ownerId : 0].filter(
+    (uid) => Number.isFinite(uid) && uid > 0,
+  );
+
+  const users =
+    userIds.length > 0
+      ? await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, displayName: true },
+        })
+      : [];
+  const waiterById = new Map<number, string>(
+    users.map(
+      (u: { id: number; displayName: string }) =>
+        [u.id, u.displayName] as const,
+    ),
+  );
+  const waiterName: string | null =
+    (row.userId ? waiterById.get(Number(row.userId)) : null) ??
+    (ownerId ? waiterById.get(ownerId) : null) ??
+    null;
+
+  const itemsAll = Array.isArray(row.itemsJson) ? row.itemsJson : [];
+  const byStation = new Map<
+    string,
+    KdsTicketDetailDTO['stations'][0]['items']
+  >();
+  for (let idx = 0; idx < itemsAll.length; idx++) {
+    const it = itemsAll[idx];
+    const st = String(it?.station || 'KITCHEN').toUpperCase();
+    if (!byStation.has(st)) byStation.set(st, []);
+    byStation.get(st)!.push({
+      name: String(it?.name || ''),
+      qty: it?.qty != null ? Number(it.qty) : undefined,
+      note: it?.note ? String(it.note) : undefined,
+      voided: Boolean(it?.voided),
+      bumped: Boolean(it?.bumped),
+      _idx: idx,
+    });
+  }
+
+  const stations: KdsTicketDetailDTO['stations'] = [];
+  for (const st of ALL_KDS_STATIONS) {
+    const items = byStation.get(st) || [];
+    if (items.length === 0) continue;
+    stations.push({
+      station: st,
+      label: kdsStationLabel(st),
+      items,
+    });
+    byStation.delete(st);
+  }
+  for (const [st, items] of byStation) {
+    if (items.length === 0) continue;
+    stations.push({ station: st, label: st, items });
+  }
+
+  return {
+    ticketId: id,
+    orderNo: Number(o?.orderNo || 0),
+    area,
+    tableLabel,
+    waiterName,
+    firedAt: row.firedAt?.toISOString?.() ?? '',
+    note: row.note ?? null,
+    stations,
+  };
 }

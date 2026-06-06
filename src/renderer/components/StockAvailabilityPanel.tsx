@@ -113,47 +113,36 @@ export function StockAvailabilityPanel({
   }, [categories]);
 
   return (
-    <section className="rounded-xl border border-amber-900/35 bg-gradient-to-br from-amber-950/25 to-gray-900/80 p-4 shadow-sm">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
-        <div>
-          <div className="font-semibold text-amber-100 flex items-center gap-2">
-            <IconWarningTriangle className="w-5 h-5 text-amber-400" />
-            {t('stockPanel.title')}
-          </div>
-          <p className="text-xs opacity-75 mt-1 max-w-2xl">
-            {t('stockPanel.helpLow')}
-          </p>
-          <p className="text-[11px] opacity-60 mt-1 max-w-2xl">
-            {t('stockPanel.helpReset')}
-          </p>
-        </div>
+    <section>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
+        <div className="text-sm opacity-70">{t('stockPanel.title')}</div>
         <input
           type="search"
           placeholder={t('stockPanel.searchPlaceholder')}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           disabled={disabled}
-          className="w-full sm:w-56 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm shrink-0"
+          className="w-full sm:w-56 bg-gray-700 rounded px-3 py-2 text-sm shrink-0"
         />
       </div>
-      <div className="max-h-56 overflow-auto rounded-lg border border-gray-700/80">
+      <div className="overflow-auto max-h-56 border border-gray-700 rounded">
         <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-gray-950/95 backdrop-blur-sm border-b border-gray-700 z-10">
-            <tr className="text-left text-xs uppercase tracking-wide opacity-70">
-              <th className="px-3 py-2">{t('stockPanel.colItem')}</th>
-              <th className="px-3 py-2 hidden sm:table-cell">
+          <thead className="text-left bg-gray-900 sticky top-0 z-10">
+            <tr className="opacity-70">
+              <th className="py-2 px-3">{t('stockPanel.colItem')}</th>
+              <th className="py-2 px-3 hidden sm:table-cell">
                 {t('stockPanel.colCategory')}
               </th>
-              <th className="px-3 py-2 w-[88px]">{t('stockPanel.colLeft')}</th>
-              <th className="px-3 py-2 w-[148px]">
+              <th className="py-2 px-3 w-[88px]">{t('stockPanel.colLeft')}</th>
+              <th className="py-2 px-3 w-[148px]">
                 {t('stockPanel.colAvailability')}
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-800">
+          <tbody>
             {rows.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="px-3 py-6 text-center opacity-60">
+              <tr className="border-t border-gray-800">
+                <td colSpan={4} className="py-3 px-3 opacity-70">
                   {t('stockPanel.noItemsMatch')}
                 </td>
               </tr>
@@ -169,25 +158,25 @@ export function StockAvailabilityPanel({
                     : '1');
 
                 return (
-                  <tr key={row.id} className="hover:bg-gray-800/40">
-                    <td className="px-3 py-2">
+                  <tr key={row.id} className="border-t border-gray-800">
+                    <td className="py-2 px-3">
                       <div className="font-medium truncate max-w-[200px] sm:max-w-xs">
                         {row.name}
                       </div>
-                      <div className="text-[10px] opacity-50 font-mono truncate">
+                      <div className="text-xs opacity-70 font-mono truncate">
                         {row.sku}
                       </div>
                     </td>
-                    <td className="px-3 py-2 hidden sm:table-cell opacity-80">
+                    <td className="py-2 px-3 hidden sm:table-cell opacity-90">
                       {row.categoryName}
                     </td>
-                    <td className="px-3 py-2 align-middle">
+                    <td className="py-2 px-3 align-middle">
                       <input
                         type="number"
                         min={1}
                         step={1}
                         disabled={disabled || level !== 'LOW'}
-                        className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs disabled:opacity-40"
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs disabled:opacity-40"
                         value={level === 'LOW' ? qtyStr : ''}
                         placeholder={level === 'LOW' ? undefined : '—'}
                         title={
@@ -217,9 +206,9 @@ export function StockAvailabilityPanel({
                         }}
                       />
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="py-2 px-3">
                       <select
-                        className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs"
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs"
                         value={level}
                         disabled={disabled}
                         onChange={(e) => {

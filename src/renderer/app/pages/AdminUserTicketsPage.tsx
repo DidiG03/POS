@@ -261,7 +261,7 @@ export default function AdminUserTicketsPage() {
         if (cancelled) return;
         const sc = s?.preferences?.serviceCharge || {};
         setPrefs({
-          vatEnabled: s?.preferences?.vatEnabled !== false,
+          vatEnabled: Boolean(s?.fiscal?.enabled),
           serviceCharge: {
             enabled: Boolean(sc.enabled),
             mode:

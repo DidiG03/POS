@@ -110,6 +110,8 @@ const api: Api = {
     }) => ipcRenderer.invoke('kds:bumpItem', input),
     clearDone: (input: { station: 'KITCHEN' | 'BAR' | 'DESSERT' }) =>
       ipcRenderer.invoke('kds:clearDone', input),
+    getTicketDetail: (input: { ticketId: number }) =>
+      ipcRenderer.invoke('kds:getTicketDetail', input),
     debug: () => ipcRenderer.invoke('kds:debug'),
   },
   backups: {

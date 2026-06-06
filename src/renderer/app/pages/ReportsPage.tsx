@@ -6,6 +6,7 @@ type Overview = {
   revenueTodayNet: number;
   revenueTodayVat: number;
   openOrders: number;
+  fiscalEnabled?: boolean;
 };
 
 /** Same local calendar day as `ref` (default: now). */

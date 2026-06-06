@@ -19,6 +19,7 @@ type Overview = {
   appVersion: string;
   revenueTodayNet?: number;
   revenueTodayVat?: number;
+  fiscalEnabled?: boolean;
   coversToday?: number;
   reservationsTotalToday?: number;
   reservationsCoversToday?: number;
@@ -359,6 +360,13 @@ export default function AdminPage() {
     () => shifts.filter((s) => s.isOpen).length,
     [shifts],
   );
+  const openShifts = useMemo(
+    () =>
+      shifts
+        .filter((s) => s.isOpen)
+        .sort((a, b) => String(b.openedAt).localeCompare(String(a.openedAt))),
+    [shifts],
+  );
   const closedShiftCount = useMemo(
     () => shifts.filter((s) => !s.isOpen).length,
     [shifts],
@@ -475,7 +483,7 @@ export default function AdminPage() {
       </div>
       <ReservationsTodayCard ov={ov} />
 
-      <div className="col-span-2 min-w-0">
+      <div className="bg-gray-800 rounded p-4 col-span-2 min-w-0 overflow-hidden">
         <StockAvailabilityPanel
           categories={stockMenuCats}
           disabled={billingPaused || stockSaving}
@@ -517,28 +525,41 @@ export default function AdminPage() {
             {t('adminOverview.viewAll')}
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          {shifts.filter((s) => s.isOpen).length === 0 && (
-            <div className="opacity-70 col-span-2">
-              {t('adminOverview.noOpenShifts')}
-            </div>
-          )}
-          {shifts
-            .filter((s) => s.isOpen)
-            .map((s) => (
-              <div key={s.id} className="bg-gray-900 rounded p-3">
-                <div className="text-base font-semibold truncate">
-                  {s.userName}
-                </div>
-                <div className="text-xs opacity-80">
-                  {t('adminOverview.opened')}:{' '}
-                  {new Date(s.openedAt).toLocaleTimeString()}
-                </div>
-                <div className="text-xs">
-                  {t('adminOverview.hours')}: {s.durationHours}
-                </div>
-              </div>
-            ))}
+        <div className="overflow-auto border border-gray-700 rounded">
+          <table className="w-full text-sm">
+            <thead className="text-left bg-gray-900">
+              <tr className="opacity-70">
+                <th className="py-2 px-3">{t('adminOverview.colStaff')}</th>
+                <th className="py-2 px-3">{t('adminOverview.colOpened')}</th>
+                <th className="py-2 px-3 text-right">
+                  {t('adminOverview.colHours')}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {openShifts.length === 0 ? (
+                <tr className="border-t border-gray-800">
+                  <td className="py-3 px-3 opacity-70" colSpan={3}>
+                    {t('adminOverview.noOpenShifts')}
+                  </td>
+                </tr>
+              ) : (
+                openShifts.map((s) => (
+                  <tr key={s.id} className="border-t border-gray-800">
+                    <td className="py-2 px-3 font-medium">{s.userName}</td>
+                    <td className="py-2 px-3 opacity-90">
+                      {new Date(s.openedAt).toLocaleString()}
+                    </td>
+                    <td className="py-2 px-3 text-right font-mono tabular-nums">
+                      {Number.isFinite(s.durationHours)
+                        ? s.durationHours.toFixed(2)
+                        : '—'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

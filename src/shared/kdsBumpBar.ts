@@ -10,9 +10,11 @@ export type KdsBumpBarAction =
   | { type: 'selectFirst' }
   | { type: 'showDone' }
   | { type: 'showNew' }
+  | { type: 'showSettings' }
   | { type: 'clearDone' }
   | { type: 'scrollUp' }
   | { type: 'scrollDown' }
+  | { type: 'showTicketSummary' }
   | { type: 'dismiss' };
 
 export type KdsBumpBarKeyInput = {
@@ -77,6 +79,14 @@ export function kdsBumpBarActionFromKeyInput(
 
   if (isLetter(code, 'f') || key === 'f' || key === 'F') {
     return { type: 'showDone' };
+  }
+
+  if (isLetter(code, 'j') || key === 'j' || key === 'J') {
+    return { type: 'showSettings' };
+  }
+
+  if (isLetter(code, 'a') || key === 'a' || key === 'A') {
+    return { type: 'showTicketSummary' };
   }
 
   if (digit === 4 || code === 'Numpad4') return { type: 'clearDone' };
@@ -172,6 +182,16 @@ export const KDS_BUMP_BAR_PROGRAMMING = [
   { button: 'Cursor ↑', keystroke: '↑', action: 'Scroll ticket list up' },
   { button: 'Cursor ↓', keystroke: '↓', action: 'Scroll ticket list down' },
   { button: 'Done', keystroke: 'F', action: 'Switch to Done tab' },
+  {
+    button: 'Settings',
+    keystroke: 'J',
+    action: 'Open Settings tab',
+  },
+  {
+    button: 'All items',
+    keystroke: 'A',
+    action: 'Show / hide full ticket (all stations)',
+  },
   {
     button: 'Item Summary',
     keystroke: 'S',

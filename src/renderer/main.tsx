@@ -840,11 +840,15 @@ if (!(window as any).api) {
     },
     tickets: {
       async log(input: any) {
-        await goLan('/tickets', {
+        const r = await goLan('/tickets', {
           method: 'POST',
           body: JSON.stringify(input),
         });
-        return true;
+        if (r && typeof r === 'object') {
+          if (r.ok === false) return r;
+          if (r.ok === true) return r;
+        }
+        return { ok: true };
       },
       async getLatestForTable(area: string, tableLabel: string) {
         return await goLan(
@@ -1059,6 +1063,12 @@ if (!(window as any).api) {
           body: JSON.stringify({ station, ticketId, itemIdx }),
         });
         return Boolean((r as any)?.ok ?? true);
+      },
+      async getTicketDetail(input: any) {
+        const ticketId = Number(input?.ticketId || 0);
+        if (!ticketId) return null;
+        const q = new URLSearchParams({ ticketId: String(ticketId) });
+        return await goLan(`/kds/ticket-detail?${q.toString()}`);
       },
       async debug() {
         return await goLan('/kds/debug');

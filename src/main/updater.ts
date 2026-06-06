@@ -28,9 +28,37 @@ let updateInfo: UpdateInfo | null = null;
 let updateDownloaded = false;
 let updateCheckListeners: Set<BrowserWindow> = new Set();
 
+// Hands-off (kiosk) auto-update state. Only enabled for the KDS.
+let autoInstallOnDownloaded = false;
+let autoInstallDelayMs = 60_000;
+let autoInstallTimer: NodeJS.Timeout | null = null;
+
+function clearAutoInstallTimer(): void {
+  if (autoInstallTimer) {
+    clearTimeout(autoInstallTimer);
+    autoInstallTimer = null;
+  }
+}
+
 export type AutoUpdaterSetupOptions = {
   /** GitHub release channel. Omit for POS (`latest.yml`); use `kds` for KDS. */
   channel?: string;
+  /**
+   * Download the update automatically as soon as it's detected, without
+   * waiting for a user click. Used by the KDS kiosk so an unattended
+   * kitchen display fetches new versions on its own. POS keeps the
+   * manual "Download" button (default false).
+   */
+  autoDownload?: boolean;
+  /**
+   * After the download finishes, automatically restart-and-install once
+   * the grace period elapses. The renderer shows a deferrable countdown
+   * so staff can postpone an install during a busy service. Used by the
+   * KDS kiosk; POS leaves this off and relies on the explicit button.
+   */
+  autoInstallOnDownloaded?: boolean;
+  /** Grace period before the automatic install fires. Default 60s. */
+  autoInstallDelayMs?: number;
 };
 
 function releaseDateIso(releaseDate: unknown): string | undefined {
@@ -101,8 +129,20 @@ export const updaterHandlers = {
     if (!updateDownloaded) {
       return { error: 'Update not downloaded yet' };
     }
+    clearAutoInstallTimer();
     addBreadcrumb('Installing update and restarting', 'updater', 'info');
     autoUpdater.quitAndInstall(false, true);
+    return { success: true };
+  },
+  /**
+   * Cancel a pending automatic install (the deferrable kiosk countdown).
+   * The update stays downloaded and `autoInstallOnAppQuit` still applies,
+   * so it installs the next time the app is closed.
+   */
+  deferInstall: () => {
+    clearAutoInstallTimer();
+    addBreadcrumb('Auto-install deferred by user', 'updater', 'info');
+    notifyListeners('auto-install-deferred');
     return { success: true };
   },
 };
@@ -151,10 +191,19 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
     }
 
     // Configuration
-    autoUpdater.autoDownload = false; // Let user choose when to download
+    autoUpdater.autoDownload = Boolean(options?.autoDownload); // KDS: true; POS: false (manual)
     autoUpdater.autoInstallOnAppQuit = true; // Auto-install on quit if downloaded
     autoUpdater.allowDowngrade = false;
     autoUpdater.allowPrerelease = false; // Only stable releases
+
+    autoInstallOnDownloaded = Boolean(options?.autoInstallOnDownloaded);
+    if (
+      typeof options?.autoInstallDelayMs === 'number' &&
+      Number.isFinite(options.autoInstallDelayMs) &&
+      options.autoInstallDelayMs >= 0
+    ) {
+      autoInstallDelayMs = options.autoInstallDelayMs;
+    }
 
     // Event handlers
     autoUpdater.on('checking-for-update', () => {
@@ -172,6 +221,18 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
         releaseNotes: info.releaseNotes || '',
       });
       addBreadcrumb(`Update available: ${info.version}`, 'updater', 'info');
+      // Kiosk path: pull the update down immediately so the only remaining
+      // step is the (auto-scheduled) restart. `autoDownload` already does
+      // this internally, but calling it explicitly keeps behavior obvious
+      // and works even if a future electron-updater changes the default.
+      if (autoUpdater.autoDownload) {
+        autoUpdater.downloadUpdate().catch((error) => {
+          captureException(
+            error instanceof Error ? error : new Error(String(error)),
+            { context: 'updater:autoDownload' },
+          );
+        });
+      }
     });
 
     autoUpdater.on('update-not-available', (info: UpdateInfo) => {
@@ -209,6 +270,36 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
         releaseNotes: info.releaseNotes || '',
       });
       addBreadcrumb(`Update downloaded: ${info.version}`, 'updater', 'info');
+
+      // Kiosk path: schedule an automatic restart-and-install after a
+      // grace period. The renderer shows a deferrable countdown so staff
+      // can postpone it mid-service; if nobody intervenes the kitchen
+      // display updates itself with zero manual steps.
+      if (autoInstallOnDownloaded) {
+        clearAutoInstallTimer();
+        const installAtMs = Date.now() + autoInstallDelayMs;
+        notifyListeners('auto-install-scheduled', {
+          version: info.version,
+          delayMs: autoInstallDelayMs,
+          installAtMs,
+        });
+        autoInstallTimer = setTimeout(() => {
+          autoInstallTimer = null;
+          addBreadcrumb(
+            `Auto-installing update: ${info.version}`,
+            'updater',
+            'info',
+          );
+          try {
+            autoUpdater.quitAndInstall(true, true);
+          } catch (error) {
+            captureException(
+              error instanceof Error ? error : new Error(String(error)),
+              { context: 'updater:autoInstall' },
+            );
+          }
+        }, autoInstallDelayMs);
+      }
     });
 
     // Check for updates on startup (after a delay to not block app launch)
@@ -273,5 +364,6 @@ export function cleanup(): void {
     clearInterval(updateCheckInterval);
     updateCheckInterval = null;
   }
+  clearAutoInstallTimer();
   updateCheckListeners.clear();
 }

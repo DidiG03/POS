@@ -67,6 +67,8 @@ model Category {
   sortOrder Int       @default(0)
   active    Boolean   @default(true)
   color     String?
+  /// When set, items in this category appear on that KDS screen; null = hidden from KDS.
+  kdsStation PrepStation?
   items     MenuItem[]
 }
 

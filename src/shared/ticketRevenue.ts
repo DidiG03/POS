@@ -9,7 +9,10 @@ export function liveTicketLines(itemsJson: unknown): any[] {
   return arr.filter((it: any) => !it?.voided);
 }
 
-export function sumTicketLinesNetVat(itemsJson: unknown): {
+export function sumTicketLinesNetVat(
+  itemsJson: unknown,
+  vatEnabled = true,
+): {
   net: number;
   vat: number;
 } {
@@ -22,7 +25,7 @@ export function sumTicketLinesNetVat(itemsJson: unknown): {
     const vatRate = Number((it as any)?.vatRate || 0);
     const lineNet = unit * qty;
     net += lineNet;
-    vat += lineNet * vatRate;
+    if (vatEnabled) vat += lineNet * vatRate;
   }
   return { net, vat };
 }

@@ -35,6 +35,7 @@ export interface SettingsDTO {
   preferences?: {
     /** UI locale for the venue (`sq` = Albanian). Stored for consistency; translations can grow over time. */
     language?: 'en' | 'sq';
+    /** @deprecated VAT follows `fiscal.enabled`; not stored in preferences. */
     vatEnabled?: boolean;
     serviceCharge?: {
       enabled?: boolean;
@@ -141,7 +142,19 @@ export interface TableAreaDTO {
  */
 export interface TicketPrintMeta {
   // What kind of slip this is. Affects header style + which side effects fire.
-  kind?: 'ORDER' | 'PAYMENT' | 'RECEIPT';
+  kind?: 'ORDER' | 'PAYMENT' | 'RECEIPT' | 'SHIFT_CLOSE';
+  /** Populated when kind === 'SHIFT_CLOSE' — shift-end summary slip. */
+  shiftSummary?: {
+    waiterName: string;
+    openedAtIso: string;
+    closedAtIso: string;
+    orders: number;
+    revenueNet: number;
+    revenueVat: number;
+    revenueGross: number;
+    vatEnabled: boolean;
+    byMethod: { method: string; amount: number }[];
+  };
   // Originating user (used for notifications + anti-theft attribution).
   userId?: number;
   // Optional station hint set by the routing splitter ("KITCHEN" | "BAR" | "ALL").
@@ -180,6 +193,8 @@ export interface TicketPrintMeta {
   fiscalNslf?: string;
   fiscalNivf?: string;
   fiscalLink?: string;
+  fiscalWarning?: string;
+  fiscalStatus?: string;
 }
 
 export const LoginWithPinInputSchema = z.object({
@@ -290,14 +305,18 @@ export interface MenuCategoryDTO {
   sortOrder: number;
   active: boolean;
   color?: string | null;
+  kdsStation?: 'KITCHEN' | 'BAR' | 'DESSERT' | null;
   items: MenuItemDTO[];
 }
+
+export const KdsStationSchema = z.enum(['KITCHEN', 'BAR', 'DESSERT']);
 
 export const CreateMenuCategoryInputSchema = z.object({
   name: z.string().min(1),
   sortOrder: z.number().int().min(0).optional(),
   color: z.string().optional().nullable(),
   active: z.boolean().optional(),
+  kdsStation: KdsStationSchema.nullable().optional(),
 });
 export type CreateMenuCategoryInput = z.infer<
   typeof CreateMenuCategoryInputSchema
@@ -309,6 +328,7 @@ export const UpdateMenuCategoryInputSchema = z.object({
   sortOrder: z.number().int().min(0).optional(),
   color: z.string().optional().nullable(),
   active: z.boolean().optional(),
+  kdsStation: KdsStationSchema.nullable().optional(),
 });
 export type UpdateMenuCategoryInput = z.infer<
   typeof UpdateMenuCategoryInputSchema
@@ -633,6 +653,28 @@ export interface KdsTicketDTO {
   items: any[];
 }
 
+export interface KdsTicketDetailDTO {
+  ticketId: number;
+  orderNo: number;
+  area: string;
+  tableLabel: string;
+  waiterName?: string | null;
+  firedAt: string;
+  note?: string | null;
+  stations: Array<{
+    station: 'KITCHEN' | 'BAR' | 'DESSERT' | string;
+    label: string;
+    items: Array<{
+      name: string;
+      qty?: number;
+      note?: string;
+      voided?: boolean;
+      bumped?: boolean;
+      _idx?: number;
+    }>;
+  }>;
+}
+
 export interface ApiKds {
   openWindow(): Promise<boolean>;
   listTickets(input: {
@@ -663,6 +705,9 @@ export interface ApiKds {
   clearDone(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
   }): Promise<{ ok: boolean; purgedDoneRows: number }>;
+  getTicketDetail(input: {
+    ticketId: number;
+  }): Promise<KdsTicketDetailDTO | null>;
   debug(): Promise<any>;
 }
 
@@ -679,6 +724,8 @@ export interface AdminOverviewDTO {
   appVersion: string;
   revenueTodayNet?: number; // without VAT
   revenueTodayVat?: number; // VAT amount
+  /** When false, VAT is not applied on tickets and revenueTodayVat is 0. */
+  fiscalEnabled?: boolean;
   // Total guests served today across all tables. Computed from the most
   // recent cover count saved per (area, label) for the current day.
   coversToday?: number;
@@ -1034,6 +1081,8 @@ export interface ReviewWeekdayBucketDTO {
 
 export interface ReviewDTO {
   granularity: ReviewGranularity;
+  /** When false, VAT is not applied on tickets and review VAT totals are 0. */
+  fiscalEnabled?: boolean;
   current: ReviewSummaryDTO;
   /** Present only when a comparison range was requested. */
   compare: ReviewSummaryDTO | null;
@@ -1251,4 +1300,6 @@ export interface ApiUpdater {
   checkForUpdates(): Promise<{ success?: boolean; error?: string }>;
   downloadUpdate(): Promise<{ success?: boolean; error?: string }>;
   installUpdate(): Promise<{ success?: boolean; error?: string }>;
+  /** Cancel a pending automatic install (kiosk countdown). KDS only. */
+  deferInstall?(): Promise<{ success?: boolean; error?: string }>;
 }

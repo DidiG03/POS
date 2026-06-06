@@ -15,4 +15,13 @@ describe('sumTicketLinesNetVat', () => {
     expect(sumTicketLinesNetVat(null)).toEqual({ net: 0, vat: 0 });
     expect(sumTicketLinesNetVat([])).toEqual({ net: 0, vat: 0 });
   });
+
+  it('skips VAT when vatEnabled is false', () => {
+    const { net, vat } = sumTicketLinesNetVat(
+      [{ name: 'A', qty: 1, unitPrice: 100, vatRate: 0.2 }],
+      false,
+    );
+    expect(net).toBe(100);
+    expect(vat).toBe(0);
+  });
 });

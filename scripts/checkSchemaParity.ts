@@ -79,6 +79,10 @@ const SHARED_ENUMS = [
 // Fields legitimately present only locally (Electron-only behavior).
 const ALLOWED_LOCAL_ONLY: Record<string, string[]> = {
   User: ['twoFactorEnabled', 'twoFactorSecret'],
+  // KDS prep-station routing is a LAN-only concern (the kitchen display
+  // talks to the local POS host, not the cloud), so the field never syncs
+  // to the multi-tenant Postgres schema.
+  Category: ['kdsStation'],
   MenuItem: ['stockLevel', 'stockRemaining', 'stockDay'],
   // Printer-offline retry queue lives only on the LAN POS host (SQLite).
   PrintJob: ['attempts', 'lastError', 'nextAttemptAt', 'printerProfileId'],

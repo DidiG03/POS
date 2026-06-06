@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type {
   ReviewDTO,
   ReviewGranularity,
   ReviewRangeInput,
   ReviewSummaryDTO,
 } from '@shared/ipc';
-import { formatMoneyCompact } from '../../utils/format';
+import {
+  formatMoneyCompact,
+  formatNumberMaxDecimals,
+} from '../../utils/format';
 
 // ---------------------------------------------------------------------
 // Date helpers — all comparisons are computed in the operator's local
@@ -94,16 +98,28 @@ interface Period {
 
 interface Preset {
   id: PresetId;
-  label: string;
   current(): Period;
   compare(): Period;
   granularity: ReviewGranularity;
 }
 
+function presetLabel(id: PresetId, t: (key: string) => string): string {
+  const keys: Record<Exclude<PresetId, 'custom'>, string> = {
+    today: 'adminReview.presetToday',
+    yesterday: 'adminReview.presetYesterday',
+    last7: 'adminReview.presetLast7',
+    last30: 'adminReview.presetLast30',
+    thisMonth: 'adminReview.presetThisMonth',
+    lastMonth: 'adminReview.presetLastMonth',
+    thisYear: 'adminReview.presetThisYear',
+    lastYear: 'adminReview.presetLastYear',
+  };
+  return id === 'custom' ? t('adminReview.customRange') : t(keys[id]);
+}
+
 const PRESETS: Preset[] = [
   {
     id: 'today',
-    label: 'Today vs Yesterday',
     current: () => ({
       start: startOfDay(new Date()),
       end: endOfDay(new Date()),
@@ -116,7 +132,6 @@ const PRESETS: Preset[] = [
   },
   {
     id: 'yesterday',
-    label: 'Yesterday vs Day Before',
     current: () => {
       const y = addDays(new Date(), -1);
       return { start: startOfDay(y), end: endOfDay(y) };
@@ -129,7 +144,6 @@ const PRESETS: Preset[] = [
   },
   {
     id: 'last7',
-    label: 'Last 7 days vs Prior 7',
     current: () => ({
       start: startOfDay(addDays(new Date(), -6)),
       end: endOfDay(new Date()),
@@ -142,7 +156,6 @@ const PRESETS: Preset[] = [
   },
   {
     id: 'last30',
-    label: 'Last 30 days vs Prior 30',
     current: () => ({
       start: startOfDay(addDays(new Date(), -29)),
       end: endOfDay(new Date()),
@@ -155,7 +168,6 @@ const PRESETS: Preset[] = [
   },
   {
     id: 'thisMonth',
-    label: 'This month vs last month',
     current: () => ({
       start: startOfMonth(new Date()),
       end: endOfDay(new Date()),
@@ -168,7 +180,6 @@ const PRESETS: Preset[] = [
   },
   {
     id: 'lastMonth',
-    label: 'Last month vs prior month',
     current: () => {
       const prev = addMonths(new Date(), -1);
       return { start: startOfMonth(prev), end: endOfMonth(prev) };
@@ -181,7 +192,6 @@ const PRESETS: Preset[] = [
   },
   {
     id: 'thisYear',
-    label: 'This year vs last year',
     current: () => ({
       start: startOfYear(new Date()),
       end: endOfDay(new Date()),
@@ -194,7 +204,6 @@ const PRESETS: Preset[] = [
   },
   {
     id: 'lastYear',
-    label: 'Last year vs prior year',
     current: () => {
       const ly = addYears(new Date(), -1);
       return { start: startOfYear(ly), end: endOfYear(ly) };
@@ -533,13 +542,16 @@ function KpiCard({
   prev,
   delta,
   hint,
+  showComparison = false,
 }: {
   label: string;
   value: string;
   prev?: string | null;
   delta?: number | null;
   hint?: string;
+  showComparison?: boolean;
 }) {
+  const { t } = useTranslation();
   const dir = delta == null ? 0 : delta > 0 ? 1 : delta < 0 ? -1 : 0;
   const dirCls =
     dir > 0 ? 'text-emerald-400' : dir < 0 ? 'text-rose-400' : 'text-gray-400';
@@ -552,16 +564,22 @@ function KpiCard({
       <div className="text-xl sm:text-2xl font-semibold tabular-nums truncate">
         {value}
       </div>
-      <div className="text-xs flex items-center gap-2 mt-0.5">
-        {delta != null ? (
-          <span className={`${dirCls} tabular-nums`}>
-            {arrow} {fmtPct(delta)}
-          </span>
-        ) : (
-          <span className="opacity-50">No comparison</span>
-        )}
-        {prev != null && <span className="opacity-60 truncate">vs {prev}</span>}
-      </div>
+      {showComparison ? (
+        <div className="text-xs flex items-center gap-2 mt-0.5">
+          {delta != null ? (
+            <span className={`${dirCls} tabular-nums`}>
+              {arrow} {fmtPct(delta)}
+            </span>
+          ) : (
+            <span className="opacity-50">{t('adminReview.noComparison')}</span>
+          )}
+          {prev != null && (
+            <span className="opacity-60 truncate">
+              {t('adminReview.vs')} {prev}
+            </span>
+          )}
+        </div>
+      ) : null}
       {hint && <div className="text-[11px] opacity-50 mt-1">{hint}</div>}
     </div>
   );
@@ -572,6 +590,7 @@ function KpiCard({
 // ---------------------------------------------------------------------
 
 export default function AdminReviewPage() {
+  const { t } = useTranslation();
   const [presetId, setPresetId] = useState<PresetId>('thisMonth');
   const initialPreset = PRESETS.find((p) => p.id === 'thisMonth')!;
   const [granularity, setGranularity] = useState<ReviewGranularity>(
@@ -661,25 +680,27 @@ export default function AdminReviewPage() {
         // surface a clear, actionable message instead of a raw TypeError.
         const fn = (window.api as any)?.admin?.getReview;
         if (typeof fn !== 'function') {
-          throw new Error(
-            'Review insights are unavailable in this session. Please fully restart the app (close and reopen the window) to enable the latest features.',
-          );
+          throw new Error(t('adminReview.unavailable'));
         }
         const res = await window.api.admin.getReview(req);
         if (myReq !== reqRef.current) return;
         setData(res);
       } catch (e: any) {
         if (myReq !== reqRef.current) return;
-        setError(e?.message || 'Failed to load business review');
+        setError(e?.message || t('adminReview.loadFailed'));
       } finally {
         if (myReq === reqRef.current) setLoading(false);
       }
     })();
-  }, [curStart, curEnd, cmpStart, cmpEnd, compareEnabled, granularity]);
+  }, [curStart, curEnd, cmpStart, cmpEnd, compareEnabled, granularity, t]);
 
   const fmtMoney = useMemo(
     () => (n: number) => formatMoneyCompact(currency, n),
     [currency],
+  );
+  const fmtNum = useMemo(
+    () => (n: number) => formatNumberMaxDecimals(n, 1),
+    [],
   );
 
   const summary = data?.current;
@@ -696,124 +717,170 @@ export default function AdminReviewPage() {
       : cmp.map((p) => p.label);
   }, [series]);
 
+  const weekdayNames = useMemo(
+    () => [
+      t('adminReview.weekdaySun'),
+      t('adminReview.weekdayMon'),
+      t('adminReview.weekdayTue'),
+      t('adminReview.weekdayWed'),
+      t('adminReview.weekdayThu'),
+      t('adminReview.weekdayFri'),
+      t('adminReview.weekdaySat'),
+    ],
+    [t],
+  );
+
   const chartSeries = useMemo<LineSeries[]>(() => {
     if (!series) return [];
     const cur = series.current || [];
     const out: LineSeries[] = [
       {
-        label: 'Current',
+        label: t('adminReview.current'),
         color: '#60a5fa',
         points: cur.map((p) => ({
           x: 0,
           y: p.revenue,
-          tooltip: `${p.label} • ${fmtMoney(p.revenue)} • ${p.orders} orders`,
+          tooltip: t('adminReview.chartTooltip', {
+            label: p.label,
+            revenue: fmtMoney(p.revenue),
+            orders: fmtNum(p.orders),
+          }),
         })),
       },
     ];
     if (series.compare) {
       out.push({
-        label: 'Compare',
+        label: t('adminReview.compareSeries'),
         color: '#f59e0b',
         points: series.compare.map((p) => ({
           x: 0,
           y: p.revenue,
-          tooltip: `${p.label} • ${fmtMoney(p.revenue)} • ${p.orders} orders`,
+          tooltip: t('adminReview.chartTooltip', {
+            label: p.label,
+            revenue: fmtMoney(p.revenue),
+            orders: fmtNum(p.orders),
+          }),
         })),
       });
     }
     return out;
-  }, [series, fmtMoney]);
+  }, [series, fmtMoney, fmtNum, t]);
 
   const hourlyBars = useMemo(
     () =>
       (data?.hourly || []).map((h) => ({
         label: String(h.hour).padStart(2, '0'),
         value: h.revenue,
-        tooltip: `${String(h.hour).padStart(2, '0')}:00 • ${fmtMoney(h.revenue)} • ${h.orders} orders`,
+        tooltip: t('adminReview.hourlyTooltip', {
+          hour: String(h.hour).padStart(2, '0'),
+          revenue: fmtMoney(h.revenue),
+          orders: fmtNum(h.orders),
+        }),
       })),
-    [data?.hourly, fmtMoney],
+    [data?.hourly, fmtMoney, fmtNum, t],
   );
 
   const weekdayBars = useMemo(() => {
-    const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     return (data?.weekday || []).map((w) => ({
-      label: names[w.dayOfWeek] || String(w.dayOfWeek),
+      label: weekdayNames[w.dayOfWeek] || String(w.dayOfWeek),
       value: w.revenue,
-      tooltip: `${names[w.dayOfWeek]} • ${fmtMoney(w.revenue)} • ${w.orders} orders`,
+      tooltip: t('adminReview.weekdayTooltip', {
+        day: weekdayNames[w.dayOfWeek] || String(w.dayOfWeek),
+        revenue: fmtMoney(w.revenue),
+        orders: fmtNum(w.orders),
+      }),
     }));
-  }, [data?.weekday, fmtMoney]);
+  }, [data?.weekday, fmtMoney, fmtNum, t, weekdayNames]);
 
   return (
     <div className="space-y-4">
       {/* Header / controls */}
-      <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div>
-              <h1 className="text-lg sm:text-xl font-semibold">
-                Business Review
-              </h1>
-              <p className="text-xs opacity-70">
-                Insights on revenue, performance, and staff for any period.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <label className="opacity-70">Bucket</label>
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-xl font-semibold">
+              {t('adminReview.title')}
+            </h1>
+            <p className="text-xs opacity-70 mt-0.5">
+              {t('adminReview.subtitle')}
+            </p>
+          </div>
+
+          <div
+            className="flex flex-wrap items-center gap-1 rounded-lg border border-gray-700 bg-gray-900/50 p-1.5 w-full lg:w-auto shrink-0"
+            role="toolbar"
+            aria-label={t('adminReview.filtersAria')}
+          >
+            <label className="flex items-center gap-2 pl-2 pr-1 py-1 min-w-0 flex-1 sm:flex-none">
+              <span className="text-xs font-medium text-gray-400 shrink-0">
+                {t('adminReview.period')}
+              </span>
+              <select
+                value={presetId}
+                onChange={(e) => {
+                  const id = e.target.value as PresetId;
+                  if (id === 'custom') setPresetId('custom');
+                  else applyPreset(id);
+                }}
+                className="h-9 min-w-0 flex-1 sm:min-w-[200px] sm:max-w-[260px] bg-gray-950 border border-gray-600 rounded-md px-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
+              >
+                {PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {presetLabel(p.id, t)}
+                  </option>
+                ))}
+                <option value="custom">{t('adminReview.customRange')}</option>
+              </select>
+            </label>
+
+            <div
+              className="hidden sm:block w-px h-7 bg-gray-700 shrink-0"
+              aria-hidden
+            />
+
+            <label className="flex items-center gap-2 px-2 py-1 shrink-0">
+              <span className="text-xs font-medium text-gray-400">
+                {t('adminReview.bucket')}
+              </span>
               <select
                 value={granularity}
                 onChange={(e) =>
                   setGranularity(e.target.value as ReviewGranularity)
                 }
-                className="bg-gray-900 border border-gray-700 rounded px-2 py-1"
+                className="h-9 bg-gray-950 border border-gray-600 rounded-md px-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
               >
-                <option value="day">By day</option>
-                <option value="month">By month</option>
-                <option value="year">By year</option>
+                <option value="day">{t('adminReview.granularityDay')}</option>
+                <option value="month">
+                  {t('adminReview.granularityMonth')}
+                </option>
+                <option value="year">{t('adminReview.granularityYear')}</option>
               </select>
-              <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={compareEnabled}
-                  onChange={(e) => setCompareEnabled(e.target.checked)}
-                  className="accent-blue-500"
-                />
-                <span>Compare</span>
-              </label>
-            </div>
-          </div>
+            </label>
 
-          {/* Presets */}
-          <div className="flex flex-wrap gap-1.5">
-            {PRESETS.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => applyPreset(p.id)}
-                className={`text-xs px-2.5 py-1 rounded border ${
-                  presetId === p.id
-                    ? 'bg-blue-600 border-blue-500 text-white'
-                    : 'bg-gray-900 border-gray-700 hover:bg-gray-700/60'
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
-            <button
-              onClick={() => setPresetId('custom')}
-              className={`text-xs px-2.5 py-1 rounded border ${
-                presetId === 'custom'
-                  ? 'bg-blue-600 border-blue-500 text-white'
-                  : 'bg-gray-900 border-gray-700 hover:bg-gray-700/60'
-              }`}
-            >
-              Custom
-            </button>
-          </div>
+            <div
+              className="hidden sm:block w-px h-7 bg-gray-700 shrink-0"
+              aria-hidden
+            />
 
-          {/* Custom date pickers */}
+            <label className="flex items-center gap-2 h-9 px-3 cursor-pointer shrink-0 select-none">
+              <input
+                type="checkbox"
+                checked={compareEnabled}
+                onChange={(e) => setCompareEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-600 bg-gray-950 accent-blue-500"
+              />
+              <span className="text-sm text-gray-200">
+                {t('adminReview.compare')}
+              </span>
+            </label>
+          </div>
+        </div>
+
+        {presetId === 'custom' ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <fieldset className="bg-gray-900/60 border border-gray-700 rounded p-2 sm:p-3">
               <legend className="text-xs px-1 opacity-70">
-                Current period
+                {t('adminReview.currentPeriod')}
               </legend>
               <div className="flex items-center gap-2 flex-wrap">
                 <input
@@ -826,7 +893,9 @@ export default function AdminReviewPage() {
                   }}
                   className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"
                 />
-                <span className="opacity-60 text-xs">to</span>
+                <span className="opacity-60 text-xs">
+                  {t('adminReview.dateTo')}
+                </span>
                 <input
                   type="date"
                   value={curEnd}
@@ -847,7 +916,7 @@ export default function AdminReviewPage() {
               }`}
             >
               <legend className="text-xs px-1 opacity-70">
-                Compare period
+                {t('adminReview.comparePeriod')}
               </legend>
               <div className="flex items-center gap-2 flex-wrap">
                 <input
@@ -861,7 +930,9 @@ export default function AdminReviewPage() {
                   }}
                   className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm disabled:cursor-not-allowed"
                 />
-                <span className="opacity-60 text-xs">to</span>
+                <span className="opacity-60 text-xs">
+                  {t('adminReview.dateTo')}
+                </span>
                 <input
                   type="date"
                   value={cmpEnd}
@@ -876,7 +947,7 @@ export default function AdminReviewPage() {
               </div>
             </fieldset>
           </div>
-        </div>
+        ) : null}
       </div>
 
       {error && (
@@ -888,40 +959,46 @@ export default function AdminReviewPage() {
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
         <KpiCard
-          label="Revenue (net)"
+          label={t('adminReview.revenueNet')}
           value={fmtMoney(summary?.revenueNet ?? 0)}
+          showComparison={compareEnabled}
           prev={compare ? fmtMoney(compare.revenueNet) : null}
           delta={deltaFor(summary?.revenueNet ?? 0, compare?.revenueNet)}
         />
         <KpiCard
-          label="Orders"
-          value={String(summary?.orders ?? 0)}
-          prev={compare ? String(compare.orders) : null}
+          label={t('adminReview.orders')}
+          value={fmtNum(summary?.orders ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.orders) : null}
           delta={deltaFor(summary?.orders ?? 0, compare?.orders)}
         />
         <KpiCard
-          label="Items sold"
-          value={String(summary?.items ?? 0)}
-          prev={compare ? String(compare.items) : null}
+          label={t('adminReview.itemsSold')}
+          value={fmtNum(summary?.items ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.items) : null}
           delta={deltaFor(summary?.items ?? 0, compare?.items)}
         />
         <KpiCard
-          label="Avg ticket"
+          label={t('adminReview.avgTicket')}
           value={fmtMoney(summary?.avgTicket ?? 0)}
+          showComparison={compareEnabled}
           prev={compare ? fmtMoney(compare.avgTicket) : null}
           delta={deltaFor(summary?.avgTicket ?? 0, compare?.avgTicket)}
         />
         <KpiCard
-          label="Covers"
-          value={String(summary?.covers ?? 0)}
-          prev={compare ? String(compare.covers) : null}
+          label={t('adminReview.covers')}
+          value={fmtNum(summary?.covers ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.covers) : null}
           delta={deltaFor(summary?.covers ?? 0, compare?.covers)}
-          hint="Sum of recorded covers"
+          hint={t('adminReview.coversHint')}
         />
         <KpiCard
-          label="Voided tickets"
-          value={String(summary?.voidedTickets ?? 0)}
-          prev={compare ? String(compare.voidedTickets) : null}
+          label={t('adminReview.voidedTickets')}
+          value={fmtNum(summary?.voidedTickets ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.voidedTickets) : null}
           delta={deltaFor(summary?.voidedTickets ?? 0, compare?.voidedTickets)}
         />
       </div>
@@ -929,26 +1006,28 @@ export default function AdminReviewPage() {
       {/* Revenue chart */}
       <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-semibold">Revenue over time</h2>
+          <h2 className="text-sm font-semibold">
+            {t('adminReview.revenueOverTime')}
+          </h2>
           <Legend
             items={[
-              { label: 'Current', color: '#60a5fa' },
+              { label: t('adminReview.current'), color: '#60a5fa' },
               ...(series?.compare
-                ? [{ label: 'Compare', color: '#f59e0b' }]
+                ? [{ label: t('adminReview.compareSeries'), color: '#f59e0b' }]
                 : []),
             ]}
           />
         </div>
         {loading && !data ? (
           <div className="h-[240px] flex items-center justify-center opacity-60 text-sm">
-            Loading…
+            {t('adminReview.loading')}
           </div>
         ) : (
           <LineChart
             series={chartSeries}
             xLabels={chartLabels}
             height={260}
-            yLabel={`Revenue (${currency})`}
+            yLabel={t('adminReview.revenueAxis', { currency })}
           />
         )}
       </div>
@@ -956,68 +1035,49 @@ export default function AdminReviewPage() {
       {/* Two-column: top items + hourly */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-          <h2 className="text-sm font-semibold mb-2">Top items (by revenue)</h2>
+          <h2 className="text-sm font-semibold mb-2">
+            {t('adminReview.topItemsTitle')}
+          </h2>
           {data?.topItems?.length ? (
             <table className="w-full text-sm">
               <thead className="text-xs opacity-70">
                 <tr className="border-b border-gray-700/60">
-                  <th className="text-left py-1.5">Item</th>
-                  <th className="text-right py-1.5">Qty</th>
-                  <th className="text-right py-1.5">Revenue</th>
-                  <th className="text-right py-1.5">Share</th>
+                  <th className="text-left py-1.5">{t('adminReview.item')}</th>
+                  <th className="text-right py-1.5">{t('adminReview.qty')}</th>
+                  <th className="text-right py-1.5">
+                    {t('adminReview.revenue')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {(() => {
-                  const total = data.topItems.reduce(
-                    (s, it) => s + it.revenue,
-                    0,
-                  );
-                  return data.topItems.map((it) => {
-                    const share = total > 0 ? it.revenue / total : 0;
-                    return (
-                      <tr key={it.name} className="border-b border-gray-700/30">
-                        <td className="py-1.5 truncate max-w-[280px]">
-                          {it.name}
-                        </td>
-                        <td className="py-1.5 text-right tabular-nums">
-                          {it.qty}
-                        </td>
-                        <td className="py-1.5 text-right tabular-nums">
-                          {fmtMoney(it.revenue)}
-                        </td>
-                        <td className="py-1.5 text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <div className="w-16 h-1.5 bg-gray-700 rounded overflow-hidden">
-                              <div
-                                className="h-full bg-blue-500"
-                                style={{
-                                  width: `${Math.min(100, share * 100)}%`,
-                                }}
-                              />
-                            </div>
-                            <span className="opacity-70 text-xs tabular-nums w-10 text-right">
-                              {(share * 100).toFixed(1)}%
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  });
-                })()}
+                {data.topItems.map((it) => (
+                  <tr key={it.name} className="border-b border-gray-700/30">
+                    <td className="py-1.5 truncate max-w-[280px]">{it.name}</td>
+                    <td className="py-1.5 text-right tabular-nums">
+                      {fmtNum(it.qty)}
+                    </td>
+                    <td className="py-1.5 text-right tabular-nums">
+                      {fmtMoney(it.revenue)}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           ) : (
             <div className="text-sm opacity-60 py-4">
-              No items sold in this period.
+              {t('adminReview.noItemsSold')}
             </div>
           )}
         </div>
 
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-          <h2 className="text-sm font-semibold mb-2">Sales by hour</h2>
+          <h2 className="text-sm font-semibold mb-2">
+            {t('adminReview.salesByHour')}
+          </h2>
           <BarChart data={hourlyBars} height={180} format={fmtMoney} />
-          <h2 className="text-sm font-semibold mt-4 mb-2">Sales by weekday</h2>
+          <h2 className="text-sm font-semibold mt-4 mb-2">
+            {t('adminReview.salesByWeekday')}
+          </h2>
           <BarChart
             data={weekdayBars}
             height={140}
@@ -1030,14 +1090,19 @@ export default function AdminReviewPage() {
       {/* Waiter performance */}
       <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-          <h2 className="text-sm font-semibold">Waiter performance</h2>
+          <h2 className="text-sm font-semibold">
+            {t('adminReview.waiterPerformance')}
+          </h2>
           <span className="text-xs opacity-60">
-            {data?.waiters?.length ?? 0} staff with sales in this period
+            {t('adminReview.staffWithSales', {
+              count: data?.waiters?.length ?? 0,
+            })}
           </span>
         </div>
         <WaiterTable
           waiters={data?.waiters || []}
           fmtMoney={fmtMoney}
+          fmtNum={fmtNum}
           totalRevenue={summary?.revenueNet ?? 0}
         />
       </div>
@@ -1045,15 +1110,17 @@ export default function AdminReviewPage() {
       {/* Period summary card at bottom for quick review */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <PeriodSummaryCard
-          title="Current period"
+          title={t('adminReview.currentPeriod')}
           summary={summary}
           fmtMoney={fmtMoney}
+          fmtNum={fmtNum}
         />
         {compareEnabled && (
           <PeriodSummaryCard
-            title="Compare period"
+            title={t('adminReview.comparePeriod')}
             summary={compare}
             fmtMoney={fmtMoney}
+            fmtNum={fmtNum}
           />
         )}
       </div>
@@ -1081,15 +1148,18 @@ function PeriodSummaryCard({
   title,
   summary,
   fmtMoney,
+  fmtNum,
 }: {
   title: string;
   summary: ReviewSummaryDTO | null | undefined;
   fmtMoney: (n: number) => string;
+  fmtNum: (n: number) => string;
 }) {
+  const { t } = useTranslation();
   if (!summary) {
     return (
       <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700 text-sm opacity-60">
-        {title} — not selected
+        {t('adminReview.periodNotSelected', { title })}
       </div>
     );
   }
@@ -1100,21 +1170,36 @@ function PeriodSummaryCard({
       d.getDate(),
     ).padStart(2, '0')}/${d.getFullYear()}`;
   const rows: { k: string; v: string }[] = [
-    { k: 'Range', v: `${fmtDate(start)} – ${fmtDate(end)}` },
-    { k: 'Revenue (net)', v: fmtMoney(summary.revenueNet) },
-    { k: 'VAT', v: fmtMoney(summary.revenueVat) },
     {
-      k: 'Revenue (gross)',
+      k: t('adminReview.summaryRange'),
+      v: `${fmtDate(start)} – ${fmtDate(end)}`,
+    },
+    { k: t('adminReview.summaryRevenueNet'), v: fmtMoney(summary.revenueNet) },
+    { k: t('adminReview.summaryVat'), v: fmtMoney(summary.revenueVat) },
+    {
+      k: t('adminReview.summaryRevenueGross'),
       v: fmtMoney(summary.revenueNet + summary.revenueVat),
     },
-    { k: 'Orders', v: String(summary.orders) },
-    { k: 'Items sold', v: String(summary.items) },
-    { k: 'Covers', v: String(summary.covers) },
-    { k: 'Avg ticket', v: fmtMoney(summary.avgTicket) },
-    { k: 'Avg items / ticket', v: summary.avgItemsPerTicket.toFixed(2) },
-    { k: 'Unique tables touched', v: String(summary.uniqueTables) },
-    { k: 'Waiters with sales', v: String(summary.uniqueWaiters) },
-    { k: 'Voided tickets', v: String(summary.voidedTickets) },
+    { k: t('adminReview.summaryOrders'), v: fmtNum(summary.orders) },
+    { k: t('adminReview.summaryItemsSold'), v: fmtNum(summary.items) },
+    { k: t('adminReview.summaryCovers'), v: fmtNum(summary.covers) },
+    { k: t('adminReview.summaryAvgTicket'), v: fmtMoney(summary.avgTicket) },
+    {
+      k: t('adminReview.summaryAvgItemsPerTicket'),
+      v: fmtNum(summary.avgItemsPerTicket),
+    },
+    {
+      k: t('adminReview.summaryUniqueTables'),
+      v: fmtNum(summary.uniqueTables),
+    },
+    {
+      k: t('adminReview.summaryWaitersWithSales'),
+      v: fmtNum(summary.uniqueWaiters),
+    },
+    {
+      k: t('adminReview.summaryVoidedTickets'),
+      v: fmtNum(summary.voidedTickets),
+    },
   ];
   return (
     <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
@@ -1146,12 +1231,15 @@ type SortKey =
 function WaiterTable({
   waiters,
   fmtMoney,
+  fmtNum,
   totalRevenue,
 }: {
   waiters: ReviewDTO['waiters'];
   fmtMoney: (n: number) => string;
+  fmtNum: (n: number) => string;
   totalRevenue: number;
 }) {
+  const { t } = useTranslation();
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({
     key: 'revenue',
     desc: true,
@@ -1173,7 +1261,7 @@ function WaiterTable({
   if (waiters.length === 0) {
     return (
       <div className="text-sm opacity-60 py-4">
-        No waiter activity in this period.
+        {t('adminReview.noWaiterActivity')}
       </div>
     );
   }
@@ -1197,27 +1285,28 @@ function WaiterTable({
       <table className="w-full text-sm min-w-[720px]">
         <thead className="text-xs opacity-70">
           <tr className="border-b border-gray-700/60">
-            <th className="text-left py-1.5">Staff</th>
-            <th className="text-left py-1.5">Role</th>
+            <th className="text-left py-1.5">{t('adminReview.staff')}</th>
+            <th className="text-left py-1.5">{t('adminReview.role')}</th>
             <th className="text-right py-1.5">
-              {headerBtn('revenue', 'Revenue')}
-            </th>
-            <th className="text-right py-1.5">Share</th>
-            <th className="text-right py-1.5">
-              {headerBtn('orders', 'Orders')}
-            </th>
-            <th className="text-right py-1.5">{headerBtn('items', 'Items')}</th>
-            <th className="text-right py-1.5">
-              {headerBtn('covers', 'Covers')}
+              {headerBtn('revenue', t('adminReview.revenue'))}
             </th>
             <th className="text-right py-1.5">
-              {headerBtn('avgTicket', 'Avg ticket')}
+              {headerBtn('orders', t('adminReview.orders'))}
             </th>
             <th className="text-right py-1.5">
-              {headerBtn('hoursWorked', 'Hours')}
+              {headerBtn('items', t('adminReview.items'))}
             </th>
             <th className="text-right py-1.5">
-              {headerBtn('revenuePerHour', 'Per hour')}
+              {headerBtn('covers', t('adminReview.covers'))}
+            </th>
+            <th className="text-right py-1.5">
+              {headerBtn('avgTicket', t('adminReview.avgTicket'))}
+            </th>
+            <th className="text-right py-1.5">
+              {headerBtn('hoursWorked', t('adminReview.hours'))}
+            </th>
+            <th className="text-right py-1.5">
+              {headerBtn('revenuePerHour', t('adminReview.perHour'))}
             </th>
           </tr>
         </thead>
@@ -1235,7 +1324,7 @@ function WaiterTable({
                       <div className="truncate">{w.name}</div>
                       {!w.active && (
                         <div className="text-[10px] uppercase tracking-wide text-rose-400">
-                          inactive
+                          {t('adminReview.inactive')}
                         </div>
                       )}
                     </div>
@@ -1253,19 +1342,25 @@ function WaiterTable({
                       />
                     </div>
                     <span>{fmtMoney(w.revenue)}</span>
+                    <span className="opacity-70 text-xs tabular-nums w-10 text-right">
+                      {fmtNum(share * 100)}%
+                    </span>
                   </div>
                 </td>
-                <td className="py-1.5 text-right tabular-nums opacity-80">
-                  {(share * 100).toFixed(1)}%
+                <td className="py-1.5 text-right tabular-nums">
+                  {fmtNum(w.orders)}
                 </td>
-                <td className="py-1.5 text-right tabular-nums">{w.orders}</td>
-                <td className="py-1.5 text-right tabular-nums">{w.items}</td>
-                <td className="py-1.5 text-right tabular-nums">{w.covers}</td>
+                <td className="py-1.5 text-right tabular-nums">
+                  {fmtNum(w.items)}
+                </td>
+                <td className="py-1.5 text-right tabular-nums">
+                  {fmtNum(w.covers)}
+                </td>
                 <td className="py-1.5 text-right tabular-nums">
                   {fmtMoney(w.avgTicket)}
                 </td>
                 <td className="py-1.5 text-right tabular-nums">
-                  {w.hoursWorked > 0 ? w.hoursWorked.toFixed(1) : '—'}
+                  {w.hoursWorked > 0 ? fmtNum(w.hoursWorked) : '—'}
                 </td>
                 <td className="py-1.5 text-right tabular-nums">
                   {w.hoursWorked > 0 ? fmtMoney(w.revenuePerHour) : '—'}

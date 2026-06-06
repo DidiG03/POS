@@ -23,6 +23,10 @@ import {
 } from './services/realtime';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
 import {
+  isVatEnabledFromSettings,
+  resolveVatEnabledFromMeta,
+} from '@shared/vatFromFiscal';
+import {
   LoginWithPinInputSchema,
   CreateUserInputSchema,
   UpdateUserInputSchema,
@@ -114,7 +118,17 @@ import {
   syncFromCloudAfterLogin,
   syncFromCloudManual,
 } from './services/cloudSync';
-import { formatKdsTicketListRows } from './services/kdsList';
+import {
+  formatKdsTicketListRows,
+  getKdsTicketDetail,
+} from './services/kdsList';
+import {
+  ALL_KDS_STATIONS,
+  decorateKdsTicketItemsFromCategory,
+  kdsStationsWithActiveItems,
+  loadKdsRoutingFromDb,
+} from './services/kdsStationRouting';
+import { finalizeShiftAfterClockOut } from './services/shiftSummary';
 import {
   kdsStationListWhere,
   purgeKdsDoneTicketsForStation,
@@ -127,57 +141,10 @@ import {
 
 dotenv.config();
 
-/** Lower bound for `(area, label)` rows tied to the current POS session. */
-async function getTableSessionStartedAt(
-  area: string,
-  label: string,
-): Promise<Date | null> {
-  const openAtRow = await prisma.syncState
-    .findUnique({ where: { key: 'tables:openAt' } })
-    .catch(() => null);
-  const openAtMap = ((openAtRow?.valueJson as any) || {}) as Record<
-    string,
-    string
-  >;
-  const openAtIso = openAtMap[`${area}:${label}`];
-  if (!openAtIso) return null;
-  const sessionStart = new Date(openAtIso);
-  if (Number.isNaN(sessionStart.getTime())) return null;
-  return sessionStart;
-}
-
-/**
- * Returns the userId of the waiter who owns the CURRENT open session
- * for `(area, tableLabel)`, or `null` if either:
- *   - the table has no `tables:openAt` entry (can't bound the session), or
- *   - no `ticketLog` rows exist within the current session window.
- *
- * Use this for ownership checks (send / void / transfer) instead of
- * looking at the all-time latest `ticketLog` row, because tables get
- * reused across sessions and the historical latest row often belongs
- * to a previous waiter from days ago. That bug surfaced as "Send
- * blocked – Table is owned by <previous waiter>" toasts on freshly
- * opened tables.
- */
-async function getCurrentSessionOwnerId(
-  area: string,
-  tableLabel: string,
-): Promise<number | null> {
-  const sessionStart = await getTableSessionStartedAt(area, tableLabel);
-  if (!sessionStart) return null;
-  const last = await prisma.ticketLog
-    .findFirst({
-      where: {
-        area,
-        tableLabel,
-        createdAt: { gte: sessionStart },
-      },
-      orderBy: { createdAt: 'desc' },
-      select: { userId: true },
-    })
-    .catch(() => null);
-  return last ? Number(last.userId) : null;
-}
+import {
+  getCurrentSessionOwnerId,
+  getTableSessionStartedAt,
+} from './services/tableSession';
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -1832,10 +1799,17 @@ ipcMain.handle('shifts:clockOut', async (_e, { userId, force }) => {
     }
   }
 
+  const closedAt = new Date();
   const updated = await prisma.dayShift.update({
     where: { id: open.id },
-    data: { closedAt: new Date(), closedById: userId },
+    data: { closedAt, closedById: userId },
   });
+  void finalizeShiftAfterClockOut({
+    shiftId: updated.id,
+    userId,
+    openedAt: open.openedAt,
+    closedAt,
+  }).catch((e) => console.warn('[shifts:clockOut] shift print failed:', e));
   return {
     id: updated.id,
     openedAt: updated.openedAt.toISOString(),
@@ -2572,6 +2546,8 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
     const openKeys = Object.entries(openMap)
       .filter(([, v]) => Boolean(v))
       .map(([k]) => k);
+    const activeSettings = await readSettings().catch(() => ({}));
+    const activeVatEnabled = isVatEnabledFromSettings(activeSettings);
 
     const tickets = await Promise.all(
       openKeys.map(async (k) => {
@@ -2621,15 +2597,16 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
             s + Number(it.unitPrice || 0) * Number(it.qty || 1),
           0,
         );
-        // ACTIVE tickets are not "paid", so we don't have a meta.vatEnabled; use item vatRates.
-        const vat = items.reduce(
-          (s: number, it: any) =>
-            s +
-            Number(it.unitPrice || 0) *
-              Number(it.qty || 1) *
-              Number(it.vatRate || 0),
-          0,
-        );
+        const vat = activeVatEnabled
+          ? items.reduce(
+              (s: number, it: any) =>
+                s +
+                Number(it.unitPrice || 0) *
+                  Number(it.qty || 1) *
+                  Number(it.vatRate || 0),
+              0,
+            )
+          : 0;
         return {
           kind: 'ACTIVE',
           area,
@@ -2640,7 +2617,7 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
           note: rows.find((r: any) => r.note)?.note ?? last.note ?? null,
           userName: u?.displayName ?? null,
           paymentMethod: null,
-          vatEnabled: null,
+          vatEnabled: activeVatEnabled,
           items,
           subtotal,
           vat,
@@ -2682,6 +2659,7 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
       })
       .catch(() => []);
 
+    const paymentSettings = await readSettings().catch(() => ({}));
     const out: any[] = [];
     for (const j of jobs as any[]) {
       const p = (j.payloadJson as any) || {};
@@ -2705,7 +2683,7 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
           s + Number(it.unitPrice || 0) * Number(it.qty || 1),
         0,
       );
-      const vatEnabled = meta?.vatEnabled !== false;
+      const vatEnabled = resolveVatEnabledFromMeta(meta, paymentSettings);
       const vat = vatEnabled
         ? items.reduce(
             (s: number, it: any) =>
@@ -2953,6 +2931,7 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
     sortOrder: c.sortOrder,
     active: c.active,
     color: (c as any)?.color ?? null,
+    kdsStation: (c as any)?.kdsStation ?? null,
     items: c.items.map((i: any) => ({
       id: i.id,
       name: i.name,
@@ -2980,6 +2959,7 @@ ipcMain.handle('menu:createCategory', async (_e, payload) => {
       sortOrder: Number(input.sortOrder ?? 0),
       active: input.active ?? true,
       color: (input as any).color ?? null,
+      kdsStation: (input as any).kdsStation ?? null,
     } as any,
   });
   return { id: created.id };
@@ -2987,19 +2967,29 @@ ipcMain.handle('menu:createCategory', async (_e, payload) => {
 
 ipcMain.handle('menu:updateCategory', async (_e, payload) => {
   const input = UpdateMenuCategoryInputSchema.parse(payload);
+  const data: any = {
+    ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
+    ...(typeof input.sortOrder === 'number'
+      ? { sortOrder: input.sortOrder }
+      : {}),
+    ...((input as any).color !== undefined
+      ? { color: (input as any).color }
+      : {}),
+    ...(typeof input.active === 'boolean' ? { active: input.active } : {}),
+    ...((input as any).kdsStation !== undefined
+      ? { kdsStation: (input as any).kdsStation }
+      : {}),
+  };
   await prisma.category.update({
     where: { id: input.id },
-    data: {
-      ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
-      ...(typeof input.sortOrder === 'number'
-        ? { sortOrder: input.sortOrder }
-        : {}),
-      ...((input as any).color !== undefined
-        ? { color: (input as any).color }
-        : {}),
-      ...(typeof input.active === 'boolean' ? { active: input.active } : {}),
-    } as any,
+    data,
   });
+  if ((input as any).kdsStation) {
+    await prisma.menuItem.updateMany({
+      where: { categoryId: input.id },
+      data: { station: (input as any).kdsStation },
+    });
+  }
   return true;
 });
 
@@ -3017,6 +3007,15 @@ ipcMain.handle('menu:deleteCategory', async (_e, payload) => {
 
 ipcMain.handle('menu:createItem', async (_e, payload) => {
   const input = CreateMenuItemInputSchema.parse(payload);
+  const category = await prisma.category.findUnique({
+    where: { id: Number(input.categoryId) },
+    select: { kdsStation: true },
+  });
+  const inheritedStation =
+    (category as any)?.kdsStation ??
+    (typeof (input as any).station === 'string'
+      ? String((input as any).station).toUpperCase()
+      : 'KITCHEN');
   const created = await prisma.menuItem.create({
     data: {
       name: input.name.trim(),
@@ -3028,9 +3027,7 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
       ),
       active: (input as any).active ?? true,
       isKg: (input as any).isKg ?? false,
-      ...(typeof (input as any).station === 'string'
-        ? { station: String((input as any).station).toUpperCase() }
-        : {}),
+      station: inheritedStation,
       ...(typeof input.stockLevel === 'string'
         ? { stockLevel: normalizeMenuStockLevel(input.stockLevel) }
         : {}),
@@ -3132,6 +3129,8 @@ ipcMain.handle('menu:deleteItem', async (_e, payload) => {
 ipcMain.handle('admin:getOverview', async (_e) => {
   const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
   const todayEnd = new Date(new Date().setHours(23, 59, 59, 999));
+  const settings = await readSettings().catch(() => ({}));
+  const fiscalVatEnabled = isVatEnabledFromSettings(settings);
 
   const [
     users,
@@ -3232,11 +3231,11 @@ ipcMain.handle('admin:getOverview', async (_e) => {
     (r: any) => !isTransferredOutNote(r?.note),
   );
   const revenueTodayNet = livingRevenueRows.reduce((s, r) => {
-    const { net } = sumTicketLinesNetVat(r?.itemsJson);
+    const { net } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
     return s + net;
   }, 0);
   const revenueTodayVat = livingRevenueRows.reduce((s, r) => {
-    const { vat } = sumTicketLinesNetVat(r?.itemsJson);
+    const { vat } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
     return s + vat;
   }, 0);
 
@@ -3340,6 +3339,7 @@ ipcMain.handle('admin:getOverview', async (_e) => {
     appVersion: process.env.npm_package_version || '0.1.0',
     revenueTodayNet,
     revenueTodayVat,
+    fiscalEnabled: fiscalVatEnabled,
     coversToday,
     reservationsTotalToday: resRows.length,
     reservationsCoversToday,
@@ -3471,17 +3471,7 @@ function dayKeyLocal(d = new Date()) {
 }
 
 async function getEnabledStations() {
-  try {
-    const s: any = await readSettings();
-    const raw = (s as any)?.kds?.enabledStations;
-    const arr = Array.isArray(raw)
-      ? raw.map((x) => String(x).toUpperCase())
-      : ['KITCHEN'];
-    const uniq = Array.from(new Set(arr.filter(Boolean)));
-    return uniq.length ? uniq : ['KITCHEN'];
-  } catch {
-    return ['KITCHEN'];
-  }
+  return [...ALL_KDS_STATIONS];
 }
 
 async function createKdsTicketFromLog(input: {
@@ -3495,8 +3485,6 @@ async function createKdsTicketFromLog(input: {
   const okSchema = await ensureKdsLocalSchema();
   if (!okSchema) return null;
   const enabled = new Set(await getEnabledStations());
-  const stations = Array.from(enabled);
-  const fallbackStation = stations[0] || 'KITCHEN';
 
   const rawLines = Array.isArray(input.fireItems)
     ? input.fireItems
@@ -3506,61 +3494,14 @@ async function createKdsTicketFromLog(input: {
   if (rawLines.length === 0) return null;
 
   const lines = rawLines;
-  const skus = Array.from(
-    new Set(
-      lines
-        .map((it) => String(it?.sku || '').trim())
-        .filter((s) => s.length > 0),
-    ),
-  );
+  const routing = await loadKdsRoutingFromDb(prisma).catch(() => ({
+    categoryIdToKdsStation: {},
+    skuToKdsStation: {},
+  }));
 
-  // Resolve station per SKU (default KITCHEN).
-  let skuToStation: Record<string, string> = {};
-  try {
-    if (skus.length) {
-      const menuRows = await (prisma as any).menuItem.findMany({
-        where: { sku: { in: skus } },
-        select: { sku: true, station: true },
-      });
-      for (const r of menuRows as any[]) {
-        const st = String((r as any)?.station || 'KITCHEN').toUpperCase();
-        skuToStation[String((r as any)?.sku || '')] = enabled.has(st)
-          ? st
-          : fallbackStation;
-      }
-    }
-  } catch {
-    // ignore
-  }
+  const decorated = decorateKdsTicketItemsFromCategory(lines, routing);
 
-  const decorated = lines.map((it: any) => {
-    // 1. Use the station already attached to the item (set by the renderer from menu data)
-    const itemStation = String(it?.station || '').toUpperCase();
-    if (itemStation && enabled.has(itemStation)) {
-      return { ...it, station: itemStation };
-    }
-    // 2. Fall back to local DB lookup by SKU
-    const sku = String(it?.sku || '').trim();
-    const stRaw = sku ? skuToStation[sku] : '';
-    if (stRaw && enabled.has(String(stRaw).toUpperCase())) {
-      return { ...it, station: String(stRaw).toUpperCase() };
-    }
-    // 3. If the item has a known station that's NOT enabled (e.g. BAR item but only KITCHEN is enabled),
-    //    keep its real station so it gets filtered out of the KDS view rather than mis-routed to KITCHEN.
-    if (itemStation) {
-      return { ...it, station: itemStation };
-    }
-    // 4. No station info at all — default to KITCHEN
-    return { ...it, station: fallbackStation };
-  });
-
-  const usedStations = Array.from(
-    new Set(
-      decorated
-        .map((it: any) => String(it?.station || '').toUpperCase())
-        .filter((s) => enabled.has(s)),
-    ),
-  );
+  const usedStations = kdsStationsWithActiveItems(decorated, enabled);
   if (usedStations.length === 0) return null;
 
   // Find current open KDS order for this table; if none, create with next orderNo for the day.
@@ -3812,6 +3753,16 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
     const { userId, area, tableLabel, covers, items, note } = payload || {};
     if (!userId || !area || !tableLabel) return false;
 
+    const idempotencyKey = String(
+      (payload as any)?.idempotencyKey ?? '',
+    ).trim();
+    if (idempotencyKey) {
+      const existing = await prisma.ticketLog
+        .findFirst({ where: { idempotencyKey } as any })
+        .catch(() => null);
+      if (existing) return { ok: true };
+    }
+
     // Sanitize inputs
     const sanitizedArea = sanitizeString(area, 50);
     const sanitizedTableLabel = sanitizeString(tableLabel, 50);
@@ -3893,20 +3844,26 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
         ? ((payload as any).kdsFireItems as any[])
         : undefined;
 
-      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-        await expireStaleMenuStock(tx);
-        await tx.ticketLog.create({
-          data: {
-            userId: Number(userId),
-            area: sanitizedArea,
-            tableLabel: sanitizedTableLabel,
-            covers: sanitizedCovers,
-            itemsJson: items ?? [],
-            note: sanitizedNote,
-          },
+      try {
+        await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+          await expireStaleMenuStock(tx);
+          await tx.ticketLog.create({
+            data: {
+              userId: Number(userId),
+              area: sanitizedArea,
+              tableLabel: sanitizedTableLabel,
+              covers: sanitizedCovers,
+              itemsJson: items ?? [],
+              note: sanitizedNote,
+              ...(idempotencyKey ? { idempotencyKey } : {}),
+            },
+          });
+          await consumeMenuStockForTicketLines(tx, stockConsumeLines);
         });
-        await consumeMenuStockForTicketLines(tx, stockConsumeLines);
-      });
+      } catch (e: any) {
+        if (e?.code === 'P2002' && idempotencyKey) return { ok: true };
+        throw e;
+      }
 
       // Notify every other client so the table's waiter badge / metrics
       // refresh in real time. Without this, a table that waiter B
@@ -4078,6 +4035,17 @@ ipcMain.handle('kds:listTickets', async (_e, input) => {
     return await formatKdsTicketListRows(rows, station, status);
   } catch {
     return [];
+  }
+});
+
+ipcMain.handle('kds:getTicketDetail', async (_e, input) => {
+  await ensureKdsLocalSchema();
+  const ticketId = Number((input as any)?.ticketId || 0);
+  if (!ticketId) return null;
+  try {
+    return await getKdsTicketDetail(ticketId);
+  } catch {
+    return null;
   }
 });
 
@@ -4464,6 +4432,8 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
 ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
   const userId = Number(input?.userId);
   if (!userId) return [];
+  const settings = await readSettings().catch(() => ({}));
+  const defaultVatEnabled = isVatEnabledFromSettings(settings);
   const where: any = { userId };
   if (input?.startIso || input?.endIso) {
     where.createdAt = {};
@@ -4508,7 +4478,10 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
 
   // Pull recent receipt print jobs and index PAYMENT timestamps per table.
   // 1000 is a generous cap — a single day rarely produces more than a few hundred receipts.
-  const paymentsByTable = new Map<string, number[]>(); // ms timestamps, ascending
+  const paymentsByTable = new Map<
+    string,
+    { atMs: number; vatEnabled: boolean }[]
+  >();
   if (uniqueTables.length) {
     // Same retry-row caveat as `listMyPaidTickets`: only consider
     // original payment-audit rows (`attempts = 0`), never the per-tick
@@ -4534,14 +4507,18 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
       const k = `${String(p.area || '')}|${String(p.tableLabel || '')}`;
       if (!uniqueTables.includes(k)) continue;
       const arr = paymentsByTable.get(k) || [];
-      arr.push(new Date(j.createdAt).getTime());
+      arr.push({
+        atMs: new Date(j.createdAt).getTime(),
+        vatEnabled: resolveVatEnabledFromMeta(meta, settings),
+      });
       paymentsByTable.set(k, arr);
     }
-    for (const [, arr] of paymentsByTable) arr.sort((a, b) => a - b);
+    for (const [, arr] of paymentsByTable) arr.sort((a, b) => a.atMs - b.atMs);
   }
 
   return visibleRows.map((r: any) => {
     const items = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
+    const liveItems = items.filter((it: any) => !it?.voided);
     const noteStr = String(r.note || '').toUpperCase();
     const allVoided =
       items.length > 0 && items.every((it: any) => it?.voided === true);
@@ -4557,7 +4534,11 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
     const rowMs = new Date(r.createdAt).getTime();
     const payments = paymentsByTable.get(tKey) || [];
     // A payment "covers" this row only if it happened at or after the row was sent.
-    const isPaid = payments.some((ms) => ms >= rowMs);
+    const coveringPayment = payments.find((p) => p.atMs >= rowMs);
+    const isPaid = Boolean(coveringPayment);
+    const rowVatEnabled = coveringPayment
+      ? coveringPayment.vatEnabled
+      : defaultVatEnabled;
     const isOpen = Boolean(openMap[`${r.area}:${r.tableLabel}`]);
 
     const status: 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED' = isVoided
@@ -4597,16 +4578,20 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
       note: r.note,
       status,
       transfer,
-      subtotal: items.reduce(
+      subtotal: liveItems.reduce(
         (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
         0,
       ),
-      vat: items.reduce(
-        (s: number, it: any) =>
-          s +
-          Number(it.unitPrice) * Number(it.qty || 1) * Number(it.vatRate || 0),
-        0,
-      ),
+      vat: rowVatEnabled
+        ? liveItems.reduce(
+            (s: number, it: any) =>
+              s +
+              Number(it.unitPrice) *
+                Number(it.qty || 1) *
+                Number(it.vatRate || 0),
+            0,
+          )
+        : 0,
     };
   });
 });
@@ -4666,6 +4651,33 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
   const users = await prisma.user.findMany({
     where: { role: { not: 'ADMIN' } } as any,
   });
+
+  // Only staff who clocked in during the filtered period (shift overlaps range).
+  let clockedInDuringPeriod: Set<number> | null = null;
+  if (input?.startIso || input?.endIso) {
+    const rangeStart = input?.startIso ? new Date(input.startIso) : new Date(0);
+    const rangeEnd = input?.endIso ? new Date(input.endIso) : new Date();
+    const periodShifts = await prisma.dayShift
+      .findMany({
+        where: {
+          OR: [
+            { closedAt: null, openedAt: { lte: rangeEnd } },
+            {
+              openedAt: { lte: rangeEnd },
+              closedAt: { gte: rangeStart },
+            },
+          ],
+        },
+        select: { openedById: true },
+      } as any)
+      .catch(() => [] as { openedById: number }[]);
+    clockedInDuringPeriod = new Set(
+      (periodShifts as { openedById: number }[]).map((s) =>
+        Number(s.openedById),
+      ),
+    );
+  }
+
   const openShifts = await prisma.dayShift.findMany({
     where: { closedAt: null },
   });
@@ -4696,7 +4708,12 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
     // Best-effort metric — never block the list on it.
   }
 
-  return users.map((u: any) => ({
+  const visibleUsers =
+    clockedInDuringPeriod == null
+      ? users
+      : users.filter((u: any) => clockedInDuringPeriod!.has(u.id));
+
+  return visibleUsers.map((u: any) => ({
     id: u.id,
     name: u.displayName,
     active: openIds.has(u.id),
@@ -4918,6 +4935,9 @@ ipcMain.handle('admin:exportMemorySnapshot', async () => {
 // already mirrors paid/voided ticket history via TicketLog.
 // =====================================================================
 ipcMain.handle('admin:getReview', async (_e, input) => {
+  const settings = await readSettings().catch(() => ({}));
+  const fiscalVatEnabled = isVatEnabledFromSettings(settings);
+
   type Granularity = 'day' | 'month' | 'year';
   const granularity: Granularity =
     input?.granularity === 'month' || input?.granularity === 'year'
@@ -5139,7 +5159,7 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
         const vatRate = Number(it?.vatRate || 0);
         const lineNet = unit * qty;
         rowRevenue += lineNet;
-        rowVat += lineNet * vatRate;
+        if (fiscalVatEnabled) rowVat += lineNet * vatRate;
         rowItems += qty;
         const name = String(it?.name || 'Item');
         const e2 = itemAgg.get(name) || { name, qty: 0, revenue: 0 };
@@ -5303,6 +5323,7 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
 
   return {
     granularity,
+    fiscalEnabled: fiscalVatEnabled,
     current: cur.summary,
     compare: cmp?.summary ?? null,
     series: {
@@ -5319,6 +5340,8 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
 ipcMain.handle('reports:getMyOverview', async (_e, input) => {
   const userId = Number(input?.userId || 0);
   if (!userId) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
+  const settings = await readSettings().catch(() => ({}));
+  const fiscalVatEnabled = isVatEnabledFromSettings(settings);
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date();
   const rows = await prisma.ticketLog
@@ -5333,11 +5356,11 @@ ipcMain.handle('reports:getMyOverview', async (_e, input) => {
     (r: any) => !isTransferredOutNote(r?.note),
   );
   const revenueTodayNet = liveRows.reduce((s: number, r: any) => {
-    const { net } = sumTicketLinesNetVat(r?.itemsJson);
+    const { net } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
     return s + net;
   }, 0);
   const revenueTodayVat = liveRows.reduce((s: number, r: any) => {
-    const { vat } = sumTicketLinesNetVat(r?.itemsJson);
+    const { vat } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
     return s + vat;
   }, 0);
   // Open orders: open tables where latest ticket owner is this user.
@@ -5362,7 +5385,12 @@ ipcMain.handle('reports:getMyOverview', async (_e, input) => {
     }),
   );
   const openOrders = latests.filter(Boolean).length;
-  return { revenueTodayNet, revenueTodayVat, openOrders };
+  return {
+    revenueTodayNet,
+    revenueTodayVat,
+    openOrders,
+    fiscalEnabled: fiscalVatEnabled,
+  };
 });
 
 ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {

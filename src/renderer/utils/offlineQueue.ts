@@ -60,6 +60,15 @@ const MAX_ITEMS = 500;
 const MAX_ATTEMPTS = 12;
 const QUEUE_CHANGE_EVENT = 'offline-queue:changed';
 
+function isNativeCapacitor(): boolean {
+  if (typeof window === 'undefined') return false;
+  const capacitor = (window as any).Capacitor;
+  return (
+    Boolean(capacitor?.isNativePlatform?.()) ||
+    Boolean(capacitor?.getPlatform?.() && capacitor.getPlatform() !== 'web')
+  );
+}
+
 /** Map every error we want to forgive (i.e. "try again later"). */
 function isLikelyOfflineError(e: any): boolean {
   if (!e) return false;
@@ -162,9 +171,19 @@ const dispatchers: Record<OfflineOp, (args: any) => Promise<void>> = {
   },
 
   'tables.transfer': async (a) => {
-    if (window.api.tables?.transfer) {
-      await window.api.tables.transfer(a);
+    if (!window.api.tables?.transfer) {
+      throw new Error('Table transfer is unavailable');
     }
+    const r: any = await window.api.tables.transfer(a);
+    if (r && typeof r === 'object' && r.ok === false) {
+      const err: any = new Error(
+        String(r.error || 'Transfer rejected by server'),
+      );
+      err.code = String(r.code || 'TRANSFER_REJECTED');
+      err.permanent = true;
+      throw err;
+    }
+    return r;
   },
 
   'covers.save': async (a) => {
@@ -273,7 +292,11 @@ class OfflineQueue {
   async sync(): Promise<{ sent: number; remaining: number }> {
     if (this.syncing)
       return { sent: 0, remaining: await this.getPendingCount() };
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    if (
+      typeof navigator !== 'undefined' &&
+      !navigator.onLine &&
+      !isNativeCapacitor()
+    ) {
       return { sent: 0, remaining: await this.getPendingCount() };
     }
 
@@ -472,22 +495,26 @@ export const offlineQueue = getGlobalOfflineQueue();
  *     UI can show its normal error state. We only auto-queue
  *     transport problems.
  */
-export async function tryOrQueue(
+export async function tryOrQueue<T = unknown>(
   op: OfflineOp,
   args: any,
   options?: { dedupeKey?: string },
-): Promise<{ queued: boolean; error?: string }> {
+): Promise<{ queued: boolean; result?: T; error?: string }> {
   const dispatcher = dispatchers[op];
   if (!dispatcher) {
     throw new Error(`Unknown offline op: ${op}`);
   }
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (
+    typeof navigator !== 'undefined' &&
+    !navigator.onLine &&
+    !isNativeCapacitor()
+  ) {
     await offlineQueue.enqueue(op, args, options);
     return { queued: true };
   }
   try {
-    await dispatcher(args);
-    return { queued: false };
+    const result = (await dispatcher(args)) as T;
+    return { queued: false, result };
   } catch (e: any) {
     if (isLikelyOfflineError(e)) {
       await offlineQueue.enqueue(op, args, options);

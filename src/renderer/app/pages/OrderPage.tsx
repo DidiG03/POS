@@ -193,7 +193,7 @@ export default function OrderPage() {
   >('NONE');
   const [discountValue, setDiscountValue] = useState<string>('');
   const [discountReason, setDiscountReason] = useState<string>('');
-  const [vatEnabled, setVatEnabled] = useState<boolean>(true);
+  const [vatEnabled, setVatEnabled] = useState<boolean>(false);
   const [serviceChargeCfg, setServiceChargeCfg] = useState<{
     enabled: boolean;
     mode: 'PERCENT' | 'AMOUNT';
@@ -636,7 +636,7 @@ export default function OrderPage() {
   async function reloadPreferences() {
     try {
       const s: any = await window.api.settings.get().catch(() => null);
-      setVatEnabled((s as any)?.preferences?.vatEnabled !== false);
+      setVatEnabled(Boolean((s as any)?.fiscal?.enabled));
       const sc = (s as any)?.preferences?.serviceCharge || {};
       const enabled = Boolean(sc.enabled);
       const mode =
@@ -668,8 +668,15 @@ export default function OrderPage() {
     const onFocus = () => {
       void reloadPreferences();
     };
+    const onSettings = () => {
+      void reloadPreferences();
+    };
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    window.addEventListener('pos:settingsChanged', onSettings);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('pos:settingsChanged', onSettings);
+    };
   }, []);
 
   const serviceChargeAmount = useMemo(() => {
@@ -2945,9 +2952,21 @@ export default function OrderPage() {
                       payload.toArea = transferToArea.trim();
                       payload.toLabel = transferToLabel.trim();
                     }
-                    const r: any = await (window.api.tables as any).transfer(
+                    const transferResult = await tryOrQueue(
+                      'tables.transfer',
                       payload,
+                      {
+                        dedupeKey: `tables.transfer:${selectedTable.area}:${selectedTable.label}`,
+                      },
                     );
+                    if (transferResult.queued) {
+                      toast.info(t('order.transferQueued'), {
+                        title: t('common.syncingQueued'),
+                      });
+                      setShowTransfer(false);
+                      return;
+                    }
+                    const r: any = transferResult.result;
                     if (!r || r.ok !== true) {
                       const errMsg = String(
                         r?.error || t('order.transferFailedGeneric'),

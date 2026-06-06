@@ -6,14 +6,34 @@ export function makeFormatAmount() {
   };
 }
 
+/** Format a number with at most `maxFractionDigits` decimal places (avoids float noise). */
+export function formatNumberMaxDecimals(
+  n: number,
+  maxFractionDigits = 1,
+): string {
+  if (!Number.isFinite(n)) return '—';
+  const factor = 10 ** maxFractionDigits;
+  const rounded = Math.round(n * factor) / factor;
+  return rounded.toLocaleString(undefined, {
+    maximumFractionDigits: maxFractionDigits,
+    minimumFractionDigits: 0,
+  });
+}
+
 export function formatMoneyCompact(currency: string, amount: number) {
   const a = Number.isFinite(amount) ? amount : 0;
   const rounded = Math.round(a);
-  const cur = String(currency || '').trim().toUpperCase();
+  const cur = String(currency || '')
+    .trim()
+    .toUpperCase();
   // Prefer ISO currency formatting when possible
   if (/^[A-Z]{3}$/.test(cur)) {
     try {
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(rounded);
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency: cur,
+        maximumFractionDigits: 0,
+      }).format(rounded);
     } catch {
       // fall through
     }
@@ -22,4 +42,3 @@ export function formatMoneyCompact(currency: string, amount: number) {
   const looksSymbol = cur.length <= 2 && /[^A-Z0-9]/.test(cur);
   return looksSymbol ? `${cur}${rounded}` : `${cur || 'EUR'} ${rounded}`;
 }
-

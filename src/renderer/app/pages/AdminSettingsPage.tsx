@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { UpdateStatusDTO } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
+import { kdsStationLabel } from '@shared/kdsStations';
 import { KDS_BUMP_BAR_PROGRAMMING } from '../../utils/kdsBumpBar';
 import FloorCanvas from '../components/FloorCanvas';
 import { useSessionStore } from '../../stores/session';
@@ -750,7 +751,6 @@ function PreferencesSettings() {
   const [loading, setLoading] = useState(true);
   const [currency, setCurrency] = useState<string>('EUR');
   const [language, setLanguage] = useState<'en' | 'sq'>('en');
-  const [vatEnabled, setVatEnabled] = useState(true);
   const [enabled, setEnabled] = useState(false);
   const [mode, setMode] = useState<'PERCENT' | 'AMOUNT'>('PERCENT');
   const [value, setValue] = useState<string>('10');
@@ -786,7 +786,6 @@ function PreferencesSettings() {
         } catch {
           // ignore non-browser
         }
-        setVatEnabled((s as any)?.preferences?.vatEnabled !== false);
         const sc = (s as any)?.preferences?.serviceCharge || {};
         setEnabled(Boolean(sc.enabled));
         const m = String(sc.mode || 'PERCENT').toUpperCase();
@@ -853,7 +852,6 @@ function PreferencesSettings() {
       },
       preferences: {
         language,
-        vatEnabled,
         serviceCharge: { enabled, mode, value: n },
         autoCloseShift: {
           enabled: autoCloseShiftEnabled,
@@ -981,22 +979,6 @@ function PreferencesSettings() {
                 />
               </label>
             </div>
-          </div>
-          <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
-            <div className="font-medium mb-1">VAT</div>
-            <div className="text-xs opacity-70 mb-3">
-              Enable/disable VAT calculations on tickets and receipts.
-            </div>
-            <label className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm">Enable VAT</div>
-              </div>
-              <input
-                type="checkbox"
-                checked={vatEnabled}
-                onChange={(e) => setVatEnabled(e.target.checked)}
-              />
-            </label>
           </div>
           <div className="p-3 rounded bg-gray-900/50 border border-gray-700">
             <div className="font-medium mb-1">Auto-close waiter shifts</div>
@@ -1288,6 +1270,11 @@ function FiscalSettings() {
     setAuthToken('');
     setStatusOk(true);
     setStatus(t('fiscal.saved'));
+    try {
+      window.dispatchEvent(new CustomEvent('pos:settingsChanged'));
+    } catch {
+      // ignore
+    }
     await refreshTokenHint();
   }
 
@@ -1860,118 +1847,24 @@ function BackupsSettings() {
 }
 
 function KdsSettings() {
-  const [loading, setLoading] = useState(true);
-  const [enabled, setEnabled] = useState<{
-    KITCHEN: boolean;
-    BAR: boolean;
-    DESSERT: boolean;
-  }>({
-    KITCHEN: true,
-    BAR: false,
-    DESSERT: false,
-  });
   const [status, setStatus] = useState<string | null>(null);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const s: any = await window.api.settings.get();
-        const raw = (s as any)?.kds?.enabledStations;
-        const arr = (Array.isArray(raw) ? raw : ['KITCHEN']).map((x: any) =>
-          String(x).toUpperCase(),
-        );
-        const next = { KITCHEN: false, BAR: false, DESSERT: false };
-        for (const x of arr) {
-          if (x === 'KITCHEN' || x === 'BAR' || x === 'DESSERT')
-            (next as any)[x] = true;
-        }
-        // Safety: must have at least kitchen
-        if (!next.KITCHEN && !next.BAR && !next.DESSERT) next.KITCHEN = true;
-        setEnabled(next);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  const enabledStations = [
-    enabled.KITCHEN ? 'KITCHEN' : null,
-    enabled.BAR ? 'BAR' : null,
-    enabled.DESSERT ? 'DESSERT' : null,
-  ].filter(Boolean) as Array<'KITCHEN' | 'BAR' | 'DESSERT'>;
-
-  if (loading) return <div className="opacity-70">Loading…</div>;
 
   return (
     <div>
       <div className="text-lg font-semibold mb-3">Kitchen Display (KDS)</div>
       <div className="space-y-3">
-        <div className="text-xs opacity-70">
-          Choose which stations exist in your kitchen screens.
-        </div>
-        <label className="flex items-center justify-between gap-3">
-          <div>
-            <div className="font-medium">Kitchen</div>
-            <div className="text-xs opacity-70">
-              Default station (recommended)
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            checked={enabled.KITCHEN}
-            onChange={(e) => {
-              // Always keep at least one station enabled
-              const next = { ...enabled, KITCHEN: e.target.checked };
-              if (!next.KITCHEN && !next.BAR && !next.DESSERT)
-                next.KITCHEN = true;
-              setEnabled(next);
-            }}
-          />
-        </label>
-        <label className="flex items-center justify-between gap-3">
-          <div className="font-medium">Bar</div>
-          <input
-            type="checkbox"
-            checked={enabled.BAR}
-            onChange={(e) =>
-              setEnabled((s) => ({ ...s, BAR: e.target.checked }))
-            }
-          />
-        </label>
-        <label className="flex items-center justify-between gap-3">
-          <div className="font-medium">Dessert</div>
-          <input
-            type="checkbox"
-            checked={enabled.DESSERT}
-            onChange={(e) =>
-              setEnabled((s) => ({ ...s, DESSERT: e.target.checked }))
-            }
-          />
-        </label>
-
         <div className="rounded border border-gray-700 bg-gray-900/40 p-3 text-xs opacity-80">
           KDS app updates are installed on each kitchen screen (not from this
           POS admin panel). When a new KDS version is published, the kitchen app
           shows a download prompt — use Install &amp; Restart there, same as POS
           updates under System Updates.
         </div>
-
-        <button
-          className="px-3 py-2 rounded bg-emerald-700 w-full"
-          onClick={async () => {
-            setStatus(null);
-            try {
-              await window.api.settings.update({
-                kds: { enabledStations },
-              } as any);
-              setStatus('Saved.');
-            } catch (e: any) {
-              setStatus(e?.message || 'Save failed.');
-            }
-          }}
-        >
-          Save KDS Settings
-        </button>
+        <div className="text-xs opacity-70">
+          On each kitchen screen, open the KDS Settings tab (or press{' '}
+          <span className="font-mono">J</span> on the bump bar) to choose{' '}
+          {kdsStationLabel('KITCHEN')}, {kdsStationLabel('BAR')}, or{' '}
+          {kdsStationLabel('DESSERT')} for that display.
+        </div>
 
         <div className="mt-4 pt-4 border-t border-gray-800">
           <div className="font-medium mb-1">Bump bar programming</div>

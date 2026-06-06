@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import {
+  kdsCategoryLinkLabel,
+  kdsStationLabel,
+  type KdsStation,
+} from '@shared/kdsStations';
 import { PageSpinner } from '../../components/PageSpinner';
 import {
   IconWarningTriangle,
@@ -26,6 +31,7 @@ type MenuCategory = {
   sortOrder: number;
   active: boolean;
   color?: string | null;
+  kdsStation?: KdsStation | null;
   items: MenuItem[];
 };
 
@@ -42,6 +48,66 @@ const CATEGORY_PRESETS = [
   'Soft Drinks',
   'Alcohol',
 ] as const;
+
+const OTHER_CATEGORY = '__OTHER__' as const;
+
+type NewCategorySelection =
+  | (typeof CATEGORY_PRESETS)[number]
+  | typeof OTHER_CATEGORY
+  | '';
+
+function guessDefaultKdsStation(name: string): KdsStation | null {
+  const n = String(name || '')
+    .trim()
+    .toLowerCase();
+  if (
+    n === 'drinks' ||
+    n === 'hot drinks' ||
+    n === 'soft drinks' ||
+    n === 'alcohol' ||
+    n === 'beverages'
+  ) {
+    return 'BAR';
+  }
+  if (
+    n === 'food' ||
+    n === 'starters' ||
+    n === 'mains' ||
+    n === 'sides' ||
+    n === 'salads' ||
+    n === 'breakfast' ||
+    n === 'desserts'
+  ) {
+    return 'KITCHEN';
+  }
+  return null;
+}
+
+function KdsStationSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: KdsStation | '';
+  onChange: (next: KdsStation | '') => void;
+  disabled?: boolean;
+}) {
+  return (
+    <select
+      className="bg-gray-700 rounded px-3 py-2 w-full"
+      value={value}
+      onChange={(e) => onChange((e.target.value || '') as KdsStation | '')}
+      disabled={disabled}
+    >
+      <option value="">Not on KDS</option>
+      {(['KITCHEN', 'BAR', 'DESSERT'] as KdsStation[]).map((st) => (
+        <option key={st} value={st}>
+          {kdsStationLabel(st)}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 function IconRefresh() {
   return (
@@ -282,10 +348,27 @@ export default function AdminMenuPage() {
     })();
   }, []);
 
-  const [newCatName, setNewCatName] = useState<
-    (typeof CATEGORY_PRESETS)[number] | ''
-  >('');
+  const [newCatName, setNewCatName] = useState<NewCategorySelection>('');
+  const [newCatCustomName, setNewCatCustomName] = useState('');
   const [newCatColor, setNewCatColor] = useState<string>('#22c55e');
+  const [newCatKdsStation, setNewCatKdsStation] = useState<KdsStation | ''>('');
+
+  const resolvedNewCatName = useMemo(() => {
+    if (newCatName === OTHER_CATEGORY) return newCatCustomName.trim();
+    return String(newCatName || '').trim();
+  }, [newCatName, newCatCustomName]);
+
+  const newCatNameTaken = useMemo(() => {
+    const n = resolvedNewCatName.toLowerCase();
+    if (!n) return false;
+    return cats.some((c) => c.name.trim().toLowerCase() === n);
+  }, [resolvedNewCatName, cats]);
+
+  const canAddCategory =
+    resolvedNewCatName.length > 0 &&
+    !newCatNameTaken &&
+    saving == null &&
+    !billingPaused;
 
   const [showAddItem, setShowAddItem] = useState(false);
 
@@ -325,7 +408,17 @@ export default function AdminMenuPage() {
               <select
                 className="bg-gray-700 rounded px-3 py-2 flex-1"
                 value={newCatName}
-                onChange={(e) => setNewCatName(e.target.value as any)}
+                onChange={(e) => {
+                  const next = e.target.value as NewCategorySelection;
+                  setNewCatName(next);
+                  if (next === OTHER_CATEGORY) {
+                    setNewCatCustomName('');
+                    setNewCatKdsStation('');
+                  } else {
+                    setNewCatCustomName('');
+                    setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
+                  }
+                }}
                 title="Category preset"
                 disabled={saving != null || billingPaused}
               >
@@ -341,6 +434,7 @@ export default function AdminMenuPage() {
                     </option>
                   );
                 })}
+                <option value={OTHER_CATEGORY}>Other…</option>
               </select>
               <input
                 type="color"
@@ -352,14 +446,17 @@ export default function AdminMenuPage() {
               />
               <button
                 className="px-4 py-2 rounded bg-transparent hover:bg-gray-700 disabled:opacity-60 cursor-pointer"
-                disabled={!newCatName || saving != null || billingPaused}
+                disabled={!canAddCategory}
                 onClick={() =>
                   void withSaving('create-category', async () => {
                     const resp = await window.api.menu.createCategory({
-                      name: String(newCatName),
+                      name: resolvedNewCatName,
                       color: newCatColor,
+                      kdsStation: newCatKdsStation || null,
                     } as any);
                     setNewCatName('');
+                    setNewCatCustomName('');
+                    setNewCatKdsStation('');
                     await reload();
                     const createdId = Number((resp as any)?.id || 0);
                     if (createdId) setSelectedId(createdId);
@@ -369,6 +466,35 @@ export default function AdminMenuPage() {
               >
                 +
               </button>
+            </div>
+            {newCatName === OTHER_CATEGORY && (
+              <div className="mt-2">
+                <div className="text-xs opacity-70 mb-1">Category name</div>
+                <input
+                  className="bg-gray-700 rounded px-3 py-2 w-full"
+                  placeholder="Enter category name…"
+                  value={newCatCustomName}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setNewCatCustomName(next);
+                    setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
+                  }}
+                  disabled={saving != null || billingPaused}
+                />
+                {newCatCustomName.trim() && newCatNameTaken ? (
+                  <div className="text-xs text-rose-400 mt-1">
+                    A category with this name already exists.
+                  </div>
+                ) : null}
+              </div>
+            )}
+            <div className="mt-2">
+              <div className="text-xs opacity-70 mb-1">KDS display</div>
+              <KdsStationSelect
+                value={newCatKdsStation}
+                onChange={setNewCatKdsStation}
+                disabled={saving != null || billingPaused}
+              />
             </div>
           </div>
 
@@ -391,6 +517,9 @@ export default function AdminMenuPage() {
                           style={{ backgroundColor: c.color || '#374151' }}
                         />
                         <span className="font-medium truncate">{c.name}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-700 opacity-80 shrink-0">
+                          {kdsCategoryLinkLabel(c.kdsStation ?? null)}
+                        </span>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs px-2 py-0.5 rounded bg-gray-900/40 border border-gray-700 opacity-90">
@@ -494,6 +623,7 @@ export default function AdminMenuPage() {
                         <ItemRow
                           key={it.id}
                           item={it}
+                          kdsStation={selected.kdsStation ?? null}
                           disabled={saving != null}
                           onSave={(patch) =>
                             withSaving('update-item', async () => {
@@ -582,16 +712,12 @@ function AddItemForm({
     price: number;
     vatRate?: number;
     isKg: boolean;
-    station: 'KITCHEN' | 'BAR' | 'DESSERT';
   }) => Promise<any>;
 }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [vat, setVat] = useState('0.2');
   const [isKg, setIsKg] = useState(false);
-  const [station, setStation] = useState<'KITCHEN' | 'BAR' | 'DESSERT'>(
-    'KITCHEN',
-  );
 
   const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
 
@@ -613,7 +739,6 @@ function AddItemForm({
                 price: Number(price),
                 vatRate: vat ? Number(vat) : undefined,
                 isKg,
-                station,
               });
           }}
         />
@@ -644,31 +769,16 @@ function AddItemForm({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <div className="text-xs opacity-70 mb-1">Station</div>
-          <select
-            className="bg-gray-700 rounded px-3 py-2 w-full"
-            value={station}
-            onChange={(e) => setStation(e.target.value as any)}
+      <div className="flex items-end pb-1">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={isKg}
+            onChange={(e) => setIsKg(e.target.checked)}
             disabled={disabled}
-          >
-            <option value="KITCHEN">Kitchen</option>
-            <option value="BAR">Bar</option>
-            <option value="DESSERT">Dessert</option>
-          </select>
-        </div>
-        <div className="flex items-end pb-1">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={isKg}
-              onChange={(e) => setIsKg(e.target.checked)}
-              disabled={disabled}
-            />
-            Sold by kg
-          </label>
-        </div>
+          />
+          Sold by kg
+        </label>
       </div>
 
       <div className="flex justify-end pt-2">
@@ -681,7 +791,6 @@ function AddItemForm({
               price: Number(price),
               vatRate: vat ? Number(vat) : undefined,
               isKg,
-              station,
             })
           }
           type="button"
@@ -709,6 +818,7 @@ function CategoryEditor({
     sortOrder?: number;
     color?: string | null;
     active?: boolean;
+    kdsStation?: KdsStation | null;
   }) => Promise<any>;
   onDelete: () => Promise<any>;
   showDelete?: boolean;
@@ -721,6 +831,9 @@ function CategoryEditor({
     String(category.color || '#374151'),
   );
   const [sortOrder, setSortOrder] = useState(String(category.sortOrder ?? 0));
+  const [kdsStation, setKdsStation] = useState<KdsStation | ''>(
+    (category.kdsStation as KdsStation | null) ?? '',
+  );
 
   useEffect(() => {
     setName(category.name);
@@ -728,7 +841,14 @@ function CategoryEditor({
     setColor(next);
     setColorText(next);
     setSortOrder(String(category.sortOrder ?? 0));
-  }, [category.id, category.name, category.sortOrder, category.color]);
+    setKdsStation((category.kdsStation as KdsStation | null) ?? '');
+  }, [
+    category.id,
+    category.name,
+    category.sortOrder,
+    category.color,
+    category.kdsStation,
+  ]);
 
   function normalizeColorInput(v: string): string | null {
     const raw = String(v || '').trim();
@@ -796,6 +916,17 @@ function CategoryEditor({
             />
           </div>
         </div>
+        <div className="md:col-span-12">
+          <div className="text-xs opacity-70 mb-1">KDS display</div>
+          <KdsStationSelect
+            value={kdsStation}
+            onChange={setKdsStation}
+            disabled={disabled}
+          />
+          <div className="text-[10px] opacity-50 mt-1">
+            Items in this category only appear on the linked KDS screen.
+          </div>
+        </div>
         {/* <div className="md:col-span-2">
           <div className="text-xs opacity-70 mb-1">Sort</div>
           <input
@@ -833,6 +964,7 @@ function CategoryEditor({
               name: name.trim(),
               color: norm,
               sortOrder: Number(sortOrder || 0),
+              kdsStation: kdsStation || null,
             });
           }}
           type="button"
@@ -860,18 +992,19 @@ function CategoryEditor({
 
 function ItemRow({
   item,
+  kdsStation,
   disabled,
   onSave,
   onDelete,
 }: {
   item: MenuItem;
+  kdsStation: KdsStation | null;
   disabled: boolean;
   onSave: (patch: {
     name?: string;
     price?: number;
     vatRate?: number;
     isKg?: boolean;
-    station?: 'KITCHEN' | 'BAR' | 'DESSERT';
     active?: boolean;
     stockLevel?: StockLevel;
     stockRemaining?: number | null;
@@ -881,12 +1014,7 @@ function ItemRow({
   const [editing, setEditing] = useState(false);
   const active = Boolean(item.active);
   const stock = normalizeStock(item.stockLevel);
-  const stationLabel =
-    item.station === 'BAR'
-      ? 'Bar'
-      : item.station === 'DESSERT'
-        ? 'Dessert'
-        : 'Kitchen';
+  const stationLabel = kdsCategoryLinkLabel(kdsStation);
 
   return (
     <>
@@ -980,7 +1108,6 @@ function EditItemModal({
     price?: number;
     vatRate?: number;
     isKg?: boolean;
-    station?: 'KITCHEN' | 'BAR' | 'DESSERT';
     active?: boolean;
     stockLevel?: StockLevel;
     stockRemaining?: number | null;
@@ -991,9 +1118,6 @@ function EditItemModal({
   const [price, setPrice] = useState(String(item.price));
   const [vat, setVat] = useState(String(item.vatRate ?? 0.2));
   const [isKg, setIsKg] = useState(Boolean(item.isKg));
-  const [station, setStation] = useState<'KITCHEN' | 'BAR' | 'DESSERT'>(
-    (item.station as any) || 'KITCHEN',
-  );
   const [active, setActive] = useState(Boolean(item.active));
   const [stockLevel, setStockLevel] = useState<StockLevel>(
     normalizeStock(item.stockLevel),
@@ -1009,7 +1133,6 @@ function EditItemModal({
     setPrice(String(item.price));
     setVat(String(item.vatRate ?? 0.2));
     setIsKg(Boolean(item.isKg));
-    setStation(((item.station as any) || 'KITCHEN') as any);
     setActive(Boolean(item.active));
     setStockLevel(normalizeStock(item.stockLevel));
     setStockQty(
@@ -1024,7 +1147,6 @@ function EditItemModal({
     item.price,
     item.vatRate,
     item.isKg,
-    item.station,
     item.active,
     item.stockLevel,
     item.stockRemaining,
@@ -1078,19 +1200,6 @@ function EditItemModal({
         </div>
 
         <div className="grid grid-cols-2 gap-4">
-          <div>
-            <div className="text-xs opacity-70 mb-1">Station</div>
-            <select
-              className="bg-gray-700 rounded px-3 py-2 w-full"
-              value={station}
-              onChange={(e) => setStation(e.target.value as any)}
-              disabled={disabled}
-            >
-              <option value="KITCHEN">Kitchen</option>
-              <option value="BAR">Bar</option>
-              <option value="DESSERT">Dessert</option>
-            </select>
-          </div>
           <div>
             <div className="text-xs opacity-70 mb-1">Waiter availability</div>
             <select
@@ -1158,7 +1267,6 @@ function EditItemModal({
                 price: number;
                 vatRate: number;
                 isKg: boolean;
-                station: 'KITCHEN' | 'BAR' | 'DESSERT';
                 active: boolean;
                 stockLevel: StockLevel;
                 stockRemaining?: number | null;
@@ -1167,7 +1275,6 @@ function EditItemModal({
                 price: Number(price || 0),
                 vatRate: Number(vat || 0),
                 isKg,
-                station,
                 active,
                 stockLevel,
               };
