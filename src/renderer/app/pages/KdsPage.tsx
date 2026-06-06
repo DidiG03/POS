@@ -1056,11 +1056,11 @@ export default function KdsPage() {
                       </div>
                     ) : null}
                     <div className="mb-2">
-                      <div className="text-2xl font-bold">
+                      <div className="text-3xl font-bold leading-tight">
                         {t.area} {t.tableLabel}
                       </div>
                       {t.waiterName || timeLabel ? (
-                        <div className="text-sm mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                        <div className="text-base mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                           {t.waiterName ? (
                             <span className="opacity-80">{t.waiterName}</span>
                           ) : null}
@@ -1090,7 +1090,7 @@ export default function KdsPage() {
                     </div>
 
                     {t.note && (
-                      <div className="mb-2 text-sm bg-gray-950 border border-gray-800 rounded p-2">
+                      <div className="mb-2 text-base bg-gray-950 border border-gray-800 rounded p-2">
                         {t.note}
                       </div>
                     )}
@@ -1109,7 +1109,7 @@ export default function KdsPage() {
                           <div
                             key={idx}
                             data-kds-item-idx={idx}
-                            className={`flex items-start justify-between gap-2 text-sm select-none rounded px-1 -mx-1 ${
+                            className={`flex items-start justify-between gap-2 text-lg leading-snug select-none rounded px-1 -mx-1 ${
                               struck ? 'opacity-50' : ''
                             } ${
                               itemSelected
@@ -1118,15 +1118,18 @@ export default function KdsPage() {
                             }`}
                           >
                             <div
-                              className={`font-medium ${struck ? 'line-through decoration-2' : ''}`}
+                              className={`font-semibold ${struck ? 'line-through decoration-2' : ''}`}
                             >
                               {it.name}
                               {it.note ? (
-                                <span className="opacity-70"> · {it.note}</span>
+                                <span className="opacity-70 text-base">
+                                  {' '}
+                                  · {it.note}
+                                </span>
                               ) : null}
                             </div>
                             <div
-                              className={`opacity-80 ${struck ? 'line-through decoration-2' : ''}`}
+                              className={`font-bold tabular-nums shrink-0 ${struck ? 'line-through decoration-2' : ''}`}
                             >
                               {Number(it.qty || 1)}x
                             </div>
