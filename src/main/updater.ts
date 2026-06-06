@@ -13,15 +13,16 @@
  */
 
 import { autoUpdater, UpdateInfo } from 'electron-updater';
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
 
-const IS_DEV =
-  process.env.NODE_ENV !== 'production' || process.env.ELECTRON_IS_DEV === '1';
+// Dev detection MUST use `app.isPackaged`, not NODE_ENV: the bundler does not
+// inline `process.env.NODE_ENV`, so in a packaged (double-clicked) app it's
+// undefined and the old `NODE_ENV !== 'production'` check wrongly reported DEV,
+// silently disabling auto-updates. `app.isPackaged` is the canonical signal
+// (it's exactly what electron-updater itself uses internally).
+const IS_DEV = !app.isPackaged || process.env.ELECTRON_IS_DEV === '1';
 const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED !== 'false';
-const GITHUB_OWNER = process.env.GITHUB_OWNER || '';
-const GITHUB_REPO = process.env.GITHUB_REPO || '';
-const UPDATE_SERVER_URL = process.env.UPDATE_SERVER_URL || '';
 
 let updateCheckInterval: NodeJS.Timeout | null = null;
 let updateInfo: UpdateInfo | null = null;
@@ -159,8 +160,22 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
   }
 
   try {
-    // Configure update server
-    if (GITHUB_OWNER && GITHUB_REPO) {
+    // Read feed config at call time (NOT as module-level consts): the KDS
+    // sets GITHUB_OWNER/REPO via ensurePackagedDefaults() at startup, which
+    // runs AFTER this module is first imported — so module-level consts would
+    // capture empty strings. Reading here guarantees we see the resolved env.
+    const githubOwner = (process.env.GITHUB_OWNER || '').trim();
+    const githubRepo = (process.env.GITHUB_REPO || '').trim();
+    const updateServerUrl = (process.env.UPDATE_SERVER_URL || '').trim();
+
+    // The channel always applies (works with an explicit feed OR with the
+    // bundled app-update.yml that electron-builder ships from the publish
+    // config). For KDS this is "kds" so it reads kds.yml.
+    if (options?.channel) {
+      autoUpdater.channel = options.channel;
+    }
+
+    if (githubOwner && githubRepo) {
       const feed: {
         provider: 'github';
         owner: string;
@@ -168,26 +183,29 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
         channel?: string;
       } = {
         provider: 'github',
-        owner: GITHUB_OWNER,
-        repo: GITHUB_REPO,
+        owner: githubOwner,
+        repo: githubRepo,
       };
       if (options?.channel) feed.channel = options.channel;
       autoUpdater.setFeedURL(feed);
       console.log(
-        `[AutoUpdater] Configured for GitHub: ${GITHUB_OWNER}/${GITHUB_REPO}` +
+        `[AutoUpdater] Configured for GitHub: ${githubOwner}/${githubRepo}` +
           (options?.channel ? ` (channel: ${options.channel})` : ''),
       );
-    } else if (UPDATE_SERVER_URL) {
+    } else if (updateServerUrl) {
       // Custom update server
-      autoUpdater.setFeedURL(UPDATE_SERVER_URL);
+      autoUpdater.setFeedURL(updateServerUrl);
       console.log(
-        `[AutoUpdater] Configured for custom server: ${UPDATE_SERVER_URL}`,
+        `[AutoUpdater] Configured for custom server: ${updateServerUrl}`,
       );
     } else {
-      console.warn(
-        '[AutoUpdater] No update server configured. Set GITHUB_OWNER/GITHUB_REPO or UPDATE_SERVER_URL',
+      // No explicit feed: fall back to the bundled app-update.yml that
+      // electron-builder generates from the publish config. Don't bail —
+      // this is the normal packaged path.
+      console.log(
+        '[AutoUpdater] Using bundled app-update.yml feed' +
+          (options?.channel ? ` (channel: ${options.channel})` : ''),
       );
-      return;
     }
 
     // Configuration
