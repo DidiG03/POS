@@ -418,6 +418,50 @@ async function ensureKdsLocalSchema() {
   }
 }
 
+let __localColumnsReady = false;
+
+/**
+ * Self-heal local-only columns on upgrade.
+ *
+ * A FRESH install ships a fully migrated `seed.db` (buildSeedDb runs
+ * `prisma migrate deploy`). But on an UPGRADE we reuse the customer's
+ * existing SQLite DB in userData, and the app does NOT run migrations on
+ * boot — so columns added by recent migrations are missing, and queries
+ * like `category.findMany()` crash with "no such column".
+ *
+ * SQLite's `ADD COLUMN` is idempotent enough for our needs: it throws
+ * "duplicate column name" if it already exists, which we swallow. Each
+ * statement mirrors a real migration so an old DB converges to the current
+ * schema without a full migration engine in the packaged app.
+ */
+async function ensureLocalDbColumns(): Promise<void> {
+  if (__localColumnsReady) return;
+  const statements = [
+    // 20260526165000_category_kds_station
+    `ALTER TABLE "Category" ADD COLUMN "kdsStation" TEXT;`,
+    // 20260430235907_add_category_color
+    `ALTER TABLE "Category" ADD COLUMN "color" TEXT;`,
+    // 20260204... MenuItem prep-station routing
+    `ALTER TABLE "MenuItem" ADD COLUMN "station" TEXT NOT NULL DEFAULT 'KITCHEN';`,
+    // 20260501000025_add_menuitem_iskg
+    `ALTER TABLE "MenuItem" ADD COLUMN "isKg" BOOLEAN NOT NULL DEFAULT false;`,
+    // 20260517174500_add_menuitem_stock_level
+    `ALTER TABLE "MenuItem" ADD COLUMN "stockLevel" TEXT NOT NULL DEFAULT 'OK';`,
+    // 20260517190000_menuitem_stock_qty_day
+    `ALTER TABLE "MenuItem" ADD COLUMN "stockRemaining" INTEGER;`,
+    `ALTER TABLE "MenuItem" ADD COLUMN "stockDay" TEXT;`,
+  ];
+  for (const sql of statements) {
+    try {
+      await (prisma as any).$executeRawUnsafe(sql);
+    } catch {
+      // Column already exists (duplicate column name) — expected on
+      // already-migrated DBs; ignore and continue.
+    }
+  }
+  __localColumnsReady = true;
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -1136,6 +1180,12 @@ app.whenReady().then(async () => {
       // ignore — dock icon stays default
     }
   }
+  // Heal local-only columns BEFORE the window (and its IPC queries) load, so
+  // an upgraded DB missing recent columns (e.g. Category.kdsStation) doesn't
+  // crash menu/category queries.
+  await ensureLocalDbColumns().catch((e) =>
+    console.warn('[startup] ensureLocalDbColumns failed:', e),
+  );
   createWindow();
   setupAutoUpdater();
   apiServers = await startApiServer();
