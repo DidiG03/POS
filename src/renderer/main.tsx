@@ -1013,6 +1013,7 @@ if (!(window as any).api) {
           status,
           limit: String(limit),
         });
+        if (input?.cooker) q.set('cooker', '1');
         return await goLan(`/kds/tickets?${q.toString()}`);
       },
       async bump(input: any) {
@@ -1020,7 +1021,11 @@ if (!(window as any).api) {
         const ticketId = Number(input?.ticketId || 0);
         const r = await goLan('/kds/bump', {
           method: 'POST',
-          body: JSON.stringify({ station, ticketId }),
+          body: JSON.stringify({
+            station,
+            ticketId,
+            cooker: Boolean(input?.cooker),
+          }),
         });
         return Boolean((r as any)?.ok ?? true);
       },
@@ -1060,7 +1065,12 @@ if (!(window as any).api) {
         const itemIdx = Number(input?.itemIdx ?? input?.idx ?? -1);
         const r = await goLan('/kds/bump-item', {
           method: 'POST',
-          body: JSON.stringify({ station, ticketId, itemIdx }),
+          body: JSON.stringify({
+            station,
+            ticketId,
+            itemIdx,
+            cooker: Boolean(input?.cooker),
+          }),
         });
         return Boolean((r as any)?.ok ?? true);
       },
@@ -1070,8 +1080,23 @@ if (!(window as any).api) {
         const q = new URLSearchParams({ ticketId: String(ticketId) });
         return await goLan(`/kds/ticket-detail?${q.toString()}`);
       },
-      async debug() {
-        return await goLan('/kds/debug');
+      async getCookerMode() {
+        const r = await goLan('/kds/cooker-mode');
+        return { enabled: Boolean((r as any)?.enabled) };
+      },
+      async setCookerMode(input: any) {
+        const r = await goLan('/kds/cooker-mode', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: Boolean(input?.enabled) }),
+        });
+        return {
+          ok: Boolean((r as any)?.ok),
+          enabled: Boolean((r as any)?.enabled),
+          error: (r as any)?.error,
+        };
+      },
+      debug() {
+        return goLan('/kds/debug');
       },
     },
     reports: {

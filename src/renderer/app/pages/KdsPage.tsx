@@ -11,6 +11,8 @@ import {
   saveKdsDisplayStation,
   loadKdsTheme,
   saveKdsTheme,
+  loadKdsCooker,
+  saveKdsCooker,
   type KdsTheme,
 } from '../../utils/kdsDisplayConfig';
 import {
@@ -48,6 +50,12 @@ type KdsTicket = {
     _idx?: number;
     bumped?: boolean;
     voided?: boolean;
+    /** Two-stage kitchen: line cooked by the cooker screen. */
+    cookerBumped?: boolean;
+    /** Main screen: cooked & ready for the waiter's final bump (green). */
+    ready?: boolean;
+    /** Main screen: not cooked yet — cannot be selected/bumped (greyed). */
+    locked?: boolean;
   }>;
 };
 
@@ -76,6 +84,9 @@ function navigableItemIndices(
     .map((it, i) => ({ it, i }))
     .filter(({ it }) => {
       if (it.voided) return false;
+      // Two-stage main screen: a line the cook hasn't finished is locked and
+      // cannot be selected/bumped here.
+      if (it.locked) return false;
       if (mode === 'done') return true;
       return !it.bumped;
     })
@@ -170,6 +181,8 @@ export default function KdsPage() {
   const initialStation = loadKdsDisplayStation();
   const [station, setStationState] = useState<Station>(initialStation);
   const [theme, setThemeState] = useState<KdsTheme>(() => loadKdsTheme());
+  const [cooker, setCookerState] = useState<boolean>(() => loadKdsCooker());
+  const cookerRef = useRef<boolean>(cooker);
   const [tab, setTab] = useState<Tab>('NEW');
   const [tickets, setTickets] = useState<KdsTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -208,6 +221,17 @@ export default function KdsPage() {
     setThemeState(next);
     saveKdsTheme(next);
   }, []);
+  // Toggling "Cooker" both marks THIS screen as the cooker (local) and flips
+  // the POS-host master switch so the main kitchen screen starts gating items.
+  const setCooker = useCallback((next: boolean) => {
+    setCookerState(next);
+    cookerRef.current = next;
+    saveKdsCooker(next);
+    void window.api.kds.setCookerMode?.({ enabled: next }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    cookerRef.current = cooker;
+  }, [cooker]);
   useEffect(() => {
     errRef.current = err;
   }, [err]);
@@ -326,16 +350,45 @@ export default function KdsPage() {
       if (tabRef.current !== 'NEW') return;
       if (bumping.current.has(ticket.ticketId)) return;
       bumping.current.add(ticket.ticketId);
-      setTickets((arr) => arr.filter((x) => x.ticketId !== ticket.ticketId));
+      // Two-stage main screen: a whole-ticket bump only finalises the lines the
+      // cook already finished (green/ready) — locked lines stay on the card.
+      const twoStageMain = ticket.items.some((it) => it.locked || it.ready);
+      if (twoStageMain) {
+        setTickets((arr) =>
+          arr
+            .map((t) =>
+              t.ticketId !== ticket.ticketId
+                ? t
+                : {
+                    ...t,
+                    items: t.items.map((it) =>
+                      it.ready && !it.bumped && !it.voided
+                        ? {
+                            ...it,
+                            bumped: true,
+                            bumpedAt: new Date().toISOString(),
+                          }
+                        : it,
+                    ),
+                  },
+            )
+            .filter((t) => hasActiveItems(t)),
+        );
+      } else {
+        setTickets((arr) => arr.filter((x) => x.ticketId !== ticket.ticketId));
+      }
       clearItemSelection();
       const ok = await window.api.kds
         .bump({
           station: stationRef.current,
           ticketId: ticket.ticketId,
+          cooker: cookerRef.current,
         })
         .catch(() => false);
       bumping.current.delete(ticket.ticketId);
-      if (!ok) {
+      if (!ok && !twoStageMain) {
+        // Restore the card we optimistically removed (the next poll reconciles
+        // the two-stage case, where we only edited items in place).
         setTickets((arr) => [ticket, ...arr]);
       }
     },
@@ -347,6 +400,8 @@ export default function KdsPage() {
       if (tabRef.current !== 'NEW') return;
       const it = ticket.items[itemListIdx];
       if (!it || it.voided || it.bumped) return;
+      // Two-stage main screen: a line the cook hasn't finished is locked.
+      if (it.locked) return;
       const itemIdx = Number(it._idx ?? -1);
       if (!Number.isFinite(itemIdx) || itemIdx < 0) return;
 
@@ -365,6 +420,7 @@ export default function KdsPage() {
           station: stationRef.current,
           ticketId,
           itemIdx,
+          cooker: cookerRef.current,
         } as any)
         .catch(() => false);
     },
@@ -414,8 +470,9 @@ export default function KdsPage() {
   }, []);
 
   const title = useMemo(() => {
-    return `${kdsStationLabel(station)} Display`;
-  }, [station]);
+    const base = `${kdsStationLabel(station)} Display`;
+    return cooker ? `Cooker · ${base}` : base;
+  }, [station, cooker]);
 
   useEffect(() => {
     if (tab === 'SETTINGS') {
@@ -441,6 +498,7 @@ export default function KdsPage() {
           station,
           status: tab,
           limit: tab === 'NEW' ? 120 : 80,
+          cooker,
         })) as any;
         if (!alive) return;
         setTickets(Array.isArray(rows) ? (rows as KdsTicket[]) : []);
@@ -488,7 +546,7 @@ export default function KdsPage() {
         // ignore
       }
     };
-  }, [station, tab]);
+  }, [station, tab, cooker]);
 
   useEffect(() => {
     const itemNavMode = (): 'new' | 'done' =>
@@ -681,6 +739,7 @@ export default function KdsPage() {
                 station: stationRef.current,
                 status: 'NEW',
                 limit: 120,
+                cooker: cookerRef.current,
               })
               .catch(() => [])) as KdsTicket[];
             setTickets(Array.isArray(rows) ? rows : []);
@@ -721,6 +780,7 @@ export default function KdsPage() {
                 station: stationRef.current,
                 status: 'NEW',
                 limit: 120,
+                cooker: cookerRef.current,
               })
               .catch(() => [])) as KdsTicket[];
             setTickets(Array.isArray(rows) ? rows : []);
@@ -746,6 +806,7 @@ export default function KdsPage() {
                   station: stationRef.current,
                   status: 'DONE',
                   limit: 80,
+                  cooker: cookerRef.current,
                 })
                 .catch(() => [])) as KdsTicket[];
               setTickets(Array.isArray(rows) ? rows : []);
@@ -935,6 +996,40 @@ export default function KdsPage() {
             </div>
           </section>
 
+          <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">Cooker screen</div>
+                <div className="text-xs opacity-70">
+                  Turn this on for the cook&apos;s station. Kitchen items appear
+                  here first; once the cook bumps a line it turns green and
+                  unlocks on the main kitchen screen for pickup.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={cooker}
+                onClick={() => setCooker(!cooker)}
+                className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${
+                  cooker ? 'bg-emerald-600' : 'bg-gray-700'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                    cooker ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+            {cooker ? (
+              <div className="text-xs text-emerald-400">
+                This screen is the cooker. The main kitchen screen now waits for
+                you to bump each item before the waiter can pick it up.
+              </div>
+            ) : null}
+          </section>
+
           {isStandaloneKds ? (
             <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
               <div className="text-sm font-semibold">POS connection</div>
@@ -1100,10 +1195,23 @@ export default function KdsPage() {
                         const struck = Boolean(
                           it.voided || it.bumped || tab === 'DONE',
                         );
+                        // Two-stage main screen: a line the cook hasn't
+                        // finished is locked (greyed, not selectable); once
+                        // cooked it's "ready" (green) for the final bump.
+                        const locked =
+                          Boolean(it.locked) && tab === 'NEW' && !struck;
+                        const ready =
+                          Boolean(it.ready) && tab === 'NEW' && !struck;
                         const itemSelected =
                           ticketIdx === selectedIdx &&
                           selectedItemIdx === idx &&
-                          !it.voided;
+                          !it.voided &&
+                          !locked;
+                        const rowAccent = itemSelected
+                          ? 'bg-emerald-900/40 ring-1 ring-emerald-500/70'
+                          : ready
+                            ? 'bg-emerald-900/25 ring-1 ring-emerald-600/40'
+                            : '';
 
                         return (
                           <div
@@ -1111,20 +1219,30 @@ export default function KdsPage() {
                             data-kds-item-idx={idx}
                             className={`flex items-start justify-between gap-2 text-lg leading-snug select-none rounded px-1 -mx-1 ${
                               struck ? 'opacity-50' : ''
-                            } ${
-                              itemSelected
-                                ? 'bg-emerald-900/40 ring-1 ring-emerald-500/70'
-                                : ''
-                            }`}
+                            } ${locked ? 'opacity-45' : ''} ${rowAccent}`}
                           >
                             <div
-                              className={`font-semibold ${struck ? 'line-through decoration-2' : ''}`}
+                              className={`font-semibold ${
+                                struck ? 'line-through decoration-2' : ''
+                              } ${ready ? 'text-emerald-300' : ''} ${
+                                locked ? 'italic text-gray-400' : ''
+                              }`}
                             >
                               {it.name}
                               {it.note ? (
                                 <span className="opacity-70 text-base">
                                   {' '}
                                   · {it.note}
+                                </span>
+                              ) : null}
+                              {locked ? (
+                                <span className="ml-1.5 align-middle text-[11px] font-semibold uppercase tracking-wide text-amber-400/90">
+                                  cooking…
+                                </span>
+                              ) : null}
+                              {ready ? (
+                                <span className="ml-1.5 align-middle text-[11px] font-semibold uppercase tracking-wide text-emerald-400">
+                                  ready
                                 </span>
                               ) : null}
                             </div>

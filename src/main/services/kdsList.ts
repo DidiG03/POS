@@ -4,6 +4,18 @@ import {
   kdsStationLabel,
   type KdsStation,
 } from '@shared/kdsStations';
+import {
+  isTwoStageKitchen,
+  viewKitchenItemsForCooker,
+  type CookerTab,
+} from '@shared/kdsCooker';
+
+export type KdsListOptions = {
+  /** This screen is the cooker's display (first of the two kitchen stages). */
+  cooker?: boolean;
+  /** POS-host setting: two-stage cook → pass flow is active. */
+  cookerEnabled?: boolean;
+};
 
 async function getTableSessionStartedAt(
   area: string,
@@ -47,7 +59,9 @@ export async function formatKdsTicketListRows(
   rows: any[],
   station: string,
   status: string,
+  options: KdsListOptions = {},
 ) {
+  const twoStage = isTwoStageKitchen(station, options.cookerEnabled);
   const tableKeys = Array.from(
     new Set(
       (rows as any[])
@@ -108,14 +122,25 @@ export async function formatKdsTicketListRows(
         null;
 
       const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
-      const items = itemsAll
+      const stationItems = itemsAll
         .map((it: any, idx: number) => ({ ...it, _idx: idx }))
         .filter(
           (it: any) => String(it?.station || '').toUpperCase() === station,
         );
-      if (items.length === 0) return null;
-      if (status === 'NEW') {
-        const hasActive = items.some((it: any) => !it?.voided && !it?.bumped);
+      if (stationItems.length === 0) return null;
+
+      let items = stationItems;
+      if (twoStage) {
+        // Cooker (cook → pass) view: filter + flag lines for this screen's role.
+        items = viewKitchenItemsForCooker(stationItems, {
+          cooker: Boolean(options.cooker),
+          tab: (status as CookerTab) === 'DONE' ? 'DONE' : 'NEW',
+        });
+        if (items.length === 0) return null;
+      } else if (status === 'NEW') {
+        const hasActive = stationItems.some(
+          (it: any) => !it?.voided && !it?.bumped,
+        );
         if (!hasActive) return null;
       }
 

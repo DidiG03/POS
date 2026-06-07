@@ -2,6 +2,7 @@ import { parseKdsStation, type KdsStation } from '@shared/kdsStations';
 
 const STORAGE_KEY = 'kds_display_station';
 const THEME_STORAGE_KEY = 'kds_display_theme';
+const COOKER_STORAGE_KEY = 'kds_display_cooker';
 
 export type KdsTheme = 'dark' | 'light';
 
@@ -70,5 +71,38 @@ export function saveKdsTheme(theme: KdsTheme): void {
     | undefined;
   if (kdsApp?.saveDisplayTheme) {
     void kdsApp.saveDisplayTheme(theme).catch(() => {});
+  }
+}
+
+/**
+ * Whether THIS screen is the cooker's display (first kitchen stage). Stored
+ * per-device so a kitchen can have one cooker screen and one main screen.
+ */
+export function loadKdsCooker(): boolean {
+  try {
+    if ((window as any).__KDS_COOKER__ === true) return true;
+    if ((window as any).__KDS_COOKER__ === false) return false;
+  } catch {
+    // ignore
+  }
+  try {
+    return localStorage.getItem(COOKER_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Remember whether this screen is the cooker display (localStorage + config). */
+export function saveKdsCooker(cooker: boolean): void {
+  try {
+    localStorage.setItem(COOKER_STORAGE_KEY, cooker ? '1' : '0');
+  } catch {
+    // ignore
+  }
+  const kdsApp = (window as any).kdsApp as
+    | { saveDisplayCooker?: (cooker: boolean) => Promise<unknown> }
+    | undefined;
+  if (kdsApp?.saveDisplayCooker) {
+    void kdsApp.saveDisplayCooker(cooker).catch(() => {});
   }
 }

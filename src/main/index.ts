@@ -138,6 +138,12 @@ import {
   recallKdsTicket,
   bumpAllStationItemsInJson,
 } from './services/kdsRecall';
+import {
+  bumpReadyKitchenItems,
+  cookerBumpAllKitchenItems,
+  cookerBumpSingleKitchenItem,
+  isTwoStageKitchen,
+} from '@shared/kdsCooker';
 
 dotenv.config();
 
@@ -4060,10 +4066,21 @@ ipcMain.handle('tickets:getTableTooltip', async (_e, input) => {
   };
 });
 
+/** POS-host flag: KITCHEN runs the two-stage cook → pass (cooker) flow. */
+async function getCookerEnabled(): Promise<boolean> {
+  try {
+    const settings: any = await readSettings();
+    return Boolean(settings?.kds?.cookerEnabled);
+  } catch {
+    return false;
+  }
+}
+
 // KDS: list tickets by station + status (NEW/DONE)
 ipcMain.handle('kds:listTickets', async (_e, input) => {
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const status = String((input as any)?.status || 'NEW').toUpperCase();
+  const cooker = Boolean((input as any)?.cooker);
   const limit = Math.min(
     200,
     Math.max(1, Number((input as any)?.limit || 100)),
@@ -4072,17 +4089,25 @@ ipcMain.handle('kds:listTickets', async (_e, input) => {
 
   await ensureKdsLocalSchema();
   try {
+    const cookerEnabled = await getCookerEnabled();
+    // The cooker screen always reads OPEN (NEW) tickets — its "Done" tab shows
+    // cooked-but-not-picked-up lines that still live on open tickets.
+    const cookerView = cooker && isTwoStageKitchen(station, cookerEnabled);
+    const queryStatus = cookerView ? 'NEW' : status;
     const rows = await (prisma as any).kdsTicketStation.findMany({
-      where: kdsStationListWhere(station, status),
+      where: kdsStationListWhere(station, queryStatus),
       include: { ticket: { include: { order: true } } },
       orderBy:
-        status === 'NEW'
+        queryStatus === 'NEW'
           ? { ticket: { firedAt: 'asc' } }
           : { bumpedAt: 'desc' },
       take: limit,
     });
 
-    return await formatKdsTicketListRows(rows, station, status);
+    return await formatKdsTicketListRows(rows, station, status, {
+      cooker,
+      cookerEnabled,
+    });
   } catch {
     return [];
   }
@@ -4135,6 +4160,7 @@ ipcMain.handle('kds:debug', async () => {
 ipcMain.handle('kds:bump', async (_e, input) => {
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
+  const cooker = Boolean((input as any)?.cooker);
   const bumpedById = Number((input as any)?.userId || 0) || null;
   if (!ticketId) return false;
   // IMPORTANT: KDS is always local (even when POS is in cloud mode).
@@ -4143,9 +4169,51 @@ ipcMain.handle('kds:bump', async (_e, input) => {
   try {
     const now = new Date();
     const bumpedAt = now.toISOString();
+    const cookerEnabled = await getCookerEnabled();
+    const twoStage = isTwoStageKitchen(station, cookerEnabled);
     const ticket = await (prisma as any).kdsTicket
       .findUnique({ where: { id: ticketId } })
       .catch(() => null);
+
+    // Two-stage KITCHEN: the cooker screen only flags items `cookerBumped`
+    // (stage 1) and never completes the station; the main screen finalises
+    // just the cooked lines (stage 2).
+    if (twoStage && ticket) {
+      const itemsAll: any[] = Array.isArray(ticket.itemsJson)
+        ? ticket.itemsJson
+        : [];
+      if (cooker) {
+        const nextItems = cookerBumpAllKitchenItems(itemsAll, bumpedAt);
+        await (prisma as any).kdsTicket.update({
+          where: { id: ticketId },
+          data: { itemsJson: nextItems },
+        });
+        return true;
+      }
+      const nextItems = bumpReadyKitchenItems(itemsAll, bumpedAt);
+      await (prisma as any).kdsTicket.update({
+        where: { id: ticketId },
+        data: { itemsJson: nextItems },
+      });
+      const remaining = nextItems.filter(
+        (x: any) =>
+          !x?.voided &&
+          !x?.bumped &&
+          String(x?.station || '').toUpperCase() === station,
+      );
+      if (remaining.length === 0) {
+        await (prisma as any).kdsTicketStation.updateMany({
+          where: { ticketId, station, status: 'NEW' },
+          data: {
+            status: 'DONE',
+            bumpedAt: now,
+            ...(bumpedById ? { bumpedById } : {}),
+          },
+        });
+      }
+      return true;
+    }
+
     if (ticket) {
       const itemsAll: any[] = Array.isArray(ticket.itemsJson)
         ? ticket.itemsJson
@@ -4187,15 +4255,35 @@ ipcMain.handle('kds:clearDone', async (_e, input) => {
   );
 });
 
+// KDS: read/set the POS-host "cooker" (two-stage kitchen) master switch.
+ipcMain.handle('kds:getCookerMode', async () => {
+  return { enabled: await getCookerEnabled() };
+});
+
+ipcMain.handle('kds:setCookerMode', async (_e, input) => {
+  const enabled = Boolean((input as any)?.enabled);
+  try {
+    await coreServices.updateSettings({
+      kds: { cookerEnabled: enabled },
+    } as any);
+    return { ok: true, enabled };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Failed to set cooker mode' };
+  }
+});
+
 ipcMain.handle('kds:bumpItem', async (_e, input) => {
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
   const itemIdx = Number((input as any)?.itemIdx ?? -1);
+  const cooker = Boolean((input as any)?.cooker);
   const bumpedById = Number((input as any)?.userId || 0) || null;
   if (!ticketId || !Number.isFinite(itemIdx) || itemIdx < 0) return false;
   await ensureKdsLocalSchema();
   const now = new Date();
   try {
+    const cookerEnabled = await getCookerEnabled();
+    const twoStage = isTwoStageKitchen(station, cookerEnabled);
     const ticket = await (prisma as any).kdsTicket
       .findUnique({ where: { id: ticketId } })
       .catch(() => null);
@@ -4208,6 +4296,27 @@ ipcMain.handle('kds:bumpItem', async (_e, input) => {
     if (!it) return false;
     if (String(it?.station || '').toUpperCase() !== station) return false;
     if (it?.voided) return true;
+
+    // Two-stage KITCHEN: the cooker screen flags `cookerBumped` (stage 1); the
+    // main screen is blocked from finalising a line the cook hasn't finished.
+    if (twoStage && cooker) {
+      if (it?.cookerBumped) return true;
+      const nextItems = cookerBumpSingleKitchenItem(
+        itemsAll,
+        itemIdx,
+        now.toISOString(),
+      );
+      await (prisma as any).kdsTicket.update({
+        where: { id: ticketId },
+        data: { itemsJson: nextItems },
+      });
+      return true;
+    }
+    if (twoStage && !cooker && !it?.cookerBumped) {
+      // Locked: the cook must bump it first.
+      return false;
+    }
+
     if (it?.bumped) return true;
     const nextItems = itemsAll.slice();
     nextItems[itemIdx] = { ...it, bumped: true, bumpedAt: now.toISOString() };

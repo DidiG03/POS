@@ -112,6 +112,15 @@ export interface SettingsDTO {
     /** Required when POS currency is EUR — sent as currency.exRate to easyPos cloud. */
     eurExchangeRate?: number;
   };
+  /** Kitchen Display System host-level settings. */
+  kds?: {
+    enabledStations?: Array<'KITCHEN' | 'BAR' | 'DESSERT'>;
+    /**
+     * Two-stage "cooker" kitchen flow. When true, KITCHEN items must be
+     * bumped on the cooker screen before the main screen can finalise them.
+     */
+    cookerEnabled?: boolean;
+  };
 }
 
 export interface PrinterProfileDTO {
@@ -685,11 +694,14 @@ export interface ApiKds {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
     status: 'NEW' | 'DONE';
     limit?: number;
+    /** This screen is the cooker's display (first kitchen stage). */
+    cooker?: boolean;
   }): Promise<KdsTicketDTO[]>;
   bump(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
     ticketId: number;
     userId?: number;
+    cooker?: boolean;
   }): Promise<boolean>;
   recall(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
@@ -705,6 +717,7 @@ export interface ApiKds {
     ticketId: number;
     itemIdx: number;
     userId?: number;
+    cooker?: boolean;
   }): Promise<boolean>;
   clearDone(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
@@ -712,6 +725,12 @@ export interface ApiKds {
   getTicketDetail(input: {
     ticketId: number;
   }): Promise<KdsTicketDetailDTO | null>;
+  /** Read the POS-host "cooker" (two-stage kitchen) master switch. */
+  getCookerMode(): Promise<{ enabled: boolean }>;
+  /** Toggle the POS-host "cooker" (two-stage kitchen) master switch. */
+  setCookerMode(input: {
+    enabled: boolean;
+  }): Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
   debug(): Promise<any>;
 }
 

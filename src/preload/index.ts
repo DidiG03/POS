@@ -91,11 +91,13 @@ const api: Api = {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';
       status: 'NEW' | 'DONE';
       limit?: number;
+      cooker?: boolean;
     }) => ipcRenderer.invoke('kds:listTickets', input),
     bump: (input: {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';
       ticketId: number;
       userId?: number;
+      cooker?: boolean;
     }) => ipcRenderer.invoke('kds:bump', input),
     recall: (input: {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';
@@ -107,11 +109,15 @@ const api: Api = {
       ticketId: number;
       itemIdx: number;
       userId?: number;
+      cooker?: boolean;
     }) => ipcRenderer.invoke('kds:bumpItem', input),
     clearDone: (input: { station: 'KITCHEN' | 'BAR' | 'DESSERT' }) =>
       ipcRenderer.invoke('kds:clearDone', input),
     getTicketDetail: (input: { ticketId: number }) =>
       ipcRenderer.invoke('kds:getTicketDetail', input),
+    getCookerMode: () => ipcRenderer.invoke('kds:getCookerMode'),
+    setCookerMode: (input: { enabled: boolean }) =>
+      ipcRenderer.invoke('kds:setCookerMode', input),
     debug: () => ipcRenderer.invoke('kds:debug'),
   },
   backups: {

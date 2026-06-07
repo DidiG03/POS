@@ -47,6 +47,22 @@ import {
   recallKdsTicket,
   bumpAllStationItemsInJson,
 } from './services/kdsRecall';
+import {
+  bumpReadyKitchenItems,
+  cookerBumpAllKitchenItems,
+  cookerBumpSingleKitchenItem,
+  isTwoStageKitchen,
+} from '@shared/kdsCooker';
+
+/** POS-host flag: KITCHEN runs the two-stage cook → pass (cooker) flow. */
+async function getCookerEnabledFromSettings(): Promise<boolean> {
+  try {
+    const settings: any = await coreServices.readSettings();
+    return Boolean(settings?.kds?.cookerEnabled);
+  } catch {
+    return false;
+  }
+}
 
 async function maybeAlertSuspiciousVoidsLocal(input: {
   actorUserId: number;
@@ -1034,6 +1050,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/kds/bump-item',
         '/kds/recall',
         '/kds/clear-done',
+        '/kds/cooker-mode',
         '/kds/debug',
         '/shifts/open',
         '/settings',
@@ -1478,16 +1495,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           200,
           Math.max(1, Number((parsed.query.limit as any) || 100)),
         );
+        const cooker = String(parsed.query.cooker ?? '') === '1';
+        const cookerEnabled = await getCookerEnabledFromSettings();
+        // The cooker screen always reads OPEN (NEW) tickets — its "Done" tab
+        // shows cooked-but-not-picked-up lines that still live on open tickets.
+        const cookerView = cooker && isTwoStageKitchen(station, cookerEnabled);
+        const queryStatus = cookerView ? 'NEW' : status;
         const rows = await (prisma as any).kdsTicketStation.findMany({
-          where: kdsStationListWhere(station, status),
+          where: kdsStationListWhere(station, queryStatus),
           include: { ticket: { include: { order: true } } },
           orderBy:
-            status === 'NEW'
+            queryStatus === 'NEW'
               ? { ticket: { firedAt: 'asc' } }
               : { bumpedAt: 'desc' },
           take: limit,
         });
-        const out = await formatKdsTicketListRows(rows, station, status);
+        const out = await formatKdsTicketListRows(rows, station, status, {
+          cooker,
+          cookerEnabled,
+        });
         return send(res, 200, out, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/kds/ticket-detail') {
@@ -1503,15 +1529,57 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/kds/bump') {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
-        const { station, ticketId } = await parseJson(req);
+        const { station, ticketId, cooker } = await parseJson(req);
         const st = String(station || 'KITCHEN').toUpperCase();
         const id = Number(ticketId || 0);
         if (!id) return send(res, 400, { error: 'invalid' }, corsOrigin);
         const now = new Date();
         const bumpedAt = now.toISOString();
+        const cookerEnabled = await getCookerEnabledFromSettings();
+        const twoStage = isTwoStageKitchen(st, cookerEnabled);
         const ticket = await (prisma as any).kdsTicket
           .findUnique({ where: { id } })
           .catch(() => null);
+
+        // Two-stage KITCHEN: cooker screen only flags `cookerBumped` (stage 1);
+        // the main screen finalises just the cooked lines (stage 2).
+        if (twoStage && ticket) {
+          const itemsAll: any[] = Array.isArray(ticket.itemsJson)
+            ? ticket.itemsJson
+            : [];
+          if (cooker) {
+            await (prisma as any).kdsTicket.update({
+              where: { id },
+              data: {
+                itemsJson: cookerBumpAllKitchenItems(itemsAll, bumpedAt),
+              },
+            });
+            return send(res, 200, { ok: true }, corsOrigin);
+          }
+          const nextItems = bumpReadyKitchenItems(itemsAll, bumpedAt);
+          await (prisma as any).kdsTicket.update({
+            where: { id },
+            data: { itemsJson: nextItems },
+          });
+          const remaining = nextItems.filter(
+            (x: any) =>
+              !x?.voided &&
+              !x?.bumped &&
+              String(x?.station || '').toUpperCase() === st,
+          );
+          if (remaining.length === 0) {
+            await (prisma as any).kdsTicketStation.updateMany({
+              where: { ticketId: id, station: st, status: 'NEW' },
+              data: {
+                status: 'DONE',
+                bumpedAt: now,
+                bumpedById: auth?.userId || null,
+              },
+            });
+          }
+          return send(res, 200, { ok: true }, corsOrigin);
+        }
+
         if (ticket) {
           const itemsAll: any[] = Array.isArray(ticket.itemsJson)
             ? ticket.itemsJson
@@ -1556,13 +1624,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/kds/bump-item') {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
-        const { station, ticketId, itemIdx } = await parseJson(req);
+        const { station, ticketId, itemIdx, cooker } = await parseJson(req);
         const st = String(station || 'KITCHEN').toUpperCase();
         const id = Number(ticketId || 0);
         const idx = Number(itemIdx ?? -1);
         if (!id || !Number.isFinite(idx) || idx < 0)
           return send(res, 400, { error: 'invalid' }, corsOrigin);
         const now = new Date();
+        const cookerEnabled = await getCookerEnabledFromSettings();
+        const twoStage = isTwoStageKitchen(st, cookerEnabled);
         const ticket = await (prisma as any).kdsTicket
           .findUnique({ where: { id } })
           .catch(() => null);
@@ -1575,6 +1645,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const it = itemsAll[idx];
         if (!it || String(it?.station || '').toUpperCase() !== st)
           return send(res, 400, { error: 'invalid' }, corsOrigin);
+
+        // Two-stage KITCHEN: cooker flags `cookerBumped`; main is blocked from
+        // finalising a line the cook hasn't finished yet.
+        if (twoStage && cooker) {
+          if (!it?.voided && !it?.cookerBumped) {
+            await (prisma as any).kdsTicket.update({
+              where: { id },
+              data: {
+                itemsJson: cookerBumpSingleKitchenItem(
+                  itemsAll,
+                  idx,
+                  now.toISOString(),
+                ),
+              },
+            });
+          }
+          return send(res, 200, { ok: true }, corsOrigin);
+        }
+        if (twoStage && !cooker && !it?.voided && !it?.cookerBumped) {
+          return send(res, 423, { ok: false, error: 'locked' }, corsOrigin);
+        }
+
         if (!it?.voided && !it?.bumped) {
           const next = itemsAll.slice();
           next[idx] = { ...it, bumped: true, bumpedAt: now.toISOString() };
@@ -1600,6 +1692,27 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
         }
         return send(res, 200, { ok: true }, corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/kds/cooker-mode') {
+        const enabled = await getCookerEnabledFromSettings();
+        return send(res, 200, { enabled }, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/kds/cooker-mode') {
+        const body = await parseJson(req);
+        const enabled = Boolean(body?.enabled);
+        try {
+          await coreServices.updateSettings({
+            kds: { cookerEnabled: enabled },
+          } as any);
+          return send(res, 200, { ok: true, enabled }, corsOrigin);
+        } catch (e: any) {
+          return send(
+            res,
+            500,
+            { ok: false, error: e?.message || 'failed' },
+            corsOrigin,
+          );
+        }
       }
       if (req.method === 'GET' && pathname === '/kds/debug') {
         const ok = await ensureKdsLocalSchema();

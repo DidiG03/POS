@@ -43,6 +43,8 @@ type KdsConfig = {
   businessCode?: string;
   station?: KdsStation;
   theme?: KdsTheme;
+  /** This screen is the cooker's display (first kitchen stage). */
+  cooker?: boolean;
 };
 
 function parseTheme(value: unknown): KdsTheme | undefined {
@@ -69,6 +71,7 @@ function readConfig(): KdsConfig | null {
       businessCode: j.businessCode ? String(j.businessCode) : undefined,
       station: parseKdsStation(j.station) ?? undefined,
       theme: parseTheme(j.theme),
+      cooker: j.cooker === true ? true : undefined,
     };
   } catch {
     return null;
@@ -208,6 +211,8 @@ ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
       payload?.theme != null
         ? (parseTheme(payload.theme) ?? existing?.theme)
         : existing?.theme,
+    cooker:
+      payload?.cooker != null ? Boolean(payload.cooker) : existing?.cooker,
   };
   if (!cfg.host) throw new Error('Host is required');
   writeConfig(cfg);
@@ -233,6 +238,13 @@ ipcMain.handle('kdsApp:saveDisplayTheme', async (_e, payload) => {
   const existing = readConfig();
   if (existing) writeConfig({ ...existing, theme });
   return theme;
+});
+
+ipcMain.handle('kdsApp:saveDisplayCooker', async (_e, payload) => {
+  const cooker = Boolean(payload);
+  const existing = readConfig();
+  if (existing) writeConfig({ ...existing, cooker });
+  return cooker;
 });
 
 ipcMain.handle('kdsApp:resetConfig', () => {

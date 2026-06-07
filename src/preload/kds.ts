@@ -24,6 +24,7 @@ type KdsConfig = {
   businessCode?: string;
   station?: import('@shared/kdsStations').KdsStation;
   theme?: KdsTheme;
+  cooker?: boolean;
 };
 
 type DiscoveredHost = {
@@ -58,6 +59,8 @@ const kdsApp = {
     ipcRenderer.invoke('kdsApp:saveDisplayStation', station),
   saveDisplayTheme: (theme: KdsTheme): Promise<KdsTheme> =>
     ipcRenderer.invoke('kdsApp:saveDisplayTheme', theme),
+  saveDisplayCooker: (cooker: boolean): Promise<boolean> =>
+    ipcRenderer.invoke('kdsApp:saveDisplayCooker', cooker),
   resetConfig: (): Promise<boolean> => ipcRenderer.invoke('kdsApp:resetConfig'),
   discover: (): Promise<DiscoveredHost[]> =>
     ipcRenderer.invoke('kdsApp:discover'),
@@ -103,6 +106,7 @@ try {
   if (cfg?.theme) {
     contextBridge.exposeInMainWorld('__KDS_THEME__', cfg.theme);
   }
+  contextBridge.exposeInMainWorld('__KDS_COOKER__', cfg?.cooker === true);
 } catch {
   // ignore
 }
