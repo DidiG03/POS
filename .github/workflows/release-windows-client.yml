@@ -133,7 +133,13 @@ jobs:
           if [[ ! -f dist/latest.yml ]]; then
             write_update_yml "$CANONICAL_POS" dist/latest.yml "$CANONICAL_POS_NAME"
           fi
-          write_update_yml "$CANONICAL_KDS" dist-installers/kds/latest-kds.yml "$CANONICAL_KDS_NAME"
+          # The KDS app runs setupAutoUpdater({ channel: 'kds' }), so on Windows
+          # electron-updater fetches a manifest named `kds.yml` (NOT
+          # `latest-kds.yml`). Publish under that exact name or the KDS silently
+          # reports "no update". We also publish `latest-kds.yml` for backward
+          # compatibility with any older naming expectations.
+          write_update_yml "$CANONICAL_KDS" dist-installers/kds/kds.yml "$CANONICAL_KDS_NAME"
+          cp dist-installers/kds/kds.yml dist-installers/kds/latest-kds.yml
 
           NOTES="Windows client installers for Code Orbit POS ${VERSION} and Code Orbit KDS ${VERSION}."
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -144,7 +150,7 @@ jobs:
 
           UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" )
           shopt -s nullglob
-          UPLOAD+=( dist/latest*.yml dist-installers/kds/latest*.yml )
+          UPLOAD+=( dist/latest*.yml dist-installers/kds/kds.yml dist-installers/kds/latest*.yml )
           shopt -u nullglob
 
           gh release upload "$TAG" "${UPLOAD[@]}" --clobber
