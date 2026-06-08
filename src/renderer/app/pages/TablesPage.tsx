@@ -768,26 +768,26 @@ export default function TablesPage() {
     const bw = Math.max(1, maxX - minX);
     const bh = Math.max(1, maxY - minY);
 
-    // Independent x / y POSITION scales so the layout fills the
-    // canvas in both directions instead of leaving empty bands on the
-    // sides or below. Position scale is given a generous upper bound
-    // so even small layouts spread out to use the available space —
-    // children apply a counter-scale so tables themselves don't grow
-    // beyond `shapeMaxScale` and stay nicely proportioned.
+    // UNIFORM fit-to-contain: scale positions AND shapes by the same
+    // factor (the smaller axis) so the waiter floor preserves the exact
+    // proportions and relative spacing of the admin editor. A non-uniform
+    // stretch (independent x / y scale) would spread tables apart to fill
+    // the canvas and produce the large gaps the editor never shows.
     const minScale = 0.3;
-    const positionMaxScale = 6;
-    const shapeMaxScale = 1.8;
+    const maxScale = 1.8;
     const clamp = (raw: number, lo: number, hi: number) =>
       Math.max(lo, Math.min(hi, raw));
-    const scaleX = clamp((cw - pad * 2) / bw, minScale, positionMaxScale);
-    const scaleY = clamp((ch - pad * 2) / bh, minScale, positionMaxScale);
-    // Uniform shape scale: the smaller axis dictates how big shapes
-    // can render so they never visually exceed their density-derived
-    // slot. Cap separately so shapes don't blow up on very sparse
-    // layouts even though positions are free to stretch.
-    const scale = clamp(Math.min(scaleX, scaleY), minScale, shapeMaxScale);
-    const tx = (cw - bw * scaleX) / 2 - minX * scaleX;
-    const ty = (ch - bh * scaleY) / 2 - minY * scaleY;
+    const fit = clamp(
+      Math.min((cw - pad * 2) / bw, (ch - pad * 2) / bh),
+      minScale,
+      maxScale,
+    );
+    const scale = fit;
+    const scaleX = fit;
+    const scaleY = fit;
+    // Centre the (uniformly) scaled bounding box in the canvas.
+    const tx = (cw - bw * fit) / 2 - minX * fit;
+    const ty = (ch - bh * fit) / 2 - minY * fit;
     return { scale, scaleX, scaleY, tx, ty };
   }, [editable, nodes, canvasSize.w, canvasSize.h]);
 
@@ -1118,9 +1118,9 @@ export default function TablesPage() {
                     transform: `translate(${viewTransform.tx}px, ${viewTransform.ty}px) scale(${viewTransform.scaleX}, ${viewTransform.scaleY})`,
                     transformOrigin: 'top left',
                     // Children read these to counter-distort their own
-                    // shapes (so circles stay circles even when the
-                    // wrapper is non-uniformly scaled to spread positions
-                    // across the whole grid).
+                    // shapes. With the uniform fit-to-contain transform
+                    // these resolve to 1 (no distortion); they remain as a
+                    // safety net should the wrapper ever scale non-uniformly.
                     ['--floor-cx' as any]:
                       viewTransform.scaleX > 0
                         ? viewTransform.scale / viewTransform.scaleX

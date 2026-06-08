@@ -2757,12 +2757,27 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         ]);
         const settings = await coreServices.readSettings();
         const fiscalVatEnabled = isVatEnabledFromSettings(settings);
+        const fiscalDefaultVatRate = Number(
+          (settings as any)?.defaultVatRate || 0,
+        );
         const revenueTodayNet = (revenueRows as any[]).reduce(
-          (s, r) => s + sumTicketLinesNetVat(r.itemsJson, fiscalVatEnabled).net,
+          (s, r) =>
+            s +
+            sumTicketLinesNetVat(
+              r.itemsJson,
+              fiscalVatEnabled,
+              fiscalDefaultVatRate,
+            ).net,
           0,
         );
         const revenueTodayVat = (revenueRows as any[]).reduce(
-          (s, r) => s + sumTicketLinesNetVat(r.itemsJson, fiscalVatEnabled).vat,
+          (s, r) =>
+            s +
+            sumTicketLinesNetVat(
+              r.itemsJson,
+              fiscalVatEnabled,
+              fiscalDefaultVatRate,
+            ).vat,
           0,
         );
         return send(
@@ -2872,12 +2887,27 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           .catch(() => []);
         const settings = await coreServices.readSettings();
         const fiscalVatEnabled = isVatEnabledFromSettings(settings);
+        const fiscalDefaultVatRate = Number(
+          (settings as any)?.defaultVatRate || 0,
+        );
         const revenueTodayNet = (rows as any[]).reduce(
-          (s, r) => s + sumTicketLinesNetVat(r.itemsJson, fiscalVatEnabled).net,
+          (s, r) =>
+            s +
+            sumTicketLinesNetVat(
+              r.itemsJson,
+              fiscalVatEnabled,
+              fiscalDefaultVatRate,
+            ).net,
           0,
         );
         const revenueTodayVat = (rows as any[]).reduce(
-          (s, r) => s + sumTicketLinesNetVat(r.itemsJson, fiscalVatEnabled).vat,
+          (s, r) =>
+            s +
+            sumTicketLinesNetVat(
+              r.itemsJson,
+              fiscalVatEnabled,
+              fiscalDefaultVatRate,
+            ).vat,
           0,
         );
         const openRow = await prisma.syncState

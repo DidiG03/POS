@@ -21,7 +21,11 @@ import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
 } from './services/realtime';
-import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
+import {
+  effectiveVatRate,
+  splitGrossVat,
+  sumTicketLinesNetVat,
+} from '@shared/ticketRevenue';
 import {
   isVatEnabledFromSettings,
   resolveVatEnabledFromMeta,
@@ -2648,21 +2652,11 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
           Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [],
         );
         const items = itemsAll.filter((it: any) => !it?.voided);
-        const subtotal = items.reduce(
-          (s: number, it: any) =>
-            s + Number(it.unitPrice || 0) * Number(it.qty || 1),
-          0,
+        const { net: subtotal, vat } = sumTicketLinesNetVat(
+          items,
+          activeVatEnabled,
+          Number((activeSettings as any)?.defaultVatRate || 0),
         );
-        const vat = activeVatEnabled
-          ? items.reduce(
-              (s: number, it: any) =>
-                s +
-                Number(it.unitPrice || 0) *
-                  Number(it.qty || 1) *
-                  Number(it.vatRate || 0),
-              0,
-            )
-          : 0;
         return {
           kind: 'ACTIVE',
           area,
@@ -2734,22 +2728,12 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
       const userName = p.userName ?? null;
       const paymentMethod = (meta.method ?? null) as any;
       const paidAt = meta.paidAt ?? j.createdAt.toISOString();
-      const subtotal = items.reduce(
-        (s: number, it: any) =>
-          s + Number(it.unitPrice || 0) * Number(it.qty || 1),
-        0,
-      );
       const vatEnabled = resolveVatEnabledFromMeta(meta, paymentSettings);
-      const vat = vatEnabled
-        ? items.reduce(
-            (s: number, it: any) =>
-              s +
-              Number(it.unitPrice || 0) *
-                Number(it.qty || 1) *
-                Number(it.vatRate || 0),
-            0,
-          )
-        : 0;
+      const { net: subtotal, vat } = sumTicketLinesNetVat(
+        items,
+        vatEnabled,
+        Number((paymentSettings as any)?.defaultVatRate || 0),
+      );
       const serviceChargeEnabled = (meta.serviceChargeEnabled ?? null) as any;
       const serviceChargeApplied = (meta.serviceChargeApplied ?? null) as any;
       const serviceChargeMode = (meta.serviceChargeMode ?? null) as any;
@@ -2823,6 +2807,12 @@ ipcMain.handle('reports:listMyVoidedTickets', async (_e, input) => {
       })
       .catch(() => []);
 
+    const voidSettings = await readSettings().catch(() => ({}));
+    const voidVatEnabled = isVatEnabledFromSettings(voidSettings);
+    const voidDefaultVatRate = Number(
+      (voidSettings as any)?.defaultVatRate || 0,
+    );
+
     const out: any[] = [];
     for (const r of rows as any[]) {
       if (Number(r.userId) !== Number(userId)) continue;
@@ -2841,19 +2831,19 @@ ipcMain.handle('reports:listMyVoidedTickets', async (_e, input) => {
         .findUnique({ where: { id: r.userId } })
         .catch(() => null);
 
-      const subtotal = voidedItems.reduce(
+      const grossSubtotal = voidedItems.reduce(
         (s: number, it: any) =>
           s + Number(it.unitPrice || 0) * Number(it.qty || 1),
         0,
       );
-      const vat = voidedItems.reduce(
-        (s: number, it: any) =>
-          s +
-          Number(it.unitPrice || 0) *
-            Number(it.qty || 1) *
-            Number(it.vatRate || 0),
-        0,
-      );
+      const vat = voidVatEnabled
+        ? voidedItems.reduce((s: number, it: any) => {
+            const lineGross = Number(it.unitPrice || 0) * Number(it.qty || 1);
+            const rate = effectiveVatRate(it.vatRate, voidDefaultVatRate);
+            return s + splitGrossVat(lineGross, rate).vat;
+          }, 0)
+        : 0;
+      const subtotal = grossSubtotal - vat;
 
       out.push({
         kind: isFullVoid ? 'VOIDED_TICKET' : 'VOIDED_ITEMS',
@@ -2868,7 +2858,7 @@ ipcMain.handle('reports:listMyVoidedTickets', async (_e, input) => {
         voidedCount: voidedItems.length,
         subtotal,
         vat,
-        total: subtotal,
+        total: grossSubtotal,
       });
       if (out.length >= limit) break;
     }
@@ -3061,6 +3051,33 @@ ipcMain.handle('menu:deleteCategory', async (_e, payload) => {
   return true;
 });
 
+function slugifySku(name: string): string {
+  const base = String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '') // drop diacritics (ç, ë, …)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return base || 'ITEM';
+}
+
+// SKU is unique. Build a candidate from an explicit sku (or the name) and
+// resolve collisions by appending a counter, so bulk imports with duplicate
+// or pre-existing names never crash on the unique constraint.
+async function nextAvailableSku(preferred: string): Promise<string> {
+  const base = slugifySku(preferred);
+  for (let i = 0; i < 200; i++) {
+    const candidate = i === 0 ? base : `${base}-${i + 1}`;
+    const clash = await prisma.menuItem.findUnique({
+      where: { sku: candidate },
+      select: { id: true },
+    });
+    if (!clash) return candidate;
+  }
+  return `${base}-${Date.now().toString(36).toUpperCase()}`;
+}
+
 ipcMain.handle('menu:createItem', async (_e, payload) => {
   const input = CreateMenuItemInputSchema.parse(payload);
   const category = await prisma.category.findUnique({
@@ -3072,24 +3089,40 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
     (typeof (input as any).station === 'string'
       ? String((input as any).station).toUpperCase()
       : 'KITCHEN');
-  const created = await prisma.menuItem.create({
-    data: {
-      name: input.name.trim(),
-      sku: String(input.sku || input.name).trim(),
-      categoryId: Number(input.categoryId),
-      price: Number(input.price),
-      vatRate: Number(
-        (input as any).vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2,
-      ),
-      active: (input as any).active ?? true,
-      isKg: (input as any).isKg ?? false,
-      station: inheritedStation,
-      ...(typeof input.stockLevel === 'string'
-        ? { stockLevel: normalizeMenuStockLevel(input.stockLevel) }
-        : {}),
-    } as any,
-  });
-  return { id: created.id, sku: created.sku };
+  const data = {
+    name: input.name.trim(),
+    categoryId: Number(input.categoryId),
+    price: Number(input.price),
+    vatRate: Number(
+      (input as any).vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2,
+    ),
+    active: (input as any).active ?? true,
+    isKg: (input as any).isKg ?? false,
+    station: inheritedStation,
+    ...(typeof input.stockLevel === 'string'
+      ? { stockLevel: normalizeMenuStockLevel(input.stockLevel) }
+      : {}),
+  };
+  // Retry a couple of times in case a concurrent create grabbed the SKU
+  // between the availability check and the insert.
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const sku = await nextAvailableSku(String(input.sku || input.name).trim());
+    try {
+      const created = await prisma.menuItem.create({
+        data: { ...data, sku } as any,
+      });
+      return { id: created.id, sku: created.sku };
+    } catch (e: any) {
+      // P2002 = unique constraint violation; retry with a fresh SKU.
+      if (e?.code === 'P2002') {
+        lastErr = e;
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr ?? new Error('Failed to create menu item');
 });
 
 ipcMain.handle('menu:updateItem', async (_e, payload) => {
@@ -3286,12 +3319,21 @@ ipcMain.handle('admin:getOverview', async (_e) => {
   const livingRevenueRows = (revenueRows as any[]).filter(
     (r: any) => !isTransferredOutNote(r?.note),
   );
+  const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const revenueTodayNet = livingRevenueRows.reduce((s, r) => {
-    const { net } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
+    const { net } = sumTicketLinesNetVat(
+      r?.itemsJson,
+      fiscalVatEnabled,
+      fiscalDefaultVatRate,
+    );
     return s + net;
   }, 0);
   const revenueTodayVat = livingRevenueRows.reduce((s, r) => {
-    const { vat } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
+    const { vat } = sumTicketLinesNetVat(
+      r?.itemsJson,
+      fiscalVatEnabled,
+      fiscalDefaultVatRate,
+    );
     return s + vat;
   }, 0);
 
@@ -4737,20 +4779,14 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
       note: r.note,
       status,
       transfer,
-      subtotal: liveItems.reduce(
-        (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
-        0,
-      ),
-      vat: rowVatEnabled
-        ? liveItems.reduce(
-            (s: number, it: any) =>
-              s +
-              Number(it.unitPrice) *
-                Number(it.qty || 1) *
-                Number(it.vatRate || 0),
-            0,
-          )
-        : 0,
+      ...(() => {
+        const { net, vat } = sumTicketLinesNetVat(
+          liveItems,
+          rowVatEnabled,
+          Number((settings as any)?.defaultVatRate || 0),
+        );
+        return { subtotal: net, vat };
+      })(),
     };
   });
 });
@@ -5312,18 +5348,27 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
       let rowRevenue = 0;
       let rowVat = 0;
       let rowItems = 0;
+      const reviewDefaultVatRate = Number(
+        (settings as any)?.defaultVatRate || 0,
+      );
       for (const it of live) {
         const qty = Number(it?.qty || 1);
         const unit = Number(it?.unitPrice || 0);
-        const vatRate = Number(it?.vatRate || 0);
-        const lineNet = unit * qty;
-        rowRevenue += lineNet;
-        if (fiscalVatEnabled) rowVat += lineNet * vatRate;
+        const lineGross = unit * qty;
+        // VAT-inclusive: extract the contained tax so revenueNet is the
+        // ex-VAT base and revenueNet + revenueVat == gross sales.
+        const rate = effectiveVatRate(it?.vatRate, reviewDefaultVatRate);
+        const split = fiscalVatEnabled
+          ? splitGrossVat(lineGross, rate)
+          : { net: lineGross, vat: 0 };
+        rowRevenue += split.net;
+        rowVat += split.vat;
         rowItems += qty;
         const name = String(it?.name || 'Item');
         const e2 = itemAgg.get(name) || { name, qty: 0, revenue: 0 };
         e2.qty += qty;
-        e2.revenue += lineNet;
+        // Item leaderboard tracks gross sales per item.
+        e2.revenue += lineGross;
         itemAgg.set(name, e2);
       }
 
@@ -5514,12 +5559,21 @@ ipcMain.handle('reports:getMyOverview', async (_e, input) => {
   const liveRows = (rows as any[]).filter(
     (r: any) => !isTransferredOutNote(r?.note),
   );
+  const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const revenueTodayNet = liveRows.reduce((s: number, r: any) => {
-    const { net } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
+    const { net } = sumTicketLinesNetVat(
+      r?.itemsJson,
+      fiscalVatEnabled,
+      fiscalDefaultVatRate,
+    );
     return s + net;
   }, 0);
   const revenueTodayVat = liveRows.reduce((s: number, r: any) => {
-    const { vat } = sumTicketLinesNetVat(r?.itemsJson, fiscalVatEnabled);
+    const { vat } = sumTicketLinesNetVat(
+      r?.itemsJson,
+      fiscalVatEnabled,
+      fiscalDefaultVatRate,
+    );
     return s + vat;
   }, 0);
   // Open orders: open tables where latest ticket owner is this user.
@@ -5645,7 +5699,9 @@ ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
     const when = new Date(r.createdAt);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
-    const net = sumTicketLinesNetVat(r.itemsJson).net;
+    // Sales trend reports gross sales (total money taken), independent of
+    // the VAT split — pass vatEnabled=false so net == gross.
+    const net = sumTicketLinesNetVat(r.itemsJson, false).net;
     result[idx].total += net;
     result[idx].orders += 1;
   }

@@ -3,6 +3,7 @@ import {
   isVatEnabledFromSettings,
   resolveVatEnabledFromMeta,
 } from '@shared/vatFromFiscal';
+import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import type { ShiftClosePrintSummary } from '../print';
@@ -21,21 +22,21 @@ function paymentTotalFromPayload(
 } {
   const meta = (p?.meta as any) || {};
   const items = Array.isArray(p?.items) ? p.items : [];
-  const subtotal = items.reduce(
+  // VAT-inclusive: extract the contained tax from the gross line totals.
+  const grossSubtotal = items.reduce(
     (s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1),
     0,
   );
   const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
+  const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const vat = vatEnabled
-    ? items.reduce(
-        (s: number, it: any) =>
-          s +
-          Number(it.unitPrice || 0) *
-            Number(it.qty || 1) *
-            Number(it.vatRate || 0),
-        0,
-      )
+    ? items.reduce((s: number, it: any) => {
+        const lineGross = Number(it.unitPrice || 0) * Number(it.qty || 1);
+        const rate = effectiveVatRate(it.vatRate, defaultVatRate);
+        return s + splitGrossVat(lineGross, rate).vat;
+      }, 0)
     : 0;
+  const subtotal = grossSubtotal - vat;
   const serviceChargeAmount = Number(meta.serviceChargeAmount || 0);
   const discountAmount = Number(meta.discountAmount || 0);
   const fallbackTotal = Math.max(

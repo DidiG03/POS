@@ -56,9 +56,30 @@ interface LegacyOfflineItem {
 
 const DB_NAME = 'pos-offline';
 const STORE = 'orders';
+/** Items that exceeded MAX_ATTEMPTS or were permanently rejected live here. */
+const FAILED_STORE = 'failed';
+const DB_VERSION = 2;
 const MAX_ITEMS = 500;
 const MAX_ATTEMPTS = 12;
 const QUEUE_CHANGE_EVENT = 'offline-queue:changed';
+const FAILED_CHANGE_EVENT = 'offline-queue:failed-changed';
+
+/**
+ * Operations that move money or create the source-of-truth order. These
+ * must NEVER be silently dropped: a transient outage longer than the
+ * retry budget keeps retrying forever (at the capped backoff) instead of
+ * discarding the write. Only a PERMANENT server rejection moves them to
+ * the failed surface for manual review.
+ */
+const MONEY_OPS = new Set<OfflineOp>(['tickets.log', 'payments.record']);
+
+/** Why an item ended up on the failed surface. */
+export type FailedReason = 'rejected' | 'exhausted';
+
+export interface FailedSyncItem extends OfflineQueueItem {
+  failedAt: number;
+  reason: FailedReason;
+}
 
 function isNativeCapacitor(): boolean {
   if (typeof window === 'undefined') return false;
@@ -207,14 +228,54 @@ class OfflineQueue {
   private onlineHandler: (() => void) | null = null;
   private startupTimer: number | null = null;
   private syncing = false;
+  // Serialises store read-modify-write critical sections (enqueue, the
+  // commit phase of sync, retryFailed) so two writers can't clobber each
+  // other's changes. Network I/O deliberately runs OUTSIDE this lock.
+  private opLock: Promise<unknown> = Promise.resolve();
 
   constructor() {
     this.dbPromise = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
-        req.result.createObjectStore(STORE, { keyPath: 'id' });
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) {
+          db.createObjectStore(STORE, { keyPath: 'id' });
+        }
+        // v2: durable "needs attention" store for permanently-rejected
+        // and exhausted (non-money) operations.
+        if (!db.objectStoreNames.contains(FAILED_STORE)) {
+          db.createObjectStore(FAILED_STORE, { keyPath: 'id' });
+        }
       };
-      req.onsuccess = () => resolve(req.result);
+      // Another tab/window is holding an older version open and blocking
+      // our upgrade. We can't force it; the open will proceed once they
+      // close. Surface it instead of hanging silently in dev.
+      req.onblocked = () => {
+        try {
+          console.warn(
+            '[offlineQueue] IndexedDB upgrade blocked by another open connection; waiting for it to close.',
+          );
+        } catch {
+          // ignore
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        // If a FUTURE version wants to upgrade, close this connection so
+        // we never block the other tab (and never leave a half-open DB).
+        try {
+          db.onversionchange = () => {
+            try {
+              db.close();
+            } catch {
+              // ignore
+            }
+          };
+        } catch {
+          // ignore
+        }
+        resolve(db);
+      };
       req.onerror = () => reject(req.error);
     });
 
@@ -241,6 +302,20 @@ class OfflineQueue {
     }
   }
 
+  /**
+   * Run a store mutation exclusively. Chains onto the previous op so the
+   * read-modify-write sequences inside never interleave. Errors in one
+   * op don't break the chain for the next.
+   */
+  private withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.opLock.then(fn, fn);
+    this.opLock = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   // ---- public API -------------------------------------------------
 
   async enqueue(
@@ -248,40 +323,42 @@ class OfflineQueue {
     args: any,
     options?: { dedupeKey?: string },
   ): Promise<{ pending: number }> {
-    const all = await this.getAll();
-    const next: OfflineQueueItem = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      op,
-      args,
-      attempts: 0,
-      nextAttemptAt: 0,
-      dedupeKey: options?.dedupeKey,
-      createdAt: Date.now(),
-    };
+    return this.withLock(async () => {
+      const all = await this.getAll();
+      const next: OfflineQueueItem = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        op,
+        args,
+        attempts: 0,
+        nextAttemptAt: 0,
+        dedupeKey: options?.dedupeKey,
+        createdAt: Date.now(),
+      };
 
-    let items: OfflineQueueItem[] = all
-      .map(this.normalize)
-      .filter((it): it is OfflineQueueItem => it !== null);
+      let items: OfflineQueueItem[] = all
+        .map(this.normalize)
+        .filter((it): it is OfflineQueueItem => it !== null);
 
-    // Latest-wins coalescing: drop older entries with the same dedupe
-    // key. Keeps a quick "open / close / open" sequence to ONE final
-    // write instead of three.
-    if (next.dedupeKey) {
-      items = items.filter((it) => it.dedupeKey !== next.dedupeKey);
-    }
-    items.push(next);
+      // Latest-wins coalescing: drop older entries with the same dedupe
+      // key. Keeps a quick "open / close / open" sequence to ONE final
+      // write instead of three.
+      if (next.dedupeKey) {
+        items = items.filter((it) => it.dedupeKey !== next.dedupeKey);
+      }
+      items.push(next);
 
-    // Bound: drop oldest beyond the cap. Anything past 500 means the
-    // user has been offline for a very long time AND keeps mashing
-    // buttons; the alternative is unbounded IDB growth which can OOM
-    // a Safari tab.
-    if (items.length > MAX_ITEMS) {
-      items = items.slice(items.length - MAX_ITEMS);
-    }
+      // Bound: drop oldest beyond the cap. Anything past 500 means the
+      // user has been offline for a very long time AND keeps mashing
+      // buttons; the alternative is unbounded IDB growth which can OOM
+      // a Safari tab.
+      if (items.length > MAX_ITEMS) {
+        items = items.slice(items.length - MAX_ITEMS);
+      }
 
-    await this.replaceAll(items);
-    this.broadcastChange(items.length);
-    return { pending: items.length };
+      await this.replaceAll(items);
+      this.broadcastChange(items.length);
+      return { pending: items.length };
+    });
   }
 
   async getPendingCount(): Promise<number> {
@@ -309,7 +386,16 @@ class OfflineQueue {
         .filter((it): it is OfflineQueueItem => it !== null);
 
       const now = Date.now();
-      let mutated = false;
+      // We never mutate the store mid-loop (a concurrent enqueue/retry
+      // could be clobbered). Instead we record decisions and apply them
+      // atomically in `commitSync`, which re-reads under the lock and
+      // preserves any items added while the network calls were in flight.
+      const removedIds = new Set<string>();
+      const updates = new Map<
+        string,
+        { attempts: number; nextAttemptAt: number; lastError?: string }
+      >();
+      let touched = false;
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
@@ -321,9 +407,8 @@ class OfflineQueue {
           // This can happen if a feature is rolled back or the user
           // downgrades the app; better to lose one stale operation
           // than to block every newer item behind it.
-          items.splice(i, 1);
-          i -= 1;
-          mutated = true;
+          removedIds.add(it.id);
+          touched = true;
           continue;
         }
 
@@ -334,36 +419,62 @@ class OfflineQueue {
           // honours it; tickets.log already does).
           const args = { ...it.args, idempotencyKey: it.id };
           await dispatcher(args);
-          items.splice(i, 1);
-          i -= 1;
+          removedIds.add(it.id);
           sent += 1;
-          mutated = true;
+          touched = true;
         } catch (e: any) {
           // Permanent server rejections (e.g. table is now closed,
           // table owned by another waiter, validation failure) will
           // never succeed on a retry. Drop them immediately and tell
           // the UI so the waiter sees a toast instead of a silent loss.
           if (e?.permanent === true) {
-            it.lastError = String(e?.message || e || 'rejected');
-            this.broadcastDrop(it);
-            items.splice(i, 1);
-            i -= 1;
-            mutated = true;
+            const failedItem: OfflineQueueItem = {
+              ...it,
+              lastError: String(e?.message || e || 'rejected'),
+            };
+            this.broadcastDrop(failedItem);
+            // Permanent rejections (table closed, owned by another waiter,
+            // validation) will never succeed — move to the durable failed
+            // surface so an operator can see exactly what was lost.
+            await this.recordFailed(failedItem, 'rejected');
+            removedIds.add(it.id);
+            touched = true;
             continue;
           }
-          it.attempts = Math.min(MAX_ATTEMPTS, (it.attempts || 0) + 1);
-          it.lastError = String(e?.message || e || 'request failed');
-          if (it.attempts >= MAX_ATTEMPTS) {
-            // Give up — the user has been retrying this for ~5 min of
-            // wall time across their app session. Surface it for the
-            // future UI to show, then drop.
-            this.broadcastDrop(it);
-            items.splice(i, 1);
-            i -= 1;
+          const attempts = Math.min(MAX_ATTEMPTS, (it.attempts || 0) + 1);
+          const lastError = String(e?.message || e || 'request failed');
+          if (attempts >= MAX_ATTEMPTS) {
+            if (MONEY_OPS.has(it.op)) {
+              // NEVER drop an order/payment. The server is the source of
+              // truth for money; keep retrying at the capped backoff
+              // (~30s) until it lands. The UI surfaces it as "stuck" so
+              // staff know a write hasn't synced yet.
+              updates.set(it.id, {
+                attempts,
+                nextAttemptAt: Date.now() + computeBackoffMs(attempts),
+                lastError,
+              });
+            } else {
+              // Non-money op (e.g. covers, table colour) retried for ~5 min
+              // of wall time. Move it to the failed surface for review
+              // instead of silently discarding it.
+              const failedItem: OfflineQueueItem = {
+                ...it,
+                attempts,
+                lastError,
+              };
+              this.broadcastDrop(failedItem);
+              await this.recordFailed(failedItem, 'exhausted');
+              removedIds.add(it.id);
+            }
           } else {
-            it.nextAttemptAt = Date.now() + computeBackoffMs(it.attempts);
+            updates.set(it.id, {
+              attempts,
+              nextAttemptAt: Date.now() + computeBackoffMs(attempts),
+              lastError,
+            });
           }
-          mutated = true;
+          touched = true;
           // If the box clearly can't reach the network, don't burn
           // through every other queued item making the same failed
           // call — wait for the next 'online' event.
@@ -371,14 +482,48 @@ class OfflineQueue {
         }
       }
 
-      if (mutated) {
-        await this.replaceAll(items);
-        this.broadcastChange(items.length);
+      let remaining = items.length;
+      if (touched) {
+        remaining = await this.commitSync(removedIds, updates);
       }
-      return { sent, remaining: items.length };
+      return { sent, remaining };
     } finally {
       this.syncing = false;
     }
+  }
+
+  /**
+   * Apply a sync pass's decisions atomically. Re-reads the live store
+   * under the lock so that items added by a concurrent `enqueue` /
+   * `retryFailed` (ids the sync pass never saw) are preserved instead of
+   * being clobbered by a stale snapshot.
+   */
+  private async commitSync(
+    removedIds: Set<string>,
+    updates: Map<
+      string,
+      { attempts: number; nextAttemptAt: number; lastError?: string }
+    >,
+  ): Promise<number> {
+    return this.withLock(async () => {
+      const current = (await this.getAll())
+        .map(this.normalize)
+        .filter((it): it is OfflineQueueItem => it !== null);
+      const next: OfflineQueueItem[] = [];
+      for (const row of current) {
+        if (removedIds.has(row.id)) continue;
+        const u = updates.get(row.id);
+        if (u) {
+          row.attempts = u.attempts;
+          row.nextAttemptAt = u.nextAttemptAt;
+          row.lastError = u.lastError;
+        }
+        next.push(row);
+      }
+      await this.replaceAll(next);
+      this.broadcastChange(next.length);
+      return next.length;
+    });
   }
 
   // ---- internals --------------------------------------------------
@@ -466,6 +611,110 @@ class OfflineQueue {
       // ignore
     }
   }
+
+  // ---- failed surface (PR #6) -------------------------------------
+
+  /** Persist an item that can no longer be replayed automatically. */
+  private async recordFailed(
+    it: OfflineQueueItem,
+    reason: FailedReason,
+  ): Promise<void> {
+    try {
+      const db = await this.dbPromise;
+      const tx = db.transaction(FAILED_STORE, 'readwrite');
+      const failed: FailedSyncItem = { ...it, failedAt: Date.now(), reason };
+      tx.objectStore(FAILED_STORE).put(failed);
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      this.broadcastFailedChange(await this.getFailedCount());
+    } catch {
+      // The failed surface is advisory — never let a bookkeeping write
+      // break the live queue.
+    }
+  }
+
+  async getFailed(): Promise<FailedSyncItem[]> {
+    try {
+      const db = await this.dbPromise;
+      const tx = db.transaction(FAILED_STORE, 'readonly');
+      const req = tx.objectStore(FAILED_STORE).getAll();
+      const rows: any[] = await new Promise((resolve, reject) => {
+        req.onsuccess = () => resolve((req.result as any[]) || []);
+        req.onerror = () => reject(req.error);
+      });
+      return rows
+        .filter((r) => r && r.id && r.op)
+        .sort((a, b) => Number(b.failedAt || 0) - Number(a.failedAt || 0));
+    } catch {
+      return [];
+    }
+  }
+
+  async getFailedCount(): Promise<number> {
+    return (await this.getFailed()).length;
+  }
+
+  private async deleteFailed(id: string): Promise<void> {
+    const db = await this.dbPromise;
+    const tx = db.transaction(FAILED_STORE, 'readwrite');
+    tx.objectStore(FAILED_STORE).delete(id);
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /** Move a failed item back into the live queue and try again now. */
+  async retryFailed(id: string): Promise<{ requeued: boolean }> {
+    const failed = await this.getFailed();
+    const row = failed.find((f) => f.id === id);
+    if (!row) return { requeued: false };
+    const revived: OfflineQueueItem = {
+      id: row.id,
+      op: row.op,
+      args: row.args,
+      attempts: 0,
+      nextAttemptAt: 0,
+      dedupeKey: row.dedupeKey,
+      createdAt: row.createdAt || Date.now(),
+    };
+    await this.withLock(async () => {
+      const all = (await this.getAll())
+        .map(this.normalize)
+        .filter((it): it is OfflineQueueItem => it !== null)
+        .filter((it) => it.id !== revived.id);
+      all.push(revived);
+      await this.replaceAll(all);
+      this.broadcastChange(all.length);
+    });
+    // Only drop the failed-store copy once the live re-queue is durable.
+    // If we crash between these two writes the item is briefly in BOTH
+    // stores (it will sync from the live queue and can be dismissed from
+    // the banner) — never in NEITHER, so it can't be lost.
+    await this.deleteFailed(id);
+    this.broadcastFailedChange(await this.getFailedCount());
+    void this.sync();
+    return { requeued: true };
+  }
+
+  /** Permanently discard a failed item (operator acknowledged the loss). */
+  async dismissFailed(id: string): Promise<void> {
+    await this.deleteFailed(id);
+    this.broadcastFailedChange(await this.getFailedCount());
+  }
+
+  private broadcastFailedChange(count: number) {
+    if (typeof window === 'undefined') return;
+    try {
+      window.dispatchEvent(
+        new CustomEvent(FAILED_CHANGE_EVENT, { detail: { count } }),
+      );
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function getGlobalOfflineQueue(): OfflineQueue {
@@ -527,6 +776,25 @@ export async function tryOrQueue<T = unknown>(
 /** Cheap accessor for badges / status indicators. */
 export async function getOfflineQueueCount(): Promise<number> {
   return await offlineQueue.getPendingCount();
+}
+
+/** Items that need manual attention (permanently rejected or exhausted). */
+export async function getFailedSyncItems(): Promise<FailedSyncItem[]> {
+  return await offlineQueue.getFailed();
+}
+
+export async function getFailedSyncCount(): Promise<number> {
+  return await offlineQueue.getFailedCount();
+}
+
+export async function retryFailedSyncItem(
+  id: string,
+): Promise<{ requeued: boolean }> {
+  return await offlineQueue.retryFailed(id);
+}
+
+export async function dismissFailedSyncItem(id: string): Promise<void> {
+  return await offlineQueue.dismissFailed(id);
 }
 
 // Dev-only HMR cleanup — keeps a single live IDB connection across

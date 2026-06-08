@@ -1,77 +1,87 @@
 import { describe, it, expect } from 'vitest';
+import { effectiveVatRate, splitGrossVat } from '../shared/ticketRevenue';
 
 /**
  * Unit tests for critical business logic
- * 
- * Tests cover:
- * - Totals calculation (subtotal, VAT, total)
- * - VAT enabled/disabled
- * - Discount calculations (percentage and fixed)
- * - Service charge calculations
+ *
+ * Prices are VAT-INCLUSIVE (Albanian fiscalization): the displayed gross
+ * already contains the tax, so VAT is extracted from the menu price rather
+ * than added on top. The customer total therefore equals the sum of menu
+ * prices, and `subtotal + vat === total`.
  */
 
-// Extract computeTotals function logic for testing
+// Mirror of OrderPage.computeTotals (kept in sync via the shared helpers).
 function computeTotals(
   lines: Array<{ unitPrice: number; qty: number; vatRate: number }>,
-  vatEnabled = true
+  vatEnabled = true,
+  defaultVatRate = 0,
 ) {
-  const subtotal = (lines || []).reduce(
+  const grossSubtotal = (lines || []).reduce(
     (s, l) => s + Number(l.unitPrice || 0) * Number(l.qty || 0),
-    0
+    0,
   );
   const vat = vatEnabled
-    ? (lines || []).reduce(
-        (s, l) =>
-          s +
-          Number(l.unitPrice || 0) *
-            Number(l.qty || 0) *
-            Number(l.vatRate || 0),
-        0
-      )
+    ? (lines || []).reduce((s, l) => {
+        const lineGross = Number(l.unitPrice || 0) * Number(l.qty || 0);
+        const rate = effectiveVatRate(l.vatRate, defaultVatRate);
+        return s + splitGrossVat(lineGross, rate).vat;
+      }, 0)
     : 0;
+  const subtotal = grossSubtotal - vat;
   const total = subtotal + vat;
   return { subtotal, vat, total };
 }
 
-describe('Business Logic: Totals Calculation', () => {
+describe('Business Logic: Totals Calculation (VAT-inclusive)', () => {
   describe('computeTotals', () => {
-    it('should calculate subtotal correctly', () => {
+    it('keeps the gross total equal to the sum of menu prices', () => {
       const lines = [
         { unitPrice: 10, qty: 2, vatRate: 0.1 },
         { unitPrice: 5, qty: 3, vatRate: 0.1 },
       ];
       const result = computeTotals(lines);
-      expect(result.subtotal).toBe(35); // (10*2) + (5*3) = 20 + 15 = 35
+      expect(result.total).toBeCloseTo(35, 6); // (10*2) + (5*3) = 35
+      expect(result.subtotal).toBeCloseTo(35 / 1.1, 6); // net
     });
 
-    it('should calculate VAT correctly when enabled', () => {
+    it('extracts VAT from the gross when enabled', () => {
       const lines = [
-        { unitPrice: 10, qty: 2, vatRate: 0.1 }, // VAT: 2
-        { unitPrice: 5, qty: 3, vatRate: 0.1 }, // VAT: 1.5
+        { unitPrice: 10, qty: 2, vatRate: 0.1 },
+        { unitPrice: 5, qty: 3, vatRate: 0.1 },
       ];
       const result = computeTotals(lines, true);
-      expect(result.vat).toBe(3.5); // (10*2*0.1) + (5*3*0.1) = 2 + 1.5 = 3.5
-      expect(result.total).toBe(38.5); // 35 + 3.5 = 38.5
+      expect(result.vat).toBeCloseTo(35 - 35 / 1.1, 6);
+      expect(result.total).toBeCloseTo(35, 6);
+      expect(result.subtotal + result.vat).toBeCloseTo(result.total, 6);
     });
 
-    it('should not calculate VAT when disabled', () => {
+    it('does not split VAT when disabled (net === gross)', () => {
       const lines = [
         { unitPrice: 10, qty: 2, vatRate: 0.1 },
         { unitPrice: 5, qty: 3, vatRate: 0.1 },
       ];
       const result = computeTotals(lines, false);
       expect(result.vat).toBe(0);
-      expect(result.total).toBe(35); // Only subtotal
+      expect(result.subtotal).toBe(35);
+      expect(result.total).toBe(35);
     });
 
-    it('should handle empty lines array', () => {
+    it('falls back to the default rate for lines with a 0/missing rate', () => {
+      const lines = [{ unitPrice: 120, qty: 1, vatRate: 0 }];
+      const result = computeTotals(lines, true, 0.2);
+      expect(result.total).toBeCloseTo(120, 6);
+      expect(result.vat).toBeCloseTo(20, 6);
+      expect(result.subtotal).toBeCloseTo(100, 6);
+    });
+
+    it('handles empty lines array', () => {
       const result = computeTotals([]);
       expect(result.subtotal).toBe(0);
       expect(result.vat).toBe(0);
       expect(result.total).toBe(0);
     });
 
-    it('should handle zero prices', () => {
+    it('handles zero prices', () => {
       const lines = [
         { unitPrice: 0, qty: 5, vatRate: 0.1 },
         { unitPrice: 10, qty: 0, vatRate: 0.1 },
@@ -82,23 +92,21 @@ describe('Business Logic: Totals Calculation', () => {
       expect(result.total).toBe(0);
     });
 
-    it('should handle different VAT rates', () => {
+    it('handles different VAT rates', () => {
       const lines = [
-        { unitPrice: 10, qty: 1, vatRate: 0.1 }, // 10% VAT
-        { unitPrice: 10, qty: 1, vatRate: 0.2 }, // 20% VAT
+        { unitPrice: 10, qty: 1, vatRate: 0.1 },
+        { unitPrice: 10, qty: 1, vatRate: 0.2 },
       ];
       const result = computeTotals(lines);
-      expect(result.subtotal).toBe(20);
-      expect(result.vat).toBe(3); // (10*1*0.1) + (10*1*0.2) = 1 + 2 = 3
-      expect(result.total).toBe(23);
+      expect(result.total).toBeCloseTo(20, 6);
+      expect(result.vat).toBeCloseTo(10 - 10 / 1.1 + (10 - 10 / 1.2), 6);
     });
 
-    it('should handle decimal quantities', () => {
+    it('handles decimal quantities', () => {
       const lines = [{ unitPrice: 10, qty: 1.5, vatRate: 0.1 }];
       const result = computeTotals(lines);
-      expect(result.subtotal).toBe(15); // 10 * 1.5 = 15
-      expect(result.vat).toBe(1.5); // 15 * 0.1 = 1.5
-      expect(result.total).toBe(16.5);
+      expect(result.total).toBeCloseTo(15, 6); // 10 * 1.5
+      expect(result.vat).toBeCloseTo(15 - 15 / 1.1, 6);
     });
   });
 
@@ -169,44 +177,34 @@ describe('Business Logic: Totals Calculation', () => {
   });
 
   describe('Combined Calculations', () => {
-    it('should calculate total with VAT and service charge correctly', () => {
+    it('applies service charge on the gross (VAT-inclusive) total', () => {
       const lines = [
-        { unitPrice: 10, qty: 2, vatRate: 0.1 }, // 20 + 2 VAT
-        { unitPrice: 5, qty: 1, vatRate: 0.1 }, // 5 + 0.5 VAT
+        { unitPrice: 10, qty: 2, vatRate: 0.1 },
+        { unitPrice: 5, qty: 1, vatRate: 0.1 },
       ];
       const totals = computeTotals(lines, true);
-      // Subtotal: 25, VAT: 2.5, Total: 27.5
-
-      const serviceChargeAmount = 2.75; // 10% of total
+      const serviceChargeAmount = 2.5; // 10% of gross (25)
       const finalTotal = totals.total + serviceChargeAmount;
 
-      expect(totals.subtotal).toBe(25);
-      expect(totals.vat).toBe(2.5);
-      expect(totals.total).toBe(27.5);
-      expect(finalTotal).toBe(30.25);
+      expect(totals.total).toBeCloseTo(25, 6); // gross == menu prices
+      expect(totals.subtotal + totals.vat).toBeCloseTo(totals.total, 6);
+      expect(finalTotal).toBeCloseTo(27.5, 6);
     });
 
-    it('should calculate total with VAT, discount, and service charge', () => {
-      const lines = [
-        { unitPrice: 100, qty: 1, vatRate: 0.1 }, // 100 + 10 VAT = 110
-      ];
+    it('applies discount and service charge on the gross total', () => {
+      const lines = [{ unitPrice: 100, qty: 1, vatRate: 0.1 }];
       const totals = computeTotals(lines, true);
 
-      // Apply 10% discount
-      const discountPercent = 10;
-      const discountAmount = (totals.total * discountPercent) / 100;
-      const totalAfterDiscount = totals.total - discountAmount; // 110 - 11 = 99
+      const discountAmount = (totals.total * 10) / 100;
+      const totalAfterDiscount = totals.total - discountAmount; // 100 - 10 = 90
+      const serviceChargeAmount = (totalAfterDiscount * 5) / 100;
+      const finalTotal = totalAfterDiscount + serviceChargeAmount; // 90 + 4.5
 
-      // Apply 5% service charge on discounted total
-      const serviceChargePercent = 5;
-      const serviceChargeAmount = (totalAfterDiscount * serviceChargePercent) / 100;
-      const finalTotal = totalAfterDiscount + serviceChargeAmount; // 99 + 4.95 = 103.95
-
-      expect(totals.total).toBe(110);
-      expect(discountAmount).toBe(11);
-      expect(totalAfterDiscount).toBe(99);
-      expect(serviceChargeAmount).toBe(4.95);
-      expect(finalTotal).toBe(103.95);
+      expect(totals.total).toBeCloseTo(100, 6);
+      expect(discountAmount).toBeCloseTo(10, 6);
+      expect(totalAfterDiscount).toBeCloseTo(90, 6);
+      expect(serviceChargeAmount).toBeCloseTo(4.5, 6);
+      expect(finalTotal).toBeCloseTo(94.5, 6);
     });
   });
 });

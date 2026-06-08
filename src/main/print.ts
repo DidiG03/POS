@@ -1,4 +1,6 @@
 import type { SettingsDTO, TicketPrintMeta } from '@shared/ipc';
+import { resolveVatEnabledFromMeta } from '@shared/vatFromFiscal';
+import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
 import os from 'node:os';
 import { BrowserWindow } from 'electron';
 import fs from 'node:fs/promises';
@@ -261,15 +263,20 @@ export function buildEscposTicket(
   lines.push(escposText(`${nowStr}\n`));
   lines.push(escposText('--------------------------------\n'));
 
-  // Items
-  let subtotal = 0;
+  // Items. Prices are VAT-inclusive (Albanian fiscalization): the gross
+  // line already contains the tax, so VAT is extracted, never added on top.
+  let grossSubtotal = 0;
   let vat = 0;
-  const vatEnabled = meta?.vatEnabled !== false;
+  const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
+  const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   for (const it of itemsToPrint) {
     const qty = Number(it.qty || 1);
     const linePrice = Number(it.unitPrice || 0) * qty;
-    subtotal += linePrice;
-    if (vatEnabled) vat += linePrice * Number(it.vatRate || 0);
+    grossSubtotal += linePrice;
+    if (vatEnabled) {
+      const rate = effectiveVatRate(it.vatRate, defaultVatRate);
+      vat += splitGrossVat(linePrice, rate).vat;
+    }
     if (kind === 'ORDER') {
       lines.push(cmdTextSize('lg'));
       lines.push(cmdBold(true));
@@ -293,7 +300,9 @@ export function buildEscposTicket(
     }
   }
 
-  // Totals (skip for ORDER slips)
+  // Totals (skip for ORDER slips). Net is the gross minus the contained
+  // VAT so that Subtotal + VAT == gross total (the menu-price sum).
+  const subtotal = grossSubtotal - vat;
   const scAmt = Number(meta?.serviceChargeAmount || 0);
   const discountAmt = Number(meta?.discountAmount || 0);
   const baseTotal = subtotal + vat;
@@ -461,7 +470,8 @@ export function buildHtmlReceipt(
   const bizWebsite = String(businessInfo?.website || '').trim();
   const currency = settings.currency || 'EUR';
   const meta: any = payload.meta || {};
-  const vatEnabled = meta?.vatEnabled !== false;
+  const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
+  const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const kind = String(meta?.kind || '').toUpperCase();
   const stationLabel = String(meta?.station || '').toUpperCase();
   const routeLabel = String(meta?.routeLabel || '').trim();
@@ -477,20 +487,20 @@ export function buildHtmlReceipt(
 
   const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
   const items = hidePrices ? itemsRaw : aggregateTicketItems(itemsRaw);
-  const subtotal = items.reduce(
+  // VAT-inclusive: the gross line already contains the tax, so we extract
+  // the contained VAT rather than adding it on top of the menu price.
+  const grossSubtotal = items.reduce(
     (sum, it) => sum + Number(it.unitPrice || 0) * Number(it.qty || 1),
     0,
   );
   const vat = vatEnabled
-    ? items.reduce(
-        (sum, it) =>
-          sum +
-          Number(it.unitPrice || 0) *
-            Number(it.qty || 1) *
-            Number(it.vatRate || 0),
-        0,
-      )
+    ? items.reduce((sum, it) => {
+        const lineGross = Number(it.unitPrice || 0) * Number(it.qty || 1);
+        const rate = effectiveVatRate(it.vatRate, defaultVatRate);
+        return sum + splitGrossVat(lineGross, rate).vat;
+      }, 0)
     : 0;
+  const subtotal = grossSubtotal - vat;
   const scAmt = Number(meta?.serviceChargeAmount || 0);
   const discountAmt = Number(meta?.discountAmount || 0);
   const baseTotal = subtotal + vat;

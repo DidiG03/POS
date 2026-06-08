@@ -5,6 +5,7 @@ import { useSessionStore } from '../stores/session';
 import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
+import { FailedSyncPanel } from '../components/FailedSyncPanel';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
 import { toast } from '../stores/toasts';
 import { getOfflineQueueCount } from '../utils/offlineQueue';
@@ -643,6 +644,7 @@ export default function AppLayout() {
       </main>
       <UpdateNotification />
       <PrinterNotification />
+      <FailedSyncPanel />
     </div>
   );
 }

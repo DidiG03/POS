@@ -295,6 +295,10 @@ export default function FloorCanvas({
     w: 0,
     h: 0,
   });
+  // Bumped only when a fresh layout is LOADED (open / area change / remote
+  // update) — never on per-node edits — so the editor re-centres the
+  // layout on load/resize without snapping back to centre mid-drag.
+  const [layoutVersion, setLayoutVersion] = useState(0);
 
   // Load layout on user/area/scope change.
   useEffect(() => {
@@ -308,15 +312,69 @@ export default function FloorCanvas({
       if (Array.isArray(saved) && saved.length) {
         setNodes(normaliseSavedNodes(saved));
         setDirty(false);
+        setLayoutVersion((v) => v + 1);
         return;
       }
       setNodes(generateDefaultTables(defaultCount));
       setDirty(false);
+      setLayoutVersion((v) => v + 1);
     })();
     return () => {
       cancelled = true;
     };
   }, [userId, area, scope, defaultCount]);
+
+  // Latest nodes, readable without making memos/callbacks depend on every
+  // edit (which would otherwise recompute the editor centring on each drag).
+  const nodesRef = useRef<FloorNode[] | null>(nodes);
+  nodesRef.current = nodes;
+
+  // Editor centring offset: translate-only (scale 1) so the loaded layout
+  // sits centred in the canvas exactly like the read-only waiter view,
+  // while editing stays 1:1. Recomputed on load / resize — NOT on node
+  // edits — so dragging a single table never snaps the whole floor around.
+  const editorOffset = useMemo(() => {
+    const zero = { tx: 0, ty: 0 };
+    if (!editable) return zero;
+    const cur = nodesRef.current || [];
+    if (!cur.length) return zero;
+    const cw = Math.max(0, canvasSize.w);
+    const ch = Math.max(0, canvasSize.h);
+    if (cw < 50 || ch < 50) return zero;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of cur as any[]) {
+      if (!n) continue;
+      const x = Number(n.x || 0);
+      const y = Number(n.y || 0);
+      const isArea = String(n.kind || 'TABLE') === 'AREA';
+      const halfW = isArea
+        ? Math.max(0, Number(n.w || 0)) / 2
+        : Math.max(32, Number(n.w || 64) / 2);
+      const halfH = isArea
+        ? Math.max(0, Number(n.h || 0)) / 2
+        : Math.max(32, Number(n.h || 64) / 2);
+      minX = Math.min(minX, x - halfW);
+      minY = Math.min(minY, y - halfH);
+      maxX = Math.max(maxX, x + halfW);
+      maxY = Math.max(maxY, y + halfH);
+    }
+    if (
+      !Number.isFinite(minX) ||
+      !Number.isFinite(minY) ||
+      !Number.isFinite(maxX) ||
+      !Number.isFinite(maxY)
+    )
+      return zero;
+    const bw = Math.max(1, maxX - minX);
+    const bh = Math.max(1, maxY - minY);
+    return { tx: (cw - bw) / 2 - minX, ty: (ch - bh) / 2 - minY };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editable, layoutVersion, canvasSize.w, canvasSize.h]);
+  const editorOffsetRef = useRef(editorOffset);
+  editorOffsetRef.current = editorOffset;
 
   const handleMove = useCallback((id: number, x: number, y: number) => {
     setNodes((prev) =>
@@ -374,8 +432,11 @@ export default function FloorCanvas({
       setNodes((prev) => {
         const cur = prev || [];
         const rect = canvasRef.current?.getBoundingClientRect();
-        const x = rect ? Math.max(60, rect.width * 0.5) : 240;
-        const y = rect ? Math.max(60, rect.height * 0.5) : 200;
+        const off = editorOffsetRef.current;
+        const cw = rect?.width ?? 480;
+        const ch = rect?.height ?? 360;
+        const x = Math.max(60, cw * 0.5 - off.tx);
+        const y = Math.max(60, ch * 0.5 - off.ty);
         const usedIds = new Set(cur.map((n) => n.id).filter((n) => n > 0));
         let id = 1;
         while (usedIds.has(id)) id++;
@@ -411,8 +472,11 @@ export default function FloorCanvas({
         const cur = prev || [];
         const id = nextAreaId(cur);
         const rect = canvasRef.current?.getBoundingClientRect();
-        const x = rect ? Math.max(120, rect.width * 0.5) : 240;
-        const y = rect ? Math.max(120, rect.height * 0.4) : 180;
+        const off = editorOffsetRef.current;
+        const cw = rect?.width ?? 480;
+        const ch = rect?.height ?? 360;
+        const x = Math.max(120, cw * 0.5 - off.tx);
+        const y = Math.max(120, ch * 0.4 - off.ty);
         const node: FloorAreaNode = {
           id,
           kind: 'AREA',
@@ -690,6 +754,7 @@ export default function FloorCanvas({
             if (!Array.isArray(saved)) return;
             setNodes(normaliseSavedNodes(saved));
             setDirty(false);
+            setLayoutVersion((v) => v + 1);
           } catch {
             // ignore
           }
@@ -851,7 +916,13 @@ export default function FloorCanvas({
             }
             style={
               editable
-                ? undefined
+                ? ({
+                    // Centre the loaded layout (translate only, scale 1) so
+                    // the editor mirrors the centred waiter view. Drag math
+                    // is delta-based, so this visual offset doesn't affect it.
+                    transform: `translate(${editorOffset.tx}px, ${editorOffset.ty}px)`,
+                    transformOrigin: 'top left',
+                  } as React.CSSProperties)
                 : ({
                     transform: `translate(${viewTransform.tx}px, ${viewTransform.ty}px) scale(${viewTransform.scaleX}, ${viewTransform.scaleY})`,
                     transformOrigin: 'top left',

@@ -2928,14 +2928,16 @@ function AreaLayoutEditorModal({
   const [editable, setEditable] = useState(true);
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-3 sm:p-6"
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex"
       onClick={onClose}
     >
+      {/* Full-page editor so the design surface fills the screen and
+          matches the dimensions/aspect of the waiter floor view. */}
       <div
-        className="bg-gray-800 border border-gray-700 rounded-lg shadow-2xl w-full max-w-6xl flex flex-col max-h-[92vh]"
+        className="bg-gray-800 w-full h-full flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-3">
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-3 shrink-0">
           <div className="text-base font-semibold flex-1 truncate">
             Layout · {area}
           </div>
@@ -2947,19 +2949,20 @@ function AreaLayoutEditorModal({
             Done
           </button>
         </div>
-        <div className="p-3 sm:p-4 overflow-auto">
+        <div className="flex-1 min-h-0 flex flex-col p-3 sm:p-4">
           <FloorCanvas
             userId={userId}
             area={area}
             editable={editable}
             onEditableChange={setEditable}
             defaultCount={defaultCount}
+            fillAvailableHeight
           />
-          <div className="mt-3 text-xs opacity-70">
-            Changes save to the shared layout when you press
-            <span className="mx-1 text-blue-300">Save layout</span>and appear
-            immediately on every waiter and host device.
-          </div>
+        </div>
+        <div className="px-4 py-2 border-t border-gray-700 text-xs opacity-70 shrink-0">
+          Changes save to the shared layout when you press
+          <span className="mx-1 text-blue-300">Save layout</span>and appear
+          immediately on every waiter and host device.
         </div>
       </div>
     </div>

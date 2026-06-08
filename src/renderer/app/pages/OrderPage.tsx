@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTicketStore } from '../../stores/ticket';
+import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
@@ -137,6 +138,30 @@ function activeTicketItems<T extends { voided?: boolean }>(items: T[]): T[] {
   return items.filter((it) => !it?.voided);
 }
 
+/** Persists waiter-created quick comment buttons across page reloads. */
+const CUSTOM_COMMENT_BUTTONS_KEY = 'pos_custom_comment_buttons_v1';
+
+function loadCustomCommentButtons(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(CUSTOM_COMMENT_BUTTONS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (Array.isArray(value)) {
+        const phrases = value.filter(
+          (v): v is string => typeof v === 'string' && v.trim() !== '',
+        );
+        if (phrases.length) out[key] = phrases;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export default function OrderPage() {
   const { t } = useTranslation();
   const [categories, setCategories] = useState<MenuCategoryDTO[]>([]);
@@ -166,7 +191,7 @@ export default function OrderPage() {
   const customCommentInputRef = useRef<HTMLTextAreaElement | null>(null);
   /** Waiter-created quick buttons for the current table — not order text until tapped. */
   const [customCommentButtonsByTable, setCustomCommentButtonsByTable] =
-    useState<Record<string, string[]>>({});
+    useState<Record<string, string[]>>(loadCustomCommentButtons);
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
   const { selectedTable, setPendingAction, setSelectedTable } =
     useOrderContext();
@@ -188,12 +213,14 @@ export default function OrderPage() {
   >('CASH');
   const [amountPaid, setAmountPaid] = useState<string>('');
   const [printReceipt, setPrintReceipt] = useState<boolean>(true);
+  const [printStationTickets, setPrintStationTickets] = useState<boolean>(true);
   const [discountType, setDiscountType] = useState<
     'NONE' | 'PERCENT' | 'AMOUNT'
   >('NONE');
   const [discountValue, setDiscountValue] = useState<string>('');
   const [discountReason, setDiscountReason] = useState<string>('');
   const [vatEnabled, setVatEnabled] = useState<boolean>(false);
+  const [defaultVatRate, setDefaultVatRate] = useState<number>(0.2);
   const [serviceChargeCfg, setServiceChargeCfg] = useState<{
     enabled: boolean;
     mode: 'PERCENT' | 'AMOUNT';
@@ -576,8 +603,8 @@ export default function OrderPage() {
     coversKnown > 0;
 
   const totals = useMemo(
-    () => computeTotals(activeLines, vatEnabled),
-    [activeLines, vatEnabled],
+    () => computeTotals(activeLines, vatEnabled, defaultVatRate),
+    [activeLines, vatEnabled, defaultVatRate],
   );
   const [approvalsCfg, setApprovalsCfg] = useState<{
     requireManagerPinForDiscount: boolean;
@@ -637,6 +664,8 @@ export default function OrderPage() {
     try {
       const s: any = await window.api.settings.get().catch(() => null);
       setVatEnabled(Boolean((s as any)?.fiscal?.enabled));
+      const dvr = Number((s as any)?.defaultVatRate);
+      setDefaultVatRate(Number.isFinite(dvr) && dvr > 0 ? dvr : 0.2);
       const sc = (s as any)?.preferences?.serviceCharge || {};
       const enabled = Boolean(sc.enabled);
       const mode =
@@ -820,6 +849,18 @@ export default function OrderPage() {
     },
     [tableCommentKey, commentPresets],
   );
+
+  // Persist waiter-created comment buttons so they survive a page refresh.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        CUSTOM_COMMENT_BUTTONS_KEY,
+        JSON.stringify(customCommentButtonsByTable),
+      );
+    } catch {
+      // Ignore storage failures (e.g. private mode / quota).
+    }
+  }, [customCommentButtonsByTable]);
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -2009,6 +2050,7 @@ export default function OrderPage() {
                         if (!isOpen(selectedTable.area, selectedTable.label)) {
                           setCoversMode('openAndSend');
                           setCoversValue('');
+                          setPrintStationTickets(true);
                           setShowCovers(true);
                           return;
                         }
@@ -3042,6 +3084,35 @@ export default function OrderPage() {
               value={coversValue}
               onChange={(e) => setCoversValue(e.target.value)}
             />
+            {coversMode === 'openAndSend' ? (
+              <div className="flex items-center justify-between mt-4">
+                <div className="flex items-center gap-2">
+                  <IconPrinter />
+                  <span className="text-sm">
+                    {t('order.printStationTickets')}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={printStationTickets}
+                  className={`relative h-8 w-14 shrink-0 rounded-full transition-colors duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 ${
+                    printStationTickets ? 'bg-blue-600' : 'bg-gray-700'
+                  }`}
+                  onClick={() => setPrintStationTickets((v) => !v)}
+                  aria-label={t('order.togglePrintStationTickets')}
+                >
+                  <span
+                    aria-hidden
+                    className={`pointer-events-none absolute top-1/2 size-[1.375rem] -translate-y-1/2 rounded-full bg-white shadow-md ring-1 ring-black/15 transition-[left] duration-200 ease-out ${
+                      printStationTickets
+                        ? 'left-[calc(100%-1.375rem-5px)]'
+                        : 'left-[5px]'
+                    }`}
+                  />
+                </button>
+              </div>
+            ) : null}
             <div className="flex gap-2 mt-4">
               <button
                 className="flex-1 bg-gray-600 py-2 rounded"
@@ -3171,7 +3242,11 @@ export default function OrderPage() {
                         sku: l.sku,
                         qty: l.qty,
                       })),
-                      kdsFireItems: printLines,
+                      // Kitchen stations (KDS + printers) only when the
+                      // toggle is on; the ticket is always logged above.
+                      kdsFireItems: printStationTickets
+                        ? printLines
+                        : undefined,
                     });
                     if (!logResult.ok) {
                       // Same recovery path as the regular Send button:
@@ -3204,33 +3279,35 @@ export default function OrderPage() {
                     }
                     useTicketStore.getState().markAllAsSent();
                   }
-                  await window.api.tickets.print({
-                    area: selectedTable.area,
-                    tableLabel: selectedTable.label,
-                    covers: num,
-                    items: printLines,
-                    note: orderNote,
-                    userName: user.displayName,
-                    meta: {
-                      userId: user.id,
-                      kind: isFireOrder ? 'ORDER' : 'TICKET',
-                      vatEnabled,
-                      serviceChargeEnabled: serviceChargeCfg.enabled,
-                      serviceChargeApplied: serviceChargeCfg.enabled,
-                      serviceChargeMode: serviceChargeCfg.mode,
-                      serviceChargeValue: serviceChargeCfg.value,
-                      serviceChargeAmount: serviceChargeCfg.enabled
-                        ? serviceChargeCfg.mode === 'PERCENT'
-                          ? Math.max(
-                              0,
-                              (Number(totals.total || 0) *
-                                Number(serviceChargeCfg.value || 0)) /
-                                100,
-                            )
-                          : Math.max(0, Number(serviceChargeCfg.value || 0))
-                        : 0,
-                    },
-                  });
+                  if (printStationTickets) {
+                    await window.api.tickets.print({
+                      area: selectedTable.area,
+                      tableLabel: selectedTable.label,
+                      covers: num,
+                      items: printLines,
+                      note: orderNote,
+                      userName: user.displayName,
+                      meta: {
+                        userId: user.id,
+                        kind: isFireOrder ? 'ORDER' : 'TICKET',
+                        vatEnabled,
+                        serviceChargeEnabled: serviceChargeCfg.enabled,
+                        serviceChargeApplied: serviceChargeCfg.enabled,
+                        serviceChargeMode: serviceChargeCfg.mode,
+                        serviceChargeValue: serviceChargeCfg.value,
+                        serviceChargeAmount: serviceChargeCfg.enabled
+                          ? serviceChargeCfg.mode === 'PERCENT'
+                            ? Math.max(
+                                0,
+                                (Number(totals.total || 0) *
+                                  Number(serviceChargeCfg.value || 0)) /
+                                  100,
+                              )
+                            : Math.max(0, Number(serviceChargeCfg.value || 0))
+                          : 0,
+                      },
+                    });
+                  }
                   // Keep this as a best-effort "ensure open" after printing.
                   await window.api.tables
                     .setOpen(selectedTable.area, selectedTable.label, true)
@@ -3824,21 +3901,22 @@ function TicketTotals({
 function computeTotals(
   lines: Array<{ unitPrice: number; qty: number; vatRate: number }>,
   vatEnabled = true,
+  defaultVatRate = 0,
 ) {
-  const subtotal = (lines || []).reduce(
+  // Prices are VAT-inclusive: the gross already contains the tax, so VAT
+  // is extracted and the customer total stays equal to the menu price.
+  const grossSubtotal = (lines || []).reduce(
     (s, l) => s + Number(l.unitPrice || 0) * Number(l.qty || 0),
     0,
   );
   const vat = vatEnabled
-    ? (lines || []).reduce(
-        (s, l) =>
-          s +
-          Number(l.unitPrice || 0) *
-            Number(l.qty || 0) *
-            Number(l.vatRate || 0),
-        0,
-      )
+    ? (lines || []).reduce((s, l) => {
+        const lineGross = Number(l.unitPrice || 0) * Number(l.qty || 0);
+        const rate = effectiveVatRate(l.vatRate, defaultVatRate);
+        return s + splitGrossVat(lineGross, rate).vat;
+      }, 0)
     : 0;
+  const subtotal = grossSubtotal - vat;
   const total = subtotal + vat;
   return { subtotal, vat, total };
 }

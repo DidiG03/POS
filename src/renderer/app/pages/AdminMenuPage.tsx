@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ParsedMenuRow, parseMenuWorkbook } from '../../utils/menuImport';
 import {
   kdsCategoryLinkLabel,
   kdsStationLabel,
@@ -154,6 +155,33 @@ function IconX() {
   );
 }
 
+function IconUpload() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="pos-icon"
+      aria-hidden
+    >
+      <path
+        d="M12 16V4m0 0L8 8m4-4 4 4"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function IconPencil() {
   return (
     <svg
@@ -296,6 +324,7 @@ export default function AdminMenuPage() {
   const [err, setErr] = useState<string | null>(null);
   const [billingPaused, setBillingPaused] = useState(false);
   const [editCategoryId, setEditCategoryId] = useState<number | null>(null);
+  const [showImport, setShowImport] = useState(false);
 
   const selected = useMemo(
     () => cats.find((c) => c.id === selectedId) || null,
@@ -393,14 +422,26 @@ export default function AdminMenuPage() {
         <div className="md:col-span-4 bg-gray-800 rounded border border-gray-700 overflow-hidden min-h-0 flex flex-col">
           <div className="p-4 border-b border-gray-700 flex items-center justify-between">
             <div className="font-semibold">Categories</div>
-            <button
-              className="text-sm px-3 py-2 rounded bg-transparent hover:bg-gray-700 flex items-center gap-2 cursor-pointer"
-              onClick={() => void reload()}
-              type="button"
-              title="Refresh"
-            >
-              <IconRefresh />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                className="text-sm px-3 py-2 rounded bg-transparent hover:bg-gray-700 flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                onClick={() => setShowImport(true)}
+                type="button"
+                title="Import menu from Excel/CSV"
+                disabled={billingPaused}
+              >
+                <IconUpload />
+                <span className="hidden lg:inline">Import</span>
+              </button>
+              <button
+                className="text-sm px-3 py-2 rounded bg-transparent hover:bg-gray-700 flex items-center gap-2 cursor-pointer"
+                onClick={() => void reload()}
+                type="button"
+                title="Refresh"
+              >
+                <IconRefresh />
+              </button>
+            </div>
           </div>
           <div className="p-4 border-b border-gray-700">
             <div className="text-xs opacity-70 mb-2">Add category</div>
@@ -698,7 +739,447 @@ export default function AdminMenuPage() {
           />
         </Modal>
       )}
+
+      {showImport && (
+        <MenuImportModal
+          categories={cats}
+          disabled={billingPaused}
+          onClose={() => setShowImport(false)}
+          onImported={reload}
+        />
+      )}
     </>
+  );
+}
+
+type ImportPlanRow = ParsedMenuRow & {
+  status: 'new' | 'update' | 'new-category';
+  existingItemId?: number;
+};
+
+function buildImportPlan(
+  rows: ParsedMenuRow[],
+  categories: MenuCategory[],
+): { plan: ImportPlanRow[]; newCategories: string[] } {
+  const norm = (v: string) => v.trim().toLowerCase();
+  const catByName = new Map<string, MenuCategory>();
+  for (const c of categories) catByName.set(norm(c.name), c);
+  const itemByKey = new Map<string, number>();
+  for (const c of categories)
+    for (const it of c.items) itemByKey.set(`${c.id}||${norm(it.name)}`, it.id);
+
+  const newCategorySet = new Set<string>();
+  const plan: ImportPlanRow[] = rows.map((r) => {
+    const cat = catByName.get(norm(r.category));
+    if (!cat) {
+      newCategorySet.add(r.category);
+      return { ...r, status: 'new-category' };
+    }
+    const existingItemId = itemByKey.get(`${cat.id}||${norm(r.name)}`);
+    return existingItemId != null
+      ? { ...r, status: 'update', existingItemId }
+      : { ...r, status: 'new' };
+  });
+  return { plan, newCategories: Array.from(newCategorySet) };
+}
+
+function MenuImportModal({
+  categories,
+  disabled,
+  onClose,
+  onImported,
+}: {
+  categories: MenuCategory[];
+  disabled: boolean;
+  onClose: () => void;
+  onImported: () => Promise<void> | void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [fileName, setFileName] = useState<string>('');
+  const [parsing, setParsing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rows, setRows] = useState<ParsedMenuRow[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [updateExisting, setUpdateExisting] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number }>({
+    done: 0,
+    total: 0,
+  });
+  const [result, setResult] = useState<{
+    createdCategories: number;
+    created: number;
+    updated: number;
+    skipped: number;
+  } | null>(null);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !importing) onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose, importing]);
+
+  const { plan, newCategories } = useMemo(
+    () => buildImportPlan(rows, categories),
+    [rows, categories],
+  );
+
+  const counts = useMemo(() => {
+    let create = 0;
+    let update = 0;
+    for (const r of plan) {
+      if (r.status === 'update') update++;
+      else create++;
+    }
+    return { create, update };
+  }, [plan]);
+
+  async function handleFile(file: File) {
+    setError(null);
+    setResult(null);
+    setRows([]);
+    setWarnings([]);
+    setFileName(file.name);
+    setParsing(true);
+    try {
+      const XLSX = await import('xlsx');
+      const buf = await file.arrayBuffer();
+      const parsed = parseMenuWorkbook(XLSX, buf);
+      setRows(parsed.rows);
+      setWarnings(parsed.warnings);
+      if (!parsed.rows.length && !parsed.warnings.length) {
+        setError('No menu rows were found in the file.');
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Failed to read the file.');
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  async function downloadTemplate() {
+    try {
+      const XLSX = await import('xlsx');
+      const data = [
+        ['Category', 'Name', 'Price', 'VAT', 'Kg', 'Station'],
+        ['Drinks', 'Espresso', 1.5, 20, 'No', 'BAR'],
+        ['Drinks', 'Cappuccino', 2, 20, 'No', 'BAR'],
+        ['Food', 'Margherita Pizza', 6.5, 20, 'No', 'KITCHEN'],
+        ['Food', 'Prosciutto (per kg)', 18, 20, 'Yes', 'KITCHEN'],
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Menu');
+      XLSX.writeFile(wb, 'menu-template.xlsx');
+    } catch (e: any) {
+      setError(e?.message || 'Failed to create template.');
+    }
+  }
+
+  async function runImport() {
+    if (!rows.length || importing) return;
+    setImporting(true);
+    setError(null);
+    const normName = (v: string) => v.trim().toLowerCase();
+    try {
+      // Re-fetch the live menu so matching is accurate even after a previous
+      // partial import — this keeps the import idempotent (no duplicates on a
+      // retry; existing items get updated instead).
+      const fresh = (await window.api.menu.listCategoriesWithItems()) as any[];
+      const catIdByName = new Map<string, number>();
+      for (const c of fresh) catIdByName.set(normName(c.name), c.id);
+      const itemIdByKey = new Map<string, number>();
+      for (const c of fresh)
+        for (const it of c.items || [])
+          itemIdByKey.set(`${c.id}||${normName(it.name)}`, it.id);
+
+      let createdCategories = 0;
+      const neededCats = Array.from(
+        new Set(rows.map((r) => r.category).filter(Boolean)),
+      );
+      for (const catName of neededCats) {
+        if (catIdByName.has(normName(catName))) continue;
+        const resp = await window.api.menu.createCategory({
+          name: catName,
+          kdsStation: guessDefaultKdsStation(catName) ?? null,
+        } as any);
+        const id = Number((resp as any)?.id || 0);
+        if (id) {
+          catIdByName.set(normName(catName), id);
+          createdCategories++;
+        }
+      }
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      setProgress({ done: 0, total: rows.length });
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const catId = catIdByName.get(normName(r.category));
+        const existingId = catId
+          ? itemIdByKey.get(`${catId}||${normName(r.name)}`)
+          : undefined;
+        if (!catId) {
+          skipped++;
+        } else if (existingId != null) {
+          if (updateExisting) {
+            await window.api.menu.updateItem({
+              id: existingId,
+              price: r.price,
+              ...(r.vatRate != null ? { vatRate: r.vatRate } : {}),
+              ...(r.isKg != null ? { isKg: r.isKg } : {}),
+              ...(r.station ? { station: r.station } : {}),
+            } as any);
+            updated++;
+          } else {
+            skipped++;
+          }
+        } else {
+          const resp = await window.api.menu.createItem({
+            categoryId: catId,
+            name: r.name,
+            price: r.price,
+            active: true,
+            ...(r.vatRate != null ? { vatRate: r.vatRate } : {}),
+            ...(r.isKg != null ? { isKg: r.isKg } : {}),
+            ...(r.station ? { station: r.station } : {}),
+          } as any);
+          // Track the new item so a duplicate row later in the same file
+          // updates it rather than colliding.
+          const newId = Number((resp as any)?.id || 0);
+          if (newId) itemIdByKey.set(`${catId}||${normName(r.name)}`, newId);
+          created++;
+        }
+        setProgress({ done: i + 1, total: rows.length });
+      }
+
+      setResult({ createdCategories, created, updated, skipped });
+      await onImported();
+    } catch (e: any) {
+      setError(e?.message || 'Import failed.');
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const fmtPrice = (n: number) =>
+    Number.isInteger(n) ? String(n) : n.toFixed(2);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+        onClick={() => !importing && onClose()}
+        aria-label="Close modal"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-4xl max-h-[92vh] flex flex-col rounded-2xl border border-gray-700/80 bg-gradient-to-b from-gray-900 to-gray-950 text-gray-100 shadow-2xl overflow-hidden"
+      >
+        <div className="px-4 sm:px-5 py-3.5 border-b border-gray-700/70 flex items-center justify-between gap-3 shrink-0">
+          <div className="min-w-0">
+            <div className="font-semibold truncate">Import menu from Excel</div>
+            <div className="text-xs opacity-70 mt-0.5">
+              Upload an .xlsx, .xls or .csv file. Columns are detected
+              automatically (Name, Price, Category, VAT, Kg, Station).
+            </div>
+          </div>
+          <button
+            type="button"
+            className="w-9 h-9 rounded-lg bg-gray-800/80 hover:bg-gray-700 border border-gray-700/80 flex items-center justify-center disabled:opacity-50"
+            onClick={onClose}
+            disabled={importing}
+            aria-label="Close"
+            title="Close"
+          >
+            <IconX />
+          </button>
+        </div>
+
+        <div className="p-4 sm:p-5 overflow-auto min-h-0 space-y-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleFile(f);
+              e.target.value = '';
+            }}
+          />
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              className="px-4 py-2 rounded bg-green-600 hover:bg-green-500 disabled:opacity-60 cursor-pointer flex items-center gap-2"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={parsing || importing || disabled}
+            >
+              <IconUpload />
+              {fileName ? 'Choose another file' : 'Choose file'}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer text-sm"
+              onClick={() => void downloadTemplate()}
+              disabled={importing}
+            >
+              Download template
+            </button>
+            {fileName ? (
+              <span className="text-sm opacity-80 truncate">{fileName}</span>
+            ) : null}
+            {parsing ? (
+              <span className="text-sm opacity-80">Parsing…</span>
+            ) : null}
+          </div>
+
+          {error ? (
+            <div className="rounded-lg border border-rose-700/60 bg-rose-900/30 px-3 py-2 text-sm text-rose-200">
+              {error}
+            </div>
+          ) : null}
+
+          {result ? (
+            <div className="rounded-lg border border-emerald-700/60 bg-emerald-900/25 px-4 py-3 text-sm">
+              <div className="font-semibold text-emerald-300 mb-1">
+                Import complete
+              </div>
+              <ul className="space-y-0.5 opacity-90">
+                <li>{result.createdCategories} categories created</li>
+                <li>{result.created} items added</li>
+                <li>{result.updated} items updated</li>
+                {result.skipped ? <li>{result.skipped} skipped</li> : null}
+              </ul>
+            </div>
+          ) : null}
+
+          {warnings.length ? (
+            <div className="rounded-lg border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 space-y-1 max-h-32 overflow-auto">
+              {warnings.map((w, i) => (
+                <div key={i}>• {w}</div>
+              ))}
+            </div>
+          ) : null}
+
+          {plan.length && !result ? (
+            <>
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                <div className="opacity-80">
+                  <span className="font-semibold text-gray-100">
+                    {plan.length}
+                  </span>{' '}
+                  rows · {counts.create} new · {counts.update} existing
+                  {newCategories.length
+                    ? ` · ${newCategories.length} new categories`
+                    : ''}
+                </div>
+                <label className="flex items-center gap-2 ml-auto cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={updateExisting}
+                    onChange={(e) => setUpdateExisting(e.target.checked)}
+                    disabled={importing}
+                  />
+                  Update prices of existing items
+                </label>
+              </div>
+
+              <div className="rounded-lg border border-gray-800 overflow-hidden">
+                <div className="max-h-[42vh] overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-gray-800 text-left text-xs uppercase tracking-wide opacity-80">
+                      <tr>
+                        <th className="px-3 py-2">Category</th>
+                        <th className="px-3 py-2">Item</th>
+                        <th className="px-3 py-2 text-right">Price</th>
+                        <th className="px-3 py-2 text-right">VAT</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {plan.map((r, i) => (
+                        <tr
+                          key={i}
+                          className="border-t border-gray-800/70 hover:bg-gray-800/40"
+                        >
+                          <td className="px-3 py-1.5 whitespace-nowrap">
+                            {r.category}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {r.name}
+                            {r.isKg ? (
+                              <span className="ml-1 text-[10px] opacity-60">
+                                /kg
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {fmtPrice(r.price)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums opacity-80">
+                            {r.vatRate != null
+                              ? `${Math.round(r.vatRate * 100)}%`
+                              : '—'}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {r.status === 'update' ? (
+                              <span className="text-amber-300">
+                                {updateExisting ? 'Update' : 'Skip'}
+                              </span>
+                            ) : r.status === 'new-category' ? (
+                              <span className="text-sky-300">
+                                New + category
+                              </span>
+                            ) : (
+                              <span className="text-emerald-300">New</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
+
+        <div className="px-4 sm:px-5 py-3 border-t border-gray-700/70 flex items-center justify-end gap-3 shrink-0">
+          {importing ? (
+            <span className="text-sm opacity-80 mr-auto">
+              Importing {progress.done}/{progress.total}…
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer disabled:opacity-60"
+            onClick={onClose}
+            disabled={importing}
+          >
+            {result ? 'Close' : 'Cancel'}
+          </button>
+          {!result ? (
+            <button
+              type="button"
+              className="px-4 py-2 rounded bg-green-600 hover:bg-green-500 cursor-pointer disabled:opacity-60"
+              onClick={() => void runImport()}
+              disabled={!plan.length || importing || disabled}
+            >
+              {importing
+                ? 'Importing…'
+                : `Import ${plan.length} item${plan.length === 1 ? '' : 's'}`}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
