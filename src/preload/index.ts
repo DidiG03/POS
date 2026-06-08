@@ -118,6 +118,7 @@ const api: Api = {
     getCookerMode: () => ipcRenderer.invoke('kds:getCookerMode'),
     setCookerMode: (input: { enabled: boolean }) =>
       ipcRenderer.invoke('kds:setCookerMode', input),
+    getEnabledStations: () => ipcRenderer.invoke('kds:getEnabledStations'),
     debug: () => ipcRenderer.invoke('kds:debug'),
   },
   backups: {

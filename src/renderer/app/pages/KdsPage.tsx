@@ -27,6 +27,13 @@ import {
   kdsTimerUrgencyFromIso,
   kdsTimerUrgencyTextClass,
 } from '@shared/kdsTimerUrgency';
+import {
+  COLUMN_GAP_PX,
+  columnWidthForContainer,
+  maxColumnsForWidth,
+  paginateTicketBlocks,
+  withCardChrome,
+} from './kdsPagination';
 
 type Station = KdsStation;
 type Tab = 'NEW' | 'DONE' | 'SETTINGS';
@@ -108,66 +115,14 @@ function hasActiveItems(ticket: KdsTicket): boolean {
   return ticket.items.some((it) => !it.voided && !it.bumped);
 }
 
-const TICKET_GAP_PX = 12;
-const COLUMN_GAP_PX = 12;
-
-function columnWidthForContainer(containerWidth: number): number {
-  return Math.min(380, Math.max(280, containerWidth * 0.28));
-}
-
-function maxColumnsForWidth(containerWidth: number): number {
-  const colW = columnWidthForContainer(containerWidth);
-  return Math.max(
-    1,
-    Math.floor((containerWidth + COLUMN_GAP_PX) / (colW + COLUMN_GAP_PX)),
-  );
-}
-
-function estimateTicketHeight(t: KdsTicket): number {
-  let h = 76;
-  if (t.note) h += 52;
-  h += Math.max(1, t.items.length) * 28;
-  return h;
-}
-
-/** Pack tickets into pages: columns fill top→bottom, then next column, then next page. */
-function paginateTickets(
-  tickets: KdsTicket[],
-  containerWidth: number,
-  containerHeight: number,
-): number[][] {
-  if (tickets.length === 0) return [];
-  if (containerWidth <= 0 || containerHeight <= 0)
-    return [tickets.map((_, i) => i)];
-
-  const maxCols = maxColumnsForWidth(containerWidth);
-  const pageHeight = containerHeight;
-
-  const pages: number[][] = [[]];
-  let activeCol = 0;
-  const columnHeights = new Array(maxCols).fill(0);
-
-  for (let i = 0; i < tickets.length; i++) {
-    const h = estimateTicketHeight(tickets[i]);
-    let placed = false;
-
-    while (!placed) {
-      const gap = columnHeights[activeCol] > 0 ? TICKET_GAP_PX : 0;
-      if (columnHeights[activeCol] + gap + h <= pageHeight) {
-        pages[pages.length - 1].push(i);
-        columnHeights[activeCol] += gap + h;
-        placed = true;
-      } else if (activeCol < maxCols - 1) {
-        activeCol += 1;
-      } else {
-        pages.push([]);
-        activeCol = 0;
-        columnHeights.fill(0);
-      }
-    }
+/** Rough block heights used on the very first render, before measurement. */
+function estimateTicketBlocks(t: KdsTicket): number[] {
+  const leaves: number[] = [68]; // header (title + waiter/timer line) + mb
+  if (t.note) leaves.push(52);
+  for (const it of t.items) {
+    leaves.push(40 + (it.note ? 26 : 0));
   }
-
-  return pages.filter((p) => p.length > 0);
+  return withCardChrome(leaves);
 }
 
 function countTicketsOnPages(pages: number[][], fromPage: number): number {
@@ -204,6 +159,9 @@ export default function KdsPage() {
   const ticketPagesRef = useRef<number[][]>([]);
   const prevSelectedIdxForPageRef = useRef(0);
   const [boardSize, setBoardSize] = useState({ width: 0, height: 0 });
+  /** Real rendered block heights (keyed by ticketId) for accurate paging. */
+  const measuredBlocksRef = useRef<Map<number, number[]>>(new Map());
+  const [measureVersion, setMeasureVersion] = useState(0);
   const [ticketSummary, setTicketSummary] = useState<KdsTicketDetail | null>(
     null,
   );
@@ -211,6 +169,9 @@ export default function KdsPage() {
   const ticketSummaryRef = useRef<KdsTicketDetail | null>(null);
   const ticketSummaryLoadingRef = useRef(false);
   const [clockMs, setClockMs] = useState(() => Date.now());
+  const [enabledStations, setEnabledStations] = useState<Station[]>(() => [
+    ...ALL_KDS_STATIONS,
+  ]);
 
   const setStation = useCallback((next: Station) => {
     setStationState(next);
@@ -221,17 +182,43 @@ export default function KdsPage() {
     setThemeState(next);
     saveKdsTheme(next);
   }, []);
-  // Toggling "Cooker" both marks THIS screen as the cooker (local) and flips
-  // the POS-host master switch so the main kitchen screen starts gating items.
+  // Local role only: mark THIS screen as the cooker (cook's station) vs the
+  // main pickup screen. The two-stage flow itself is always on (product
+  // default), so this just picks which view this device shows.
   const setCooker = useCallback((next: boolean) => {
     setCookerState(next);
     cookerRef.current = next;
     saveKdsCooker(next);
-    void window.api.kds.setCookerMode?.({ enabled: next }).catch(() => {});
   }, []);
   useEffect(() => {
     cookerRef.current = cooker;
   }, [cooker]);
+  // Keep the station selector in sync with the host's admin setting. If the
+  // station this screen is showing gets disabled, fall back to the first
+  // enabled one so the display never gets stuck on a station with no orders.
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await window.api.kds.getEnabledStations();
+        const list = Array.isArray(res?.stations)
+          ? (res.stations as Station[])
+          : [];
+        const enabled = ALL_KDS_STATIONS.filter((s) => list.includes(s));
+        if (!alive || enabled.length === 0) return;
+        setEnabledStations(enabled);
+        if (!enabled.includes(stationRef.current)) setStation(enabled[0]);
+      } catch {
+        /* keep last-known stations */
+      }
+    };
+    void load();
+    const id = setInterval(load, 15000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [setStation]);
   useEffect(() => {
     errRef.current = err;
   }, [err]);
@@ -306,10 +293,24 @@ export default function KdsPage() {
     };
   }, [tab, loading]);
 
-  const ticketPages = useMemo(
-    () => paginateTickets(tickets, boardSize.width, boardSize.height),
-    [tickets, boardSize.width, boardSize.height],
-  );
+  const ticketPages = useMemo(() => {
+    if (tickets.length === 0) return [];
+    if (boardSize.width <= 0 || boardSize.height <= 0)
+      return [tickets.map((_, i) => i)];
+    const blocks = tickets.map((t) => {
+      const measured = measuredBlocksRef.current.get(t.ticketId);
+      return measured && measured.length > 0
+        ? measured
+        : estimateTicketBlocks(t);
+    });
+    const maxCols = maxColumnsForWidth(boardSize.width);
+    // Small epsilon guards against sub-pixel rounding spilling into a hidden
+    // extra column (which would clip orders).
+    const colHeight = Math.max(120, boardSize.height - 4);
+    return paginateTicketBlocks(blocks, maxCols, colHeight);
+    // measureVersion bumps when rendered block heights change, so the packer
+    // re-runs with real measurements instead of the rough estimate.
+  }, [tickets, boardSize.width, boardSize.height, measureVersion]);
 
   useEffect(() => {
     ticketPagesRef.current = ticketPages;
@@ -339,6 +340,53 @@ export default function KdsPage() {
   const totalPages = ticketPages.length;
   const colWidth =
     boardSize.width > 0 ? columnWidthForContainer(boardSize.width) : 320;
+
+  // Measure the actually-rendered ticket heights and feed them back into the
+  // packer. The first render uses the estimate; once real heights are known
+  // the page re-packs so columns fill correctly before breaking to a new page.
+  useEffect(() => {
+    const root = ticketListRef.current;
+    if (!root) return;
+    let changed = false;
+    const nodes = root.querySelectorAll<HTMLElement>('[data-kds-ticket-idx]');
+    nodes.forEach((el) => {
+      const idx = Number(el.getAttribute('data-kds-ticket-idx'));
+      const t = tickets[idx];
+      if (!t) return;
+      // Measure each non-fragmenting leaf block (header, note, item rows) in
+      // flow order. A ticket itself may be split across columns, so its own
+      // offsetHeight is unreliable — but its children render whole, so the
+      // per-block list lets the packer simulate the column flow exactly.
+      const head = el.querySelector<HTMLElement>('[data-kds-ticket-head]');
+      const note = el.querySelector<HTMLElement>('[data-kds-ticket-note]');
+      const rows = el.querySelectorAll<HTMLElement>('[data-kds-item-idx]');
+      const leaves: number[] = [];
+      if (head) leaves.push(head.offsetHeight + 8); // mb-2
+      if (note) leaves.push(note.offsetHeight + 8); // mb-2
+      rows.forEach((r, ri) => {
+        leaves.push(r.offsetHeight + (ri > 0 ? 4 : 0)); // space-y-1 gaps
+      });
+      if (leaves.length === 0) return;
+      const blocks = withCardChrome(leaves);
+      const prev = measuredBlocksRef.current.get(t.ticketId);
+      const same =
+        prev != null &&
+        prev.length === blocks.length &&
+        prev.every((v, k) => Math.abs(v - blocks[k]) <= 2);
+      if (!same) {
+        measuredBlocksRef.current.set(t.ticketId, blocks);
+        changed = true;
+      }
+    });
+    // Drop measurements for tickets that no longer exist (kept bounded).
+    if (measuredBlocksRef.current.size > tickets.length) {
+      const live = new Set(tickets.map((t) => t.ticketId));
+      for (const id of measuredBlocksRef.current.keys()) {
+        if (!live.has(id)) measuredBlocksRef.current.delete(id);
+      }
+    }
+    if (changed) setMeasureVersion((v) => v + 1);
+  }, [visibleTicketIndices, tickets, boardSize.width, boardSize.height]);
 
   const clearItemSelection = useCallback(() => {
     setSelectedItemIdx(null);
@@ -947,7 +995,7 @@ export default function KdsPage() {
               for next time.
             </div>
             <div className="flex flex-wrap gap-2">
-              {ALL_KDS_STATIONS.map((st) => {
+              {enabledStations.map((st) => {
                 const label = kdsStationLabel(st);
                 const active = station === st;
                 return (
@@ -999,11 +1047,15 @@ export default function KdsPage() {
           <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold">Cooker screen</div>
+                <div className="text-sm font-semibold">
+                  Cooker screen (this device)
+                </div>
                 <div className="text-xs opacity-70">
-                  Turn this on for the cook&apos;s station. Kitchen items appear
-                  here first; once the cook bumps a line it turns green and
-                  unlocks on the main kitchen screen for pickup.
+                  The kitchen runs a two-stage cook → pass flow. Turn this on
+                  for the cook&apos;s station — kitchen items appear here first
+                  and bumping a line marks it cooked. Leave it off on the main
+                  pickup screen, where items stay locked until the cook bumps
+                  them, then turn green (ready) for the final pickup bump.
                 </div>
               </div>
               <button
@@ -1024,8 +1076,8 @@ export default function KdsPage() {
             </div>
             {cooker ? (
               <div className="text-xs text-emerald-400">
-                This screen is the cooker. The main kitchen screen now waits for
-                you to bump each item before the waiter can pick it up.
+                This screen is the cooker. The main kitchen screen waits for you
+                to bump each item before the waiter can pick it up.
               </div>
             ) : null}
           </section>
@@ -1115,7 +1167,14 @@ export default function KdsPage() {
           className="relative flex-1 min-h-0 flex flex-col"
         >
           <div ref={ticketListRef} className="flex-1 min-h-0 overflow-hidden">
-            <div className="flex h-full w-max min-w-full flex-col flex-wrap content-start items-start gap-3">
+            <div
+              className="h-full"
+              style={{
+                columnWidth: `${colWidth}px`,
+                columnGap: `${COLUMN_GAP_PX}px`,
+                columnFill: 'auto',
+              }}
+            >
               {visibleTicketIndices.map((ticketIdx) => {
                 const t = tickets[ticketIdx];
                 if (!t) return null;
@@ -1131,7 +1190,7 @@ export default function KdsPage() {
                   <div
                     key={`${station}-${tab}-${t.ticketId}`}
                     data-kds-ticket-idx={ticketIdx}
-                    className={`relative shrink-0 self-start bg-gray-900 border rounded p-3 transition-shadow ${
+                    className={`relative mb-3 bg-gray-900 border rounded p-3 transition-shadow ${
                       timerUrgency
                         ? kdsTimerUrgencyCardAccent(timerUrgency)
                         : ''
@@ -1140,7 +1199,7 @@ export default function KdsPage() {
                         ? 'border-emerald-500 ring-2 ring-emerald-500/60'
                         : 'border-gray-800'
                     }`}
-                    style={{ width: colWidth }}
+                    style={{ breakInside: 'auto' }}
                   >
                     {tab === 'NEW' && ticketIdx < 5 ? (
                       <div
@@ -1150,14 +1209,20 @@ export default function KdsPage() {
                         {ticketIdx + 2}
                       </div>
                     ) : null}
-                    <div className="mb-2">
+                    <div
+                      className="mb-2"
+                      data-kds-ticket-head
+                      style={{ breakInside: 'avoid' }}
+                    >
                       <div className="text-3xl font-bold leading-tight">
-                        {t.area} {t.tableLabel}
+                        {t.waiterName || `${t.area} ${t.tableLabel}`.trim()}
                       </div>
                       {t.waiterName || timeLabel ? (
                         <div className="text-base mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                           {t.waiterName ? (
-                            <span className="opacity-80">{t.waiterName}</span>
+                            <span className="opacity-80">
+                              {t.area} {t.tableLabel}
+                            </span>
                           ) : null}
                           {t.waiterName && timeLabel ? (
                             <span className="opacity-50" aria-hidden>
@@ -1185,7 +1250,11 @@ export default function KdsPage() {
                     </div>
 
                     {t.note && (
-                      <div className="mb-2 text-base bg-gray-950 border border-gray-800 rounded p-2">
+                      <div
+                        className="mb-2 text-base bg-gray-950 border border-gray-800 rounded p-2"
+                        data-kds-ticket-note
+                        style={{ breakInside: 'avoid' }}
+                      >
                         {t.note}
                       </div>
                     )}
@@ -1217,7 +1286,8 @@ export default function KdsPage() {
                           <div
                             key={idx}
                             data-kds-item-idx={idx}
-                            className={`flex items-start justify-between gap-2 text-lg leading-snug select-none rounded px-1 -mx-1 ${
+                            style={{ breakInside: 'avoid' }}
+                            className={`flex items-start justify-between gap-2 text-lg leading-snug select-none rounded border border-gray-800 px-2 py-1 ${
                               struck ? 'opacity-50' : ''
                             } ${locked ? 'opacity-45' : ''} ${rowAccent}`}
                           >
@@ -1228,22 +1298,43 @@ export default function KdsPage() {
                                 locked ? 'italic text-gray-400' : ''
                               }`}
                             >
-                              {it.name}
+                              <span>
+                                {locked ? (
+                                  <svg
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    role="img"
+                                    aria-label="Cooking"
+                                    className="mr-1.5 inline-block h-[0.9em] w-[0.9em] align-[-0.12em] text-amber-500"
+                                  >
+                                    <title>Cooking</title>
+                                    <path d="M6 2a1 1 0 0 0 0 2h1v2.6a5 5 0 0 0 2.4 4.28L11 12l-1.6.92A5 5 0 0 0 7 17.2V20H6a1 1 0 1 0 0 2h12a1 1 0 1 0 0-2h-1v-2.8a5 5 0 0 0-2.4-4.28L13 12l1.6-.92A5 5 0 0 0 17 6.8V4h1a1 1 0 1 0 0-2H6zm3 2h6v2.6a3 3 0 0 1-1.49 2.6L12 10.27l-1.51-1.07A3 3 0 0 1 9 6.6V4z" />
+                                  </svg>
+                                ) : null}
+                                {ready ? (
+                                  <svg
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    role="img"
+                                    aria-label="Ready"
+                                    className="mr-1.5 inline-block h-[0.95em] w-[0.95em] align-[-0.15em] text-emerald-500"
+                                  >
+                                    <title>Ready</title>
+                                    <path d="M9.55 17.6 4.4 12.45a1 1 0 0 1 1.42-1.42l3.73 3.74 8.23-8.23a1 1 0 0 1 1.42 1.42l-8.94 8.94a1 1 0 0 1-1.42 0z" />
+                                  </svg>
+                                ) : null}
+                                {it.name}
+                              </span>
                               {it.note ? (
-                                <span className="opacity-70 text-base">
-                                  {' '}
-                                  · {it.note}
-                                </span>
-                              ) : null}
-                              {locked ? (
-                                <span className="ml-1.5 align-middle text-[11px] font-semibold uppercase tracking-wide text-amber-400/90">
-                                  cooking…
-                                </span>
-                              ) : null}
-                              {ready ? (
-                                <span className="ml-1.5 align-middle text-[11px] font-semibold uppercase tracking-wide text-emerald-400">
-                                  ready
-                                </span>
+                                <div className="mt-0.5 flex items-start gap-1.5 pl-4 text-base font-normal">
+                                  <span
+                                    className="text-amber-400 font-bold leading-none"
+                                    aria-hidden
+                                  >
+                                    ↳
+                                  </span>
+                                  <span className="opacity-80">{it.note}</span>
+                                </div>
                               ) : null}
                             </div>
                             <div
@@ -1360,12 +1451,13 @@ export default function KdsPage() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="text-3xl font-bold">
-                        {ticketSummary.area} {ticketSummary.tableLabel}
+                        {ticketSummary.waiterName ||
+                          `${ticketSummary.area} ${ticketSummary.tableLabel}`.trim()}
                       </div>
                       <div className="mt-1 text-sm flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                         {ticketSummary.waiterName ? (
                           <span className="opacity-80">
-                            {ticketSummary.waiterName}
+                            {ticketSummary.area} {ticketSummary.tableLabel}
                           </span>
                         ) : null}
                         {ticketSummary.firedAt ? (
@@ -1456,12 +1548,19 @@ export default function KdsPage() {
                                 }`}
                               >
                                 <div className="font-medium">
-                                  {it.name}
+                                  <div>{it.name}</div>
                                   {it.note ? (
-                                    <span className="font-normal opacity-70">
-                                      {' '}
-                                      · {it.note}
-                                    </span>
+                                    <div className="mt-0.5 flex items-start gap-1.5 pl-4 font-normal">
+                                      <span
+                                        className="text-amber-400 font-bold leading-none"
+                                        aria-hidden
+                                      >
+                                        ↳
+                                      </span>
+                                      <span className="opacity-80">
+                                        {it.note}
+                                      </span>
+                                    </div>
                                   ) : null}
                                 </div>
                                 <div className="shrink-0 opacity-80 tabular-nums">

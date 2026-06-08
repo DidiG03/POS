@@ -181,3 +181,37 @@ select {
 [data-kds-page][data-theme='light'] .border-gray-700 {
   border-color: #cbd5e1; /* slate-300 */
 }
+
+/* Accent colours are tuned for a dark board, so on the light theme they wash
+ * out on white cards. Repaint the emerald/amber/rose accents (ready lines,
+ * cooking/notes, timer urgency) to darker, high-contrast shades. */
+[data-kds-page][data-theme='light'] .text-emerald-300,
+[data-kds-page][data-theme='light'] .text-emerald-400,
+[data-kds-page][data-theme='light'] .text-emerald-500 {
+  color: #047857; /* emerald-700 */
+}
+[data-kds-page][data-theme='light'] .text-amber-400,
+[data-kds-page][data-theme='light'] .text-amber-400\/90,
+[data-kds-page][data-theme='light'] .text-amber-500 {
+  color: #b45309; /* amber-700 */
+}
+[data-kds-page][data-theme='light'] .text-rose-400,
+[data-kds-page][data-theme='light'] .text-rose-200 {
+  color: #be123c; /* rose-700 */
+}
+/* Locked ("cooking…") lines: keep them muted but legible on white. */
+[data-kds-page][data-theme='light'] .text-gray-400 {
+  color: #64748b; /* slate-500 */
+}
+/* Ready-line highlight: a dark translucent green reads as muddy grey on white,
+ * so use a light mint tint instead. */
+[data-kds-page][data-theme='light'] .bg-emerald-900\/25 {
+  background-color: rgba(16, 185, 129, 0.14);
+}
+[data-kds-page][data-theme='light'] .bg-emerald-900\/40 {
+  background-color: rgba(16, 185, 129, 0.2);
+}
+/* Error banner sits on a dark rose tint by default. */
+[data-kds-page][data-theme='light'] .bg-rose-900\/30 {
+  background-color: #fee2e2; /* red-100 */
+}

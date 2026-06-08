@@ -2,6 +2,21 @@ import { ALL_KDS_STATIONS } from '@shared/kdsStations';
 
 export { ALL_KDS_STATIONS };
 
+/**
+ * Which prep stations are enabled for KDS routing, read from settings.
+ * Shape: `settings.kds.stations = { KITCHEN: boolean, BAR: boolean, DESSERT:
+ * boolean }`. A station is enabled unless it's explicitly set to `false`, so
+ * existing installs (no setting yet) keep routing to every station.
+ */
+export function enabledStationsFromSettings(settings: unknown): Set<string> {
+  const map = (settings as any)?.kds?.stations;
+  const enabled = new Set<string>();
+  for (const st of ALL_KDS_STATIONS) {
+    if (!map || map[st] !== false) enabled.add(st);
+  }
+  return enabled;
+}
+
 export type KdsRoutingMaps = {
   categoryIdToKdsStation: Record<number, string | null>;
   skuToKdsStation: Record<string, string | null>;

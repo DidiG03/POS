@@ -186,6 +186,7 @@ export default function OrderPage() {
     vatRate: number;
   } | null>(null);
   const [weightInput, setWeightInput] = useState<string>('');
+  const [weightUnit, setWeightUnit] = useState<'kg' | 'g'>('kg');
   const [customCommentOpen, setCustomCommentOpen] = useState(false);
   const [customCommentInput, setCustomCommentInput] = useState('');
   const customCommentInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1470,6 +1471,7 @@ export default function OrderPage() {
                           undefined,
                       } as any);
                       setWeightInput('');
+                      setWeightUnit('kg');
                     } else {
                       addItem({
                         sku: i.sku,
@@ -3518,14 +3520,22 @@ export default function OrderPage() {
             </div>
             <div className="flex gap-2 mb-3">
               <button
-                className="flex-1 bg-gray-700 py-2 rounded"
-                onClick={() => setWeightInput((v) => v + ' kg')}
+                className={`flex-1 py-2 rounded ${
+                  weightUnit === 'kg'
+                    ? 'bg-emerald-600'
+                    : 'bg-gray-700 hover:bg-gray-600'
+                }`}
+                onClick={() => setWeightUnit('kg')}
               >
                 kg
               </button>
               <button
-                className="flex-1 bg-gray-700 py-2 rounded"
-                onClick={() => setWeightInput((v) => v + ' g')}
+                className={`flex-1 py-2 rounded ${
+                  weightUnit === 'g'
+                    ? 'bg-emerald-600'
+                    : 'bg-gray-700 hover:bg-gray-600'
+                }`}
+                onClick={() => setWeightUnit('g')}
               >
                 g
               </button>
@@ -3533,13 +3543,24 @@ export default function OrderPage() {
             <input
               className="w-full bg-gray-700 rounded px-2 py-2 text-center mb-3"
               placeholder={t('order.weightPlaceholder')}
-              value={weightInput}
-              onChange={(e) => setWeightInput(e.target.value)}
+              inputMode="decimal"
+              value={weightInput ? `${weightInput} ${weightUnit}` : ''}
+              onChange={(e) => {
+                // Keep only the numeric part; the unit is chosen via kg/g.
+                const digits = e.target.value
+                  .replace(/[^0-9.]/g, '')
+                  .replace(/(\..*)\./g, '$1');
+                setWeightInput(digits);
+              }}
             />
             <div className="flex gap-2">
               <button
                 className="flex-1 bg-gray-600 py-2 rounded"
-                onClick={() => setWeightModal(null)}
+                onClick={() => {
+                  setWeightModal(null);
+                  setWeightInput('');
+                  setWeightUnit('kg');
+                }}
               >
                 {t('common.cancel')}
               </button>
@@ -3547,14 +3568,9 @@ export default function OrderPage() {
                 className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
                 onClick={() => {
                   if (!weightModal) return;
-                  const raw = weightInput.trim().toLowerCase();
-                  if (!raw) return;
-                  let qty = 0;
-                  if (raw.endsWith('kg'))
-                    qty = Number(raw.replace('kg', '').trim());
-                  else if (raw.endsWith('g'))
-                    qty = Number(raw.replace('g', '').trim()) / 1000;
-                  else qty = Number(raw);
+                  const amount = Number(weightInput.trim());
+                  if (!Number.isFinite(amount) || amount <= 0) return;
+                  const qty = weightUnit === 'g' ? amount / 1000 : amount;
                   if (!Number.isFinite(qty) || qty <= 0) return;
                   addItem({
                     sku: weightModal.sku,
@@ -3568,6 +3584,7 @@ export default function OrderPage() {
                   } as any);
                   setWeightModal(null);
                   setWeightInput('');
+                  setWeightUnit('kg');
                 }}
               >
                 {t('order.confirm')}

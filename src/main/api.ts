@@ -31,8 +31,8 @@ import {
   getKdsTicketDetail,
 } from './services/kdsList';
 import {
-  ALL_KDS_STATIONS,
   decorateKdsTicketItemsFromCategory,
+  enabledStationsFromSettings,
   kdsStationsWithActiveItems,
   loadKdsRoutingFromDb,
 } from './services/kdsStationRouting';
@@ -54,14 +54,12 @@ import {
   isTwoStageKitchen,
 } from '@shared/kdsCooker';
 
-/** POS-host flag: KITCHEN runs the two-stage cook → pass (cooker) flow. */
+/**
+ * KITCHEN always runs the two-stage cook → pass (cooker) flow — it's the
+ * product default and no longer configurable from the UI.
+ */
 async function getCookerEnabledFromSettings(): Promise<boolean> {
-  try {
-    const settings: any = await coreServices.readSettings();
-    return Boolean(settings?.kds?.cookerEnabled);
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 async function maybeAlertSuspiciousVoidsLocal(input: {
@@ -1354,7 +1352,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         try {
           const ok = await ensureKdsLocalSchema();
           if (ok) {
-            const enabledStations = new Set<string>(ALL_KDS_STATIONS);
+            const enabledStations = enabledStationsFromSettings(
+              await coreServices.readSettings().catch(() => ({})),
+            );
             const lines = Array.isArray(items) ? items : [];
             const routing = await loadKdsRoutingFromDb(prisma).catch(() => ({
               categoryIdToKdsStation: {},

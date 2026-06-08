@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { UpdateStatusDTO } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
-import { kdsStationLabel } from '@shared/kdsStations';
+import {
+  ALL_KDS_STATIONS,
+  kdsStationLabel,
+  type KdsStation,
+} from '@shared/kdsStations';
 import { KDS_BUMP_BAR_PROGRAMMING } from '../../utils/kdsBumpBar';
 import FloorCanvas from '../components/FloorCanvas';
 import { useSessionStore } from '../../stores/session';
@@ -1848,6 +1852,59 @@ function BackupsSettings() {
 
 function KdsSettings() {
   const [status, setStatus] = useState<string | null>(null);
+  const [stations, setStations] = useState<Record<KdsStation, boolean>>(() => {
+    const init = {} as Record<KdsStation, boolean>;
+    for (const st of ALL_KDS_STATIONS) init[st] = true;
+    return init;
+  });
+  const [loadingStations, setLoadingStations] = useState(true);
+  const [savingStation, setSavingStation] = useState<KdsStation | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s: any = await window.api.settings.get();
+        const map = s?.kds?.stations;
+        if (!alive) return;
+        setStations((prev) => {
+          const next = { ...prev };
+          for (const st of ALL_KDS_STATIONS) {
+            next[st] = !map || map[st] !== false;
+          }
+          return next;
+        });
+      } catch {
+        /* keep defaults (all enabled) */
+      } finally {
+        if (alive) setLoadingStations(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const toggleStation = async (station: KdsStation) => {
+    const next = { ...stations, [station]: !stations[station] };
+    setStations(next);
+    setSavingStation(station);
+    setStatus(null);
+    try {
+      await window.api.settings.update({ kds: { stations: next } });
+      setStatus(
+        next[station]
+          ? `${kdsStationLabel(station)} enabled — orders now route here.`
+          : `${kdsStationLabel(station)} disabled — orders no longer route here.`,
+      );
+    } catch {
+      // Roll back on failure.
+      setStations((prev) => ({ ...prev, [station]: !next[station] }));
+      setStatus(`Could not save ${kdsStationLabel(station)}.`);
+    } finally {
+      setSavingStation(null);
+    }
+  };
 
   return (
     <div>
@@ -1864,6 +1921,40 @@ function KdsSettings() {
           <span className="font-mono">J</span> on the bump bar) to choose{' '}
           {kdsStationLabel('KITCHEN')}, {kdsStationLabel('BAR')}, or{' '}
           {kdsStationLabel('DESSERT')} for that display.
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-gray-800">
+          <div className="font-medium mb-1">Active prep stations</div>
+          <div className="text-xs opacity-70 mb-3">
+            Turn a station off to stop routing its items to any kitchen screen.
+            Disabled stations keep printing on receipts but never appear on the
+            KDS.
+          </div>
+          <div className="space-y-2">
+            {ALL_KDS_STATIONS.map((st) => (
+              <label
+                key={st}
+                className="flex items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-2"
+              >
+                <span className="text-sm">{kdsStationLabel(st)}</span>
+                <button
+                  type="button"
+                  disabled={loadingStations || savingStation === st}
+                  onClick={() => toggleStation(st)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
+                    stations[st] ? 'bg-emerald-600' : 'bg-gray-600'
+                  }`}
+                  aria-pressed={stations[st]}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      stations[st] ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </label>
+            ))}
+          </div>
         </div>
 
         <div className="mt-4 pt-4 border-t border-gray-800">

@@ -116,6 +116,11 @@ export interface SettingsDTO {
   kds?: {
     enabledStations?: Array<'KITCHEN' | 'BAR' | 'DESSERT'>;
     /**
+     * Per-station routing switch. When a station is set to `false`, its items
+     * are no longer fanned out to any KDS screen. Missing/true means enabled.
+     */
+    stations?: Partial<Record<'KITCHEN' | 'BAR' | 'DESSERT', boolean>>;
+    /**
      * Two-stage "cooker" kitchen flow. When true, KITCHEN items must be
      * bumped on the cooker screen before the main screen can finalise them.
      */
@@ -731,6 +736,10 @@ export interface ApiKds {
   setCookerMode(input: {
     enabled: boolean;
   }): Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
+  /** Prep stations enabled for routing on the POS host (admin setting). */
+  getEnabledStations(): Promise<{
+    stations: Array<'KITCHEN' | 'BAR' | 'DESSERT'>;
+  }>;
   debug(): Promise<any>;
 }
 

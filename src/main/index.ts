@@ -129,6 +129,7 @@ import {
 import {
   ALL_KDS_STATIONS,
   decorateKdsTicketItemsFromCategory,
+  enabledStationsFromSettings,
   kdsStationsWithActiveItems,
   loadKdsRoutingFromDb,
 } from './services/kdsStationRouting';
@@ -3568,8 +3569,13 @@ function dayKeyLocal(d = new Date()) {
   return `${y}-${m}-${dd}`;
 }
 
-async function getEnabledStations() {
-  return [...ALL_KDS_STATIONS];
+async function getEnabledStations(): Promise<string[]> {
+  try {
+    const settings: any = await readSettings();
+    return Array.from(enabledStationsFromSettings(settings));
+  } catch {
+    return [...ALL_KDS_STATIONS];
+  }
 }
 
 async function createKdsTicketFromLog(input: {
@@ -4108,14 +4114,13 @@ ipcMain.handle('tickets:getTableTooltip', async (_e, input) => {
   };
 });
 
-/** POS-host flag: KITCHEN runs the two-stage cook → pass (cooker) flow. */
+/**
+ * KITCHEN always runs the two-stage cook → pass (cooker) flow — it's the
+ * product default and no longer configurable. The per-screen "cooker" role
+ * (which device is the cook vs the main pickup screen) is still chosen locally.
+ */
 async function getCookerEnabled(): Promise<boolean> {
-  try {
-    const settings: any = await readSettings();
-    return Boolean(settings?.kds?.cookerEnabled);
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 // KDS: list tickets by station + status (NEW/DONE)
@@ -4300,6 +4305,14 @@ ipcMain.handle('kds:clearDone', async (_e, input) => {
 // KDS: read/set the POS-host "cooker" (two-stage kitchen) master switch.
 ipcMain.handle('kds:getCookerMode', async () => {
   return { enabled: await getCookerEnabled() };
+});
+
+ipcMain.handle('kds:getEnabledStations', async () => {
+  try {
+    return { stations: await getEnabledStations() };
+  } catch {
+    return { stations: [...ALL_KDS_STATIONS] };
+  }
 });
 
 ipcMain.handle('kds:setCookerMode', async (_e, input) => {
