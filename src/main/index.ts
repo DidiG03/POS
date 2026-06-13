@@ -5259,6 +5259,7 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
     summary: {
       startIso: string;
       endIso: string;
+      revenueGross: number;
       revenueNet: number;
       revenueVat: number;
       orders: number;
@@ -5357,6 +5358,7 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
       const live = itemsArr.filter((it) => !it?.voided);
       const allVoided = itemsArr.length > 0 && live.length === 0;
       if (allVoided) voidedTickets += 1;
+      if (live.length === 0) continue;
 
       let rowRevenue = 0;
       let rowVat = 0;
@@ -5387,6 +5389,7 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
 
       revenueNet += rowRevenue;
       revenueVat += rowVat;
+      const rowGross = rowRevenue + rowVat;
       items += rowItems;
       orders += 1;
       const cov = Number(r.covers || 0);
@@ -5402,21 +5405,21 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
         orders: 0,
         covers: 0,
       };
-      w.revenue += rowRevenue;
+      w.revenue += rowGross;
       w.items += rowItems;
       w.orders += 1;
       w.covers += Number.isFinite(cov) && cov > 0 ? cov : 0;
       waiterAgg.set(wid, w);
 
       hourly[when.getHours()].orders += 1;
-      hourly[when.getHours()].revenue += rowRevenue;
+      hourly[when.getHours()].revenue += rowGross;
       weekday[when.getDay()].orders += 1;
-      weekday[when.getDay()].revenue += rowRevenue;
+      weekday[when.getDay()].revenue += rowGross;
 
       const bIso = bucketStart(when, granularity).toISOString();
       const idx = seriesIndex.get(bIso);
       if (idx != null) {
-        series[idx].revenue += rowRevenue;
+        series[idx].revenue += rowGross;
         series[idx].orders += 1;
       }
     }
@@ -5425,12 +5428,13 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
       summary: {
         startIso: s.toISOString(),
         endIso: e.toISOString(),
+        revenueGross: revenueNet + revenueVat,
         revenueNet,
         revenueVat,
         orders,
         items,
         covers,
-        avgTicket: orders > 0 ? revenueNet / orders : 0,
+        avgTicket: orders > 0 ? (revenueNet + revenueVat) / orders : 0,
         avgItemsPerTicket: orders > 0 ? items / orders : 0,
         uniqueTables: tables.size,
         uniqueWaiters: waiters.size,

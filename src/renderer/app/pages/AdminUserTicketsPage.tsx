@@ -241,6 +241,179 @@ function TicketTotalsRow({
   );
 }
 
+function fmtInt(n: number): string {
+  const v = Number(n || 0);
+  if (!Number.isFinite(v)) return '—';
+  return v.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function SummaryTile({
+  label,
+  value,
+  tone = 'slate',
+}: {
+  label: string;
+  value: string | number;
+  tone?: 'slate' | 'green' | 'amber' | 'rose' | 'indigo';
+}) {
+  const toneCls =
+    tone === 'green'
+      ? 'border-emerald-700/60 bg-emerald-950/30 text-emerald-100'
+      : tone === 'amber'
+        ? 'border-amber-700/60 bg-amber-950/30 text-amber-100'
+        : tone === 'rose'
+          ? 'border-rose-700/60 bg-rose-950/30 text-rose-100'
+          : tone === 'indigo'
+            ? 'border-indigo-700/60 bg-indigo-950/30 text-indigo-100'
+            : 'border-gray-700 bg-gray-900/50 text-gray-100';
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${toneCls}`}>
+      <div className="text-[11px] uppercase tracking-wide opacity-70">
+        {label}
+      </div>
+      <div className="mt-0.5 text-lg font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function TicketCard({
+  ticket,
+  prefs,
+  computeServiceCharge,
+  zoom,
+  mode,
+}: {
+  ticket: Ticket;
+  prefs: Preferences | null;
+  computeServiceCharge: (base: number, p: Preferences | null) => number;
+  zoom: number;
+  mode: 'list' | 'grid';
+}) {
+  const liveItems = ticket.items.filter((it) => !it.voided);
+  const voidedItems = ticket.items.filter((it) => it.voided);
+  const isVoided = ((ticket.status as TicketStatus) || 'PAID') === 'VOIDED';
+  const isTransferred =
+    ((ticket.status as TicketStatus) || 'PAID') === 'TRANSFERRED';
+  const visibleLive = mode === 'grid' ? liveItems.slice(0, 8) : liveItems;
+  const hiddenLive = Math.max(0, liveItems.length - visibleLive.length);
+  const table = `${ticket.area} ${ticket.tableLabel}`.trim();
+  const cardTone = isVoided
+    ? 'border-rose-800/70 bg-rose-950/20'
+    : isTransferred || ticketHasTransfer(ticket)
+      ? 'border-indigo-700/70 bg-indigo-950/20'
+      : 'border-gray-700 bg-gray-800/80';
+
+  return (
+    <article
+      className={`rounded-xl border p-3 shadow-sm ${cardTone}`}
+      style={
+        mode === 'grid'
+          ? { transform: `scale(${zoom})`, transformOrigin: 'top left' }
+          : undefined
+      }
+    >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-base font-semibold">{table || 'Table —'}</div>
+            <StatusBadge status={ticket.status} />
+            <TransferredChip transfer={ticket.transfer} note={ticket.note} />
+          </div>
+          <div className="mt-0.5 text-xs text-gray-400">
+            {new Date(ticket.createdAt).toLocaleString()} · Covers:{' '}
+            {ticket.covers ?? '—'}
+          </div>
+        </div>
+        <div className="text-left sm:text-right">
+          <div className="text-xl font-bold tabular-nums">
+            {fmtInt(
+              ticket.subtotal +
+                (prefs?.vatEnabled !== false ? ticket.vat : 0) +
+                computeServiceCharge(
+                  ticket.subtotal +
+                    (prefs?.vatEnabled !== false ? ticket.vat : 0),
+                  prefs,
+                ),
+            )}
+          </div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-500">
+            Total
+          </div>
+        </div>
+      </div>
+
+      {ticket.note && (
+        <div className="mt-3 rounded-lg border border-gray-700/70 bg-gray-950/30 px-3 py-2 text-xs text-gray-300">
+          Note: {ticket.note}
+        </div>
+      )}
+
+      <div className="mt-3 space-y-1.5">
+        {visibleLive.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-gray-700 px-3 py-3 text-sm text-gray-400">
+            No active items on this ticket.
+          </div>
+        ) : (
+          visibleLive.map((it, i) => (
+            <div
+              key={`${it.name}-${i}`}
+              className="flex items-start justify-between gap-3 rounded-lg border border-gray-700/70 bg-gray-900/70 px-3 py-2 text-sm"
+            >
+              <div className="min-w-0">
+                <div className="font-medium">
+                  {it.name}{' '}
+                  <span className="text-gray-400 tabular-nums">×{it.qty}</span>
+                </div>
+                {it.note ? (
+                  <div className="mt-0.5 text-xs text-gray-400">{it.note}</div>
+                ) : null}
+              </div>
+              <div className="shrink-0 font-mono tabular-nums">
+                {fmtInt(it.unitPrice * it.qty)}
+              </div>
+            </div>
+          ))
+        )}
+        {hiddenLive > 0 && (
+          <div className="px-3 py-1 text-xs text-gray-400">
+            +{hiddenLive} more active items…
+          </div>
+        )}
+        {voidedItems.length > 0 && (
+          <details className="rounded-lg border border-rose-900/50 bg-rose-950/10 px-3 py-2 text-sm">
+            <summary className="cursor-pointer text-rose-200">
+              {voidedItems.length} voided item
+              {voidedItems.length === 1 ? '' : 's'}
+            </summary>
+            <div className="mt-2 space-y-1">
+              {voidedItems.map((it, i) => (
+                <div
+                  key={`${it.name}-${i}`}
+                  className="flex justify-between gap-3 text-xs text-rose-100/75 line-through"
+                >
+                  <span>
+                    {it.name} ×{it.qty}
+                  </span>
+                  <span className="font-mono tabular-nums">
+                    {fmtInt(it.unitPrice * it.qty)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+
+      <TicketTotalsRow
+        ticket={ticket}
+        prefs={prefs}
+        computeServiceCharge={computeServiceCharge}
+        layout={mode === 'list' ? 'inline' : 'stack'}
+      />
+    </article>
+  );
+}
+
 export default function AdminUserTicketsPage() {
   const { userId } = useParams();
   const [params, setParams] = useSearchParams();
@@ -250,8 +423,9 @@ export default function AdminUserTicketsPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
   const [prefs, setPrefs] = useState<Preferences | null>(null);
-  const [view, setView] = useState<'list' | 'grid4'>('grid4');
+  const [view, setView] = useState<'list' | 'grid4'>('list');
   const [zoom, setZoom] = useState<number>(1);
+  const [statusFilter, setStatusFilter] = useState<TicketStatus | 'ALL'>('ALL');
 
   useEffect(() => {
     let cancelled = false;
@@ -341,6 +515,13 @@ export default function AdminUserTicketsPage() {
     return { subtotal, vat, serviceCharge, grand, counts, transfers };
   }, [tickets, prefs]);
 
+  const filteredTickets = useMemo(() => {
+    if (statusFilter === 'ALL') return tickets;
+    return tickets.filter(
+      (t) => ((t.status as TicketStatus) || 'PAID') === statusFilter,
+    );
+  }, [statusFilter, tickets]);
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
@@ -421,7 +602,7 @@ export default function AdminUserTicketsPage() {
               className={`px-3 py-1 ${view === 'grid4' ? 'bg-gray-700' : ''}`}
               onClick={() => setView('grid4')}
             >
-              Grid ×4
+              Grid
             </button>
           </div>
           <div className="bg-gray-800 rounded overflow-hidden text-xs flex items-center">
@@ -452,168 +633,101 @@ export default function AdminUserTicketsPage() {
         </div>
       </div>
 
-      <div className="bg-gray-800 rounded p-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-        <div>Tickets: {tickets.length.toLocaleString()}</div>
-        <div className="flex items-center gap-2">
-          <StatusBadge status="PAID" />
-          <span>{totals.counts.PAID}</span>
-          <StatusBadge status="ACTIVE" />
-          <span>{totals.counts.ACTIVE}</span>
-          <StatusBadge status="VOIDED" />
-          <span>{totals.counts.VOIDED}</span>
-          {totals.counts.TRANSFERRED > 0 && (
-            <>
-              <StatusBadge status="TRANSFERRED" />
-              <span>{totals.counts.TRANSFERRED}</span>
-            </>
-          )}
+      <div className="rounded-xl border border-gray-700 bg-gray-800/70 p-3">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-6">
+          <SummaryTile label="Tickets" value={tickets.length} />
+          <SummaryTile label="Paid" value={totals.counts.PAID} tone="green" />
+          <SummaryTile
+            label="Active"
+            value={totals.counts.ACTIVE}
+            tone="amber"
+          />
+          <SummaryTile
+            label="Voided"
+            value={totals.counts.VOIDED}
+            tone="rose"
+          />
+          <SummaryTile
+            label="Transferred"
+            value={totals.counts.TRANSFERRED}
+            tone="indigo"
+          />
+          <SummaryTile label="Total" value={fmtInt(totals.grand)} />
         </div>
-        {totals.transfers > 0 && (
-          <div
-            className="flex items-center gap-2"
-            title="Tickets this waiter received via a table transfer in this period"
-          >
-            <span className="inline-flex items-center text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border bg-indigo-900/60 border-indigo-700 text-indigo-100">
-              Transferred in
+        <div className="mt-3 flex flex-col gap-3 border-t border-gray-700/70 pt-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            {(['ALL', 'PAID', 'ACTIVE', 'VOIDED', 'TRANSFERRED'] as const).map(
+              (s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStatusFilter(s)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide ${
+                    statusFilter === s
+                      ? 'border-blue-500 bg-blue-900/50 text-blue-100'
+                      : 'border-gray-700 bg-gray-900/60 text-gray-300 hover:bg-gray-800'
+                  }`}
+                >
+                  {s === 'ALL' ? 'All' : s.toLowerCase().replace('_', ' ')}
+                  <span className="ml-2 font-mono">
+                    {s === 'ALL' ? tickets.length : totals.counts[s]}
+                  </span>
+                </button>
+              ),
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-300">
+            <span>Subtotal: {fmtInt(totals.subtotal)}</span>
+            <span>
+              VAT:{' '}
+              {prefs?.vatEnabled !== false ? (
+                fmtInt(totals.vat)
+              ) : (
+                <span className="opacity-70">Disabled</span>
+              )}
             </span>
-            <span>{totals.transfers}</span>
+            {prefs?.serviceCharge?.enabled && totals.serviceCharge > 0 && (
+              <span>Service: {fmtInt(totals.serviceCharge)}</span>
+            )}
+            {totals.transfers > 0 && (
+              <span title="Tickets this waiter received via a table transfer in this period">
+                Transferred in: {totals.transfers}
+              </span>
+            )}
           </div>
-        )}
-        <div>
-          Subtotal:{' '}
-          {totals.subtotal.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-        </div>
-        {prefs?.vatEnabled !== false ? (
-          <div>
-            VAT: {totals.vat.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-          </div>
-        ) : (
-          <div>
-            VAT: <span className="opacity-70">Disabled</span>
-          </div>
-        )}
-        {prefs?.serviceCharge?.enabled && totals.serviceCharge > 0 && (
-          <div>
-            Service charge:{' '}
-            {totals.serviceCharge
-              .toFixed(0)
-              .replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-          </div>
-        )}
-        <div>
-          Total: {totals.grand.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
         </div>
       </div>
 
       {loading ? (
         <div className="opacity-70 text-sm">Loading…</div>
+      ) : filteredTickets.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-700 bg-gray-800/50 p-6 text-sm text-gray-400">
+          No tickets match this filter.
+        </div>
       ) : view === 'grid4' ? (
-        <div className="grid grid-cols-4 gap-3">
-          {tickets.map((t) => {
-            const maxLines = 10;
-            const extra = Math.max(0, t.items.length - maxLines);
-            const items = t.items.slice(0, maxLines);
-            return (
-              <div
-                key={t.id}
-                className={`bg-gray-900 rounded border p-3 flex flex-col shadow-sm ${ticketHasTransfer(t) ? 'border-indigo-700 ring-1 ring-indigo-900/40' : 'border-gray-700'}`}
-                style={{
-                  transform: `scale(${zoom})`,
-                  transformOrigin: 'top left',
-                }}
-              >
-                <div className="flex items-center justify-between mb-2 gap-2">
-                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                    <div className="text-sm font-semibold whitespace-nowrap">
-                      {new Date(t.createdAt).toLocaleTimeString()}
-                    </div>
-                    <StatusBadge status={t.status} />
-                    <TransferredChip transfer={t.transfer} note={t.note} />
-                  </div>
-                  <div className="text-xs opacity-80 whitespace-nowrap">
-                    {t.area} • {t.tableLabel} • C:{t.covers ?? '—'}
-                  </div>
-                </div>
-                <div className="font-mono tabular-nums text-[13px] md:text-sm leading-snug flex-1">
-                  {items.map((it, i) => (
-                    <div
-                      key={i}
-                      className={`px-2 py-0.5 rounded flex items-center justify-between ${it.voided ? 'bg-red-900/50 line-through' : 'bg-gray-800'}`}
-                    >
-                      <div className="min-w-0 truncate" title={it.name}>
-                        {it.name} ×{it.qty}
-                        {it.note ? ` • ${it.note}` : ''}
-                      </div>
-                      <div className="ml-2 shrink-0">
-                        {it.unitPrice * it.qty}
-                      </div>
-                    </div>
-                  ))}
-                  {extra > 0 && (
-                    <div className="mt-1 text-xs opacity-70">
-                      +{extra} more…
-                    </div>
-                  )}
-                </div>
-                {t.note && (
-                  <div className="mt-2 text-xs opacity-80">Note: {t.note}</div>
-                )}
-                <TicketTotalsRow
-                  ticket={t}
-                  prefs={prefs}
-                  computeServiceCharge={computeServiceCharge}
-                />
-              </div>
-            );
-          })}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
+          {filteredTickets.map((t) => (
+            <TicketCard
+              key={t.id}
+              ticket={t}
+              prefs={prefs}
+              computeServiceCharge={computeServiceCharge}
+              zoom={zoom}
+              mode="grid"
+            />
+          ))}
         </div>
       ) : (
         <div className="space-y-3">
-          {tickets.map((t) => (
-            <div
+          {filteredTickets.map((t) => (
+            <TicketCard
               key={t.id}
-              className={`bg-gray-800 rounded p-3 ${ticketHasTransfer(t) ? 'border border-indigo-700' : ''}`}
-            >
-              <div className="text-sm opacity-80 mb-1 flex items-center gap-2 flex-wrap">
-                <StatusBadge status={t.status} />
-                <TransferredChip transfer={t.transfer} note={t.note} />
-                <span>
-                  {new Date(t.createdAt).toLocaleString()} • {t.area} •{' '}
-                  {t.tableLabel} • Covers: {t.covers ?? '—'}
-                </span>
-              </div>
-              <div className="space-y-1 text-sm">
-                {t.items.map((it, i) => (
-                  <div
-                    key={i}
-                    className={`flex justify-between ${it.voided ? 'opacity-60 line-through' : ''}`}
-                  >
-                    <div>
-                      <span className="font-medium">{it.name}</span>
-                      <span className="opacity-70"> ×{it.qty}</span>
-                      {it.note ? (
-                        <span className="opacity-70"> • {it.note}</span>
-                      ) : null}
-                      {it.voided ? (
-                        <span className="ml-2 text-[10px] px-1 rounded bg-red-700">
-                          VOID
-                        </span>
-                      ) : null}
-                    </div>
-                    <div>{it.unitPrice * it.qty}</div>
-                  </div>
-                ))}
-              </div>
-              {t.note && (
-                <div className="text-xs opacity-70 mt-1">Note: {t.note}</div>
-              )}
-              <TicketTotalsRow
-                ticket={t}
-                prefs={prefs}
-                computeServiceCharge={computeServiceCharge}
-                layout="inline"
-              />
-            </div>
+              ticket={t}
+              prefs={prefs}
+              computeServiceCharge={computeServiceCharge}
+              zoom={zoom}
+              mode="list"
+            />
           ))}
         </div>
       )}

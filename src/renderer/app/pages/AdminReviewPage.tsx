@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
   ReviewDTO,
@@ -54,6 +55,27 @@ function addYears(d: Date, n: number): Date {
   const out = new Date(d);
   out.setFullYear(out.getFullYear() + n);
   return out;
+}
+
+function previousMonthToSameElapsedDay(d: Date): Period {
+  const currentStart = startOfMonth(d);
+  const elapsedDays = Math.max(
+    0,
+    Math.floor((startOfDay(d).getTime() - currentStart.getTime()) / 86400000),
+  );
+  const prev = addMonths(d, -1);
+  const start = startOfMonth(prev);
+  const end = endOfDay(addDays(start, elapsedDays));
+  const cap = endOfMonth(prev);
+  return { start, end: end.getTime() > cap.getTime() ? cap : end };
+}
+
+function previousYearToSameElapsedDay(d: Date): Period {
+  const start = startOfYear(addYears(d, -1));
+  const candidate = addYears(d, -1);
+  const end = endOfDay(candidate);
+  const cap = endOfYear(candidate);
+  return { start, end: end.getTime() > cap.getTime() ? cap : end };
 }
 
 function addDays(d: Date, n: number): Date {
@@ -173,8 +195,7 @@ const PRESETS: Preset[] = [
       end: endOfDay(new Date()),
     }),
     compare: () => {
-      const prev = addMonths(new Date(), -1);
-      return { start: startOfMonth(prev), end: endOfMonth(prev) };
+      return previousMonthToSameElapsedDay(new Date());
     },
     granularity: 'day',
   },
@@ -197,8 +218,7 @@ const PRESETS: Preset[] = [
       end: endOfDay(new Date()),
     }),
     compare: () => {
-      const ly = addYears(new Date(), -1);
-      return { start: startOfYear(ly), end: endOfYear(ly) };
+      return previousYearToSameElapsedDay(new Date());
     },
     granularity: 'month',
   },
@@ -536,6 +556,11 @@ function deltaFor(
   return (curr - prev) / Math.abs(prev);
 }
 
+function grossRevenueOf(summary: ReviewSummaryDTO | null | undefined): number {
+  if (!summary) return 0;
+  return summary.revenueGross ?? summary.revenueNet + summary.revenueVat;
+}
+
 function KpiCard({
   label,
   value,
@@ -582,6 +607,25 @@ function KpiCard({
       ) : null}
       {hint && <div className="text-[11px] opacity-50 mt-1">{hint}</div>}
     </div>
+  );
+}
+
+function MetricGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-lg border border-gray-700 bg-gray-800/50 p-3">
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+        {title}
+      </h2>
+      <div className="grid grid-cols-1 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3 gap-2.5">
+        {children}
+      </div>
+    </section>
   );
 }
 
@@ -706,6 +750,8 @@ export default function AdminReviewPage() {
   const summary = data?.current;
   const compare = data?.compare ?? null;
   const series = data?.series;
+  const currentGross = grossRevenueOf(summary);
+  const compareGross = grossRevenueOf(compare);
 
   // Build aligned x labels: the longer of the two series.
   const chartLabels = useMemo<string[]>(() => {
@@ -957,50 +1003,85 @@ export default function AdminReviewPage() {
       )}
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-        <KpiCard
-          label={t('adminReview.revenueNet')}
-          value={fmtMoney(summary?.revenueNet ?? 0)}
-          showComparison={compareEnabled}
-          prev={compare ? fmtMoney(compare.revenueNet) : null}
-          delta={deltaFor(summary?.revenueNet ?? 0, compare?.revenueNet)}
-        />
-        <KpiCard
-          label={t('adminReview.orders')}
-          value={fmtNum(summary?.orders ?? 0)}
-          showComparison={compareEnabled}
-          prev={compare ? fmtNum(compare.orders) : null}
-          delta={deltaFor(summary?.orders ?? 0, compare?.orders)}
-        />
-        <KpiCard
-          label={t('adminReview.itemsSold')}
-          value={fmtNum(summary?.items ?? 0)}
-          showComparison={compareEnabled}
-          prev={compare ? fmtNum(compare.items) : null}
-          delta={deltaFor(summary?.items ?? 0, compare?.items)}
-        />
-        <KpiCard
-          label={t('adminReview.avgTicket')}
-          value={fmtMoney(summary?.avgTicket ?? 0)}
-          showComparison={compareEnabled}
-          prev={compare ? fmtMoney(compare.avgTicket) : null}
-          delta={deltaFor(summary?.avgTicket ?? 0, compare?.avgTicket)}
-        />
-        <KpiCard
-          label={t('adminReview.covers')}
-          value={fmtNum(summary?.covers ?? 0)}
-          showComparison={compareEnabled}
-          prev={compare ? fmtNum(compare.covers) : null}
-          delta={deltaFor(summary?.covers ?? 0, compare?.covers)}
-          hint={t('adminReview.coversHint')}
-        />
-        <KpiCard
-          label={t('adminReview.voidedTickets')}
-          value={fmtNum(summary?.voidedTickets ?? 0)}
-          showComparison={compareEnabled}
-          prev={compare ? fmtNum(compare.voidedTickets) : null}
-          delta={deltaFor(summary?.voidedTickets ?? 0, compare?.voidedTickets)}
-        />
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+        <MetricGroup title={t('adminReview.groupSales')}>
+          <KpiCard
+            label={t('adminReview.revenueGross')}
+            value={fmtMoney(currentGross)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtMoney(compareGross) : null}
+            delta={deltaFor(currentGross, compare ? compareGross : null)}
+          />
+          <KpiCard
+            label={t('adminReview.revenueNet')}
+            value={fmtMoney(summary?.revenueNet ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtMoney(compare.revenueNet) : null}
+            delta={deltaFor(summary?.revenueNet ?? 0, compare?.revenueNet)}
+          />
+          <KpiCard
+            label={t('adminReview.vat')}
+            value={fmtMoney(summary?.revenueVat ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtMoney(compare.revenueVat) : null}
+            delta={deltaFor(summary?.revenueVat ?? 0, compare?.revenueVat)}
+          />
+        </MetricGroup>
+
+        <MetricGroup title={t('adminReview.groupActivity')}>
+          <KpiCard
+            label={t('adminReview.orders')}
+            value={fmtNum(summary?.orders ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtNum(compare.orders) : null}
+            delta={deltaFor(summary?.orders ?? 0, compare?.orders)}
+          />
+          <KpiCard
+            label={t('adminReview.itemsSold')}
+            value={fmtNum(summary?.items ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtNum(compare.items) : null}
+            delta={deltaFor(summary?.items ?? 0, compare?.items)}
+          />
+          <KpiCard
+            label={t('adminReview.avgTicket')}
+            value={fmtMoney(summary?.avgTicket ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtMoney(compare.avgTicket) : null}
+            delta={deltaFor(summary?.avgTicket ?? 0, compare?.avgTicket)}
+          />
+        </MetricGroup>
+
+        <MetricGroup title={t('adminReview.groupGuestsControl')}>
+          <KpiCard
+            label={t('adminReview.covers')}
+            value={fmtNum(summary?.covers ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtNum(compare.covers) : null}
+            delta={deltaFor(summary?.covers ?? 0, compare?.covers)}
+            hint={t('adminReview.coversHint')}
+          />
+          <KpiCard
+            label={t('adminReview.avgItemsPerTicket')}
+            value={fmtNum(summary?.avgItemsPerTicket ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtNum(compare.avgItemsPerTicket) : null}
+            delta={deltaFor(
+              summary?.avgItemsPerTicket ?? 0,
+              compare?.avgItemsPerTicket,
+            )}
+          />
+          <KpiCard
+            label={t('adminReview.voidedTickets')}
+            value={fmtNum(summary?.voidedTickets ?? 0)}
+            showComparison={compareEnabled}
+            prev={compare ? fmtNum(compare.voidedTickets) : null}
+            delta={deltaFor(
+              summary?.voidedTickets ?? 0,
+              compare?.voidedTickets,
+            )}
+          />
+        </MetricGroup>
       </div>
 
       {/* Revenue chart */}
@@ -1027,7 +1108,7 @@ export default function AdminReviewPage() {
             series={chartSeries}
             xLabels={chartLabels}
             height={260}
-            yLabel={t('adminReview.revenueAxis', { currency })}
+            yLabel={t('adminReview.revenueAxisGross', { currency })}
           />
         )}
       </div>
@@ -1036,7 +1117,7 @@ export default function AdminReviewPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
           <h2 className="text-sm font-semibold mb-2">
-            {t('adminReview.topItemsTitle')}
+            {t('adminReview.topItemsTitleGross')}
           </h2>
           {data?.topItems?.length ? (
             <table className="w-full text-sm">
@@ -1103,7 +1184,7 @@ export default function AdminReviewPage() {
           waiters={data?.waiters || []}
           fmtMoney={fmtMoney}
           fmtNum={fmtNum}
-          totalRevenue={summary?.revenueNet ?? 0}
+          totalRevenue={currentGross}
         />
       </div>
 
@@ -1174,12 +1255,12 @@ function PeriodSummaryCard({
       k: t('adminReview.summaryRange'),
       v: `${fmtDate(start)} – ${fmtDate(end)}`,
     },
-    { k: t('adminReview.summaryRevenueNet'), v: fmtMoney(summary.revenueNet) },
-    { k: t('adminReview.summaryVat'), v: fmtMoney(summary.revenueVat) },
     {
       k: t('adminReview.summaryRevenueGross'),
-      v: fmtMoney(summary.revenueNet + summary.revenueVat),
+      v: fmtMoney(grossRevenueOf(summary)),
     },
+    { k: t('adminReview.summaryRevenueNet'), v: fmtMoney(summary.revenueNet) },
+    { k: t('adminReview.summaryVat'), v: fmtMoney(summary.revenueVat) },
     { k: t('adminReview.summaryOrders'), v: fmtNum(summary.orders) },
     { k: t('adminReview.summaryItemsSold'), v: fmtNum(summary.items) },
     { k: t('adminReview.summaryCovers'), v: fmtNum(summary.covers) },

@@ -1044,17 +1044,19 @@ export interface ReviewRangeInput {
 export interface ReviewSummaryDTO {
   startIso: string;
   endIso: string;
-  /** Net revenue (sum of unitPrice * qty for non-voided lines). */
+  /** Gross sales total (customer-facing total, VAT included when enabled). */
+  revenueGross: number;
+  /** Net revenue (gross minus VAT for non-voided lines). */
   revenueNet: number;
-  /** Estimated VAT (sum of unitPrice * qty * vatRate for non-voided lines). */
+  /** VAT extracted from gross sales for non-voided lines. */
   revenueVat: number;
-  /** Number of TicketLog rows in the period (proxy for "ticket sends"). */
+  /** Number of TicketLog rows with at least one non-voided line. */
   orders: number;
   /** Number of non-voided line items. */
   items: number;
   /** Sum of `covers` across rows that recorded covers. */
   covers: number;
-  /** revenueNet / orders, 0 when no orders. */
+  /** revenueGross / orders, 0 when no orders. */
   avgTicket: number;
   /** items / orders, 0 when no orders. */
   avgItemsPerTicket: number;
@@ -1071,6 +1073,7 @@ export interface ReviewSeriesPointDTO {
   label: string;
   /** Bucket start, ISO — used to align current vs compare on the same x axis. */
   bucketIso: string;
+  /** Gross sales total for this bucket. */
   revenue: number;
   orders: number;
 }
@@ -1082,6 +1085,7 @@ export interface ReviewWaiterDTO {
   active: boolean;
   orders: number;
   items: number;
+  /** Gross sales total attributed to this waiter. */
   revenue: number;
   covers: number;
   avgTicket: number;
@@ -1094,6 +1098,7 @@ export interface ReviewWaiterDTO {
 export interface ReviewTopItemDTO {
   name: string;
   qty: number;
+  /** Gross item sales. */
   revenue: number;
 }
 
@@ -1101,6 +1106,7 @@ export interface ReviewHourBucketDTO {
   /** 0..23 (local time of the device). */
   hour: number;
   orders: number;
+  /** Gross sales total for this hour. */
   revenue: number;
 }
 
@@ -1108,6 +1114,7 @@ export interface ReviewWeekdayBucketDTO {
   /** 0..6 with 0 = Sunday. */
   dayOfWeek: number;
   orders: number;
+  /** Gross sales total for this weekday. */
   revenue: number;
 }
 

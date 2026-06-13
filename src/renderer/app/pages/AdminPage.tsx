@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import {
+  normalizeStock,
   StockAvailabilityPanel,
   type StockPanelMenuCategory,
 } from '../../components/StockAvailabilityPanel';
@@ -298,6 +299,27 @@ export default function AdminPage() {
       });
   }, [showAdmins, showInactive, userQuery, users]);
 
+  const staffTotals = useMemo(
+    () => ({
+      active: users.filter((u) => u.active).length,
+      onShift: openUserIds.size,
+    }),
+    [openUserIds.size, users],
+  );
+
+  const stockTotals = useMemo(() => {
+    let low = 0;
+    let out = 0;
+    for (const c of stockMenuCats) {
+      for (const it of c.items || []) {
+        const level = normalizeStock(it.stockLevel);
+        if (level === 'LOW') low += 1;
+        if (level === 'OUT') out += 1;
+      }
+    }
+    return { low, out, attention: low + out };
+  }, [stockMenuCats]);
+
   async function refreshUsers() {
     setUsers(await window.api.auth.listUsers());
   }
@@ -438,52 +460,145 @@ export default function AdminPage() {
   }, [shifts]);
 
   return (
-    <div className="grid gap-4 grid-cols-2">
+    <div className="space-y-4">
       {adminNotice && (
-        <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded p-3 col-span-2 text-sm">
+        <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded-lg p-3 text-sm">
           {adminNotice}
         </div>
       )}
-      <div className="grid gap-4 grid-cols-1 min-[520px]:grid-cols-3 min-w-0 [&>*]:min-w-0">
-        <Stat
-          title={t('adminOverview.coversToday')}
-          value={ov?.coversToday ?? 0}
-        />
-        <Stat title={t('adminOverview.openShifts')} value={ov?.openShifts} />
-        <Stat title={t('adminOverview.openOrders')} value={ov?.openOrders} />
-        <Stat
-          title={t('adminOverview.revenueTodayNet')}
-          value={ov ? (ov.revenueTodayNet ?? 0) : null}
-          kind="money"
-          currency={currency}
-        />
-        <Stat
-          title={t('adminOverview.vatToday')}
-          value={ov ? (ov.revenueTodayVat ?? 0) : null}
-          kind="money"
-          currency={currency}
-        />
-        <div className="bg-gray-800 rounded p-4 min-w-0 overflow-hidden">
-          <div className="text-sm opacity-70">
-            {t('adminOverview.topSellingToday')}
-          </div>
-          <div className="mt-1 text-base sm:text-lg font-semibold break-words">
-            {topSelling ? topSelling.name : '—'}
-          </div>
-          {topSelling && (
-            <div className="text-sm opacity-80 mt-1 break-words">
-              {t('adminOverview.qty')}: {topSelling.qty} •{' '}
-              {t('adminOverview.revenue')}:{' '}
-              <span className="font-semibold tabular-nums">
-                {formatMoney(topSelling.revenue, currency)}
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-      <ReservationsTodayCard ov={ov} />
 
-      <div className="bg-gray-800 rounded p-4 col-span-2 min-w-0 overflow-hidden">
+      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+        <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold">
+              {t('adminOverview.todaySnapshot')}
+            </h2>
+            <p className="text-xs text-gray-400">
+              {t('adminOverview.todaySnapshotHelp')}
+            </p>
+          </div>
+          <div className="text-xs text-gray-400">
+            {dataSource === 'cloud'
+              ? t('adminOverview.loadedFromCloud')
+              : t('adminOverview.loadedFromLocal')}
+          </div>
+        </div>
+        <div className="grid gap-3 grid-cols-1 min-[520px]:grid-cols-2 xl:grid-cols-5 min-w-0 [&>*]:min-w-0">
+          <Stat
+            title={t('adminOverview.revenueTodayNet')}
+            value={ov ? (ov.revenueTodayNet ?? 0) : null}
+            kind="money"
+            currency={currency}
+          />
+          <Stat
+            title={t('adminOverview.vatToday')}
+            value={ov ? (ov.revenueTodayVat ?? 0) : null}
+            kind="money"
+            currency={currency}
+          />
+          <Stat
+            title={t('adminOverview.coversToday')}
+            value={ov?.coversToday ?? 0}
+          />
+          <Stat title={t('adminOverview.openOrders')} value={ov?.openOrders} />
+          <div className="bg-gray-900/60 rounded-lg border border-gray-700/70 p-4 min-w-0 overflow-hidden">
+            <div className="text-sm opacity-70">
+              {t('adminOverview.topSellingToday')}
+            </div>
+            <div className="mt-1 text-base sm:text-lg font-semibold break-words">
+              {topSelling ? topSelling.name : '—'}
+            </div>
+            {topSelling && (
+              <div className="text-sm opacity-80 mt-1 break-words">
+                {t('adminOverview.qty')}: {topSelling.qty} •{' '}
+                {t('adminOverview.revenue')}:{' '}
+                <span className="font-semibold tabular-nums">
+                  {formatMoney(topSelling.revenue, currency)}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)] gap-4">
+        <ReservationsTodayCard ov={ov} />
+
+        <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">
+                {t('adminOverview.operations')}
+              </h2>
+              <p className="text-xs text-gray-400">
+                {t('adminOverview.operationsHelp')}
+              </p>
+            </div>
+            <button
+              className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
+              onClick={() => {
+                setShiftFilter('ALL');
+                setShiftView('SHIFTS');
+                setShiftRange('TODAY');
+                setShowShiftsModal(true);
+                void refreshShifts();
+              }}
+              type="button"
+            >
+              {t('adminOverview.viewAll')}
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <MiniStat
+              label={t('adminOverview.openShifts')}
+              value={openShifts.length}
+            />
+            <MiniStat
+              label={t('stockPanel.lowStock')}
+              value={stockTotals.low}
+            />
+            <MiniStat
+              label={t('stockPanel.outOfStock')}
+              value={stockTotals.out}
+            />
+          </div>
+          <div className="space-y-2">
+            {openShifts.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 px-3 py-4 text-sm text-gray-400">
+                {t('adminOverview.noOpenShifts')}
+              </div>
+            ) : (
+              openShifts.slice(0, 4).map((s) => (
+                <div
+                  key={s.id}
+                  className="rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{s.userName}</div>
+                      <div className="text-xs text-gray-400">
+                        {new Date(s.openedAt).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-mono tabular-nums text-sm font-semibold">
+                        {Number.isFinite(s.durationHours)
+                          ? s.durationHours.toFixed(2)
+                          : '—'}
+                      </div>
+                      <div className="text-[11px] uppercase tracking-wide text-gray-500">
+                        {t('adminOverview.hours')}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      </div>
+
+      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4 min-w-0 overflow-hidden">
         <StockAvailabilityPanel
           categories={stockMenuCats}
           disabled={billingPaused || stockSaving}
@@ -504,64 +619,7 @@ export default function AdminPage() {
             }
           }}
         />
-      </div>
-
-      <div className="bg-gray-800 rounded p-4 col-span-1">
-        <div className="flex items-center justify-between gap-3 mb-2">
-          <div className="text-sm opacity-70">
-            {t('adminOverview.openShifts')}
-          </div>
-          <button
-            className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
-            onClick={() => {
-              setShiftFilter('ALL');
-              setShiftView('SHIFTS');
-              setShiftRange('TODAY');
-              setShowShiftsModal(true);
-              void refreshShifts();
-            }}
-            type="button"
-          >
-            {t('adminOverview.viewAll')}
-          </button>
-        </div>
-        <div className="overflow-auto border border-gray-700 rounded">
-          <table className="w-full text-sm">
-            <thead className="text-left bg-gray-900">
-              <tr className="opacity-70">
-                <th className="py-2 px-3">{t('adminOverview.colStaff')}</th>
-                <th className="py-2 px-3">{t('adminOverview.colOpened')}</th>
-                <th className="py-2 px-3 text-right">
-                  {t('adminOverview.colHours')}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {openShifts.length === 0 ? (
-                <tr className="border-t border-gray-800">
-                  <td className="py-3 px-3 opacity-70" colSpan={3}>
-                    {t('adminOverview.noOpenShifts')}
-                  </td>
-                </tr>
-              ) : (
-                openShifts.map((s) => (
-                  <tr key={s.id} className="border-t border-gray-800">
-                    <td className="py-2 px-3 font-medium">{s.userName}</td>
-                    <td className="py-2 px-3 opacity-90">
-                      {new Date(s.openedAt).toLocaleString()}
-                    </td>
-                    <td className="py-2 px-3 text-right font-mono tabular-nums">
-                      {Number.isFinite(s.durationHours)
-                        ? s.durationHours.toFixed(2)
-                        : '—'}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      </section>
 
       {showShiftsModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
@@ -848,20 +906,21 @@ export default function AdminPage() {
         </div>
       )}
 
-      <div className="bg-gray-800 rounded p-4 col-span-1">
-        <div className="flex items-center justify-between gap-3 mb-3">
+      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <div className="text-sm opacity-70">
+            <h2 className="text-base font-semibold">
               {t('adminOverview.staffMembers')}
-            </div>
-            <div className="text-xs opacity-70">
-              {dataSource === 'cloud'
-                ? t('adminOverview.loadedFromCloud')
-                : t('adminOverview.loadedFromLocal')}
-            </div>
+            </h2>
+            <p className="text-xs text-gray-400">
+              {t('adminOverview.staffHelp', {
+                active: staffTotals.active,
+                onShift: staffTotals.onShift,
+              })}
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs opacity-80 flex items-center gap-2 select-none">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs opacity-80 flex items-center gap-2 select-none rounded-lg border border-gray-700 bg-gray-900/50 px-2.5 py-2">
               <input
                 type="checkbox"
                 checked={showAdmins}
@@ -869,7 +928,7 @@ export default function AdminPage() {
               />
               {t('adminOverview.showAdmins')}
             </label>
-            <label className="text-xs opacity-80 flex items-center gap-2 select-none">
+            <label className="text-xs opacity-80 flex items-center gap-2 select-none rounded-lg border border-gray-700 bg-gray-900/50 px-2.5 py-2">
               <input
                 type="checkbox"
                 checked={showInactive}
@@ -878,11 +937,11 @@ export default function AdminPage() {
               {t('adminOverview.showInactive')}
             </label>
             <button
-              className="px-3 py-2 rounded bg-transparent hover:bg-gray-700 text-sm disabled:opacity-60 cursor-pointer"
+              className="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-sm disabled:opacity-60 cursor-pointer"
               disabled={billingPaused}
               onClick={() => setShowAddStaffModal(true)}
             >
-              +
+              {t('adminOverview.addStaff')}
             </button>
           </div>
         </div>
@@ -925,185 +984,184 @@ export default function AdminPage() {
           </div>
         )}
 
-        <div className="mb-3">
+        <div className="mt-4 mb-3">
           <input
-            className="w-full bg-gray-700 rounded px-3 py-2"
+            className="w-full bg-gray-900/70 border border-gray-700 rounded-lg px-3 py-2"
             placeholder={t('adminOverview.searchStaff')}
             value={userQuery}
             onChange={(e) => setUserQuery(e.target.value)}
           />
         </div>
 
-        <div className="overflow-auto max-h-96">
-          <table className="w-full text-sm">
-            <thead className="text-left opacity-70">
-              <tr>
-                <th className="py-1 pr-2">{t('adminOverview.colId')}</th>
-                <th className="py-1 pr-2">{t('adminOverview.colName')}</th>
-                <th className="py-1 pr-2">{t('adminOverview.colRole')}</th>
-                <th className="py-1 pr-2">{t('adminOverview.colOnShift')}</th>
-                <th className="py-1 pr-2">{t('adminOverview.colCreated')}</th>
-                <th className="py-1 pr-2">{t('adminOverview.colActions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {staffList.length === 0 && (
-                <tr className="border-t border-gray-700">
-                  <td className="py-2 opacity-70" colSpan={7}>
-                    {t('adminOverview.noStaffFound')}
-                  </td>
-                </tr>
-              )}
-              {staffList.map((u) => (
-                <tr key={u.id} className="border-t border-gray-700">
-                  <td className="py-1 pr-2 opacity-80">{u.id}</td>
-                  <td className="py-1 pr-2">{u.displayName}</td>
-                  <td className="py-1 pr-2">
-                    <span className="px-2 py-0.5 rounded bg-gray-900/70 border border-gray-700">
-                      {u.role}
-                    </span>
-                  </td>
-                  {/* <td className="py-1 pr-2">{u.active ? 'Yes' : 'No'}</td> */}
-                  <td className="py-1 pr-2">
-                    {openUserIds.has(u.id)
-                      ? t('adminOverview.yes')
-                      : t('adminOverview.no')}
-                  </td>
-                  <td className="py-1 pr-2 opacity-80">
-                    {u.createdAt
-                      ? new Date(u.createdAt).toLocaleDateString()
-                      : '—'}
-                  </td>
-                  <td className="py-1 pr-2">
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="px-2 py-1 rounded bg-transparent hover:bg-gray-700 text-xs cursor-pointer"
-                        title={t('adminOverview.editStaffTitle')}
-                        onClick={() =>
-                          setEditingStaff({
-                            id: u.id,
-                            displayName: u.displayName,
-                            role: u.role,
-                            active: Boolean(u.active),
-                          })
-                        }
-                      >
-                        <IconPencil />
-                      </button>
-                      {u.active ? (
-                        <button
-                          className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-40"
-                          disabled={myId === u.id}
-                          title={
-                            myId === u.id
-                              ? t('adminOverview.disableSelfTitle')
-                              : t('adminOverview.disableUserTitle')
-                          }
-                          onClick={async () => {
-                            setStaffStatus(null);
-                            try {
-                              await window.api.auth.updateUser({
-                                id: u.id,
-                                active: false,
-                              } as any);
-                              setStaffStatus({
-                                kind: 'success',
-                                message: t('adminOverview.disabledUser', {
-                                  name: u.displayName,
-                                }),
-                              });
-                              await refreshUsers();
-                            } catch (e: any) {
-                              setStaffStatus({
-                                kind: 'error',
-                                message:
-                                  e?.message ||
-                                  t('adminOverview.disableFailed'),
-                              });
-                            }
-                          }}
-                        >
-                          {t('adminOverview.disable')}
-                        </button>
-                      ) : (
-                        <button
-                          className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs"
-                          onClick={async () => {
-                            setStaffStatus(null);
-                            try {
-                              await window.api.auth.updateUser({
-                                id: u.id,
-                                active: true,
-                              } as any);
-                              setStaffStatus({
-                                kind: 'success',
-                                message: t('adminOverview.enabledUser', {
-                                  name: u.displayName,
-                                }),
-                              });
-                              await refreshUsers();
-                            } catch (e: any) {
-                              setStaffStatus({
-                                kind: 'error',
-                                message:
-                                  e?.message || t('adminOverview.enableFailed'),
-                              });
-                            }
-                          }}
-                        >
-                          {t('adminOverview.enable')}
-                        </button>
-                      )}
-
-                      <button
-                        className="px-2 py-1 rounded bg-red-700 hover:bg-red-600 text-xs disabled:opacity-40"
-                        disabled={myId === u.id}
-                        title={
-                          myId === u.id
-                            ? t('adminOverview.deleteSelfTitle')
-                            : t('adminOverview.deleteUserTitle')
-                        }
-                        onClick={async () => {
-                          if (myId === u.id) return;
-                          const ok = window.confirm(
-                            t('adminOverview.deleteConfirm', {
-                              name: u.displayName,
-                              id: u.id,
-                            }),
-                          );
-                          if (!ok) return;
-                          setStaffStatus(null);
-                          try {
-                            await window.api.auth.deleteUser({
-                              id: u.id,
-                              hard: true,
-                            } as any);
-                            setStaffStatus({
-                              kind: 'success',
-                              message: t('adminOverview.deletedUser', {
-                                name: u.displayName,
-                              }),
-                            });
-                            await refreshUsers();
-                          } catch (e: any) {
-                            setStaffStatus({
-                              kind: 'error',
-                              message:
-                                e?.message || t('adminOverview.deleteFailed'),
-                            });
-                          }
-                        }}
-                      >
-                        <IconTrash />
-                      </button>
+        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
+          {staffList.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 px-3 py-4 text-sm text-gray-400">
+              {t('adminOverview.noStaffFound')}
+            </div>
+          ) : (
+            staffList.map((u) => (
+              <div
+                key={u.id}
+                className="rounded-lg border border-gray-700 bg-gray-900/50 p-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="truncate text-base font-semibold">
+                        {u.displayName}
+                      </div>
+                      {!u.active ? (
+                        <span className="rounded-full border border-rose-700 bg-rose-900/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-rose-100">
+                          {t('adminOverview.showInactive')}
+                        </span>
+                      ) : openUserIds.has(u.id) ? (
+                        <span className="rounded-full border border-emerald-700 bg-emerald-900/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-100">
+                          {t('adminOverview.colOnShift')}
+                        </span>
+                      ) : null}
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                      <span className="rounded bg-gray-950/80 px-2 py-0.5 font-mono">
+                        #{u.id}
+                      </span>
+                      <span className="rounded border border-gray-700 bg-gray-950/60 px-2 py-0.5">
+                        {u.role}
+                      </span>
+                      <span>
+                        {t('adminOverview.colCreated')}:{' '}
+                        {u.createdAt
+                          ? new Date(u.createdAt).toLocaleDateString()
+                          : '—'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    className="px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-xs cursor-pointer border border-gray-700"
+                    title={t('adminOverview.editStaffTitle')}
+                    onClick={() =>
+                      setEditingStaff({
+                        id: u.id,
+                        displayName: u.displayName,
+                        role: u.role,
+                        active: Boolean(u.active),
+                      })
+                    }
+                  >
+                    <IconPencil />
+                  </button>
+                  {u.active ? (
+                    <button
+                      className="px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-xs disabled:opacity-40 border border-gray-700"
+                      disabled={myId === u.id}
+                      title={
+                        myId === u.id
+                          ? t('adminOverview.disableSelfTitle')
+                          : t('adminOverview.disableUserTitle')
+                      }
+                      onClick={async () => {
+                        setStaffStatus(null);
+                        try {
+                          await window.api.auth.updateUser({
+                            id: u.id,
+                            active: false,
+                          } as any);
+                          setStaffStatus({
+                            kind: 'success',
+                            message: t('adminOverview.disabledUser', {
+                              name: u.displayName,
+                            }),
+                          });
+                          await refreshUsers();
+                        } catch (e: any) {
+                          setStaffStatus({
+                            kind: 'error',
+                            message:
+                              e?.message || t('adminOverview.disableFailed'),
+                          });
+                        }
+                      }}
+                    >
+                      {t('adminOverview.disable')}
+                    </button>
+                  ) : (
+                    <button
+                      className="px-2.5 py-1.5 rounded bg-emerald-800 hover:bg-emerald-700 text-xs"
+                      onClick={async () => {
+                        setStaffStatus(null);
+                        try {
+                          await window.api.auth.updateUser({
+                            id: u.id,
+                            active: true,
+                          } as any);
+                          setStaffStatus({
+                            kind: 'success',
+                            message: t('adminOverview.enabledUser', {
+                              name: u.displayName,
+                            }),
+                          });
+                          await refreshUsers();
+                        } catch (e: any) {
+                          setStaffStatus({
+                            kind: 'error',
+                            message:
+                              e?.message || t('adminOverview.enableFailed'),
+                          });
+                        }
+                      }}
+                    >
+                      {t('adminOverview.enable')}
+                    </button>
+                  )}
+
+                  <button
+                    className="ml-auto px-2.5 py-1.5 rounded bg-red-800 hover:bg-red-700 text-xs disabled:opacity-40"
+                    disabled={myId === u.id}
+                    title={
+                      myId === u.id
+                        ? t('adminOverview.deleteSelfTitle')
+                        : t('adminOverview.deleteUserTitle')
+                    }
+                    onClick={async () => {
+                      if (myId === u.id) return;
+                      const ok = window.confirm(
+                        t('adminOverview.deleteConfirm', {
+                          name: u.displayName,
+                          id: u.id,
+                        }),
+                      );
+                      if (!ok) return;
+                      setStaffStatus(null);
+                      try {
+                        await window.api.auth.deleteUser({
+                          id: u.id,
+                          hard: true,
+                        } as any);
+                        setStaffStatus({
+                          kind: 'success',
+                          message: t('adminOverview.deletedUser', {
+                            name: u.displayName,
+                          }),
+                        });
+                        await refreshUsers();
+                      } catch (e: any) {
+                        setStaffStatus({
+                          kind: 'error',
+                          message:
+                            e?.message || t('adminOverview.deleteFailed'),
+                        });
+                      }
+                    }}
+                  >
+                    <IconTrash />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }
