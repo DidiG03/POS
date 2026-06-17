@@ -298,6 +298,38 @@
     "save": "Save fiskalizimi settings",
     "saved": "Saved."
   },
+  "googleCalendar": {
+    "title": "Google Calendar reservations",
+    "subtitle": "Import confirmed bookings from Google Calendar into the POS reservations screen. Tables are never assigned automatically — staff assign them manually.",
+    "flowHelp": "WhatsApp agent → confirms booking → creates Google Calendar event → POS syncs automatically.\n\nClick Connect to Google Calendar, sign in in your browser, then choose which calendar receives WhatsApp bookings.",
+    "accountTitle": "Google account",
+    "connect": "Connect to Google Calendar",
+    "connectHelp": "Opens your browser so you can sign in with the Google account that receives WhatsApp bookings.",
+    "connecting": "Waiting for Google sign-in…",
+    "connected": "Connected as {{email}}",
+    "connectedAs": "Connected as",
+    "connectFailed": "Could not connect Google Calendar.",
+    "disconnect": "Disconnect",
+    "disconnected": "Google Calendar disconnected.",
+    "disconnectFailed": "Could not disconnect Google Calendar.",
+    "calendarPicker": "Bookings calendar",
+    "primary": "primary",
+    "oauthNotConfigured": "Google sign-in is not configured for this POS build yet. Ask your provider to add GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.",
+    "enableLabel": "Enable automatic reservation sync",
+    "syncInterval": "Sync every (minutes)",
+    "defaultArea": "Default area",
+    "defaultDuration": "Default duration (minutes)",
+    "eventFormatTitle": "Recommended event format for your WhatsApp bot",
+    "eventFormatExample": "Title: Guest Name (4)\nDescription:\nphone: +355691234567\nparty: 4\narea: Terrace\nnote: Birthday — staff assign the table in POS",
+    "lastSync": "Last sync",
+    "syncNow": "Sync now",
+    "syncing": "Syncing…",
+    "saved": "Google Calendar settings saved.",
+    "saveFailed": "Could not save Google Calendar settings.",
+    "syncFailed": "Calendar sync failed.",
+    "syncUnavailable": "Calendar sync is not available. Restart the POS app.",
+    "syncSuccess": "Synced {{imported}} new, {{updated}} updated, {{cancelled}} cancelled."
+  },
   "order": {
     "loadErrors": {
       "occ_tables_slow": "Loading occupied tables… (slow/offline network). Retrying…"

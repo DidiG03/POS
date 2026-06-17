@@ -30,6 +30,15 @@ const api: Api = {
     getFiscalTokenHint: () => ipcRenderer.invoke('settings:getFiscalTokenHint'),
     testFiscalMinimalInvoice: () =>
       ipcRenderer.invoke('settings:testFiscalMinimalInvoice'),
+    syncGoogleCalendar: () => ipcRenderer.invoke('settings:syncGoogleCalendar'),
+    connectGoogleCalendar: () =>
+      ipcRenderer.invoke('settings:connectGoogleCalendar'),
+    disconnectGoogleCalendar: () =>
+      ipcRenderer.invoke('settings:disconnectGoogleCalendar'),
+    getGoogleCalendarStatus: () =>
+      ipcRenderer.invoke('settings:getGoogleCalendarStatus'),
+    listGoogleCalendars: () =>
+      ipcRenderer.invoke('settings:listGoogleCalendars'),
     listPrinters: () => ipcRenderer.invoke('printer:list'),
     listSerialPorts: () => ipcRenderer.invoke('printer:listSerialPorts'),
   },

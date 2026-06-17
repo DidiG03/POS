@@ -5,6 +5,7 @@ dist
 pnpm-debug.log*
 .env
 coverage
+prisma/dev.db
 
 # Capacitor build outputs (Xcode/Android Studio derived files).
 # Note: when you start customizing native projects, you'll want to

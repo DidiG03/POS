@@ -15,6 +15,13 @@ import {
 initSentry();
 import { coreServices, withTableLock } from './services/core';
 import * as reservationsService from './services/reservations';
+import { syncGoogleCalendarReservations } from './services/googleCalendarSync';
+import {
+  connectGoogleCalendarAccount,
+  getGoogleOAuthClientConfig,
+  listGoogleCalendars,
+  getValidGoogleAccessToken,
+} from './services/googleCalendarOAuth';
 import {
   broadcastReservationsChanged,
   broadcastTableStatusChanged,
@@ -461,6 +468,9 @@ async function ensureLocalDbColumns(): Promise<void> {
     // 20260517190000_menuitem_stock_qty_day
     `ALTER TABLE "MenuItem" ADD COLUMN "stockRemaining" INTEGER;`,
     `ALTER TABLE "MenuItem" ADD COLUMN "stockDay" TEXT;`,
+    // 20260613190000_reservation_external_sync
+    `ALTER TABLE "Reservation" ADD COLUMN "externalSource" TEXT;`,
+    `ALTER TABLE "Reservation" ADD COLUMN "externalId" TEXT;`,
   ];
   for (const sql of statements) {
     try {
@@ -469,6 +479,13 @@ async function ensureLocalDbColumns(): Promise<void> {
       // Column already exists (duplicate column name) — expected on
       // already-migrated DBs; ignore and continue.
     }
+  }
+  try {
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS "Reservation_externalSource_externalId_key" ON "Reservation"("externalSource", "externalId");`,
+    );
+  } catch {
+    // ignore
   }
   __localColumnsReady = true;
 }
@@ -659,6 +676,8 @@ let autoCloseShiftsTimer: NodeJS.Timeout | null = null;
 let autoCloseShiftsRunning = false;
 
 let autoNoShowReservationsTimer: NodeJS.Timeout | null = null;
+let googleCalendarSyncTimer: NodeJS.Timeout | null = null;
+let googleCalendarSyncRunning = false;
 let autoNoShowReservationsRunning = false;
 function startAutoVoidStaleTicketsLoop() {
   if (autoVoidTimer) return;
@@ -1175,6 +1194,140 @@ function stopAutoNoShowReservationsLoop() {
   }
 }
 
+async function runGoogleCalendarSyncOnce() {
+  if (googleCalendarSyncRunning) {
+    return {
+      ok: false,
+      imported: 0,
+      updated: 0,
+      cancelled: 0,
+      skipped: 0,
+      error: 'Calendar sync already running',
+    };
+  }
+  googleCalendarSyncRunning = true;
+  try {
+    const settings = await coreServices.readSettings().catch(() => null as any);
+    const cfg = (settings as any)?.googleCalendar || {};
+    if (!cfg?.enabled) {
+      return {
+        ok: false,
+        imported: 0,
+        updated: 0,
+        cancelled: 0,
+        skipped: 0,
+        error: 'Google Calendar sync is disabled',
+      };
+    }
+    const oauthConnected = Boolean(cfg?.oauth?.refreshToken);
+    const icalUrl = String(cfg?.icalUrl || '').trim();
+    if (!oauthConnected && !icalUrl) {
+      return {
+        ok: false,
+        imported: 0,
+        updated: 0,
+        cancelled: 0,
+        skipped: 0,
+        error: 'Connect Google Calendar or configure an iCal feed URL',
+      };
+    }
+
+    const result = await syncGoogleCalendarReservations({
+      enabled: true,
+      authMode: cfg?.authMode,
+      icalUrl: cfg?.icalUrl,
+      calendarId: cfg?.calendarId,
+      oauth: cfg?.oauth,
+      defaultArea: cfg?.defaultArea,
+      defaultDurationMin: cfg?.defaultDurationMin,
+      onOAuthUpdated: async (oauth) => {
+        await coreServices.updateSettings({ googleCalendar: { oauth } });
+      },
+    });
+
+    const count =
+      Number(result.imported || 0) +
+      Number(result.updated || 0) +
+      Number(result.cancelled || 0);
+    await coreServices.updateSettings({
+      googleCalendar: {
+        lastSyncAt: new Date().toISOString(),
+        lastSyncCount: count,
+        lastSyncMessage: result.ok ? result.message : undefined,
+        lastSyncError: result.ok ? undefined : result.error,
+      },
+    });
+    return result;
+  } catch (e: any) {
+    const error = String(e?.message || e || 'Calendar sync failed');
+    try {
+      await coreServices.updateSettings({
+        googleCalendar: {
+          lastSyncAt: new Date().toISOString(),
+          lastSyncError: error,
+        },
+      });
+    } catch {
+      // ignore
+    }
+    return {
+      ok: false,
+      imported: 0,
+      updated: 0,
+      cancelled: 0,
+      skipped: 0,
+      error,
+    };
+  } finally {
+    googleCalendarSyncRunning = false;
+  }
+}
+
+function startGoogleCalendarSyncLoop() {
+  if (googleCalendarSyncTimer) return;
+
+  const runOnce = async () => {
+    try {
+      const settings = await coreServices
+        .readSettings()
+        .catch(() => null as any);
+      const cfg = (settings as any)?.googleCalendar || {};
+      if (!cfg?.enabled) return;
+      const oauthConnected = Boolean(cfg?.oauth?.refreshToken);
+      const icalUrl = String(cfg?.icalUrl || '').trim();
+      if (!oauthConnected && !icalUrl) return;
+      const minsRaw = Number(cfg?.syncIntervalMin ?? 5);
+      const intervalMin =
+        Number.isFinite(minsRaw) && minsRaw >= 5 && minsRaw <= 60
+          ? Math.round(minsRaw)
+          : 5;
+      const lastSyncMs = cfg?.lastSyncAt
+        ? new Date(String(cfg.lastSyncAt)).getTime()
+        : 0;
+      if (
+        Number.isFinite(lastSyncMs) &&
+        lastSyncMs > 0 &&
+        Date.now() - lastSyncMs < intervalMin * 60_000
+      ) {
+        return;
+      }
+      await runGoogleCalendarSyncOnce();
+    } catch {
+      // ignore
+    }
+  };
+
+  void runOnce();
+  googleCalendarSyncTimer = setInterval(() => void runOnce(), 60_000);
+}
+
+function stopGoogleCalendarSyncLoop() {
+  if (googleCalendarSyncTimer) {
+    clearInterval(googleCalendarSyncTimer);
+    googleCalendarSyncTimer = null;
+  }
+}
+
 let apiServers: {
   http: http.Server | null;
   https: https.Server | null;
@@ -1233,6 +1386,8 @@ app.whenReady().then(async () => {
   startAutoCloseShiftsLoop();
   // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
   startAutoNoShowReservationsLoop();
+  // Reservations: import confirmed bookings from Google Calendar iCal feed.
+  startGoogleCalendarSyncLoop();
   // Memory monitoring: track memory usage to detect leaks (runs every minute)
   if (
     process.env.NODE_ENV !== 'production' ||
@@ -1264,6 +1419,7 @@ app.on('before-quit', async (event) => {
   stopAutoVoidStaleTicketsLoop();
   stopAutoCloseShiftsLoop();
   stopAutoNoShowReservationsLoop();
+  stopGoogleCalendarSyncLoop();
   stopPrinterStationLoop();
   stopOutboxLoop();
   try {
@@ -1996,6 +2152,27 @@ async function readSettings() {
       delete result.fiscal.authToken;
     }
   }
+  if (result?.googleCalendar && typeof result.googleCalendar === 'object') {
+    result.googleCalendar = { ...result.googleCalendar };
+    if (result.googleCalendar.icalUrl) {
+      result.googleCalendar.icalUrlConfigured = true;
+      delete result.googleCalendar.icalUrl;
+    }
+    if (
+      result.googleCalendar.oauth &&
+      typeof result.googleCalendar.oauth === 'object'
+    ) {
+      result.googleCalendar.oauth = { ...result.googleCalendar.oauth };
+      if (result.googleCalendar.oauth.refreshToken) {
+        result.googleCalendar.oauthConnected = true;
+        delete result.googleCalendar.oauth.refreshToken;
+        delete result.googleCalendar.oauth.accessToken;
+        delete result.googleCalendar.oauth.accessTokenExpiresAt;
+      }
+    }
+  }
+  result.googleCalendarOAuthConfigured =
+    getGoogleOAuthClientConfig().configured;
   return result;
 }
 
@@ -2102,6 +2279,102 @@ ipcMain.handle('network:getIps', async () => {
   }
   // Prefer stable ordering
   return Array.from(new Set(ips)).sort((a, b) => a.localeCompare(b));
+});
+
+ipcMain.handle('settings:syncGoogleCalendar', async () => {
+  return await runGoogleCalendarSyncOnce();
+});
+
+ipcMain.handle('settings:getGoogleCalendarStatus', async () => {
+  const settings = await coreServices.readSettings();
+  const gc = (settings as any)?.googleCalendar || {};
+  const { configured } = getGoogleOAuthClientConfig();
+  return {
+    oauthConfigured: configured,
+    oauthConnected: Boolean(gc?.oauth?.refreshToken),
+    accountEmail: gc?.accountEmail ? String(gc.accountEmail) : undefined,
+    calendarId: gc?.calendarId ? String(gc.calendarId) : undefined,
+    calendarSummary: gc?.calendarSummary
+      ? String(gc.calendarSummary)
+      : undefined,
+  };
+});
+
+ipcMain.handle('settings:connectGoogleCalendar', async () => {
+  try {
+    const connected = await connectGoogleCalendarAccount();
+    await coreServices.updateSettings({
+      googleCalendar: {
+        enabled: true,
+        authMode: 'oauth',
+        oauthConnected: true,
+        accountEmail: connected.accountEmail,
+        calendarId: connected.calendarId,
+        calendarSummary: connected.calendarSummary,
+        oauth: {
+          refreshToken: connected.refreshToken,
+          accessToken: connected.accessToken,
+          accessTokenExpiresAt: connected.accessTokenExpiresAt,
+        },
+        lastSyncError: connected.warning,
+      },
+    });
+    return {
+      ok: true,
+      accountEmail: connected.accountEmail,
+      calendarId: connected.calendarId,
+      calendarSummary: connected.calendarSummary,
+      calendars: connected.calendars,
+      warning: connected.warning,
+    };
+  } catch (e: any) {
+    return {
+      ok: false,
+      error: String(e?.message || e || 'Google Calendar connection failed'),
+    };
+  }
+});
+
+ipcMain.handle('settings:disconnectGoogleCalendar', async () => {
+  await coreServices.updateSettings({
+    googleCalendar: {
+      authMode: undefined,
+      oauthConnected: false,
+      accountEmail: undefined,
+      calendarId: undefined,
+      calendarSummary: undefined,
+      oauth: null,
+    },
+  });
+  return { ok: true };
+});
+
+ipcMain.handle('settings:listGoogleCalendars', async () => {
+  const settings = await coreServices.readSettings();
+  const gc = (settings as any)?.googleCalendar || {};
+  const { clientId, clientSecret, configured } = getGoogleOAuthClientConfig();
+  if (!configured || !gc?.oauth?.refreshToken) {
+    return {
+      ok: false,
+      calendars: [],
+      error: 'Google Calendar is not connected',
+    };
+  }
+  try {
+    const { accessToken } = await getValidGoogleAccessToken({
+      oauth: gc.oauth,
+      clientId,
+      clientSecret,
+    });
+    const calendars = await listGoogleCalendars(accessToken);
+    return { ok: true, calendars };
+  } catch (e: any) {
+    return {
+      ok: false,
+      calendars: [],
+      error: String(e?.message || e || 'Could not list calendars'),
+    };
+  }
 });
 
 ipcMain.handle('settings:testFiscalConnection', async () => {

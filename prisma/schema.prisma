@@ -401,11 +401,16 @@ model Reservation {
   status        ReservationStatus @default(BOOKED)
   createdBy     User              @relation("ReservationCreatedBy", fields: [createdById], references: [id])
   createdById   Int
+  /** External sync source (e.g. GOOGLE_CALENDAR). */
+  externalSource String?
+  /** Stable id from the external system (e.g. calendar event UID). */
+  externalId     String?
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
   @@index([startsAt])
   @@index([area, tableLabel, startsAt])
+  @@unique([externalSource, externalId])
 }
 
 

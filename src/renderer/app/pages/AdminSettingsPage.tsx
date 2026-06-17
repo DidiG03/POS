@@ -28,6 +28,7 @@ type MemoryStats = {
 type Section =
   | { key: 'printer'; label: string }
   | { key: 'areas'; label: string }
+  | { key: 'googleCalendar'; label: string }
   | { key: 'kds'; label: string }
   | { key: 'preferences'; label: string }
   | { key: 'fiscal'; label: string }
@@ -42,6 +43,7 @@ type Section =
 const sections: Section[] = [
   { key: 'printer', label: 'Printer' },
   { key: 'areas', label: 'Table Areas' },
+  { key: 'googleCalendar', label: 'Google Calendar' },
   { key: 'kds', label: 'Kitchen Display' },
   { key: 'preferences', label: 'Preferences' },
   { key: 'fiscal', label: 'Fiskalizimi' },
@@ -120,6 +122,25 @@ function SectionIcon({ k }: { k: Section['key'] }) {
             strokeWidth="1.75"
             strokeLinecap="round"
             opacity="0.7"
+          />
+        </svg>
+      </IconWrap>
+    );
+  if (k === 'googleCalendar')
+    return (
+      <IconWrap>
+        <svg {...common} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M7 3v2M17 3v2M4 9h16M6 5h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M8 13h3v3H8v-3ZM13 13h3v3h-3v-3Z"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinejoin="round"
           />
         </svg>
       </IconWrap>
@@ -365,6 +386,7 @@ export default function AdminSettingsPage() {
       <div className="bg-gray-800 rounded p-4 overflow-auto">
         {selected === 'printer' && <PrinterSettings />}
         {selected === 'areas' && <AreasSettings />}
+        {selected === 'googleCalendar' && <GoogleCalendarSettings />}
         {selected === 'kds' && <KdsSettings />}
         {selected === 'preferences' && <PreferencesSettings />}
         {selected === 'fiscal' && <FiscalSettings />}
@@ -1846,6 +1868,385 @@ function BackupsSettings() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function GoogleCalendarSettings() {
+  const { t } = useTranslation();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [oauthConfigured, setOauthConfigured] = useState(false);
+  const [oauthConnected, setOauthConnected] = useState(false);
+  const [accountEmail, setAccountEmail] = useState('');
+  const [calendarId, setCalendarId] = useState('primary');
+  const [calendarSummary, setCalendarSummary] = useState('');
+  const [calendars, setCalendars] = useState<
+    Array<{ id: string; summary: string; primary?: boolean }>
+  >([]);
+  const [syncIntervalMin, setSyncIntervalMin] = useState(5);
+  const [defaultArea, setDefaultArea] = useState('Main Hall');
+  const [defaultDurationMin, setDefaultDurationMin] = useState(120);
+  const [areas, setAreas] = useState<string[]>(['Main Hall']);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const loadSettings = async () => {
+    const s: any = await window.api.settings.get();
+    const gc = s?.googleCalendar || {};
+    setEnabled(Boolean(gc.enabled));
+    setOauthConfigured(Boolean(s?.googleCalendarOAuthConfigured));
+    setOauthConnected(Boolean(gc.oauthConnected));
+    setAccountEmail(String(gc.accountEmail || ''));
+    setCalendarId(String(gc.calendarId || 'primary'));
+    setCalendarSummary(String(gc.calendarSummary || ''));
+    setSyncIntervalMin(Number(gc.syncIntervalMin || 5));
+    setDefaultArea(String(gc.defaultArea || 'Main Hall'));
+    setDefaultDurationMin(Number(gc.defaultDurationMin || 120));
+    setLastSyncAt(gc.lastSyncAt ? String(gc.lastSyncAt) : null);
+    setLastSyncMessage(gc.lastSyncMessage ? String(gc.lastSyncMessage) : null);
+    setLastSyncError(gc.lastSyncError ? String(gc.lastSyncError) : null);
+    const tableAreas = Array.isArray(s?.tableAreas)
+      ? s.tableAreas.map((a: any) => String(a?.name || '')).filter(Boolean)
+      : [];
+    if (tableAreas.length) setAreas(tableAreas);
+    if (gc.oauthConnected) {
+      const listed = await window.api.settings.listGoogleCalendars?.();
+      if (listed?.ok && Array.isArray(listed.calendars)) {
+        setCalendars(listed.calendars);
+      }
+    }
+  };
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!alive) return;
+        await loadSettings();
+      } catch {
+        /* ignore */
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const selected = calendars.find((c) => c.id === calendarId);
+      const payload: any = {
+        googleCalendar: {
+          enabled,
+          syncIntervalMin,
+          defaultArea: defaultArea.trim() || 'Main Hall',
+          defaultDurationMin,
+          calendarId,
+          calendarSummary: selected?.summary || calendarSummary || undefined,
+        },
+      };
+      await window.api.settings.update(payload);
+      setStatus(t('googleCalendar.saved'));
+      toast.success(t('googleCalendar.saved'));
+    } catch (e: any) {
+      const msg = String(e?.message || t('googleCalendar.saveFailed'));
+      setStatus(msg);
+      toast.error(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const connect = async () => {
+    setConnecting(true);
+    setStatus(t('googleCalendar.connecting'));
+    try {
+      const result = await window.api.settings.connectGoogleCalendar?.();
+      if (!result?.ok) {
+        throw new Error(
+          String(result?.error || t('googleCalendar.connectFailed')),
+        );
+      }
+      setOauthConnected(true);
+      setEnabled(true);
+      setAccountEmail(String(result.accountEmail || ''));
+      setCalendarId(String(result.calendarId || 'primary'));
+      setCalendarSummary(String(result.calendarSummary || ''));
+      if (Array.isArray(result.calendars)) setCalendars(result.calendars);
+      if (result.warning) {
+        setLastSyncError(result.warning);
+        setStatus(result.warning);
+        toast.error(result.warning);
+        return;
+      }
+      setStatus(
+        t('googleCalendar.connected', { email: result.accountEmail || '' }),
+      );
+      toast.success(
+        t('googleCalendar.connected', { email: result.accountEmail || '' }),
+      );
+    } catch (e: any) {
+      const msg = String(e?.message || t('googleCalendar.connectFailed'));
+      setStatus(msg);
+      toast.error(msg);
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setConnecting(true);
+    setStatus(null);
+    try {
+      await window.api.settings.disconnectGoogleCalendar?.();
+      setOauthConnected(false);
+      setAccountEmail('');
+      setCalendarSummary('');
+      setCalendars([]);
+      setStatus(t('googleCalendar.disconnected'));
+      toast.success(t('googleCalendar.disconnected'));
+    } catch (e: any) {
+      const msg = String(e?.message || t('googleCalendar.disconnectFailed'));
+      setStatus(msg);
+      toast.error(msg);
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    setStatus(null);
+    try {
+      const result = await window.api.settings.syncGoogleCalendar?.();
+      if (!result) throw new Error(t('googleCalendar.syncUnavailable'));
+      const refreshed: any = await window.api.settings.get();
+      const gc = refreshed?.googleCalendar || {};
+      setLastSyncAt(gc.lastSyncAt ? String(gc.lastSyncAt) : null);
+      setLastSyncMessage(
+        gc.lastSyncMessage ? String(gc.lastSyncMessage) : null,
+      );
+      setLastSyncError(gc.lastSyncError ? String(gc.lastSyncError) : null);
+      if (!result.ok) {
+        const msg = String(result.error || t('googleCalendar.syncFailed'));
+        setStatus(msg);
+        toast.error(msg);
+        return;
+      }
+      const msg = String(
+        result.message ||
+          t('googleCalendar.syncSuccess', {
+            imported: result.imported,
+            updated: result.updated,
+            cancelled: result.cancelled,
+          }),
+      );
+      setStatus(msg);
+      toast.success(msg);
+    } catch (e: any) {
+      const msg = String(e?.message || t('googleCalendar.syncFailed'));
+      setStatus(msg);
+      toast.error(msg);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="text-lg font-semibold mb-1">
+        {t('googleCalendar.title')}
+      </div>
+      <div className="text-sm opacity-70 mb-4">
+        {t('googleCalendar.subtitle')}
+      </div>
+
+      <div className="rounded border border-gray-700 bg-gray-900/40 p-3 text-xs opacity-80 mb-4 whitespace-pre-line">
+        {t('googleCalendar.flowHelp')}
+      </div>
+
+      {!oauthConfigured && (
+        <div className="rounded border border-amber-700/50 bg-amber-950/20 p-3 text-sm text-amber-100 mb-4">
+          {t('googleCalendar.oauthNotConfigured')}
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <div className="rounded border border-gray-800 bg-gray-900/30 p-4 space-y-3">
+          <div className="font-medium">{t('googleCalendar.accountTitle')}</div>
+          {oauthConnected ? (
+            <>
+              <div className="text-sm">
+                <span className="opacity-70">
+                  {t('googleCalendar.connectedAs')}
+                </span>{' '}
+                <span className="font-medium">
+                  {accountEmail || 'Google account'}
+                </span>
+              </div>
+              {calendars.length > 0 && (
+                <div>
+                  <label className="block text-sm mb-1">
+                    {t('googleCalendar.calendarPicker')}
+                  </label>
+                  <select
+                    className="bg-gray-700 rounded px-3 py-2 w-full"
+                    value={calendarId}
+                    onChange={(e) => setCalendarId(e.target.value)}
+                    disabled={loading}
+                  >
+                    {calendars.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.summary}
+                        {c.primary ? ` (${t('googleCalendar.primary')})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <button
+                type="button"
+                className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                onClick={() => void disconnect()}
+                disabled={loading || connecting}
+              >
+                {t('googleCalendar.disconnect')}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="text-sm opacity-80">
+                {t('googleCalendar.connectHelp')}
+              </div>
+              <button
+                type="button"
+                className="px-4 py-2 rounded bg-blue-700 hover:bg-blue-800 disabled:opacity-50"
+                onClick={() => void connect()}
+                disabled={loading || connecting || !oauthConfigured}
+              >
+                {connecting
+                  ? t('googleCalendar.connecting')
+                  : t('googleCalendar.connect')}
+              </button>
+            </>
+          )}
+        </div>
+
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            disabled={loading || !oauthConnected}
+          />
+          {t('googleCalendar.enableLabel')}
+        </label>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-sm mb-1">
+              {t('googleCalendar.syncInterval')}
+            </label>
+            <input
+              type="number"
+              min={5}
+              max={60}
+              className="bg-gray-700 rounded px-3 py-2 w-full"
+              value={syncIntervalMin}
+              onChange={(e) => setSyncIntervalMin(Number(e.target.value))}
+              disabled={loading}
+            />
+          </div>
+          <div>
+            <label className="block text-sm mb-1">
+              {t('googleCalendar.defaultArea')}
+            </label>
+            <select
+              className="bg-gray-700 rounded px-3 py-2 w-full"
+              value={defaultArea}
+              onChange={(e) => setDefaultArea(e.target.value)}
+              disabled={loading}
+            >
+              {areas.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm mb-1">
+              {t('googleCalendar.defaultDuration')}
+            </label>
+            <input
+              type="number"
+              min={15}
+              max={720}
+              className="bg-gray-700 rounded px-3 py-2 w-full"
+              value={defaultDurationMin}
+              onChange={(e) => setDefaultDurationMin(Number(e.target.value))}
+              disabled={loading}
+            />
+          </div>
+        </div>
+
+        <div className="rounded border border-gray-800 bg-gray-900/30 p-3">
+          <div className="font-medium text-sm mb-2">
+            {t('googleCalendar.eventFormatTitle')}
+          </div>
+          <pre className="text-xs opacity-80 whitespace-pre-wrap font-mono">
+            {t('googleCalendar.eventFormatExample')}
+          </pre>
+        </div>
+
+        {(lastSyncAt || lastSyncMessage || lastSyncError) && (
+          <div className="rounded border border-gray-800 bg-gray-900/30 p-3 text-sm space-y-1">
+            <div className="font-medium">{t('googleCalendar.lastSync')}</div>
+            {lastSyncAt && (
+              <div className="opacity-80">
+                {new Date(lastSyncAt).toLocaleString()}
+              </div>
+            )}
+            {lastSyncMessage && (
+              <div className="text-emerald-300">{lastSyncMessage}</div>
+            )}
+            {lastSyncError && (
+              <div className="text-rose-300">{lastSyncError}</div>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            className="px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50"
+            onClick={() => void save()}
+            disabled={loading || saving}
+          >
+            {saving ? t('common.saving') : t('common.save')}
+          </button>
+          <button
+            className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+            onClick={() => void syncNow()}
+            disabled={loading || syncing || !enabled || !oauthConnected}
+          >
+            {syncing
+              ? t('googleCalendar.syncing')
+              : t('googleCalendar.syncNow')}
+          </button>
+        </div>
+
+        {status && <div className="text-sm opacity-80">{status}</div>}
+      </div>
     </div>
   );
 }

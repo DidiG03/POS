@@ -298,6 +298,38 @@
     "save": "Ruaj cilësimet e fiskalizimit",
     "saved": "U ruajt."
   },
+  "googleCalendar": {
+    "title": "Rezervime nga Google Calendar",
+    "subtitle": "Importo rezervimet e konfirmuara nga Google Calendar në ekranin e rezervimeve të POS. Tavolinat nuk caktohen automatikisht — stafi i cakton manualisht.",
+    "flowHelp": "Agjenti WhatsApp → konfirmon rezervimin → krijon event në Google Calendar → POS sinkronizon automatikisht.\n\nKliko Lidhu me Google Calendar, hyr në shfletues, pastaj zgjidh kalendarin ku mbërrijnë rezervimet nga WhatsApp.",
+    "accountTitle": "Llogaria Google",
+    "connect": "Lidhu me Google Calendar",
+    "connectHelp": "Hap shfletuesin që të hysh me llogarinë Google ku mbërrijnë rezervimet nga WhatsApp.",
+    "connecting": "Duke pritur hyrjen në Google…",
+    "connected": "U lidh si {{email}}",
+    "connectedAs": "U lidh si",
+    "connectFailed": "Nuk u lidh Google Calendar.",
+    "disconnect": "Shkëput",
+    "disconnected": "Google Calendar u shkëput.",
+    "disconnectFailed": "Nuk u shkëput Google Calendar.",
+    "calendarPicker": "Kalendari i rezervimeve",
+    "primary": "kryesor",
+    "oauthNotConfigured": "Hyrja me Google nuk është konfiguruar ende për këtë POS. Kërkoji ofruesit GOOGLE_OAUTH_CLIENT_ID dhe GOOGLE_OAUTH_CLIENT_SECRET.",
+    "enableLabel": "Aktivizo sinkronizimin automatik të rezervimeve",
+    "syncInterval": "Sinkronizo çdo (minuta)",
+    "defaultArea": "Zona default",
+    "defaultDuration": "Kohëzgjatja default (minuta)",
+    "eventFormatTitle": "Formati i rekomanduar i eventit për bot-in WhatsApp",
+    "eventFormatExample": "Titulli: Emri i mysafirit (4)\nPërshkrimi:\nphone: +355691234567\nparty: 4\narea: Terrace\nnote: Ditëlindje — stafi cakton tavolinën në POS",
+    "lastSync": "Sinkronizimi i fundit",
+    "syncNow": "Sinkronizo tani",
+    "syncing": "Duke sinkronizuar…",
+    "saved": "Cilësimet e Google Calendar u ruajtën.",
+    "saveFailed": "Nuk u ruajtën cilësimet e Google Calendar.",
+    "syncFailed": "Sinkronizimi i kalendarit dështoi.",
+    "syncUnavailable": "Sinkronizimi i kalendarit nuk është i disponueshëm. Rinis aplikacionin POS.",
+    "syncSuccess": "U sinkronizuan {{imported}} të reja, {{updated}} të përditësuara, {{cancelled}} të anuluara."
+  },
   "order": {
     "loadErrors": {
       "occ_tables_slow": "Duke ngarkuar tavolinat e zëna… (rrjet i ngadaltë/jashtë linje). Duke riprovuar…"

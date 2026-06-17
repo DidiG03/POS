@@ -126,6 +126,43 @@ export interface SettingsDTO {
      */
     cookerEnabled?: boolean;
   };
+  /**
+   * Import reservations from Google Calendar (OAuth or iCal feed).
+   * Host-only; tokens and secret URLs are not exposed to tablets.
+   */
+  googleCalendar?: {
+    enabled?: boolean;
+    authMode?: 'oauth' | 'ical';
+    /** Private iCal URL — optional fallback when OAuth is unavailable. */
+    icalUrl?: string;
+    /** Set by settings:get when a URL is saved (renderer never sees the URL). */
+    icalUrlConfigured?: boolean;
+    /** Set by settings:get when OAuth refresh token is saved. */
+    oauthConnected?: boolean;
+    accountEmail?: string;
+    calendarId?: string;
+    calendarSummary?: string;
+    /** OAuth tokens — host-only, redacted from settings:get. */
+    oauth?: {
+      refreshToken?: string;
+      accessToken?: string;
+      accessTokenExpiresAt?: string;
+    };
+    /** Poll interval in minutes (5–60). Default 5. */
+    syncIntervalMin?: number;
+    /** Default dining area when the calendar event omits one. */
+    defaultArea?: string;
+    /** Default duration when the event has no end time. */
+    defaultDurationMin?: number;
+    /** ISO timestamp of the last successful sync. */
+    lastSyncAt?: string;
+    /** Human-readable result from the last sync attempt. */
+    lastSyncMessage?: string;
+    /** Count of reservations created/updated on the last sync. */
+    lastSyncCount?: number;
+    /** Error message when the last sync failed. */
+    lastSyncError?: string;
+  };
 }
 
 export interface PrinterProfileDTO {
@@ -507,6 +544,47 @@ export interface ApiSettings {
     deviceTail?: string;
   }>;
   testFiscalMinimalInvoice?(): Promise<{ ok: boolean; message?: string }>;
+  /** Pull reservations from the configured Google Calendar iCal feed now. */
+  syncGoogleCalendar?(): Promise<GoogleCalendarSyncResultDTO>;
+  /** Open the system browser to link a Google account for calendar sync. */
+  connectGoogleCalendar?(): Promise<GoogleCalendarConnectResultDTO>;
+  /** Remove stored Google OAuth tokens from this POS. */
+  disconnectGoogleCalendar?(): Promise<{ ok: boolean }>;
+  /** Whether OAuth client credentials are baked into this build. */
+  getGoogleCalendarStatus?(): Promise<GoogleCalendarStatusDTO>;
+  listGoogleCalendars?(): Promise<{
+    ok: boolean;
+    calendars: Array<{ id: string; summary: string; primary?: boolean }>;
+    error?: string;
+  }>;
+}
+
+export interface GoogleCalendarSyncResultDTO {
+  ok: boolean;
+  imported: number;
+  updated: number;
+  cancelled: number;
+  skipped: number;
+  message?: string;
+  error?: string;
+}
+
+export interface GoogleCalendarConnectResultDTO {
+  ok: boolean;
+  accountEmail?: string;
+  calendarId?: string;
+  calendarSummary?: string;
+  calendars?: Array<{ id: string; summary: string; primary?: boolean }>;
+  warning?: string;
+  error?: string;
+}
+
+export interface GoogleCalendarStatusDTO {
+  oauthConfigured: boolean;
+  oauthConnected: boolean;
+  accountEmail?: string;
+  calendarId?: string;
+  calendarSummary?: string;
 }
 
 export type TestPrintResult = { ok: boolean; error?: string };

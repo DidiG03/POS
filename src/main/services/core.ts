@@ -214,6 +214,56 @@ export const coreServices = {
     if (input?.security)
       merged.security = { ...(current.security || {}), ...input.security };
     if (input?.kds) merged.kds = { ...(current.kds || {}), ...input.kds };
+    if (input?.googleCalendar) {
+      merged.googleCalendar = {
+        ...(current.googleCalendar || {}),
+        ...input.googleCalendar,
+      };
+      const nextUrl = String(
+        (input.googleCalendar as any)?.icalUrl || '',
+      ).trim();
+      const prevUrl = String(
+        (current as any)?.googleCalendar?.icalUrl || '',
+      ).trim();
+      if (!nextUrl && prevUrl) {
+        merged.googleCalendar.icalUrl = prevUrl;
+      }
+      if ((input.googleCalendar as any)?.oauth === null) {
+        delete merged.googleCalendar.oauth;
+      } else if ((input.googleCalendar as any)?.oauth) {
+        merged.googleCalendar.oauth = {
+          ...((current as any)?.googleCalendar?.oauth || {}),
+          ...((input.googleCalendar as any).oauth || {}),
+        };
+        const nextRefresh = String(
+          (input.googleCalendar as any)?.oauth?.refreshToken || '',
+        ).trim();
+        const prevRefresh = String(
+          (current as any)?.googleCalendar?.oauth?.refreshToken || '',
+        ).trim();
+        if (!nextRefresh && prevRefresh) {
+          merged.googleCalendar.oauth.refreshToken = prevRefresh;
+        }
+        const nextAccess = String(
+          (input.googleCalendar as any)?.oauth?.accessToken || '',
+        ).trim();
+        const prevAccess = String(
+          (current as any)?.googleCalendar?.oauth?.accessToken || '',
+        ).trim();
+        if (!nextAccess && prevAccess) {
+          merged.googleCalendar.oauth.accessToken = prevAccess;
+        }
+        const nextExpires = String(
+          (input.googleCalendar as any)?.oauth?.accessTokenExpiresAt || '',
+        ).trim();
+        const prevExpires = String(
+          (current as any)?.googleCalendar?.oauth?.accessTokenExpiresAt || '',
+        ).trim();
+        if (!nextExpires && prevExpires) {
+          merged.googleCalendar.oauth.accessTokenExpiresAt = prevExpires;
+        }
+      }
+    }
     if (input?.preferences)
       merged.preferences = {
         ...(current.preferences || {}),
