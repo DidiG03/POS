@@ -25,6 +25,14 @@ const ticketRequestUpdateMany = vi.fn();
 const kdsOrderFindFirst = vi.fn();
 const kdsOrderUpdate = vi.fn();
 const coversCreate = vi.fn();
+const broadcastTableStatusChanged = vi.fn();
+const broadcastTicketsChanged = vi.fn();
+
+vi.mock('./realtime', () => ({
+  broadcastTableStatusChanged: (...a: any[]) =>
+    broadcastTableStatusChanged(...a),
+  broadcastTicketsChanged: (...a: any[]) => broadcastTicketsChanged(...a),
+}));
 
 vi.mock('@db/client', () => ({
   prisma: {
@@ -376,6 +384,21 @@ describe('transferTableLocal — on-shift requirement', () => {
     expect(ticketLogUpdate.mock.calls[1][0].data.note).toMatch(
       /\nwaiter note$/,
     );
+    expect(broadcastTableStatusChanged).toHaveBeenCalledWith({
+      area: 'Sallon',
+      label: 'T1',
+      open: false,
+    });
+    expect(broadcastTableStatusChanged).toHaveBeenCalledWith({
+      area: 'Sallon',
+      label: 'T2',
+      open: true,
+    });
+    expect(broadcastTicketsChanged).toHaveBeenCalledWith({
+      area: 'Sallon',
+      tableLabel: 'T2',
+      userId: ACTOR.id,
+    });
   });
 
   it('admins are also bound by the on-shift requirement', async () => {

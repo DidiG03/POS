@@ -59,6 +59,7 @@ type KdsTicket = {
     voided?: boolean;
     /** Two-stage kitchen: line cooked by the cooker screen. */
     cookerBumped?: boolean;
+    cookerBumpedAt?: string;
     /** Main screen: cooked & ready for the waiter's final bump (green). */
     ready?: boolean;
     /** Main screen: not cooked yet — cannot be selected/bumped (greyed). */
@@ -111,8 +112,46 @@ function markItemBumped(ticket: KdsTicket, itemListIdx: number): KdsTicket {
   };
 }
 
-function hasActiveItems(ticket: KdsTicket): boolean {
+function markItemCookerBumped(
+  ticket: KdsTicket,
+  itemListIdx: number,
+): KdsTicket {
+  const at = new Date().toISOString();
+  return {
+    ...ticket,
+    items: ticket.items.map((x, i) =>
+      i === itemListIdx ? { ...x, cookerBumped: true, cookerBumpedAt: at } : x,
+    ),
+  };
+}
+
+function markTicketCookerBumped(ticket: KdsTicket): KdsTicket {
+  const at = new Date().toISOString();
+  return {
+    ...ticket,
+    items: ticket.items.map((it) =>
+      !it.voided && !it.cookerBumped
+        ? { ...it, cookerBumped: true, cookerBumpedAt: at }
+        : it,
+    ),
+  };
+}
+
+/** Whether the ticket still has lines visible on the NEW tab for this screen role. */
+function hasActiveItems(ticket: KdsTicket, cookerScreen = false): boolean {
+  if (cookerScreen) {
+    return ticket.items.some((it) => !it.voided && !it.cookerBumped);
+  }
   return ticket.items.some((it) => !it.voided && !it.bumped);
+}
+
+function latestCookerBumpedIso(ticket: KdsTicket): string | null {
+  let best: string | null = null;
+  for (const it of ticket.items) {
+    const at = (it as { cookerBumpedAt?: string }).cookerBumpedAt;
+    if (typeof at === 'string' && at && (!best || at > best)) best = at;
+  }
+  return best;
 }
 
 /** Rough block heights used on the very first render, before measurement. */
@@ -401,6 +440,7 @@ export default function KdsPage() {
       // Two-stage main screen: a whole-ticket bump only finalises the lines the
       // cook already finished (green/ready) — locked lines stay on the card.
       const twoStageMain = ticket.items.some((it) => it.locked || it.ready);
+      const isCookerScreen = cookerRef.current;
       if (twoStageMain) {
         setTickets((arr) =>
           arr
@@ -420,7 +460,16 @@ export default function KdsPage() {
                     ),
                   },
             )
-            .filter((t) => hasActiveItems(t)),
+            .filter((t) => hasActiveItems(t, isCookerScreen)),
+        );
+      } else if (isCookerScreen) {
+        // Cooker stage 1: flag lines cooked; they move to the Done tab here.
+        setTickets((arr) =>
+          arr
+            .map((t) =>
+              t.ticketId !== ticket.ticketId ? t : markTicketCookerBumped(t),
+            )
+            .filter((t) => hasActiveItems(t, true)),
         );
       } else {
         setTickets((arr) => arr.filter((x) => x.ticketId !== ticket.ticketId));
@@ -434,7 +483,7 @@ export default function KdsPage() {
         })
         .catch(() => false);
       bumping.current.delete(ticket.ticketId);
-      if (!ok && !twoStageMain) {
+      if (!ok && !twoStageMain && !isCookerScreen) {
         // Restore the card we optimistically removed (the next poll reconciles
         // the two-stage case, where we only edited items in place).
         setTickets((arr) => [ticket, ...arr]);
@@ -447,19 +496,29 @@ export default function KdsPage() {
     async (ticket: KdsTicket, itemListIdx: number) => {
       if (tabRef.current !== 'NEW') return;
       const it = ticket.items[itemListIdx];
-      if (!it || it.voided || it.bumped) return;
+      if (!it || it.voided) return;
+      if (cookerRef.current) {
+        if (it.cookerBumped) return;
+      } else if (it.bumped) {
+        return;
+      }
       // Two-stage main screen: a line the cook hasn't finished is locked.
       if (it.locked) return;
       const itemIdx = Number(it._idx ?? -1);
       if (!Number.isFinite(itemIdx) || itemIdx < 0) return;
 
       const ticketId = ticket.ticketId;
+      const isCookerScreen = cookerRef.current;
       setTickets((arr) =>
         arr
           .map((t) =>
-            t.ticketId !== ticketId ? t : markItemBumped(t, itemListIdx),
+            t.ticketId !== ticketId
+              ? t
+              : isCookerScreen
+                ? markItemCookerBumped(t, itemListIdx)
+                : markItemBumped(t, itemListIdx),
           )
-          .filter((t) => hasActiveItems(t)),
+          .filter((t) => hasActiveItems(t, isCookerScreen)),
       );
       clearItemSelection();
 
@@ -1179,7 +1238,13 @@ export default function KdsPage() {
                 const t = tickets[ticketIdx];
                 if (!t) return null;
                 const timeIso =
-                  tab === 'NEW' ? t.firedAt : t.bumpedAt ? t.bumpedAt : null;
+                  tab === 'NEW'
+                    ? t.firedAt
+                    : cooker && tab === 'DONE'
+                      ? (latestCookerBumpedIso(t) ?? t.firedAt)
+                      : t.bumpedAt
+                        ? t.bumpedAt
+                        : null;
                 const timeLabel = timeIso ? fmtAgo(timeIso, clockMs) : '';
                 const timerUrgency =
                   tab === 'NEW' && t.firedAt
@@ -1261,8 +1326,10 @@ export default function KdsPage() {
 
                     <div className="space-y-1">
                       {t.items.map((it, idx) => {
+                        // Main Done = picked up (struck). Cooker Done = cooked &
+                        // waiting on expo — keep lines readable, not struck.
                         const struck = Boolean(
-                          it.voided || it.bumped || tab === 'DONE',
+                          it.voided || it.bumped || (tab === 'DONE' && !cooker),
                         );
                         // Two-stage main screen: a line the cook hasn't
                         // finished is locked (greyed, not selectable); once
@@ -1271,6 +1338,12 @@ export default function KdsPage() {
                           Boolean(it.locked) && tab === 'NEW' && !struck;
                         const ready =
                           Boolean(it.ready) && tab === 'NEW' && !struck;
+                        const cookedWaiting =
+                          cooker &&
+                          tab === 'DONE' &&
+                          Boolean(it.cookerBumped) &&
+                          !it.bumped &&
+                          !it.voided;
                         const itemSelected =
                           ticketIdx === selectedIdx &&
                           selectedItemIdx === idx &&
@@ -1278,7 +1351,7 @@ export default function KdsPage() {
                           !locked;
                         const rowAccent = itemSelected
                           ? 'bg-emerald-900/40 ring-1 ring-emerald-500/70'
-                          : ready
+                          : ready || cookedWaiting
                             ? 'bg-emerald-900/25 ring-1 ring-emerald-600/40'
                             : '';
 
@@ -1294,7 +1367,7 @@ export default function KdsPage() {
                             <div
                               className={`font-semibold ${
                                 struck ? 'line-through decoration-2' : ''
-                              } ${ready ? 'text-emerald-300' : ''} ${
+                              } ${ready || cookedWaiting ? 'text-emerald-300' : ''} ${
                                 locked ? 'italic text-gray-400' : ''
                               }`}
                             >
@@ -1311,7 +1384,7 @@ export default function KdsPage() {
                                     <path d="M6 2a1 1 0 0 0 0 2h1v2.6a5 5 0 0 0 2.4 4.28L11 12l-1.6.92A5 5 0 0 0 7 17.2V20H6a1 1 0 1 0 0 2h12a1 1 0 1 0 0-2h-1v-2.8a5 5 0 0 0-2.4-4.28L13 12l1.6-.92A5 5 0 0 0 17 6.8V4h1a1 1 0 1 0 0-2H6zm3 2h6v2.6a3 3 0 0 1-1.49 2.6L12 10.27l-1.51-1.07A3 3 0 0 1 9 6.6V4z" />
                                   </svg>
                                 ) : null}
-                                {ready ? (
+                                {ready || cookedWaiting ? (
                                   <svg
                                     viewBox="0 0 24 24"
                                     fill="currentColor"

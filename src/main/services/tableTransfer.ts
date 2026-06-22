@@ -1,5 +1,9 @@
 import { prisma } from '@db/client';
 import { buildTransferTicketNote } from '@shared/utils/transferNote';
+import {
+  broadcastTableStatusChanged,
+  broadcastTicketsChanged,
+} from './realtime';
 
 export type TransferTableInput = {
   fromArea: string;
@@ -590,6 +594,34 @@ export async function transferTableLocal(
     }
   } catch {
     // Notifications are best-effort; never block the transfer on them.
+  }
+
+  if (movingTable) {
+    try {
+      broadcastTableStatusChanged({
+        area: fromArea,
+        label: fromLabel,
+        open: false,
+      });
+      broadcastTableStatusChanged({ area: toArea, label: toLabel, open: true });
+      broadcastTicketsChanged({
+        area: toArea,
+        tableLabel: toLabel,
+        userId: nextUserId,
+      });
+    } catch {
+      // Best-effort — LAN tablets and other POS windows rely on these events.
+    }
+  } else if (changingOwner) {
+    try {
+      broadcastTicketsChanged({
+        area: toArea,
+        tableLabel: toLabel,
+        userId: nextUserId,
+      });
+    } catch {
+      // ignore
+    }
   }
 
   return { ok: true };

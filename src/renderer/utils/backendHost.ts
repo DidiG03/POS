@@ -1,3 +1,5 @@
+import { buildLanHttpUrl, buildLanHttpsUrl } from '@shared/lanHost';
+
 export type BackendHost = {
   host: string;
   httpPort: string;
@@ -79,12 +81,12 @@ export function resolveBackendHost(): BackendHost {
 
 export function getHttpBase(): string {
   const { host, httpPort } = resolveBackendHost();
-  return `http://${host}:${httpPort}`;
+  return buildLanHttpUrl(host, httpPort);
 }
 
 export function getHttpsBase(): string {
   const { host, httpsPort } = resolveBackendHost();
-  return `https://${host}:${httpsPort}`;
+  return buildLanHttpsUrl(host, httpsPort);
 }
 
 export function syncBackendHostToLocalStorage(input: {

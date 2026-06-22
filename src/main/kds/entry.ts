@@ -14,6 +14,7 @@
  *      mDNS or type a host manually, test the connection, and save.
  */
 import { app, BrowserWindow, ipcMain, Menu } from 'electron';
+import { buildLanHttpUrl, pickBestLanAddress } from '@shared/lanHost';
 import { dirname, join, basename, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -137,6 +138,7 @@ function createWindow(): void {
     backgroundColor: '#111827',
     autoHideMenuBar: true,
     show: false,
+    fullscreen: isProdKds,
     alwaysOnTop: isProdKds,
     webPreferences: {
       preload: PRELOAD_PATH,
@@ -148,7 +150,10 @@ function createWindow(): void {
   });
   attachKdsBumpBarInput(mainWindow);
   registerUpdateListener(mainWindow);
-  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.once('ready-to-show', () => {
+    if (isProdKds) mainWindow?.setFullScreen(true);
+    mainWindow?.show();
+  });
   // Dedicated kitchen display: keep focus on the KDS window for the bump bar.
   mainWindow.on('blur', () => {
     setTimeout(() => {
@@ -260,7 +265,7 @@ ipcMain.handle('kdsApp:testConnection', async (_e, payload) => {
   const host = String(payload?.host || '').trim();
   const httpPort = Number(payload?.httpPort) || 3333;
   if (!host) return { ok: false, error: 'Host is required' };
-  const url = `http://${host}:${httpPort}/kds/debug`;
+  const url = buildLanHttpUrl(host, httpPort, '/kds/debug');
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), 4000);
   try {
@@ -301,17 +306,21 @@ ipcMain.handle('kdsApp:discover', async () => {
           const addresses = Array.isArray((svc as any).addresses)
             ? ((svc as any).addresses as string[])
             : [];
-          const v4 =
-            addresses.find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a)) ||
-            addresses[0];
-          if (!v4) return;
           const txt = (svc.txt || {}) as Record<string, string>;
+          const txtHost = String(txt.lanHost || txt.host || '').trim();
+          const host = pickBestLanAddress([
+            ...(txtHost ? [txtHost] : []),
+            ...addresses,
+          ]);
+          if (!host) return;
           const httpsPort = Number(txt.https) || undefined;
           const businessCode = txt.businessCode || undefined;
-          const key = `${v4}:${svc.port}`;
-          found.set(key, {
+          const serviceKey = String(
+            (svc as any).name || (svc as any).fqdn || host,
+          );
+          found.set(serviceKey, {
             name: (svc as any).name,
-            host: v4,
+            host,
             httpPort: svc.port || 3333,
             httpsPort,
             addresses,
@@ -327,7 +336,7 @@ ipcMain.handle('kdsApp:discover', async () => {
           // ignore
         }
         resolve(Array.from(found.values()));
-      }, 2500);
+      }, 3500);
     });
   } catch (e) {
     if (typeof console !== 'undefined')

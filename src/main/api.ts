@@ -17,11 +17,13 @@ import { maybeFiscalizePayment } from './services/fiscal';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
-  broadcastTableStatusChanged,
   broadcastTicketsChanged,
   broadcastLayoutChanged,
 } from './services/realtime';
 import { transferTableLocal } from './services/tableTransfer';
+import { setTableOpenWithSideEffects } from './services/tableOpen';
+import { createKdsTicketFromLog } from './services/kdsCreateTicket';
+import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
@@ -30,12 +32,6 @@ import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
 } from './services/kdsList';
-import {
-  decorateKdsTicketItemsFromCategory,
-  enabledStationsFromSettings,
-  kdsStationsWithActiveItems,
-  loadKdsRoutingFromDb,
-} from './services/kdsStationRouting';
 import {
   kdsStationListWhere,
   localDayStart,
@@ -195,60 +191,6 @@ type CorsPolicy = {
 
 type AuthContext = { userId: number; role?: string } | null;
 
-let __kdsSchemaReady: boolean | null = null;
-async function ensureKdsLocalSchema() {
-  if (__kdsSchemaReady === true) return true;
-  try {
-    await (prisma as any).kdsDayCounter.count();
-    __kdsSchemaReady = true;
-    return true;
-  } catch {
-    // continue
-  }
-  try {
-    // MenuItem.station (ignore if already exists)
-    try {
-      await (prisma as any).$executeRawUnsafe(
-        `ALTER TABLE "MenuItem" ADD COLUMN "station" TEXT NOT NULL DEFAULT 'KITCHEN';`,
-      );
-    } catch {
-      // ignore
-    }
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE TABLE IF NOT EXISTS "KdsDayCounter" ("dayKey" TEXT NOT NULL PRIMARY KEY, "lastNo" INTEGER NOT NULL DEFAULT 0);`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE TABLE IF NOT EXISTS "KdsOrder" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "dayKey" TEXT NOT NULL, "orderNo" INTEGER NOT NULL, "area" TEXT NOT NULL, "tableLabel" TEXT NOT NULL, "openedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "closedAt" DATETIME);`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE UNIQUE INDEX IF NOT EXISTS "KdsOrder_dayKey_orderNo_key" ON "KdsOrder"("dayKey","orderNo");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "KdsOrder_area_tableLabel_closedAt_idx" ON "KdsOrder"("area","tableLabel","closedAt");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE TABLE IF NOT EXISTS "KdsTicket" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "orderId" INTEGER NOT NULL, "userId" INTEGER, "firedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "itemsJson" JSONB NOT NULL, "note" TEXT, CONSTRAINT "KdsTicket_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "KdsOrder" ("id") ON DELETE RESTRICT ON UPDATE CASCADE, CONSTRAINT "KdsTicket_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE);`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "KdsTicket_orderId_firedAt_idx" ON "KdsTicket"("orderId","firedAt");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE TABLE IF NOT EXISTS "KdsTicketStation" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "ticketId" INTEGER NOT NULL, "station" TEXT NOT NULL, "status" TEXT NOT NULL DEFAULT 'NEW', "bumpedAt" DATETIME, "bumpedById" INTEGER, CONSTRAINT "KdsTicketStation_ticketId_fkey" FOREIGN KEY ("ticketId") REFERENCES "KdsTicket" ("id") ON DELETE RESTRICT ON UPDATE CASCADE, CONSTRAINT "KdsTicketStation_bumpedById_fkey" FOREIGN KEY ("bumpedById") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE);`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE UNIQUE INDEX IF NOT EXISTS "KdsTicketStation_ticketId_station_key" ON "KdsTicketStation"("ticketId","station");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "KdsTicketStation_station_status_bumpedAt_idx" ON "KdsTicketStation"("station","status","bumpedAt");`,
-    );
-    __kdsSchemaReady = true;
-    return true;
-  } catch {
-    __kdsSchemaReady = false;
-    return false;
-  }
-}
-
 // Suspicious-pattern detection (best-effort, in-memory).
 const mgrPinFailByIp = new Map<
   string,
@@ -265,13 +207,6 @@ const payAdjustByUser = new Map<
     lastAlertAt: number;
   }
 >();
-
-function dayKeyLocal(d = new Date()) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${dd}`;
-}
 
 function send(
   res: http.ServerResponse,
@@ -1348,76 +1283,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           return send(res, 409, result, corsOrigin);
         }
 
-        // Best-effort: also create KDS ticket on the host, so kitchen clients see orders.
+        // Best-effort: append to the open KDS ticket (same logic as IPC).
         try {
-          const ok = await ensureKdsLocalSchema();
-          if (ok) {
-            const enabledStations = enabledStationsFromSettings(
-              await coreServices.readSettings().catch(() => ({})),
-            );
-            const lines = Array.isArray(items) ? items : [];
-            const routing = await loadKdsRoutingFromDb(prisma).catch(() => ({
-              categoryIdToKdsStation: {},
-              skuToKdsStation: {},
-            }));
-            const decorated = decorateKdsTicketItemsFromCategory(
-              lines,
-              routing,
-            );
-            const usedStations = kdsStationsWithActiveItems(
-              decorated,
-              enabledStations,
-            );
-            if (usedStations.length) {
-              const now = new Date();
-              const dayKey = dayKeyLocal(now);
-              await (prisma as any).$transaction(async (tx: any) => {
-                let order = await tx.kdsOrder.findFirst({
-                  where: {
-                    area: sanitizedArea,
-                    tableLabel: sanitizedTableLabel,
-                    closedAt: null,
-                  },
-                  orderBy: { openedAt: 'desc' },
-                });
-                if (!order) {
-                  const counter = await tx.kdsDayCounter.upsert({
-                    where: { dayKey },
-                    create: { dayKey, lastNo: 0 },
-                    update: {},
-                  });
-                  const nextNo = Number(counter?.lastNo || 0) + 1;
-                  await tx.kdsDayCounter.update({
-                    where: { dayKey },
-                    data: { lastNo: nextNo },
-                  });
-                  order = await tx.kdsOrder.create({
-                    data: {
-                      dayKey,
-                      orderNo: nextNo,
-                      area: sanitizedArea,
-                      tableLabel: sanitizedTableLabel,
-                      openedAt: now,
-                    },
-                  });
-                }
-                const ticket = await tx.kdsTicket.create({
-                  data: {
-                    orderId: order.id,
-                    userId: Number(userId),
-                    firedAt: now,
-                    itemsJson: decorated,
-                    note: sanitizedNote,
-                  },
-                });
-                for (const st of usedStations) {
-                  await tx.kdsTicketStation.create({
-                    data: { ticketId: ticket.id, station: st, status: 'NEW' },
-                  });
-                }
-              });
-            }
-          }
+          const kdsFireItems = Array.isArray(body?.kdsFireItems)
+            ? body.kdsFireItems
+            : undefined;
+          await createKdsTicketFromLog({
+            userId: Number(userId),
+            area: sanitizedArea,
+            tableLabel: sanitizedTableLabel,
+            items: items ?? [],
+            fireItems: kdsFireItems,
+            note: sanitizedNote,
+          });
         } catch {
           // ignore
         }
@@ -2031,6 +1909,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             });
           }
         }
+        try {
+          broadcastTicketsChanged({
+            area: String(area),
+            tableLabel: String(tableLabel),
+            userId: Number(userId),
+          });
+        } catch {
+          // best-effort
+        }
         // Best-effort suspicious-pattern alerting (admins only; conservative thresholds).
         void maybeAlertSuspiciousVoidsLocal({
           actorUserId: Number(userId),
@@ -2139,25 +2026,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             },
           });
         }
-        // Also mark table free
+        await setTableOpenWithSideEffects(
+          String(area),
+          String(tableLabel),
+          false,
+        ).catch(() => false);
         try {
-          const key = 'tables:open';
-          const row = await prisma.syncState.findUnique({ where: { key } });
-          const map = ((row?.valueJson as any) || {}) as Record<
-            string,
-            boolean
-          >;
-          const k = `${area}:${tableLabel}`;
-          if (map[k]) {
-            delete map[k];
-            await prisma.syncState.upsert({
-              where: { key },
-              create: { key, valueJson: map },
-              update: { valueJson: map },
-            });
-          }
-        } catch (e) {
-          void e;
+          broadcastTicketsChanged({
+            area: String(area),
+            tableLabel: String(tableLabel),
+            userId: Number(userId),
+          });
+        } catch {
+          // best-effort
         }
         // Best-effort suspicious-pattern alerting (admins only; conservative thresholds).
         void maybeAlertSuspiciousVoidsLocal({
@@ -2299,25 +2180,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/tables/open') {
         const { area, label, open } = await parseJson(req);
         if (!area || !label) return send(res, 400, 'invalid', corsOrigin);
-        const key = 'tables:open';
-        const row = await prisma.syncState.findUnique({ where: { key } });
-        const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-        const k = `${area}:${label}`;
-        if (open) map[k] = true;
-        else delete map[k];
-        await prisma.syncState.upsert({
-          where: { key },
-          create: { key, valueJson: map },
-          update: { valueJson: map },
-        });
-        // Broadcast to every client (other LAN tablets via SSE + every
-        // Electron window via IPC) so the floor colour updates without
-        // waiting for the next poll.
-        try {
-          broadcastTableStatusChanged({ area, label, open });
-        } catch {
-          // ignore — best effort
-        }
+        const ok = await setTableOpenWithSideEffects(
+          String(area),
+          String(label),
+          Boolean(open),
+        );
+        if (!ok) return send(res, 400, 'invalid', corsOrigin);
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/tables/open') {
