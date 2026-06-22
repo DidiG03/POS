@@ -22,6 +22,9 @@
 appId: com.codeorbit.kds
 productName: Code Orbit KDS
 
+# CI runs `pnpm serial:rebuild` for POS only; KDS excludes serialport.
+npmRebuild: false
+
 directories:
   buildResources: build-resources
   output: dist-installers/kds

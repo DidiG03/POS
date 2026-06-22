@@ -90,6 +90,13 @@
       ],
       "icon": "build-resources/icon.ico"
     },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    },
+    "npmRebuild": false,
     "nsis": {
       "include": "build/installer.nsh",
       "installerIcon": "build-resources/icon.ico",
