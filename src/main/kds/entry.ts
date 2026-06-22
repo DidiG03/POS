@@ -13,7 +13,7 @@
  *   3. Otherwise, load `#/kds-setup` which lets the user discover via
  *      mDNS or type a host manually, test the connection, and save.
  */
-import { app, BrowserWindow, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import { buildLanHttpUrl, pickBestLanAddress } from '@shared/lanHost';
 import { dirname, join, basename, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,6 +100,54 @@ function clearConfig(): void {
 }
 
 let mainWindow: BrowserWindow | null = null;
+/** When true, skip the bump-bar focus steal so quit / system dialogs can work. */
+let quitting = false;
+
+async function quitKdsApp(): Promise<boolean> {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  const wasFullscreen = Boolean(win?.isFullScreen());
+  const wasAlwaysOnTop = Boolean(win?.isAlwaysOnTop());
+
+  if (win) {
+    try {
+      if (wasFullscreen) win.setFullScreen(false);
+      if (wasAlwaysOnTop) win.setAlwaysOnTop(false);
+    } catch {
+      // ignore
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  const quitDialog = {
+    type: 'question' as const,
+    buttons: ['Cancel', 'Quit KDS'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Code Orbit KDS',
+    message: 'Quit Code Orbit KDS?',
+    detail: 'You can reopen it from the desktop or Start menu.',
+  };
+  const { response } = win
+    ? await dialog.showMessageBox(win, quitDialog)
+    : await dialog.showMessageBox(quitDialog);
+
+  if (response !== 1) {
+    if (win && !win.isDestroyed()) {
+      try {
+        if (wasAlwaysOnTop) win.setAlwaysOnTop(true);
+        if (wasFullscreen) win.setFullScreen(true);
+        win.focus();
+      } catch {
+        // ignore
+      }
+    }
+    return false;
+  }
+
+  quitting = true;
+  app.quit();
+  return true;
+}
 
 function loadHash(win: BrowserWindow, hash: '/kds' | '/kds-setup'): void {
   const devUrl = process.env.ELECTRON_RENDERER_URL;
@@ -156,8 +204,10 @@ function createWindow(): void {
   });
   // Dedicated kitchen display: keep focus on the KDS window for the bump bar.
   mainWindow.on('blur', () => {
+    if (quitting) return;
     setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+      if (quitting || !mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.focus();
     }, 150);
   });
   mainWindow.on('closed', () => {
@@ -185,6 +235,8 @@ ipcMain.handle('updater:installUpdate', async () =>
 ipcMain.handle('updater:deferInstall', async () =>
   updaterHandlers.deferInstall(),
 );
+
+ipcMain.handle('kdsApp:quit', () => quitKdsApp());
 
 ipcMain.handle('kdsApp:getConfig', () => readConfig());
 

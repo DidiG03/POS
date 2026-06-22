@@ -211,6 +211,53 @@ export default function KdsPage() {
   const [enabledStations, setEnabledStations] = useState<Station[]>(() => [
     ...ALL_KDS_STATIONS,
   ]);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+
+  const kdsUpdater = () =>
+    (window as any).kdsApp?.updater ?? (window as any).api?.updater;
+
+  const handleCheckForUpdates = useCallback(async () => {
+    const updater = kdsUpdater();
+    if (!updater?.checkForUpdates) {
+      setUpdateMessage('Updates are only available in the KDS app.');
+      return;
+    }
+    setUpdateChecking(true);
+    setUpdateMessage(null);
+    try {
+      const result = await updater.checkForUpdates();
+      if (result?.error) {
+        setUpdateMessage(result.error);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+      const status = await updater.getUpdateStatus?.();
+      if (status?.downloaded && status.updateInfo?.version) {
+        setUpdateMessage(
+          `Version ${status.updateInfo.version} is downloaded and ready to install.`,
+        );
+      } else if (status?.hasUpdate && status.updateInfo?.version) {
+        setUpdateMessage(
+          `Update available: version ${status.updateInfo.version}. Downloading…`,
+        );
+      } else {
+        setUpdateMessage('You are on the latest version.');
+      }
+    } catch (e: any) {
+      setUpdateMessage(e?.message || 'Failed to check for updates.');
+    } finally {
+      setUpdateChecking(false);
+    }
+  }, []);
+
+  const handleQuitKds = useCallback(async () => {
+    try {
+      await (window as any).kdsApp?.quit?.();
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const setStation = useCallback((next: Station) => {
     setStationState(next);
@@ -1140,6 +1187,38 @@ export default function KdsPage() {
               </div>
             ) : null}
           </section>
+
+          {isStandaloneKds ? (
+            <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+              <div className="text-sm font-semibold">App</div>
+              <div className="text-xs opacity-70">
+                Check for a new KDS release from GitHub, or exit the kitchen
+                display.
+              </div>
+              {updateMessage ? (
+                <div className="text-sm text-emerald-300/90">
+                  {updateMessage}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleCheckForUpdates()}
+                  disabled={updateChecking}
+                  className="px-4 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50 text-sm font-medium"
+                >
+                  {updateChecking ? 'Checking…' : 'Check for updates'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleQuitKds()}
+                  className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-sm font-medium"
+                >
+                  Quit KDS
+                </button>
+              </div>
+            </section>
+          ) : null}
 
           {isStandaloneKds ? (
             <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">

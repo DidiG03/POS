@@ -62,6 +62,7 @@ const kdsApp = {
   saveDisplayCooker: (cooker: boolean): Promise<boolean> =>
     ipcRenderer.invoke('kdsApp:saveDisplayCooker', cooker),
   resetConfig: (): Promise<boolean> => ipcRenderer.invoke('kdsApp:resetConfig'),
+  quit: (): Promise<boolean> => ipcRenderer.invoke('kdsApp:quit'),
   discover: (): Promise<DiscoveredHost[]> =>
     ipcRenderer.invoke('kdsApp:discover'),
   testConnection: (input: {
