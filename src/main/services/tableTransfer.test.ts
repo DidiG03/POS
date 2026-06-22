@@ -24,6 +24,7 @@ const syncStateUpsert = vi.fn();
 const ticketRequestUpdateMany = vi.fn();
 const kdsOrderFindFirst = vi.fn();
 const kdsOrderUpdate = vi.fn();
+const kdsTicketUpdateMany = vi.fn();
 const coversCreate = vi.fn();
 const broadcastTableStatusChanged = vi.fn();
 const broadcastTicketsChanged = vi.fn();
@@ -58,6 +59,9 @@ vi.mock('@db/client', () => ({
     kdsOrder: {
       findFirst: (...a: any[]) => kdsOrderFindFirst(...a),
       update: (...a: any[]) => kdsOrderUpdate(...a),
+    },
+    kdsTicket: {
+      updateMany: (...a: any[]) => kdsTicketUpdateMany(...a),
     },
     covers: {
       create: (...a: any[]) => coversCreate(...a),
@@ -267,6 +271,7 @@ describe('transferTableLocal — on-shift requirement', () => {
     syncStateUpsert.mockResolvedValue({});
     ticketRequestUpdateMany.mockResolvedValue({});
     kdsOrderFindFirst.mockResolvedValue(null);
+    kdsTicketUpdateMany.mockResolvedValue({ count: 0 });
     coversCreate.mockResolvedValue({});
   });
 
@@ -294,6 +299,8 @@ describe('transferTableLocal — on-shift requirement', () => {
 
   it('allows ownership transfer when the target waiter has an open shift', async () => {
     dayShiftFindFirst.mockResolvedValue({ id: 42 });
+    kdsOrderFindFirst.mockResolvedValue({ id: 7 });
+    kdsTicketUpdateMany.mockResolvedValue({ count: 1 });
     const result = await transferTableLocal({
       fromArea: 'Sallon',
       fromLabel: 'T1',
@@ -305,6 +312,10 @@ describe('transferTableLocal — on-shift requirement', () => {
     // The new ticket-log row should be assigned to the target user.
     const createCall = ticketLogCreate.mock.calls[0][0];
     expect(createCall.data.userId).toBe(TARGET.id);
+    expect(kdsTicketUpdateMany).toHaveBeenCalledWith({
+      where: { orderId: 7 },
+      data: { userId: TARGET.id },
+    });
   });
 
   it('tags prior session rows when handing off to another waiter on the same table', async () => {

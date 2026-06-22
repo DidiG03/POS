@@ -88,9 +88,9 @@ describe('viewKitchenItemsForCooker', () => {
     kitchen('Fries', { _idx: 3, voided: true }),
   ];
 
-  it('cooker NEW shows only un-cooked lines', () => {
+  it('cooker NEW shows un-cooked lines including voided', () => {
     const out = viewKitchenItemsForCooker(items, { cooker: true, tab: 'NEW' });
-    expect(out.map((i) => i.name)).toEqual(['Steak']);
+    expect(out.map((i) => i.name)).toEqual(['Steak', 'Fries']);
   });
 
   it('cooker DONE shows cooked-but-not-picked-up lines', () => {
@@ -98,10 +98,11 @@ describe('viewKitchenItemsForCooker', () => {
     expect(out.map((i) => i.name)).toEqual(['Soup']);
   });
 
-  it('main NEW shows active lines with locked/ready flags', () => {
+  it('main NEW shows active lines with locked/ready flags, keeps voided visible', () => {
     const out = viewKitchenItemsForCooker(items, { cooker: false, tab: 'NEW' });
-    expect(out.map((i) => i.name)).toEqual(['Steak', 'Soup']);
+    expect(out.map((i) => i.name)).toEqual(['Steak', 'Soup', 'Fries']);
     expect(out[0]).toMatchObject({ locked: true, ready: false });
     expect(out[1]).toMatchObject({ locked: false, ready: true });
+    expect(out[2]).toMatchObject({ locked: false, ready: false, voided: true });
   });
 });

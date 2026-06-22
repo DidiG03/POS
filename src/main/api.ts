@@ -23,6 +23,7 @@ import {
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
+import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
@@ -1900,7 +1901,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         });
         if (last) {
           const items = (last.itemsJson as any[]) || [];
-          const idx = items.findIndex((it: any) => it.name === item.name);
+          const idx = items.findIndex(
+            (it: any) => it.name === item.name && !it?.voided,
+          );
           if (idx !== -1) {
             items[idx] = { ...items[idx], voided: true };
             await prisma.ticketLog.update({
@@ -1909,6 +1912,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             });
           }
         }
+        await applyKdsVoidItem({
+          userId: Number(userId),
+          area: String(area),
+          tableLabel: String(tableLabel),
+          item,
+        }).catch(() => false);
         try {
           broadcastTicketsChanged({
             area: String(area),
@@ -2031,6 +2040,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           String(tableLabel),
           false,
         ).catch(() => false);
+        await applyKdsVoidTicket({
+          userId: Number(userId),
+          area: String(area),
+          tableLabel: String(tableLabel),
+          reason: reason ? String(reason) : undefined,
+        }).catch(() => false);
         try {
           broadcastTicketsChanged({
             area: String(area),

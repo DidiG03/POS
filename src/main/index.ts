@@ -120,6 +120,7 @@ import {
 } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
+import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import {
@@ -3728,131 +3729,6 @@ async function getEnabledStations(): Promise<string[]> {
   }
 }
 
-async function applyKdsVoidTicket(input: {
-  userId: number;
-  area: string;
-  tableLabel: string;
-  reason?: string;
-}) {
-  const okSchema = await ensureKdsLocalSchema();
-  if (!okSchema) return false;
-  const area = String(input.area || '');
-  const tableLabel = String(input.tableLabel || '');
-  if (!area || !tableLabel) return false;
-
-  try {
-    await (prisma as any).$transaction(async (tx: any) => {
-      const order = await tx.kdsOrder.findFirst({
-        where: { area, tableLabel, closedAt: null },
-        orderBy: { openedAt: 'desc' },
-      });
-      if (!order) return;
-
-      // Only set bumpedById if the user exists locally (cloud user ids may not).
-      let safeBumpedById: number | null = null;
-      try {
-        const u = await tx.user.findUnique({
-          where: { id: Number(input.userId) },
-        });
-        safeBumpedById = u ? Number(input.userId) : null;
-      } catch {
-        safeBumpedById = null;
-      }
-
-      const tickets = await tx.kdsTicket.findMany({
-        where: { orderId: order.id },
-        orderBy: { id: 'asc' },
-      });
-      const now = new Date();
-      for (const t of tickets) {
-        const items = (Array.isArray(t.itemsJson) ? t.itemsJson : []).map(
-          (it: any) => ({ ...it, voided: true }),
-        );
-        const note = t.note
-          ? `${t.note} | VOIDED${input.reason ? `: ${input.reason}` : ''}`
-          : `VOIDED${input.reason ? `: ${input.reason}` : ''}`;
-        await tx.kdsTicket.update({
-          where: { id: t.id },
-          data: { itemsJson: items, note },
-        });
-        // Mark all stations NEW->DONE so they disappear from the kitchen queue
-        await tx.kdsTicketStation.updateMany({
-          where: { ticketId: t.id, status: 'NEW' },
-          data: {
-            status: 'DONE',
-            bumpedAt: now,
-            ...(safeBumpedById ? { bumpedById: safeBumpedById } : {}),
-          },
-        });
-      }
-      await tx.kdsOrder.update({
-        where: { id: order.id },
-        data: { closedAt: now },
-      });
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function applyKdsVoidItem(input: {
-  userId: number;
-  area: string;
-  tableLabel: string;
-  item: any;
-}) {
-  const okSchema = await ensureKdsLocalSchema();
-  if (!okSchema) return false;
-  const area = String(input.area || '');
-  const tableLabel = String(input.tableLabel || '');
-  const name = String(input?.item?.name || '').trim();
-  const sku = String(input?.item?.sku || '').trim();
-  if (!area || !tableLabel || !name) return false;
-
-  try {
-    await (prisma as any).$transaction(async (tx: any) => {
-      const order = await tx.kdsOrder.findFirst({
-        where: { area, tableLabel, closedAt: null },
-        orderBy: { openedAt: 'desc' },
-      });
-      if (!order) return;
-
-      const tickets = await tx.kdsTicket.findMany({
-        where: { orderId: order.id },
-        orderBy: { id: 'asc' },
-      });
-      for (const t of tickets) {
-        const itemsAll = Array.isArray(t.itemsJson)
-          ? (t.itemsJson as any[])
-          : [];
-        let changed = false;
-        const nextItems = itemsAll.map((it: any) => {
-          const itSku = String(it?.sku || '').trim();
-          const itName = String(it?.name || '').trim();
-          const match = (sku && itSku && itSku === sku) || itName === name;
-          if (match && !it?.voided) {
-            changed = true;
-            return { ...it, voided: true };
-          }
-          return it;
-        });
-        if (changed) {
-          await tx.kdsTicket.update({
-            where: { id: t.id },
-            data: { itemsJson: nextItems },
-          });
-
-          // Keep the ticket on NEW so voided lines stay visible (struck through) until bumped.
-        }
-      }
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // Tickets logging
 ipcMain.handle('tickets:log', async (_e, payload) => {
   try {
@@ -4499,7 +4375,9 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
   });
   if (last) {
     const items = (last.itemsJson as any[]) || [];
-    const idx = items.findIndex((it: any) => it.name === item.name);
+    const idx = items.findIndex(
+      (it: any) => it.name === item.name && !it?.voided,
+    );
     if (idx !== -1) {
       items[idx] = { ...items[idx], voided: true };
       await prisma.ticketLog.update({

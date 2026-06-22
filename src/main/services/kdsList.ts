@@ -117,8 +117,8 @@ export async function formatKdsTicketListRows(
       const tableKey = `${area}:${tableLabel}`;
       const ownerId = ownerByTable.get(tableKey);
       const waiterName =
-        (t?.userId ? waiterById.get(Number(t.userId)) : null) ??
         (ownerId ? waiterById.get(ownerId) : null) ??
+        (t?.userId ? waiterById.get(Number(t.userId)) : null) ??
         null;
 
       const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
@@ -138,10 +138,9 @@ export async function formatKdsTicketListRows(
         });
         if (items.length === 0) return null;
       } else if (status === 'NEW') {
-        const hasActive = stationItems.some(
-          (it: any) => !it?.voided && !it?.bumped,
-        );
-        if (!hasActive) return null;
+        // Keep the card on NEW while any line is still open (including voided).
+        const hasOpen = stationItems.some((it: any) => !it?.bumped);
+        if (!hasOpen) return null;
       }
 
       return {
@@ -220,8 +219,8 @@ export async function getKdsTicketDetail(
     ),
   );
   const waiterName: string | null =
-    (row.userId ? waiterById.get(Number(row.userId)) : null) ??
     (ownerId ? waiterById.get(ownerId) : null) ??
+    (row.userId ? waiterById.get(Number(row.userId)) : null) ??
     null;
 
   const itemsAll = Array.isArray(row.itemsJson) ? row.itemsJson : [];

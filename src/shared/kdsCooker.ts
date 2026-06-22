@@ -89,23 +89,22 @@ export function viewKitchenItemsForCooker(
   const list = Array.isArray(stationItems) ? stationItems : [];
   if (opts.cooker) {
     if (opts.tab === 'NEW') {
-      // Still to cook.
-      return list.filter((it) => !it?.voided && !it?.cookerBumped);
+      // Still to cook; keep voided lines visible (struck through) until bumped.
+      return list.filter((it) => !it?.cookerBumped);
     }
     // Cooked, but waiting on the waiter's final pickup bump (recall lives here).
     return list.filter((it) => !it?.voided && it?.cookerBumped && !it?.bumped);
   }
   // Main view.
   if (opts.tab === 'NEW') {
-    // Show everything not yet finally bumped; lock the lines the cook hasn't
-    // finished so they can't be selected/bumped, and flag the ready ones green.
+    // Show everything not yet finally bumped, including voided lines.
     return list
-      .filter((it) => !it?.voided && !it?.bumped)
+      .filter((it) => !it?.bumped)
       .map((it) => ({
         ...it,
         cookerBumped: Boolean(it?.cookerBumped),
-        ready: Boolean(it?.cookerBumped),
-        locked: !it?.cookerBumped,
+        ready: Boolean(it?.cookerBumped) && !it?.voided,
+        locked: !it?.voided && !it?.cookerBumped,
       }));
   }
   // Main DONE: handled by the existing station-DONE query + struck rendering.

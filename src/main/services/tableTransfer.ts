@@ -27,6 +27,27 @@ function norm(s: any) {
   return String(s ?? '').trim();
 }
 
+/** Keep open KDS ticket cards aligned with the table's current waiter. */
+async function updateKdsSessionOwner(
+  area: string,
+  tableLabel: string,
+  userId: number,
+): Promise<void> {
+  try {
+    const active = await (prisma as any).kdsOrder.findFirst({
+      where: { area, tableLabel, closedAt: null },
+      orderBy: { openedAt: 'desc' },
+    });
+    if (!active) return;
+    await (prisma as any).kdsTicket.updateMany({
+      where: { orderId: active.id },
+      data: { userId: Number(userId) },
+    });
+  } catch {
+    // ignore if KDS tables not migrated
+  }
+}
+
 async function readOpenMap(): Promise<Record<string, boolean>> {
   const row = await prisma.syncState
     .findUnique({ where: { key: 'tables:open' } })
@@ -550,6 +571,8 @@ export async function transferTableLocal(
         data: { ownerId: Number(toUserId) },
       } as any)
       .catch(() => null);
+
+    await updateKdsSessionOwner(toArea, toLabel, nextUserId);
 
     const msg = movingTable
       ? `Table transferred to you: ${fromArea} ${fromLabel} → ${toArea} ${toLabel}`
