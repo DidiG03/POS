@@ -26,6 +26,30 @@ function lastCall(): { op: string; args: any } {
   return { op: call![0], args: call![1] };
 }
 
+/**
+ * Vitest runs these files in Node. Some Node builds expose `navigator`,
+ * Linux CI does not — so never assume the object is already there.
+ */
+try {
+  delete (globalThis as { navigator?: unknown }).navigator;
+} catch {
+  // ignore
+}
+
+function setOnline(value: boolean) {
+  const current = (globalThis as { navigator?: object }).navigator;
+  const nav = current && typeof current === 'object' ? current : {};
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    writable: true,
+    value: nav,
+  });
+  Object.defineProperty(globalThis.navigator, 'onLine', {
+    configurable: true,
+    value,
+  });
+}
+
 const baseTicket = {
   userId: 1,
   area: 'Main Hall',
@@ -38,10 +62,7 @@ describe('logTicket', () => {
     tryOrQueue.mockClear();
     enqueue.mockClear();
     tryOrQueue.mockResolvedValue({ queued: false });
-    Object.defineProperty(globalThis.navigator, 'onLine', {
-      configurable: true,
-      value: true,
-    });
+    setOnline(true);
   });
 
   it('stamps a key before the live call when the caller omits one', async () => {
@@ -68,10 +89,7 @@ describe('logTicket', () => {
   });
 
   it('stamps a key on the offline enqueue path too', async () => {
-    Object.defineProperty(globalThis.navigator, 'onLine', {
-      configurable: true,
-      value: false,
-    });
+    setOnline(false);
     const r = await logTicket({
       ...baseTicket,
       idempotencyKey: 'intent-offline-1',
