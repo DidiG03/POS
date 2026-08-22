@@ -7,6 +7,14 @@ pnpm-debug.log*
 coverage
 prisma/dev.db
 
+# TLS material must never be committed. The LAN HTTPS certificate is
+# installed per-machine under <userData>/certs (see `tlsCertDir()`).
+*.pem
+*.key
+*.p12
+*.pfx
+.local-certs/
+
 # Capacitor build outputs (Xcode/Android Studio derived files).
 # Note: when you start customizing native projects, you'll want to
 # COMMIT ios/ and android/ instead and only ignore their build dirs.

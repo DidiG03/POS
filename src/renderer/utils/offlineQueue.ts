@@ -20,7 +20,9 @@
  *     mashes the close-table button doesn't queue 8 separate writes.
  *   - On a network-shaped error we stop draining the queue early to
  *     avoid pointlessly hammering an offline server.
- *   - Bounded at 500 items; oldest are dropped if the cap is hit.
+ *   - Bounded at 500 items. Advisory ops are shed oldest-first when the
+ *     cap is hit; money ops are never deleted, only moved to the
+ *     durable failed surface for manual review.
  *
  * Observability (for PR 4b's sync-status badge):
  *   - Every queue mutation dispatches a `'offline-queue:changed'`
@@ -30,6 +32,7 @@
 
 export type OfflineOp =
   | 'tickets.log'
+  | 'tickets.print'
   | 'tickets.voidItem'
   | 'tickets.voidTicket'
   | 'tables.setOpen'
@@ -72,6 +75,158 @@ const FAILED_CHANGE_EVENT = 'offline-queue:failed-changed';
  * the failed surface for manual review.
  */
 const MONEY_OPS = new Set<OfflineOp>(['tickets.log', 'payments.record']);
+
+/** True for operations that create an order or move money. */
+export function isMoneyOp(op: OfflineOp): boolean {
+  return MONEY_OPS.has(op);
+}
+
+/**
+ * Operations that must reach the host eventually, even though they don't move
+ * money themselves.
+ *
+ * `tables.setOpen` is here because freeing a table is the other half of taking
+ * payment. Treated as advisory it would give up after the retry budget and land
+ * on the failed-sync surface, so a paid table stayed red on the floor until
+ * somebody noticed and replayed it by hand — and if the failure wasn't
+ * network-shaped it was never queued at all, because `tryOrQueue` rethrows for
+ * advisory ops and the pay handler deliberately swallows that.
+ *
+ * Retrying forever is safe here: the write is level-triggered ("this table is
+ * closed"), not an increment, so applying it twice is the same as applying it
+ * once. `tryOrQueue` drops superseded entries when a newer write for the same
+ * table lands, which keeps an unbounded retry from re-closing a table that has
+ * since been reopened.
+ *
+ * `tickets.print` is here for kitchen chits. A lost response used to make the
+ * waiter tap Send again, and without a key that printed a second ticket. The
+ * print helper now stamps a key before the first attempt; retries of that same
+ * intent hit the host's PrintJob unique index and no-op instead of reprinting.
+ */
+const DURABLE_OPS = new Set<OfflineOp>([
+  ...MONEY_OPS,
+  'tables.setOpen',
+  'tickets.print',
+]);
+
+/**
+ * True for operations that may never be silently discarded. A superset of
+ * {@link isMoneyOp} — money is durable, but not everything durable is money.
+ */
+export function isDurableOp(op: OfflineOp): boolean {
+  return DURABLE_OPS.has(op);
+}
+
+/**
+ * Failures that retrying makes worse rather than better.
+ *
+ * `FISCAL_NEEDS_REVIEW` means the host could not determine whether the tax
+ * service registered the invoice. Sending it again risks a second real
+ * invoice for one sale, which needs a corrective filing to undo — so this
+ * belongs on the failed-sync surface for a human, not on the retry loop.
+ */
+/**
+ * Failures a retry cannot clear. `FISCAL_NEEDS_REVIEW` needs someone to
+ * check easyPos before we dare send again; `FISCAL_REJECTED` needs the
+ * fiscal configuration fixed first. Both belong on the failed-sync
+ * surface, where an admin can release them, not in the retry loop.
+ */
+const NEEDS_RECONCILIATION_CODES = new Set([
+  'FISCAL_NEEDS_REVIEW',
+  'FISCAL_REJECTED',
+]);
+
+/**
+ * True when a human has to resolve this before the sale can be completed.
+ * Distinct from an ordinary permanent rejection (table closed, validation)
+ * where the server told us nothing happened and the UI's error is enough.
+ */
+export function needsManualReconciliation(e: any): boolean {
+  return NEEDS_RECONCILIATION_CODES.has(String(e?.code || ''));
+}
+
+/** True when retrying cannot change the outcome. */
+export function isPermanentFailure(e: any): boolean {
+  return e?.permanent === true || needsManualReconciliation(e);
+}
+
+/**
+ * Translate a `tickets.print` response into success or a thrown error.
+ *
+ * Both transports report a hard failure as `false`: the Electron IPC
+ * handler returns it when fiscalization is rejected, and the mobile
+ * client returns it when `/print/ticket` answers non-ok. Treating that
+ * as success would delete the queued item and lose the sale.
+ *
+ * A bare `false` is deliberately NOT permanent — a fiscal provider outage
+ * is the usual cause and is transient, so the item stays on the queue as a
+ * money op and is retried at the capped backoff. Only an explicit
+ * rejection can mark itself permanent.
+ */
+export function assertPrintAccepted(result: unknown): void {
+  if (result === false) {
+    const err: any = new Error(
+      'Payment was not recorded (fiscalization or printing was rejected)',
+    );
+    err.code = 'PAYMENT_NOT_RECORDED';
+    throw err;
+  }
+  if (result && typeof result === 'object' && (result as any).ok === false) {
+    const r = result as any;
+    const err: any = new Error(String(r.error || 'Payment rejected by server'));
+    err.code = String(r.code || 'PAYMENT_REJECTED');
+    if (r.permanent === true) err.permanent = true;
+    throw err;
+  }
+}
+
+export interface EvictionPlan<T> {
+  /** Items that stay on the live queue. */
+  kept: T[];
+  /** Advisory items discarded outright. */
+  evicted: T[];
+  /** Money items moved to the durable failed surface instead of dropped. */
+  spilled: T[];
+}
+
+/**
+ * Decide what to shed when the queue exceeds its cap.
+ *
+ * Eviction must never destroy money or a pending table close. Advisory
+ * operations (table colour, covers) are shed oldest-first; only if the queue is
+ * still over the cap after shedding all of them do durable operations move —
+ * and then to the failed surface for manual replay, never to nothing.
+ */
+export function planEviction<T extends { op: OfflineOp }>(
+  items: T[],
+  maxItems: number,
+): EvictionPlan<T> {
+  if (items.length <= maxItems) {
+    return { kept: items, evicted: [], spilled: [] };
+  }
+
+  const evicted: T[] = [];
+  const survivors: T[] = [];
+  let toShed = items.length - maxItems;
+
+  for (const it of items) {
+    if (toShed > 0 && !DURABLE_OPS.has(it.op)) {
+      evicted.push(it);
+      toShed -= 1;
+    } else {
+      survivors.push(it);
+    }
+  }
+
+  if (survivors.length > maxItems) {
+    return {
+      kept: survivors.slice(survivors.length - maxItems),
+      evicted,
+      spilled: survivors.slice(0, survivors.length - maxItems),
+    };
+  }
+  return { kept: survivors, evicted, spilled: [] };
+}
 
 /** Why an item ended up on the failed surface. */
 export type FailedReason = 'rejected' | 'exhausted';
@@ -216,10 +371,14 @@ const dispatchers: Record<OfflineOp, (args: any) => Promise<void>> = {
   },
 
   'payments.record': async (a) => {
-    // `idempotencyKey` is forwarded to `tickets.print`; the IPC handler
-    // dedupes identical keys so offline-queue retries cannot double-record
-    // a payment audit row (PrintJob).
-    await window.api.tickets.print(a);
+    // `idempotencyKey` is forwarded to `tickets.print`; both the Electron
+    // IPC handler and the LAN `/print/ticket` route dedupe identical keys
+    // so a retry cannot double-record a payment audit row (PrintJob).
+    assertPrintAccepted(await window.api.tickets.print(a));
+  },
+
+  'tickets.print': async (a) => {
+    assertPrintAccepted(await window.api.tickets.print(a));
   },
 };
 
@@ -235,6 +394,13 @@ class OfflineQueue {
 
   constructor() {
     this.dbPromise = new Promise((resolve, reject) => {
+      // Node (unit tests, any SSR-style import) has no IndexedDB. Fail
+      // the promise rather than throwing at module load, so importing
+      // the pure helpers from this file stays side-effect free.
+      if (typeof indexedDB === 'undefined') {
+        reject(new Error('IndexedDB is unavailable in this environment'));
+        return;
+      }
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -278,6 +444,10 @@ class OfflineQueue {
       };
       req.onerror = () => reject(req.error);
     });
+    // Callers surface the failure when they actually touch the store;
+    // this keeps an unopened database from raising an unhandled
+    // rejection at import time.
+    void this.dbPromise.catch(() => undefined);
 
     if (typeof window !== 'undefined') {
       // Stable handler so we can remove it cleanly under HMR.
@@ -347,12 +517,20 @@ class OfflineQueue {
       }
       items.push(next);
 
-      // Bound: drop oldest beyond the cap. Anything past 500 means the
-      // user has been offline for a very long time AND keeps mashing
-      // buttons; the alternative is unbounded IDB growth which can OOM
-      // a Safari tab.
+      // Bound the store so a very long outage can't grow IndexedDB
+      // without limit (which will OOM a WKWebView on an iPad).
       if (items.length > MAX_ITEMS) {
-        items = items.slice(items.length - MAX_ITEMS);
+        const plan = planEviction(items, MAX_ITEMS);
+        items = plan.kept;
+        for (const it of plan.evicted) this.broadcastDrop(it);
+        for (const it of plan.spilled) {
+          const failedItem: OfflineQueueItem = {
+            ...it,
+            lastError: 'Queue overflow — parked for manual review',
+          };
+          this.broadcastDrop(failedItem);
+          await this.recordFailed(failedItem, 'exhausted');
+        }
       }
 
       await this.replaceAll(items);
@@ -364,6 +542,31 @@ class OfflineQueue {
   async getPendingCount(): Promise<number> {
     const items = await this.getAll();
     return items.length;
+  }
+
+  /**
+   * Drop queued writes for a target that a newer write has already delivered.
+   *
+   * Only safe for level-triggered state such as `tables.setOpen`, where the
+   * latest value is the whole truth. Callers pass the same `dedupeKey` they
+   * would have enqueued under, so this mirrors the latest-wins coalescing in
+   * {@link enqueue} for the case where the newer write went out live.
+   */
+  async purgeSuperseded(dedupeKey: string): Promise<{ removed: number }> {
+    if (!dedupeKey) return { removed: 0 };
+    return this.withLock(async () => {
+      const all = await this.getAll();
+      const items = all
+        .map(this.normalize)
+        .filter((it): it is OfflineQueueItem => it !== null);
+      const kept = items.filter((it) => it.dedupeKey !== dedupeKey);
+      const removed = items.length - kept.length;
+      if (removed > 0) {
+        await this.replaceAll(kept);
+        this.broadcastChange(kept.length);
+      }
+      return { removed };
+    });
   }
 
   async sync(): Promise<{ sent: number; remaining: number }> {
@@ -413,11 +616,20 @@ class OfflineQueue {
         }
 
         try {
-          // Stable idempotency key derived from the queue item id —
-          // safe to retry the same enqueue forever without
-          // double-processing on the main side (provided the IPC
-          // honours it; tickets.log already does).
-          const args = { ...it.args, idempotencyKey: it.id };
+          // Stable idempotency key so the same enqueue can be retried
+          // forever without double-processing on the host side.
+          //
+          // An existing key on the args MUST win. A payment that was
+          // attempted live already sent its key to the host; if that
+          // call actually landed and only the response was lost,
+          // replacing the key here would defeat the host's dedupe and
+          // record the payment a second time.
+          const args = {
+            ...it.args,
+            idempotencyKey: String(it.args?.idempotencyKey || '').trim()
+              ? it.args.idempotencyKey
+              : it.id,
+          };
           await dispatcher(args);
           removedIds.add(it.id);
           sent += 1;
@@ -427,7 +639,7 @@ class OfflineQueue {
           // table owned by another waiter, validation failure) will
           // never succeed on a retry. Drop them immediately and tell
           // the UI so the waiter sees a toast instead of a silent loss.
-          if (e?.permanent === true) {
+          if (isPermanentFailure(e)) {
             const failedItem: OfflineQueueItem = {
               ...it,
               lastError: String(e?.message || e || 'rejected'),
@@ -444,9 +656,9 @@ class OfflineQueue {
           const attempts = Math.min(MAX_ATTEMPTS, (it.attempts || 0) + 1);
           const lastError = String(e?.message || e || 'request failed');
           if (attempts >= MAX_ATTEMPTS) {
-            if (MONEY_OPS.has(it.op)) {
-              // NEVER drop an order/payment. The server is the source of
-              // truth for money; keep retrying at the capped backoff
+            if (DURABLE_OPS.has(it.op)) {
+              // NEVER drop an order, a payment, or a table close. The server
+              // is the source of truth; keep retrying at the capped backoff
               // (~30s) until it lands. The UI surfaces it as "stuck" so
               // staff know a write hasn't synced yet.
               updates.set(it.id, {
@@ -615,6 +827,33 @@ class OfflineQueue {
   // ---- failed surface (PR #6) -------------------------------------
 
   /** Persist an item that can no longer be replayed automatically. */
+  /**
+   * Park a live failure that retrying cannot fix directly on the failed
+   * surface, without it ever joining the retry queue.
+   *
+   * The sync loop already does this for items that were queued first; this
+   * is the same outcome for one that failed on its first online attempt.
+   */
+  async parkPermanentFailure(
+    op: OfflineOp,
+    args: any,
+    error: string,
+    options?: { dedupeKey?: string },
+  ): Promise<void> {
+    const item: OfflineQueueItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      op,
+      args,
+      attempts: 1,
+      nextAttemptAt: 0,
+      dedupeKey: options?.dedupeKey,
+      createdAt: Date.now(),
+      lastError: error,
+    };
+    this.broadcastDrop(item);
+    await this.recordFailed(item, 'rejected');
+  }
+
   private async recordFailed(
     it: OfflineQueueItem,
     reason: FailedReason,
@@ -740,9 +979,11 @@ export const offlineQueue = getGlobalOfflineQueue();
  *     return `{ queued: true }`.
  *   - Otherwise dispatch the call live. On success → `{ queued: false }`.
  *   - On a network-shaped error → enqueue + return `{ queued: true }`.
+ *   - On any other failure of a MONEY op that isn't a permanent
+ *     rejection → enqueue, because the caller closes the table
+ *     regardless and a thrown error would simply be swallowed.
  *   - On any OTHER error (validation, auth, etc.) → re-throw so the
- *     UI can show its normal error state. We only auto-queue
- *     transport problems.
+ *     UI can show its normal error state.
  */
 export async function tryOrQueue<T = unknown>(
   op: OfflineOp,
@@ -763,9 +1004,38 @@ export async function tryOrQueue<T = unknown>(
   }
   try {
     const result = (await dispatcher(args)) as T;
+    // This write reached the host, so any queued write for the same target is
+    // stale by definition. Without this, a close that failed earlier keeps
+    // retrying and eventually frees a table that has since been reopened for
+    // the next party — a real risk now that durable ops retry indefinitely.
+    if (options?.dedupeKey) {
+      await offlineQueue
+        .purgeSuperseded(options.dedupeKey)
+        .catch(() => undefined);
+    }
     return { queued: false, result };
   } catch (e: any) {
+    // Checked before the offline test on purpose: an indeterminate fiscal
+    // outcome must never be re-sent just because its message happens to
+    // look network-shaped. Park it where an operator will find it.
+    if (needsManualReconciliation(e)) {
+      await offlineQueue
+        .parkPermanentFailure(op, args, String(e?.message || e), options)
+        .catch(() => undefined);
+      throw e;
+    }
     if (isLikelyOfflineError(e)) {
+      await offlineQueue.enqueue(op, args, options);
+      return { queued: true, error: String(e?.message || e) };
+    }
+    // A durable op that failed for any reason other than a permanent
+    // rejection must not evaporate. The payment UI closes the table on
+    // a best-effort basis and swallows what we throw, so rethrowing
+    // here would lose the sale — or leave the table occupied forever.
+    // Park it on the durable queue instead; the args already carry the
+    // original `idempotencyKey`, so a retry that reaches a host which did
+    // record it is deduped rather than charged twice.
+    if (DURABLE_OPS.has(op) && !isPermanentFailure(e)) {
       await offlineQueue.enqueue(op, args, options);
       return { queued: true, error: String(e?.message || e) };
     }

@@ -11,6 +11,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from './components/Toaster';
 import { UpdateNotification } from './components/UpdateNotification';
 import { initMobileShell } from './utils/mobileShell';
+import { resumeMainProcessSession } from './utils/resumeSession';
 import './i18n/config';
 import { I18nextProvider, useTranslation } from 'react-i18next';
 import i18n from './i18n/config';
@@ -114,8 +115,17 @@ if (!(window as any).api) {
   pickBackend();
   /** Tablets on LAN Wi‑Fi often need more than 5s; desktops stay snappy. */
   const CLIENT_TIMEOUT_MS = IS_NATIVE_SHELL ? 12_000 : 5_000;
-  /** `/print/*` hits the host, then TCP to the printer — 5s is too tight on Wi‑Fi tablets. */
-  const LAN_PRINT_TIMEOUT_MS = 45_000;
+  /**
+   * `/print/*` hits the host, then fiskalizimi, then TCP to the printer.
+   *
+   * This MUST stay above the host's worst case or we abort a payment the
+   * host is still working on: `easyPosRequest` allows 3 attempts at a 20s
+   * timeout with 1s+2s backoff (~63s) before the receipt is even
+   * dispatched. The host's fiscal claim makes an early abort safe rather
+   * than duplicating an invoice, but aborting still turns a slow payment
+   * into a queued retry the waiter has to wait out.
+   */
+  const LAN_PRINT_TIMEOUT_MS = 90_000;
 
   async function fetchWithTimeout(
     input: RequestInfo | URL,
@@ -654,6 +664,15 @@ if (!(window as any).api) {
         throw new Error('not supported in browser');
       },
       async logoutAdmin() {
+        return true;
+      },
+      // The IPC session registry is an Electron-only concept: LAN clients
+      // authenticate every request with their own bearer token. `null` here
+      // would read as "your session is gone", so these are inert.
+      async resumeSession() {
+        return null;
+      },
+      async endSession() {
         return true;
       },
       async listUsers(_input?: { includeAdmins?: boolean }) {
@@ -1736,6 +1755,11 @@ function Root() {
             await (window as any).api.settings.get();
             await (window as any).api.auth.listUsers();
           }
+          if (cancelled) return;
+          // Hand the main process the token from our last login so it can
+          // recognise the persisted session as one it issued. Without this the
+          // privileged IPC channels stay closed after an app restart.
+          await resumeMainProcessSession().catch(() => {});
           if (cancelled) return;
           setReady(true);
           setBackendUnreachable(false);

@@ -9,6 +9,9 @@ const api: Api = {
     verifyManagerPin: (pin: string) =>
       ipcRenderer.invoke('auth:verifyManagerPin', { pin }),
     logoutAdmin: () => ipcRenderer.invoke('auth:logoutAdmin'),
+    resumeSession: (token: string) =>
+      ipcRenderer.invoke('auth:resumeSession', { token }),
+    endSession: () => ipcRenderer.invoke('auth:endSession'),
     createUser: (input) => ipcRenderer.invoke('auth:createUser', input),
     listUsers: (input?: { includeAdmins?: boolean }) =>
       ipcRenderer.invoke('auth:listUsers', input || {}),
@@ -30,6 +33,9 @@ const api: Api = {
     getFiscalTokenHint: () => ipcRenderer.invoke('settings:getFiscalTokenHint'),
     testFiscalMinimalInvoice: () =>
       ipcRenderer.invoke('settings:testFiscalMinimalInvoice'),
+    listFiscalReviews: () => ipcRenderer.invoke('settings:listFiscalReviews'),
+    resolveFiscalReview: (input) =>
+      ipcRenderer.invoke('settings:resolveFiscalReview', input),
     syncGoogleCalendar: () => ipcRenderer.invoke('settings:syncGoogleCalendar'),
     connectGoogleCalendar: () =>
       ipcRenderer.invoke('settings:connectGoogleCalendar'),
@@ -40,6 +46,7 @@ const api: Api = {
     listGoogleCalendars: () =>
       ipcRenderer.invoke('settings:listGoogleCalendars'),
     listPrinters: () => ipcRenderer.invoke('printer:list'),
+    scanNetworkPrinters: () => ipcRenderer.invoke('printer:scanNetwork'),
     listSerialPorts: () => ipcRenderer.invoke('printer:listSerialPorts'),
   },
   menu: {

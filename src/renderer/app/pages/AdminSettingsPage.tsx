@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { UpdateStatusDTO } from '@shared/ipc';
+import type {
+  FiscalReviewDTO,
+  NetworkPrinterDTO,
+  UpdateStatusDTO,
+} from '@shared/ipc';
 import { toast } from '../../stores/toasts';
 import {
   ALL_KDS_STATIONS,
@@ -1440,6 +1444,8 @@ function FiscalSettings() {
   return (
     <div>
       <div className="text-lg font-semibold mb-3">{t('fiscal.title')}</div>
+      {/* Unresolved sales come first — they are money waiting on a decision. */}
+      <FiscalReviewPanel />
       {loading ? (
         <div className="opacity-70">{t('common.loading')}</div>
       ) : (
@@ -1643,6 +1649,224 @@ function FiscalSettings() {
           ) : null}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Payments the POS refused to retry because it could not tell whether
+ * easyPos had already registered the invoice.
+ *
+ * Only an admin looking at easyPos can settle these, so the panel asks
+ * exactly one question — is the invoice there or not — and makes the
+ * consequence of each answer explicit. Both answers are irreversible in
+ * practice: "not there" sends the payment again, "there" records it as
+ * done forever.
+ */
+function FiscalReviewPanel() {
+  const { t } = useTranslation();
+  const [rows, setRows] = useState<FiscalReviewDTO[] | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [nslf, setNslf] = useState('');
+  const [nivf, setNivf] = useState('');
+  const [status, setStatus] = useState<string>('');
+
+  const supported = Boolean(window.api.settings.listFiscalReviews);
+
+  const load = useCallback(async () => {
+    if (!supported) return;
+    try {
+      setRows((await window.api.settings.listFiscalReviews?.()) ?? []);
+    } catch {
+      setRows([]);
+    }
+  }, [supported]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const resolve = async (
+    idempotencyKey: string,
+    resolution: 'retry' | 'registered' | 'corrected',
+  ) => {
+    setBusyKey(idempotencyKey);
+    setStatus('');
+    try {
+      const r = await window.api.settings.resolveFiscalReview?.({
+        idempotencyKey,
+        resolution,
+        ...(resolution === 'registered'
+          ? { nslf: nslf.trim(), nivf: nivf.trim() }
+          : {}),
+      });
+      setStatus(r?.ok ? t('fiscal.reviewResolved') : t('fiscal.reviewFailed'));
+      setExpanded(null);
+      setNslf('');
+      setNivf('');
+      await load();
+    } catch (e: any) {
+      setStatus(String(e?.message || t('fiscal.reviewFailed')));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  // Stay out of the way entirely when there is nothing to reconcile.
+  if (!supported || !rows || rows.length === 0) return null;
+
+  return (
+    <div className="mb-4 rounded border border-amber-600/60 bg-amber-950/30 p-3">
+      <div className="font-medium text-amber-300">
+        {t('fiscal.reviewTitle')} ({rows.length})
+      </div>
+      <div className="text-[11px] opacity-80 mt-1 mb-3">
+        {t('fiscal.reviewHelp')}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {rows.map((row) => {
+          const open = expanded === row.idempotencyKey;
+          const busy = busyKey === row.idempotencyKey;
+          return (
+            <div
+              key={row.idempotencyKey}
+              className="rounded bg-gray-900/60 p-2 text-xs"
+            >
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="font-medium">
+                  {[row.area, row.tableLabel && `Table ${row.tableLabel}`]
+                    .filter(Boolean)
+                    .join(' ') || '—'}
+                </span>
+                <span className="rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+                  {row.kind === 'correction-required'
+                    ? t('fiscal.reviewKindCorrection')
+                    : t('fiscal.reviewKindUnknown')}
+                </span>
+                {row.total != null ? <span>{row.total.toFixed(2)}</span> : null}
+                <span className="opacity-60">
+                  {new Date(row.updatedAt).toLocaleString()}
+                </span>
+                <span className="opacity-60">
+                  {t('fiscal.reviewAttempts', { count: row.attempts })}
+                </span>
+              </div>
+              <div className="mt-1 font-mono break-all opacity-80">
+                {t('fiscal.reviewDocId')}: {row.idempotencyKey}
+              </div>
+              {row.nivf || row.nslf ? (
+                <div className="mt-1 font-mono break-all opacity-80">
+                  {[
+                    row.nivf && `${t('fiscal.reviewNivf')}: ${row.nivf}`,
+                    row.nslf && `${t('fiscal.reviewNslf')}: ${row.nslf}`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              ) : null}
+              {row.lastError ? (
+                <div className="mt-1 opacity-70 break-words">
+                  {row.lastError}
+                </div>
+              ) : null}
+
+              {/* A correction has one honest answer: file it in easyPos,
+                  then say so. Retrying or re-recording makes no sense. */}
+              {row.kind === 'correction-required' ? (
+                <div className="mt-2 flex flex-col gap-2 border-t border-gray-700 pt-2">
+                  <div className="opacity-80">
+                    {t('fiscal.reviewCorrectionHelp')}
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50"
+                      onClick={() =>
+                        void resolve(row.idempotencyKey, 'corrected')
+                      }
+                    >
+                      {t('fiscal.reviewConfirmCorrected')}
+                    </button>
+                  </div>
+                </div>
+              ) : open ? (
+                <div className="mt-2 flex flex-col gap-2 border-t border-gray-700 pt-2">
+                  <div className="opacity-80">
+                    {t('fiscal.reviewFoundHelp')}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <label className="flex-1 min-w-[140px]">
+                      <div className="mb-1">{t('fiscal.reviewNslf')}</div>
+                      <input
+                        className="w-full bg-gray-800 rounded px-2 py-1"
+                        value={nslf}
+                        onChange={(e) => setNslf(e.target.value)}
+                      />
+                    </label>
+                    <label className="flex-1 min-w-[140px]">
+                      <div className="mb-1">{t('fiscal.reviewNivf')}</div>
+                      <input
+                        className="w-full bg-gray-800 rounded px-2 py-1"
+                        value={nivf}
+                        onChange={(e) => setNivf(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50"
+                      onClick={() =>
+                        void resolve(row.idempotencyKey, 'registered')
+                      }
+                    >
+                      {t('fiscal.reviewConfirmFound')}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                      onClick={() => setExpanded(null)}
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                    onClick={() => {
+                      setExpanded(row.idempotencyKey);
+                      setNslf('');
+                      setNivf('');
+                    }}
+                  >
+                    {t('fiscal.reviewFound')}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                    title={t('fiscal.reviewNotFoundHelp')}
+                    onClick={() => void resolve(row.idempotencyKey, 'retry')}
+                  >
+                    {t('fiscal.reviewNotFound')}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {status ? <div className="mt-2 text-xs opacity-80">{status}</div> : null}
     </div>
   );
 }
@@ -2980,6 +3204,9 @@ function PrinterProfileCard({
     ok: boolean;
     msg: string;
   } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanHint, setScanHint] = useState<string | null>(null);
+  const [discovered, setDiscovered] = useState<NetworkPrinterDTO[]>([]);
 
   async function runTestPrint() {
     setTesting(true);
@@ -3019,6 +3246,75 @@ function PrinterProfileCard({
     }
   }
 
+  async function runNetworkScan() {
+    setScanning(true);
+    setScanHint(null);
+    try {
+      const fn = window.api.settings.scanNetworkPrinters;
+      if (typeof fn !== 'function') {
+        setScanHint(
+          'Network scan is not available in this build. Restart the app after upgrading.',
+        );
+        return;
+      }
+      const list = (await fn()) || [];
+      setDiscovered(list);
+      if (list.length === 0) {
+        setScanHint(
+          'No printers answered on this network. Check it is powered on and on the same Wi-Fi, or type the IP below.',
+        );
+        return;
+      }
+      setScanHint(
+        list.length === 1
+          ? 'Found 1 printer. Select it from the list.'
+          : `Found ${list.length} printers. Select one from the list.`,
+      );
+      // One hit and this profile has no address yet — pick it so the
+      // admin does not have to open the dropdown for a single device.
+      if (list.length === 1 && !String(p.ip || '').trim()) {
+        applyDiscovered(list[0]);
+      }
+    } catch (e: any) {
+      setScanHint(String(e?.message || e || 'Scan failed.'));
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  function applyDiscovered(hit: NetworkPrinterDTO) {
+    const genericName =
+      !p.name || /^(Default printer|Printer \d+)$/i.test(p.name);
+    onUpdate({
+      ip: hit.ip,
+      port: hit.port,
+      ...(genericName && hit.source === 'mdns' && hit.name
+        ? { name: hit.name }
+        : {}),
+    });
+  }
+
+  const selectedKey = p.ip
+    ? `${String(p.ip).trim()}:${Number(p.port || 9100)}`
+    : '';
+  const dropdownOptions = (() => {
+    const rows = [...discovered];
+    if (
+      p.ip &&
+      !rows.some(
+        (d) =>
+          d.ip === String(p.ip).trim() && d.port === Number(p.port || 9100),
+      )
+    ) {
+      rows.unshift({
+        ip: String(p.ip).trim(),
+        port: Number(p.port || 9100),
+        name: `${p.name || 'Current'} (${p.ip}:${p.port || 9100})`,
+        source: 'tcp',
+      });
+    }
+    return rows;
+  })();
   const mode = p.mode || 'NETWORK';
   const modeLabel =
     mode === 'NETWORK' ? 'Network' : mode === 'SYSTEM' ? 'USB' : 'Serial';
@@ -3117,6 +3413,56 @@ function PrinterProfileCard({
           {mode === 'NETWORK' && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
+                <select
+                  className="bg-gray-700 rounded px-3 py-2 flex-1"
+                  value={selectedKey}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) {
+                      onUpdate({ ip: '', port: 9100 });
+                      return;
+                    }
+                    const [ip, portStr] = v.split(':');
+                    const hit =
+                      discovered.find((d) => `${d.ip}:${d.port}` === v) ||
+                      ({
+                        ip,
+                        port: Number(portStr || 9100),
+                        name: '',
+                        source: 'tcp' as const,
+                      } satisfies NetworkPrinterDTO);
+                    applyDiscovered(hit);
+                  }}
+                >
+                  <option value="">
+                    {scanning ? 'Scanning…' : 'Select a printer…'}
+                  </option>
+                  {dropdownOptions.map((d) => (
+                    <option
+                      key={`${d.ip}:${d.port}`}
+                      value={`${d.ip}:${d.port}`}
+                    >
+                      {d.name} — {d.ip}:{d.port}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 whitespace-nowrap"
+                  disabled={scanning}
+                  onClick={() => void runNetworkScan()}
+                >
+                  {scanning ? 'Scanning…' : 'Scan'}
+                </button>
+              </div>
+              <div className="text-xs opacity-70">
+                Scan finds receipt printers on this LAN (raw port 9100). If
+                yours is missing, type the address below.
+              </div>
+              {scanHint ? (
+                <div className="text-xs text-amber-200">{scanHint}</div>
+              ) : null}
+              <div className="flex items-center gap-2">
                 <input
                   className="bg-gray-700 rounded px-3 py-2 flex-1"
                   placeholder="Printer IP (e.g. 192.168.1.50)"
@@ -3130,9 +3476,6 @@ function PrinterProfileCard({
                   value={Number(p.port || 9100)}
                   onChange={(e) => onUpdate({ port: Number(e.target.value) })}
                 />
-              </div>
-              <div className="text-xs opacity-70">
-                Raw TCP 9100 (default) or LPR 515.
               </div>
             </div>
           )}

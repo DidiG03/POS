@@ -5,6 +5,8 @@ import type { UserDTO } from '@shared/ipc';
 interface AdminSessionState {
   user: UserDTO | null;
   expiresAtMs: number | null;
+  /** See the note in `session.ts` — kept separate from `user` on purpose. */
+  sessionToken: string | null;
   setUser: (u: UserDTO | null) => void;
 }
 
@@ -17,23 +19,39 @@ export const useAdminSessionStore = create<AdminSessionState>()(
     (set) => ({
       user: null,
       expiresAtMs: null,
+      sessionToken: null,
       setUser: (u: UserDTO | null) =>
-        set({
-          user: u,
-          expiresAtMs: u ? Date.now() + SESSION_TTL_MS : null,
+        set((state) => {
+          if (!u) return { user: null, expiresAtMs: null, sessionToken: null };
+          const { sessionToken, ...rest } = u;
+          return {
+            user: rest as UserDTO,
+            expiresAtMs: Date.now() + SESSION_TTL_MS,
+            sessionToken: sessionToken ?? state.sessionToken,
+          };
         }),
     }),
     {
       name: 'pos-admin-session',
-      version: 2,
-      partialize: (state) => ({ user: state.user, expiresAtMs: state.expiresAtMs }),
+      version: 3,
+      partialize: (state) => ({
+        user: state.user,
+        expiresAtMs: state.expiresAtMs,
+        sessionToken: state.sessionToken,
+      }),
       migrate: (persisted: any, version) => {
         if (version === 1) {
-          return { user: persisted?.user ?? null, expiresAtMs: null };
+          return {
+            user: persisted?.user ?? null,
+            expiresAtMs: null,
+            sessionToken: null,
+          };
+        }
+        if (version === 2) {
+          return { ...(persisted ?? {}), sessionToken: null };
         }
         return persisted as any;
       },
     },
   ),
 );
-

@@ -13,6 +13,66 @@ export type FiscalSaleResult = {
   raw?: unknown;
 };
 
+/**
+ * Whether a failed attempt could have left a real invoice on the provider.
+ *
+ * `unknown` is not a nicety: retrying one of those can register a second
+ * tax document for the same sale, which needs a corrective invoice to
+ * undo. Only `not-registered` may be retried automatically.
+ */
+export type FiscalOutcome = 'not-registered' | 'unknown';
+
+export interface FiscalError extends Error {
+  fiscalOutcome: FiscalOutcome;
+  /**
+   * False when the same request will keep failing until a human changes
+   * something — a bad article id, an unknown operator code, a missing
+   * exchange rate. Retrying those forever just hammers easyPos and leaves
+   * the payment stuck with nobody told why.
+   */
+  fiscalRetryable: boolean;
+}
+
+function fiscalError(
+  message: string,
+  outcome: FiscalOutcome,
+  retryable = true,
+): FiscalError {
+  const err = new Error(message) as FiscalError;
+  err.fiscalOutcome = outcome;
+  err.fiscalRetryable = retryable;
+  return err;
+}
+
+/** Anything we did not explicitly classify is assumed to have registered. */
+export function fiscalOutcomeOf(error: unknown): FiscalOutcome {
+  const tagged = (error as Partial<FiscalError> | null)?.fiscalOutcome;
+  return tagged === 'not-registered' ? 'not-registered' : 'unknown';
+}
+
+/** False only when we know a retry cannot succeed without a change. */
+export function isFiscalRetryable(error: unknown): boolean {
+  return (error as Partial<FiscalError> | null)?.fiscalRetryable !== false;
+}
+
+/** Transport errors that prove the request never reached the provider. */
+function neverReachedProvider(error: unknown): boolean {
+  const combined = [
+    String((error as any)?.message || error || ''),
+    String((error as any)?.code || ''),
+    String((error as any)?.cause?.code || ''),
+    String((error as any)?.cause?.message || ''),
+  ]
+    .join(' ')
+    .toLowerCase();
+  return (
+    combined.includes('econnrefused') ||
+    combined.includes('connection refused') ||
+    combined.includes('enotfound') ||
+    combined.includes('getaddrinfo')
+  );
+}
+
 function normalizeBaseUrl(baseUrl: string): string {
   return String(baseUrl || '')
     .trim()
@@ -265,11 +325,17 @@ async function easyPosRequest(
   settings: SettingsDTO,
   path: string,
   init?: RequestInit,
+  options?: { retryOnGatewayError?: boolean },
 ): Promise<any> {
   assertFiscalConfigured(settings);
   const { baseUrl, authToken, integrationApp, cloud } = fiscalConfig(settings);
   const url = `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
-  const maxAttempts = 3;
+  // Registering an invoice is not idempotent from our side: a 502/503/504
+  // means the upstream may already have filed it, so re-POSTing is the
+  // very thing that creates a duplicate tax document. Read-only calls and
+  // the connection test are free to retry.
+  const retryGateway = options?.retryOnGatewayError !== false;
+  const maxAttempts = retryGateway ? 3 : 1;
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -292,11 +358,15 @@ async function easyPosRequest(
       } as any);
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        if ([502, 503, 504].includes(res.status) && attempt < maxAttempts) {
+        if (
+          retryGateway &&
+          [502, 503, 504].includes(res.status) &&
+          attempt < maxAttempts
+        ) {
           await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
           continue;
         }
-        throw new Error(
+        throw fiscalError(
           formatFiscalHttpError({
             method: String(init?.method || 'GET').toUpperCase(),
             url,
@@ -305,6 +375,12 @@ async function easyPosRequest(
             cloud,
             purpose: 'payment',
           }),
+          // A 4xx is the provider refusing the payload, so nothing was
+          // filed. A 5xx may have filed it and then failed to tell us.
+          res.status >= 500 ? 'unknown' : 'not-registered',
+          // A refused payload (bad article, unknown operator, bad token)
+          // will be refused identically every time until it is corrected.
+          res.status >= 500,
         );
       }
       return data;
@@ -314,11 +390,15 @@ async function easyPosRequest(
           .toLowerCase()
           .includes('abort')
       ) {
-        lastError = new Error('Fiscal middleware timed out.');
+        // We stopped listening; the provider may still have filed it.
+        lastError = fiscalError('Fiscal middleware timed out.', 'unknown');
       } else if (e instanceof Error && e.message.includes('→ HTTP')) {
         lastError = e;
       } else {
-        lastError = new Error(formatFiscalNetworkError(e, cloud, baseUrl));
+        lastError = fiscalError(
+          formatFiscalNetworkError(e, cloud, baseUrl),
+          neverReachedProvider(e) ? 'not-registered' : 'unknown',
+        );
       }
       if (attempt < maxAttempts && lastError.message.includes('HTTP 502')) {
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
@@ -337,7 +417,9 @@ async function easyPosRequest(
       clearTimeout(timer);
     }
   }
-  throw lastError || new Error('Fiscal middleware request failed.');
+  throw (
+    lastError || fiscalError('Fiscal middleware request failed.', 'unknown')
+  );
 }
 
 function isDailyBalanceCashWarning(cisFault: string, data: any): boolean {
@@ -361,7 +443,9 @@ function parseFiscalResponse(data: any): FiscalSaleResult {
         data?.message ||
         'Fiscal middleware rejected the invoice.',
     );
-    throw new Error(msg);
+    // An explicit rejection: the provider told us it filed nothing, and
+    // it will say the same thing again until the invoice data changes.
+    throw fiscalError(msg, 'not-registered', false);
   }
   const nslf = String(
     response?.nslf ||
@@ -386,9 +470,15 @@ function parseFiscalResponse(data: any): FiscalSaleResult {
       data?.link ||
       '',
   ).trim();
-  if (!nslf && !nivf && statusCode !== 2 && !data?.docId && !data?.orderId) {
-    throw new Error(
-      cisFault || 'Fiscal middleware returned an invalid response.',
+  if (!nslf && !nivf) {
+    // No NSLF and no NIVF is not a registration, whatever else the body
+    // echoed back. Reporting it as success would print a receipt claiming
+    // fiskalizimi with blank numbers and file an audit row saying the sale
+    // was declared — so treat it as an outcome we cannot confirm and let a
+    // human check easyPos.
+    throw fiscalError(
+      cisFault || 'Fiscal middleware returned neither an NSLF nor an NIVF.',
+      'unknown',
     );
   }
   if (cisFault && !nivf) {
@@ -402,15 +492,20 @@ function parseFiscalResponse(data: any): FiscalSaleResult {
         raw: data,
       };
     }
-    throw new Error(
+    // NSLF may already have been allocated upstream, so this is not a
+    // clean "nothing happened" — do not let it be retried blindly.
+    throw fiscalError(
       `${cisFault} · For CASH invoices, report the daily opening balance in easyPos first, or test with CARD payment.`,
+      'unknown',
     );
   }
   return {
     nslf,
     nivf,
     link,
-    status: statusCode === 2 || (!nivf && nslf) ? 'pending' : 'accepted',
+    // 'accepted' means the tax service issued the invoice number. An NSLF
+    // on its own, or an explicit pending status, is not that yet.
+    status: nivf && statusCode !== 2 ? 'accepted' : 'pending',
     raw: data,
   };
 }
@@ -605,9 +700,13 @@ export async function createEasyPosSale(
 ): Promise<FiscalSaleResult> {
   const { cloud } = fiscalConfig(settings);
   const path = cloud ? '/invoice/register' : '/v1/invoices/new';
-  const data = await easyPosRequest(settings, path, {
-    method: 'POST',
-    body: JSON.stringify(draft),
-  });
+  const data = await easyPosRequest(
+    settings,
+    path,
+    { method: 'POST', body: JSON.stringify(draft) },
+    // One shot only. A gateway error here is an unknown outcome, and the
+    // caller routes those to manual review rather than sending again.
+    { retryOnGatewayError: false },
+  );
   return parseFiscalResponse(data);
 }

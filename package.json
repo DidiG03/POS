@@ -1,6 +1,6 @@
 {
   "name": "code-orbit-pos",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "private": true,
   "description": "Desktop POS for  Code Orbit Agroturizem (Electron + React + Prisma)",
   "type": "module",
@@ -75,6 +75,10 @@
       {
         "from": "build-resources/seed.db",
         "to": "seed.db"
+      },
+      {
+        "from": "prisma/migrations",
+        "to": "migrations"
       }
     ],
     "mac": {

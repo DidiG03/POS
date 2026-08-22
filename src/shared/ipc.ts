@@ -20,6 +20,23 @@ export interface UserDTO {
   role: UserRole;
   active: boolean;
   createdAt: string;
+  /**
+   * Opaque proof that this identity was established by a real PIN check,
+   * returned only by `loginWithPin`. The renderer persists it alongside the
+   * session and replays it through `resumeSession` after a restart; the main
+   * process will not honour a role claim without it. Never displayed, never
+   * sent anywhere but back over IPC.
+   */
+  sessionToken?: string;
+}
+
+/** What `resumeSession` reports back when a stored token is still good. */
+export interface ResumedSessionDTO {
+  id: number;
+  displayName: string;
+  role: UserRole;
+  active: boolean;
+  expiresAt: number;
 }
 
 export interface SettingsDTO {
@@ -243,6 +260,19 @@ export interface TicketPrintMeta {
   serviceChargeValue?: number;
   serviceChargeAmount?: number;
 
+  /**
+   * Present only when the client's claimed total disagreed with the
+   * host's recomputation. The printed figures are always the host's;
+   * this preserves what was claimed so the divergence is auditable.
+   */
+  totalsMismatch?: {
+    claimedTotal: number | null;
+    computedTotal: number;
+    delta: number;
+    detail: string;
+    at: string;
+  };
+
   // ---- Fiscal metadata (only when fiskalizimi is enabled) ------------
   fiscalEnabled?: boolean;
   fiscalNslf?: string;
@@ -335,6 +365,14 @@ export interface SystemPrinterDTO {
   isDefault?: boolean;
   status?: number;
   description?: string;
+}
+
+/** A receipt printer found by scanning the local LAN (TCP 9100/515 + mDNS). */
+export interface NetworkPrinterDTO {
+  ip: string;
+  port: number;
+  name: string;
+  source: 'mdns' | 'tcp';
 }
 
 // Menu DTOs and contracts
@@ -441,6 +479,14 @@ export interface ApiAuth {
     approvalToken?: string;
   }>;
   logoutAdmin(): Promise<boolean>;
+  /**
+   * Re-bind a persisted session to this window. Resolves to null when the
+   * token is unknown, expired, or its account has since been disabled — the
+   * caller should then clear its stored session and show the login screen.
+   */
+  resumeSession(token: string): Promise<ResumedSessionDTO | null>;
+  /** Drop this window's session in the main process (sign out). */
+  endSession(): Promise<boolean>;
   createUser(input: CreateUserInput): Promise<UserDTO>;
   listUsers(input?: { includeAdmins?: boolean }): Promise<UserDTO[]>;
   updateUser(input: UpdateUserInput): Promise<UserDTO>;
@@ -522,6 +568,8 @@ export interface ApiSettings {
   // card so an admin can validate the printer config before saving.
   testPrintProfile?(profile: PrinterProfileDTO): Promise<TestPrintResult>;
   listPrinters?(): Promise<SystemPrinterDTO[]>;
+  /** Scan this LAN for ESC/POS printers (TCP 9100 / 515 and mDNS). */
+  scanNetworkPrinters?(): Promise<NetworkPrinterDTO[]>;
   listSerialPorts?(): Promise<
     {
       path: string;
@@ -544,6 +592,19 @@ export interface ApiSettings {
     deviceTail?: string;
   }>;
   testFiscalMinimalInvoice?(): Promise<{ ok: boolean; message?: string }>;
+  /** Payments whose fiscal outcome could not be determined. */
+  listFiscalReviews?(): Promise<FiscalReviewDTO[]>;
+  /**
+   * Record what an admin found in easyPos. `registered` means the invoice
+   * exists there, so the sale must never be sent again; `retry` means it
+   * does not, so the payment is released for another attempt.
+   */
+  resolveFiscalReview?(input: {
+    idempotencyKey: string;
+    resolution: 'retry' | 'registered' | 'corrected';
+    nslf?: string;
+    nivf?: string;
+  }): Promise<{ ok: boolean; error?: string }>;
   /** Pull reservations from the configured Google Calendar iCal feed now. */
   syncGoogleCalendar?(): Promise<GoogleCalendarSyncResultDTO>;
   /** Open the system browser to link a Google account for calendar sync. */
@@ -1342,7 +1403,46 @@ export interface ApiTickets {
     firstAt: string | null;
     total: number;
   } | null>;
-  print(input: PrintTicketInput): Promise<boolean>;
+  print(input: PrintTicketInput): Promise<boolean | PrintRejection>;
+}
+
+/**
+ * A payment held out of the retry loop because we cannot tell whether the
+ * tax service registered its invoice. `idempotencyKey` is the docId to
+ * look up in easyPos.
+ */
+export interface FiscalReviewDTO {
+  idempotencyKey: string;
+  /**
+   * `unknown-outcome`: we never learned whether the invoice was filed.
+   * `correction-required`: it was filed, then the ticket was voided.
+   */
+  kind: 'unknown-outcome' | 'correction-required';
+  area: string | null;
+  tableLabel: string | null;
+  total: number | null;
+  attempts: number;
+  lastError: string | null;
+  nslf: string | null;
+  nivf: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A print/payment the host refused, with enough detail for the caller to
+ * decide whether retrying can ever help.
+ *
+ * `permanent` exists for the one case retrying makes worse: a fiscal
+ * registration whose outcome is unknown. Sending it again could file a
+ * second invoice with the tax service, so it belongs on the failed-sync
+ * surface for a human, not on the retry loop.
+ */
+export interface PrintRejection {
+  ok: false;
+  code?: string;
+  error?: string;
+  permanent?: boolean;
 }
 
 export interface PrintTicketInput {
@@ -1366,6 +1466,12 @@ export interface PrintTicketInput {
   recordOnly?: boolean;
   // Optional metadata used for reporting/attribution (e.g., payment receipts).
   meta?: any;
+  /**
+   * Stable key for this print/payment intent. Generated before the first
+   * attempt so a lost response can be retried without a second kitchen chit
+   * or a second payment audit row.
+   */
+  idempotencyKey?: string;
 }
 
 export interface NotificationDTO {

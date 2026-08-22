@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { effectiveVatRate, splitGrossVat } from '../shared/ticketRevenue';
+import { computeAuthoritativeTotals } from '../shared/pricing';
 
 /**
  * Unit tests for critical business logic
@@ -10,26 +10,23 @@ import { effectiveVatRate, splitGrossVat } from '../shared/ticketRevenue';
  * prices, and `subtotal + vat === total`.
  */
 
-// Mirror of OrderPage.computeTotals (kept in sync via the shared helpers).
+/**
+ * Thin adapter over the shared pricing module, matching the shape
+ * `OrderPage.computeTotals` returns. This used to be a hand-copied
+ * duplicate of the page's arithmetic, which meant the tests could drift
+ * away from the code they were meant to protect.
+ */
 function computeTotals(
   lines: Array<{ unitPrice: number; qty: number; vatRate: number }>,
   vatEnabled = true,
   defaultVatRate = 0,
 ) {
-  const grossSubtotal = (lines || []).reduce(
-    (s, l) => s + Number(l.unitPrice || 0) * Number(l.qty || 0),
-    0,
-  );
-  const vat = vatEnabled
-    ? (lines || []).reduce((s, l) => {
-        const lineGross = Number(l.unitPrice || 0) * Number(l.qty || 0);
-        const rate = effectiveVatRate(l.vatRate, defaultVatRate);
-        return s + splitGrossVat(lineGross, rate).vat;
-      }, 0)
-    : 0;
-  const subtotal = grossSubtotal - vat;
-  const total = subtotal + vat;
-  return { subtotal, vat, total };
+  const t = computeAuthoritativeTotals({
+    items: lines,
+    vatEnabled,
+    defaultVatRate,
+  });
+  return { subtotal: t.net, vat: t.vat, total: t.baseTotal };
 }
 
 describe('Business Logic: Totals Calculation (VAT-inclusive)', () => {
@@ -40,8 +37,9 @@ describe('Business Logic: Totals Calculation (VAT-inclusive)', () => {
         { unitPrice: 5, qty: 3, vatRate: 0.1 },
       ];
       const result = computeTotals(lines);
-      expect(result.total).toBeCloseTo(35, 6); // (10*2) + (5*3) = 35
-      expect(result.subtotal).toBeCloseTo(35 / 1.1, 6); // net
+      expect(result.total).toBe(35); // (10*2) + (5*3) = 35
+      // Net is 31.8181…, presented to the cent.
+      expect(result.subtotal).toBe(31.82);
     });
 
     it('extracts VAT from the gross when enabled', () => {
@@ -50,9 +48,10 @@ describe('Business Logic: Totals Calculation (VAT-inclusive)', () => {
         { unitPrice: 5, qty: 3, vatRate: 0.1 },
       ];
       const result = computeTotals(lines, true);
-      expect(result.vat).toBeCloseTo(35 - 35 / 1.1, 6);
-      expect(result.total).toBeCloseTo(35, 6);
-      expect(result.subtotal + result.vat).toBeCloseTo(result.total, 6);
+      expect(result.vat).toBe(3.18); // 35 − 35/1.1 = 3.1818…
+      expect(result.total).toBe(35);
+      // The receipt invariant: the printed parts must add up exactly.
+      expect(result.subtotal + result.vat).toBe(result.total);
     });
 
     it('does not split VAT when disabled (net === gross)', () => {
@@ -98,15 +97,18 @@ describe('Business Logic: Totals Calculation (VAT-inclusive)', () => {
         { unitPrice: 10, qty: 1, vatRate: 0.2 },
       ];
       const result = computeTotals(lines);
-      expect(result.total).toBeCloseTo(20, 6);
-      expect(result.vat).toBeCloseTo(10 - 10 / 1.1 + (10 - 10 / 1.2), 6);
+      expect(result.total).toBe(20);
+      // (10 − 10/1.1) + (10 − 10/1.2) = 2.5757…
+      expect(result.vat).toBe(2.58);
+      expect(result.subtotal + result.vat).toBe(result.total);
     });
 
     it('handles decimal quantities', () => {
       const lines = [{ unitPrice: 10, qty: 1.5, vatRate: 0.1 }];
       const result = computeTotals(lines);
-      expect(result.total).toBeCloseTo(15, 6); // 10 * 1.5
-      expect(result.vat).toBeCloseTo(15 - 15 / 1.1, 6);
+      expect(result.total).toBe(15); // 10 * 1.5
+      expect(result.vat).toBe(1.36); // 15 − 15/1.1 = 1.3636…
+      expect(result.subtotal + result.vat).toBe(result.total);
     });
   });
 

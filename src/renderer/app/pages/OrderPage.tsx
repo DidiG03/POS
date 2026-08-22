@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTicketStore } from '../../stores/ticket';
-import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
+import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
+import {
+  computeDiscountAmount,
+  computeServiceChargeAmount,
+  roundMoney,
+} from '@shared/pricing';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
-import { logTicket } from '../../api';
+import { logTicket, printTicket } from '../../api';
 import { tryOrQueue } from '../../utils/offlineQueue';
+import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
@@ -709,54 +715,53 @@ export default function OrderPage() {
     };
   }, []);
 
-  const serviceChargeAmount = useMemo(() => {
-    if (!serviceChargeCfg.enabled || !applyServiceCharge) return 0;
-    const base = Number(totals.total || 0);
-    if (!Number.isFinite(base) || base <= 0) return 0;
-    const v = Number(serviceChargeCfg.value || 0);
-    if (!Number.isFinite(v) || v <= 0) return 0;
-    if (serviceChargeCfg.mode === 'PERCENT')
-      return Math.max(0, (base * v) / 100);
-    return Math.max(0, v);
-  }, [
-    serviceChargeCfg.enabled,
-    serviceChargeCfg.mode,
-    serviceChargeCfg.value,
-    applyServiceCharge,
-    totals.total,
-  ]);
+  const serviceChargeAmount = useMemo(
+    () =>
+      computeServiceChargeAmount(
+        Number(totals.total || 0),
+        serviceChargeCfg,
+        applyServiceCharge,
+      ),
+    [
+      serviceChargeCfg.enabled,
+      serviceChargeCfg.mode,
+      serviceChargeCfg.value,
+      applyServiceCharge,
+      totals.total,
+    ],
+  );
 
   // Service charge amount as configured (ignores waiter toggle). Used for approval checks.
-  const serviceChargeConfiguredAmount = useMemo(() => {
-    if (!serviceChargeCfg.enabled) return 0;
-    const base = Number(totals.total || 0);
-    if (!Number.isFinite(base) || base <= 0) return 0;
-    const v = Number(serviceChargeCfg.value || 0);
-    if (!Number.isFinite(v) || v <= 0) return 0;
-    if (serviceChargeCfg.mode === 'PERCENT')
-      return Math.max(0, (base * v) / 100);
-    return Math.max(0, v);
-  }, [
-    serviceChargeCfg.enabled,
-    serviceChargeCfg.mode,
-    serviceChargeCfg.value,
-    totals.total,
-  ]);
-
-  const totalBeforeDiscount = Math.max(
-    0,
-    Number(totals.total || 0) + serviceChargeAmount,
+  const serviceChargeConfiguredAmount = useMemo(
+    () =>
+      computeServiceChargeAmount(
+        Number(totals.total || 0),
+        serviceChargeCfg,
+        true,
+      ),
+    [
+      serviceChargeCfg.enabled,
+      serviceChargeCfg.mode,
+      serviceChargeCfg.value,
+      totals.total,
+    ],
   );
-  const discountAmount = useMemo(() => {
-    const base = Number(totalBeforeDiscount || 0);
-    if (!Number.isFinite(base) || base <= 0) return 0;
-    const raw = Number(String(discountValue || '').replace(',', '.'));
-    if (!Number.isFinite(raw) || raw <= 0) return 0;
-    if (discountType === 'PERCENT') return Math.min(base, (base * raw) / 100);
-    if (discountType === 'AMOUNT') return Math.min(base, raw);
-    return 0;
-  }, [discountType, discountValue, totalBeforeDiscount]);
-  const totalDue = Math.max(0, totalBeforeDiscount - discountAmount);
+
+  const totalBeforeDiscount = roundMoney(
+    Math.max(0, Number(totals.total || 0) + serviceChargeAmount),
+  );
+  const discountAmount = useMemo(
+    () =>
+      computeDiscountAmount(
+        totalBeforeDiscount,
+        discountType,
+        String(discountValue || '').replace(',', '.'),
+      ),
+    [discountType, discountValue, totalBeforeDiscount],
+  );
+  const totalDue = roundMoney(
+    Math.max(0, totalBeforeDiscount - discountAmount),
+  );
   const formatAmount = useMemo(() => makeFormatAmount(), []);
 
   const fav = useFavourites();
@@ -2149,7 +2154,7 @@ export default function OrderPage() {
                             }
                             useTicketStore.getState().markAllAsSent();
                           }
-                          await window.api.tickets.print({
+                          await printTicket({
                             area: selectedTable.area,
                             tableLabel: selectedTable.label,
                             covers: lastCovers ?? null,
@@ -2637,11 +2642,7 @@ export default function OrderPage() {
                           categoryName: (l as any).categoryName,
                         }));
                         attemptedPayment = true;
-                        const paymentIdempotencyKey =
-                          typeof globalThis.crypto !== 'undefined' &&
-                          typeof globalThis.crypto.randomUUID === 'function'
-                            ? globalThis.crypto.randomUUID()
-                            : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+                        const paymentIdempotencyKey = newIdempotencyKey();
                         // Process the payment + receipt synchronously so
                         // the user sees a real "Processing…" state. The
                         // IPC handler `tickets:print` is bounded:
@@ -2978,11 +2979,7 @@ export default function OrderPage() {
                         return;
                       }
                     }
-                    const transferIdempotencyKey =
-                      typeof globalThis.crypto !== 'undefined' &&
-                      typeof globalThis.crypto.randomUUID === 'function'
-                        ? globalThis.crypto.randomUUID()
-                        : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+                    const transferIdempotencyKey = newIdempotencyKey();
                     const payload: any = {
                       fromArea: selectedTable.area,
                       fromLabel: selectedTable.label,
@@ -3123,8 +3120,10 @@ export default function OrderPage() {
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 disabled:cursor-not-allowed"
+                disabled={busyAction != null}
                 onClick={async () => {
+                  if (busyAction != null) return;
                   const num = Number(coversValue);
                   if (!Number.isFinite(num) || num <= 0) return;
                   if (coversMode === 'editOnly') {
@@ -3161,65 +3160,54 @@ export default function OrderPage() {
                   // via `tables:openAt`) can't briefly return the previous
                   // payout's guest count while the covers UI effect races the
                   // handshake (same class of bug as stale ticket lines).
-                  lastSendAtRef.current = Date.now();
-                  lastSendTableRef.current = {
-                    area: selectedTable.area,
-                    label: selectedTable.label,
-                  };
-                  // IMPORTANT: when opening a table in cloud mode,
-                  // set "open" first so the cloud "openAt" timestamp
-                  // exists BEFORE we write covers/tickets (tooltip
-                  // uses openAt as the session start).
-                  // PR 4a: route through the queue so an offline
-                  // open-and-send still records the table-open and
-                  // covers (the ticket itself is already covered by
-                  // logTicket → 'tickets.log').
-                  await tryOrQueue(
-                    'tables.setOpen',
-                    {
+                  setBusyAction('send');
+                  try {
+                    lastSendAtRef.current = Date.now();
+                    lastSendTableRef.current = {
                       area: selectedTable.area,
                       label: selectedTable.label,
-                      open: true,
-                    },
-                    {
-                      dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                    },
-                  ).catch(() => {});
-                  await tryOrQueue(
-                    'covers.save',
-                    {
+                    };
+                    // IMPORTANT: when opening a table in cloud mode,
+                    // set "open" first so the cloud "openAt" timestamp
+                    // exists BEFORE we write covers/tickets (tooltip
+                    // uses openAt as the session start).
+                    // PR 4a: route through the queue so an offline
+                    // open-and-send still records the table-open and
+                    // covers (the ticket itself is already covered by
+                    // logTicket → 'tickets.log').
+                    await tryOrQueue(
+                      'tables.setOpen',
+                      {
+                        area: selectedTable.area,
+                        label: selectedTable.label,
+                        open: true,
+                      },
+                      {
+                        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                      },
+                    ).catch(() => {});
+                    await tryOrQueue(
+                      'covers.save',
+                      {
+                        area: selectedTable.area,
+                        label: selectedTable.label,
+                        covers: num,
+                      },
+                      {
+                        dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                      },
+                    ).catch(() => {});
+                    setCoversKnown(num);
+                    setOpen(selectedTable.area, selectedTable.label, true);
+                    setShowCovers(false);
+                    const stagedOnly = lines.filter((l) => l.staged);
+                    const isFireOrder = stagedOnly.length > 0;
+                    const details = {
+                      table: selectedTable.label,
                       area: selectedTable.area,
-                      label: selectedTable.label,
                       covers: num,
-                    },
-                    {
-                      dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
-                    },
-                  ).catch(() => {});
-                  setCoversKnown(num);
-                  setOpen(selectedTable.area, selectedTable.label, true);
-                  setShowCovers(false);
-                  const stagedOnly = lines.filter((l) => l.staged);
-                  const isFireOrder = stagedOnly.length > 0;
-                  const details = {
-                    table: selectedTable.label,
-                    area: selectedTable.area,
-                    covers: num,
-                    orderNote,
-                    lines: lines.map((l) => ({
-                      sku: l.sku,
-                      name: l.name,
-                      qty: l.qty,
-                      unitPrice: l.unitPrice,
-                      vatRate: l.vatRate,
-                      note: l.note,
-                      station: (l as any).station,
-                      categoryId: (l as any).categoryId,
-                      categoryName: (l as any).categoryName,
-                    })),
-                  };
-                  const printLines = isFireOrder
-                    ? stagedOnly.map((l) => ({
+                      orderNote,
+                      lines: lines.map((l) => ({
                         sku: l.sku,
                         name: l.name,
                         qty: l.qty,
@@ -3229,91 +3217,107 @@ export default function OrderPage() {
                         station: (l as any).station,
                         categoryId: (l as any).categoryId,
                         categoryName: (l as any).categoryName,
-                      }))
-                    : details.lines;
-                  if (!user?.id) return;
-                  if (isFireOrder) {
-                    const logResult = await logTicket({
-                      userId: user.id,
-                      area: selectedTable.area,
-                      tableLabel: selectedTable.label,
-                      covers: num,
-                      items: details.lines,
-                      note: orderNote,
-                      stockConsumeLines: stagedOnly.map((l) => ({
-                        sku: l.sku,
-                        qty: l.qty,
                       })),
-                      // Kitchen stations (KDS + printers) only when the
-                      // toggle is on; the ticket is always logged above.
-                      kdsFireItems: printStationTickets
-                        ? printLines
-                        : undefined,
-                    });
-                    if (!logResult.ok) {
-                      // Same recovery path as the regular Send button:
-                      // somebody else closed / claimed this table while
-                      // this device was on the covers modal. Toast,
-                      // resync the open-tables map, and bail before the
-                      // print fires (which would otherwise create a
-                      // ghost kitchen ticket).
-                      toast.error(logResult.error, {
-                        title: t('order.toastSendBlocked'),
-                      });
-                      try {
-                        const open = await window.api.tables.listOpen();
-                        if (Array.isArray(open)) {
-                          const stillOpen = open.some(
-                            (tbl: any) =>
-                              tbl.area === selectedTable.area &&
-                              tbl.label === selectedTable.label,
-                          );
-                          setOpen(
-                            selectedTable.area,
-                            selectedTable.label,
-                            stillOpen,
-                          );
-                        }
-                      } catch {
-                        // ignore
-                      }
-                      return;
-                    }
-                    useTicketStore.getState().markAllAsSent();
-                  }
-                  if (printStationTickets) {
-                    await window.api.tickets.print({
-                      area: selectedTable.area,
-                      tableLabel: selectedTable.label,
-                      covers: num,
-                      items: printLines,
-                      note: orderNote,
-                      userName: user.displayName,
-                      meta: {
+                    };
+                    const printLines = isFireOrder
+                      ? stagedOnly.map((l) => ({
+                          sku: l.sku,
+                          name: l.name,
+                          qty: l.qty,
+                          unitPrice: l.unitPrice,
+                          vatRate: l.vatRate,
+                          note: l.note,
+                          station: (l as any).station,
+                          categoryId: (l as any).categoryId,
+                          categoryName: (l as any).categoryName,
+                        }))
+                      : details.lines;
+                    if (!user?.id) return;
+                    if (isFireOrder) {
+                      const logResult = await logTicket({
                         userId: user.id,
-                        kind: isFireOrder ? 'ORDER' : 'TICKET',
-                        vatEnabled,
-                        serviceChargeEnabled: serviceChargeCfg.enabled,
-                        serviceChargeApplied: serviceChargeCfg.enabled,
-                        serviceChargeMode: serviceChargeCfg.mode,
-                        serviceChargeValue: serviceChargeCfg.value,
-                        serviceChargeAmount: serviceChargeCfg.enabled
-                          ? serviceChargeCfg.mode === 'PERCENT'
-                            ? Math.max(
-                                0,
-                                (Number(totals.total || 0) *
-                                  Number(serviceChargeCfg.value || 0)) /
-                                  100,
-                              )
-                            : Math.max(0, Number(serviceChargeCfg.value || 0))
-                          : 0,
-                      },
-                    });
+                        area: selectedTable.area,
+                        tableLabel: selectedTable.label,
+                        covers: num,
+                        items: details.lines,
+                        note: orderNote,
+                        stockConsumeLines: stagedOnly.map((l) => ({
+                          sku: l.sku,
+                          qty: l.qty,
+                        })),
+                        // Kitchen stations (KDS + printers) only when the
+                        // toggle is on; the ticket is always logged above.
+                        kdsFireItems: printStationTickets
+                          ? printLines
+                          : undefined,
+                      });
+                      if (!logResult.ok) {
+                        // Same recovery path as the regular Send button:
+                        // somebody else closed / claimed this table while
+                        // this device was on the covers modal. Toast,
+                        // resync the open-tables map, and bail before the
+                        // print fires (which would otherwise create a
+                        // ghost kitchen ticket).
+                        toast.error(logResult.error, {
+                          title: t('order.toastSendBlocked'),
+                        });
+                        try {
+                          const open = await window.api.tables.listOpen();
+                          if (Array.isArray(open)) {
+                            const stillOpen = open.some(
+                              (tbl: any) =>
+                                tbl.area === selectedTable.area &&
+                                tbl.label === selectedTable.label,
+                            );
+                            setOpen(
+                              selectedTable.area,
+                              selectedTable.label,
+                              stillOpen,
+                            );
+                          }
+                        } catch {
+                          // ignore
+                        }
+                        return;
+                      }
+                      useTicketStore.getState().markAllAsSent();
+                    }
+                    if (printStationTickets) {
+                      await printTicket({
+                        area: selectedTable.area,
+                        tableLabel: selectedTable.label,
+                        covers: num,
+                        items: printLines,
+                        note: orderNote,
+                        userName: user.displayName,
+                        meta: {
+                          userId: user.id,
+                          kind: isFireOrder ? 'ORDER' : 'TICKET',
+                          vatEnabled,
+                          serviceChargeEnabled: serviceChargeCfg.enabled,
+                          serviceChargeApplied: serviceChargeCfg.enabled,
+                          serviceChargeMode: serviceChargeCfg.mode,
+                          serviceChargeValue: serviceChargeCfg.value,
+                          serviceChargeAmount: serviceChargeCfg.enabled
+                            ? serviceChargeCfg.mode === 'PERCENT'
+                              ? Math.max(
+                                  0,
+                                  (Number(totals.total || 0) *
+                                    Number(serviceChargeCfg.value || 0)) /
+                                    100,
+                                )
+                              : Math.max(0, Number(serviceChargeCfg.value || 0))
+                            : 0,
+                        },
+                      });
+                    }
+                    // Keep this as a best-effort "ensure open" after printing.
+                    await window.api.tables
+                      .setOpen(selectedTable.area, selectedTable.label, true)
+                      .catch(() => {});
+                  } finally {
+                    setBusyAction(null);
                   }
-                  // Keep this as a best-effort "ensure open" after printing.
-                  await window.api.tables
-                    .setOpen(selectedTable.area, selectedTable.label, true)
-                    .catch(() => {});
                 }}
               >
                 {t('order.confirm')}
@@ -3915,27 +3919,23 @@ function TicketTotals({
   );
 }
 
+/**
+ * Display totals for the open ticket.
+ *
+ * Delegates to the shared helpers so the cashier's figures are produced
+ * by the same code the host uses to recompute the payment. These are
+ * still a display value — `tickets:print` recomputes authoritatively —
+ * but keeping one implementation means the two agree.
+ */
 function computeTotals(
   lines: Array<{ unitPrice: number; qty: number; vatRate: number }>,
   vatEnabled = true,
   defaultVatRate = 0,
 ) {
-  // Prices are VAT-inclusive: the gross already contains the tax, so VAT
-  // is extracted and the customer total stays equal to the menu price.
-  const grossSubtotal = (lines || []).reduce(
-    (s, l) => s + Number(l.unitPrice || 0) * Number(l.qty || 0),
-    0,
-  );
-  const vat = vatEnabled
-    ? (lines || []).reduce((s, l) => {
-        const lineGross = Number(l.unitPrice || 0) * Number(l.qty || 0);
-        const rate = effectiveVatRate(l.vatRate, defaultVatRate);
-        return s + splitGrossVat(lineGross, rate).vat;
-      }, 0)
-    : 0;
-  const subtotal = grossSubtotal - vat;
-  const total = subtotal + vat;
-  return { subtotal, vat, total };
+  const { net, vat } = sumTicketLinesNetVat(lines, vatEnabled, defaultVatRate);
+  const subtotal = roundMoney(net);
+  const vatAmount = roundMoney(vat);
+  return { subtotal, vat: vatAmount, total: roundMoney(subtotal + vatAmount) };
 }
 
 // makeFormatAmount imported from utils/format

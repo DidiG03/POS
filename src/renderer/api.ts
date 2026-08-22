@@ -1,3 +1,4 @@
+import { newIdempotencyKey } from './utils/idempotency';
 import { offlineQueue, tryOrQueue } from './utils/offlineQueue';
 
 export interface TicketLinePayload {
@@ -20,6 +21,11 @@ export interface TicketPayload {
   stockConsumeLines?: { sku?: string; qty?: number }[];
   /** Newly fired lines only — appended to the open KDS ticket instead of creating a duplicate card. */
   kdsFireItems?: TicketLinePayload[];
+  /**
+   * Set automatically by {@link logTicket} when the caller omits it. Present so
+   * a caller that owns a longer-lived intent can supply its own.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -48,9 +54,17 @@ export type LogTicketResult =
 export async function logTicket(
   payload: TicketPayload,
 ): Promise<LogTicketResult> {
-  const normalized: TicketPayload & { covers: number | null } = {
+  // Stamp the key before the first attempt, not on the retry. If the live call
+  // reaches the host and only the response is lost, the queued replay carries
+  // this same key and the host recognises it instead of sending the order to
+  // the kitchen a second time.
+  const normalized: TicketPayload & {
+    covers: number | null;
+    idempotencyKey: string;
+  } = {
     ...payload,
     covers: payload.covers ?? null,
+    idempotencyKey: payload.idempotencyKey || newIdempotencyKey(),
   };
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -76,4 +90,22 @@ export async function logTicket(
     }
     return { ok: true };
   }
+}
+
+/**
+ * Print a kitchen/station ticket, or a full-order reprint.
+ *
+ * Same contract as {@link logTicket}: the key is stamped before the first
+ * attempt so a lost response retries as a no-op on the host instead of
+ * printing a second chit. Routed through the durable queue so a Wi-Fi drop
+ * still delivers the ticket once, without the waiter tapping Send again.
+ */
+export async function printTicket(
+  input: import('@shared/ipc').PrintTicketInput,
+): Promise<void> {
+  const payload = {
+    ...input,
+    idempotencyKey: input.idempotencyKey || newIdempotencyKey(),
+  };
+  await tryOrQueue('tickets.print', payload);
 }

@@ -5,6 +5,8 @@ import type { UserDTO } from '@shared/ipc';
 interface ReservationSessionState {
   user: UserDTO | null;
   expiresAtMs: number | null;
+  /** See the note in `session.ts` — kept separate from `user` on purpose. */
+  sessionToken: string | null;
   setUser: (u: UserDTO | null) => void;
 }
 
@@ -21,19 +23,31 @@ export const useReservationSessionStore = create<ReservationSessionState>()(
     (set) => ({
       user: null,
       expiresAtMs: null,
+      sessionToken: null,
       setUser: (u: UserDTO | null) =>
-        set({
-          user: u,
-          expiresAtMs: u ? Date.now() + SESSION_TTL_MS : null,
+        set((state) => {
+          if (!u) return { user: null, expiresAtMs: null, sessionToken: null };
+          const { sessionToken, ...rest } = u;
+          return {
+            user: rest as UserDTO,
+            expiresAtMs: Date.now() + SESSION_TTL_MS,
+            sessionToken: sessionToken ?? state.sessionToken,
+          };
         }),
     }),
     {
       name: 'pos-host-session',
-      version: 1,
+      version: 2,
       partialize: (state) => ({
         user: state.user,
         expiresAtMs: state.expiresAtMs,
+        sessionToken: state.sessionToken,
       }),
+      migrate: (persisted: any, version) => {
+        // v1 had no token; those sessions must re-authenticate once.
+        if (version === 1) return { ...(persisted ?? {}), sessionToken: null };
+        return persisted as any;
+      },
     },
   ),
 );

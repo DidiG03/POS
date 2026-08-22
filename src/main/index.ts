@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import { join, dirname, resolve as resolvePath, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -69,7 +69,6 @@ import {
   cleanup as cleanupUpdater,
 } from './updater';
 import {
-  checkRateLimit,
   cleanupSenderRateLimits,
   logSecurityEvent,
   sanitizeString,
@@ -77,6 +76,18 @@ import {
   sanitizeNumber,
   getSecurityLog,
 } from './services/security';
+import { ipcHandle } from './services/ipcGuard';
+import { reportAuditWriteFailure } from './services/adminAlerts';
+import {
+  createSession,
+  getSession,
+  pruneExpiredSessions,
+  registerWindowKind,
+  resumeSession,
+  revokeSession,
+  revokeSessionsForUser,
+  unbindSender,
+} from './services/ipcSession';
 import {
   startMemoryMonitoring,
   stopMemoryMonitoring,
@@ -108,7 +119,10 @@ import {
   type DispatchResult,
 } from './services/printDispatcher';
 import {
-  maybeFiscalizePayment,
+  fiscalizePaymentOnce,
+  flagVoidAfterFiscalization,
+  listFiscalClaimsNeedingReview,
+  resolveFiscalClaim,
   testFiscalConnection,
   getFiscalTokenHint,
   testMinimalCloudInvoice,
@@ -144,6 +158,8 @@ import {
   loadKdsRoutingFromDb,
 } from './services/kdsStationRouting';
 import { finalizeShiftAfterClockOut } from './services/shiftSummary';
+import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
+import { runPendingMigrations } from './services/migrator';
 import {
   kdsStationListWhere,
   purgeKdsDoneTicketsForStation,
@@ -373,9 +389,95 @@ function forceLogoutSender(sender: any, reason: string) {
   }
 }
 
+/**
+ * Progressive delay after a wrong PIN, keyed by window.
+ *
+ * A hard lockout is not an option here: a waiter locked out mid-service is a
+ * worse outcome than the brute-force risk on a physically supervised terminal.
+ * A delay costs a human nothing — one mistyped PIN means a 150ms pause — but it
+ * drops an automated guesser from thousands of attempts per minute to roughly
+ * two, which turns exhausting a 4-digit PIN space from minutes into hours while
+ * every attempt lands in the security log and notifies the account owner.
+ */
+/**
+ * Settings are ADMIN-only with one unavoidable exception.
+ *
+ * A freshly installed host has no users, so there is nobody to authenticate as
+ * — yet the operator must be able to enter the cloud business code and password
+ * on the login screen to pull the staff list down. We allow that single case:
+ * no users in the database, and a payload that touches nothing but the cloud
+ * pairing fields. Everything else needs a real ADMIN session.
+ */
+const CLOUD_ONBOARDING_KEYS = new Set(['businessCode', 'accessPassword']);
+
+async function assertMaySaveSettings(
+  senderId: number,
+  input: unknown,
+): Promise<void> {
+  if (getSession(senderId)?.role === 'ADMIN') return;
+
+  const patch = (input ?? {}) as Record<string, unknown>;
+  const topLevelKeys = Object.keys(patch);
+  const cloudPatch = (patch.cloud ?? {}) as Record<string, unknown>;
+  const onlyCloudPairing =
+    topLevelKeys.length === 1 &&
+    topLevelKeys[0] === 'cloud' &&
+    Object.keys(cloudPatch).every((k) => CLOUD_ONBOARDING_KEYS.has(k));
+
+  const userCount = onlyCloudPairing
+    ? await prisma.user.count().catch(() => 1)
+    : 1;
+
+  if (!onlyCloudPairing || userCount > 0) {
+    logSecurityEvent('ipc_denied', {
+      channel: 'settings:update',
+      senderId,
+      reason: 'not_admin',
+      keys: topLevelKeys,
+    });
+    throw new Error('forbidden');
+  }
+}
+
+const pinFailuresBySender = new Map<number, number>();
+const PIN_FAILURE_DELAY_STEP_MS = 150;
+const PIN_FAILURE_DELAY_MAX_MS = 2000;
+
+function clearPinFailures(senderId: number): void {
+  pinFailuresBySender.delete(Number(senderId) || 0);
+}
+
+async function throttleAfterPinFailure(
+  senderId: number,
+  channel: string,
+): Promise<void> {
+  const key = Number(senderId) || 0;
+  const failures = (pinFailuresBySender.get(key) ?? 0) + 1;
+  pinFailuresBySender.set(key, failures);
+  logSecurityEvent('pin_failed', { senderId: key, channel, failures });
+  const delayMs = Math.min(
+    PIN_FAILURE_DELAY_MAX_MS,
+    failures * PIN_FAILURE_DELAY_STEP_MS,
+  );
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 let __kdsLastError: string | null = null;
 
 let __localColumnsReady = false;
+
+/**
+ * Where the Prisma migration files live at runtime.
+ *
+ * Packaged builds ship `prisma/migrations` as an extra resource; in dev
+ * they are read straight from the working tree.
+ */
+function resolveMigrationsDir(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'migrations');
+  }
+  return join(process.cwd(), 'prisma', 'migrations');
+}
 
 /**
  * Self-heal local-only columns on upgrade.
@@ -456,6 +558,7 @@ function createWindow() {
   mainWindow.webContents.on('did-fail-load', onMainFailLoad);
 
   const mainWcId = mainWindow.webContents.id;
+  registerWindowKind(mainWcId, 'pos');
   mainWindow.on('closed', () => {
     try {
       mainWindow?.webContents.removeListener('did-fail-load', onMainFailLoad);
@@ -463,6 +566,7 @@ function createWindow() {
       // ignore
     }
     cleanupSenderRateLimits(mainWcId);
+    unbindSender(mainWcId);
     mainWindow = null;
   });
 
@@ -497,8 +601,10 @@ function createAdminWindow() {
   // SECURITY/MEM: rate limits are keyed by webContents.id (event.sender.id),
   // not BrowserWindow.id. Capture it now before the window is gone.
   const adminWcId = adminWindow.webContents.id;
+  registerWindowKind(adminWcId, 'admin');
   adminWindow.on('closed', () => {
     cleanupSenderRateLimits(adminWcId);
+    unbindSender(adminWcId);
     adminWindow = null;
   });
 
@@ -530,7 +636,11 @@ function createKdsWindow() {
     kdsWindow.loadFile(RENDERER_INDEX_HTML, {
       hash: '/kds',
     });
+  const kdsWcId = kdsWindow.webContents.id;
+  registerWindowKind(kdsWcId, 'kds');
   kdsWindow.on('closed', () => {
+    cleanupSenderRateLimits(kdsWcId);
+    unbindSender(kdsWcId);
     kdsWindow = null;
   });
 }
@@ -561,8 +671,10 @@ function createReservationWindow() {
     });
   // Match admin window: capture webContents.id for rate-limit cleanup BEFORE close.
   const wcId = reservationWindow.webContents.id;
+  registerWindowKind(wcId, 'reservations');
   reservationWindow.on('closed', () => {
     cleanupSenderRateLimits(wcId);
+    unbindSender(wcId);
     reservationWindow = null;
   });
   registerUpdateListener(reservationWindow);
@@ -1283,11 +1395,47 @@ app.whenReady().then(async () => {
       // ignore — dock icon stays default
     }
   }
-  // Heal local-only columns BEFORE the window (and its IPC queries) load, so
-  // an upgraded DB missing recent columns (e.g. Category.kdsStation) doesn't
-  // crash menu/category queries.
+  // Bring the database up to date BEFORE the window (and its IPC
+  // queries) load, so an upgraded install missing recent columns
+  // doesn't crash the first menu/category query.
+  //
+  // The real migration files are the source of truth. A backup is taken
+  // first, but only when something is actually pending.
+  try {
+    const migrationsDir = resolveMigrationsDir();
+    const outcome = await runPendingMigrations(migrationsDir, {
+      onBeforeApply: async () => {
+        const backup = await createDbBackupNow().catch((e) => {
+          console.warn('[startup] pre-migration backup failed:', e);
+          return null;
+        });
+        if (backup?.file) {
+          console.log(`[startup] Pre-migration backup at ${backup.file}`);
+        }
+      },
+    });
+    if (outcome.failed) {
+      console.error(
+        `[startup] Migration ${outcome.failed.name} failed: ${outcome.failed.error}`,
+      );
+      captureException(new Error(`Migration failed: ${outcome.failed.error}`), {
+        type: 'migration',
+        migration: outcome.failed.name,
+      });
+    }
+  } catch (e) {
+    console.warn('[startup] runPendingMigrations failed:', e);
+  }
+  // Belt and braces: older databases may carry columns that were added
+  // by hand before the migrator existed, leaving `_prisma_migrations`
+  // out of step. This converges those without touching a healthy DB.
   await ensureLocalDbColumns().catch((e) =>
     console.warn('[startup] ensureLocalDbColumns failed:', e),
+  );
+  // Drop IPC sessions that aged out while the app was closed, so a machine
+  // that sat idle over a long weekend doesn't come back with resumable ones.
+  await pruneExpiredSessions().catch((e) =>
+    console.warn('[startup] pruneExpiredSessions failed:', e),
   );
   createWindow();
   setupAutoUpdater();
@@ -1402,19 +1550,19 @@ app.on('before-quit', async (event) => {
 });
 
 // Updater IPC handlers
-ipcMain.handle('updater:getStatus', async () => {
+ipcHandle('updater:getStatus', async () => {
   return updaterHandlers.getUpdateStatus();
 });
 
-ipcMain.handle('updater:checkForUpdates', async () => {
+ipcHandle('updater:checkForUpdates', async () => {
   return await updaterHandlers.checkForUpdates();
 });
 
-ipcMain.handle('updater:downloadUpdate', async () => {
+ipcHandle('updater:downloadUpdate', async () => {
   return await updaterHandlers.downloadUpdate();
 });
 
-ipcMain.handle('updater:installUpdate', async () => {
+ipcHandle('updater:installUpdate', async () => {
   return updaterHandlers.installUpdate();
 });
 
@@ -1435,7 +1583,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // IPC Handlers (skeleton with validation)
-ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
+ipcHandle('auth:loginWithPin', async (_e, payload) => {
   // Login is intentionally NOT rate-limited on the local POS terminal.
   // Waiters retype PINs frequently throughout a shift and getting locked out
   // mid-service is worse than a brute-force risk on a physically supervised
@@ -1456,12 +1604,14 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
   if (user) {
     const ok = await bcrypt.compare(pin, user.pinHash);
     if (ok) {
+      clearPinFailures(_e.sender.id);
       const userData = {
         id: user.id,
         displayName: user.displayName,
         role: user.role,
         active: user.active,
         createdAt: user.createdAt.toISOString(),
+        sessionToken: await createSession(_e.sender.id, user),
       };
       setSentryUser(user.id, user.displayName, user.role);
       addBreadcrumb('User logged in', 'auth', 'info');
@@ -1477,6 +1627,7 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
         },
       })
       .catch(() => {});
+    await throttleAfterPinFailure(_e.sender.id, 'auth:loginWithPin');
   }
 
   // Local failed: try cloud login when cloud is configured (sync data on success)
@@ -1504,12 +1655,14 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
           setCloudSession(session);
           setCloudSessionForSender(_e.sender.id, session);
           await syncFromCloudAfterLogin(loginRes.token, loginRes.user.id, pin);
+          clearPinFailures(_e.sender.id);
           const userData = {
             id: user.id,
             displayName: user.displayName,
             role: user.role,
             active: user.active,
             createdAt: user.createdAt.toISOString(),
+            sessionToken: await createSession(_e.sender.id, user),
           };
           setSentryUser(user.id, user.displayName, user.role);
           addBreadcrumb(
@@ -1528,7 +1681,7 @@ ipcMain.handle('auth:loginWithPin', async (_e, payload) => {
   return null;
 });
 
-ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
+ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
   const pin = String((payload as any)?.pin || '').trim();
   // Validate format (but don't reject weak PINs during verification - managers may already have them)
   const pinValidation = validatePin(pin, false); // rejectWeak = false for verification
@@ -1618,29 +1771,48 @@ ipcMain.handle('auth:verifyManagerPin', async (_e, payload) => {
   return { ok: false };
 });
 
-ipcMain.handle('auth:logoutAdmin', async (_e) => {
+ipcHandle('auth:logoutAdmin', async (_e) => {
   // Clear any cloud session (used for cloud backup feature)
   clearCloudAdminSession();
   clearCloudSessionForSender(_e.sender.id);
+  await revokeSession(_e.sender.id);
   forceLogoutSender(_e.sender, 'logout');
   return true;
 });
 
-ipcMain.handle('auth:createUser', async (_e, payload) => {
-  // Rate limit user creation (admin only)
-  if (
-    !checkRateLimit(_e, 'auth:createUser', {
-      maxAttempts: 20,
-      windowMs: 60 * 1000,
-    })
-  ) {
-    logSecurityEvent('ipc_rate_limit_exceeded', {
-      handler: 'auth:createUser',
-      senderId: _e.sender.id,
-    });
-    throw new Error('Too many requests. Please slow down.');
-  }
+/**
+ * Re-attach a session the renderer persisted across an app restart.
+ *
+ * The renderer keeps its Zustand session for 12h, so staff expect to reopen
+ * the app without retyping a PIN. We can't take the renderer's word for who it
+ * is, so login hands back an opaque token that only this process can mint and
+ * only this process can resolve. Presenting the token proves the session was
+ * really established by a PIN check.
+ */
+ipcHandle('auth:resumeSession', async (_e, payload) => {
+  const token = String((payload as any)?.token || '').trim();
+  const session = await resumeSession(_e.sender.id, token);
+  if (!session) return null;
+  return {
+    id: session.userId,
+    displayName: session.displayName,
+    role: session.role,
+    active: true,
+    expiresAt: session.expiresAt,
+  };
+});
 
+/** Explicit sign-out for the POS and reservations shells. */
+ipcHandle('auth:endSession', async (_e) => {
+  clearCloudSessionForSender(_e.sender.id);
+  await revokeSession(_e.sender.id);
+  return true;
+});
+
+ipcHandle('auth:createUser', async (_e, payload) => {
+  // Rate limiting for this channel is declared in IPC_POLICIES and applied by
+  // ipcHandle before we get here; a second check with the same key would just
+  // consume the budget twice.
   const input = CreateUserInputSchema.parse(payload);
 
   // Validate PIN format
@@ -1660,19 +1832,26 @@ ipcMain.handle('auth:createUser', async (_e, payload) => {
   if (!sanitizedDisplayName) {
     throw new Error('Display name is required');
   }
-  // Local-first: always use local DB for user creation
-  // - Allow creating the very first user only if it's an ADMIN (initial setup).
-  // - After that, only allow user creation from the admin window.
+  // Local-first: always use local DB for user creation.
+  //
+  // First-run setup is the one case that cannot require an admin session,
+  // because there is no admin yet — so we allow exactly one bootstrap user and
+  // only if it is an ADMIN. Every later create needs a real ADMIN session.
+  // (This used to check that the call came from the admin *window*, which both
+  // let any authenticated role through in that window and locked out admins
+  // working in the main window's embedded /app/admin route.)
   const userCount = await prisma.user.count().catch(() => 0);
   if (userCount === 0) {
     if (String(input.role || '').toUpperCase() !== 'ADMIN') {
       throw new Error('forbidden');
     }
-  } else {
-    const adminSenderId = adminWindow?.webContents?.id;
-    if (!adminSenderId || _e.sender.id !== adminSenderId) {
-      throw new Error('forbidden');
-    }
+  } else if (getSession(_e.sender.id)?.role !== 'ADMIN') {
+    logSecurityEvent('ipc_denied', {
+      channel: 'auth:createUser',
+      senderId: _e.sender.id,
+      reason: 'not_admin',
+    });
+    throw new Error('forbidden');
   }
 
   const pinHash = await bcrypt.hash(input.pin, 10);
@@ -1693,7 +1872,7 @@ ipcMain.handle('auth:createUser', async (_e, payload) => {
   };
 });
 
-ipcMain.handle('auth:listUsers', async (_e, payload) => {
+ipcHandle('auth:listUsers', async (_e, payload) => {
   // Local-first: use local DB for users
   let users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
   // When local is empty and cloud is configured, sync users from cloud first
@@ -1724,21 +1903,8 @@ ipcMain.handle('auth:listUsers', async (_e, payload) => {
   }));
 });
 
-ipcMain.handle('auth:updateUser', async (_e, payload) => {
-  // Rate limit user updates (admin only)
-  if (
-    !checkRateLimit(_e, 'auth:updateUser', {
-      maxAttempts: 20,
-      windowMs: 60 * 1000,
-    })
-  ) {
-    logSecurityEvent('ipc_rate_limit_exceeded', {
-      handler: 'auth:updateUser',
-      senderId: _e.sender.id,
-    });
-    throw new Error('Too many requests. Please slow down.');
-  }
-
+ipcHandle('auth:updateUser', async (_e, payload) => {
+  // Rate limit declared in IPC_POLICIES.
   const input = UpdateUserInputSchema.parse(payload);
 
   // Validate PIN format if provided
@@ -1787,6 +1953,16 @@ ipcMain.handle('auth:updateUser', async (_e, payload) => {
       ...(pinHash ? { pinHash } : {}),
     },
   });
+  // Deactivating an account, changing its role, or resetting its PIN must all
+  // invalidate any session still running under the old identity. Resumed
+  // sessions re-read the role, but a live binding would otherwise keep it.
+  if (
+    sanitizedInput.active === false ||
+    sanitizedInput.role ||
+    Boolean(pinHash)
+  ) {
+    await revokeSessionsForUser(input.id);
+  }
   return {
     id: updated.id,
     displayName: updated.displayName,
@@ -1796,7 +1972,7 @@ ipcMain.handle('auth:updateUser', async (_e, payload) => {
   };
 });
 
-ipcMain.handle('auth:deleteUser', async (_e, payload) => {
+ipcHandle('auth:deleteUser', async (_e, payload) => {
   const input = DeleteUserInputSchema.parse(payload);
   const id = Number(input.id);
   if (!id) throw new Error('invalid user id');
@@ -1804,6 +1980,9 @@ ipcMain.handle('auth:deleteUser', async (_e, payload) => {
   // Local-first: always use local DB for user delete/disable
   if (!input.hard) {
     await prisma.user.update({ where: { id }, data: { active: false } });
+    // A deactivated account must lose its privileges now, not whenever its
+    // window happens to reload.
+    await revokeSessionsForUser(id);
     return true;
   }
 
@@ -1849,11 +2028,12 @@ ipcMain.handle('auth:deleteUser', async (_e, payload) => {
     throw new Error('user has history; disable instead of deleting');
 
   await prisma.user.delete({ where: { id } });
+  await revokeSessionsForUser(id);
   return true;
 });
 
 // Shifts IPC - Local-first: always use local DB
-ipcMain.handle('shifts:getOpen', async (_e, { userId }) => {
+ipcHandle('shifts:getOpen', async (_e, { userId }) => {
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -1868,7 +2048,7 @@ ipcMain.handle('shifts:getOpen', async (_e, { userId }) => {
     : null;
 });
 
-ipcMain.handle('shifts:clockIn', async (_e, { userId }) => {
+ipcHandle('shifts:clockIn', async (_e, { userId }) => {
   const already = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -1892,7 +2072,7 @@ ipcMain.handle('shifts:clockIn', async (_e, { userId }) => {
   };
 });
 
-ipcMain.handle('shifts:clockOut', async (_e, { userId, force }) => {
+ipcHandle('shifts:clockOut', async (_e, { userId, force }) => {
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -1975,13 +2155,13 @@ ipcMain.handle('shifts:clockOut', async (_e, { userId, force }) => {
   };
 });
 
-ipcMain.handle('shifts:listOpen', async (_e) => {
+ipcHandle('shifts:listOpen', async (_e) => {
   const open = await prisma.dayShift.findMany({ where: { closedAt: null } });
   return open.map((s: { openedById: number }) => s.openedById);
 });
 
 // Sync staff from external API and upsert into local users
-ipcMain.handle('auth:syncStaffFromApi', async (_e, raw) => {
+ipcHandle('auth:syncStaffFromApi', async (_e, raw) => {
   const url: string =
     (raw?.url as string) ||
     process.env.STAFF_API_URL ||
@@ -2115,11 +2295,24 @@ async function readSettings() {
   return result;
 }
 
-ipcMain.handle('settings:get', async () => {
-  return await readSettings();
+ipcHandle('settings:get', async (_e) => {
+  const settings = (await readSettings()) as any;
+  // This channel is public because every shell reads locale, currency and
+  // feature flags before anyone logs in. The pairing code is the one field in
+  // here that is a credential rather than configuration, so it goes only to an
+  // admin — which is the only screen that displays it.
+  if (
+    settings?.security?.pairingCode &&
+    getSession(_e.sender.id)?.role !== 'ADMIN'
+  ) {
+    settings.security = { ...settings.security };
+    delete settings.security.pairingCode;
+  }
+  return settings;
 });
 
-ipcMain.handle('settings:update', async (_e, input) => {
+ipcHandle('settings:update', async (_e, input) => {
+  await assertMaySaveSettings(_e.sender.id, input);
   // If cloud is enabled, validate business code + access password before persisting.
   // This prevents saving wrong values and then having a confusing "no users" login screen.
   try {
@@ -2204,7 +2397,7 @@ ipcMain.handle('settings:update', async (_e, input) => {
   return await readSettings();
 });
 
-ipcMain.handle('network:getIps', async () => {
+ipcHandle('network:getIps', async () => {
   const nets = os.networkInterfaces();
   const ips: string[] = [];
   for (const name of Object.keys(nets)) {
@@ -2220,11 +2413,11 @@ ipcMain.handle('network:getIps', async () => {
   return Array.from(new Set(ips)).sort((a, b) => a.localeCompare(b));
 });
 
-ipcMain.handle('settings:syncGoogleCalendar', async () => {
+ipcHandle('settings:syncGoogleCalendar', async () => {
   return await runGoogleCalendarSyncOnce();
 });
 
-ipcMain.handle('settings:getGoogleCalendarStatus', async () => {
+ipcHandle('settings:getGoogleCalendarStatus', async () => {
   const settings = await coreServices.readSettings();
   const gc = (settings as any)?.googleCalendar || {};
   const { configured } = getGoogleOAuthClientConfig();
@@ -2239,7 +2432,7 @@ ipcMain.handle('settings:getGoogleCalendarStatus', async () => {
   };
 });
 
-ipcMain.handle('settings:connectGoogleCalendar', async () => {
+ipcHandle('settings:connectGoogleCalendar', async () => {
   try {
     const connected = await connectGoogleCalendarAccount();
     await coreServices.updateSettings({
@@ -2274,7 +2467,7 @@ ipcMain.handle('settings:connectGoogleCalendar', async () => {
   }
 });
 
-ipcMain.handle('settings:disconnectGoogleCalendar', async () => {
+ipcHandle('settings:disconnectGoogleCalendar', async () => {
   await coreServices.updateSettings({
     googleCalendar: {
       authMode: undefined,
@@ -2288,7 +2481,7 @@ ipcMain.handle('settings:disconnectGoogleCalendar', async () => {
   return { ok: true };
 });
 
-ipcMain.handle('settings:listGoogleCalendars', async () => {
+ipcHandle('settings:listGoogleCalendars', async () => {
   const settings = await coreServices.readSettings();
   const gc = (settings as any)?.googleCalendar || {};
   const { clientId, clientSecret, configured } = getGoogleOAuthClientConfig();
@@ -2316,22 +2509,87 @@ ipcMain.handle('settings:listGoogleCalendars', async () => {
   }
 });
 
-ipcMain.handle('settings:testFiscalConnection', async () => {
+ipcHandle('settings:testFiscalConnection', async () => {
   const settings = await coreServices.readSettings();
   return await testFiscalConnection(settings as any);
 });
 
-ipcMain.handle('settings:getFiscalTokenHint', async () => {
+ipcHandle('settings:getFiscalTokenHint', async () => {
   const settings = await coreServices.readSettings();
   return getFiscalTokenHint(settings as any);
 });
 
-ipcMain.handle('settings:testFiscalMinimalInvoice', async () => {
+ipcHandle('settings:testFiscalMinimalInvoice', async () => {
   const settings = await coreServices.readSettings();
   return await testMinimalCloudInvoice(settings as any);
 });
 
-ipcMain.handle('settings:setPrinter', async (_e, payload) => {
+/**
+ * Payments whose fiscal outcome we could not determine. Each one is a sale
+ * that may or may not already exist at the tax service, so it is held out
+ * of the retry loop until an admin has checked easyPos.
+ */
+ipcHandle('settings:listFiscalReviews', async () => {
+  const rows = await listFiscalClaimsNeedingReview();
+  return rows.map(({ idempotencyKey, record }) => ({
+    idempotencyKey,
+    kind:
+      record.state === 'CORRECTION_REQUIRED'
+        ? ('correction-required' as const)
+        : ('unknown-outcome' as const),
+    area: record.context?.area ?? null,
+    tableLabel: record.context?.tableLabel ?? null,
+    total: record.context?.total ?? null,
+    attempts: record.attempts,
+    lastError: record.lastError ?? null,
+    // The invoice to correct — useless to an admin without these.
+    nslf: record.result?.nslf ?? null,
+    nivf: record.result?.nivf ?? null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  }));
+});
+
+ipcHandle('settings:resolveFiscalReview', async (_e, payload) => {
+  const idempotencyKey = String((payload as any)?.idempotencyKey || '').trim();
+  const requested = String((payload as any)?.resolution || '');
+  const resolution: 'registered' | 'retry' | 'corrected' =
+    requested === 'registered'
+      ? 'registered'
+      : requested === 'corrected'
+        ? 'corrected'
+        : 'retry';
+  if (!idempotencyKey) return { ok: false, error: 'missing idempotencyKey' };
+
+  // `registered` records the invoice easyPos already holds so the sale is
+  // never sent again; `retry` releases it for a fresh attempt; `corrected`
+  // closes out a void whose corrective invoice has been filed. Getting
+  // this wrong in either direction is a real tax error, so log who chose.
+  const nslf = String((payload as any)?.nslf || '').trim();
+  const nivf = String((payload as any)?.nivf || '').trim();
+  const ok = await resolveFiscalClaim(
+    idempotencyKey,
+    resolution,
+    resolution === 'registered'
+      ? {
+          nslf: nslf || undefined,
+          nivf: nivf || undefined,
+          status: 'accepted',
+        }
+      : undefined,
+  );
+  if (!ok) return { ok: false, error: 'claim not found' };
+
+  logSecurityEvent('fiscal_review_resolved', {
+    senderId: _e.sender.id,
+    userId: getSession(_e.sender.id)?.userId,
+    idempotencyKey,
+    resolution,
+  });
+  return { ok: true };
+});
+
+ipcHandle('settings:setPrinter', async (_e, payload) => {
   const _ = SetPrinterInputSchema.parse(payload);
   const current = await readSettings();
   const merged = { ...current, printer: { ...current.printer, ..._ } } as any;
@@ -2343,7 +2601,7 @@ ipcMain.handle('settings:setPrinter', async (_e, payload) => {
   return merged;
 });
 
-ipcMain.handle('settings:testPrint', async () => {
+ipcHandle('settings:testPrint', async () => {
   try {
     const settings = await readSettings();
     const profile = pickActiveReceiptProfile(settings as any);
@@ -2369,7 +2627,7 @@ ipcMain.handle('settings:testPrint', async () => {
 // persisting anything. Powers the per-profile "Test print" button on
 // the Admin → Settings → Printer screen so an admin can validate
 // IP/port/USB/serial changes BEFORE saving them.
-ipcMain.handle(
+ipcHandle(
   'settings:testPrintProfile',
   async (_evt, profile): Promise<{ ok: boolean; error?: string }> => {
     try {
@@ -2387,7 +2645,7 @@ ipcMain.handle(
   },
 );
 
-ipcMain.handle('settings:testPrintVerbose', async () => {
+ipcHandle('settings:testPrintVerbose', async () => {
   try {
     const settings = await readSettings();
     const profile = pickActiveReceiptProfile(settings as any);
@@ -2411,7 +2669,7 @@ ipcMain.handle('settings:testPrintVerbose', async () => {
   }
 });
 
-ipcMain.handle('printer:list', async (e) => {
+ipcHandle('printer:list', async (e) => {
   const list = await e.sender.getPrintersAsync();
   return (list || []).map((p: any) => ({
     name: p.name,
@@ -2421,7 +2679,19 @@ ipcMain.handle('printer:list', async (e) => {
   }));
 });
 
-ipcMain.handle('printer:listSerialPorts', async () => {
+ipcHandle('printer:scanNetwork', async () => {
+  try {
+    const { scanNetworkPrinters } = await import(
+      './services/networkPrinterScan'
+    );
+    return await scanNetworkPrinters();
+  } catch (e: any) {
+    console.warn('[Printer] scanNetwork failed:', e?.message || e);
+    return [];
+  }
+});
+
+ipcHandle('printer:listSerialPorts', async () => {
   try {
     const { listSerialPorts } = await import('./serial');
     return await listSerialPorts();
@@ -2432,7 +2702,7 @@ ipcMain.handle('printer:listSerialPorts', async () => {
   }
 });
 
-ipcMain.handle('offline:getStatus', async () => {
+ipcHandle('offline:getStatus', async () => {
   // Return outbox status for the UI indicator (only count items ready to sync, not waiting for retry)
   return await getOutboxStatus();
 });
@@ -2444,7 +2714,7 @@ ipcMain.handle('offline:getStatus', async () => {
 // renderer can't silently drop the kitchen's tickets — for now we
 // gate it behind requireAuth which already exists upstream of these
 // handlers (callers from the staff UI will pass through that path).
-ipcMain.handle('print:listRetries', async () => {
+ipcHandle('print:listRetries', async () => {
   const rows = await prisma.printJob
     .findMany({
       where: { status: { in: ['RETRY', 'FAILED'] as any } },
@@ -2466,7 +2736,7 @@ ipcMain.handle('print:listRetries', async () => {
   }));
 });
 
-ipcMain.handle('print:cancelRetry', async (_e, payload) => {
+ipcHandle('print:cancelRetry', async (_e, payload) => {
   const id = Number((payload as any)?.id || 0);
   if (!id) return { ok: false, error: 'missing id' };
   await prisma.printJob
@@ -2482,7 +2752,7 @@ ipcMain.handle('print:cancelRetry', async (_e, payload) => {
   return { ok: true };
 });
 
-ipcMain.handle('system:openExternal', async (_e, payload) => {
+ipcHandle('system:openExternal', async (_e, payload) => {
   try {
     const url = String((payload as any)?.url || '').trim();
     if (!url) return false;
@@ -2502,7 +2772,7 @@ ipcMain.handle('system:openExternal', async (_e, payload) => {
   }
 });
 
-ipcMain.handle('billing:getStatus', async (_e) => {
+ipcHandle('billing:getStatus', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (!cloud) {
     return { status: 'ACTIVE', billingEnabled: false };
@@ -2522,7 +2792,7 @@ ipcMain.handle('billing:getStatus', async (_e) => {
   }
 });
 
-ipcMain.handle('billing:getStatusLive', async (_e) => {
+ipcHandle('billing:getStatusLive', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (!cloud) {
     return { status: 'ACTIVE', billingEnabled: false };
@@ -2541,7 +2811,7 @@ ipcMain.handle('billing:getStatusLive', async (_e) => {
   }
 });
 
-ipcMain.handle('billing:createCheckoutSession', async (_e) => {
+ipcHandle('billing:createCheckoutSession', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (!cloud)
     return { error: 'Cloud billing is not configured on this device' };
@@ -2557,7 +2827,7 @@ ipcMain.handle('billing:createCheckoutSession', async (_e) => {
   }
 });
 
-ipcMain.handle('billing:createPortalSession', async (_e) => {
+ipcHandle('billing:createPortalSession', async (_e) => {
   const cloud = await getCloudConfig().catch(() => null);
   if (!cloud)
     return { error: 'Cloud billing is not configured on this device' };
@@ -2574,7 +2844,7 @@ ipcMain.handle('billing:createPortalSession', async (_e) => {
 });
 
 // Print ticket over ESC/POS
-ipcMain.handle('tickets:print', async (_e, input) => {
+ipcHandle('tickets:print', async (_e, input) => {
   const idempotencyKey = String((input as any)?.idempotencyKey ?? '').trim();
   if (idempotencyKey) {
     const existing = await prisma.printJob
@@ -2593,11 +2863,14 @@ ipcMain.handle('tickets:print', async (_e, input) => {
   const tableLabel = String(input?.tableLabel || '');
   const items = (input?.items as any[]) || [];
   const recordOnly = Boolean((input as any)?.recordOnly);
-  const meta = ((input as any)?.meta as any) || null;
   if (!area || !tableLabel || items.length === 0) return false;
 
+  // Use internal settings (includes fiscal auth token). `readSettings()`
+  // strips secrets before sending to the renderer.
+  const settings = await coreServices.readSettings();
+
   // Local-first: print directly via local PrintJob
-  let payload = {
+  const requested = {
     area,
     tableLabel,
     covers: input?.covers ?? null,
@@ -2606,6 +2879,27 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     userName: input?.userName || undefined,
     meta: (input as any)?.meta ?? undefined,
   } as any;
+
+  // The renderer's totals are a display value. Recompute from the line
+  // items we are about to print before any of it becomes a receipt, an
+  // audit row, or a fiscal record.
+  const enforcedTotals = await enforceAuthoritativePaymentTotals(
+    requested,
+    settings as any,
+    'ipc',
+  );
+  let payload = enforcedTotals.payload;
+  const meta = (payload?.meta as any) || null;
+  if (enforcedTotals.mismatch) {
+    broadcastPrinterEvent({
+      level: 'warn',
+      kind: 'totals',
+      message: 'Payment total was recalculated from the ticket items.',
+      detail: enforcedTotals.mismatch,
+      at: Date.now(),
+      context: { area, tableLabel, kind: 'PAYMENT' },
+    });
+  }
 
   // If this is a payment receipt and includes a discount, add an admin-visible notification entry.
   // (Admin UI lists all notifications, grouped by userName, so we store it against the waiter userId.)
@@ -2665,38 +2959,41 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     // do not block printing/logging
   }
 
-  // Use internal settings (includes fiscal auth token). `readSettings()`
-  // strips secrets before sending to the renderer.
-  const settings = await coreServices.readSettings();
   const kind = String(meta?.kind || '').toUpperCase();
   if (kind === 'PAYMENT') {
-    try {
-      payload = await maybeFiscalizePayment(payload, settings as any, {
-        idempotencyKey: idempotencyKey || undefined,
-      });
-      const fiscalWarning = String(
-        (payload as any)?.meta?.fiscalWarning || '',
-      ).trim();
-      if (fiscalWarning) {
-        broadcastPrinterEvent({
-          level: 'warn',
-          kind: 'fiscal',
-          message: fiscalWarning,
-          detail: fiscalWarning,
-          at: Date.now(),
-          context: { area, tableLabel, kind: 'PAYMENT' },
-        });
-      }
-    } catch (e: any) {
-      const msg = String(e?.message || 'Fiskalizimi failed.');
+    const outcome = await fiscalizePaymentOnce(payload, settings as any, {
+      idempotencyKey: idempotencyKey || undefined,
+    });
+    if (outcome.kind !== 'ok') {
       broadcastPrinterEvent({
         level: 'error',
         kind: 'fiscal',
-        message: msg,
-        detail: msg,
+        message: outcome.message,
+        detail: outcome.message,
         at: Date.now(),
         context: { area, tableLabel, kind: 'PAYMENT' },
       });
+      if (outcome.kind === 'needs-review') {
+        // Admins were already notified by `fiscalizePaymentOnce`. Retrying
+        // could file a second invoice, so tell the caller to stop.
+        return {
+          ok: false,
+          code: 'FISCAL_NEEDS_REVIEW',
+          error: outcome.message,
+          permanent: true,
+        };
+      }
+      if (outcome.kind === 'rejected') {
+        // Nothing was filed, but the same request will be refused again
+        // until the configuration is fixed. Park it where an admin can see
+        // it and release it, rather than retrying it into the ground.
+        return {
+          ok: false,
+          code: 'FISCAL_REJECTED',
+          error: outcome.message,
+          permanent: true,
+        };
+      }
       try {
         const uid = Number(meta?.userId || 0);
         if (uid) {
@@ -2704,7 +3001,7 @@ ipcMain.handle('tickets:print', async (_e, input) => {
             data: {
               userId: uid,
               type: 'OTHER' as any,
-              message: `Fiskalizimi failed on ${area} Table ${tableLabel}: ${msg}`,
+              message: `Fiskalizimi failed on ${area} Table ${tableLabel}: ${outcome.message}`,
             } as any,
           });
         }
@@ -2712,6 +3009,20 @@ ipcMain.handle('tickets:print', async (_e, input) => {
         // ignore
       }
       return false;
+    }
+    payload = outcome.payload;
+    const fiscalWarning = String(
+      (payload as any)?.meta?.fiscalWarning || '',
+    ).trim();
+    if (fiscalWarning) {
+      broadcastPrinterEvent({
+        level: 'warn',
+        kind: 'fiscal',
+        message: fiscalWarning,
+        detail: fiscalWarning,
+        at: Date.now(),
+        context: { area, tableLabel, kind: 'PAYMENT' },
+      });
     }
   }
 
@@ -2792,14 +3103,33 @@ ipcMain.handle('tickets:print', async (_e, input) => {
     if (e?.code === 'P2002' && idempotencyKey) {
       // Concurrent identical payment — treat as success (other call won).
     } else {
-      // ignore
+      // This row is the receipt, the revenue line in the shift summary,
+      // and the retry guard. Losing it silently used to mean a payment
+      // that existed only on paper (and, once fiscalized, only at the tax
+      // service). The fiscal identifiers survive in the claim record, but
+      // someone still has to know this happened.
+      const detail = String(e?.message || e);
+      broadcastPrinterEvent({
+        level: 'error',
+        kind: 'audit',
+        message: 'The receipt record could not be saved.',
+        detail,
+        at: Date.now(),
+        context: { area, tableLabel, kind },
+      });
+      await reportAuditWriteFailure({
+        area,
+        tableLabel,
+        actorUserId: Number((payload as any)?.meta?.userId || 0) || undefined,
+        error: detail,
+      });
     }
   }
   return ok;
 });
 
 // Waiter-facing ticket lists (receipt-style) - Local-first: always use local DB
-ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
+ipcHandle('reports:listMyActiveTickets', async (_e, input) => {
   const userId = Number(input?.userId || 0);
   if (!userId) return [];
   const listLocal = async () => {
@@ -2897,7 +3227,7 @@ ipcMain.handle('reports:listMyActiveTickets', async (_e, input) => {
   return await listLocal();
 });
 
-ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
+ipcHandle('reports:listMyPaidTickets', async (_e, input) => {
   const userId = Number(input?.userId || 0);
   const q = String(input?.q || '')
     .trim()
@@ -3006,7 +3336,7 @@ ipcMain.handle('reports:listMyPaidTickets', async (_e, input) => {
 });
 
 // Voided tickets/items report - Local-first
-ipcMain.handle('reports:listMyVoidedTickets', async (_e, input) => {
+ipcHandle('reports:listMyVoidedTickets', async (_e, input) => {
   const userId = Number(input?.userId || 0);
   const limit = Math.min(200, Math.max(1, Number(input?.limit || 40)));
   if (!userId) return [];
@@ -3082,7 +3412,7 @@ ipcMain.handle('reports:listMyVoidedTickets', async (_e, input) => {
 });
 
 // Persist open tables in SyncState - Local-first: always use local DB
-ipcMain.handle('tables:setOpen', async (_e, input) => {
+ipcHandle('tables:setOpen', async (_e, input) => {
   const area = String(input?.area || '');
   const label = String(input?.label || '');
   const open = Boolean(input?.open);
@@ -3090,7 +3420,7 @@ ipcMain.handle('tables:setOpen', async (_e, input) => {
 });
 
 // Local-first: always use local SyncState for open tables
-ipcMain.handle('tables:listOpen', async (_e) => {
+ipcHandle('tables:listOpen', async (_e) => {
   const key = 'tables:open';
   const row = await prisma.syncState.findUnique({ where: { key } });
   const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
@@ -3103,7 +3433,7 @@ ipcMain.handle('tables:listOpen', async (_e) => {
 });
 
 // Local-first: always use local transfer
-ipcMain.handle('tables:transfer', async (_e, payload) => {
+ipcHandle('tables:transfer', async (_e, payload) => {
   try {
     const input = TransferTableInputSchema.parse(payload);
     return await transferTableLocal(input as any);
@@ -3122,7 +3452,7 @@ function normalizeMenuStockLevel(raw: unknown): 'OK' | 'LOW' | 'OUT' {
 }
 
 // Local-first: always use local DB for menu
-ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
+ipcHandle('menu:listCategoriesWithItems', async (_e) => {
   await expireStaleMenuStock(prisma);
   const cats = await prisma.category.findMany({
     where: { active: true },
@@ -3156,7 +3486,7 @@ ipcMain.handle('menu:listCategoriesWithItems', async (_e) => {
   }));
 });
 
-ipcMain.handle('menu:createCategory', async (_e, payload) => {
+ipcHandle('menu:createCategory', async (_e, payload) => {
   const input = CreateMenuCategoryInputSchema.parse(payload);
   const created = await prisma.category.create({
     data: {
@@ -3170,7 +3500,7 @@ ipcMain.handle('menu:createCategory', async (_e, payload) => {
   return { id: created.id };
 });
 
-ipcMain.handle('menu:updateCategory', async (_e, payload) => {
+ipcHandle('menu:updateCategory', async (_e, payload) => {
   const input = UpdateMenuCategoryInputSchema.parse(payload);
   const data: any = {
     ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
@@ -3198,7 +3528,7 @@ ipcMain.handle('menu:updateCategory', async (_e, payload) => {
   return true;
 });
 
-ipcMain.handle('menu:deleteCategory', async (_e, payload) => {
+ipcHandle('menu:deleteCategory', async (_e, payload) => {
   const id = Number((payload as any)?.id || 0);
   if (!id) return false;
   await prisma.category
@@ -3237,7 +3567,7 @@ async function nextAvailableSku(preferred: string): Promise<string> {
   return `${base}-${Date.now().toString(36).toUpperCase()}`;
 }
 
-ipcMain.handle('menu:createItem', async (_e, payload) => {
+ipcHandle('menu:createItem', async (_e, payload) => {
   const input = CreateMenuItemInputSchema.parse(payload);
   const category = await prisma.category.findUnique({
     where: { id: Number(input.categoryId) },
@@ -3284,7 +3614,7 @@ ipcMain.handle('menu:createItem', async (_e, payload) => {
   throw lastErr ?? new Error('Failed to create menu item');
 });
 
-ipcMain.handle('menu:updateItem', async (_e, payload) => {
+ipcHandle('menu:updateItem', async (_e, payload) => {
   const input = UpdateMenuItemInputSchema.parse(payload);
   await expireStaleMenuStock(prisma);
 
@@ -3364,7 +3694,7 @@ ipcMain.handle('menu:updateItem', async (_e, payload) => {
   return true;
 });
 
-ipcMain.handle('menu:deleteItem', async (_e, payload) => {
+ipcHandle('menu:deleteItem', async (_e, payload) => {
   const id = Number((payload as any)?.id || 0);
   if (!id) return false;
   await prisma.menuItem
@@ -3374,7 +3704,7 @@ ipcMain.handle('menu:deleteItem', async (_e, payload) => {
 });
 
 // Admin overview - Local-first: always use local DB
-ipcMain.handle('admin:getOverview', async (_e) => {
+ipcHandle('admin:getOverview', async (_e) => {
   const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
   const todayEnd = new Date(new Date().setHours(23, 59, 59, 999));
   const settings = await readSettings().catch(() => ({}));
@@ -3616,17 +3946,17 @@ ipcMain.handle('admin:getOverview', async (_e) => {
   };
 });
 
-ipcMain.handle('admin:openWindow', async () => {
+ipcHandle('admin:openWindow', async () => {
   createAdminWindow();
   return true;
 });
 
-ipcMain.handle('kds:openWindow', async () => {
+ipcHandle('kds:openWindow', async () => {
   createKdsWindow();
   return true;
 });
 
-ipcMain.handle('reservations:openWindow', async () => {
+ipcHandle('reservations:openWindow', async () => {
   createReservationWindow();
   return true;
 });
@@ -3636,45 +3966,45 @@ ipcMain.handle('reservations:openWindow', async () => {
 // Authorization, validation, conflict-detection, and DTO mapping all live in
 // `services/reservations.ts` so the LAN HTTP API (used by mobile clients) and
 // the desktop IPC layer share the exact same behaviour.
-ipcMain.handle('reservations:list', async (_e, input) => {
+ipcHandle('reservations:list', async (_e, input) => {
   return reservationsService.listReservationsForDay(input || {});
 });
 
-ipcMain.handle('reservations:listCounts', async (_e, input) => {
+ipcHandle('reservations:listCounts', async (_e, input) => {
   return reservationsService.listReservationCounts(input || {});
 });
 
-ipcMain.handle('reservations:create', async (_e, input) => {
+ipcHandle('reservations:create', async (_e, input) => {
   return reservationsService.createReservation(input || {});
 });
 
-ipcMain.handle('reservations:update', async (_e, input) => {
+ipcHandle('reservations:update', async (_e, input) => {
   return reservationsService.updateReservation(input || {});
 });
 
-ipcMain.handle('reservations:setStatus', async (_e, input) => {
+ipcHandle('reservations:setStatus', async (_e, input) => {
   return reservationsService.setReservationStatus(input || {});
 });
 
-ipcMain.handle('reservations:delete', async (_e, input) => {
+ipcHandle('reservations:delete', async (_e, input) => {
   return reservationsService.deleteReservation(input || {});
 });
 
 // Backups: create/list/restore (local SQLite)
-ipcMain.handle('backups:list', async () => {
+ipcHandle('backups:list', async () => {
   return listDbBackups();
 });
 
-ipcMain.handle('backups:create', async () => {
+ipcHandle('backups:create', async () => {
   return await createDbBackupNow();
 });
 
-ipcMain.handle('backups:restore', async (_e, input) => {
+ipcHandle('backups:restore', async (_e, input) => {
   const name = String((input as any)?.name || '');
   return await restoreDbBackup(name);
 });
 
-ipcMain.handle('backups:uploadToCloud', async (_e, input) => {
+ipcHandle('backups:uploadToCloud', async (_e, input) => {
   const name = String((input as any)?.name || '').trim();
   const cloud = await getCloudConfig().catch(() => null);
   if (!cloud) return { ok: false, error: 'Cloud not configured' };
@@ -3716,7 +4046,7 @@ ipcMain.handle('backups:uploadToCloud', async (_e, input) => {
   }
 });
 
-ipcMain.handle('sync:fromCloud', async (_e) => {
+ipcHandle('sync:fromCloud', async (_e) => {
   return syncFromCloudManual();
 });
 
@@ -3730,18 +4060,9 @@ async function getEnabledStations(): Promise<string[]> {
 }
 
 // Tickets logging
-ipcMain.handle('tickets:log', async (_e, payload) => {
+ipcHandle('tickets:log', async (_e, payload) => {
   try {
-    // Rate limit ticket creation
-    if (
-      !checkRateLimit(_e, 'tickets:log', {
-        maxAttempts: 100,
-        windowMs: 60 * 1000,
-      })
-    ) {
-      throw new Error('Too many requests. Please slow down.');
-    }
-
+    // Rate limit declared in IPC_POLICIES.
     const { userId, area, tableLabel, covers, items, note } = payload || {};
     if (!userId || !area || !tableLabel) return false;
 
@@ -3910,7 +4231,7 @@ ipcMain.handle('tickets:log', async (_e, payload) => {
   }
 });
 
-ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
+ipcHandle('tickets:getLatestForTable', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!area || !tableLabel) return null;
@@ -3948,7 +4269,7 @@ ipcMain.handle('tickets:getLatestForTable', async (_e, input) => {
 });
 
 // Tooltip stats for a table: covers, first ticket time, latest total
-ipcMain.handle('tickets:getTableTooltip', async (_e, input) => {
+ipcHandle('tickets:getTableTooltip', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!area || !tableLabel) return null;
@@ -4012,7 +4333,7 @@ async function getCookerEnabled(): Promise<boolean> {
 }
 
 // KDS: list tickets by station + status (NEW/DONE)
-ipcMain.handle('kds:listTickets', async (_e, input) => {
+ipcHandle('kds:listTickets', async (_e, input) => {
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const status = String((input as any)?.status || 'NEW').toUpperCase();
   const cooker = Boolean((input as any)?.cooker);
@@ -4048,7 +4369,7 @@ ipcMain.handle('kds:listTickets', async (_e, input) => {
   }
 });
 
-ipcMain.handle('kds:getTicketDetail', async (_e, input) => {
+ipcHandle('kds:getTicketDetail', async (_e, input) => {
   await ensureKdsLocalSchema();
   const ticketId = Number((input as any)?.ticketId || 0);
   if (!ticketId) return null;
@@ -4059,7 +4380,7 @@ ipcMain.handle('kds:getTicketDetail', async (_e, input) => {
   }
 });
 
-ipcMain.handle('kds:debug', async () => {
+ipcHandle('kds:debug', async () => {
   const cloud = await getCloudConfig().catch(() => null);
   const schemaReady = await ensureKdsLocalSchema();
   const enabledStations = await getEnabledStations();
@@ -4092,7 +4413,7 @@ ipcMain.handle('kds:debug', async () => {
   return out;
 });
 
-ipcMain.handle('kds:bump', async (_e, input) => {
+ipcHandle('kds:bump', async (_e, input) => {
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
   const cooker = Boolean((input as any)?.cooker);
@@ -4173,7 +4494,7 @@ ipcMain.handle('kds:bump', async (_e, input) => {
   }
 });
 
-ipcMain.handle('kds:recall', async (_e, input) => {
+ipcHandle('kds:recall', async (_e, input) => {
   await ensureKdsLocalSchema();
   return recallKdsTicket(prisma, {
     station: String((input as any)?.station || 'KITCHEN'),
@@ -4182,7 +4503,7 @@ ipcMain.handle('kds:recall', async (_e, input) => {
   });
 });
 
-ipcMain.handle('kds:clearDone', async (_e, input) => {
+ipcHandle('kds:clearDone', async (_e, input) => {
   await ensureKdsLocalSchema();
   return purgeKdsDoneTicketsForStation(
     prisma,
@@ -4191,11 +4512,11 @@ ipcMain.handle('kds:clearDone', async (_e, input) => {
 });
 
 // KDS: read/set the POS-host "cooker" (two-stage kitchen) master switch.
-ipcMain.handle('kds:getCookerMode', async () => {
+ipcHandle('kds:getCookerMode', async () => {
   return { enabled: await getCookerEnabled() };
 });
 
-ipcMain.handle('kds:getEnabledStations', async () => {
+ipcHandle('kds:getEnabledStations', async () => {
   try {
     return { stations: await getEnabledStations() };
   } catch {
@@ -4203,7 +4524,7 @@ ipcMain.handle('kds:getEnabledStations', async () => {
   }
 });
 
-ipcMain.handle('kds:setCookerMode', async (_e, input) => {
+ipcHandle('kds:setCookerMode', async (_e, input) => {
   const enabled = Boolean((input as any)?.enabled);
   try {
     await coreServices.updateSettings({
@@ -4215,7 +4536,7 @@ ipcMain.handle('kds:setCookerMode', async (_e, input) => {
   }
 });
 
-ipcMain.handle('kds:bumpItem', async (_e, input) => {
+ipcHandle('kds:bumpItem', async (_e, input) => {
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
   const itemIdx = Number((input as any)?.itemIdx ?? -1);
@@ -4292,7 +4613,7 @@ ipcMain.handle('kds:bumpItem', async (_e, input) => {
 });
 
 // Void item: records a notification and returns true
-ipcMain.handle('tickets:voidItem', async (_e, input) => {
+ipcHandle('tickets:voidItem', async (_e, input) => {
   const userId = Number(input?.userId);
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
@@ -4396,10 +4717,18 @@ ipcMain.handle('tickets:voidItem', async (_e, input) => {
     // best-effort
   }
   await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(() => false);
+  // Removing a line from a ticket already declared to the tax service
+  // changes the amount on a filed invoice.
+  await flagVoidAfterFiscalization({
+    area,
+    tableLabel,
+    reason: `"${String(item?.name || 'Item')}" was voided after the sale was fiscalized`,
+    actorUserId: Number(userId) || undefined,
+  }).catch(() => false);
   return true;
 });
 
-ipcMain.handle('tickets:voidTicket', async (_e, input) => {
+ipcHandle('tickets:voidTicket', async (_e, input) => {
   const userId = Number(input?.userId);
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
@@ -4494,6 +4823,16 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
       },
     });
   }
+  // Before the close clears `tables:openAt`: if this table was already
+  // fiscalized in this session, the tax service now holds an invoice for a
+  // ticket that no longer exists. Only a corrective invoice fixes that.
+  await flagVoidAfterFiscalization({
+    area,
+    tableLabel,
+    reason: `Ticket voided after the sale was fiscalized${reason ? `: ${reason}` : ''}`,
+    actorUserId: Number(userId) || undefined,
+  }).catch(() => false);
+
   // Close table + openAt + KDS and broadcast to every client.
   await setTableOpenWithSideEffects(area, tableLabel, false).catch(() => false);
   try {
@@ -4511,7 +4850,7 @@ ipcMain.handle('tickets:voidTicket', async (_e, input) => {
   return true;
 });
 
-ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
+ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   const userId = Number(input?.userId);
   if (!userId) return [];
   const settings = await readSettings().catch(() => ({}));
@@ -4673,7 +5012,7 @@ ipcMain.handle('admin:listTicketsByUser', async (_e, input) => {
 });
 
 // Notifications IPC
-ipcMain.handle('notifications:list', async (_e, input) => {
+ipcHandle('notifications:list', async (_e, input) => {
   const onlyUnread = Boolean(input?.onlyUnread);
   const userId = Number(input?.userId);
   if (!userId) return [];
@@ -4692,7 +5031,7 @@ ipcMain.handle('notifications:list', async (_e, input) => {
   }));
 });
 
-ipcMain.handle('notifications:markAllRead', async (_e, input) => {
+ipcHandle('notifications:markAllRead', async (_e, input) => {
   const userId = Number(input?.userId);
   if (!userId) return false;
   await prisma.notification.updateMany({
@@ -4702,7 +5041,7 @@ ipcMain.handle('notifications:markAllRead', async (_e, input) => {
   return true;
 });
 
-ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
+ipcHandle('admin:listTicketCounts', async (_e, input) => {
   const where: any = {};
   if (input?.startIso || input?.endIso) {
     where.createdAt = {};
@@ -4798,7 +5137,7 @@ ipcMain.handle('admin:listTicketCounts', async (_e, input) => {
   }));
 });
 
-ipcMain.handle('admin:listShifts', async (_e, input) => {
+ipcHandle('admin:listShifts', async (_e, input) => {
   const where: any = {};
   if (input?.startIso || input?.endIso) {
     where.openedAt = {};
@@ -4829,7 +5168,7 @@ ipcMain.handle('admin:listShifts', async (_e, input) => {
   });
 });
 
-ipcMain.handle('admin:listNotifications', async (_e, input) => {
+ipcHandle('admin:listNotifications', async (_e, input) => {
   const onlyUnread = Boolean(input?.onlyUnread);
   const limit = Math.min(500, Math.max(1, Number(input?.limit || 100)));
   // Notifications are per-recipient. The admin panel must only show rows
@@ -4863,7 +5202,7 @@ ipcMain.handle('admin:listNotifications', async (_e, input) => {
   }));
 });
 
-ipcMain.handle('admin:markAllNotificationsRead', async (_e, input) => {
+ipcHandle('admin:markAllNotificationsRead', async (_e, input) => {
   // Only mark the calling admin's own notifications as read — never wipe
   // every user's unread badge.
   const userId = Number(input?.userId || 0);
@@ -4876,7 +5215,7 @@ ipcMain.handle('admin:markAllNotificationsRead', async (_e, input) => {
 });
 
 // Top selling item today from TicketLog
-ipcMain.handle('admin:getTopSellingToday', async (_e) => {
+ipcHandle('admin:getTopSellingToday', async (_e) => {
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
   const rows = await prisma.ticketLog.findMany({
@@ -4908,7 +5247,7 @@ ipcMain.handle('admin:getTopSellingToday', async (_e) => {
 });
 
 // Sales trends (daily/weekly/monthly)
-ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
+ipcHandle('admin:getSalesTrends', async (_e, input) => {
   const range = (input?.range as any) || 'daily';
   const today = new Date(new Date().setHours(0, 0, 0, 0));
   let start: Date;
@@ -4983,13 +5322,13 @@ ipcMain.handle('admin:getSalesTrends', async (_e, input) => {
 
 // Waiter-facing reports (per-user)
 // Security log (admin only)
-ipcMain.handle('admin:getSecurityLog', async (_e, input) => {
+ipcHandle('admin:getSecurityLog', async (_e, input) => {
   const limit = sanitizeNumber(input?.limit, 1, 1000, 100);
   return getSecurityLog(limit);
 });
 
 // Memory monitoring (admin only)
-ipcMain.handle('admin:getMemoryStats', async () => {
+ipcHandle('admin:getMemoryStats', async () => {
   const stats = getMemoryStats();
   const currentUsage = getMemoryUsage();
   return {
@@ -5001,7 +5340,7 @@ ipcMain.handle('admin:getMemoryStats', async () => {
   };
 });
 
-ipcMain.handle('admin:exportMemorySnapshot', async () => {
+ipcHandle('admin:exportMemorySnapshot', async () => {
   return await exportMemorySnapshot();
 });
 
@@ -5010,7 +5349,7 @@ ipcMain.handle('admin:exportMemorySnapshot', async () => {
 // All compute is local-first (no cloud round trip); the local SQLite DB
 // already mirrors paid/voided ticket history via TicketLog.
 // =====================================================================
-ipcMain.handle('admin:getReview', async (_e, input) => {
+ipcHandle('admin:getReview', async (_e, input) => {
   const settings = await readSettings().catch(() => ({}));
   const fiscalVatEnabled = isVatEnabledFromSettings(settings);
 
@@ -5426,7 +5765,7 @@ ipcMain.handle('admin:getReview', async (_e, input) => {
   };
 });
 
-ipcMain.handle('reports:getMyOverview', async (_e, input) => {
+ipcHandle('reports:getMyOverview', async (_e, input) => {
   const userId = Number(input?.userId || 0);
   if (!userId) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
   const settings = await readSettings().catch(() => ({}));
@@ -5491,7 +5830,7 @@ ipcMain.handle('reports:getMyOverview', async (_e, input) => {
   };
 });
 
-ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {
+ipcHandle('reports:getMyTopSellingToday', async (_e, input) => {
   const userId = Number(input?.userId || 0);
   if (!userId) return null;
   const start = new Date(new Date().setHours(0, 0, 0, 0));
@@ -5523,7 +5862,7 @@ ipcMain.handle('reports:getMyTopSellingToday', async (_e, input) => {
   return best;
 });
 
-ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
+ipcHandle('reports:getMySalesTrends', async (_e, input) => {
   const userId = Number(input?.userId || 0);
   const range = (input?.range as any) || 'daily';
   if (!userId) return { range, points: [] } as any;
@@ -5593,14 +5932,14 @@ ipcMain.handle('reports:getMySalesTrends', async (_e, input) => {
   return { range, points: result } as any;
 });
 // Covers API
-ipcMain.handle('covers:save', async (_e, { area, label, covers }) => {
+ipcHandle('covers:save', async (_e, { area, label, covers }) => {
   const num = Number(covers);
   if (!area || !label || !Number.isFinite(num) || num <= 0) return false;
   await prisma.covers.create({ data: { area, label, covers: num } });
   return true;
 });
 
-ipcMain.handle('covers:getLast', async (_e, { area, label }) => {
+ipcHandle('covers:getLast', async (_e, { area, label }) => {
   // Scope to the current session via `tables:openAt`, mirroring
   // `tickets:getLatestForTable`. Without this, reopening a label after
   // payout flashes the previous guest count until refresh — the
@@ -5663,29 +6002,18 @@ async function readSharedLayoutNodes(area: string): Promise<any[] | null> {
   return null;
 }
 
-ipcMain.handle('layout:get', async (_e, { area }) => {
+ipcHandle('layout:get', async (_e, { area }) => {
   return await readSharedLayoutNodes(String(area || ''));
 });
 
-ipcMain.handle('layout:save', async (_e, { area, nodes, userId }) => {
+ipcHandle('layout:save', async (_e, { area, nodes }) => {
   const a = String(area || '');
   if (!a || !Array.isArray(nodes)) return false;
-  // Require the calling user to be an active ADMIN. The shared floor
-  // layout is now centrally managed and waiters / hosts must not be
-  // able to silently overwrite it via direct IPC. The renderer hides
-  // the editor UI from non-admins; this is the second line of defence.
-  try {
-    const uid = Number(userId || 0);
-    if (!uid) return false;
-    const u = await prisma.user
-      .findUnique({ where: { id: uid } })
-      .catch(() => null);
-    if (!u || !u.active || String(u.role).toUpperCase() !== 'ADMIN') {
-      return false;
-    }
-  } catch {
-    return false;
-  }
+  // The shared floor layout is centrally managed: waiters and hosts must not
+  // be able to overwrite it. This used to read the caller's identity out of
+  // the payload, which meant anyone could claim to be an admin by passing an
+  // admin's id. The session is the only trustworthy source.
+  if (getSession(_e.sender.id)?.role !== 'ADMIN') return false;
   await prisma.syncState.upsert({
     where: { key: globalLayoutKey(a) },
     create: { key: globalLayoutKey(a), valueJson: { nodes } },
@@ -5700,7 +6028,7 @@ ipcMain.handle('layout:save', async (_e, { area, nodes, userId }) => {
 });
 
 // Create a request from non-owner
-ipcMain.handle('requests:create', async (_e, input) => {
+ipcHandle('requests:create', async (_e, input) => {
   const { requesterId, ownerId, area, tableLabel, items, note } = input || {};
   if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items))
     return false;
@@ -5731,7 +6059,7 @@ ipcMain.handle('requests:create', async (_e, input) => {
 });
 
 // List pending requests for owner
-ipcMain.handle('requests:listForOwner', async (_e, input) => {
+ipcHandle('requests:listForOwner', async (_e, input) => {
   const ownerId = Number(input?.ownerId);
   if (!ownerId) return [];
   const rows = await prisma.ticketRequest.findMany({
@@ -5750,7 +6078,7 @@ ipcMain.handle('requests:listForOwner', async (_e, input) => {
 });
 
 // Approve or reject
-ipcMain.handle('requests:approve', async (_e, input) => {
+ipcHandle('requests:approve', async (_e, input) => {
   const id = Number(input?.id);
   const ownerId = Number(input?.ownerId);
   if (!id || !ownerId) return false;
@@ -5822,7 +6150,7 @@ ipcMain.handle('requests:approve', async (_e, input) => {
   return true;
 });
 
-ipcMain.handle('requests:reject', async (_e, input) => {
+ipcHandle('requests:reject', async (_e, input) => {
   const id = Number(input?.id);
   const ownerId = Number(input?.ownerId);
   if (!id || !ownerId) return false;
@@ -5846,7 +6174,7 @@ ipcMain.handle('requests:reject', async (_e, input) => {
 });
 
 // Owner's OrderPage polls approved requests for current table
-ipcMain.handle('requests:pollApprovedForTable', async (_e, input) => {
+ipcHandle('requests:pollApprovedForTable', async (_e, input) => {
   const ownerId = Number(input?.ownerId);
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
@@ -5859,7 +6187,7 @@ ipcMain.handle('requests:pollApprovedForTable', async (_e, input) => {
 });
 
 // Mark applied so we don’t re-apply
-ipcMain.handle('requests:markApplied', async (_e, input) => {
+ipcHandle('requests:markApplied', async (_e, input) => {
   const ids: number[] = Array.isArray(input?.ids) ? input.ids : [];
   if (!ids.length) return false;
   await prisma.ticketRequest.updateMany({

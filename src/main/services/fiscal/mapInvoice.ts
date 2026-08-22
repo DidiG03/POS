@@ -58,17 +58,48 @@ function sumArticleTotal(articles: EasyPosInvoiceDraft['articles']): number {
   );
 }
 
+/**
+ * Reported whenever the invoice we are about to file had to be adjusted to
+ * match the amount charged. A cent is rounding; anything more means the
+ * line items and the total genuinely disagree, and the VAT breakdown filed
+ * with the tax service will not match the receipt.
+ */
+export interface DraftAdjustment {
+  articleTotal: number;
+  targetTotal: number;
+  difference: number;
+  vatCode: string;
+}
+
+export interface BuildDraftOptions {
+  docId?: string;
+  onAdjustment?: (info: DraftAdjustment) => void;
+}
+
 function reconcileArticlesToTotal(
   articles: EasyPosInvoiceDraft['articles'],
   targetTotal: number,
   settings: SettingsDTO,
   cloud: boolean,
+  onAdjustment?: (info: DraftAdjustment) => void,
 ): EasyPosInvoiceDraft['articles'] {
   if (!Number.isFinite(targetTotal) || targetTotal < 0) return articles;
   const soldIn = fiscalArticleSettings(settings).soldIn;
   const current = sumArticleTotal(articles);
   const diff = roundMoney(current - targetTotal);
   if (Math.abs(diff) < 0.01) return articles;
+
+  const vatCode = mapVatRateToCode(settings.defaultVatRate || 0.2);
+  // The adjustment carries the DEFAULT rate, so on a mixed-VAT ticket it
+  // lands in the wrong band. The totals will balance and easyPos will
+  // accept it; the breakdown is what silently goes wrong. Tell someone.
+  onAdjustment?.({
+    articleTotal: current,
+    targetTotal,
+    difference: diff,
+    vatCode,
+  });
+
   return [
     ...articles,
     {
@@ -78,7 +109,7 @@ function reconcileArticlesToTotal(
         settings,
         cloud,
       ),
-      vatCode: mapVatRateToCode(settings.defaultVatRate || 0.2),
+      vatCode,
       name: diff > 0 ? 'Discount' : 'Adjustment',
       soldIn,
       price: diff > 0 ? -diff : Math.abs(diff),
@@ -208,7 +239,7 @@ function ensureDocId(options?: { docId?: string }): string {
 export function buildEasyPosCloudInvoiceDraft(
   payload: TicketPrintPayload,
   settings: SettingsDTO,
-  options?: { docId?: string },
+  options?: BuildDraftOptions,
 ): EasyPosCloudInvoiceDraft {
   const baseUrl = String((settings as any)?.fiscal?.baseUrl || '');
   const cloud = isEasyPosCloudApi(baseUrl);
@@ -218,7 +249,13 @@ export function buildEasyPosCloudInvoiceDraft(
   }
   const totalAfter = Number((payload.meta as any)?.totalAfter);
   if (Number.isFinite(totalAfter) && totalAfter >= 0) {
-    articles = reconcileArticlesToTotal(articles, totalAfter, settings, cloud);
+    articles = reconcileArticlesToTotal(
+      articles,
+      totalAfter,
+      settings,
+      cloud,
+      options?.onAdjustment,
+    );
   }
   const draft: EasyPosCloudInvoiceDraft = {
     docId: ensureDocId(options),
@@ -253,7 +290,7 @@ export function buildEasyPosCloudInvoiceDraft(
 export function buildEasyPosInvoiceDraft(
   payload: TicketPrintPayload,
   settings: SettingsDTO,
-  options?: { docId?: string },
+  options?: BuildDraftOptions,
 ): EasyPosInvoiceDraft | EasyPosCloudInvoiceDraft {
   const baseUrl = String((settings as any)?.fiscal?.baseUrl || '');
   if (isEasyPosCloudApi(baseUrl)) {
@@ -269,7 +306,6 @@ export function buildEasyPosInvoiceDraft(
   const method = mapPaymentMethod(
     String(meta.method || meta.paymentMethod || 'CASH'),
   );
-  const amountPaid = Number(meta.amountPaid);
   const totalAfter = Number(meta.totalAfter);
   const total = Number(meta.total);
   const articleTotal = sumArticleTotal(articles);
@@ -283,6 +319,20 @@ export function buildEasyPosInvoiceDraft(
     Number.isFinite(amountDue) && amountDue > 0
       ? { type: method, amount: roundMoney(amountDue) }
       : { type: method };
+
+  // Unlike the cloud draft this path sends the charged amount as-is rather
+  // than forcing the lines to match it. easyPos rejects the invoice when
+  // the two disagree, so surface the discrepancy instead of letting the
+  // payment fail with an opaque provider error.
+  const gap = roundMoney(articleTotal - roundMoney(amountDue));
+  if (Number.isFinite(gap) && Math.abs(gap) >= 0.01) {
+    options?.onAdjustment?.({
+      articleTotal,
+      targetTotal: roundMoney(amountDue),
+      difference: gap,
+      vatCode: mapVatRateToCode(settings.defaultVatRate || 0.2),
+    });
+  }
 
   const draft: EasyPosInvoiceDraft = {
     app: 'Code Orbit POS',

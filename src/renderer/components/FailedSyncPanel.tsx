@@ -12,6 +12,7 @@ const FAILED_CHANGE_EVENT = 'offline-queue:failed-changed';
 
 const OP_LABEL_KEY: Record<OfflineOp, string> = {
   'tickets.log': 'failedSync.opTicketsLog',
+  'tickets.print': 'failedSync.opTicketsPrint',
   'payments.record': 'failedSync.opPaymentRecord',
   'tickets.voidItem': 'failedSync.opTicketsVoidItem',
   'tickets.voidTicket': 'failedSync.opTicketsVoidTicket',

@@ -11,7 +11,7 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:wipe": "tsx scripts/wipeCloudDb.ts",
-    "register:ullishtja": "tsx scripts/registerUllishtja.ts",
+    "register:business": "tsx scripts/registerBusiness.ts",
     "lint": "eslint \"src/**/*.ts\" --max-warnings=0"
   },
   "dependencies": {

@@ -13,7 +13,11 @@ import {
   pickActiveReceiptProfile,
   testPrintWithProfile,
 } from './services/printDispatcher';
-import { maybeFiscalizePayment } from './services/fiscal';
+import {
+  fiscalizePaymentOnce,
+  flagVoidAfterFiscalization,
+} from './services/fiscal';
+import { reportAuditWriteFailure } from './services/adminAlerts';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
@@ -26,7 +30,11 @@ import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
+import { authorizeLanRoute } from './services/lanPolicy';
+import { logSecurityEvent } from './services/security';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
+import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
+import { app } from 'electron';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { getCloudConfig } from './services/cloud';
 import {
@@ -545,6 +553,39 @@ function setSecurityHeaders(
   }
 }
 
+/**
+ * Where an operator installs the LAN HTTPS certificate.
+ *
+ * Deliberately outside the repo and outside the app bundle. A previous
+ * build read `key.pem` from the working directory, and the key that
+ * satisfied it had been committed to source control — so anyone with
+ * repo access held the private key for every deployment.
+ */
+export function tlsCertDir(): string {
+  try {
+    return join(app.getPath('userData'), 'certs');
+  } catch {
+    // `app` is unavailable outside Electron (unit tests, tooling).
+    return join(process.cwd(), 'certs');
+  }
+}
+
+/**
+ * Load the LAN HTTPS key pair, or `null` when none is installed.
+ * A missing certificate is a normal, supported configuration.
+ */
+export function readTlsMaterial(): { key: Buffer; cert: Buffer } | null {
+  const dir = tlsCertDir();
+  try {
+    const keyPath = join(dir, 'key.pem');
+    const certPath = join(dir, 'cert.pem');
+    if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) return null;
+    return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
+  } catch {
+    return null;
+  }
+}
+
 export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
   const CURRENT_FILE = fileURLToPath(import.meta.url);
   const CURRENT_DIR = dirname(CURRENT_FILE);
@@ -1028,6 +1069,38 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
           }
           return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        }
+      }
+
+      // Positive authorization gate. Until this existed, a route was only as
+      // protected as whatever `auth.role` check its own handler remembered to
+      // make — and four privileged routes made none, so any logged-in tablet
+      // could read business-wide revenue or rewrite printer and fiscal config.
+      // The per-handler checks below are finer-grained (mostly "your own data
+      // unless admin") and still apply; this runs first.
+      {
+        const verdict = authorizeLanRoute(
+          req.method || 'GET',
+          pathname,
+          auth?.role,
+        );
+        if (verdict !== 'allow') {
+          logSecurityEvent('lan_denied', {
+            method: req.method,
+            pathname,
+            verdict,
+            role: auth?.role ?? null,
+            userId: auth?.userId ?? null,
+          });
+          // `unknown` means no policy exists for the route. Deny it: a route
+          // nobody decided about should not be reachable from the network.
+          const status = verdict === 'unauthenticated' ? 401 : 403;
+          return send(
+            res,
+            status,
+            { error: status === 401 ? 'unauthorized' : 'forbidden' },
+            corsOrigin,
+          );
         }
       }
 
@@ -1635,7 +1708,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'POST' && pathname === '/print/ticket') {
         const body = await parseJson(req);
-        const payload = {
+        const printIdempotencyKey = String(body?.idempotencyKey ?? '').trim();
+        // Mirrors the `tickets:print` IPC guard. Without it a tablet
+        // replaying a queued payment after a Wi-Fi drop would print and
+        // fiscalize the same receipt twice.
+        if (printIdempotencyKey) {
+          const existing = await prisma.printJob
+            .findFirst({
+              where: { idempotencyKey: printIdempotencyKey } as any,
+            })
+            .catch(() => null);
+          if (existing) return send(res, 200, { ok: true }, corsOrigin);
+        }
+        const requested = {
           area: String(body?.area || ''),
           tableLabel: String(body?.tableLabel || ''),
           covers: body?.covers ?? null,
@@ -1644,7 +1729,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           userName: body?.userName || undefined,
           meta: body?.meta ?? undefined,
         } as any;
-        if (!payload.area || !payload.tableLabel || payload.items.length === 0)
+        if (
+          !requested.area ||
+          !requested.tableLabel ||
+          requested.items.length === 0
+        )
           return send(
             res,
             400,
@@ -1652,6 +1741,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             corsOrigin,
           );
         const settings = await coreServices.readSettings();
+
+        // iOS/Android tablets and LAN browsers are separate devices that
+        // may run a stale bundle or be tampered with, so the totals they
+        // send are advisory. Recompute from the line items before this
+        // becomes a receipt, an audit row, or a fiscal record.
+        const enforcedTotals = await enforceAuthoritativePaymentTotals(
+          requested,
+          settings as any,
+          'lan',
+        );
+        const payload = enforcedTotals.payload;
 
         // Track last payment time per table + payment adjustment alerts.
         // Run before printing so it works for all printer modes — and
@@ -1778,27 +1878,54 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         let fiscalPayload = payload;
         const payKind = String(payload?.meta?.kind || '').toUpperCase();
         if (payKind === 'PAYMENT') {
-          try {
-            fiscalPayload = await maybeFiscalizePayment(
-              payload,
-              settings as any,
+          const outcome = await fiscalizePaymentOnce(payload, settings as any, {
+            idempotencyKey: printIdempotencyKey || undefined,
+          });
+          if (outcome.kind === 'needs-review') {
+            // Retrying could file a second invoice with the tax service.
+            // `permanent` moves it to the tablet's failed-sync surface
+            // instead of the retry loop; admins were already notified.
+            return send(
+              res,
+              409,
               {
-                idempotencyKey:
-                  String(body?.idempotencyKey || '').trim() || undefined,
+                ok: false,
+                code: 'FISCAL_NEEDS_REVIEW',
+                error: outcome.message,
+                permanent: true,
               },
+              corsOrigin,
             );
-          } catch (e: any) {
+          }
+          if (outcome.kind === 'rejected') {
+            // Refused, and it will be refused identically next time. Same
+            // treatment as a review case so the tablet stops retrying.
+            return send(
+              res,
+              409,
+              {
+                ok: false,
+                code: 'FISCAL_REJECTED',
+                error: outcome.message,
+                permanent: true,
+              },
+              corsOrigin,
+            );
+          }
+          if (outcome.kind !== 'ok') {
             return send(
               res,
               502,
               {
                 ok: false,
-                error: 'fiscal_failed',
-                message: String(e?.message || e),
+                code: 'FISCAL_FAILED',
+                error: outcome.message,
+                message: outcome.message,
               },
               corsOrigin,
             );
           }
+          fiscalPayload = outcome.payload;
         }
 
         // Single dispatch: hands off mode selection, profile picking,
@@ -1812,6 +1939,37 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // as the Electron app (PR 3).
           persistRetryOnTransientFailure: true,
         });
+
+        // Receipt-history / audit row, matching the Electron path. This
+        // is also what makes `printIdempotencyKey` above effective, so a
+        // tablet retry is recognised as already-processed.
+        try {
+          await prisma.printJob.create({
+            data: {
+              type: 'RECEIPT' as any,
+              payloadJson: fiscalPayload,
+              status: r.ok ? ('SENT' as any) : ('FAILED' as any),
+              ...(printIdempotencyKey
+                ? { idempotencyKey: printIdempotencyKey }
+                : {}),
+            } as any,
+          });
+        } catch (e: any) {
+          // P2002 = a concurrent identical payment won the race; its row
+          // is the audit record and this one is a duplicate.
+          if (!(e?.code === 'P2002' && printIdempotencyKey)) {
+            // Without this row the payment is absent from receipt history
+            // and the shift summary, and if it was fiscalized the tax
+            // service holds an invoice this POS cannot show.
+            await reportAuditWriteFailure({
+              area: String(body?.area || ''),
+              tableLabel: String(body?.tableLabel || ''),
+              actorUserId: Number(body?.meta?.userId || 0) || undefined,
+              error: String(e?.message || e),
+            });
+          }
+        }
+
         return send(
           res,
           r.ok ? 200 : 500,
@@ -1938,6 +2096,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           tableLabel: String(tableLabel),
           kind: 'VOID_ITEM',
         });
+        await flagVoidAfterFiscalization({
+          area: String(area),
+          tableLabel: String(tableLabel),
+          reason: `"${String(item?.name || 'Item')}" was voided after the sale was fiscalized`,
+          actorUserId: Number(userId) || undefined,
+        }).catch(() => false);
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/tickets/void-ticket') {
@@ -2035,6 +2199,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             },
           });
         }
+        // Must run before the close clears `tables:openAt`. Mirrors the
+        // desktop `tickets:voidTicket` path: an invoice already filed for
+        // this table needs a corrective document, not a silent close.
+        await flagVoidAfterFiscalization({
+          area: String(area),
+          tableLabel: String(tableLabel),
+          reason: `Ticket voided after the sale was fiscalized${reason ? `: ${String(reason)}` : ''}`,
+          actorUserId: Number(userId) || undefined,
+        }).catch(() => false);
         await setTableOpenWithSideEffects(
           String(area),
           String(tableLabel),
@@ -2520,6 +2693,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (result?.security && typeof result.security === 'object') {
           result.security = { ...result.security };
           delete result.security.apiSecret;
+          // The pairing code is the gate that decides which LAN devices may
+          // log in at all, and this route is reachable without a token — so
+          // returning it here handed the key to anyone who could reach the
+          // port. Clients only need to know *whether* a code is required.
+          delete result.security.pairingCode;
         }
         // Never expose provider-supplied business password to tablets/LAN clients.
         if (result?.cloud && typeof result.cloud === 'object') {
@@ -3051,9 +3229,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
   let httpsServer: https.Server | null = null;
   try {
-    const key = fs.readFileSync('key.pem');
-    const cert = fs.readFileSync('cert.pem');
-    httpsServer = https.createServer({ key, cert }, handler);
+    const tls = readTlsMaterial();
+    if (!tls) {
+      // Not an error: the LAN API is reachable over plain HTTP and that
+      // is what the tablets use by default. HTTPS is opt-in and needs a
+      // certificate the operator supplies.
+      console.log(
+        `HTTPS API disabled (no certificate). Drop key.pem/cert.pem in ${tlsCertDir()} to enable it.`,
+      );
+      throw new Error('no tls material');
+    }
+    httpsServer = https.createServer({ key: tls.key, cert: tls.cert }, handler);
     httpsServer.on('error', (err: any) => {
       const code = String(err?.code || '');
       if (code === 'EADDRINUSE') {
