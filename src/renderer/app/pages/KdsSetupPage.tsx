@@ -2,9 +2,9 @@
  * First-run / re-pair screen for the standalone "Code Orbit KDS" app.
  *
  * Flow:
- *   1. Auto-discover POS hosts on the LAN via mDNS (handled in the KDS
- *      main process; we just call `window.kdsApp.discover()`).
- *   2. The user can pick one, or type a host manually.
+ *   1. Auto-discover POS hosts on the LAN (mDNS + HTTP scan of this Wi-Fi).
+ *   2. If several tills answer, the user picks one. If only one answers,
+ *      it is selected automatically. Manual IP remains as a fallback.
  *   3. "Test connection" hits `/kds/debug` on the host to confirm it
  *      responds before we save.
  *   4. On save, the main process rewrites the saved config and
@@ -16,15 +16,10 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { persistKdsBackendHost } from '@renderer/utils/backendHost';
+import { PosHostPicker } from '../components/PosHostPicker';
+import type { DiscoveredPosHost } from '@shared/posHostDiscovery';
 
-type DiscoveredHost = {
-  name?: string;
-  host: string;
-  httpPort: number;
-  httpsPort?: number;
-  addresses: string[];
-  businessCode?: string;
-};
+type DiscoveredHost = DiscoveredPosHost;
 
 type KdsAppApi = {
   getConfig: () => Promise<any>;
@@ -65,15 +60,23 @@ export default function KdsSetupPage() {
     setResult(null);
     setResultOk(null);
     try {
-      const list = await api.discover();
-      setHosts(Array.isArray(list) ? list : []);
-      if (list && list.length === 1) {
+      const raw = await api.discover();
+      const list = Array.isArray(raw) ? raw : [];
+      setHosts(list);
+      if (list.length === 1) {
         setHost(list[0].host);
         setHttpPort(String(list[0].httpPort || 3333));
-      }
-      if (!list || list.length === 0) {
+        setResult(`Found ${list[0].name}. Save to connect, or rescan.`);
+        setResultOk(true);
+      } else if (list.length > 1) {
+        setHost('');
         setResult(
-          'No POS hosts answered the scan. Make sure the POS app is running on the same Wi-Fi.',
+          `${list.length} POS hosts found. Tap the one this kitchen display should use.`,
+        );
+        setResultOk(true);
+      } else {
+        setResult(
+          'No POS hosts answered the scan. Make sure the POS app is running on the same Wi-Fi, then tap Rescan — or type the IP below.',
         );
         setResultOk(false);
       }
@@ -160,8 +163,8 @@ export default function KdsSetupPage() {
           </div>
           <h1 className="text-xl font-semibold mt-1">Connect to your POS</h1>
           <p className="text-sm opacity-80 mt-1">
-            This kitchen display needs to know where your POS host is on the
-            network. Pick one we found, or type the IP address manually.
+            We look for POS tills on this Wi-Fi. If more than one is found, tap
+            the one this kitchen display should use.
           </p>
         </div>
 
@@ -172,51 +175,24 @@ export default function KdsSetupPage() {
           </div>
         )}
 
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-medium opacity-90">
-              POS hosts on this network
-            </div>
-            <button
-              type="button"
-              disabled={!api || scanning}
-              onClick={() => void scan()}
-              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-60"
-            >
-              {scanning ? 'Scanning…' : 'Rescan'}
-            </button>
-          </div>
-          <div className="rounded border border-gray-700 divide-y divide-gray-700 max-h-48 overflow-y-auto">
-            {scanning && hosts.length === 0 ? (
-              <div className="p-3 text-sm opacity-70">Looking for hosts…</div>
-            ) : hosts.length === 0 ? (
-              <div className="p-3 text-sm opacity-70">No hosts found yet.</div>
-            ) : (
-              hosts.map((h) => (
-                <button
-                  key={`${h.host}:${h.httpPort}`}
-                  type="button"
-                  onClick={() => {
-                    setHost(h.host);
-                    setHttpPort(String(h.httpPort || 3333));
-                  }}
-                  className={`w-full text-left p-3 hover:bg-gray-700/60 ${
-                    host === h.host && String(httpPort) === String(h.httpPort)
-                      ? 'bg-emerald-900/30'
-                      : ''
-                  }`}
-                >
-                  <div className="text-sm font-medium truncate">
-                    {h.name || 'Code Orbit POS'}
-                  </div>
-                  <div className="text-xs opacity-70 font-mono">
-                    {h.host}:{h.httpPort}
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        </section>
+        <PosHostPicker
+          hosts={hosts}
+          selectedHost={host}
+          selectedPort={httpPort}
+          scanning={scanning}
+          onSelect={(h) => {
+            setHost(h.host);
+            setHttpPort(String(h.httpPort || 3333));
+            setResult(null);
+          }}
+          onRescan={() => void scan()}
+          labels={{
+            title: 'POS hosts on this network',
+            scanning: 'Looking for POS…',
+            empty: 'No hosts found yet.',
+            rescan: 'Rescan',
+          }}
+        />
 
         <section className="space-y-3">
           <div className="text-sm font-medium opacity-90">Manual entry</div>

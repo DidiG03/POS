@@ -39,6 +39,7 @@ export async function createKdsTicketFromLog(
   } catch {
     enabled = new Set(ALL_KDS_STATIONS);
   }
+  if (enabled.size === 0) return null;
 
   const rawLines = Array.isArray(input.fireItems)
     ? input.fireItems

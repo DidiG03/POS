@@ -14,7 +14,7 @@
  *      mDNS or type a host manually, test the connection, and save.
  */
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
-import { buildLanHttpUrl, pickBestLanAddress } from '@shared/lanHost';
+import { buildLanHttpUrl } from '@shared/lanHost';
 import { dirname, join, basename, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -337,63 +337,17 @@ ipcMain.handle('kdsApp:testConnection', async (_e, payload) => {
   }
 });
 
-// mDNS browse for ~2.5s, return any POS hosts found on the LAN.
+// Find POS tills on the LAN (mDNS + HTTP /kds/debug walk).
 ipcMain.handle('kdsApp:discover', async () => {
-  type Found = {
-    name?: string;
-    host: string;
-    httpPort: number;
-    httpsPort?: number;
-    addresses: string[];
-    businessCode?: string;
-  };
-  const found = new Map<string, Found>();
   try {
-    const { Bonjour } = await import('bonjour-service');
-    const b = new Bonjour();
-    return await new Promise<Found[]>((resolve) => {
-      const browser = b.find(
-        { type: 'codeorbit-pos', protocol: 'tcp' },
-        (svc) => {
-          const addresses = Array.isArray((svc as any).addresses)
-            ? ((svc as any).addresses as string[])
-            : [];
-          const txt = (svc.txt || {}) as Record<string, string>;
-          const txtHost = String(txt.lanHost || txt.host || '').trim();
-          const host = pickBestLanAddress([
-            ...(txtHost ? [txtHost] : []),
-            ...addresses,
-          ]);
-          if (!host) return;
-          const httpsPort = Number(txt.https) || undefined;
-          const businessCode = txt.businessCode || undefined;
-          const serviceKey = String(
-            (svc as any).name || (svc as any).fqdn || host,
-          );
-          found.set(serviceKey, {
-            name: (svc as any).name,
-            host,
-            httpPort: svc.port || 3333,
-            httpsPort,
-            addresses,
-            businessCode,
-          });
-        },
-      );
-      setTimeout(() => {
-        try {
-          browser.stop();
-          b.destroy();
-        } catch {
-          // ignore
-        }
-        resolve(Array.from(found.values()));
-      }, 3500);
-    });
+    const { discoverPosHostsOnLan } = await import(
+      '../services/posHostDiscover'
+    );
+    return await discoverPosHostsOnLan();
   } catch (e) {
     if (typeof console !== 'undefined')
       console.warn('[kds] discover failed:', e);
-    return [] as Found[];
+    return [];
   }
 });
 

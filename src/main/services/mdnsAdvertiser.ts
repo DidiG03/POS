@@ -26,6 +26,7 @@ export type AdvertiseInput = {
   httpsPort?: number;
   appVersion?: string;
   businessCode?: string;
+  restaurantName?: string;
 };
 
 function primaryLanIpv4(): string {
@@ -73,6 +74,7 @@ export async function startMdnsAdvertiser(
         version: String(input.appVersion || '0'),
         https: String(input.httpsPort || ''),
         businessCode: String(input.businessCode || ''),
+        restaurantName: String(input.restaurantName || ''),
         lanHost,
       },
     });

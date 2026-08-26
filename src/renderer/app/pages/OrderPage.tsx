@@ -18,6 +18,7 @@ import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
+import { saneTableAreas } from '@shared/tableAreas';
 
 type MenuItemDTO = {
   id: number;
@@ -936,9 +937,8 @@ export default function OrderPage() {
       setOnShiftUserIds(
         new Set((Array.isArray(openIds) ? openIds : []).map((n) => Number(n))),
       );
-      const list: { name: string; count: number }[] =
-        (settings?.tableAreas as any) || [];
-      setTransferTableSections(Array.isArray(list) ? list : []);
+      const list = saneTableAreas(settings?.tableAreas);
+      setTransferTableSections(list);
     })();
     return () => {
       cancelled = true;
@@ -2206,7 +2206,7 @@ export default function OrderPage() {
                           );
                           const detail = (m ? m[1] : raw).trim();
                           const status = Number(e?.status || 0);
-                          const isAuth = status === 401 || status === 403;
+                          const isAuth = status === 401;
                           const isAbort =
                             String(e?.name || '') === 'AbortError';
                           const isType = e instanceof TypeError;
@@ -3664,7 +3664,7 @@ export default function OrderPage() {
                 } catch (err: any) {
                   const status = Number(err?.status || 0);
                   const msg =
-                    status === 401 || status === 403
+                    status === 401
                       ? t('order.sessionExpiredLogin')
                       : t('order.verifyPinFailed');
                   setApprovalModal((s) => ({ ...s, error: msg }));
@@ -3731,7 +3731,7 @@ export default function OrderPage() {
                   } catch (err: any) {
                     const status = Number(err?.status || 0);
                     const msg =
-                      status === 401 || status === 403
+                      status === 401
                         ? t('order.sessionExpiredLogin')
                         : t('order.verifyPinFailed');
                     setApprovalModal((s) => ({ ...s, error: msg }));

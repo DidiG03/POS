@@ -102,7 +102,13 @@
     "clearFailed": "Pastrimi i cilësimeve dështoi",
     "saveReload": "Ruaj dhe ringarko",
     "reset": "Rivendos",
-    "resetTitle": "Harro serverin e ruajtur dhe përdor zbulimin automatik"
+    "resetTitle": "Harro serverin e ruajtur dhe përdor zbulimin automatik",
+    "foundTitle": "POS në këtë Wi-Fi",
+    "scanning": "Duke kërkuar POS…",
+    "rescan": "Kërko përsëri",
+    "noneFound": "Nuk u gjet asnjë. Qëndro në këtë Wi-Fi, sigurohu që POS është hapur, pastaj kërko përsëri — ose shkruaj IP-në më poshtë.",
+    "pickOne": "U gjetën disa POS. Zgjidh atë që duhet të përdorë ky ekran.",
+    "foundOne": "U gjet {{name}}. Ruaje, ose zgjidh tjetrën nëse nuk është till-i i duhur."
   },
   "layout": {
     "billingPausedTitle": "POS i ndalur — duhet pagesa",
@@ -221,6 +227,10 @@
   },
   "tables": {
     "title": "Tavolinat – {{area}}",
+    "titleNone": "Tavolinat",
+    "loading": "Duke ngarkuar tavolinat…",
+    "noAreas": "Nuk ka zona tavolinash. Shtoji te Admin → Cilësimet → Zonat e tavolinave.",
+    "noLayout": "Nuk ka plan të ruajtur për këtë zonë. Hap Admin → Cilësimet → Zonat e tavolinave dhe prek Ndrysho planin.",
     "editLayout": "Ndrysho planin",
     "editing": "Duke edituar…",
     "addArea": "+ Zonë",
@@ -348,6 +358,18 @@
     "syncFailed": "Sinkronizimi i kalendarit dështoi.",
     "syncUnavailable": "Sinkronizimi i kalendarit nuk është i disponueshëm. Rinis aplikacionin POS.",
     "syncSuccess": "U sinkronizuan {{imported}} të reja, {{updated}} të përditësuara, {{cancelled}} të anuluara."
+  },
+  "kdsSettings": {
+    "title": "Ekrani i kuzhinës (KDS)",
+    "masterLabel": "Përdor ekranin e kuzhinës",
+    "masterHelp": "Fike nëse kuzhina punon vetëm me bileta të printuara. Porositë printohen si zakonisht; asgjë nuk dërgohet te ekranet KDS.",
+    "masterOn": "Ekrani i kuzhinës është ndezur — porositë e reja shfaqen te ekranet.",
+    "masterOff": "Ekrani i kuzhinës është fikur — porositë printohen dhe nuk dërgohen te KDS.",
+    "masterSaveFailed": "Nuk u ruajt cilësimi i ekranit të kuzhinës.",
+    "stationsTitle": "Stacionet e përgatitjes",
+    "stationsHelp": "Fike një stacion që artikujt e tij të mos shkojnë te asnjë ekran kuzhine. Stacionet e fikura vazhdojnë të printohen në bileta, por nuk shfaqen në KDS.",
+    "openWindow": "Hap ekranin e kuzhinës",
+    "openWindowDisabled": "Ndeze ekranin e kuzhinës për ta hapur nga këtu."
   },
   "order": {
     "loadErrors": {

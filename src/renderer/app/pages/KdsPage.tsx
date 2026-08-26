@@ -211,6 +211,7 @@ export default function KdsPage() {
   const [enabledStations, setEnabledStations] = useState<Station[]>(() => [
     ...ALL_KDS_STATIONS,
   ]);
+  const [kdsHostEnabled, setKdsHostEnabled] = useState(true);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
@@ -291,9 +292,12 @@ export default function KdsPage() {
           ? (res.stations as Station[])
           : [];
         const enabled = ALL_KDS_STATIONS.filter((s) => list.includes(s));
-        if (!alive || enabled.length === 0) return;
+        if (!alive) return;
+        setKdsHostEnabled(res?.enabled !== false);
         setEnabledStations(enabled);
-        if (!enabled.includes(stationRef.current)) setStation(enabled[0]);
+        if (enabled.length > 0 && !enabled.includes(stationRef.current)) {
+          setStation(enabled[0]);
+        }
       } catch {
         /* keep last-known stations */
       }
@@ -1089,6 +1093,13 @@ export default function KdsPage() {
       {err && (
         <div className="mb-3 p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">
           {err}
+        </div>
+      )}
+
+      {!kdsHostEnabled && (
+        <div className="mb-3 p-3 rounded bg-amber-900/30 border border-amber-700 text-amber-100 text-sm">
+          Kitchen Display is turned off in POS Admin → Kitchen Display. Orders
+          still print; this screen will stay empty until it is turned back on.
         </div>
       )}
 

@@ -131,6 +131,8 @@ export interface SettingsDTO {
   };
   /** Kitchen Display System host-level settings. */
   kds?: {
+    /** Master switch. Missing/true keeps KDS on; false stops all kitchen routing. */
+    enabled?: boolean;
     enabledStations?: Array<'KITCHEN' | 'BAR' | 'DESSERT'>;
     /**
      * Per-station routing switch. When a station is set to `false`, its items
@@ -197,6 +199,8 @@ export interface PrinterProfileDTO {
   dataBits?: 7 | 8;
   stopBits?: 1 | 2;
   parity?: 'none' | 'even' | 'odd';
+  /** Thermal roll width. 80mm = 48 columns (Font A); 58mm = 32 columns. */
+  paperWidthMm?: 58 | 80;
 }
 
 export interface TableAreaDTO {
@@ -877,6 +881,7 @@ export interface ApiKds {
   }): Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
   /** Prep stations enabled for routing on the POS host (admin setting). */
   getEnabledStations(): Promise<{
+    enabled?: boolean;
     stations: Array<'KITCHEN' | 'BAR' | 'DESSERT'>;
   }>;
   debug(): Promise<any>;

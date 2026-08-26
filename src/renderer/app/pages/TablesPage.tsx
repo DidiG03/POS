@@ -8,6 +8,7 @@ import { useTicketStore } from '../../stores/ticket';
 import { formatMoneyCompact } from '../../utils/format';
 import { PageSpinner } from '../../components/PageSpinner';
 import { resolveTableFillColor } from '@shared/floorTableStyle';
+import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
 
 type TableStatus = 'FREE' | 'OCCUPIED' | 'RESERVED' | 'SERVED';
 type TableShape = 'circle' | 'square' | 'rect';
@@ -80,21 +81,6 @@ function toInitials(name: string): string {
   return (first + second).toUpperCase();
 }
 
-function generateDefaultNodes(_areaName: string, count: number): TableNode[] {
-  const width = 760;
-  const height = 460;
-  const cx = width / 2;
-  const cy = height / 2;
-  const radius = Math.min(cx, cy) - 60;
-  const n = Math.max(0, count);
-  return Array.from({ length: n }).map((_, i) => {
-    const angle = (i / Math.max(1, n)) * Math.PI * 2;
-    const x = cx + radius * Math.cos(angle);
-    const y = cy + radius * Math.sin(angle);
-    return { id: i + 1, label: `T${i + 1}`, x, y, status: 'FREE' } as TableNode;
-  });
-}
-
 function nextAreaId(cur: LayoutNode[] | null): number {
   const ids = (cur || []).map((n) => n.id);
   const min = ids.length ? Math.min(...ids) : 0;
@@ -103,14 +89,12 @@ function nextAreaId(cur: LayoutNode[] | null): number {
 
 export default function TablesPage() {
   const { t } = useTranslation();
-  const [area, setArea] = useState<string>('Main Hall');
-  // Seed with sensible defaults so the area pills + layout fetch
-  // work immediately on mobile, even before `/settings` resolves.
-  // Real values from settings overwrite these once they arrive.
-  const [areas, setAreas] = useState<{ name: string; count: number }[]>([
-    { name: 'Main Hall', count: 8 },
-    { name: 'Terrace', count: 4 },
-  ]);
+  const [area, setArea] = useState<string>('');
+  // Filled from Settings → Table Areas. Never seed Main Hall / Terrace —
+  // those names hid the restaurant's real areas until /settings arrived,
+  // so the till showed an unselected generic floor next to the real pills.
+  const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
+  const [areasReady, setAreasReady] = useState(false);
   const { user } = useSessionStore();
   const [editable, setEditable] = useState(false);
   const [nodes, setNodes] = useState<LayoutNode[] | null>(null);
@@ -194,10 +178,11 @@ export default function TablesPage() {
   >({});
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
-  // Load users + settings once on mount
+  // Load users + table areas. Re-run when the device comes back to the
+  // foreground so an admin rename on the till shows up here without a restart.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async () => {
       try {
         const [users, s] = await Promise.all([
           window.api.auth.listUsers(),
@@ -212,20 +197,25 @@ export default function TablesPage() {
             .trim()
             .toUpperCase() || 'EUR',
         );
-        setAreas(
-          s.tableAreas ?? [
-            { name: 'Main Hall', count: s.tableCountMainHall ?? 8 },
-            { name: 'Terrace', count: s.tableCountTerrace ?? 4 },
-          ],
-        );
-        if (!s.tableAreas && area !== 'Main Hall' && area !== 'Terrace')
-          setArea('Main Hall');
+        const nextAreas = saneTableAreas(s?.tableAreas);
+        setAreas(nextAreas);
+        setArea((current) => pickConfiguredArea(current, nextAreas));
       } catch {
-        // ignore
+        // ignore — empty-area UI stays until settings succeed
+      } finally {
+        if (!cancelled) setAreasReady(true);
       }
-    })();
+    };
+    void load();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
     };
   }, []);
 
@@ -287,23 +277,21 @@ export default function TablesPage() {
     };
   }, [setAll]);
 
-  // Load layout when area changes. Layouts are now centrally managed
-  // by the admin in Settings → Table Areas, so we trust the saved
-  // layout verbatim — including its table count, shapes, seats and any
-  // decor variants — and only fall back to defaults when the admin
-  // has never saved a layout for this area.
+  // Load layout when the selected *configured* area changes. Never fetch
+  // (or invent T1…N tables) for a blank / leftover "Main Hall" name —
+  // that is what made the till show a generic floor with no pill selected.
+  const layoutGenRef = useRef(0);
   const loadLayoutForArea = useCallback(async () => {
-    // The settings endpoint can be slow on mobile (cloud / capacitor),
-    // and `areas` can briefly be empty before it resolves. Don't gate
-    // the actual layout fetch on areas: with the centralised admin
-    // layout, we just need `area` (a string) and the user's id —
-    // everything else has a sensible default.
-    if (!user) return;
-    const cfg = areas.find((a) => a.name === area);
-    const targetCount = cfg?.count ?? 8;
+    const gen = ++layoutGenRef.current;
+    const configured = Boolean(area && areas.some((a) => a.name === area));
+    if (!user || !configured) {
+      if (gen === layoutGenRef.current) setNodes(null);
+      return;
+    }
     const saved = await window.api.layout
       .get(user.id, area)
       .catch(() => null as any);
+    if (gen !== layoutGenRef.current) return;
     if (Array.isArray(saved) && saved.length) {
       const savedAny = saved as any[];
       const tables = savedAny.filter((n) => !n?.kind || n.kind === 'TABLE');
@@ -336,7 +324,7 @@ export default function TablesPage() {
       setNodes([...(normalizedAreas as any), ...(normalizedTables as any)]);
       return;
     }
-    setNodes(generateDefaultNodes(area, targetCount));
+    setNodes([]);
   }, [user, area, areas]);
 
   useEffect(() => {
@@ -989,8 +977,8 @@ export default function TablesPage() {
     ],
   );
 
-  if (!openLoaded) {
-    return <PageSpinner message={openLoadError || 'Loading tables…'} />;
+  if (!openLoaded || !areasReady || (area && nodes === null)) {
+    return <PageSpinner message={openLoadError || t('tables.loading')} />;
   }
 
   // Floor layouts are now centrally managed by the admin from the
@@ -1006,7 +994,7 @@ export default function TablesPage() {
           in a single horizontally-scrollable row. */}
       <div className="flex items-center justify-between gap-2">
         <h2 className="hidden sm:block text-lg font-semibold whitespace-nowrap">
-          {t('tables.title', { area })}
+          {area ? t('tables.title', { area }) : t('tables.titleNone')}
         </h2>
         <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 sm:mx-0 sm:px-0 flex-1 sm:flex-initial">
           {areas.map((a) => (
@@ -1079,6 +1067,16 @@ export default function TablesPage() {
           editable ? 'overflow-auto' : 'overflow-hidden touch-none'
         }`}
       >
+        {areasReady && !area ? (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-400 px-6 text-center">
+            {t('tables.noAreas')}
+          </div>
+        ) : null}
+        {areasReady && area && nodes && nodes.length === 0 ? (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-400 px-6 text-center">
+            {t('tables.noLayout')}
+          </div>
+        ) : null}
         {!editable && isZoomed && (
           <button
             type="button"

@@ -20,6 +20,12 @@
 
 import { prisma } from '@db/client';
 import type { PrinterProfileDTO, SettingsDTO } from '@shared/ipc';
+import {
+  ESC_POS_FONT_A,
+  ESC_POS_PC850,
+  encodeEscposText,
+  layoutFromSettings,
+} from '../escposEncode';
 
 import {
   buildEscposTicket,
@@ -621,24 +627,31 @@ export function buildTestPrintBuffer(
     printerName?: string;
     mode?: PrinterMode;
     detail?: string;
+    paperWidthMm?: 58 | 80;
   } = {},
 ): Buffer {
   const title = opts.title || 'Code Orbit POS Test Print';
-  const lines: string[] = [
-    '\x1b@', // ESC @ — initialise printer
-    '\x1ba\x01', // ESC a 1 — centre alignment
-    '\x1b!\x30', // ESC ! 0x30 — double-height + double-width
-    ` ${title}\n`,
-    '\x1b!\x00', // reset font
-    '\x1ba\x00', // left align
-    '-------------------------\n',
-  ];
-  if (opts.printerName) lines.push(`Printer: ${opts.printerName}\n`);
-  if (opts.mode) lines.push(`Mode:    ${opts.mode}\n`);
-  if (opts.detail) lines.push(`${opts.detail}\n`);
-  lines.push(`Time:    ${new Date().toISOString()}\n`);
-  lines.push('\n', '\x1dV\x41\x10'); // GS V A — partial cut
-  return Buffer.from(lines.join(''), 'binary');
+  const layout = layoutFromSettings({
+    printers: [{ id: 'default', paperWidthMm: opts.paperWidthMm }],
+  });
+  const body: string[] = [`${layout.sep}\n`];
+  if (opts.printerName) body.push(`Printer: ${opts.printerName}\n`);
+  if (opts.mode) body.push(`Mode:    ${opts.mode}\n`);
+  if (opts.detail) body.push(`${opts.detail}\n`);
+  body.push(`Time:    ${new Date().toISOString()}\n`);
+  return Buffer.concat([
+    Buffer.from([0x1b, 0x40]), // ESC @
+    ESC_POS_FONT_A,
+    ESC_POS_PC850,
+    Buffer.from([0x1b, 0x61, 0x01]), // center
+    Buffer.from([0x1b, 0x21, 0x30]), // double size
+    encodeEscposText(` ${title}\n`),
+    Buffer.from([0x1b, 0x21, 0x00]),
+    Buffer.from([0x1b, 0x61, 0x00]),
+    encodeEscposText(body.join('')),
+    Buffer.from([0x0a]),
+    Buffer.from([0x1d, 0x56, 0x41, 0x10]), // GS V A partial cut
+  ]);
 }
 
 /**
@@ -665,6 +678,7 @@ export async function testPrintWithProfile(
     printerName: profile?.name,
     mode,
     detail,
+    paperWidthMm: profile?.paperWidthMm === 58 ? 58 : 80,
   });
 
   if (mode === 'SYSTEM') {

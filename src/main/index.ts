@@ -133,6 +133,11 @@ import {
   isTransferredOutNote,
 } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
+import {
+  listMyActiveTickets,
+  listMyPaidTickets,
+  listMyVoidedTickets,
+} from './services/staffReports';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
@@ -154,6 +159,7 @@ import {
   ALL_KDS_STATIONS,
   decorateKdsTicketItemsFromCategory,
   enabledStationsFromSettings,
+  kdsMasterEnabledFromSettings,
   kdsStationsWithActiveItems,
   loadKdsRoutingFromDb,
 } from './services/kdsStationRouting';
@@ -1454,6 +1460,7 @@ app.whenReady().then(async () => {
       httpsPort: 3443,
       appVersion: app.getVersion(),
       businessCode,
+      restaurantName: String((settings as any)?.restaurantName || '').trim(),
     });
   } catch {
     // ignore — discovery is a convenience, not required
@@ -2239,20 +2246,7 @@ async function readSettings() {
     .catch(() => []);
   const tableAreas = (dbAreas as any[]).length
     ? (dbAreas as any[]).map((a) => ({ name: a.name, count: a.defaultCount }))
-    : (base.tableAreas ?? [
-        {
-          name: 'Main Hall',
-          count: process.env.TABLE_COUNT_MAIN_HALL
-            ? Number(process.env.TABLE_COUNT_MAIN_HALL)
-            : 8,
-        },
-        {
-          name: 'Terrace',
-          count: process.env.TABLE_COUNT_TERRACE
-            ? Number(process.env.TABLE_COUNT_TERRACE)
-            : 4,
-        },
-      ]);
+    : (base.tableAreas ?? []);
   const result: any = { ...base, tableAreas };
   // Never expose API secret to renderer
   if (result?.security && typeof result.security === 'object') {
@@ -3130,285 +3124,20 @@ ipcHandle('tickets:print', async (_e, input) => {
 
 // Waiter-facing ticket lists (receipt-style) - Local-first: always use local DB
 ipcHandle('reports:listMyActiveTickets', async (_e, input) => {
-  const userId = Number(input?.userId || 0);
-  if (!userId) return [];
-  const listLocal = async () => {
-    const [openRow, atRow] = await Promise.all([
-      prisma.syncState
-        .findUnique({ where: { key: 'tables:open' } })
-        .catch(() => null),
-      prisma.syncState
-        .findUnique({ where: { key: 'tables:openAt' } })
-        .catch(() => null),
-    ]);
-    const openMap = ((openRow?.valueJson as any) || {}) as Record<
-      string,
-      boolean
-    >;
-    const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-    const openKeys = Object.entries(openMap)
-      .filter(([, v]) => Boolean(v))
-      .map(([k]) => k);
-    const activeSettings = await readSettings().catch(() => ({}));
-    const activeVatEnabled = isVatEnabledFromSettings(activeSettings);
-
-    const tickets = await Promise.all(
-      openKeys.map(async (k) => {
-        const [area, tableLabel] = k.split(':');
-        if (!area || !tableLabel) return null;
-        const last = await prisma.ticketLog
-          .findFirst({
-            where: { area, tableLabel },
-            orderBy: { createdAt: 'desc' },
-          })
-          .catch(() => null);
-        if (!last || Number(last.userId) !== Number(userId)) return null;
-        const sinceIso = atMap[k];
-        const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-        const since =
-          sinceParsed && Number.isFinite(sinceParsed.getTime())
-            ? sinceParsed
-            : null;
-        const where: any = { area, tableLabel };
-        if (since) where.createdAt = { gte: since };
-        const [rows, coversRow, u] = await Promise.all([
-          // Cap per-table active ticket history. Even very long sessions rarely
-          // exceed a few hundred log rows; this prevents pathological loads.
-          prisma.ticketLog
-            .findMany({ where, orderBy: { createdAt: 'asc' }, take: 500 })
-            .catch(() => [] as any[]),
-          prisma.covers
-            .findFirst({
-              where: {
-                area,
-                label: tableLabel,
-                ...(since ? { createdAt: { gte: since } as any } : {}),
-              },
-              orderBy: { id: 'desc' },
-            } as any)
-            .catch(() => null),
-          prisma.user
-            .findUnique({ where: { id: last.userId } })
-            .catch(() => null),
-        ]);
-        const itemsAll = rows.flatMap((r: any) =>
-          Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [],
-        );
-        const items = itemsAll.filter((it: any) => !it?.voided);
-        const { net: subtotal, vat } = sumTicketLinesNetVat(
-          items,
-          activeVatEnabled,
-          Number((activeSettings as any)?.defaultVatRate || 0),
-        );
-        return {
-          kind: 'ACTIVE',
-          area,
-          tableLabel,
-          createdAt: since ? since.toISOString() : last.createdAt.toISOString(),
-          paidAt: null,
-          covers: coversRow?.covers ?? last.covers ?? null,
-          note: rows.find((r: any) => r.note)?.note ?? last.note ?? null,
-          userName: u?.displayName ?? null,
-          paymentMethod: null,
-          vatEnabled: activeVatEnabled,
-          items,
-          subtotal,
-          vat,
-          total: subtotal + vat,
-        } as any;
-      }),
-    );
-
-    return (tickets.filter(Boolean) as any[]).sort((a, b) =>
-      String(b.createdAt).localeCompare(String(a.createdAt)),
-    );
-  };
-
-  return await listLocal();
+  return await listMyActiveTickets(Number(input?.userId || 0));
 });
 
 ipcHandle('reports:listMyPaidTickets', async (_e, input) => {
-  const userId = Number(input?.userId || 0);
-  const q = String(input?.q || '')
-    .trim()
-    .toLowerCase();
-  const limit = Math.min(200, Math.max(1, Number(input?.limit || 40)));
-  if (!userId) return [];
-
-  const listLocal = async () => {
-    // Only the ORIGINAL payment-audit row (written by `tickets:print`)
-    // has `attempts = 0`. The printer-offline retry queue persists a
-    // separate PrintJob per backoff tick via `enqueuePrintRetry` with
-    // `attempts >= 1`. Those carry the same payload (incl.
-    // `meta.kind = 'PAYMENT'`) but represent re-print attempts, not new
-    // payments — without this guard, a single payment made while the
-    // printer is offline would surface as N "paid tickets" in the
-    // waiter report.
-    const jobs = await prisma.printJob
-      .findMany({
-        where: { type: 'RECEIPT' as any, attempts: 0 } as any,
-        orderBy: { createdAt: 'desc' },
-        take: 500,
-      })
-      .catch(() => []);
-
-    const paymentSettings = await readSettings().catch(() => ({}));
-    const out: any[] = [];
-    for (const j of jobs as any[]) {
-      const p = (j.payloadJson as any) || {};
-      const meta = (p?.meta as any) || {};
-      if (String(meta?.kind || '') !== 'PAYMENT') continue;
-      if (Number(meta?.userId || 0) !== Number(userId)) continue;
-      // Defense-in-depth: if a future migration drops the where clause
-      // or pre-PR-3 rows lack `attempts`, treat anything with
-      // attempts > 0 as a print retry, not a payment.
-      if (Number((j as any)?.attempts || 0) > 0) continue;
-      const area = String(p.area || '');
-      const tableLabel = String(p.tableLabel || '');
-      const items = Array.isArray(p.items) ? p.items : [];
-      const note = p.note ?? null;
-      const covers = (p.covers ?? null) as any;
-      const userName = p.userName ?? null;
-      const paymentMethod = (meta.method ?? null) as any;
-      const paidAt = meta.paidAt ?? j.createdAt.toISOString();
-      const vatEnabled = resolveVatEnabledFromMeta(meta, paymentSettings);
-      const { net: subtotal, vat } = sumTicketLinesNetVat(
-        items,
-        vatEnabled,
-        Number((paymentSettings as any)?.defaultVatRate || 0),
-      );
-      const serviceChargeEnabled = (meta.serviceChargeEnabled ?? null) as any;
-      const serviceChargeApplied = (meta.serviceChargeApplied ?? null) as any;
-      const serviceChargeMode = (meta.serviceChargeMode ?? null) as any;
-      const serviceChargeValue = (meta.serviceChargeValue ?? null) as any;
-      const serviceChargeAmount = Number(meta.serviceChargeAmount || 0);
-      const discountType = (meta.discountType ?? null) as any;
-      const discountValue = (meta.discountValue ?? null) as any;
-      const discountAmount = Number(meta.discountAmount || 0);
-      const discountReason = (meta.discountReason ?? null) as any;
-      const fallbackTotal = Math.max(
-        0,
-        subtotal +
-          vat +
-          (Number.isFinite(serviceChargeAmount) ? serviceChargeAmount : 0) -
-          (Number.isFinite(discountAmount) ? discountAmount : 0),
-      );
-      const totalAfter = Number(meta.totalAfter);
-      const total = Number.isFinite(totalAfter)
-        ? Math.max(0, totalAfter)
-        : fallbackTotal;
-      const hay =
-        `${area} ${tableLabel} ${String(userName || '')} ${items.map((it: any) => it.name).join(' ')}`.toLowerCase();
-      if (q && !hay.includes(q)) continue;
-      out.push({
-        kind: 'PAID',
-        area,
-        tableLabel,
-        createdAt: j.createdAt.toISOString(),
-        paidAt,
-        covers,
-        note,
-        userName,
-        paymentMethod,
-        vatEnabled,
-        serviceChargeEnabled,
-        serviceChargeApplied,
-        serviceChargeMode,
-        serviceChargeValue,
-        serviceChargeAmount: Number.isFinite(serviceChargeAmount)
-          ? serviceChargeAmount
-          : null,
-        discountType,
-        discountValue,
-        discountAmount: Number.isFinite(discountAmount) ? discountAmount : null,
-        discountReason,
-        items,
-        subtotal,
-        vat,
-        total,
-      });
-      if (out.length >= limit) break;
-    }
-    return out;
-  };
-
-  return await listLocal();
+  return await listMyPaidTickets(
+    Number(input?.userId || 0),
+    input?.q,
+    input?.limit,
+  );
 });
 
 // Voided tickets/items report - Local-first
 ipcHandle('reports:listMyVoidedTickets', async (_e, input) => {
-  const userId = Number(input?.userId || 0);
-  const limit = Math.min(200, Math.max(1, Number(input?.limit || 40)));
-  if (!userId) return [];
-
-  const listLocal = async () => {
-    // Find ticket logs that contain voided items or are fully voided (note contains VOIDED)
-    const rows = await prisma.ticketLog
-      .findMany({
-        orderBy: { createdAt: 'desc' },
-        take: 500,
-      })
-      .catch(() => []);
-
-    const voidSettings = await readSettings().catch(() => ({}));
-    const voidVatEnabled = isVatEnabledFromSettings(voidSettings);
-    const voidDefaultVatRate = Number(
-      (voidSettings as any)?.defaultVatRate || 0,
-    );
-
-    const out: any[] = [];
-    for (const r of rows as any[]) {
-      if (Number(r.userId) !== Number(userId)) continue;
-      // Transferred-out rows carry an exact copy of the destination's
-      // items (the transfer flow duplicates `itemsJson`); skipping them
-      // here prevents voided items from being reported twice in the
-      // waiter's voided-tickets list.
-      if (isTransferredOutNote(r.note)) continue;
-      const itemsAll = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
-      const voidedItems = itemsAll.filter((it: any) => it?.voided === true);
-      if (voidedItems.length === 0) continue;
-
-      const note = String(r.note || '');
-      const isFullVoid = itemsAll.every((it: any) => it?.voided === true);
-      const u = await prisma.user
-        .findUnique({ where: { id: r.userId } })
-        .catch(() => null);
-
-      const grossSubtotal = voidedItems.reduce(
-        (s: number, it: any) =>
-          s + Number(it.unitPrice || 0) * Number(it.qty || 1),
-        0,
-      );
-      const vat = voidVatEnabled
-        ? voidedItems.reduce((s: number, it: any) => {
-            const lineGross = Number(it.unitPrice || 0) * Number(it.qty || 1);
-            const rate = effectiveVatRate(it.vatRate, voidDefaultVatRate);
-            return s + splitGrossVat(lineGross, rate).vat;
-          }, 0)
-        : 0;
-      const subtotal = grossSubtotal - vat;
-
-      out.push({
-        kind: isFullVoid ? 'VOIDED_TICKET' : 'VOIDED_ITEMS',
-        area: r.area,
-        tableLabel: r.tableLabel,
-        createdAt: r.createdAt.toISOString(),
-        note,
-        userName: u?.displayName ?? null,
-        covers: r.covers ?? null,
-        items: voidedItems,
-        totalItems: itemsAll.length,
-        voidedCount: voidedItems.length,
-        subtotal,
-        vat,
-        total: grossSubtotal,
-      });
-      if (out.length >= limit) break;
-    }
-    return out;
-  };
-
-  return await listLocal();
+  return await listMyVoidedTickets(Number(input?.userId || 0), input?.limit);
 });
 
 // Persist open tables in SyncState - Local-first: always use local DB
@@ -4059,6 +3788,15 @@ async function getEnabledStations(): Promise<string[]> {
   }
 }
 
+async function isKdsMasterEnabled(): Promise<boolean> {
+  try {
+    const settings: any = await readSettings();
+    return kdsMasterEnabledFromSettings(settings);
+  } catch {
+    return true;
+  }
+}
+
 // Tickets logging
 ipcHandle('tickets:log', async (_e, payload) => {
   try {
@@ -4345,6 +4083,7 @@ ipcHandle('kds:listTickets', async (_e, input) => {
 
   await ensureKdsLocalSchema();
   try {
+    if (!(await isKdsMasterEnabled())) return [];
     const cookerEnabled = await getCookerEnabled();
     // The cooker screen always reads OPEN (NEW) tickets — its "Done" tab shows
     // cooked-but-not-picked-up lines that still live on open tickets.
@@ -4518,9 +4257,10 @@ ipcHandle('kds:getCookerMode', async () => {
 
 ipcHandle('kds:getEnabledStations', async () => {
   try {
-    return { stations: await getEnabledStations() };
+    const enabled = await isKdsMasterEnabled();
+    return { enabled, stations: await getEnabledStations() };
   } catch {
-    return { stations: [...ALL_KDS_STATIONS] };
+    return { enabled: true, stations: [...ALL_KDS_STATIONS] };
   }
 });
 

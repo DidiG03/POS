@@ -12,6 +12,7 @@ import {
   type ReservationsChangedKind,
 } from '../utils/reservationEvents';
 import type { ReservationDTO } from '@shared/ipc';
+import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
 
 export type ReservationsContext = {
   me: { id: number; displayName: string; role: string };
@@ -182,27 +183,33 @@ export default function ReservationsLayout() {
     [me?.id, areas],
   );
 
-  // Bootstrapping: load areas from settings.
+  // Bootstrapping: load areas from the POS host, not a hardcoded list.
+  // Re-run when the tablet comes back to the foreground so an admin
+  // rename on the till shows up here without a full app restart.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async () => {
       try {
         const s: any = await window.api.settings.get();
         if (cancelled) return;
-        const list: { name: string; count: number }[] =
-          (s?.tableAreas as any) || [];
-        const sane = Array.isArray(list) ? list : [];
+        const sane = saneTableAreas(s?.tableAreas);
         setAreas(sane);
-        if (!area && sane.length) setArea(String(sane[0].name));
+        setArea((current) => pickConfiguredArea(current, sane));
       } catch {
         // ignore — area selector simply stays empty until tables are configured
       }
-    })();
+    };
+    void load();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
     };
-    // Intentionally only on mount: the area selector is auto-seeded once
-    // and the user controls subsequent changes via the dropdown.
   }, []);
 
   // Pull table labels for the current header area (floor / walk-in).

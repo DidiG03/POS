@@ -25,6 +25,13 @@ describe('enabledStationsFromSettings', () => {
     expect(set.has('DESSERT')).toBe(true);
     expect(set.has('BAR')).toBe(false);
   });
+
+  it('returns no stations when the master KDS switch is off', () => {
+    const set = enabledStationsFromSettings({
+      kds: { enabled: false, stations: { KITCHEN: true, BAR: true } },
+    });
+    expect(set.size).toBe(0);
+  });
 });
 
 describe('disabled stations stop routing', () => {

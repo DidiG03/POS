@@ -2112,9 +2112,9 @@ function GoogleCalendarSettings() {
     Array<{ id: string; summary: string; primary?: boolean }>
   >([]);
   const [syncIntervalMin, setSyncIntervalMin] = useState(5);
-  const [defaultArea, setDefaultArea] = useState('Main Hall');
+  const [defaultArea, setDefaultArea] = useState('');
   const [defaultDurationMin, setDefaultDurationMin] = useState(120);
-  const [areas, setAreas] = useState<string[]>(['Main Hall']);
+  const [areas, setAreas] = useState<string[]>([]);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
@@ -2130,15 +2130,21 @@ function GoogleCalendarSettings() {
     setCalendarId(String(gc.calendarId || 'primary'));
     setCalendarSummary(String(gc.calendarSummary || ''));
     setSyncIntervalMin(Number(gc.syncIntervalMin || 5));
-    setDefaultArea(String(gc.defaultArea || 'Main Hall'));
     setDefaultDurationMin(Number(gc.defaultDurationMin || 120));
     setLastSyncAt(gc.lastSyncAt ? String(gc.lastSyncAt) : null);
     setLastSyncMessage(gc.lastSyncMessage ? String(gc.lastSyncMessage) : null);
     setLastSyncError(gc.lastSyncError ? String(gc.lastSyncError) : null);
     const tableAreas = Array.isArray(s?.tableAreas)
-      ? s.tableAreas.map((a: any) => String(a?.name || '')).filter(Boolean)
+      ? s.tableAreas
+          .map((a: any) => String(a?.name || '').trim())
+          .filter(Boolean)
       : [];
-    if (tableAreas.length) setAreas(tableAreas);
+    setAreas(tableAreas);
+    setDefaultArea((current) => {
+      const saved = String(gc.defaultArea || current || '').trim();
+      if (saved && tableAreas.includes(saved)) return saved;
+      return tableAreas[0] || '';
+    });
     if (gc.oauthConnected) {
       const listed = await window.api.settings.listGoogleCalendars?.();
       if (listed?.ok && Array.isArray(listed.calendars)) {
@@ -2173,7 +2179,7 @@ function GoogleCalendarSettings() {
         googleCalendar: {
           enabled,
           syncIntervalMin,
-          defaultArea: defaultArea.trim() || 'Main Hall',
+          defaultArea: defaultArea.trim() || areas[0] || '',
           defaultDurationMin,
           calendarId,
           calendarSummary: selected?.summary || calendarSummary || undefined,
@@ -2476,7 +2482,10 @@ function GoogleCalendarSettings() {
 }
 
 function KdsSettings() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<string | null>(null);
+  const [kdsOn, setKdsOn] = useState(true);
+  const [savingMaster, setSavingMaster] = useState(false);
   const [stations, setStations] = useState<Record<KdsStation, boolean>>(() => {
     const init = {} as Record<KdsStation, boolean>;
     for (const st of ALL_KDS_STATIONS) init[st] = true;
@@ -2492,6 +2501,7 @@ function KdsSettings() {
         const s: any = await window.api.settings.get();
         const map = s?.kds?.stations;
         if (!alive) return;
+        setKdsOn(s?.kds?.enabled !== false);
         setStations((prev) => {
           const next = { ...prev };
           for (const st of ALL_KDS_STATIONS) {
@@ -2509,6 +2519,22 @@ function KdsSettings() {
       alive = false;
     };
   }, []);
+
+  const toggleMaster = async () => {
+    const next = !kdsOn;
+    setKdsOn(next);
+    setSavingMaster(true);
+    setStatus(null);
+    try {
+      await window.api.settings.update({ kds: { enabled: next } } as any);
+      setStatus(next ? t('kdsSettings.masterOn') : t('kdsSettings.masterOff'));
+    } catch {
+      setKdsOn(!next);
+      setStatus(t('kdsSettings.masterSaveFailed'));
+    } finally {
+      setSavingMaster(false);
+    }
+  };
 
   const toggleStation = async (station: KdsStation) => {
     const next = { ...stations, [station]: !stations[station] };
@@ -2533,7 +2559,7 @@ function KdsSettings() {
 
   return (
     <div>
-      <div className="text-lg font-semibold mb-3">Kitchen Display (KDS)</div>
+      <div className="text-lg font-semibold mb-3">{t('kdsSettings.title')}</div>
       <div className="space-y-3">
         <div className="rounded border border-gray-700 bg-gray-900/40 p-3 text-xs opacity-80">
           KDS app updates are installed on each kitchen screen (not from this
@@ -2548,14 +2574,40 @@ function KdsSettings() {
           {kdsStationLabel('DESSERT')} for that display.
         </div>
 
-        <div className="mt-4 pt-4 border-t border-gray-800">
-          <div className="font-medium mb-1">Active prep stations</div>
-          <div className="text-xs opacity-70 mb-3">
-            Turn a station off to stop routing its items to any kitchen screen.
-            Disabled stations keep printing on receipts but never appear on the
-            KDS.
+        <label className="flex items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-3">
+          <div>
+            <div className="text-sm font-medium">
+              {t('kdsSettings.masterLabel')}
+            </div>
+            <div className="text-xs opacity-70 mt-1">
+              {t('kdsSettings.masterHelp')}
+            </div>
           </div>
-          <div className="space-y-2">
+          <button
+            type="button"
+            disabled={loadingStations || savingMaster}
+            onClick={() => void toggleMaster()}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+              kdsOn ? 'bg-emerald-600' : 'bg-gray-600'
+            }`}
+            aria-pressed={kdsOn}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                kdsOn ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </label>
+
+        <div className="mt-4 pt-4 border-t border-gray-800">
+          <div className="font-medium mb-1">
+            {t('kdsSettings.stationsTitle')}
+          </div>
+          <div className="text-xs opacity-70 mb-3">
+            {t('kdsSettings.stationsHelp')}
+          </div>
+          <div className={`space-y-2 ${kdsOn ? '' : 'opacity-50'}`}>
             {ALL_KDS_STATIONS.map((st) => (
               <label
                 key={st}
@@ -2564,7 +2616,7 @@ function KdsSettings() {
                 <span className="text-sm">{kdsStationLabel(st)}</span>
                 <button
                   type="button"
-                  disabled={loadingStations || savingStation === st}
+                  disabled={!kdsOn || loadingStations || savingStation === st}
                   onClick={() => toggleStation(st)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
                     stations[st] ? 'bg-emerald-600' : 'bg-gray-600'
@@ -2612,14 +2664,20 @@ function KdsSettings() {
         </div>
 
         <button
-          className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 w-full"
+          className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 w-full disabled:opacity-50"
+          disabled={!kdsOn}
           onClick={async () => {
             setStatus(null);
             await window.api.kds.openWindow();
           }}
         >
-          Open Kitchen Display
+          {t('kdsSettings.openWindow')}
         </button>
+        {!kdsOn && (
+          <div className="text-xs opacity-70">
+            {t('kdsSettings.openWindowDisabled')}
+          </div>
+        )}
 
         {status && <div className="text-xs opacity-80">{status}</div>}
       </div>
@@ -2759,6 +2817,7 @@ type PrinterProfile = {
   dataBits?: 7 | 8;
   stopBits?: 1 | 2;
   parity?: 'none' | 'even' | 'odd';
+  paperWidthMm?: 58 | 80;
 };
 
 function PrinterSettings() {
@@ -2811,6 +2870,7 @@ function PrinterSettings() {
       dataBits: (Number(p?.dataBits || 8) === 7 ? 7 : 8) as 7 | 8,
       stopBits: (Number(p?.stopBits || 1) === 2 ? 2 : 1) as 1 | 2,
       parity: String(p?.parity || 'none') as any as 'none' | 'even' | 'odd',
+      paperWidthMm: Number(p?.paperWidthMm) === 58 ? 58 : 80,
     };
   };
 
@@ -3409,6 +3469,22 @@ function PrinterProfileCard({
             <option value="SYSTEM">USB / System printer</option>
             <option value="SERIAL">Serial (ESC/POS / many Bluetooth)</option>
           </select>
+
+          <label className="flex items-center gap-2 text-sm">
+            Paper width
+            <select
+              className="bg-gray-700 rounded px-3 py-2 flex-1"
+              value={p.paperWidthMm === 58 ? 58 : 80}
+              onChange={(e) =>
+                onUpdate({
+                  paperWidthMm: Number(e.target.value) === 58 ? 58 : 80,
+                })
+              }
+            >
+              <option value={80}>80 mm (full-width receipt)</option>
+              <option value={58}>58 mm (narrow roll)</option>
+            </select>
+          </label>
 
           {mode === 'NETWORK' && (
             <div className="space-y-2">

@@ -3,14 +3,24 @@ import { ALL_KDS_STATIONS } from '@shared/kdsStations';
 export { ALL_KDS_STATIONS };
 
 /**
+ * Master KDS switch. Missing/`true` keeps kitchen routing on so existing
+ * installs don't go dark. Explicit `false` turns the whole KDS off.
+ */
+export function kdsMasterEnabledFromSettings(settings: unknown): boolean {
+  return (settings as any)?.kds?.enabled !== false;
+}
+
+/**
  * Which prep stations are enabled for KDS routing, read from settings.
  * Shape: `settings.kds.stations = { KITCHEN: boolean, BAR: boolean, DESSERT:
  * boolean }`. A station is enabled unless it's explicitly set to `false`, so
  * existing installs (no setting yet) keep routing to every station.
+ * When the master switch is off, this is empty — nothing is fanned out.
  */
 export function enabledStationsFromSettings(settings: unknown): Set<string> {
-  const map = (settings as any)?.kds?.stations;
   const enabled = new Set<string>();
+  if (!kdsMasterEnabledFromSettings(settings)) return enabled;
+  const map = (settings as any)?.kds?.stations;
   for (const st of ALL_KDS_STATIONS) {
     if (!map || map[st] !== false) enabled.add(st);
   }

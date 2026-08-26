@@ -56,6 +56,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
     note: 'locale, currency, areas; credentials are redacted before sending',
   },
   'GET /offline/status': { allow: 'public' },
+  'GET /billing/status': {
+    allow: 'public',
+    note: 'AppLayout polls this after login; payload has no credentials',
+  },
   'GET /shifts/open': {
     allow: 'public',
     note: 'login screen marks who is already clocked in',
@@ -75,6 +79,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /kds/tickets': { allow: 'public', note: 'kiosk; see note above' },
   'GET /kds/ticket-detail': { allow: 'public', note: 'kiosk' },
   'GET /kds/cooker-mode': { allow: 'public', note: 'kiosk' },
+  'GET /kds/enabled-stations': {
+    allow: 'public',
+    note: 'kiosk; which prep stations the host is routing',
+  },
   'GET /kds/debug': { allow: 'public', note: 'kiosk reachability probe' },
   'POST /kds/bump': { allow: 'public', note: 'kiosk write' },
   'POST /kds/bump-item': { allow: 'public', note: 'kiosk write' },
@@ -85,9 +93,15 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   // ------------------------------------------------------------------ auth
   'POST /auth/verify-manager-pin': { allow: 'session' },
 
+  // -------------------------------------------------------- notifications
+  'GET /notifications': { allow: 'session' },
+  'POST /notifications/mark-all-read': { allow: 'session' },
+
   // ----------------------------------------------------------------- admin
   'GET /admin/overview': { allow: ADMIN },
   'GET /admin/sales-trends': { allow: ADMIN },
+  'POST /admin/billing/create-checkout': { allow: ADMIN },
+  'POST /admin/billing/create-portal': { allow: ADMIN },
 
   // -------------------------------------------------------------- settings
   'POST /settings/update': { allow: ADMIN },
@@ -109,6 +123,9 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /reports/my/overview': { allow: 'session' },
   'GET /reports/my/sales-trends': { allow: 'session' },
   'GET /reports/my/top-selling-today': { allow: 'session' },
+  'GET /reports/my/active-tickets': { allow: 'session' },
+  'GET /reports/my/paid-tickets': { allow: 'session' },
+  'GET /reports/my/voided-tickets': { allow: 'session' },
 
   // -------------------------------------------------------------- requests
   'GET /requests/list-for-owner': { allow: 'session' },

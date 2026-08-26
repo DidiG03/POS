@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createHashRouter } from 'react-router-dom';
 import { routes } from './routes';
@@ -10,6 +10,9 @@ import { useReservationSessionStore } from './stores/reservationSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from './components/Toaster';
 import { UpdateNotification } from './components/UpdateNotification';
+import { PosHostPicker } from './app/components/PosHostPicker';
+import { discoverPosHostsInBrowser } from './utils/discoverPosHosts';
+import type { DiscoveredPosHost } from '@shared/posHostDiscovery';
 import { initMobileShell } from './utils/mobileShell';
 import { resumeMainProcessSession } from './utils/resumeSession';
 import './i18n/config';
@@ -470,6 +473,15 @@ if (!(window as any).api) {
     }
   }
 
+  // 401 = the token is missing or no longer valid. 403 is "you're signed in
+  // but this route is not for you" (LAN policy, clock-only roles, a waiter
+  // hitting an admin path). Treating 403 as expiry bounced tablets straight
+  // back to the PIN screen with no error, because AppLayout always fetches
+  // /billing/status and /notifications after login.
+  function maybeForceLogout(status: number, token: string | null) {
+    if (token && status === 401) forceLogout('Session expired');
+  }
+
   async function go(path: string, opts?: RequestInit) {
     const token = getToken();
     const headers: Record<string, string> = {
@@ -481,8 +493,7 @@ if (!(window as any).api) {
     if (IS_CLOUD) {
       const r = await fetchWithRetry(CLOUD_BASE + path, { ...opts, headers });
       if (!r.ok) {
-        if (r.status === 401 || r.status === 403)
-          forceLogout('Session expired');
+        maybeForceLogout(r.status, token);
         const { message, code } = await readErrorMessage(r);
         throw new HttpError(r.status, message, code);
       }
@@ -496,8 +507,7 @@ if (!(window as any).api) {
           headers,
         });
         if (!r.ok) {
-          if (r.status === 401 || r.status === 403)
-            forceLogout('Session expired');
+          maybeForceLogout(r.status, token);
           const { message, code } = await readErrorMessage(r);
           throw new HttpError(r.status, message, code);
         }
@@ -511,8 +521,7 @@ if (!(window as any).api) {
           headers,
         });
         if (!r2.ok) {
-          if (r2.status === 401 || r2.status === 403)
-            forceLogout('Session expired');
+          maybeForceLogout(r2.status, token);
           const { message, code } = await readErrorMessage(r2);
           throw new HttpError(r2.status, message, code);
         }
@@ -545,9 +554,7 @@ if (!(window as any).api) {
         timeoutMs,
       );
       if (!r.ok) {
-        // Only treat 401/403 as "session expired" if we actually have a token.
-        if (token && (r.status === 401 || r.status === 403))
-          forceLogout('Session expired');
+        maybeForceLogout(r.status, token);
         const { message, code } = await readErrorMessage(r);
         throw new HttpError(r.status, message, code);
       }
@@ -562,8 +569,7 @@ if (!(window as any).api) {
         timeoutMs,
       );
       if (!r2.ok) {
-        if (token && (r2.status === 401 || r2.status === 403))
-          forceLogout('Session expired');
+        maybeForceLogout(r2.status, token);
         const { message, code } = await readErrorMessage(r2);
         throw new HttpError(r2.status, message, code);
       }
@@ -715,19 +721,21 @@ if (!(window as any).api) {
     },
     settings: {
       async get() {
-        if (IS_CLOUD) {
+        // Floor areas, printers, locale, etc. live on the POS host.
+        // Auto-detecting cloud used to skip this call and return hardcoded
+        // "Main Hall" / "Terrace", so a reservation tablet looked up the
+        // wrong layout and the real area names never appeared.
+        try {
+          return await goLan('/settings');
+        } catch (e) {
+          if (!IS_CLOUD) throw e;
           const bc = getBusinessCode();
           return {
             enableAdmin: true,
             cloud: { backendUrl: CLOUD_BASE, businessCode: bc || undefined },
-            // For now, keep UI preferences local on each device.
-            tableAreas: [
-              { name: 'Main Hall', count: 8 },
-              { name: 'Terrace', count: 4 },
-            ],
+            tableAreas: [],
           };
         }
-        return await goLan('/settings');
       },
       async update(input: any) {
         if (IS_CLOUD) {
@@ -1103,6 +1111,16 @@ if (!(window as any).api) {
         const r = await goLan('/kds/cooker-mode');
         return { enabled: Boolean((r as any)?.enabled) };
       },
+      async getEnabledStations() {
+        const r = await goLan('/kds/enabled-stations');
+        const stations = Array.isArray((r as any)?.stations)
+          ? (r as any).stations
+          : [];
+        return {
+          enabled: (r as any)?.enabled !== false,
+          stations,
+        };
+      },
       async setCookerMode(input: any) {
         const r = await goLan('/kds/cooker-mode', {
           method: 'POST',
@@ -1313,6 +1331,10 @@ function BootScreen({
   const [showSetup, setShowSetup] = useState(false);
   const [setupNonce, setSetupNonce] = useState(0);
   const backend = useMemo(() => resolveBackendHost(), [setupNonce]);
+
+  useEffect(() => {
+    if (canRetry && showLanSetup) setShowSetup(true);
+  }, [canRetry, showLanSetup]);
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100 px-6">
       <div className="flex flex-col items-center gap-4 w-full max-w-md">
@@ -1419,6 +1441,35 @@ function BackendSetupModal({
   const [httpsPort, setHttpsPort] = useState(initial.httpsPort);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hosts, setHosts] = useState<DiscoveredPosHost[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [scanHint, setScanHint] = useState<string | null>(null);
+
+  const scan = useCallback(async () => {
+    setScanning(true);
+    setScanHint(null);
+    try {
+      const list = await discoverPosHostsInBrowser();
+      setHosts(list);
+      if (list.length === 1) {
+        setHost(list[0].host);
+        setHttpPort(String(list[0].httpPort || 3333));
+        setScanHint(t('server.foundOne', { name: list[0].name }));
+      } else if (list.length > 1) {
+        setScanHint(t('server.pickOne'));
+      } else {
+        setScanHint(t('server.noneFound'));
+      }
+    } catch (e: any) {
+      setScanHint(e?.message || t('server.noneFound'));
+    } finally {
+      setScanning(false);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    void scan();
+  }, [scan]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1533,6 +1584,25 @@ function BackendSetupModal({
               winCmd: 'ipconfig',
             })}
           </div>
+          <PosHostPicker
+            hosts={hosts}
+            selectedHost={host}
+            selectedPort={httpPort}
+            scanning={scanning}
+            onSelect={(h) => {
+              setHost(h.host);
+              setHttpPort(String(h.httpPort || 3333));
+              setScanHint(null);
+            }}
+            onRescan={() => void scan()}
+            labels={{
+              title: t('server.foundTitle'),
+              scanning: t('server.scanning'),
+              empty: t('server.noneFound'),
+              rescan: t('server.rescan'),
+            }}
+          />
+          {scanHint && <div className="text-xs text-gray-300">{scanHint}</div>}
           <label className="block text-sm">
             <div className="opacity-80 mb-1">{t('server.hostLabel')}</div>
             <input
@@ -1658,7 +1728,7 @@ function Root() {
 
   useEffect(() => {
     // Session expiry for Electron (persisted zustand sessions).
-    // Browser clients already rely on API token expiry; they will trigger pos:forceLogout on 401/403.
+    // Browser clients already rely on API token expiry; they will trigger pos:forceLogout on 401.
     const tick = () => {
       const staff = useSessionStore.getState() as any;
       const admin = useAdminSessionStore.getState() as any;

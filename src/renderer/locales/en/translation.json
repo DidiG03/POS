@@ -102,7 +102,13 @@
     "clearFailed": "Failed to clear settings",
     "saveReload": "Save & reload",
     "reset": "Reset",
-    "resetTitle": "Forget saved server and use auto-detection"
+    "resetTitle": "Forget saved server and use auto-detection",
+    "foundTitle": "POS hosts on this Wi-Fi",
+    "scanning": "Looking for POS…",
+    "rescan": "Rescan",
+    "noneFound": "None found yet. Stay on this Wi-Fi, make sure POS is running, then rescan — or type the IP below.",
+    "pickOne": "More than one POS was found. Tap the one this screen should use.",
+    "foundOne": "Found {{name}}. You can save, or pick another if this is the wrong till."
   },
   "layout": {
     "billingPausedTitle": "POS paused — payment required",
@@ -221,6 +227,10 @@
   },
   "tables": {
     "title": "Tables – {{area}}",
+    "titleNone": "Tables",
+    "loading": "Loading tables…",
+    "noAreas": "No table areas configured. Add them in Admin → Settings → Table Areas.",
+    "noLayout": "No floor layout saved for this area yet. Open Admin → Settings → Table Areas and tap Edit layout.",
     "editLayout": "Edit layout",
     "editing": "Editing…",
     "addArea": "+ Area",
@@ -348,6 +358,18 @@
     "syncFailed": "Calendar sync failed.",
     "syncUnavailable": "Calendar sync is not available. Restart the POS app.",
     "syncSuccess": "Synced {{imported}} new, {{updated}} updated, {{cancelled}} cancelled."
+  },
+  "kdsSettings": {
+    "title": "Kitchen Display (KDS)",
+    "masterLabel": "Use Kitchen Display",
+    "masterHelp": "Turn this off if the kitchen works from printed tickets only. Orders still print; nothing is sent to KDS screens.",
+    "masterOn": "Kitchen Display is on — new orders appear on kitchen screens.",
+    "masterOff": "Kitchen Display is off — orders print as usual and are not sent to KDS.",
+    "masterSaveFailed": "Could not save Kitchen Display setting.",
+    "stationsTitle": "Active prep stations",
+    "stationsHelp": "Turn a station off to stop routing its items to any kitchen screen. Disabled stations keep printing on receipts but never appear on the KDS.",
+    "openWindow": "Open Kitchen Display",
+    "openWindowDisabled": "Turn Kitchen Display on to open a kitchen screen from here."
   },
   "order": {
     "loadErrors": {

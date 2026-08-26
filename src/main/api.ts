@@ -42,12 +42,21 @@ import {
   getKdsTicketDetail,
 } from './services/kdsList';
 import {
+  enabledStationsFromSettings,
+  kdsMasterEnabledFromSettings,
+} from './services/kdsStationRouting';
+import {
   kdsStationListWhere,
   localDayStart,
   purgeKdsDoneTicketsForStation,
 } from './services/kdsRetention';
 import { getCurrentSessionOwnerId } from './services/tableSession';
 import { finalizeShiftAfterClockOut } from './services/shiftSummary';
+import {
+  listMyActiveTickets,
+  listMyPaidTickets,
+  listMyVoidedTickets,
+} from './services/staffReports';
 import {
   recallKdsTicket,
   bumpAllStationItemsInJson,
@@ -1026,10 +1035,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/kds/recall',
         '/kds/clear-done',
         '/kds/cooker-mode',
+        '/kds/enabled-stations',
         '/kds/debug',
         '/shifts/open',
         '/settings',
         '/offline/status',
+        '/billing/status',
       ]);
       const isPublic = publicPaths.has(pathname) || isStaticGet;
       let auth: AuthContext = null;
@@ -1119,6 +1130,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           '/shifts/clock-in',
           '/shifts/clock-out',
           '/shifts/public-open',
+          // AppLayout fetches these on every shell, including /app/clock.
+          '/billing/status',
+          '/notifications',
+          '/notifications/mark-all-read',
         ]);
         const isHostReservationsPath =
           role === 'HOST' &&
@@ -1437,6 +1452,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'GET' && pathname === '/kds/tickets') {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
+        const settings: any = await coreServices
+          .readSettings()
+          .catch(() => ({}));
+        if (!kdsMasterEnabledFromSettings(settings)) {
+          return send(res, 200, [], corsOrigin);
+        }
         const station = String(
           (parsed.query.station as any) || 'KITCHEN',
         ).toUpperCase();
@@ -1649,6 +1670,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const enabled = await getCookerEnabledFromSettings();
         return send(res, 200, { enabled }, corsOrigin);
       }
+      if (req.method === 'GET' && pathname === '/kds/enabled-stations') {
+        const settings: any = await coreServices
+          .readSettings()
+          .catch(() => ({}));
+        return send(
+          res,
+          200,
+          {
+            enabled: kdsMasterEnabledFromSettings(settings),
+            stations: Array.from(enabledStationsFromSettings(settings)),
+          },
+          corsOrigin,
+        );
+      }
       if (req.method === 'POST' && pathname === '/kds/cooker-mode') {
         const body = await parseJson(req);
         const enabled = Boolean(body?.enabled);
@@ -1668,6 +1703,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'GET' && pathname === '/kds/debug') {
         const ok = await ensureKdsLocalSchema();
+        const settings: any = await coreServices
+          .readSettings()
+          .catch(() => ({}));
         const counts: any = {
           ticketLog: await prisma.ticketLog.count().catch(() => 0),
         };
@@ -1682,7 +1720,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             .count()
             .catch(() => 0);
         }
-        return send(res, 200, { schemaReady: ok, counts }, corsOrigin);
+        return send(
+          res,
+          200,
+          {
+            app: 'code-orbit-pos',
+            schemaReady: ok,
+            counts,
+            restaurantName:
+              String(settings?.restaurantName || '').trim() || undefined,
+            businessCode:
+              String(settings?.cloud?.businessCode || '').trim() || undefined,
+          },
+          corsOrigin,
+        );
       }
 
       // Printing: test and ticket (for browser clients on LAN). All
@@ -2668,6 +2719,81 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         );
       }
 
+      // Billing status: tablets poll this after login. Keep it public and
+      // never lock the floor from a missing cloud check — same fallback as
+      // the Electron IPC handler when cloud isn't configured.
+      if (req.method === 'GET' && pathname === '/billing/status') {
+        return send(
+          res,
+          200,
+          { status: 'ACTIVE', billingEnabled: false },
+          corsOrigin,
+        );
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/admin/billing/create-checkout'
+      ) {
+        return send(
+          res,
+          200,
+          { error: 'Billing is managed from the desktop Admin window' },
+          corsOrigin,
+        );
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/admin/billing/create-portal'
+      ) {
+        return send(
+          res,
+          200,
+          { error: 'Billing is managed from the desktop Admin window' },
+          corsOrigin,
+        );
+      }
+
+      // Notifications for the signed-in staff member (tablet header bell).
+      if (req.method === 'GET' && pathname === '/notifications') {
+        if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        const onlyUnread = String(parsed.query.onlyUnread || '') === '1';
+        const limit = Math.min(
+          500,
+          Math.max(1, Number(parsed.query.limit || 100) || 100),
+        );
+        const rows = await prisma.notification.findMany({
+          where: {
+            userId: auth.userId,
+            ...(onlyUnread ? { readAt: null } : {}),
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+        } as any);
+        return send(
+          res,
+          200,
+          rows.map((n: any) => ({
+            id: n.id,
+            type: n.type,
+            message: n.message,
+            readAt: n.readAt ? new Date(n.readAt).toISOString() : null,
+            createdAt: new Date(n.createdAt).toISOString(),
+          })),
+          corsOrigin,
+        );
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/notifications/mark-all-read'
+      ) {
+        if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        await prisma.notification.updateMany({
+          where: { userId: auth.userId, readAt: null },
+          data: { readAt: new Date() },
+        });
+        return send(res, 200, { ok: true }, corsOrigin);
+      }
+
       // Settings: get and update (for browser clients)
       if (req.method === 'GET' && pathname === '/settings') {
         const base = await coreServices.readSettings();
@@ -3119,6 +3245,29 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           points[idx].orders += 1;
         }
         return send(res, 200, { range, points }, corsOrigin);
+      }
+
+      if (req.method === 'GET' && pathname === '/reports/my/active-tickets') {
+        if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        const tickets = await listMyActiveTickets(auth.userId);
+        return send(res, 200, tickets, corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/reports/my/paid-tickets') {
+        if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        const tickets = await listMyPaidTickets(
+          auth.userId,
+          String(parsed.query.q || ''),
+          Number(parsed.query.limit || 40),
+        );
+        return send(res, 200, tickets, corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/reports/my/voided-tickets') {
+        if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        const tickets = await listMyVoidedTickets(
+          auth.userId,
+          Number(parsed.query.limit || 40),
+        );
+        return send(res, 200, tickets, corsOrigin);
       }
 
       // ----- Reservations (mobile / LAN HOST + ADMIN clients) -----

@@ -129,4 +129,22 @@ describe('createKdsTicketFromLog', () => {
     expect(kdsTicketCreate).toHaveBeenCalled();
     expect(kdsTicketUpdate).not.toHaveBeenCalled();
   });
+
+  it('does not create a ticket when KDS is turned off', async () => {
+    readSettings.mockResolvedValue({
+      kds: { enabled: false, stations: { KITCHEN: true } },
+    });
+
+    const result = await createKdsTicketFromLog({
+      userId: 1,
+      area: 'Sallon',
+      tableLabel: 'T3',
+      items: [{ name: 'Pasta', qty: 1, categoryId: 1 }],
+      note: null,
+    });
+
+    expect(result).toBeNull();
+    expect(kdsTicketCreate).not.toHaveBeenCalled();
+    expect(loadKdsRoutingFromDb).not.toHaveBeenCalled();
+  });
 });

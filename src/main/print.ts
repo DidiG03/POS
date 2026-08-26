@@ -6,10 +6,29 @@ import { BrowserWindow } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import {
+  ESC_POS_FONT_A,
+  ESC_POS_PC850,
+  encodeEscposText,
+  formatTwoCol,
+  layoutFromSettings,
+  wrapEscposText,
+  type ReceiptLayout,
+} from './escposEncode';
 
 // ESC/POS helpers
 const ESC = Buffer.from([0x1b]);
 const GS = Buffer.from([0x1d]);
+
+function cmdPrinterInit(): Buffer[] {
+  return [ESC, Buffer.from('@'), ESC_POS_FONT_A, ESC_POS_PC850];
+}
+
+function twoCol(left: string, right: string, layout: ReceiptLayout): Buffer[] {
+  return formatTwoCol(left, right, layout)
+    .split('\n')
+    .map((ln) => escposText(`${ln}\n`));
+}
 
 function escposQrCode(
   data: string,
@@ -113,62 +132,47 @@ export function buildEscposShiftSummary(
 ): Buffer {
   const restaurant = settings.restaurantName || 'Restaurant';
   const currency = settings.currency || 'EUR';
+  const layout = layoutFromSettings(settings);
   const opened = formatDateTime(new Date(summary.openedAtIso));
   const closed = formatDateTime(new Date(summary.closedAtIso));
 
   const lines: Buffer[] = [];
-  lines.push(ESC, Buffer.from('@'));
+  lines.push(...cmdPrinterInit());
   lines.push(cmdAlign('center'));
   lines.push(cmdBold(true));
   lines.push(cmdTextSize('lg'));
-  lines.push(escposText(`${restaurant}\n`));
+  for (const ln of wrapEscposText(restaurant, layout.doubleWidthCols)) {
+    lines.push(escposText(`${ln}\n`));
+  }
   lines.push(cmdTextSize('normal'));
   lines.push(escposText('SHIFT REPORT\n'));
   lines.push(cmdBold(false));
-  lines.push(escposText('--------------------------------\n'));
+  lines.push(escposText(`${layout.sep}\n`));
   lines.push(cmdAlign('left'));
   lines.push(escposText(`Waiter: ${summary.waiterName}\n`));
   lines.push(escposText(`Opened: ${opened}\n`));
   lines.push(escposText(`Closed: ${closed}\n`));
-  lines.push(escposText('--------------------------------\n'));
+  lines.push(escposText(`${layout.sep}\n`));
+  lines.push(...twoCol('Orders', String(summary.orders), layout));
   lines.push(
-    escposText(
-      `${padRight('Orders', 22)}${padLeft(String(summary.orders), 10)}\n`,
-    ),
-  );
-  lines.push(
-    escposText(
-      `${padRight('Net sales', 22)}${padLeft(formatMoneyEscpos(summary.revenueNet), 10)}\n`,
-    ),
+    ...twoCol('Net sales', formatMoneyEscpos(summary.revenueNet), layout),
   );
   if (summary.vatEnabled) {
-    lines.push(
-      escposText(
-        `${padRight('VAT', 22)}${padLeft(formatMoneyEscpos(summary.revenueVat), 10)}\n`,
-      ),
-    );
+    lines.push(...twoCol('VAT', formatMoneyEscpos(summary.revenueVat), layout));
   }
   lines.push(cmdBold(true));
   lines.push(
-    escposText(
-      `${padRight('TOTAL', 22)}${padLeft(formatMoneyEscpos(summary.revenueGross), 10)}\n`,
-    ),
+    ...twoCol('TOTAL', formatMoneyEscpos(summary.revenueGross), layout),
   );
   lines.push(cmdBold(false));
   lines.push(
-    escposText(
-      `${padRight('Currency', 22)}${padLeft(String(currency).slice(0, 3).toUpperCase(), 10)}\n`,
-    ),
+    ...twoCol('Currency', String(currency).slice(0, 3).toUpperCase(), layout),
   );
   if (summary.byMethod.length > 0) {
-    lines.push(escposText('--------------------------------\n'));
+    lines.push(escposText(`${layout.sep}\n`));
     lines.push(escposText('By payment:\n'));
     for (const row of summary.byMethod) {
-      lines.push(
-        escposText(
-          `${padRight(row.method, 22)}${padLeft(formatMoneyEscpos(row.amount), 10)}\n`,
-        ),
-      );
+      lines.push(...twoCol(row.method, formatMoneyEscpos(row.amount), layout));
     }
   }
   lines.push(escposText('\n'));
@@ -204,9 +208,10 @@ export function buildEscposTicket(
   const bizEmail = String(businessInfo?.email || '').trim();
   const bizWebsite = String(businessInfo?.website || '').trim();
   const currency = settings.currency || 'EUR';
+  const layout = layoutFromSettings(settings);
 
   const lines: Buffer[] = [];
-  lines.push(ESC, Buffer.from('@'));
+  lines.push(...cmdPrinterInit());
 
   const kind = String(meta?.kind || '').toUpperCase();
   const stationLabel = String(meta?.station || '').toUpperCase();
@@ -223,12 +228,16 @@ export function buildEscposTicket(
     lines.push(cmdBold(false));
     lines.push(cmdTextSize('normal'));
     // Optional small brand line (can be removed entirely if you prefer)
-    lines.push(escposText(`${restaurant}\n`));
+    for (const ln of wrapEscposText(restaurant, layout.cols)) {
+      lines.push(escposText(`${ln}\n`));
+    }
   } else {
     lines.push(cmdAlign('center'));
     lines.push(cmdBold(true));
     lines.push(cmdTextSize('lg'));
-    lines.push(escposText(`${restaurant}\n`));
+    for (const ln of wrapEscposText(restaurant, layout.doubleWidthCols)) {
+      lines.push(escposText(`${ln}\n`));
+    }
     lines.push(cmdTextSize('normal'));
     lines.push(cmdBold(false));
     // Subtitle: address + phone (business info)
@@ -237,10 +246,10 @@ export function buildEscposTicket(
       for (const raw of String(bizAddress).split(/\r?\n/g)) {
         const t = String(raw || '').trim();
         if (!t) continue;
-        subtitleLines.push(...wrapEscposText(t, 32));
+        subtitleLines.push(...wrapEscposText(t, layout.cols));
       }
     }
-    if (bizPhone) subtitleLines.push(...wrapEscposText(bizPhone, 32));
+    if (bizPhone) subtitleLines.push(...wrapEscposText(bizPhone, layout.cols));
     for (const ln of subtitleLines) lines.push(escposText(`${ln}\n`));
   }
   if (kind === 'ORDER') {
@@ -253,7 +262,7 @@ export function buildEscposTicket(
     lines.push(escposText(`${top ? top + ' ' : ''}ORDER\n`));
     lines.push(cmdBold(false));
   }
-  lines.push(escposText('--------------------------------\n'));
+  lines.push(escposText(`${layout.sep}\n`));
   lines.push(cmdAlign('left'));
   // Avoid Unicode bullets / fancy separators (often render as garbage on ESC/POS)
   const tableInfo = `${payload.area} - ${payload.tableLabel}`;
@@ -261,7 +270,7 @@ export function buildEscposTicket(
   if (payload.covers) lines.push(escposText(`Covers: ${payload.covers}\n`));
   if (payload.userName) lines.push(escposText(`Waiter: ${payload.userName}\n`));
   lines.push(escposText(`${nowStr}\n`));
-  lines.push(escposText('--------------------------------\n'));
+  lines.push(escposText(`${layout.sep}\n`));
 
   // Items. Prices are VAT-inclusive (Albanian fiscalization): the gross
   // line already contains the tax, so VAT is extracted, never added on top.
@@ -281,22 +290,31 @@ export function buildEscposTicket(
       lines.push(cmdTextSize('lg'));
       lines.push(cmdBold(true));
       const itemLine = `${qty} x ${String(it.name || '')}`;
-      for (const ln of wrapEscposText(itemLine, 16)) {
+      for (const ln of wrapEscposText(itemLine, layout.doubleWidthCols)) {
         lines.push(escposText(`${ln}\n`));
       }
       lines.push(cmdBold(false));
       lines.push(cmdTextSize('normal'));
       if (it.note) {
-        for (const ln of wrapEscposText(`  - ${String(it.note)}`, 32)) {
+        for (const ln of wrapEscposText(
+          `  - ${String(it.note)}`,
+          layout.cols,
+        )) {
           lines.push(escposText(`${ln}\n`));
         }
       }
     } else {
-      // 32-col layout: left 22, right 10
       const left = `${qty} x ${String(it.name || '')}`;
       const right = hidePrices ? '' : formatMoneyEscpos(linePrice);
-      lines.push(escposText(`${padRight(left, 22)}${padLeft(right, 10)}\n`));
-      if (it.note) lines.push(escposText(`  - ${String(it.note)}\n`));
+      lines.push(...twoCol(left, right, layout));
+      if (it.note) {
+        for (const ln of wrapEscposText(
+          `  - ${String(it.note)}`,
+          layout.cols,
+        )) {
+          lines.push(escposText(`${ln}\n`));
+        }
+      }
     }
   }
 
@@ -317,18 +335,10 @@ export function buildEscposTicket(
     ? Math.max(0, totalAfter)
     : fallbackTotal;
   if (!hidePrices) {
-    lines.push(escposText('--------------------------------\n'));
-    lines.push(
-      escposText(
-        `${padRight('Subtotal', 22)}${padLeft(formatMoneyEscpos(subtotal), 10)}\n`,
-      ),
-    );
+    lines.push(escposText(`${layout.sep}\n`));
+    lines.push(...twoCol('Subtotal', formatMoneyEscpos(subtotal), layout));
     if (vatEnabled)
-      lines.push(
-        escposText(
-          `${padRight('VAT', 22)}${padLeft(formatMoneyEscpos(vat), 10)}\n`,
-        ),
-      );
+      lines.push(...twoCol('VAT', formatMoneyEscpos(vat), layout));
     if (Number.isFinite(scAmt) && scAmt > 0) {
       const mode = String(meta?.serviceChargeMode || '').toUpperCase();
       const v = meta?.serviceChargeValue;
@@ -336,11 +346,7 @@ export function buildEscposTicket(
         mode === 'PERCENT' && Number.isFinite(Number(v))
           ? `Service (${Number(v)}%)`
           : 'Service charge';
-      lines.push(
-        escposText(
-          `${padRight(label, 22)}${padLeft(formatMoneyEscpos(scAmt), 10)}\n`,
-        ),
-      );
+      lines.push(...twoCol(label, formatMoneyEscpos(scAmt), layout));
     }
     if (Number.isFinite(discountAmt) && discountAmt > 0) {
       const dtype = String(meta?.discountType || '').toUpperCase();
@@ -350,24 +356,16 @@ export function buildEscposTicket(
           ? `Discount (${Number(dval)}%)`
           : 'Discount';
       lines.push(
-        escposText(
-          `${padRight(label, 22)}${padLeft('-' + formatMoneyEscpos(discountAmt), 10)}\n`,
-        ),
+        ...twoCol(label, '-' + formatMoneyEscpos(discountAmt), layout),
       );
     }
     lines.push(cmdBold(true));
     lines.push(cmdTextSize('md'));
-    lines.push(
-      escposText(
-        `${padRight('TOTAL', 22)}${padLeft(formatMoneyEscpos(totalFinal), 10)}\n`,
-      ),
-    );
+    lines.push(...twoCol('TOTAL', formatMoneyEscpos(totalFinal), layout));
     lines.push(cmdTextSize('normal'));
     lines.push(cmdBold(false));
     lines.push(
-      escposText(
-        `${padRight('Currency', 22)}${padLeft(String(currency).slice(0, 3).toUpperCase(), 10)}\n`,
-      ),
+      ...twoCol('Currency', String(currency).slice(0, 3).toUpperCase(), layout),
     );
   }
 
@@ -377,7 +375,7 @@ export function buildEscposTicket(
       meta?.method || meta?.paymentMethod || '',
     ).toUpperCase();
     const approvedBy = String(meta?.managerApprovedByName || '').trim();
-    lines.push(escposText('--------------------------------\n'));
+    lines.push(escposText(`${layout.sep}\n`));
     lines.push(cmdAlign('center'));
     lines.push(cmdBold(true));
     lines.push(escposText('PAID\n'));
@@ -390,8 +388,8 @@ export function buildEscposTicket(
     const fiscalNslf = String(meta?.fiscalNslf || '').trim();
     const fiscalLink = String(meta?.fiscalLink || '').trim();
     if (meta?.fiscalEnabled && (fiscalNivf || fiscalNslf || fiscalLink)) {
-      const fiscalLineWidth = 32;
-      lines.push(escposText('--------------------------------\n'));
+      const fiscalLineWidth = layout.cols;
+      lines.push(escposText(`${layout.sep}\n`));
       lines.push(cmdAlign('center'));
       lines.push(cmdBold(true));
       lines.push(escposText('FISKALIZUAR\n'));
@@ -428,7 +426,7 @@ export function buildEscposTicket(
       lines.push(cmdTextSize('md'));
       lines.push(cmdBold(true));
     }
-    for (const ln of wrapEscposText(String(payload.note), 32)) {
+    for (const ln of wrapEscposText(String(payload.note), layout.cols)) {
       lines.push(escposText(`${ln}\n`));
     }
     if (kind === 'ORDER') {
@@ -469,6 +467,7 @@ export function buildHtmlReceipt(
   const bizEmail = String(businessInfo?.email || '').trim();
   const bizWebsite = String(businessInfo?.website || '').trim();
   const currency = settings.currency || 'EUR';
+  const paperMm = layoutFromSettings(settings).paperMm;
   const meta: any = payload.meta || {};
   const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
@@ -575,9 +574,10 @@ export function buildHtmlReceipt(
   <head>
     <meta charset="utf-8" />
     <style>
-      @page { size: 80mm auto; margin: 4mm; }
-      body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #000; }
-      .title { text-align: center; font-weight: 800; font-size: 18px; margin: 2px 0 6px; }
+      @page { size: ${paperMm}mm auto; margin: 2mm; }
+      html, body { width: 100%; margin: 0; padding: 0; }
+      body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #000; font-size: 13px; }
+      .title { text-align: center; font-weight: 800; font-size: 22px; margin: 2px 0 6px; }
       .titleSlip { text-align: center; font-weight: 500; font-size: 12px; margin: 2px 0 6px; }
       .subtitle { text-align: center; margin: -2px 0 6px; }
       .sep { border-top: 1px dashed #000; margin: 6px 0; }
@@ -991,16 +991,6 @@ async function sendViaLpr(
   }
 }
 
-function padRight(s: string, len: number): string {
-  if (s.length >= len) return s.slice(0, len);
-  return s + ' '.repeat(len - s.length);
-}
-
-function padLeft(s: string, len: number): string {
-  if (s.length >= len) return s.slice(0, len);
-  return ' '.repeat(len - s.length) + s;
-}
-
 function formatMoney(amount: number, currency: string): string {
   try {
     return new Intl.NumberFormat(undefined, {
@@ -1021,33 +1011,7 @@ function formatMoneyEscpos(amount: number): string {
 }
 
 function escposText(s: string): Buffer {
-  // Replace common problematic Unicode chars.
-  const normalized = String(s)
-    .replaceAll('•', '-')
-    .replaceAll('€', 'EUR')
-    .replaceAll('\u00A0', ' '); // NBSP
-  // Strip non-ASCII characters (ESC/POS typically uses single-byte code pages).
-  // eslint-disable-next-line no-control-regex
-  const ascii = normalized.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '?');
-  return Buffer.from(ascii, 'ascii');
-}
-
-function wrapEscposText(s: string, width: number): string[] {
-  const t = String(s || '').trim();
-  if (!t) return [];
-  const w = Math.max(8, Math.min(64, Number(width) || 32));
-  const out: string[] = [];
-  let cur = t;
-  while (cur.length > w) {
-    // Prefer breaking on whitespace within width.
-    const slice = cur.slice(0, w + 1);
-    let cut = slice.lastIndexOf(' ');
-    if (cut < Math.floor(w * 0.5)) cut = w; // fallback hard cut
-    out.push(cur.slice(0, cut).trimEnd());
-    cur = cur.slice(cut).trimStart();
-  }
-  if (cur) out.push(cur);
-  return out;
+  return encodeEscposText(s);
 }
 
 function cmdAlign(align: 'left' | 'center' | 'right'): Buffer {
