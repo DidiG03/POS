@@ -6,10 +6,7 @@ import type {
   ReservationUpdateInput,
 } from '@shared/ipc';
 import { broadcastReservationsChanged } from './realtime';
-import {
-  DEFAULT_RESERVATION_DURATION_MIN,
-  reservationOccupiesTable,
-} from '@shared/reservationDuration';
+import { DEFAULT_RESERVATION_DURATION_MIN } from '@shared/reservationDuration';
 
 // All reservation business logic lives here so the Electron IPC layer
 // (src/main/index.ts) and the LAN HTTP layer (src/main/api.ts) share the
@@ -155,6 +152,7 @@ export function mapReservation(
     customerPhone: r.customerPhone ?? null,
     partySize: Number(r.partySize || 0),
     startsAt: new Date(r.startsAt).toISOString(),
+    seatedAt: r.seatedAt ? new Date(r.seatedAt).toISOString() : null,
     durationMin: Number(r.durationMin || 0),
     note: r.note ?? null,
     status: String(r.status || 'BOOKED') as any,
@@ -171,9 +169,6 @@ export async function listReservationsForDay(input: {
 }): Promise<ReservationDTO[]> {
   const dateIso = String(input?.dateIso || '');
   if (!dateIso) return [];
-  // Persist Përfunduar for seated parties whose duration has elapsed so
-  // list/floor chips match the grey tables. Safe if nothing is due.
-  await completeExpiredSeatedReservations().catch(() => 0);
   const { start, end } = dayBounds(dateIso);
   const where: any = { startsAt: { gte: start, lte: end } };
   if (input?.area) where.area = String(input.area);
@@ -270,6 +265,7 @@ export async function createReservation(
       customerPhone: input?.customerPhone ? String(input.customerPhone) : null,
       partySize,
       startsAt,
+      seatedAt: status === 'SEATED' ? startsAt : null,
       durationMin,
       note: input?.note ? String(input.note) : null,
       createdById,
@@ -370,9 +366,21 @@ export async function setReservationStatus(input: {
   if (!(ALLOWED_STATUSES as readonly string[]).includes(status))
     throw new Error('invalid status');
   await assertHostOrAdmin(Number(input?.actorId || 0));
+  const existing = await prisma.reservation.findUnique({ where: { id } });
+  if (!existing)
+    throw Object.assign(new Error('not found'), { statusCode: 404 });
+  const data: { status: any; seatedAt?: Date | null } = {
+    status: status as any,
+  };
+  if (status === 'SEATED' && String((existing as any).status) !== 'SEATED') {
+    data.seatedAt = new Date();
+  }
+  if (status === 'BOOKED') {
+    data.seatedAt = null;
+  }
   const updated = await prisma.reservation.update({
     where: { id },
-    data: { status: status as any },
+    data,
   });
   const dto = await withCreatedByName(updated);
   broadcastReservationsChanged({
@@ -407,77 +415,4 @@ export async function deleteReservation(input: {
     area: existing?.area ?? null,
   });
   return true;
-}
-
-/**
- * Walk-ins / seated parties store how long they hold the table. When that
- * window ends, flip them to COMPLETED so the floor goes grey without a
- * host tapping Përfunduar.
- */
-export async function completeExpiredSeatedReservations(
-  nowMs = Date.now(),
-): Promise<number> {
-  const seated = await prisma.reservation.findMany({
-    where: { status: 'SEATED' as any },
-    select: {
-      id: true,
-      area: true,
-      startsAt: true,
-      durationMin: true,
-    },
-    take: 200,
-  });
-  const expired = seated.filter(
-    (r) =>
-      !reservationOccupiesTable(
-        {
-          status: 'SEATED',
-          startsAt: r.startsAt,
-          durationMin: Number((r as any).durationMin || 0),
-        },
-        nowMs,
-      ),
-  );
-  if (!expired.length) return 0;
-  const ids = expired.map((r) => r.id);
-  await prisma.reservation.updateMany({
-    where: { id: { in: ids }, status: 'SEATED' as any },
-    data: { status: 'COMPLETED' as any },
-  });
-  for (const r of expired) {
-    broadcastReservationsChanged({
-      kind: 'status',
-      id: Number(r.id),
-      dateIso: new Date(r.startsAt).toISOString(),
-      area: r.area,
-      status: 'COMPLETED',
-    });
-  }
-  return expired.length;
-}
-
-let durationLoopTimer: ReturnType<typeof setInterval> | null = null;
-let durationLoopRunning = false;
-
-export function startReservationDurationLoop(): void {
-  if (durationLoopTimer) return;
-  const run = async () => {
-    if (durationLoopRunning) return;
-    durationLoopRunning = true;
-    try {
-      await completeExpiredSeatedReservations();
-    } catch {
-      // ignore — next tick retries
-    } finally {
-      durationLoopRunning = false;
-    }
-  };
-  void run();
-  durationLoopTimer = setInterval(() => void run(), 30_000);
-}
-
-export function stopReservationDurationLoop(): void {
-  if (!durationLoopTimer) return;
-  clearInterval(durationLoopTimer);
-  durationLoopTimer = null;
 }

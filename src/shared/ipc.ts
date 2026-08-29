@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import type { TableMergeGroup } from './tableMerge';
+
+export type { TableMergeGroup } from './tableMerge';
 
 export type UserRole =
   | 'ADMIN'
@@ -750,7 +753,9 @@ export interface ReservationDTO {
   customerName: string;
   customerPhone: string | null;
   partySize: number;
-  startsAt: string; // ISO
+  startsAt: string; // ISO booked slot
+  /** When the party actually sat. Null while still BOOKED. */
+  seatedAt: string | null;
   durationMin: number;
   note: string | null;
   status: ReservationStatus;
@@ -1319,6 +1324,11 @@ export interface ApiLayout {
     nodes: TableLayoutNode[],
     scope?: string,
   ): Promise<boolean>;
+  getMerges(area: string): Promise<TableMergeGroup[]>;
+  setMerges(
+    area: string,
+    groups: TableMergeGroup[],
+  ): Promise<TableMergeGroup[]>;
 }
 
 export interface ApiCovers {

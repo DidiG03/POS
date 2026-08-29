@@ -42,6 +42,7 @@ import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
 } from './services/realtime';
+import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import {
   effectiveVatRate,
   splitGrossVat,
@@ -1572,8 +1573,6 @@ app.whenReady().then(async () => {
   startAutoCloseShiftsLoop();
   // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
   startAutoNoShowReservationsLoop();
-  // Reservations: auto-complete SEATED parties when their duration elapses.
-  reservationsService.startReservationDurationLoop();
   // Reservations: import confirmed bookings from Google Calendar iCal feed.
   startGoogleCalendarSyncLoop();
 
@@ -1615,7 +1614,6 @@ app.on('before-quit', (event) => {
   stopAutoVoidStaleTicketsLoop();
   stopAutoCloseShiftsLoop();
   stopAutoNoShowReservationsLoop();
-  reservationsService.stopReservationDurationLoop();
   stopGoogleCalendarSyncLoop();
   stopPrinterStationLoop();
 
@@ -5658,6 +5656,14 @@ async function readSharedLayoutNodes(area: string): Promise<any[] | null> {
 
 ipcHandle('layout:get', async (_e, { area }) => {
   return await readSharedLayoutNodes(String(area || ''));
+});
+
+ipcHandle('layout:getMerges', async (_e, { area }) => {
+  return await readTableMerges(String(area || ''));
+});
+
+ipcHandle('layout:setMerges', async (_e, { area, groups }) => {
+  return await writeTableMerges(String(area || ''), groups);
 });
 
 ipcHandle('layout:save', async (_e, { area, nodes }) => {

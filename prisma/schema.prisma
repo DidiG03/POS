@@ -396,6 +396,8 @@ model Reservation {
   customerPhone String?
   partySize     Int               @default(2)
   startsAt      DateTime
+  /** When the party actually sat. Null while still BOOKED. */
+  seatedAt      DateTime?
   durationMin   Int               @default(120)
   note          String?
   status        ReservationStatus @default(BOOKED)

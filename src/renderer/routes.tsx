@@ -14,6 +14,7 @@ import {
   canSeeReportsOnMobile,
   canSeeKdsOnMobile,
 } from '@shared/utils/roles';
+import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import { PageSpinner } from './components/PageSpinner';
 
 const LoginPage = React.lazy(() => import('./app/pages/LoginPage'));
@@ -141,6 +142,20 @@ function RequireAdmin({ children }: { children: React.ReactElement }) {
   return children;
 }
 
+function browserHostTokenOk(): boolean {
+  if (typeof window === 'undefined' || !(window as any).__BROWSER_CLIENT__) {
+    return true;
+  }
+  try {
+    const host = localStorage.getItem('pos_host_api_token');
+    if (host && isHostOrAdminRole(jwtRole(host))) return true;
+    const shared = localStorage.getItem('pos_api_token');
+    return Boolean(shared && isHostOrAdminRole(jwtRole(shared)));
+  } catch {
+    return true;
+  }
+}
+
 function RequireHost({ children }: { children: React.ReactElement }) {
   // Hooks first — same rationale as RequireAdmin (no conditional hooks).
   // The reservation panel runs in two shells: the dedicated Electron window
@@ -159,6 +174,12 @@ function RequireHost({ children }: { children: React.ReactElement }) {
   }
   const role = String((reservationUser as any).role || '').toUpperCase();
   if (role !== 'HOST' && role !== 'ADMIN') {
+    return <Navigate to="/reservations" replace />;
+  }
+  // Tablets share one origin with the waiter app. A waiter PIN overwrites
+  // `pos_api_token`, so a still-persisted host session would otherwise call
+  // merge/save as WAITER and get 403 Forbidden.
+  if (!browserHostTokenOk()) {
     return <Navigate to="/reservations" replace />;
   }
   return children;

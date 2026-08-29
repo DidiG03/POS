@@ -27,6 +27,7 @@ import {
   resolveBackendHost,
   syncBackendHostToLocalStorage,
 } from './utils/backendHost';
+import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 // PWA registration disabled for desktop build
 
 void initMobileShell();
@@ -50,10 +51,62 @@ if (typeof window !== 'undefined') {
 // When running inside Electron, preload already defines window.api
 if (!(window as any).api) {
   let IS_NATIVE_SHELL = false;
-  const TOKEN_KEY_LOCAL = 'pos_api_token';
+  const TOKEN_KEY_POS = 'pos_api_token';
+  const TOKEN_KEY_HOST = 'pos_host_api_token';
+
+  function isReservationsShell(): boolean {
+    try {
+      const hash = window.location.hash || '';
+      const path = window.location.pathname || '';
+      const href = window.location.href || '';
+      return (
+        hash.includes('/reservations') ||
+        path.includes('/reservations') ||
+        href.includes('#/reservations')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function tokenKeyForShell(): string {
+    return isReservationsShell() ? TOKEN_KEY_HOST : TOKEN_KEY_POS;
+  }
+
+  function readStoredToken(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function writeStoredToken(key: string, t: string | null) {
+    try {
+      if (t) localStorage.setItem(key, t);
+      else localStorage.removeItem(key);
+    } catch {
+      // ignore
+    }
+  }
+
+  /** Prefer the host PIN token for the reservations panel and merge saves. */
+  function hostApiToken(): string | null {
+    const host = readStoredToken(TOKEN_KEY_HOST);
+    if (host && isHostOrAdminRole(jwtRole(host))) return host;
+    const shared = readStoredToken(TOKEN_KEY_POS);
+    if (shared && isHostOrAdminRole(jwtRole(shared))) return shared;
+    // Decode failed (some WebViews choke on JWT padding) but this key is
+    // only written on a host/admin login, so still send it.
+    return host || null;
+  }
+
   const getToken = () => {
     try {
-      return localStorage.getItem(TOKEN_KEY_LOCAL);
+      if (isReservationsShell()) {
+        return hostApiToken();
+      }
+      return readStoredToken(TOKEN_KEY_POS);
     } catch (e) {
       void e;
       return null;
@@ -61,12 +114,25 @@ if (!(window as any).api) {
   };
   const setToken = (t: string | null) => {
     try {
-      if (t) localStorage.setItem(TOKEN_KEY_LOCAL, t);
-      else localStorage.removeItem(TOKEN_KEY_LOCAL);
+      writeStoredToken(tokenKeyForShell(), t);
+      if (t && (isReservationsShell() || isHostOrAdminRole(jwtRole(t)))) {
+        writeStoredToken(TOKEN_KEY_HOST, t);
+      }
     } catch (e) {
       void e;
     }
   };
+
+  function tokenForLanPath(path: string): string | null {
+    const pathname = String(path || '').split('?')[0];
+    if (
+      pathname.startsWith('/layout/merges') ||
+      pathname.startsWith('/reservations')
+    ) {
+      return hostApiToken() || getToken();
+    }
+    return getToken();
+  }
 
   const pickBackend = () => {
     // Side effects for URL params + mobile shell detection; resolution lives in
@@ -281,6 +347,14 @@ if (!(window as any).api) {
           void e;
         }
       });
+      es.addEventListener('tableMerges', (ev: any) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          handleSseEvent('pos:tableMergesChanged', data);
+        } catch (e) {
+          void e;
+        }
+      });
 
       // Watchdog: if the socket hasn't received anything for a long time
       // AND isn't OPEN, force a reconnect. We accept the (small) cost of
@@ -334,7 +408,7 @@ if (!(window as any).api) {
   try {
     window.addEventListener('pos:forceLogout', () => {
       try {
-        localStorage.removeItem(TOKEN_KEY_LOCAL);
+        setToken(null);
       } catch {
         // ignore
       }
@@ -460,7 +534,7 @@ if (!(window as any).api) {
 
   // Always call the host LAN API (even when cloud mode is enabled).
   async function goLan(path: string, opts?: RequestInit) {
-    const token = getToken();
+    const token = tokenForLanPath(path);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -1026,6 +1100,16 @@ if (!(window as any).api) {
           }),
         });
         return true;
+      },
+      async getMerges(area: string) {
+        const q = new URLSearchParams({ area: String(area) });
+        return await goLan(`/reservations/merges?${q.toString()}`);
+      },
+      async setMerges(area: string, groups: any[]) {
+        return await goLan('/reservations/merges', {
+          method: 'POST',
+          body: JSON.stringify({ area, groups }),
+        });
       },
     },
     notifications: {

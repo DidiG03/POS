@@ -4,7 +4,11 @@ import { useTranslation } from 'react-i18next';
 import type { ReservationsContext } from '../ReservationsLayout';
 import type { ReservationDTO, ReservationStatus } from '@shared/ipc';
 import { reservationStatusLabel } from '../../utils/reservationLabels';
-import { effectiveReservationStatus } from '@shared/reservationDuration';
+import {
+  distinctSeatedAt,
+  effectiveReservationStatus,
+  formatReservationClock,
+} from '@shared/reservationDuration';
 import {
   isReservationQuickStatusTooEarly,
   reservationQuickStatusUnlockHint,
@@ -324,13 +328,9 @@ export default function ReservationsListPage() {
   const actionShown = actionRow
     ? (effectiveReservationStatus(actionRow, nowMs) as ReservationStatus)
     : null;
-  const actionWhen = actionRow ? new Date(actionRow.startsAt) : null;
-  const actionHh = actionWhen
-    ? String(actionWhen.getHours()).padStart(2, '0')
-    : '';
-  const actionMm = actionWhen
-    ? String(actionWhen.getMinutes()).padStart(2, '0')
-    : '';
+  const actionSeated = actionRow
+    ? distinctSeatedAt(actionRow.startsAt, actionRow.seatedAt)
+    : null;
 
   return (
     <div className="space-y-3">
@@ -467,9 +467,7 @@ export default function ReservationsListPage() {
             </div>
           )}
           {filtered.map((r) => {
-            const when = new Date(r.startsAt);
-            const hh = String(when.getHours()).padStart(2, '0');
-            const mm = String(when.getMinutes()).padStart(2, '0');
+            const seatedAt = distinctSeatedAt(r.startsAt, r.seatedAt);
             return (
               <button
                 key={r.id}
@@ -479,8 +477,16 @@ export default function ReservationsListPage() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="font-mono text-base shrink-0">
-                      {hh}:{mm}
+                    <div className="shrink-0">
+                      <div className="font-mono text-base">
+                        {formatReservationClock(r.startsAt)}
+                      </div>
+                      {seatedAt ? (
+                        <div className="text-[10px] opacity-60 leading-tight mt-0.5">
+                          {t('reservations.timeSeated')}{' '}
+                          {formatReservationClock(seatedAt)}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="min-w-0">
                       <div className="font-medium truncate">
@@ -561,7 +567,7 @@ export default function ReservationsListPage() {
                 </tr>
               )}
               {filtered.map((r) => {
-                const when = new Date(r.startsAt);
+                const seatedAt = distinctSeatedAt(r.startsAt, r.seatedAt);
                 return (
                   <tr
                     key={r.id}
@@ -569,8 +575,13 @@ export default function ReservationsListPage() {
                     onClick={() => onRowPress(r)}
                   >
                     <td className="px-3 py-2 font-mono">
-                      {String(when.getHours()).padStart(2, '0')}:
-                      {String(when.getMinutes()).padStart(2, '0')}
+                      <div>{formatReservationClock(r.startsAt)}</div>
+                      {seatedAt ? (
+                        <div className="text-[10px] font-sans opacity-60">
+                          {t('reservations.timeSeated')}{' '}
+                          {formatReservationClock(seatedAt)}
+                        </div>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2">
                       <div className="font-medium">{r.customerName}</div>
@@ -641,7 +652,10 @@ export default function ReservationsListPage() {
             <div className="flex items-start justify-between p-4 border-b border-gray-700 gap-3">
               <div className="min-w-0">
                 <div className="font-mono text-sm opacity-70">
-                  {actionHh}:{actionMm}
+                  {actionRow ? formatReservationClock(actionRow.startsAt) : ''}
+                  {actionSeated
+                    ? ` · ${t('reservations.timeSeated')} ${formatReservationClock(actionSeated)}`
+                    : ''}
                   {actionRow.tableLabel
                     ? ` · ${t('reservations.tablePrefix', { label: actionRow.tableLabel })}`
                     : ''}

@@ -10,7 +10,12 @@ export const RESERVATION_TABLE_FREE_CLASS = 'bg-zinc-600';
 
 export function reservationTableColorClass(
   reservations:
-    | Array<{ status: string; startsAt: string; durationMin?: number }>
+    | Array<{
+        status: string;
+        startsAt: string;
+        seatedAt?: string | null;
+        durationMin?: number;
+      }>
     | undefined,
   isToday: boolean,
   nowMs = Date.now(),

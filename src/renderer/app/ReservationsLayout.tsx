@@ -13,7 +13,13 @@ import {
 } from '../utils/reservationEvents';
 import type { ReservationDTO } from '@shared/ipc';
 import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
-import { reservationOccupiesTable } from '@shared/reservationDuration';
+import {
+  reservationEndMs,
+  reservationOccupancyStartMs,
+  reservationOccupiesTable,
+  reservationStayElapsed,
+} from '@shared/reservationDuration';
+import { ReservationTimeUpDialog } from './components/ReservationTimeUpDialog';
 
 export type ReservationsContext = {
   me: { id: number; displayName: string; role: string };
@@ -140,7 +146,10 @@ export default function ReservationsLayout() {
 
   // Shared lookup tables — fetched once here and reused by both pages.
   const [tableLabels, setTableLabels] = useState<string[]>([]);
-  const [busyLabels, setBusyLabels] = useState<Set<string>>(new Set());
+  const [todayReservations, setTodayReservations] = useState<ReservationDTO[]>(
+    [],
+  );
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const setDate = useCallback(
     (d: Date) => setDateState(startOfLocalDay(d)),
@@ -260,31 +269,24 @@ export default function ReservationsLayout() {
     };
   }, [area, loadLayoutTableLabels]);
 
-  // Fetch the day's reservations for the active area to derive which tables
-  // are busy. Pages have their own fetches but this one is small and feeds
-  // the WalkInDialog's free-table picker.
+  // Fetch today's reservations for the active area: walk-in free tables +
+  // the time-up prompt (seated stays that have run out).
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       if (!area) {
-        setBusyLabels(new Set());
+        setTodayReservations([]);
         return;
       }
       try {
         const list = await window.api.reservations.list({
-          dateIso: date.toISOString(),
+          dateIso: startOfLocalDay(new Date()).toISOString(),
           area,
         });
         if (cancelled) return;
-        const busy = new Set<string>();
-        const now = Date.now();
-        for (const r of list) {
-          if (!r.tableLabel) continue;
-          if (reservationOccupiesTable(r, now)) busy.add(r.tableLabel);
-        }
-        setBusyLabels(busy);
+        setTodayReservations(Array.isArray(list) ? list : []);
       } catch {
-        if (!cancelled) setBusyLabels(new Set());
+        if (!cancelled) setTodayReservations([]);
       }
     };
     void load();
@@ -296,10 +298,11 @@ export default function ReservationsLayout() {
         };
         if (detail.dateIso) {
           const a = new Date(detail.dateIso);
+          const today = startOfLocalDay(new Date());
           const same =
-            a.getFullYear() === date.getFullYear() &&
-            a.getMonth() === date.getMonth() &&
-            a.getDate() === date.getDate();
+            a.getFullYear() === today.getFullYear() &&
+            a.getMonth() === today.getMonth() &&
+            a.getDate() === today.getDate();
           if (!same) return;
         }
         if (detail.area && area && String(detail.area) !== String(area)) return;
@@ -315,7 +318,45 @@ export default function ReservationsLayout() {
       window.clearInterval(tick);
       window.removeEventListener('pos:reservationsChanged', onChanged);
     };
-  }, [area, date]);
+  }, [area]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 5_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const busyLabels = useMemo(() => {
+    const busy = new Set<string>();
+    for (const r of todayReservations) {
+      if (!r.tableLabel) continue;
+      if (reservationOccupiesTable(r, nowMs)) busy.add(r.tableLabel);
+    }
+    return busy;
+  }, [todayReservations, nowMs]);
+
+  const overdueSeated = useMemo(() => {
+    return todayReservations
+      .filter(
+        (r) =>
+          Boolean(r.tableLabel) &&
+          r.status === 'SEATED' &&
+          reservationStayElapsed(r, nowMs),
+      )
+      .sort((a, b) => {
+        const aStart = reservationOccupancyStartMs(a);
+        const bStart = reservationOccupancyStartMs(b);
+        const aEnd =
+          aStart != null
+            ? reservationEndMs(new Date(aStart), a.durationMin)
+            : null;
+        const bEnd =
+          bStart != null
+            ? reservationEndMs(new Date(bStart), b.durationMin)
+            : null;
+        return (aEnd ?? 0) - (bEnd ?? 0) || a.id - b.id;
+      });
+  }, [todayReservations, nowMs]);
+  const timeUpReservation = overdueSeated[0] ?? null;
 
   const freeTableLabels = useMemo(
     () => tableLabels.filter((l) => !busyLabels.has(l)),
@@ -575,6 +616,20 @@ export default function ReservationsLayout() {
             notifyReservationsChanged('updated', r.startsAt, r.area)
           }
           onDeleted={() => notifyReservationsChanged('deleted')}
+        />
+      )}
+
+      {me?.id && timeUpReservation && (
+        <ReservationTimeUpDialog
+          reservation={timeUpReservation}
+          queueCount={overdueSeated.length}
+          actorId={me.id}
+          onResolved={(_kind, row) => {
+            setTodayReservations((prev) =>
+              prev.map((r) => (r.id === row.id ? row : r)),
+            );
+            notifyReservationsChanged('status', row.startsAt, row.area);
+          }}
         />
       )}
     </div>

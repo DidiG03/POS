@@ -8,7 +8,9 @@ import {
 import { reservationStatusLabel } from '../../utils/reservationLabels';
 import {
   DEFAULT_RESERVATION_DURATION_MIN,
+  distinctSeatedAt,
   effectiveReservationStatus,
+  formatReservationClock,
 } from '@shared/reservationDuration';
 import { ReservationDurationPicker } from './ReservationDurationPicker';
 
@@ -126,6 +128,10 @@ export default function ReservationEditor({
 }: ReservationEditorProps) {
   const { t } = useTranslation();
   const isEdit = Boolean(initial?.id);
+  const seatedClock = distinctSeatedAt(
+    initial?.startsAt || '',
+    initial?.seatedAt,
+  );
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [partySize, setPartySize] = useState<number>(2);
@@ -498,6 +504,12 @@ export default function ReservationEditor({
                 }}
                 className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
               />
+              {seatedClock ? (
+                <div className="text-xs opacity-80 mt-1">
+                  {t('reservations.timeSeated')}:{' '}
+                  {formatReservationClock(seatedClock)}
+                </div>
+              ) : null}
             </label>
             <div className="block">
               <div className="text-xs opacity-70 mb-1">

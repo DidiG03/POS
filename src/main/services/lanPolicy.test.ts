@@ -118,6 +118,23 @@ describe('authorizeLanRoute', () => {
     expect(authorizeLanRoute('POST', '/reservations', 'HOST')).toBe('allow');
   });
 
+  it('lets a host merge tables and keeps waiters out', () => {
+    expect(authorizeLanRoute('GET', '/layout/merges', 'HOST')).toBe('allow');
+    expect(authorizeLanRoute('POST', '/layout/merges', 'HOST')).toBe('allow');
+    expect(authorizeLanRoute('GET', '/reservations/merges', 'HOST')).toBe(
+      'allow',
+    );
+    expect(authorizeLanRoute('POST', '/reservations/merges', 'HOST')).toBe(
+      'allow',
+    );
+    expect(authorizeLanRoute('POST', '/layout/merges', 'WAITER')).toBe(
+      'forbidden',
+    );
+    expect(authorizeLanRoute('POST', '/reservations/merges', 'WAITER')).toBe(
+      'forbidden',
+    );
+  });
+
   it('lets a waiter read their own notifications', () => {
     expect(authorizeLanRoute('GET', '/notifications', 'WAITER')).toBe('allow');
   });

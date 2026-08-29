@@ -112,6 +112,8 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
 
   // ---------------------------------------------------------------- layout
   'GET /layout/get': { allow: 'session' },
+  'GET /layout/merges': { allow: HOST },
+  'POST /layout/merges': { allow: HOST },
   'POST /layout/save': { allow: ADMIN },
 
   // ---------------------------------------------------------------- covers
@@ -138,8 +140,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   // ---------------------------------------------------------- reservations
   'GET /reservations': { allow: HOST },
   'GET /reservations/counts': { allow: HOST },
+  'GET /reservations/merges': { allow: HOST },
   'POST /reservations': { allow: HOST },
   'POST /reservations/delete': { allow: HOST },
+  'POST /reservations/merges': { allow: HOST },
   'POST /reservations/set-status': { allow: HOST },
   'POST /reservations/update': { allow: HOST },
 

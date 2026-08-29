@@ -11,6 +11,13 @@ import {
   TABLE_COLOR_PALETTE,
   resolveTableFillColor,
 } from '@shared/floorTableStyle';
+import {
+  formatMergeLabel,
+  mergeTableGroups,
+  pruneMergeGroups,
+  tablesTouching,
+  type TableMergeGroup,
+} from '@shared/tableMerge';
 
 // Tables can render as one of three shapes. `circle` is the historical
 // default and is preserved when the saved layout doesn't include `shape`.
@@ -240,6 +247,99 @@ function nextTableLabel(cur: FloorNode[] | null): string {
 type ColorMap = Record<string, string>; // label -> tailwind class
 type BadgeMap = Record<string, string | null | undefined>;
 
+type DisplayTable = FloorTableNode & {
+  memberLabels: string[];
+  displayKey: string;
+};
+
+function tablePixelSize(node: FloorTableNode): { w: number; h: number } {
+  const shape: TableShape = node.shape ?? 'circle';
+  return {
+    w: Math.max(36, Number(node.w) || (shape === 'rect' ? 100 : 64)),
+    h: Math.max(36, Number(node.h) || (shape === 'rect' ? 56 : 64)),
+  };
+}
+
+function occupancyColorRank(cls?: string | null): number {
+  const s = String(cls || '');
+  if (s.includes('rose')) return 4;
+  if (s.includes('blue')) return 3;
+  if (s.includes('amber')) return 2;
+  if (s) return 1;
+  return 0;
+}
+
+function pickGroupColorClass(
+  labels: string[],
+  colorByLabel?: ColorMap,
+  fallback?: string,
+): string | undefined {
+  let best = fallback;
+  let bestRank = occupancyColorRank(fallback);
+  for (const label of labels) {
+    const cls = colorByLabel?.[label];
+    const rank = occupancyColorRank(cls);
+    if (rank > bestRank) {
+      best = cls;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
+function pickGroupBadge(
+  labels: string[],
+  badgeByLabel?: BadgeMap,
+): string | undefined {
+  for (const label of labels) {
+    const badge = badgeByLabel?.[label];
+    if (badge) return badge;
+  }
+  return undefined;
+}
+
+function buildDisplayTables(
+  tables: FloorTableNode[],
+  mergeGroups: TableMergeGroup[],
+): DisplayTable[] {
+  const known = tables.map((t) => t.label);
+  const groups = pruneMergeGroups(mergeGroups, known);
+  const hidden = new Set(groups.flatMap((g) => g.labels));
+  const byLabel = new Map(tables.map((t) => [t.label, t] as const));
+  const out: DisplayTable[] = [];
+  for (const t of tables) {
+    if (hidden.has(t.label)) continue;
+    out.push({
+      ...t,
+      memberLabels: [t.label],
+      displayKey: `t-${t.id}`,
+    });
+  }
+  for (const g of groups) {
+    const members = g.labels
+      .map((l) => byLabel.get(l))
+      .filter((n): n is FloorTableNode => !!n);
+    if (members.length < 2) continue;
+    const sizes = members.map(tablePixelSize);
+    const maxW = Math.max(...sizes.map((s) => s.w));
+    const maxH = Math.max(...sizes.map((s) => s.h));
+    const extra = Math.min(32, 10 * (members.length - 1));
+    const seats = members.reduce((sum, m) => sum + (Number(m.seats) || 0), 0);
+    out.push({
+      ...members[0],
+      label: formatMergeLabel(g.labels),
+      x: g.x,
+      y: g.y,
+      w: maxW + extra,
+      h: Math.max(maxH, Math.round(maxH + extra * 0.35)),
+      seats: seats || members[0].seats,
+      memberLabels: [...g.labels],
+      displayKey: `g-${g.id}`,
+    });
+  }
+  return out;
+}
+
 type FloorCanvasProps = {
   userId: number;
   area: string;
@@ -259,9 +359,22 @@ type FloorCanvasProps = {
   unlistedColorClass?: string;
   badgeByLabel?: BadgeMap;
   // Interactions
-  onTableClick?: (label: string) => void;
+  onTableClick?: (label: string, members?: string[]) => void;
+  /** Press-and-hold or right-click on a table (host floor, not the layout editor). */
+  onTableLongPress?: (info: {
+    label: string;
+    members: string[];
+    clientX: number;
+    clientY: number;
+  }) => void;
   /** Fired after the layout for `area` is loaded (saved nodes, or empty). */
   onLayoutReady?: (info: { area: string; tableCount: number }) => void;
+  /** Host floor: drag two free tables together to merge them. */
+  mergeEnabled?: boolean;
+  mergeGroups?: TableMergeGroup[];
+  isTableOccupied?: (label: string) => boolean;
+  onCommitMerges?: (groups: TableMergeGroup[]) => void;
+  onMergeBlocked?: () => void;
 };
 
 export default function FloorCanvas({
@@ -278,7 +391,13 @@ export default function FloorCanvas({
   unlistedColorClass,
   badgeByLabel,
   onTableClick,
+  onTableLongPress,
   onLayoutReady,
+  mergeEnabled = false,
+  mergeGroups = [],
+  isTableOccupied,
+  onCommitMerges,
+  onMergeBlocked,
 }: FloorCanvasProps) {
   const [nodes, setNodes] = useState<FloorNode[] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -560,6 +679,94 @@ export default function FloorCanvas({
 
   const tables = useMemo(() => (nodes || []).filter(isFloorTableNode), [nodes]);
   const areas = useMemo(() => (nodes || []).filter(isFloorAreaNode), [nodes]);
+  const displayTables = useMemo(
+    () => buildDisplayTables(tables, mergeGroups),
+    [tables, mergeGroups],
+  );
+  const [mergeHoverKey, setMergeHoverKey] = useState<string | null>(null);
+  const displayTablesRef = useRef(displayTables);
+  displayTablesRef.current = displayTables;
+  const mergeGroupsRef = useRef(mergeGroups);
+  mergeGroupsRef.current = mergeGroups;
+  const isOccupiedRef = useRef(isTableOccupied);
+  isOccupiedRef.current = isTableOccupied;
+  const onCommitMergesRef = useRef(onCommitMerges);
+  onCommitMergesRef.current = onCommitMerges;
+  const onMergeBlockedRef = useRef(onMergeBlocked);
+  onMergeBlockedRef.current = onMergeBlocked;
+
+  const membersOccupied = useCallback((labels: string[]) => {
+    const check = isOccupiedRef.current;
+    if (!check) return false;
+    return labels.some((l) => check(l));
+  }, []);
+
+  const findMergeTarget = useCallback(
+    (source: DisplayTable, x: number, y: number): DisplayTable | null => {
+      const size = tablePixelSize(source);
+      const sourceFp = { x, y, w: size.w, h: size.h };
+      for (const other of displayTablesRef.current) {
+        if (other.displayKey === source.displayKey) continue;
+        const os = tablePixelSize(other);
+        if (
+          tablesTouching(sourceFp, {
+            x: other.x,
+            y: other.y,
+            w: os.w,
+            h: os.h,
+          })
+        ) {
+          return other;
+        }
+      }
+      return null;
+    },
+    [],
+  );
+
+  const handleMergeHover = useCallback(
+    (source: DisplayTable, x: number, y: number) => {
+      const hit = findMergeTarget(source, x, y);
+      setMergeHoverKey(hit?.displayKey ?? null);
+    },
+    [findMergeTarget],
+  );
+
+  const handleMergeDrop = useCallback(
+    (source: DisplayTable, x: number, y: number): boolean => {
+      setMergeHoverKey(null);
+      const target = findMergeTarget(source, x, y);
+      if (!target) return false;
+      if (
+        membersOccupied(source.memberLabels) ||
+        membersOccupied(target.memberLabels)
+      ) {
+        onMergeBlockedRef.current?.();
+        return false;
+      }
+      const next = mergeTableGroups(
+        mergeGroupsRef.current,
+        source.memberLabels,
+        target.memberLabels,
+        (x + target.x) / 2,
+        (y + target.y) / 2,
+      );
+      onCommitMergesRef.current?.(next);
+      return true;
+    },
+    [findMergeTarget, membersOccupied],
+  );
+
+  const renderTables = useMemo((): DisplayTable[] => {
+    if (editable) {
+      return tables.map((t) => ({
+        ...t,
+        memberLabels: [t.label],
+        displayKey: `t-${t.id}`,
+      }));
+    }
+    return displayTables;
+  }, [editable, tables, displayTables]);
 
   const showToolbar = isEditor;
 
@@ -1003,27 +1210,65 @@ export default function FloorCanvas({
                 onDelete={handleDelete}
               />
             ))}
-            {tables.map((t) => (
-              <MemoCircle
-                key={`t-${t.id}`}
-                node={t}
-                editable={editable}
-                selected={selectedId === t.id}
-                onMove={handleMove}
-                onClick={() => {
-                  if (editable) {
-                    setSelectedId(t.id);
-                    return;
+            {renderTables.map((t) => {
+              const canMergeDrag =
+                mergeEnabled && !editable && !membersOccupied(t.memberLabels);
+              return (
+                <MemoCircle
+                  key={t.displayKey}
+                  node={t}
+                  editable={editable}
+                  selected={selectedId === t.id}
+                  mergeHighlight={mergeHoverKey === t.displayKey}
+                  mergeDragEnabled={canMergeDrag}
+                  layoutScaleX={
+                    editable ? 1 : viewTransform.scaleX * userZoom.scale
                   }
-                  onTableClick?.(t.label);
-                }}
-                onDelete={() => handleDelete(t.id)}
-                colorClass={
-                  colorByLabel?.[t.label] ?? unlistedColorClass ?? undefined
-                }
-                badge={badgeByLabel?.[t.label] ?? undefined}
-              />
-            ))}
+                  layoutScaleY={
+                    editable ? 1 : viewTransform.scaleY * userZoom.scale
+                  }
+                  onMove={handleMove}
+                  onClick={() => {
+                    if (editable) {
+                      setSelectedId(t.id);
+                      return;
+                    }
+                    onTableClick?.(t.memberLabels[0], t.memberLabels);
+                  }}
+                  onLongPress={
+                    editable || !onTableLongPress
+                      ? undefined
+                      : (pos) =>
+                          onTableLongPress({
+                            label: t.memberLabels[0],
+                            members: t.memberLabels,
+                            clientX: pos.clientX,
+                            clientY: pos.clientY,
+                          })
+                  }
+                  onMergeMove={
+                    canMergeDrag
+                      ? (x, y) => handleMergeHover(t, x, y)
+                      : undefined
+                  }
+                  onMergeDrop={
+                    canMergeDrag
+                      ? (x, y) => handleMergeDrop(t, x, y)
+                      : undefined
+                  }
+                  onMergeDragEnd={() => setMergeHoverKey(null)}
+                  onDelete={() => handleDelete(t.id)}
+                  colorClass={
+                    pickGroupColorClass(
+                      t.memberLabels,
+                      colorByLabel,
+                      unlistedColorClass,
+                    ) ?? undefined
+                  }
+                  badge={pickGroupBadge(t.memberLabels, badgeByLabel)}
+                />
+              );
+            })}
             {(!nodes || nodes.length === 0) && (
               <div className="absolute inset-0 flex items-center justify-center text-sm opacity-70 text-center px-4">
                 {emptyMessage ||
@@ -1708,8 +1953,16 @@ function Circle({
   node,
   editable,
   selected,
+  mergeHighlight,
+  mergeDragEnabled,
+  layoutScaleX = 1,
+  layoutScaleY = 1,
   onMove,
   onClick,
+  onLongPress,
+  onMergeMove,
+  onMergeDrop,
+  onMergeDragEnd,
   onDelete,
   colorClass,
   badge,
@@ -1717,8 +1970,16 @@ function Circle({
   node: FloorTableNode;
   editable: boolean;
   selected?: boolean;
+  mergeHighlight?: boolean;
+  mergeDragEnabled?: boolean;
+  layoutScaleX?: number;
+  layoutScaleY?: number;
   onMove: (id: number, x: number, y: number) => void;
   onClick?: () => void;
+  onLongPress?: (pos: { clientX: number; clientY: number }) => void;
+  onMergeMove?: (x: number, y: number) => void;
+  onMergeDrop?: (x: number, y: number) => boolean;
+  onMergeDragEnd?: () => void;
   onDelete?: () => void;
   colorClass?: string;
   badge?: string;
@@ -1728,6 +1989,7 @@ function Circle({
     x: node.x,
     y: node.y,
   });
+  const [mergeDragging, setMergeDragging] = useState(false);
   const posRef = useRef<{ x: number; y: number }>({ x: node.x, y: node.y });
   const rafRef = useRef<number | null>(null);
   const draggingRef = useRef(false);
@@ -1738,6 +2000,14 @@ function Circle({
   onMoveRef.current = onMove;
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
+  const onLongPressRef = useRef(onLongPress);
+  onLongPressRef.current = onLongPress;
+  const onMergeMoveRef = useRef(onMergeMove);
+  onMergeMoveRef.current = onMergeMove;
+  const onMergeDropRef = useRef(onMergeDrop);
+  onMergeDropRef.current = onMergeDrop;
+  const onMergeDragEndRef = useRef(onMergeDragEnd);
+  onMergeDragEndRef.current = onMergeDragEnd;
   const nodeRef = useRef(node);
   nodeRef.current = node;
 
@@ -1811,6 +2081,129 @@ function Circle({
     };
   }, [editable]);
 
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || editable) return;
+    let timer: number | null = null;
+    let startX = 0;
+    let startY = 0;
+    let pointerId: number | null = null;
+    let mergeDraggingLocal = false;
+    const mergeStartPx = 8;
+    const longPressCancelPx = mergeDragEnabled ? mergeStartPx : 10;
+
+    const clearTimer = () => {
+      if (timer != null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const snapHome = () => {
+      posRef.current = { x: nodeRef.current.x, y: nodeRef.current.y };
+      setPos(posRef.current);
+    };
+
+    const applyPosFromEvent = (e: PointerEvent) => {
+      const parent = el.parentElement!.getBoundingClientRect();
+      const sx = layoutScaleX > 0 ? layoutScaleX : 1;
+      const sy = layoutScaleY > 0 ? layoutScaleY : 1;
+      const layoutW = parent.width / sx;
+      const layoutH = parent.height / sy;
+      const relX = (e.clientX - parent.left) / sx;
+      const relY = (e.clientY - parent.top) / sy;
+      const newX = Math.max(16, Math.min(layoutW - 16, relX));
+      const newY = Math.max(16, Math.min(layoutH - 16, relY));
+      posRef.current = { x: newX, y: newY };
+      if (rafRef.current == null) {
+        rafRef.current = window.requestAnimationFrame(() => {
+          rafRef.current = null;
+          setPos(posRef.current);
+        });
+      }
+      onMergeMoveRef.current?.(newX, newY);
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button > 0) return;
+      startX = e.clientX;
+      startY = e.clientY;
+      pointerId = e.pointerId;
+      mergeDraggingLocal = false;
+      if (onLongPressRef.current) {
+        clearTimer();
+        timer = window.setTimeout(() => {
+          timer = null;
+          if (mergeDraggingLocal) return;
+          pointerId = null;
+          suppressClickUntilRef.current = Date.now() + 700;
+          onLongPressRef.current?.({ clientX: startX, clientY: startY });
+        }, 480);
+      }
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (pointerId !== e.pointerId) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!mergeDraggingLocal) {
+        if (dx * dx + dy * dy <= longPressCancelPx * longPressCancelPx) return;
+        clearTimer();
+        if (!mergeDragEnabled || !onMergeDropRef.current) return;
+        mergeDraggingLocal = true;
+        draggingRef.current = true;
+        setMergeDragging(true);
+        try {
+          el.setPointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+      }
+      applyPosFromEvent(e);
+      e.preventDefault();
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (pointerId !== e.pointerId) return;
+      clearTimer();
+      const wasMergeDrag = mergeDraggingLocal;
+      mergeDraggingLocal = false;
+      draggingRef.current = false;
+      pointerId = null;
+      setMergeDragging(false);
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+      if (rafRef.current != null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      if (wasMergeDrag) {
+        suppressClickUntilRef.current = Date.now() + 300;
+        const finalPos = posRef.current;
+        setPos(finalPos);
+        const committed = onMergeDropRef.current?.(finalPos.x, finalPos.y);
+        if (!committed) snapHome();
+        onMergeDragEndRef.current?.();
+      }
+    };
+    el.addEventListener('pointerdown', onPointerDown);
+    el.addEventListener('pointermove', onPointerMove);
+    el.addEventListener('pointerup', onPointerUp);
+    el.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      clearTimer();
+      el.removeEventListener('pointerdown', onPointerDown);
+      el.removeEventListener('pointermove', onPointerMove);
+      el.removeEventListener('pointerup', onPointerUp);
+      el.removeEventListener('pointercancel', onPointerUp);
+      if (rafRef.current != null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [editable, mergeDragEnabled, layoutScaleX, layoutScaleY]);
+
   const shape: TableShape = node.shape ?? 'circle';
   const w = Math.max(36, Number(node.w) || (shape === 'rect' ? 100 : 64));
   const h = Math.max(36, Number(node.h) || (shape === 'rect' ? 56 : 64));
@@ -1818,31 +2211,54 @@ function Circle({
     shape === 'circle' ? '9999px' : shape === 'square' ? '10px' : '12px';
   const ring = selected
     ? 'ring-2 ring-emerald-300 ring-offset-2 ring-offset-gray-900'
-    : '';
+    : mergeHighlight
+      ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-gray-900'
+      : '';
+  const cursorClass = editable
+    ? 'cursor-move'
+    : mergeDragEnabled
+      ? mergeDragging
+        ? 'cursor-grabbing'
+        : 'cursor-grab'
+      : 'cursor-pointer';
   return (
     // Outer wrapper sized to the table; allows the floating delete
     // button to overflow past the table edge without being clipped.
     <div
       ref={ref}
       data-haptic={editable ? 'off' : 'light'}
-      className={`absolute ${editable ? 'cursor-move' : 'cursor-pointer'} select-none`}
+      className={`absolute ${cursorClass} select-none`}
       style={{
         left: pos.x,
         top: pos.y,
         width: w,
         height: h,
+        zIndex: mergeDragging || mergeHighlight ? 30 : undefined,
         touchAction: 'none' as any,
-        willChange: editable ? ('transform,left,top' as any) : undefined,
+        willChange:
+          editable || mergeDragEnabled
+            ? ('transform,left,top' as any)
+            : undefined,
         // Counter-scale via CSS variables set on the parent so shapes
         // stay proportional even when the parent applies a non-uniform
         // auto-fit scale to spread positions across the canvas.
         transform:
           'translate(-50%, -50%) scale(var(--floor-cx, 1), var(--floor-cy, 1))',
         transformOrigin: 'center',
+        WebkitTouchCallout: 'none',
       }}
       onClick={() => {
         if (Date.now() < suppressClickUntilRef.current) return;
         onClickRef.current?.();
+      }}
+      onContextMenu={(e) => {
+        if (editable || !onLongPressRef.current) return;
+        e.preventDefault();
+        suppressClickUntilRef.current = Date.now() + 700;
+        onLongPressRef.current({
+          clientX: e.clientX,
+          clientY: e.clientY,
+        });
       }}
       title={node.seats ? `${node.label} · seats ${node.seats}` : node.label}
     >
@@ -1859,7 +2275,13 @@ function Circle({
         }}
       >
         <div className="flex flex-col items-center leading-none px-1">
-          <span className="text-sm font-semibold">{node.label}</span>
+          <span
+            className={`font-semibold ${
+              String(node.label).length > 6 ? 'text-[11px]' : 'text-sm'
+            }`}
+          >
+            {node.label}
+          </span>
           {badge && (
             <span className="mt-0.5 text-[10px] font-semibold px-1 rounded bg-black/40 max-w-[80px] truncate">
               {badge}

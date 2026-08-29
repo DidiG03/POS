@@ -199,6 +199,10 @@ const api: Api = {
       ipcRenderer.invoke('layout:get', { userId, area, scope }),
     save: (userId: number, area: string, nodes: any[], scope?: string) =>
       ipcRenderer.invoke('layout:save', { userId, area, nodes, scope }),
+    getMerges: (area: string) =>
+      ipcRenderer.invoke('layout:getMerges', { area }),
+    setMerges: (area: string, groups) =>
+      ipcRenderer.invoke('layout:setMerges', { area, groups }),
   },
   covers: {
     save: (area: string, label: string, covers: number) =>
@@ -371,6 +375,16 @@ ipcRenderer.on('layout:changed', (_e, payload) => {
   try {
     window.dispatchEvent(
       new CustomEvent('pos:layoutChanged', { detail: payload }),
+    );
+  } catch {
+    // ignore
+  }
+});
+
+ipcRenderer.on('tableMerges:changed', (_e, payload) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('pos:tableMergesChanged', { detail: payload }),
     );
   } catch {
     // ignore

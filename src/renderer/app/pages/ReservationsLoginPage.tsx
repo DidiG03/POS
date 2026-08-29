@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { useReservationSessionStore } from '../../stores/reservationSession';
 import type { UserDTO } from '@shared/ipc';
 
+import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
+
 // Mirrored from LoginPage so a tablet that paired through the staff
 // login is recognised here without re-entering the code.
 const PAIRING_STORAGE_KEY = 'pos_pairing_code';
@@ -44,12 +46,26 @@ export default function ReservationsLoginPage() {
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
 
-  // Auto-redirect if a non-expired session already exists.
+  // Auto-redirect if a non-expired session already exists *and* the LAN
+  // token is still a host/admin (tablets share localStorage with waiter login).
   useEffect(() => {
-    if (sessionUser && (!sessionExpiresAt || sessionExpiresAt > Date.now())) {
-      navigate('/reservations/app', { replace: true });
+    if (!sessionUser || (sessionExpiresAt && sessionExpiresAt <= Date.now())) {
+      return;
     }
-  }, [sessionUser, sessionExpiresAt, navigate]);
+    if (isBrowserClient) {
+      try {
+        const host = localStorage.getItem('pos_host_api_token');
+        const shared = localStorage.getItem('pos_api_token');
+        const ok =
+          (host && isHostOrAdminRole(jwtRole(host))) ||
+          (shared && isHostOrAdminRole(jwtRole(shared)));
+        if (!ok) return;
+      } catch {
+        return;
+      }
+    }
+    navigate('/reservations/app', { replace: true });
+  }, [sessionUser, sessionExpiresAt, navigate, isBrowserClient]);
 
   useEffect(() => {
     let cancelled = false;

@@ -58,6 +58,9 @@ const HOST = ['ADMIN', 'HOST'] as const;
 /** Shells that legitimately run without a login. */
 const KDS_WINDOWS = ['kds'] as const;
 
+/** Dedicated host reservations window (PIN is on that renderer). */
+const RESERVATIONS_WINDOWS = ['reservations'] as const;
+
 export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // ---------------------------------------------------------------- admin
   'admin:getOverview': { allow: ADMIN },
@@ -158,6 +161,8 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // Reading a floor plan is harmless and every shell needs it, including the
   // reservations panel run by a HOST.
   'layout:get': { allow: 'session' },
+  'layout:getMerges': { allow: HOST, windows: RESERVATIONS_WINDOWS },
+  'layout:setMerges': { allow: HOST, windows: RESERVATIONS_WINDOWS },
   // Floor-plan editing is an owner action (`canEditLayout` is currently off in
   // the UI); keep the channel closed to the floor either way.
   'layout:save': { allow: ADMIN },

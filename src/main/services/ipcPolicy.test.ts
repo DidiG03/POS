@@ -112,6 +112,12 @@ describe('IPC policy shape', () => {
     }
   });
 
+  it('lets the reservations window merge tables', () => {
+    expect(IPC_POLICIES['layout:setMerges']?.allow).toEqual(['ADMIN', 'HOST']);
+    expect(IPC_POLICIES['layout:setMerges']?.windows).toEqual(['reservations']);
+    expect(IPC_POLICIES['layout:getMerges']?.windows).toEqual(['reservations']);
+  });
+
   it('uses only known roles', () => {
     const knownRoles = new Set([
       'ADMIN',

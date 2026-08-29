@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_RESERVATION_DURATION_MIN,
+  distinctSeatedAt,
   effectiveReservationStatus,
+  formatReservationClock,
   formatReservationDuration,
   isLiveReservationStatus,
   reservationOccupiesTable,
+  reservationStayElapsed,
 } from './reservationDuration';
 
 describe('reservationOccupiesTable', () => {
@@ -62,13 +65,21 @@ describe('reservationOccupiesTable', () => {
     ).toBe(false);
   });
 
-  it('keeps occupying when duration was never set', () => {
+  it('uses the default stay when duration was never set, then frees the table', () => {
+    const start = '2026-08-27T20:00:00';
+    const startMs = Date.parse(start);
     expect(
       reservationOccupiesTable(
-        { status: 'SEATED', startsAt: '2026-08-27T10:00:00' },
-        now,
+        { status: 'SEATED', startsAt: start },
+        startMs + 89 * 60_000,
       ),
     ).toBe(true);
+    expect(
+      reservationOccupiesTable(
+        { status: 'SEATED', startsAt: start },
+        startMs + 90 * 60_000,
+      ),
+    ).toBe(false);
   });
 
   it('uses each Kohëzgjatja preset as the hold length', () => {
@@ -98,6 +109,49 @@ describe('reservationOccupiesTable', () => {
         startMs + 180 * 60_000,
       ),
     ).toBe(false);
+  });
+
+  it('holds from seated time when guests arrive late', () => {
+    const now = Date.parse('2026-08-27T21:15:00');
+    expect(
+      reservationOccupiesTable(
+        {
+          status: 'SEATED',
+          startsAt: '2026-08-27T20:00:00',
+          seatedAt: '2026-08-27T20:30:00',
+          durationMin: 90,
+        },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      reservationOccupiesTable(
+        {
+          status: 'SEATED',
+          startsAt: '2026-08-27T20:00:00',
+          seatedAt: '2026-08-27T20:30:00',
+          durationMin: 90,
+        },
+        Date.parse('2026-08-27T22:00:00'),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('distinctSeatedAt', () => {
+  it('hides seated time when it matches the booking', () => {
+    expect(
+      distinctSeatedAt('2026-08-27T20:00:00', '2026-08-27T20:00:30'),
+    ).toBeNull();
+  });
+
+  it('returns seated time when guests arrive later', () => {
+    const seated = distinctSeatedAt(
+      '2026-08-27T20:00:00',
+      '2026-08-27T20:30:00',
+    );
+    expect(seated).not.toBeNull();
+    expect(formatReservationClock(seated!)).toBe('20:30');
   });
 });
 
@@ -135,7 +189,7 @@ describe('effectiveReservationStatus', () => {
     ).toBe('SEATED');
   });
 
-  it('shows Përfunduar once the seated duration elapses', () => {
+  it('stays Ulur once the seated duration elapses until the host frees it', () => {
     expect(
       effectiveReservationStatus(
         {
@@ -145,6 +199,43 @@ describe('effectiveReservationStatus', () => {
         },
         now,
       ),
-    ).toBe('COMPLETED');
+    ).toBe('SEATED');
+  });
+});
+
+describe('reservationStayElapsed', () => {
+  const now = Date.parse('2026-08-27T21:00:00');
+
+  it('is true only after a seated stay runs out', () => {
+    expect(
+      reservationStayElapsed(
+        {
+          status: 'SEATED',
+          startsAt: '2026-08-27T20:00:00',
+          durationMin: 90,
+        },
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      reservationStayElapsed(
+        {
+          status: 'SEATED',
+          startsAt: '2026-08-27T19:00:00',
+          durationMin: 90,
+        },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      reservationStayElapsed(
+        {
+          status: 'BOOKED',
+          startsAt: '2026-08-27T19:00:00',
+          durationMin: 90,
+        },
+        now,
+      ),
+    ).toBe(false);
   });
 });

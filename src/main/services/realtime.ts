@@ -145,3 +145,10 @@ export function broadcastLayoutChanged(payload: LayoutChangePayload): void {
   broadcastIpc('layout:changed', payload);
   broadcastSse('layout', payload);
 }
+
+export function broadcastTableMergesChanged(
+  payload: LayoutChangePayload,
+): void {
+  broadcastIpc('tableMerges:changed', payload);
+  broadcastSse('tableMerges', payload);
+}

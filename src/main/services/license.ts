@@ -2,7 +2,7 @@
  * Host license: Stripe Checkout + a key stored in userData.
  * Tablets never see this — they talk to the LAN API on a licensed till.
  */
-import { app } from 'electron';
+import { app, net } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -41,8 +41,15 @@ export function isLicenseRequired(): boolean {
   if (String(process.env.POS_LICENSE_BYPASS || '').trim() === '1') {
     return false;
   }
-  // Packaged builds bake POS_BILLING_URL in entry.ts. Dev stays free unless
-  // that URL is set (so local electron-vite is not blocked by a paywall).
+  // Packaged builds bake POS_BILLING_URL in entry.ts and must be licensed.
+  // Unpackaged `npm run dev` keeps the till + LAN tablets usable even when
+  // that URL is in `.env` for billing UI work — otherwise merge/save 403s
+  // because the HTTP API never starts.
+  try {
+    if (!app.isPackaged) return false;
+  } catch {
+    // `app` is unavailable in some unit-test imports.
+  }
   return Boolean(billingBase());
 }
 
@@ -73,14 +80,23 @@ export function clearStoredLicense(): void {
   }
 }
 
+async function billingFetch(url: string, init: RequestInit): Promise<Response> {
+  // Electron's Node `fetch` (undici) often hangs on TLS to Vercel; Chromium's
+  // net.fetch uses the same stack as the rest of the app.
+  if (app.isReady()) {
+    return await net.fetch(url, init);
+  }
+  return await fetch(url, init);
+}
+
 async function billingJson<T>(pathName: string, body: unknown): Promise<T> {
   const base = billingBase();
   if (!base)
     throw new Error('Billing server is not configured (POS_BILLING_URL)');
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 20_000);
+  const t = setTimeout(() => ac.abort(), 30_000);
   try {
-    const res = await fetch(`${base}${pathName}`, {
+    const res = await billingFetch(`${base}${pathName}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -98,6 +114,10 @@ async function billingJson<T>(pathName: string, body: unknown): Promise<T> {
       );
     }
     return data as T;
+  } catch (e: any) {
+    const cause = e?.cause?.message || e?.cause?.code || '';
+    const msg = String(e?.message || 'Billing request failed');
+    throw new Error(cause ? `${msg} (${cause})` : msg);
   } finally {
     clearTimeout(t);
   }

@@ -3,6 +3,11 @@ import path from 'node:path';
 import Module from 'node:module';
 import fs from 'node:fs';
 
+app.setName('Code Orbit POS');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.codeorbit.pos');
+}
+
 /** `@types/node` omits this internal resolver hook used after mutating `NODE_PATH`. */
 type ModuleConstructorWithInitPaths = typeof Module & {
   _initPaths(): void;
@@ -98,11 +103,9 @@ function ensurePackagedDefaults() {
     if (!String(process.env.POS_ALLOW_LAN || '').trim()) {
       process.env.POS_ALLOW_LAN = 'true';
     }
-    // Stripe billing API (license keys). Same Cloud Run host as the old
-    // POS cloud — redeploy `server/` as the billing-only app.
+    // Stripe billing API (license keys) hosted on Vercel.
     if (!String(process.env.POS_BILLING_URL || '').trim()) {
-      process.env.POS_BILLING_URL =
-        'https://pos-api-1075917751068.europe-west1.run.app';
+      process.env.POS_BILLING_URL = 'https://pos-billing-theta.vercel.app';
     }
     // Auto-updates: GitHub Releases source.
     if (!String(process.env.GITHUB_OWNER || '').trim()) {

@@ -8,7 +8,7 @@
   "author": "",
   "license": "MIT",
   "scripts": {
-    "dev": "electron-vite dev --entry dist/main/index.js",
+    "dev": "node scripts/brandElectronDev.mjs && electron-vite dev --entry dist/main/index.js",
     "dev:kds": "electron-vite dev --config electron.vite.kds.config.ts --entry dist/kds/main/index.js",
     "build": "electron-vite build",
     "build:kds": "electron-vite build --config electron.vite.kds.config.ts",
@@ -92,7 +92,11 @@
         "dmg"
       ],
       "category": "public.app-category.business",
-      "icon": "build-resources/icon.icns"
+      "icon": "build-resources/icon.icns",
+      "extendInfo": {
+        "CFBundleName": "Code Orbit POS",
+        "CFBundleDisplayName": "Code Orbit POS"
+      }
     },
     "win": {
       "target": [

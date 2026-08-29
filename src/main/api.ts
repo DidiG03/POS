@@ -25,6 +25,7 @@ import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
 } from './services/realtime';
+import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
@@ -446,9 +447,13 @@ async function verifyToken(
     return null;
   }
   const now = Math.floor(Date.now() / 1000);
-  if (!payload?.sub || typeof payload.sub !== 'number') return null;
+  const userId = Number(payload.sub);
+  if (!Number.isFinite(userId) || userId <= 0) return null;
   if (typeof payload.exp === 'number' && payload.exp < now) return null;
-  return { userId: payload.sub, role: payload.role };
+  return {
+    userId,
+    role: String(payload.role || '').toUpperCase(),
+  };
 }
 
 function pickBearerToken(
@@ -604,12 +609,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
   const RENDERER_DIR = join(RUNTIME_DIR, '../renderer');
   const RENDERER_ORIGIN =
     process.env.RENDERER_ORIGIN || process.env.ELECTRON_RENDERER_URL || '';
-  const settings = await coreServices.readSettings();
-  const allowLan =
-    Boolean((settings as any)?.security?.allowLan) ||
-    process.env.POS_ALLOW_LAN === 'true';
-  const bindHost =
-    process.env.POS_BIND_HOST || (allowLan ? '0.0.0.0' : '127.0.0.1');
+  // Native tablets must reach this process on the LAN even when "Allow Web
+  // access" is off — that toggle only gates browsers.
+  const bindHost = process.env.POS_BIND_HOST || '0.0.0.0';
   const secret = await getOrCreateApiSecret();
   const cors = createCorsPolicy(Boolean(process.env.ELECTRON_RENDERER_URL));
 
@@ -946,7 +948,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         const token = await issueToken(secret, {
           userId: user.id,
-          role: user.role,
+          role: String(user.role || '').toUpperCase(),
         });
         return send(
           res,
@@ -1065,14 +1067,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           '/billing/status',
           '/notifications',
           '/notifications/mark-all-read',
+          '/layout/merges',
+          '/reservations/merges',
         ]);
         const isHostReservationsPath =
-          role === 'HOST' &&
+          (role === 'HOST' || role === 'ADMIN') &&
           (pathname === '/auth/users' ||
             pathname === '/settings' ||
             pathname === '/auth/verify-manager-pin' ||
             pathname.startsWith('/reservations') ||
-            pathname.startsWith('/layout/') ||
+            pathname.startsWith('/layout') ||
             pathname.startsWith('/notifications'));
         if (!allowed.has(pathname) && !isHostReservationsPath)
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
@@ -2476,6 +2480,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         return send(res, 200, 'ok', corsOrigin);
       }
+      if (req.method === 'GET' && pathname === '/layout/merges') {
+        const area = String(parsed.query.area || '');
+        if (!area) return send(res, 400, 'invalid', corsOrigin);
+        const groups = await readTableMerges(area);
+        return send(res, 200, groups, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/layout/merges') {
+        const { area, groups } = await parseJson(req);
+        if (!area) return send(res, 400, 'invalid', corsOrigin);
+        const next = await writeTableMerges(String(area), groups);
+        return send(res, 200, next, corsOrigin);
+      }
 
       // Shifts (open userIds) - Local-first: always use local DB
       if (req.method === 'GET' && pathname === '/shifts/open') {
@@ -3227,6 +3243,21 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           endIso,
         });
         return send(res, 200, counts, corsOrigin);
+      }
+
+      if (req.method === 'GET' && pathname === '/reservations/merges') {
+        const area = String(parsed.query.area || '');
+        if (!area) return send(res, 400, 'invalid', corsOrigin);
+        await reservationsService.assertHostOrAdmin(reservationActorId);
+        const groups = await readTableMerges(area);
+        return send(res, 200, groups, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/reservations/merges') {
+        const { area, groups } = await parseJson(req);
+        if (!area) return send(res, 400, 'invalid', corsOrigin);
+        await reservationsService.assertHostOrAdmin(reservationActorId);
+        const next = await writeTableMerges(String(area), groups);
+        return send(res, 200, next, corsOrigin);
       }
 
       if (req.method === 'POST' && pathname === '/reservations') {

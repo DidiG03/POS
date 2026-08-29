@@ -6,6 +6,13 @@ import FloorCanvas from '../components/FloorCanvas';
 import { HOST_LAYOUT_SCOPE } from '../../stores/reservationSession';
 import type { ReservationDTO, ReservationStatus } from '@shared/ipc';
 import {
+  formatMergeLabel,
+  sanitizeMergeGroups,
+  separateTableGroup,
+  type TableMergeGroup,
+} from '@shared/tableMerge';
+import { toast } from '../../stores/toasts';
+import {
   isReservationQuickStatusTooEarly,
   reservationQuickStatusUnlockHint,
 } from '../../utils/reservationStatusWindow';
@@ -17,6 +24,15 @@ import {
 } from '../../utils/reservationFloorColor';
 import { PageSpinner } from '../../components/PageSpinner';
 import { afterPaint } from '../../utils/afterPaint';
+import {
+  distinctSeatedAt,
+  effectiveReservationStatus,
+  formatReservationClock,
+  formatReservationDuration,
+  reservationEndMs,
+  reservationOccupancyStartMs,
+  reservationOccupiesTable,
+} from '@shared/reservationDuration';
 
 // Quick-action statuses surfaced in the per-table sheet.
 const QUICK_STATUSES: ReservationStatus[] = [
@@ -56,13 +72,64 @@ function quickButtonClass(s: ReservationStatus): string {
   }
 }
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return (
-    String(d.getHours()).padStart(2, '0') +
-    ':' +
-    String(d.getMinutes()).padStart(2, '0')
+function occupyingLiveReservation(
+  rs: ReservationDTO[] | undefined,
+  nowMs: number,
+): ReservationDTO | null {
+  const live = (rs || []).filter((r) => reservationOccupiesTable(r, nowMs));
+  if (!live.length) return null;
+  const seated = live.find(
+    (r) => effectiveReservationStatus(r, nowMs) === 'SEATED',
   );
+  if (seated) return seated;
+  return [...live].sort(
+    (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
+  )[0];
+}
+
+function occupyingAnyReservation(
+  labels: string[],
+  byLabel: Map<string, ReservationDTO[]>,
+  nowMs: number,
+): ReservationDTO | null {
+  for (const label of labels) {
+    const live = occupyingLiveReservation(byLabel.get(label), nowMs);
+    if (live) return live;
+  }
+  return null;
+}
+
+function reservationsForLabels(
+  labels: string[],
+  byLabel: Map<string, ReservationDTO[]>,
+): ReservationDTO[] {
+  const seen = new Set<number>();
+  const out: ReservationDTO[] = [];
+  for (const label of labels) {
+    for (const r of byLabel.get(label) || []) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r);
+    }
+  }
+  return out;
+}
+
+function menuStatusesFor(status: ReservationStatus): ReservationStatus[] {
+  if (status === 'SEATED') return ['COMPLETED', 'CANCELLED'];
+  if (status === 'BOOKED') return ['SEATED', 'NO_SHOW', 'CANCELLED'];
+  return [];
+}
+
+function clampMenuPos(x: number, y: number, width = 224, height = 360) {
+  const pad = 8;
+  const left = Math.max(pad, Math.min(x, window.innerWidth - width - pad));
+  const top = Math.max(pad, Math.min(y, window.innerHeight - height - pad));
+  return { left, top };
+}
+
+function formatTime(iso: string): string {
+  return formatReservationClock(iso);
 }
 
 // Strip Electron's verbose IPC error wrapper so the user sees the friendly text.
@@ -112,10 +179,19 @@ export default function ReservationsFloorPage() {
   const [viewReadyKey, setViewReadyKey] = useState<string | null>(null);
   // When non-null, the per-table reservations sheet is open for this label.
   const [sheetLabel, setSheetLabel] = useState<string | null>(null);
+  const [sheetMembers, setSheetMembers] = useState<string[]>([]);
   const [sheetBusyId, setSheetBusyId] = useState<number | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [sheetNowMs, setSheetNowMs] = useState(() => Date.now());
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [tableMenu, setTableMenu] = useState<{
+    label: string;
+    members: string[];
+    x: number;
+    y: number;
+  } | null>(null);
+  const [mergeGroups, setMergeGroups] = useState<TableMergeGroup[]>([]);
+  const [menuError, setMenuError] = useState<string | null>(null);
   const reloadGen = useRef(0);
   const isToday = isSameLocalDay(date, new Date());
   const snapshotKey = `${area}|${date.toISOString()}`;
@@ -127,6 +203,15 @@ export default function ReservationsFloorPage() {
     const id = window.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!tableMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTableMenu(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tableMenu]);
 
   useEffect(() => {
     if (!sheetLabel) return;
@@ -204,6 +289,47 @@ export default function ReservationsFloorPage() {
     };
   }, [reload, date, area]);
 
+  const reloadMerges = useCallback(async () => {
+    if (!area) {
+      setMergeGroups([]);
+      return;
+    }
+    const groups = await window.api.layout.getMerges(area).catch(() => []);
+    setMergeGroups(sanitizeMergeGroups(groups));
+  }, [area]);
+
+  useEffect(() => {
+    void reloadMerges();
+  }, [reloadMerges]);
+
+  useEffect(() => {
+    const onMerges = (ev: any) => {
+      const detail = (ev?.detail || {}) as { area?: string };
+      if (detail.area && area && String(detail.area) !== String(area)) return;
+      void reloadMerges();
+    };
+    window.addEventListener('pos:tableMergesChanged', onMerges);
+    return () => window.removeEventListener('pos:tableMergesChanged', onMerges);
+  }, [area, reloadMerges]);
+
+  const commitMerges = useCallback(
+    async (next: TableMergeGroup[]) => {
+      const sanitized = sanitizeMergeGroups(next);
+      setMergeGroups(sanitized);
+      try {
+        const saved = await window.api.layout.setMerges(area, sanitized);
+        setMergeGroups(sanitizeMergeGroups(saved));
+      } catch (e) {
+        const msg = cleanIpcMessage(e, t('reservations.somethingWrong'));
+        toast.error(
+          /forbidden/i.test(msg) ? t('reservations.mergeForbidden') : msg,
+        );
+        await reloadMerges();
+      }
+    },
+    [area, reloadMerges, t],
+  );
+
   const reservationsByLabel = useMemo(() => {
     const map = new Map<string, ReservationDTO[]>();
     for (const r of reservations) {
@@ -239,39 +365,75 @@ export default function ReservationsFloorPage() {
     return afterPaint(() => setViewReadyKey(snapshotKey));
   }, [contentReady, snapshotKey, colorByLabel]);
 
-  function openTableSheet(label: string) {
-    const all = reservationsByLabel.get(label) || [];
+  function openTableSheet(label: string, members?: string[]) {
+    const labels = (members?.length ? members : [label]).filter(Boolean);
+    const all = reservationsForLabels(labels, reservationsByLabel);
     // A free table (no history at all) goes straight to the new-reservation form.
     if (all.length === 0) {
-      openEditor({ tableLabel: label, area });
+      openEditor({ tableLabel: labels[0] || label, area });
       return;
     }
     setSheetError(null);
     setSheetBusyId(null);
-    setSheetLabel(label);
+    setTableMenu(null);
+    setSheetMembers(labels);
+    setSheetLabel(formatMergeLabel(labels));
   }
 
-  async function applyStatus(r: ReservationDTO, status: ReservationStatus) {
+  function closeTableSheet() {
+    setSheetLabel(null);
+    setSheetMembers([]);
+  }
+
+  function openTableMenu(info: {
+    label: string;
+    members?: string[];
+    clientX: number;
+    clientY: number;
+  }) {
+    setMenuError(null);
+    const members = info.members?.length ? info.members : [info.label];
+    setTableMenu({
+      label: info.label,
+      members,
+      x: info.clientX,
+      y: info.clientY,
+    });
+  }
+
+  async function separateMergedTables() {
+    if (!tableMenu || tableMenu.members.length < 2) return;
+    const next = separateTableGroup(mergeGroups, tableMenu.label);
+    setTableMenu(null);
+    await commitMerges(next);
+  }
+
+  async function applyStatus(
+    r: ReservationDTO,
+    status: ReservationStatus,
+    fromMenu = false,
+  ) {
     if (!me?.id) return;
     setSheetBusyId(r.id);
     setSheetError(null);
+    setMenuError(null);
     try {
       const updated = await window.api.reservations.setStatus({
         id: r.id,
         actorId: me.id,
         status,
       });
-      // Refresh this device immediately (and re-broadcast for any same-window
-      // listeners). SSE will still notify other devices via the main-process
-      // broadcast inside the service.
       notifyReservationsChanged(
         'status',
         updated?.startsAt || r.startsAt,
         updated?.area || r.area,
       );
       await reload({ silent: true });
+      if (fromMenu) setTableMenu(null);
     } catch (e) {
-      setSheetError(cleanIpcMessage(e, t('reservations.somethingWrong')));
+      const msg = cleanIpcMessage(e, t('reservations.somethingWrong'));
+      if (fromMenu) setMenuError(msg);
+      else setSheetError(msg);
     } finally {
       setSheetBusyId(null);
     }
@@ -281,11 +443,38 @@ export default function ReservationsFloorPage() {
   // sync after a status change without closing the modal.
   const sheetReservations = useMemo(() => {
     if (!sheetLabel) return [] as ReservationDTO[];
-    const arr = reservationsByLabel.get(sheetLabel) || [];
-    return [...arr].sort(
+    const labels = sheetMembers.length ? sheetMembers : [sheetLabel];
+    return reservationsForLabels(labels, reservationsByLabel).sort(
       (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
     );
-  }, [reservationsByLabel, sheetLabel]);
+  }, [reservationsByLabel, sheetLabel, sheetMembers]);
+
+  const sheetPrimaryLabel = sheetMembers[0] || sheetLabel || '';
+
+  const menuMembers = tableMenu?.members?.length
+    ? tableMenu.members
+    : tableMenu
+      ? [tableMenu.label]
+      : [];
+  const menuLive = tableMenu
+    ? occupyingAnyReservation(menuMembers, reservationsByLabel, nowMs)
+    : null;
+  const menuShown = menuLive
+    ? (effectiveReservationStatus(menuLive, nowMs) as ReservationStatus)
+    : null;
+  const menuSeated = menuLive
+    ? distinctSeatedAt(menuLive.startsAt, menuLive.seatedAt)
+    : null;
+  const menuPos = tableMenu
+    ? clampMenuPos(tableMenu.x, tableMenu.y)
+    : { left: 0, top: 0 };
+  const menuHasHistory = tableMenu
+    ? reservationsForLabels(menuMembers, reservationsByLabel).length > 0
+    : false;
+  const menuMerged = menuMembers.length > 1;
+  const menuDisplayLabel = menuMembers.length
+    ? formatMergeLabel(menuMembers)
+    : tableMenu?.label || '';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -332,10 +521,19 @@ export default function ReservationsFloorPage() {
             colorByLabel={colorByLabel}
             unlistedColorClass={RESERVATION_TABLE_FREE_CLASS}
             badgeByLabel={badgeByLabel}
-            onTableClick={(label) => openTableSheet(label)}
+            onTableClick={(label, members) => openTableSheet(label, members)}
+            onTableLongPress={openTableMenu}
             onLayoutReady={({ area: readyArea }) =>
               setLayoutReadyArea(readyArea)
             }
+            mergeEnabled
+            mergeGroups={mergeGroups}
+            isTableOccupied={(label) =>
+              occupyingLiveReservation(reservationsByLabel.get(label), nowMs) !=
+              null
+            }
+            onCommitMerges={(groups) => void commitMerges(groups)}
+            onMergeBlocked={() => toast.error(t('reservations.mergeOccupied'))}
           />
           {!viewReady && (
             <div className="absolute inset-0 z-20 bg-gray-900">
@@ -357,20 +555,23 @@ export default function ReservationsFloorPage() {
           <div className="flex items-center gap-2 flex-wrap">
             {reservations
               .filter((r) => !r.tableLabel)
-              .map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-                  onClick={() => openEditor(r)}
-                >
-                  {new Date(r.startsAt).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}{' '}
-                  • {r.customerName} ({r.partySize})
-                </button>
-              ))}
+              .map((r) => {
+                const seatedAt = distinctSeatedAt(r.startsAt, r.seatedAt);
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                    onClick={() => openEditor(r)}
+                  >
+                    {formatTime(r.startsAt)}
+                    {seatedAt
+                      ? ` · ${t('reservations.timeSeated')} ${formatReservationClock(seatedAt)}`
+                      : ''}{' '}
+                    • {r.customerName} ({r.partySize})
+                  </button>
+                );
+              })}
           </div>
         </div>
       )}
@@ -378,7 +579,7 @@ export default function ReservationsFloorPage() {
       {sheetLabel && (
         <div
           className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 sm:p-4"
-          onClick={() => setSheetLabel(null)}
+          onClick={() => closeTableSheet()}
         >
           <div
             className="w-full sm:max-w-2xl h-[92dvh] sm:h-auto bg-gray-800 border border-gray-700 sm:rounded-lg rounded-t-2xl shadow-2xl flex flex-col"
@@ -399,7 +600,7 @@ export default function ReservationsFloorPage() {
               <button
                 type="button"
                 className="px-3 py-2 rounded hover:bg-gray-700 text-lg leading-none shrink-0"
-                onClick={() => setSheetLabel(null)}
+                onClick={() => closeTableSheet()}
                 title={t('common.close')}
                 aria-label={t('common.close')}
               >
@@ -411,8 +612,8 @@ export default function ReservationsFloorPage() {
                 type="button"
                 className="px-3 py-2 rounded bg-rose-700 hover:bg-rose-600 text-sm font-medium"
                 onClick={() => {
-                  openWalkIn({ tableLabel: sheetLabel });
-                  setSheetLabel(null);
+                  openWalkIn({ tableLabel: sheetPrimaryLabel });
+                  closeTableSheet();
                 }}
                 title={t('reservations.seatNowTitle')}
               >
@@ -422,8 +623,8 @@ export default function ReservationsFloorPage() {
                 type="button"
                 className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium"
                 onClick={() => {
-                  openEditor({ tableLabel: sheetLabel, area });
-                  setSheetLabel(null);
+                  openEditor({ tableLabel: sheetPrimaryLabel, area });
+                  closeTableSheet();
                 }}
                 title={t('reservations.newReservationTitle')}
               >
@@ -450,12 +651,32 @@ export default function ReservationsFloorPage() {
                     sheetNowMs,
                   ) as ReservationStatus;
                   const isClosed = !isLiveReservation(shownStatus);
-                  const endMs = reservationEndMs(r.startsAt, r.durationMin);
+                  const occupyStart = reservationOccupancyStartMs(r);
+                  const endMs =
+                    occupyStart != null
+                      ? reservationEndMs(new Date(occupyStart), r.durationMin)
+                      : null;
+                  const seatedAt = distinctSeatedAt(r.startsAt, r.seatedAt);
                   return (
                     <div key={r.id} className="p-3">
                       <div className="flex items-center gap-3 flex-wrap">
-                        <div className="font-mono text-sm w-12 shrink-0">
-                          {formatTime(r.startsAt)}
+                        <div className="shrink-0">
+                          <div className="font-mono text-sm">
+                            {formatTime(r.startsAt)}
+                          </div>
+                          {seatedAt ? (
+                            <>
+                              <div className="text-[10px] leading-tight opacity-55">
+                                {t('reservations.timeReserved')}
+                              </div>
+                              <div className="font-mono text-sm mt-1">
+                                {formatReservationClock(seatedAt)}
+                              </div>
+                              <div className="text-[10px] leading-tight opacity-55">
+                                {t('reservations.timeSeated')}
+                              </div>
+                            </>
+                          ) : null}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="font-medium truncate">
@@ -490,14 +711,14 @@ export default function ReservationsFloorPage() {
                           className="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-60"
                           onClick={() => {
                             openEditor(r);
-                            setSheetLabel(null);
+                            closeTableSheet();
                           }}
                         >
                           {t('reservations.edit')}
                         </button>
                       </div>
 
-                      <div className="mt-2 flex items-center gap-1.5 flex-wrap pl-[3.75rem]">
+                      <div className="mt-2 flex items-center gap-1.5 flex-wrap pl-16">
                         {QUICK_STATUSES.filter((s) => s !== shownStatus).map(
                           (s) => {
                             const tooEarly = isReservationQuickStatusTooEarly(
@@ -548,6 +769,142 @@ export default function ReservationsFloorPage() {
                     </div>
                   );
                 })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tableMenu && (
+        <div className="fixed inset-0 z-50" onClick={() => setTableMenu(null)}>
+          <div
+            role="menu"
+            className="absolute w-56 rounded-lg border border-gray-600 bg-gray-800 shadow-2xl overflow-hidden"
+            style={{ left: menuPos.left, top: menuPos.top }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-3 py-2 border-b border-gray-700">
+              <div className="text-[10px] uppercase tracking-wide opacity-60">
+                {t('reservations.quickMenu')}
+              </div>
+              <div className="font-semibold truncate">
+                {t('reservations.tableLabel', { label: menuDisplayLabel })}
+              </div>
+              {menuLive ? (
+                <div className="text-xs opacity-70 truncate mt-0.5">
+                  {formatTime(menuLive.startsAt)}
+                  {menuSeated
+                    ? ` · ${t('reservations.timeSeated')} ${formatReservationClock(menuSeated)}`
+                    : ''}
+                  {' · '}
+                  {menuLive.customerName}
+                </div>
+              ) : (
+                <div className="text-xs opacity-60 mt-0.5">
+                  {t('reservations.legendFree')}
+                </div>
+              )}
+            </div>
+            {menuError && (
+              <div className="px-3 py-2 text-xs text-rose-300">{menuError}</div>
+            )}
+            <div className="p-1.5 space-y-1">
+              {menuLive &&
+                menuShown &&
+                menuStatusesFor(menuShown).map((s) => {
+                  const tooEarly = isReservationQuickStatusTooEarly(
+                    nowMs,
+                    menuLive.startsAt,
+                    s,
+                  );
+                  const label =
+                    s === 'SEATED'
+                      ? t('reservations.seatGuest')
+                      : s === 'COMPLETED'
+                        ? t('reservations.finishStay')
+                        : reservationStatusLabel(t, s);
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      role="menuitem"
+                      disabled={Boolean(sheetBusyId) || tooEarly}
+                      className={`w-full text-left px-3 py-2 rounded text-sm font-medium disabled:opacity-50 ${quickButtonClass(s)}`}
+                      title={
+                        tooEarly
+                          ? t('reservations.availableFrom', {
+                              time: reservationQuickStatusUnlockHint(
+                                menuLive.startsAt,
+                              ),
+                            })
+                          : undefined
+                      }
+                      onClick={() => void applyStatus(menuLive, s, true)}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              {!menuLive && (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-rose-700 hover:bg-rose-600"
+                    onClick={() => {
+                      openWalkIn({ tableLabel: tableMenu.label });
+                      setTableMenu(null);
+                    }}
+                  >
+                    {t('reservations.seatNow')}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-500"
+                    onClick={() => {
+                      openEditor({ tableLabel: tableMenu.label, area });
+                      setTableMenu(null);
+                    }}
+                  >
+                    {t('reservations.newReservation')}
+                  </button>
+                </>
+              )}
+              {menuLive && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left px-3 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600"
+                  onClick={() => {
+                    openEditor(menuLive);
+                    setTableMenu(null);
+                  }}
+                >
+                  {t('reservations.edit')}
+                </button>
+              )}
+              {menuHasHistory && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left px-3 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600"
+                  onClick={() =>
+                    openTableSheet(tableMenu.label, tableMenu.members)
+                  }
+                >
+                  {t('reservations.viewBookings')}
+                </button>
+              )}
+              {menuMerged && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-amber-700 hover:bg-amber-600"
+                  onClick={() => void separateMergedTables()}
+                >
+                  {t('reservations.separateTables')}
+                </button>
               )}
             </div>
           </div>
