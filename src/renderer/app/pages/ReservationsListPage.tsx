@@ -284,7 +284,9 @@ export default function ReservationsListPage() {
   const universeCount = useMemo(() => {
     if (showFinished || statusFilter !== '') return sorted.length;
     return sorted.filter((r) =>
-      isLiveListStatus(effectiveReservationStatus(r, nowMs)),
+      isLiveListStatus(
+        effectiveReservationStatus(r, nowMs) as ReservationStatus,
+      ),
     ).length;
   }, [sorted, showFinished, statusFilter, nowMs]);
 
