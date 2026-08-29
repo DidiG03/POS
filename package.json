@@ -1,6 +1,6 @@
 {
   "name": "code-orbit-pos",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "private": true,
   "description": "Desktop POS for  Code Orbit Agroturizem (Electron + React + Prisma)",
   "type": "module",

@@ -112,8 +112,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
 
   // ---------------------------------------------------------------- layout
   'GET /layout/get': { allow: 'session' },
-  'GET /layout/merges': { allow: HOST },
-  'POST /layout/merges': { allow: HOST },
+  // Host floor is the only UI that writes merges. Tablets often still hold a
+  // waiter JWT from the staff login, so this is any authenticated session.
+  'GET /layout/merges': { allow: 'session' },
+  'POST /layout/merges': { allow: 'session' },
   'POST /layout/save': { allow: ADMIN },
 
   // ---------------------------------------------------------------- covers
@@ -140,10 +142,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   // ---------------------------------------------------------- reservations
   'GET /reservations': { allow: HOST },
   'GET /reservations/counts': { allow: HOST },
-  'GET /reservations/merges': { allow: HOST },
+  'GET /reservations/merges': { allow: 'session' },
   'POST /reservations': { allow: HOST },
   'POST /reservations/delete': { allow: HOST },
-  'POST /reservations/merges': { allow: HOST },
+  'POST /reservations/merges': { allow: 'session' },
   'POST /reservations/set-status': { allow: HOST },
   'POST /reservations/update': { allow: HOST },
 

@@ -161,8 +161,8 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // Reading a floor plan is harmless and every shell needs it, including the
   // reservations panel run by a HOST.
   'layout:get': { allow: 'session' },
-  'layout:getMerges': { allow: HOST, windows: RESERVATIONS_WINDOWS },
-  'layout:setMerges': { allow: HOST, windows: RESERVATIONS_WINDOWS },
+  'layout:getMerges': { allow: 'session', windows: RESERVATIONS_WINDOWS },
+  'layout:setMerges': { allow: 'session', windows: RESERVATIONS_WINDOWS },
   // Floor-plan editing is an owner action (`canEditLayout` is currently off in
   // the UI); keep the channel closed to the floor either way.
   'layout:save': { allow: ADMIN },

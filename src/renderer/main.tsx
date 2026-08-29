@@ -129,7 +129,8 @@ if (!(window as any).api) {
       pathname.startsWith('/layout/merges') ||
       pathname.startsWith('/reservations')
     ) {
-      return hostApiToken() || getToken();
+      // Host PIN first; the waiter token still works for merge saves.
+      return hostApiToken() || readStoredToken(TOKEN_KEY_POS) || getToken();
     }
     return getToken();
   }

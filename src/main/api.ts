@@ -1029,6 +1029,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           auth?.role,
         );
         if (verdict !== 'allow') {
+          console.warn('[lan] denied', {
+            method: req.method,
+            pathname,
+            verdict,
+            role: auth?.role ?? null,
+            userId: auth?.userId ?? null,
+          });
           logSecurityEvent('lan_denied', {
             method: req.method,
             pathname,
@@ -3248,14 +3255,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'GET' && pathname === '/reservations/merges') {
         const area = String(parsed.query.area || '');
         if (!area) return send(res, 400, 'invalid', corsOrigin);
-        await reservationsService.assertHostOrAdmin(reservationActorId);
         const groups = await readTableMerges(area);
         return send(res, 200, groups, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/reservations/merges') {
         const { area, groups } = await parseJson(req);
         if (!area) return send(res, 400, 'invalid', corsOrigin);
-        await reservationsService.assertHostOrAdmin(reservationActorId);
+        console.info('[lan] save table merges', {
+          area: String(area),
+          role: auth?.role ?? null,
+          userId: auth?.userId ?? null,
+          groups: Array.isArray(groups) ? groups.length : 0,
+        });
         const next = await writeTableMerges(String(area), groups);
         return send(res, 200, next, corsOrigin);
       }

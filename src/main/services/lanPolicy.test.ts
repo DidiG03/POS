@@ -118,7 +118,7 @@ describe('authorizeLanRoute', () => {
     expect(authorizeLanRoute('POST', '/reservations', 'HOST')).toBe('allow');
   });
 
-  it('lets a host merge tables and keeps waiters out', () => {
+  it('lets any logged-in role merge tables (host floor tokens are often waiter JWTs)', () => {
     expect(authorizeLanRoute('GET', '/layout/merges', 'HOST')).toBe('allow');
     expect(authorizeLanRoute('POST', '/layout/merges', 'HOST')).toBe('allow');
     expect(authorizeLanRoute('GET', '/reservations/merges', 'HOST')).toBe(
@@ -127,11 +127,12 @@ describe('authorizeLanRoute', () => {
     expect(authorizeLanRoute('POST', '/reservations/merges', 'HOST')).toBe(
       'allow',
     );
-    expect(authorizeLanRoute('POST', '/layout/merges', 'WAITER')).toBe(
-      'forbidden',
-    );
+    expect(authorizeLanRoute('POST', '/layout/merges', 'WAITER')).toBe('allow');
     expect(authorizeLanRoute('POST', '/reservations/merges', 'WAITER')).toBe(
-      'forbidden',
+      'allow',
+    );
+    expect(authorizeLanRoute('POST', '/reservations/merges', null)).toBe(
+      'unauthenticated',
     );
   });
 
