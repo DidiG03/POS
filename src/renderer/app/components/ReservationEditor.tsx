@@ -6,6 +6,11 @@ import {
   reservationQuickStatusUnlockHint,
 } from '../../utils/reservationStatusWindow';
 import { reservationStatusLabel } from '../../utils/reservationLabels';
+import {
+  DEFAULT_RESERVATION_DURATION_MIN,
+  effectiveReservationStatus,
+} from '@shared/reservationDuration';
+import { ReservationDurationPicker } from './ReservationDurationPicker';
 
 export type ReservationEditorProps = {
   open: boolean;
@@ -128,7 +133,9 @@ export default function ReservationEditor({
     startOfLocalDay(new Date()),
   );
   const [time, setTime] = useState<string>('19:00');
-  const [durationMin, setDurationMin] = useState<number>(120);
+  const [durationMin, setDurationMin] = useState<number>(
+    DEFAULT_RESERVATION_DURATION_MIN,
+  );
   const [formArea, setFormArea] = useState<string>('');
   const [tableLabel, setTableLabel] = useState<string>('');
   const [note, setNote] = useState<string>('');
@@ -182,14 +189,18 @@ export default function ReservationEditor({
       setCustomerName(initial.customerName || '');
       setCustomerPhone(initial.customerPhone || '');
       setPartySize(Number(initial.partySize || 2));
-      setDurationMin(Number(initial.durationMin || 120));
+      setDurationMin(
+        Number(initial.durationMin || DEFAULT_RESERVATION_DURATION_MIN),
+      );
       setTableLabel(initial.tableLabel || '');
       setNote(initial.note || '');
     } else {
       setCustomerName(initial?.customerName || '');
       setCustomerPhone(initial?.customerPhone || '');
       setPartySize(Number(initial?.partySize || 2));
-      setDurationMin(Number(initial?.durationMin || 120));
+      setDurationMin(
+        Number(initial?.durationMin || DEFAULT_RESERVATION_DURATION_MIN),
+      );
       setTableLabel(initial?.tableLabel || '');
       setNote(initial?.note || '');
     }
@@ -248,6 +259,19 @@ export default function ReservationEditor({
   const minTimeToday = isReservationToday
     ? localTimeHHMM(wallClock)
     : undefined;
+
+  const shownStatus = (
+    isEdit
+      ? effectiveReservationStatus(
+          {
+            status: initial?.status || 'BOOKED',
+            startsAt: initial?.startsAt || new Date().toISOString(),
+            durationMin: initial?.durationMin ?? durationMin,
+          },
+          editNowMs,
+        )
+      : 'BOOKED'
+  ) as ReservationStatus;
 
   if (!open) return null;
 
@@ -383,10 +407,7 @@ export default function ReservationEditor({
             <div className="text-xs opacity-70">
               {t('reservations.statusLabel')}:{' '}
               <span className="uppercase tracking-wide">
-                {reservationStatusLabel(
-                  t,
-                  (initial?.status || 'BOOKED') as ReservationStatus,
-                )}
+                {reservationStatusLabel(t, shownStatus)}
               </span>
             </div>
           )}
@@ -478,23 +499,16 @@ export default function ReservationEditor({
                 className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
               />
             </label>
-            <label className="block">
+            <div className="block">
               <div className="text-xs opacity-70 mb-1">
-                {t('reservations.durationMin')}
+                {t('reservations.duration')}
               </div>
-              <select
+              <ReservationDurationPicker
                 value={durationMin}
-                onChange={(e) => setDurationMin(Number(e.target.value))}
+                onChange={setDurationMin}
                 disabled={busy}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
-              >
-                {[60, 90, 120, 150, 180, 240, 300, 360].map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </label>
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -582,7 +596,7 @@ export default function ReservationEditor({
           </button>
           {isEdit && (
             <div className="sm:ml-auto flex items-center gap-1 flex-wrap order-2 sm:order-none">
-              {STATUSES.filter((s) => s !== initial?.status).map((s) => {
+              {STATUSES.filter((s) => s !== shownStatus).map((s) => {
                 const startsAtIso = isoFromLocalDateAndTime(
                   reservationDay,
                   time,

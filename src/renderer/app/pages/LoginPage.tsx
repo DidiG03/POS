@@ -18,11 +18,8 @@ export default function LoginPage() {
       return '';
     }
   });
-  const [adminBusinessCode, setAdminBusinessCode] = useState<string>('');
-  const [adminBusinessCodeMode, setAdminBusinessCodeMode] =
-    useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [cloudNotice, setCloudNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const isBrowserClient =
@@ -64,7 +61,7 @@ export default function LoginPage() {
       const effectivePairingCode = isBrowserClient
         ? codeFromInput || pairingCode || undefined
         : undefined;
-      // Tablet always sends to host; host proxies to cloud with correct userId when needed
+      // Tablet always sends to host
       const user = await window.api.auth.loginWithPin(
         pin,
         selectedId ?? undefined,
@@ -154,35 +151,16 @@ export default function LoginPage() {
   const { setUser } = useSessionStore();
   const { setUser: setAdminUser } = useAdminSessionStore();
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [adminBusinessPassword, setAdminBusinessPassword] = useState('');
-  const [usingCode, setUsingCode] = useState(false);
   const [firstAdminName, setFirstAdminName] = useState('');
   const [firstAdminPin, setFirstAdminPin] = useState('');
   const [creatingFirstAdmin, setCreatingFirstAdmin] = useState(false);
-
-  useEffect(() => {
-    const onCloud = () => setReloadNonce((n) => n + 1);
-    window.addEventListener('pos:cloudConfigChanged', onCloud as any);
-    return () =>
-      window.removeEventListener('pos:cloudConfigChanged', onCloud as any);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const s = await window.api.settings.get();
       setEnableAdmin(s.enableAdmin ?? false);
-      const backendUrl = String((s as any)?.cloud?.backendUrl || '').trim();
-      const businessCode = String((s as any)?.cloud?.businessCode || '').trim();
-      if (isAdminContext) {
-        setAdminBusinessCode(
-          String(businessCode || '')
-            .trim()
-            .toUpperCase(),
-        );
-      }
-      // Local-first: always load from local DB. Cloud settings are for backup only.
-      setCloudNotice(null);
+      setNotice(null);
 
       let users: any[] = [];
       try {
@@ -190,34 +168,23 @@ export default function LoginPage() {
           includeAdmins: isAdminContext,
         });
       } catch (e: any) {
-        setCloudNotice(e?.message || t('login.loadUsersFailed'));
+        setNotice(e?.message || t('login.loadUsersFailed'));
         setStaff([]);
         setOpenIds([]);
         if (!cancelled) setStaffLoading(false);
         return;
       }
-      // Local-first: empty users means no users in database yet.
       if (Array.isArray(users) && users.length === 0) {
-        const cloudHint =
-          backendUrl && businessCode ? t('login.cloudHint') : '';
-        setCloudNotice(
+        setNotice(
           isAdminContext
-            ? backendUrl
-              ? t('login.noAdminUsersCloud')
-              : t('login.noAdminUsersLocal')
-            : t('login.noStaffUsers', { cloudHint }),
+            ? t('login.noAdminUsersLocal')
+            : t('login.noStaffUsers'),
         );
-        if (isAdminContext && backendUrl) {
-          setAdminBusinessCodeMode(true);
-        } else if (isAdminContext) {
-          setAdminBusinessCodeMode(false);
-        }
         setStaff([]);
         setOpenIds([]);
         if (!cancelled) setStaffLoading(false);
         return;
       }
-      if (isAdminContext) setAdminBusinessCodeMode(false);
       const list = isAdminContext
         ? users.filter((u) => u.role === 'ADMIN' && u.active)
         : // Hosts only ever sign in through the Reservations window; never
@@ -261,7 +228,7 @@ export default function LoginPage() {
       // on devices without a safe area.
       className="min-h-dvh flex items-center justify-center bg-gray-900 overflow-hidden px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
     >
-      <div className="pos-surface-panel p-5 sm:p-6 w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
+      <div className="rounded-xl bg-gray-800 p-5 sm:p-6 w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
         <div className="flex items-center justify-between mb-4 shrink-0 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             {/* Back arrow shows only on the PIN screen so the user can
@@ -342,94 +309,9 @@ export default function LoginPage() {
             </div>
           )}
         </div>
-        {cloudNotice && (
+        {notice && (
           <div className="mb-4 p-3 rounded bg-amber-900/30 border border-amber-700 text-amber-200 text-sm">
-            {cloudNotice}
-          </div>
-        )}
-        {isAdminContext && adminBusinessCodeMode && (
-          <div className="mb-4 p-3 rounded border border-gray-700 bg-gray-800/40">
-            <div className="text-sm font-medium mb-2">
-              {t('login.businessCodeTitle')}
-            </div>
-            <div className="text-xs opacity-70 mb-2">
-              {t('login.businessCodeHelp')}
-            </div>
-            <div className="flex gap-2">
-              <input
-                className="bg-gray-700 rounded px-3 py-2 flex-1"
-                placeholder={t('login.businessCodePlaceholder')}
-                value={adminBusinessCode}
-                onChange={(e) =>
-                  setAdminBusinessCode(
-                    e.target.value
-                      .replace(/[^0-9A-Za-z_-]/g, '')
-                      .toUpperCase()
-                      .slice(0, 24),
-                  )
-                }
-              />
-            </div>
-            <div className="text-xs opacity-70 mt-3 mb-2">
-              {t('login.businessPasswordLabel')}
-            </div>
-            <div className="flex gap-2">
-              <input
-                className="bg-gray-700 rounded px-3 py-2 flex-1"
-                placeholder={t('login.businessPasswordPlaceholder')}
-                value={adminBusinessPassword}
-                onChange={(e) => setAdminBusinessPassword(e.target.value)}
-                type="password"
-                autoComplete="off"
-              />
-              <button
-                className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-                disabled={
-                  !adminBusinessCode.trim() ||
-                  adminBusinessPassword.trim().length < 6 ||
-                  usingCode
-                }
-                onClick={async () => {
-                  setError(null);
-                  setCloudNotice(t('login.checkingCode'));
-                  setUsingCode(true);
-                  try {
-                    await window.api.settings.update({
-                      cloud: {
-                        businessCode: adminBusinessCode.trim(),
-                        accessPassword: adminBusinessPassword,
-                      },
-                    } as any);
-                    const users = await window.api.auth.listUsers({
-                      includeAdmins: true,
-                    });
-                    const admins = (users || []).filter(
-                      (u: any) => u.role === 'ADMIN' && u.active,
-                    );
-                    setStaff(admins);
-                    if (!admins.length) {
-                      setAdminBusinessCodeMode(true);
-                      setError(t('login.invalidBusinessCode'));
-                      setCloudNotice(t('login.invalidBusinessCode'));
-                    } else {
-                      setAdminBusinessCodeMode(false);
-                      setCloudNotice(null);
-                    }
-                  } catch (e: any) {
-                    const msg = String(
-                      e?.message || t('login.setBusinessCodeFailed'),
-                    );
-                    setError(msg);
-                    setCloudNotice(msg);
-                    setAdminBusinessCodeMode(true);
-                  } finally {
-                    setUsingCode(false);
-                  }
-                }}
-              >
-                {usingCode ? t('login.checking') : t('login.useCode')}
-              </button>
-            </div>
+            {notice}
           </div>
         )}
         {isAdminContext && !showPin && !staffLoading && staff.length === 0 && (
@@ -477,7 +359,7 @@ export default function LoginPage() {
                       pin: firstAdminPin,
                       active: true,
                     } as any);
-                    setCloudNotice(t('login.firstAdminCreated'));
+                    setNotice(t('login.firstAdminCreated'));
                     setFirstAdminName('');
                     setFirstAdminPin('');
                     setReloadNonce((n) => n + 1);

@@ -6,6 +6,13 @@ import {
   computeServiceChargeAmount,
   roundMoney,
 } from '@shared/pricing';
+import {
+  cashChangeDue,
+  cashTenderSuggestions,
+  parseEurExchangeRate,
+  splitEvenly,
+  toEurAtRate,
+} from '@shared/paymentDisplay';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
@@ -15,7 +22,7 @@ import { logTicket, printTicket } from '../../api';
 import { tryOrQueue } from '../../utils/offlineQueue';
 import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
-import { makeFormatAmount } from '../../utils/format';
+import { formatEur, makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
 import { saneTableAreas } from '@shared/tableAreas';
@@ -219,6 +226,10 @@ export default function OrderPage() {
   const [paymentMethod, setPaymentMethod] = useState<
     'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE'
   >('CASH');
+  const [posCurrency, setPosCurrency] = useState<string>('EUR');
+  const [eurExchangeRate, setEurExchangeRate] = useState<number | null>(null);
+  const [splitGuestCount, setSplitGuestCount] = useState(1);
+  const [cashTendered, setCashTendered] = useState('');
   const [amountPaid, setAmountPaid] = useState<string>('');
   const [printReceipt, setPrintReceipt] = useState<boolean>(true);
   const [printStationTickets, setPrintStationTickets] = useState<boolean>(true);
@@ -260,6 +271,9 @@ export default function OrderPage() {
    * cannot overwrite state for the table the user is currently viewing.
    */
   const hydrateGenRef = useRef(0);
+  /** Separate from hydrate so a transfer can flip ownership without
+   *  cancelling an in-flight ticket reload. */
+  const ownerFetchGenRef = useRef(0);
   /** Set when we send or are about to send; prevents overwriting with empty during server sync delay */
   const lastSendAtRef = useRef(0);
   const lastSendTableRef = useRef<{ area: string; label: string } | null>(null);
@@ -672,6 +686,14 @@ export default function OrderPage() {
     try {
       const s: any = await window.api.settings.get().catch(() => null);
       setVatEnabled(Boolean((s as any)?.fiscal?.enabled));
+      setPosCurrency(
+        String((s as any)?.currency || 'EUR')
+          .trim()
+          .toUpperCase() || 'EUR',
+      );
+      setEurExchangeRate(
+        parseEurExchangeRate((s as any)?.fiscal?.eurExchangeRate),
+      );
       const dvr = Number((s as any)?.defaultVatRate);
       setDefaultVatRate(Number.isFinite(dvr) && dvr > 0 ? dvr : 0.2);
       const sc = (s as any)?.preferences?.serviceCharge || {};
@@ -764,6 +786,38 @@ export default function OrderPage() {
     Math.max(0, totalBeforeDiscount - discountAmount),
   );
   const formatAmount = useMemo(() => makeFormatAmount(), []);
+  const eurDue = useMemo(
+    () => toEurAtRate(totalDue, eurExchangeRate),
+    [totalDue, eurExchangeRate],
+  );
+  const split = useMemo(
+    () => splitEvenly(totalDue, splitGuestCount),
+    [totalDue, splitGuestCount],
+  );
+  const eurPerPerson = useMemo(
+    () => (split ? toEurAtRate(split.perPerson, eurExchangeRate) : null),
+    [split, eurExchangeRate],
+  );
+  const cashSuggestions = useMemo(
+    () =>
+      cashTenderSuggestions(
+        totalDue,
+        eurExchangeRate != null ? 'ALL' : posCurrency,
+      ),
+    [totalDue, posCurrency, eurExchangeRate],
+  );
+  const cashTenderedNum = Number(String(cashTendered || '').replace(',', '.'));
+  const cashChange = cashChangeDue(cashTenderedNum, totalDue);
+
+  useEffect(() => {
+    if (!showPayment) return;
+    const n =
+      typeof coversKnown === 'number' && coversKnown > 0
+        ? Math.floor(coversKnown)
+        : 1;
+    setSplitGuestCount(n);
+    setCashTendered('');
+  }, [showPayment]);
 
   const fav = useFavourites();
   const favouriteSkus = fav.list(user?.id || null);
@@ -1021,34 +1075,115 @@ export default function OrderPage() {
     selectedTable?.label,
   ]);
 
-  // Determine owner of the currently selected open table
-  useEffect(() => {
-    const gen = hydrateGenRef.current;
-    (async () => {
-      if (!selectedTable) {
+  const refreshTableOwner = useCallback(
+    async (
+      area?: string | null,
+      label?: string | null,
+      optimisticUserId?: number | null,
+    ) => {
+      const a = String(area || '').trim();
+      const l = String(label || '').trim();
+      const gen = ++ownerFetchGenRef.current;
+      if (!a || !l) {
         setOwnerId(null);
         return;
       }
-      if (!isOpen(selectedTable.area, selectedTable.label)) {
-        setOwnerId(null);
-        return;
+      const optimistic = Number(optimisticUserId);
+      if (Number.isFinite(optimistic) && optimistic > 0) {
+        setOwnerId(optimistic);
       }
       try {
-        const data = await window.api.tickets.getLatestForTable(
-          selectedTable.area,
-          selectedTable.label,
-        );
-        if (gen !== hydrateGenRef.current) return;
-        setOwnerId(data?.userId ?? null);
+        const data = await window.api.tickets.getLatestForTable(a, l);
+        if (gen !== ownerFetchGenRef.current) return;
+        const fetched = Number(data?.userId);
+        if (Number.isFinite(optimistic) && optimistic > 0) {
+          if (Number.isFinite(fetched) && fetched !== optimistic) return;
+        }
+        setOwnerId(Number.isFinite(fetched) && fetched > 0 ? fetched : null);
       } catch {
-        if (gen !== hydrateGenRef.current) return;
-        setOwnerId(null);
+        if (gen !== ownerFetchGenRef.current) return;
+        if (!(Number.isFinite(optimistic) && optimistic > 0)) setOwnerId(null);
       }
-    })();
+    },
+    [],
+  );
+
+  // Determine owner of the currently selected open table
+  useEffect(() => {
+    if (!selectedTable) {
+      ownerFetchGenRef.current += 1;
+      setOwnerId(null);
+      return;
+    }
+    if (!isOpen(selectedTable.area, selectedTable.label)) {
+      ownerFetchGenRef.current += 1;
+      setOwnerId(null);
+      return;
+    }
+    void refreshTableOwner(selectedTable.area, selectedTable.label);
   }, [
     selectedTable?.area,
     selectedTable?.label,
     isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+    refreshTableOwner,
+  ]);
+
+  useEffect(() => {
+    const onTicketsChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail || {};
+      const area = String(detail.area || '');
+      const tableLabel = String(detail.tableLabel || '');
+      if (!selectedTable) return;
+      if (area !== selectedTable.area || tableLabel !== selectedTable.label) {
+        return;
+      }
+      const uid = Number(detail.userId);
+      void refreshTableOwner(
+        selectedTable.area,
+        selectedTable.label,
+        Number.isFinite(uid) && uid > 0 ? uid : null,
+      );
+    };
+    window.addEventListener('pos:ticketsChanged', onTicketsChanged);
+    return () =>
+      window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
+  }, [selectedTable?.area, selectedTable?.label, refreshTableOwner]);
+
+  // Tablets (and cloud) often miss the SSE ticket event. Re-read owner
+  // while this table is open so a transfer on another device flips the
+  // ticket to request-only without a refresh.
+  useEffect(() => {
+    if (!selectedTable) return;
+    if (!isOpen(selectedTable.area, selectedTable.label)) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const area = selectedTable.area;
+    const label = selectedTable.label;
+    const tick = () => {
+      if (cancelled) return;
+      const hidden =
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden';
+      if (!hidden) void refreshTableOwner(area, label);
+      timer = setTimeout(tick, hidden ? 12_000 : 4_000);
+    };
+    timer = setTimeout(tick, 4_000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshTableOwner(area, label);
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [
+    selectedTable?.area,
+    selectedTable?.label,
+    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+    refreshTableOwner,
   ]);
 
   // Hydrate lines from server when selecting a table or on refresh.
@@ -2309,7 +2444,7 @@ export default function OrderPage() {
       </div>
 
       {showPayment && selectedTable && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3 sm:p-4 overflow-hidden">
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 overflow-hidden p-3 sm:p-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-full sm:w-[92vw] max-w-6xl p-4 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] relative">
             <div className="flex items-center justify-between mb-3 shrink-0">
               <div className="text-lg font-semibold">{t('order.payment')}</div>
@@ -2340,46 +2475,140 @@ export default function OrderPage() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
               {/* Order summary */}
               <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
-                <div className="text-sm opacity-80 mb-2">
-                  {t('order.orderSummary')}
-                </div>
-                <div className="text-xs opacity-60 mb-2">
-                  {t('order.selectGuestsPayment')}
-                </div>
-                <div className="flex gap-2 mb-3">
-                  <button
-                    className="flex-1 bg-gray-700 rounded py-2 text-sm opacity-70"
-                    disabled
-                  >
-                    {t('common.covers')}
-                  </button>
-                </div>
-                <div className="flex-1 overflow-auto space-y-2">
-                  <div className="bg-gray-700/60 rounded p-3 flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-medium">
-                        {t('common.table')} {selectedTable.label}
-                      </div>
-                      <div className="text-xs opacity-70">
-                        {t('common.coversWithVal', {
-                          val:
-                            typeof coversKnown === 'number' ? coversKnown : '—',
-                        })}
-                      </div>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div>
+                    <div className="text-sm opacity-80">
+                      {t('order.orderSummary')}
                     </div>
-                    <div className="text-sm font-semibold">
-                      {formatAmount(totals.total)}
+                    <div className="text-sm font-medium">
+                      {t('common.table')} {selectedTable.label}
+                    </div>
+                    <div className="text-xs opacity-70">
+                      {t('common.coversWithVal', {
+                        val:
+                          typeof coversKnown === 'number' ? coversKnown : '—',
+                      })}
                     </div>
                   </div>
                 </div>
-                <div className="mt-3 text-sm opacity-80 flex justify-between">
-                  <span>{t('common.total')}</span>
-                  <span className="font-semibold">
-                    {formatAmount(totals.total)}
-                  </span>
+                <div className="flex-1 overflow-auto space-y-1.5 min-h-0">
+                  {activeLines.length === 0 ? (
+                    <div className="text-xs opacity-60">
+                      {t('common.noItems')}
+                    </div>
+                  ) : (
+                    activeLines.map((l) => (
+                      <div
+                        key={l.id}
+                        className="flex items-start justify-between gap-2 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate">
+                            {l.qty}× {l.name}
+                          </div>
+                          {l.note ? (
+                            <div className="text-[11px] opacity-60 truncate">
+                              {l.note}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="tabular-nums shrink-0 font-medium">
+                          {formatAmount(l.qty * l.unitPrice)}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="mt-3 pt-3 border-t border-gray-700 space-y-1 text-sm">
+                  <div className="flex justify-between opacity-80">
+                    <span>{t('common.subtotal')}</span>
+                    <span className="tabular-nums">
+                      {formatAmount(totals.total)}
+                    </span>
+                  </div>
+                  {serviceChargeCfg.enabled && serviceChargeAmount > 0 ? (
+                    <div className="flex justify-between opacity-80">
+                      <span>{t('common.serviceCharge')}</span>
+                      <span className="tabular-nums">
+                        + {formatAmount(serviceChargeAmount)}
+                      </span>
+                    </div>
+                  ) : null}
+                  {discountAmount > 0 ? (
+                    <div className="flex justify-between opacity-80">
+                      <span>{t('common.discount')}</span>
+                      <span className="tabular-nums">
+                        − {formatAmount(discountAmount)}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div className="flex justify-between font-semibold pt-1">
+                    <span>{t('common.total')}</span>
+                    <span className="tabular-nums">
+                      {formatAmount(totalDue)}
+                    </span>
+                  </div>
+                  <PaymentFxHint
+                    eurAmount={eurDue}
+                    eurExchangeRate={eurExchangeRate}
+                    showRate
+                  />
+                </div>
+                <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium">
+                      {t('order.splitBill')}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
+                        disabled={splitGuestCount <= 1}
+                        onClick={() =>
+                          setSplitGuestCount((n) => Math.max(1, n - 1))
+                        }
+                        aria-label="−"
+                      >
+                        −
+                      </button>
+                      <div className="min-w-[2rem] text-center font-semibold tabular-nums">
+                        {splitGuestCount}
+                      </div>
+                      <button
+                        type="button"
+                        className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
+                        disabled={splitGuestCount >= 30}
+                        onClick={() =>
+                          setSplitGuestCount((n) => Math.min(30, n + 1))
+                        }
+                        aria-label="+"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  {split ? (
+                    <div>
+                      <div className="text-sm font-semibold tabular-nums">
+                        {split.guests > 1 &&
+                        Math.abs(split.lastPerson - split.perPerson) > 0.001
+                          ? t('order.perPersonLast', {
+                              amount: formatAmount(split.perPerson),
+                              last: formatAmount(split.lastPerson),
+                            })
+                          : t('order.perPerson', {
+                              amount: formatAmount(split.perPerson),
+                            })}
+                      </div>
+                      <PaymentFxHint
+                        eurAmount={eurPerPerson}
+                        eurExchangeRate={eurExchangeRate}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -2417,41 +2646,60 @@ export default function OrderPage() {
 
               {/* Amount & confirm */}
               <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-start justify-between mb-3 gap-2">
                   <div className="text-sm opacity-80 flex items-center gap-2">
                     <IconReceipt />
                     {t('order.paymentAmount')}
                   </div>
-                  <div className="text-sm font-semibold">
-                    {formatAmount(totalDue)}
+                  <div className="text-right">
+                    <div className="text-lg font-semibold tabular-nums leading-tight">
+                      {formatAmount(totalDue)}
+                    </div>
+                    <PaymentFxHint
+                      eurAmount={eurDue}
+                      eurExchangeRate={eurExchangeRate}
+                    />
                   </div>
                 </div>
-                {/* <button
-                  className="bg-blue-600 hover:bg-blue-700 rounded py-4 font-semibold"
-                  onClick={() => {
-                    // quick set "amount paid" to total
-                    setAmountPaid(String(totals.total.toFixed(2)));
-                  }}
-                >
-                  Amount paid
-                </button> */}
-                <div className="mt-3">
-                  {/* <input
-                    className="w-full bg-gray-700 rounded px-3 py-2"
-                    placeholder="Enter amount paid"
-                    value={amountPaid}
-                    onChange={(e) => setAmountPaid(e.target.value)}
-                  /> */}
-                  {/* {paymentMethod === 'CASH' && (() => {
-                    const paid = Number(amountPaid);
-                    const change = Number.isFinite(paid) ? Math.max(0, paid - totalDue) : 0;
-                    return (
-                      <div className="text-xs opacity-70 mt-2">
-                        Change: <span className="font-semibold">{formatAmount(change)}</span>
-                      </div>
-                    );
-                  })()} */}
-                </div>
+                {paymentMethod === 'CASH' && (
+                  <div className="mb-3 p-3 rounded bg-gray-900/40 border border-gray-700">
+                    <div className="text-sm font-medium mb-2">
+                      {t('order.cashReceived')}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {cashSuggestions.map((amt) => (
+                        <button
+                          key={amt}
+                          type="button"
+                          className={`min-h-11 px-3 py-2 rounded text-sm tabular-nums ${
+                            Number.isFinite(cashTenderedNum) &&
+                            Math.abs(cashTenderedNum - amt) < 1e-9
+                              ? 'bg-blue-600'
+                              : 'bg-gray-700 hover:bg-gray-600'
+                          }`}
+                          onClick={() => setCashTendered(String(amt))}
+                        >
+                          {Math.abs(amt - totalDue) < 1e-9
+                            ? t('order.exactAmount')
+                            : formatAmount(amt)}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      className="w-full bg-gray-700 rounded px-3 py-3 text-base tabular-nums"
+                      inputMode="decimal"
+                      placeholder={t('order.cashReceivedPlaceholder')}
+                      value={cashTendered}
+                      onChange={(e) => setCashTendered(e.target.value)}
+                    />
+                    <div className="mt-2 flex justify-between text-sm">
+                      <span className="opacity-70">{t('order.changeDue')}</span>
+                      <span className="font-semibold tabular-nums">
+                        {formatAmount(cashChange)}
+                      </span>
+                    </div>
+                  </div>
+                )}
                 {serviceChargeCfg.enabled && (
                   <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
                     <div className="flex items-center justify-between mb-2">
@@ -2596,10 +2844,11 @@ export default function OrderPage() {
                       if (busyAction != null) return;
                       if (!connectionOk) return;
                       setBusyAction('pay');
-                      // Track whether we ever got far enough to need to
-                      // close the table — keeps "manager approval
-                      // cancelled" from triggering a stray close.
-                      let attemptedPayment = false;
+                      // Close the table only after the host accepted the
+                      // payment (or queued it because the POS was offline).
+                      // Fiscal refusals throw — the table must stay open
+                      // with its items so the waiter can pay again.
+                      let paymentAccepted = false;
                       try {
                         const needsDiscountApproval =
                           approvalsCfg.requireManagerPinForDiscount &&
@@ -2641,7 +2890,6 @@ export default function OrderPage() {
                           categoryId: (l as any).categoryId,
                           categoryName: (l as any).categoryName,
                         }));
-                        attemptedPayment = true;
                         const paymentIdempotencyKey = newIdempotencyKey();
                         // Process the payment + receipt synchronously so
                         // the user sees a real "Processing…" state. The
@@ -2655,12 +2903,9 @@ export default function OrderPage() {
                         //     (PRINTER_TIMEOUT_MS, default 5 s). The
                         //     printer-station loop keeps trying for
                         //     ~4 min after that.
-                        //   - On a permanent failure (no printer
-                        //     configured, etc.) it returns false; the
-                        //     receipt snapshot still lands in PrintJob
-                        //     for the audit trail.
-                        // Either way the await resolves quickly and the
-                        // table close below ALWAYS runs.
+                        // Fiscal refusals throw. Printer hiccups after
+                        // the sale is recorded return `{ queued: true }`
+                        // and we still close the table.
                         try {
                           await tryOrQueue('payments.record', {
                             area: selectedTable.area,
@@ -2707,21 +2952,18 @@ export default function OrderPage() {
                                 managerApprovedBy?.userName ?? null,
                             },
                           });
-                        } catch {
-                          // Swallow — printer-event broadcasts surface
-                          // the error toast, and the receipt is either
-                          // already in the retry queue (transient) or
-                          // recorded in PrintJob (permanent). Don't let
-                          // a printer hiccup block the table close.
+                          paymentAccepted = true;
+                        } catch (e: any) {
+                          const detail = String(e?.message || '').trim();
+                          toast.error(detail || t('order.paymentNotRecorded'), {
+                            title: t('order.paymentBlocked'),
+                          });
                         }
                       } finally {
-                        // ALWAYS close the table after a real payment
-                        // attempt, regardless of print outcome. The
-                        // payment record + retry queue have already
-                        // captured the money and the receipt; the
-                        // table must not stay locked because the
-                        // printer is offline.
-                        if (attemptedPayment) {
+                        // Close only when the sale was accepted or
+                        // queued for a transport retry. A fiscal 400
+                        // from easyPos must not free the table.
+                        if (paymentAccepted) {
                           setOpen(
                             selectedTable.area,
                             selectedTable.label,
@@ -2759,10 +3001,17 @@ export default function OrderPage() {
                         <span>{t('order.processingPaymentOverlay')}</span>
                       </>
                     ) : (
-                      <span>
-                        {t('order.payWithTotal', {
-                          amount: formatAmount(totalDue),
-                        })}
+                      <span className="flex flex-col items-center leading-tight">
+                        <span>
+                          {t('order.payWithTotal', {
+                            amount: formatAmount(totalDue),
+                          })}
+                        </span>
+                        {eurDue != null ? (
+                          <span className="text-xs font-medium opacity-90">
+                            {formatEur(eurDue)}
+                          </span>
+                        ) : null}
                       </span>
                     )}
                   </button>
@@ -3046,6 +3295,18 @@ export default function OrderPage() {
                           note: latest.note || '',
                         });
                       }
+                      void refreshTableOwner(toA, toL, latest?.userId ?? null);
+                    } else if (
+                      transferMode === 'WAITER' &&
+                      transferToUserId != null
+                    ) {
+                      // Same table, new owner — flip to request-only now,
+                      // do not wait for a refresh or the next owner poll.
+                      void refreshTableOwner(
+                        selectedTable.area,
+                        selectedTable.label,
+                        transferToUserId,
+                      );
                     }
 
                     setShowTransfer(false);
@@ -3769,6 +4030,36 @@ function ForkKnifeIcon() {
         strokeLinecap="round"
       />
     </svg>
+  );
+}
+
+function PaymentFxHint({
+  eurAmount,
+  eurExchangeRate,
+  showRate = false,
+}: {
+  eurAmount: number | null;
+  eurExchangeRate: number | null;
+  showRate?: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-0.5">
+      {eurAmount != null ? (
+        <div className="text-sm font-medium text-emerald-300 tabular-nums">
+          {t('order.inEur', { amount: formatEur(eurAmount) })}
+        </div>
+      ) : showRate ? (
+        <div className="text-[11px] opacity-50">
+          {t('order.eurRateMissing')}
+        </div>
+      ) : null}
+      {showRate && eurExchangeRate != null ? (
+        <div className="text-[11px] opacity-50">
+          {t('order.eurRateHint', { rate: String(eurExchangeRate) })}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

@@ -187,8 +187,7 @@ export function mapCalendarEventToReservation(
   config: GoogleCalendarConfig,
 ): CalendarEventFields {
   const fields = parseDescriptionFields(event.description);
-  const defaultArea =
-    String(config.defaultArea || 'Main Hall').trim() || 'Main Hall';
+  const defaultArea = String(config.defaultArea || '').trim();
   const defaultDuration = clampInt(config.defaultDurationMin, 15, 720, 120);
 
   let customerName = String(event.summary || '').trim();

@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
 import { coreServices, withTableLock } from './services/core';
+import { applyOpenAtLogin, isOpenAtLoginEnabled } from './services/hostRuntime';
 import {
   dispatchTicket,
   pickActiveReceiptProfile,
@@ -36,7 +37,6 @@ import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
 import { app } from 'electron';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
-import { getCloudConfig } from './services/cloud';
 import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
@@ -830,7 +830,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
 
       // Auth
-      // Verify pairing code (used by tablets before cloud login)
+      // Verify pairing code (used by tablets before login)
       if (req.method === 'POST' && pathname === '/pairing/verify') {
         const remoteIp = String(
           (req.socket as any)?.remoteAddress || 'unknown',
@@ -925,43 +925,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             );
           }
         }
-        // When cloud is configured and user has externalId, proxy to cloud (tablets send local userId)
-        const cfg = await getCloudConfig().catch(() => null);
-        if (cfg && userId) {
-          const localUser = await prisma.user.findFirst({
-            where: { id: Number(userId), active: true },
-          });
-          const cloudUserId = localUser?.externalId
-            ? Number(localUser.externalId)
-            : null;
-          if (cloudUserId && Number.isFinite(cloudUserId)) {
-            try {
-              const cloudRes = await fetch(
-                `${cfg.backendUrl.replace(/\/+$/, '')}/auth/login`,
-                {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    businessCode: cfg.businessCode,
-                    pin,
-                    userId: cloudUserId,
-                  }),
-                },
-              );
-              const cloudData = await cloudRes.json().catch(() => null);
-              if (
-                cloudRes.ok &&
-                cloudData &&
-                typeof cloudData === 'object' &&
-                cloudData.token
-              ) {
-                return send(res, 200, cloudData, corsOrigin);
-              }
-            } catch {
-              // fall through to local
-            }
-          }
-        }
         // Local auth
         const where: any = userId
           ? { id: Number(userId), active: true }
@@ -1003,7 +966,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'GET' && pathname === '/auth/users') {
         // Local-first: always use local DB for users
-        // Include externalId so tablets in cloud mode can use it for cloud login (cloud expects cloud user id, not local)
         const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
         return send(
           res,
@@ -1048,37 +1010,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const token = pickBearerToken(req, parsed);
         auth = token ? await verifyToken(secret, token) : null;
         if (!auth) {
-          // When tablet has cloud token (host can't verify), proxy to cloud for all non-public paths
-          const cfg = await getCloudConfig().catch(() => null);
-          if (token && cfg) {
-            try {
-              const cloudUrl = `${cfg.backendUrl}${pathname}${parsed.search || ''}`;
-              const init: RequestInit = {
-                method: req.method || 'GET',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  'Content-Type': 'application/json',
-                },
-              };
-              if (['POST', 'PUT', 'PATCH'].includes(req.method || '')) {
-                const body = await parseJson(req);
-                init.body = JSON.stringify(body);
-              }
-              const cloudRes = await fetch(cloudUrl, init);
-              const text = await cloudRes.text();
-              const headers: Record<string, string> = {
-                'Content-Type':
-                  cloudRes.headers.get('Content-Type') || 'application/json',
-              };
-              if (corsOrigin)
-                headers['Access-Control-Allow-Origin'] = corsOrigin;
-              res.writeHead(cloudRes.status, headers);
-              res.end(text);
-              return;
-            } catch {
-              // fall through to 401
-            }
-          }
           return send(res, 401, { error: 'unauthorized' }, corsOrigin);
         }
       }
@@ -1729,8 +1660,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             counts,
             restaurantName:
               String(settings?.restaurantName || '').trim() || undefined,
-            businessCode:
-              String(settings?.cloud?.businessCode || '').trim() || undefined,
           },
           corsOrigin,
         );
@@ -2719,9 +2648,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         );
       }
 
-      // Billing status: tablets poll this after login. Keep it public and
-      // never lock the floor from a missing cloud check — same fallback as
-      // the Electron IPC handler when cloud isn't configured.
+      // Billing status: tablets poll this after login. Host license is
+      // enforced by not starting this API until the till is licensed.
       if (req.method === 'GET' && pathname === '/billing/status') {
         return send(
           res,
@@ -2825,11 +2753,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // port. Clients only need to know *whether* a code is required.
           delete result.security.pairingCode;
         }
-        // Never expose provider-supplied business password to tablets/LAN clients.
-        if (result?.cloud && typeof result.cloud === 'object') {
-          result.cloud = { ...result.cloud };
-          delete result.cloud.accessPassword;
-        }
         if (result?.fiscal && typeof result.fiscal === 'object') {
           result.fiscal = { ...result.fiscal };
           if (result.fiscal.authToken) {
@@ -2841,18 +2764,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       // Offline outbox status (for tablets / browser clients)
       if (req.method === 'GET' && pathname === '/offline/status') {
-        try {
-          const { getOutboxStatus } = await import('./services/offlineOutbox');
-          const st = await getOutboxStatus();
-          return send(res, 200, st, corsOrigin);
-        } catch {
-          return send(res, 200, { queued: 0 }, corsOrigin);
-        }
+        const queued = await prisma.printJob
+          .count({
+            where: { status: { in: ['RETRY', 'QUEUED'] as any } },
+          })
+          .catch(() => 0);
+        return send(res, 200, { queued }, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/settings/update') {
         try {
           const input = await parseJson(req);
           const merged = await coreServices.updateSettings(input);
+          if (
+            input?.host &&
+            Object.prototype.hasOwnProperty.call(input.host, 'openAtLogin')
+          ) {
+            applyOpenAtLogin(isOpenAtLoginEnabled(merged));
+          }
           const result = { ...(merged as any) };
           if (result?.fiscal && typeof result.fiscal === 'object') {
             result.fiscal = { ...result.fiscal };
@@ -2860,10 +2788,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               result.fiscal.authTokenConfigured = true;
               delete result.fiscal.authToken;
             }
-          }
-          if (result?.cloud && typeof result.cloud === 'object') {
-            result.cloud = { ...result.cloud };
-            delete result.cloud.accessPassword;
           }
           return send(res, 200, result, corsOrigin);
         } catch (e) {

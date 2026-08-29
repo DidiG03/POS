@@ -19,6 +19,7 @@ import './i18n/config';
 import { I18nextProvider, useTranslation } from 'react-i18next';
 import i18n from './i18n/config';
 import { LocaleSync } from './i18n/LocaleSync';
+import LicenseGate from './app/components/LicenseGate';
 import {
   getHttpBase,
   getHttpsBase,
@@ -48,19 +49,11 @@ if (typeof window !== 'undefined') {
 // Polyfill window.api for browser (tablets) by calling the LAN HTTP API
 // When running inside Electron, preload already defines window.api
 if (!(window as any).api) {
-  const CLOUD_BASE_RAW = String(
-    (import.meta as any)?.env?.VITE_POS_CLOUD_URL || '',
-  ).trim();
-  let CLOUD_BASE = CLOUD_BASE_RAW ? CLOUD_BASE_RAW.replace(/\/+$/g, '') : '';
-  let IS_CLOUD = Boolean(CLOUD_BASE);
-  // Set inside pickBackend(); true when running the Capacitor iOS/Android app.
   let IS_NATIVE_SHELL = false;
-  const BUSINESS_KEY = 'pos_business_code';
-  const TOKEN_KEY_CLOUD = 'pos_cloud_token';
   const TOKEN_KEY_LOCAL = 'pos_api_token';
   const getToken = () => {
     try {
-      return localStorage.getItem(IS_CLOUD ? TOKEN_KEY_CLOUD : TOKEN_KEY_LOCAL);
+      return localStorage.getItem(TOKEN_KEY_LOCAL);
     } catch (e) {
       void e;
       return null;
@@ -68,31 +61,10 @@ if (!(window as any).api) {
   };
   const setToken = (t: string | null) => {
     try {
-      const key = IS_CLOUD ? TOKEN_KEY_CLOUD : TOKEN_KEY_LOCAL;
-      if (t) localStorage.setItem(key, t);
-      else localStorage.removeItem(key);
+      if (t) localStorage.setItem(TOKEN_KEY_LOCAL, t);
+      else localStorage.removeItem(TOKEN_KEY_LOCAL);
     } catch (e) {
       void e;
-    }
-  };
-
-  const getBusinessCode = () => {
-    try {
-      return (localStorage.getItem(BUSINESS_KEY) || '').trim().toUpperCase();
-    } catch {
-      return '';
-    }
-  };
-
-  const setBusinessCode = (code: string) => {
-    try {
-      const v = String(code || '')
-        .trim()
-        .toUpperCase();
-      if (v) localStorage.setItem(BUSINESS_KEY, v);
-      else localStorage.removeItem(BUSINESS_KEY);
-    } catch {
-      // ignore
     }
   };
 
@@ -218,13 +190,7 @@ if (!(window as any).api) {
 
   const startSse = () => {
     try {
-      // Cloud mode currently still uses polling; even so, we keep this
-      // function callable so the cloud-detection block at the bottom can
-      // trigger a (no-op) call without crashing.
-      if (IS_CLOUD) {
-        stopSse();
-        return;
-      }
+      // Keep this callable so boot / login can restart SSE without crashing.
       const token = getToken();
       if (!token) {
         // No session yet — close any zombie connection and wait for login
@@ -344,7 +310,6 @@ if (!(window as any).api) {
     // Called from foreground / online / pageshow listeners. If the socket
     // is missing or not OPEN, restart it with a fresh backoff so we don't
     // wait the full timeout the user just slept through.
-    if (IS_CLOUD) return;
     const token = getToken();
     if (!token) return;
     if (!es) {
@@ -370,7 +335,6 @@ if (!(window as any).api) {
     window.addEventListener('pos:forceLogout', () => {
       try {
         localStorage.removeItem(TOKEN_KEY_LOCAL);
-        localStorage.removeItem(TOKEN_KEY_CLOUD);
       } catch {
         // ignore
       }
@@ -426,19 +390,26 @@ if (!(window as any).api) {
   class HttpError extends Error {
     status: number;
     code?: string;
-    constructor(status: number, message?: string, code?: string) {
+    permanent?: boolean;
+    constructor(
+      status: number,
+      message?: string,
+      code?: string,
+      permanent?: boolean,
+    ) {
       super(message || String(status));
       this.status = status;
       if (code) this.code = code;
+      if (permanent) this.permanent = true;
     }
   }
 
-  // Extract `{ error, code }` from an error response body when present so
-  // user-facing surfaces (e.g. reservation conflict 409) get the real message
+  // Extract `{ error, code, permanent }` from an error response body when
+  // present so user-facing surfaces (e.g. fiscal 409) get the real message
   // instead of the bare HTTP status code.
   async function readErrorMessage(
     r: Response,
-  ): Promise<{ message?: string; code?: string }> {
+  ): Promise<{ message?: string; code?: string; permanent?: boolean }> {
     try {
       const ct = r.headers.get('content-type') || '';
       if (!ct.includes('application/json')) return {};
@@ -451,7 +422,8 @@ if (!(window as any).api) {
             ? body.message
             : undefined;
       const code = typeof body.code === 'string' ? body.code : undefined;
-      return { message, code };
+      const permanent = body.permanent === true ? true : undefined;
+      return { message, code, permanent };
     } catch {
       return {};
     }
@@ -482,55 +454,6 @@ if (!(window as any).api) {
     if (token && status === 401) forceLogout('Session expired');
   }
 
-  async function go(path: string, opts?: RequestInit) {
-    const token = getToken();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(IS_NATIVE_SHELL ? { 'X-POS-Client': 'native' } : {}),
-      ...(((opts?.headers as any) || {}) as any),
-    };
-    if (IS_CLOUD) {
-      const r = await fetchWithRetry(CLOUD_BASE + path, { ...opts, headers });
-      if (!r.ok) {
-        maybeForceLogout(r.status, token);
-        const { message, code } = await readErrorMessage(r);
-        throw new HttpError(r.status, message, code);
-      }
-      const ct = r.headers.get('content-type') || '';
-      return ct.includes('application/json') ? r.json() : r.text();
-    } else {
-      // Prefer HTTP first to avoid self-signed cert warnings in browsers, then fallback to HTTPS
-      try {
-        const r = await fetchWithRetry(getHttpBase() + path, {
-          ...opts,
-          headers,
-        });
-        if (!r.ok) {
-          maybeForceLogout(r.status, token);
-          const { message, code } = await readErrorMessage(r);
-          throw new HttpError(r.status, message, code);
-        }
-        const ct = r.headers.get('content-type') || '';
-        return ct.includes('application/json') ? r.json() : r.text();
-      } catch (e: any) {
-        // Only fall back to HTTPS when HTTP failed due to network/timeouts.
-        if (!isRetryableNetworkError(e)) throw e;
-        const r2 = await fetchWithRetry(getHttpsBase() + path, {
-          ...opts,
-          headers,
-        });
-        if (!r2.ok) {
-          maybeForceLogout(r2.status, token);
-          const { message, code } = await readErrorMessage(r2);
-          throw new HttpError(r2.status, message, code);
-        }
-        const ct2 = r2.headers.get('content-type') || '';
-        return ct2.includes('application/json') ? r2.json() : r2.text();
-      }
-    }
-  }
-
   function lanRequestTimeoutMs(path: string): number {
     return path.includes('/print') ? LAN_PRINT_TIMEOUT_MS : CLIENT_TIMEOUT_MS;
   }
@@ -555,8 +478,8 @@ if (!(window as any).api) {
       );
       if (!r.ok) {
         maybeForceLogout(r.status, token);
-        const { message, code } = await readErrorMessage(r);
-        throw new HttpError(r.status, message, code);
+        const { message, code, permanent } = await readErrorMessage(r);
+        throw new HttpError(r.status, message, code, permanent);
       }
       const ct = r.headers.get('content-type') || '';
       return ct.includes('application/json') ? r.json() : r.text();
@@ -570,74 +493,18 @@ if (!(window as any).api) {
       );
       if (!r2.ok) {
         maybeForceLogout(r2.status, token);
-        const { message, code } = await readErrorMessage(r2);
-        throw new HttpError(r2.status, message, code);
+        const { message, code, permanent } = await readErrorMessage(r2);
+        throw new HttpError(r2.status, message, code, permanent);
       }
       const ct2 = r2.headers.get('content-type') || '';
       return ct2.includes('application/json') ? r2.json() : r2.text();
     }
   }
 
-  // Auto-detect cloud config from the host LAN settings so tablets "just work".
-  (async () => {
-    try {
-      const wasCloud = IS_CLOUD;
-      const s: any = await goLan('/settings').catch(() => null);
-      const backendUrl = String((s as any)?.cloud?.backendUrl || '')
-        .trim()
-        .replace(/\/+$/g, '');
-      const businessCode = String((s as any)?.cloud?.businessCode || '')
-        .trim()
-        .toUpperCase();
-      if (backendUrl && businessCode) {
-        CLOUD_BASE = backendUrl;
-        IS_CLOUD = true;
-        setBusinessCode(businessCode);
-      }
-      (window as any).__CLOUD_CLIENT__ = Boolean(IS_CLOUD);
-
-      // The initial `startSse()` ran with the env-derived IS_CLOUD value;
-      // if the host's settings actually flip us into (or out of) cloud
-      // mode, restart SSE so we either tear it down (cloud uses polling)
-      // or finally open it (local mode that the env flag missed).
-      try {
-        if (wasCloud !== IS_CLOUD) {
-          if (IS_CLOUD) {
-            stopSse();
-          } else {
-            sseBackoffMs = 1000;
-            ensureSse();
-          }
-        }
-      } catch {
-        // ignore — best-effort, the foreground listener will retry
-      }
-
-      // If we just switched into cloud mode, clear any stale local persisted sessions (local DB users)
-      // and notify the UI to reload login/user lists.
-      if (!wasCloud && IS_CLOUD) {
-        try {
-          localStorage.removeItem('pos-session');
-          localStorage.removeItem('pos-admin-session');
-          localStorage.removeItem('pos_api_token');
-        } catch {
-          // ignore
-        }
-        try {
-          window.dispatchEvent(new Event('pos:cloudConfigChanged'));
-        } catch {
-          // ignore
-        }
-      }
-    } catch {
-      // ignore
-    }
-  })();
-
   (window as any).api = {
     auth: {
       async loginWithPin(pin: string, userId?: number, pairingCode?: string) {
-        // Tablets are served from the host LAN API. Enforce host pairing code before any login (even in cloud mode).
+        // Tablets are served from the host LAN API. Enforce host pairing code before any login.
         try {
           await goLan('/pairing/verify', {
             method: 'POST',
@@ -682,8 +549,7 @@ if (!(window as any).api) {
         return true;
       },
       async listUsers(_input?: { includeAdmins?: boolean }) {
-        // Always go through the LAN host for user listing so tablets never need the provider-supplied business password.
-        // Host will proxy cloud /auth/public-users if cloud is enabled.
+        // Always go through the LAN host for user listing.
         return await goLan('/auth/users');
       },
       async updateUser() {
@@ -721,28 +587,9 @@ if (!(window as any).api) {
     },
     settings: {
       async get() {
-        // Floor areas, printers, locale, etc. live on the POS host.
-        // Auto-detecting cloud used to skip this call and return hardcoded
-        // "Main Hall" / "Terrace", so a reservation tablet looked up the
-        // wrong layout and the real area names never appeared.
-        try {
-          return await goLan('/settings');
-        } catch (e) {
-          if (!IS_CLOUD) throw e;
-          const bc = getBusinessCode();
-          return {
-            enableAdmin: true,
-            cloud: { backendUrl: CLOUD_BASE, businessCode: bc || undefined },
-            tableAreas: [],
-          };
-        }
+        return await goLan('/settings');
       },
       async update(input: any) {
-        if (IS_CLOUD) {
-          const bc = String(input?.cloud?.businessCode || '').trim();
-          setBusinessCode(bc);
-          return await (window as any).api.settings.get();
-        }
         return await goLan('/settings/update', {
           method: 'POST',
           body: JSON.stringify(input),
@@ -780,6 +627,30 @@ if (!(window as any).api) {
       },
       async listSerialPorts() {
         throw new Error('not supported in browser');
+      },
+    },
+    license: {
+      async getStatus() {
+        return {
+          required: false,
+          licensed: true,
+          billingConfigured: false,
+        };
+      },
+      async createCheckout() {
+        return { error: 'Licensing is managed on the POS host' };
+      },
+      async activateSession() {
+        return { ok: false, error: 'Licensing is managed on the POS host' };
+      },
+      async activateKey() {
+        return { ok: false, error: 'Licensing is managed on the POS host' };
+      },
+      async restore() {
+        return { ok: false, error: 'Licensing is managed on the POS host' };
+      },
+      async createPortalSession() {
+        return { error: 'Licensing is managed on the POS host' };
       },
     },
     billing: {
@@ -897,54 +768,34 @@ if (!(window as any).api) {
         return true;
       },
       async print(input: any) {
-        // Smart routing: prefer the LAN host (physical printer attached) so a
-        // mis-set VITE_POS_CLOUD_URL never silently swallows a paper ticket.
-        // If the LAN host is genuinely unreachable AND a cloud is configured,
-        // fall back to the cloud's record-and-queue endpoint so the ticket
-        // isn't lost — a remote print agent will pick it up.
-        try {
-          const r = await goLan('/print/ticket', {
-            method: 'POST',
-            body: JSON.stringify(input),
-          });
-          const ok = !!(r && r.ok === true);
-          if (!ok) {
-            const err =
-              r && (r.error || r.message) ? String(r.error || r.message) : '';
-            window.dispatchEvent(
-              new CustomEvent('printer:event', {
-                detail: {
-                  level: 'error',
-                  kind: 'PRINT',
-                  message:
-                    'Printer failed to print. Check paper/power and the IP/port settings.',
-                  detail: err || undefined,
-                  at: Date.now(),
-                },
-              }),
-            );
-          }
-          return ok;
-        } catch (e: any) {
-          const isTransport =
-            e instanceof TypeError ||
-            String(e?.name || '') === 'AbortError' ||
-            // 404 = LAN host is up but doesn't expose /print/ticket (e.g.
-            // we're talking to a cloud-only Express deployment by mistake);
-            // treat as transport so the cloud fallback below can take over.
-            Number(e?.status) === 404;
-          if (!IS_CLOUD || !isTransport) throw e;
-          const { recordOnly, ...payload } = (input || {}) as any;
-          await go('/print-jobs/enqueue', {
-            method: 'POST',
-            body: JSON.stringify({
-              type: 'RECEIPT',
-              payload,
-              recordOnly: Boolean(recordOnly),
-            }),
-          });
-          return true;
+        const r = await goLan('/print/ticket', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+        // Return the host body so fiscal `{ ok: false, code, permanent }`
+        // is not collapsed to a bare `false` (that used to look like a
+        // printer hiccup and close the table).
+        if (r && typeof r === 'object' && (r as any).ok === false) {
+          return r;
         }
+        const ok = !!(r && r.ok === true);
+        if (!ok) {
+          const err =
+            r && (r.error || r.message) ? String(r.error || r.message) : '';
+          window.dispatchEvent(
+            new CustomEvent('printer:event', {
+              detail: {
+                level: 'error',
+                kind: 'PRINT',
+                message:
+                  'Printer failed to print. Check paper/power and the IP/port settings.',
+                detail: err || undefined,
+                at: Date.now(),
+              },
+            }),
+          );
+        }
+        return ok;
       },
     },
     tables: {
@@ -959,26 +810,10 @@ if (!(window as any).api) {
         return await goLan('/tables/open');
       },
       async transfer(input: any) {
-        // Prefer LAN host (same logic as Electron `transferTableLocal`). When
-        // the Capacitor/phone app is off the shop Wi‑Fi, fall back to the
-        // cloud API so transfers still run server-side rules (moved-out tags,
-        // owner handoff, etc.) — see server/src/routes/tables.ts.
-        try {
-          return await goLan('/tables/transfer', {
-            method: 'POST',
-            body: JSON.stringify(input),
-          });
-        } catch (e: any) {
-          const isTransport =
-            e instanceof TypeError ||
-            String(e?.name || '') === 'AbortError' ||
-            Number(e?.status) === 404;
-          if (!IS_CLOUD || !isTransport) throw e;
-          return await go('/tables/transfer', {
-            method: 'POST',
-            body: JSON.stringify(input),
-          });
-        }
+        return await goLan('/tables/transfer', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
       },
     },
     covers: {
@@ -1293,7 +1128,6 @@ if (!(window as any).api) {
     },
   };
   (window as any).__BROWSER_CLIENT__ = true;
-  (window as any).__CLOUD_CLIENT__ = Boolean(IS_CLOUD);
 }
 
 // Standalone KDS app: bridge auto-updater IPC exposed by preload.
@@ -1895,7 +1729,9 @@ createRoot(document.getElementById('root')!).render(
     <I18nextProvider i18n={i18n}>
       <LocaleSync>
         <ErrorBoundary>
-          <Root />
+          <LicenseGate>
+            <Root />
+          </LicenseGate>
           <Toaster />
         </ErrorBoundary>
       </LocaleSync>

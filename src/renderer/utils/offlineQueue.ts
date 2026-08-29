@@ -118,22 +118,26 @@ export function isDurableOp(op: OfflineOp): boolean {
 }
 
 /**
- * Failures that retrying makes worse rather than better.
- *
- * `FISCAL_NEEDS_REVIEW` means the host could not determine whether the tax
- * service registered the invoice. Sending it again risks a second real
- * invoice for one sale, which needs a corrective filing to undo — so this
- * belongs on the failed-sync surface for a human, not on the retry loop.
- */
-/**
  * Failures a retry cannot clear. `FISCAL_NEEDS_REVIEW` needs someone to
- * check easyPos before we dare send again; `FISCAL_REJECTED` needs the
- * fiscal configuration fixed first. Both belong on the failed-sync
- * surface, where an admin can release them, not in the retry loop.
+ * check easyPos before we dare send again (retrying could file a second
+ * invoice). `FISCAL_REJECTED` needs the fiscal configuration or payment
+ * method fixed first. Both belong on the failed-sync surface, not in
+ * the retry loop.
  */
 const NEEDS_RECONCILIATION_CODES = new Set([
   'FISCAL_NEEDS_REVIEW',
   'FISCAL_REJECTED',
+]);
+
+/**
+ * Host told us the tax invoice was not filed. Queuing these and closing
+ * the table made T1 look paid while easyPos had refused the sale.
+ * The waiter must see the error and tap Pay again (or change method).
+ */
+const FISCAL_SALE_BLOCKED_CODES = new Set([
+  'FISCAL_NEEDS_REVIEW',
+  'FISCAL_REJECTED',
+  'FISCAL_FAILED',
 ]);
 
 /**
@@ -143,6 +147,11 @@ const NEEDS_RECONCILIATION_CODES = new Set([
  */
 export function needsManualReconciliation(e: any): boolean {
   return NEEDS_RECONCILIATION_CODES.has(String(e?.code || ''));
+}
+
+/** True when fiscalization blocked the sale — the table must stay open. */
+export function isFiscalSaleBlocked(e: any): boolean {
+  return FISCAL_SALE_BLOCKED_CODES.has(String(e?.code || ''));
 }
 
 /** True when retrying cannot change the outcome. */
@@ -979,9 +988,12 @@ export const offlineQueue = getGlobalOfflineQueue();
  *     return `{ queued: true }`.
  *   - Otherwise dispatch the call live. On success → `{ queued: false }`.
  *   - On a network-shaped error → enqueue + return `{ queued: true }`.
+ *   - On a fiscal refusal (`FISCAL_*`) → re-throw without enqueueing so
+ *     the pay UI can keep the table open. Retrying a refused invoice
+ *     after closing the table is what emptied T1 while easyPos said no.
  *   - On any other failure of a MONEY op that isn't a permanent
- *     rejection → enqueue, because the caller closes the table
- *     regardless and a thrown error would simply be swallowed.
+ *     rejection → enqueue (printer / transport after the host accepted
+ *     the sale), so a Wi-Fi drop still records the payment.
  *   - On any OTHER error (validation, auth, etc.) → re-throw so the
  *     UI can show its normal error state.
  */
@@ -1024,17 +1036,22 @@ export async function tryOrQueue<T = unknown>(
         .catch(() => undefined);
       throw e;
     }
+    // easyPos / fiscal middleware refused or timed out the invoice. Do
+    // not park this as a queued payment — the table is still occupied
+    // and the waiter will pay again (possibly CARD, or a smaller cash
+    // amount under the 500,000 ALL individual cash cap).
+    if (isFiscalSaleBlocked(e)) {
+      throw e;
+    }
     if (isLikelyOfflineError(e)) {
       await offlineQueue.enqueue(op, args, options);
       return { queued: true, error: String(e?.message || e) };
     }
     // A durable op that failed for any reason other than a permanent
-    // rejection must not evaporate. The payment UI closes the table on
-    // a best-effort basis and swallows what we throw, so rethrowing
-    // here would lose the sale — or leave the table occupied forever.
-    // Park it on the durable queue instead; the args already carry the
-    // original `idempotencyKey`, so a retry that reaches a host which did
-    // record it is deduped rather than charged twice.
+    // rejection or a fiscal block must not evaporate. Printer / transport
+    // failures after the host accepted the sale still enqueue so a Wi-Fi
+    // drop cannot lose a recorded payment. Fiscal refusals are thrown
+    // above so the pay UI keeps the table open.
     if (DURABLE_OPS.has(op) && !isPermanentFailure(e)) {
       await offlineQueue.enqueue(op, args, options);
       return { queued: true, error: String(e?.message || e) };

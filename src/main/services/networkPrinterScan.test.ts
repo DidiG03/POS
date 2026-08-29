@@ -9,6 +9,8 @@ import {
   classify9100Response,
   hostsInSubnet,
   isPrivateIpv4,
+  MAX_UNCONFIRMED_TCP,
+  resultFrom9100Socket,
   scanNetworkPrinters,
 } from './networkPrinterScan';
 
@@ -62,7 +64,7 @@ describe('scanNetworkPrinters', () => {
     const found = await scanNetworkPrinters({
       interfaces: [{ address: '192.168.1.50', netmask: '255.255.255.0' }],
       discoverMdns: async () => [],
-      probe: async (host) => printers.has(host),
+      probe: async (host) => (printers.has(host) ? 'printer' : 'closed'),
     });
     expect(found.map((p) => `${p.ip}:${p.port}`).sort()).toEqual([
       '192.168.1.11:9100',
@@ -75,7 +77,7 @@ describe('scanNetworkPrinters', () => {
     const found = await scanNetworkPrinters({
       interfaces: [{ address: '192.168.1.50', netmask: '255.255.255.0' }],
       discoverMdns: async () => [],
-      probe: async () => false,
+      probe: async () => 'closed',
     });
     expect(found).toEqual([]);
   });
@@ -87,7 +89,7 @@ describe('scanNetworkPrinters', () => {
         { ip: '192.168.33.20', port: 515, name: 'Some NAS share' },
         { ip: '192.168.33.20', port: 631, name: 'CUPS' },
       ],
-      probe: async () => false,
+      probe: async () => 'closed',
     });
     expect(found).toEqual([]);
   });
@@ -98,7 +100,7 @@ describe('scanNetworkPrinters', () => {
       discoverMdns: async () => [
         { ip: '192.168.1.87', port: 9100, name: 'EPSON TM-T20' },
       ],
-      probe: async (host) => host === '192.168.1.87',
+      probe: async (host) => (host === '192.168.1.87' ? 'printer' : 'closed'),
     });
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({
@@ -115,7 +117,7 @@ describe('scanNetworkPrinters', () => {
       discoverMdns: async () => [
         { ip: '192.168.1.87', port: 9100, name: 'Kitchen printer' },
       ],
-      probe: async () => false,
+      probe: async () => 'closed',
     });
     expect(found).toEqual([
       {
@@ -134,10 +136,49 @@ describe('scanNetworkPrinters', () => {
       discoverMdns: async () => [],
       probe: async (host) => {
         probed.push(host);
-        return false;
+        return 'closed';
       },
     });
     expect(probed).not.toContain('192.168.1.50');
+  });
+
+  it('keeps a handful of silent JetDirect sockets', async () => {
+    const silent = new Set(['192.168.1.10', '192.168.1.11']);
+    const found = await scanNetworkPrinters({
+      interfaces: [{ address: '192.168.1.50', netmask: '255.255.255.0' }],
+      discoverMdns: async () => [],
+      probe: async (host) => (silent.has(host) ? 'open' : 'closed'),
+    });
+    expect(found.map((p) => p.ip).sort()).toEqual([
+      '192.168.1.10',
+      '192.168.1.11',
+    ]);
+  });
+
+  it('does not list a whole subnet of silent 9100 timeouts', async () => {
+    const found = await scanNetworkPrinters({
+      interfaces: [{ address: '192.168.1.50', netmask: '255.255.255.0' }],
+      discoverMdns: async () => [
+        { ip: '192.168.1.87', port: 9100, name: 'EPSON TM-T20' },
+      ],
+      probe: async (host) => (host === '192.168.1.87' ? 'printer' : 'open'),
+    });
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      ip: '192.168.1.87',
+      name: 'EPSON TM-T20',
+      source: 'mdns',
+    });
+  });
+
+  it('drops an all-silent flood with no confirmed printer', async () => {
+    const found = await scanNetworkPrinters({
+      interfaces: [{ address: '192.168.1.50', netmask: '255.255.255.0' }],
+      discoverMdns: async () => [],
+      probe: async () => 'open',
+    });
+    expect(found).toEqual([]);
+    expect(MAX_UNCONFIRMED_TCP).toBeLessThan(253);
   });
 });
 
@@ -163,6 +204,26 @@ describe('classify9100Response', () => {
     );
     expect(classify9100Response(Buffer.from([0x16, 0x03, 0x01, 0x00]))).toBe(
       'reject',
+    );
+  });
+});
+
+describe('resultFrom9100Socket', () => {
+  it('rejects a timeout that never connected', () => {
+    expect(resultFrom9100Socket(false, Buffer.alloc(0))).toBe('closed');
+  });
+
+  it('treats a connected silent socket as an unconfirmed JetDirect', () => {
+    expect(resultFrom9100Socket(true, Buffer.alloc(0))).toBe('open');
+  });
+
+  it('confirms an Epson-style status byte', () => {
+    expect(resultFrom9100Socket(true, Buffer.from([0x12]))).toBe('printer');
+  });
+
+  it('rejects a banner even after connect', () => {
+    expect(resultFrom9100Socket(true, Buffer.from('HTTP/1.1 200 OK\r\n'))).toBe(
+      'closed',
     );
   });
 });

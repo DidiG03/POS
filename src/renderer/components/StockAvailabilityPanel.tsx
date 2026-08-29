@@ -56,6 +56,7 @@ export function StockAvailabilityPanel({
   categories,
   disabled,
   onChangeLevel,
+  hideTitle,
 }: {
   categories: StockPanelMenuCategory[];
   disabled: boolean;
@@ -64,6 +65,7 @@ export function StockAvailabilityPanel({
     level: StockLevel,
     opts?: StockPanelChangeOpts,
   ) => Promise<void>;
+  hideTitle?: boolean;
 }) {
   const { t } = useTranslation();
   const [q, setQ] = useState('');
@@ -114,8 +116,12 @@ export function StockAvailabilityPanel({
 
   return (
     <section>
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
-        <div className="text-sm opacity-70">{t('stockPanel.title')}</div>
+      <div
+        className={`flex flex-col sm:flex-row sm:items-center gap-3 mb-2 ${hideTitle ? 'sm:justify-end' : 'sm:justify-between'}`}
+      >
+        {hideTitle ? null : (
+          <div className="text-sm opacity-70">{t('stockPanel.title')}</div>
+        )}
         <input
           type="search"
           placeholder={t('stockPanel.searchPlaceholder')}
@@ -125,7 +131,7 @@ export function StockAvailabilityPanel({
           className="w-full sm:w-56 bg-gray-700 rounded px-3 py-2 text-sm shrink-0"
         />
       </div>
-      <div className="overflow-auto max-h-56 border border-gray-700 rounded">
+      <div className="overflow-auto max-h-[min(70vh,40rem)] border border-gray-700 rounded">
         <table className="w-full text-sm">
           <thead className="text-left bg-gray-900 sticky top-0 z-10">
             <tr className="opacity-70">

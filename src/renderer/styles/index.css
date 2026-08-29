@@ -41,6 +41,12 @@ button,
   min-height: 44px; /* comfortable touch target */
 }
 
+/* Capacitor tablets: a brief press flash (system tap-highlight is off). */
+html[data-shell='capacitor']
+  :is(button, [role='button'], a[href], [data-haptic]):not(:disabled):active {
+  filter: brightness(1.16);
+}
+
 input,
 select {
   min-height: 40px;

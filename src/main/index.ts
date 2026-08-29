@@ -1,4 +1,19 @@
 import { app, BrowserWindow, shell } from 'electron';
+import {
+  allowNextQuit,
+  applyOpenAtLogin,
+  attachMainWindowHideOnClose,
+  claimSingleInstance,
+  configureHostRuntime,
+  destroyHostTray,
+  isBackgroundHostEnabled,
+  isOpenAtLoginEnabled,
+  isQuitConfirmed,
+  promptQuitDialog,
+  setupHostTray,
+  shouldStartHidden,
+  showMainWindow,
+} from './services/hostRuntime';
 import { join, dirname, resolve as resolvePath, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -49,19 +64,16 @@ import {
   TransferTableInputSchema,
 } from '@shared/ipc';
 import {
-  clearCloudAdminSession,
-  clearCloudSessionForSender,
-  cloudJson,
-  getCloudAccessPassword,
-  getCloudConfig,
-  setCloudSession,
-  setCloudSessionForSender,
-} from './services/cloud';
-import {
-  getOutboxStatus,
-  startOutboxLoop,
-  stopOutboxLoop,
-} from './services/offlineOutbox';
+  activateKey,
+  activateSession,
+  createCheckout,
+  createPortalSession,
+  getLicenseStatus,
+  isLicenseRequired,
+  registerLicenseProtocol,
+  restoreByEmail,
+  sessionIdFromProtocolUrl,
+} from './services/license';
 import {
   setupAutoUpdater,
   updaterHandlers,
@@ -88,14 +100,6 @@ import {
   revokeSessionsForUser,
   unbindSender,
 } from './services/ipcSession';
-import {
-  startMemoryMonitoring,
-  stopMemoryMonitoring,
-  getMemoryStats,
-  exportMemorySnapshot,
-  getMemoryUsage,
-  formatMemoryUsage,
-} from './services/memoryMonitor';
 import { classifyPrinterError } from './print';
 import { prisma } from '@db/client';
 import type { Prisma } from '@prisma/client';
@@ -146,11 +150,6 @@ import {
   startNotificationRetentionLoop,
   stopNotificationRetentionLoop,
 } from './services/notificationRetention';
-import {
-  syncUsersFromCloud,
-  syncFromCloudAfterLogin,
-  syncFromCloudManual,
-} from './services/cloudSync';
 import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
@@ -205,6 +204,10 @@ const APP_ICON_PATH = (() => {
     join(app.getAppPath(), 'build-resources', 'icon.png'),
     join(MAIN_RUNTIME_DIR, '../../build-resources/icon.png'),
     join(process.cwd(), 'build-resources', 'icon.png'),
+    join(process.cwd(), 'public', 'logo512.png'),
+    ...(typeof process.resourcesPath === 'string'
+      ? [join(process.resourcesPath, 'icon.png')]
+      : []),
   ];
   for (const c of candidates) {
     try {
@@ -220,6 +223,64 @@ let mainWindow: BrowserWindow | null = null;
 let adminWindow: BrowserWindow | null = null;
 let kdsWindow: BrowserWindow | null = null;
 let reservationWindow: BrowserWindow | null = null;
+
+const isPrimaryInstance = claimSingleInstance();
+
+if (isPrimaryInstance) {
+  registerLicenseProtocol();
+}
+
+function broadcastLicenseUpdated() {
+  try {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        if (!w.isDestroyed()) w.webContents.send('license:updated');
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function pickProtocolUrlFromArgv(argv: string[]): string | null {
+  const found = argv.find((a) => String(a).startsWith('codeorbit-pos:'));
+  return found ? String(found) : null;
+}
+
+let pendingLicenseUrl: string | null = pickProtocolUrlFromArgv(process.argv);
+
+async function afterLicenseUnlocked(): Promise<void> {
+  await ensureLanApiStarted();
+  broadcastLicenseUpdated();
+}
+
+async function handleLicenseProtocolUrl(raw: string): Promise<void> {
+  const sessionId = sessionIdFromProtocolUrl(raw);
+  if (!sessionId) return;
+  const r = await activateSession(sessionId);
+  if (r.ok) await afterLicenseUnlocked();
+  else broadcastLicenseUpdated();
+}
+
+function queueLicenseProtocolUrl(raw: string): void {
+  if (!app.isReady()) {
+    pendingLicenseUrl = raw;
+    return;
+  }
+  void handleLicenseProtocolUrl(raw);
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  queueLicenseProtocolUrl(url);
+});
+
+app.on('second-instance', (_event, argv) => {
+  const url = pickProtocolUrlFromArgv(argv);
+  if (url) queueLicenseProtocolUrl(url);
+});
 
 function broadcastPrinterEvent(payload: any) {
   try {
@@ -406,43 +467,21 @@ function forceLogoutSender(sender: any, reason: string) {
  * every attempt lands in the security log and notifies the account owner.
  */
 /**
- * Settings are ADMIN-only with one unavoidable exception.
- *
- * A freshly installed host has no users, so there is nobody to authenticate as
- * — yet the operator must be able to enter the cloud business code and password
- * on the login screen to pull the staff list down. We allow that single case:
- * no users in the database, and a payload that touches nothing but the cloud
- * pairing fields. Everything else needs a real ADMIN session.
+ * Settings are ADMIN-only.
  */
-const CLOUD_ONBOARDING_KEYS = new Set(['businessCode', 'accessPassword']);
-
 async function assertMaySaveSettings(
   senderId: number,
   input: unknown,
 ): Promise<void> {
   if (getSession(senderId)?.role === 'ADMIN') return;
-
   const patch = (input ?? {}) as Record<string, unknown>;
-  const topLevelKeys = Object.keys(patch);
-  const cloudPatch = (patch.cloud ?? {}) as Record<string, unknown>;
-  const onlyCloudPairing =
-    topLevelKeys.length === 1 &&
-    topLevelKeys[0] === 'cloud' &&
-    Object.keys(cloudPatch).every((k) => CLOUD_ONBOARDING_KEYS.has(k));
-
-  const userCount = onlyCloudPairing
-    ? await prisma.user.count().catch(() => 1)
-    : 1;
-
-  if (!onlyCloudPairing || userCount > 0) {
-    logSecurityEvent('ipc_denied', {
-      channel: 'settings:update',
-      senderId,
-      reason: 'not_admin',
-      keys: topLevelKeys,
-    });
-    throw new Error('forbidden');
-  }
+  logSecurityEvent('ipc_denied', {
+    channel: 'settings:update',
+    senderId,
+    reason: 'not_admin',
+    keys: Object.keys(patch),
+  });
+  throw new Error('forbidden');
 }
 
 const pinFailuresBySender = new Map<number, number>();
@@ -538,9 +577,21 @@ async function ensureLocalDbColumns(): Promise<void> {
 }
 
 function createWindow() {
+  let startHidden = false;
+  try {
+    startHidden =
+      isBackgroundHostEnabled() &&
+      shouldStartHidden(
+        process.argv,
+        Boolean(app.getLoginItemSettings()?.wasOpenedAsHidden),
+      );
+  } catch {
+    startHidden = isBackgroundHostEnabled() && shouldStartHidden(process.argv);
+  }
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    show: !startHidden,
     backgroundColor: '#111827',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
@@ -553,10 +604,11 @@ function createWindow() {
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
-    mainWindow.webContents.openDevTools();
+    if (!startHidden) mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(RENDERER_INDEX_HTML);
   }
+  attachMainWindowHideOnClose(mainWindow);
 
   const onMainFailLoad = (_e: any, ec: number, ed: string, vu: string) => {
     console.error('Renderer failed load', { ec, ed, vu });
@@ -579,6 +631,14 @@ function createWindow() {
   // Register for update notifications
   registerUpdateListener(mainWindow);
 }
+
+configureHostRuntime({
+  getMainWindow: () => mainWindow,
+  createMainWindow: () => {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  },
+  getIconPath: () => APP_ICON_PATH,
+});
 
 function createAdminWindow() {
   if (adminWindow) {
@@ -747,10 +807,6 @@ function startAutoVoidStaleTicketsLoop() {
   const runOnce = async () => {
     if (autoVoidRunning) return; // overlap guard
     autoVoidRunning = true;
-    // CORRECTNESS: previously referenced an undefined `cloud` symbol. Look up
-    // cloud config once per tick; in cloud mode the admin notification feed
-    // is cloud-backed, so we suppress duplicate local notifications.
-    const cloud = await getCloudConfig().catch(() => null);
     try {
       const keyOpen = 'tables:open';
       const openRow = await prisma.syncState
@@ -917,7 +973,7 @@ function startAutoVoidStaleTicketsLoop() {
         // Local notifications:
         // - In local mode this is the admin panel feed.
         // - In cloud mode the admin panel feed is cloud-backed, but the void-ticket API call will create a notification there.
-        if (!cloud && actorUserId) {
+        if (actorUserId) {
           const msg = `Auto-voided ticket on ${area} ${tableLabel}: exceeded 12 hours`;
           await prisma.notification
             .create({
@@ -1047,8 +1103,6 @@ function startAutoCloseShiftsLoop() {
         }
       }
 
-      const cloud = await getCloudConfig().catch(() => null);
-
       for (const s of stale) {
         // Hard guard: never close a shift while the user still has an open ticket.
         if (usersWithOpenTickets.has(Number(s.openedById))) continue;
@@ -1057,35 +1111,32 @@ function startAutoCloseShiftsLoop() {
             where: { id: s.id },
             data: { closedAt: new Date(), closedById: s.openedById },
           });
-          // Best-effort notification (only locally; cloud mode mirrors via its own feed).
-          if (!cloud) {
+          await prisma.notification
+            .create({
+              data: {
+                userId: s.openedById,
+                type: 'OTHER' as any,
+                message: `Shift auto-closed after ${hours}h of inactivity (no open tickets).`,
+              } as any,
+            })
+            .catch(() => {});
+          const admins = await prisma.user
+            .findMany({
+              where: { role: 'ADMIN', active: true },
+              select: { id: true },
+            } as any)
+            .catch(() => [] as { id: number }[]);
+          for (const a of admins as { id: number }[]) {
+            if (Number(a.id) === Number(s.openedById)) continue;
             await prisma.notification
               .create({
                 data: {
-                  userId: s.openedById,
+                  userId: a.id,
                   type: 'OTHER' as any,
-                  message: `Shift auto-closed after ${hours}h of inactivity (no open tickets).`,
+                  message: `Auto-closed shift #${s.id} (user ${s.openedById}) after ${hours}h.`,
                 } as any,
               })
               .catch(() => {});
-            const admins = await prisma.user
-              .findMany({
-                where: { role: 'ADMIN', active: true },
-                select: { id: true },
-              } as any)
-              .catch(() => [] as { id: number }[]);
-            for (const a of admins as { id: number }[]) {
-              if (Number(a.id) === Number(s.openedById)) continue;
-              await prisma.notification
-                .create({
-                  data: {
-                    userId: a.id,
-                    type: 'OTHER' as any,
-                    message: `Auto-closed shift #${s.id} (user ${s.openedById}) after ${hours}h.`,
-                  } as any,
-                })
-                .catch(() => {});
-            }
           }
         } catch {
           // ignore — best effort
@@ -1199,38 +1250,35 @@ function startAutoNoShowReservationsLoop() {
       }
 
       // Notify creators + all active hosts/admins so the floor team sees it.
-      const cloud = await getCloudConfig().catch(() => null);
-      if (!cloud) {
-        const recipients = await prisma.user
-          .findMany({
-            where: {
-              active: true,
-              role: { in: ['ADMIN', 'HOST'] as any },
-            } as any,
-            select: { id: true },
-          })
-          .catch(() => [] as { id: number }[]);
-        const recipientIds = new Set<number>(
-          (recipients as { id: number }[]).map((u) => Number(u.id)),
-        );
-        for (const r of stale) {
-          if (r.createdById) recipientIds.add(Number(r.createdById));
-          const startedAt = new Date(r.startsAt);
-          const hh = String(startedAt.getHours()).padStart(2, '0');
-          const mm = String(startedAt.getMinutes()).padStart(2, '0');
-          const where = r.tableLabel ? `${r.area} · ${r.tableLabel}` : r.area;
-          const msg = `No-show: ${r.customerName} (${hh}:${mm} on ${where}) auto-marked after ${minutes} min grace.`;
-          for (const uid of recipientIds) {
-            await prisma.notification
-              .create({
-                data: {
-                  userId: uid,
-                  type: 'OTHER' as any,
-                  message: msg,
-                } as any,
-              })
-              .catch(() => {});
-          }
+      const recipients = await prisma.user
+        .findMany({
+          where: {
+            active: true,
+            role: { in: ['ADMIN', 'HOST'] as any },
+          } as any,
+          select: { id: true },
+        })
+        .catch(() => [] as { id: number }[]);
+      const recipientIds = new Set<number>(
+        (recipients as { id: number }[]).map((u) => Number(u.id)),
+      );
+      for (const r of stale) {
+        if (r.createdById) recipientIds.add(Number(r.createdById));
+        const startedAt = new Date(r.startsAt);
+        const hh = String(startedAt.getHours()).padStart(2, '0');
+        const mm = String(startedAt.getMinutes()).padStart(2, '0');
+        const where = r.tableLabel ? `${r.area} · ${r.tableLabel}` : r.area;
+        const msg = `No-show: ${r.customerName} (${hh}:${mm} on ${where}) auto-marked after ${minutes} min grace.`;
+        for (const uid of recipientIds) {
+          await prisma.notification
+            .create({
+              data: {
+                userId: uid,
+                type: 'OTHER' as any,
+                message: msg,
+              } as any,
+            })
+            .catch(() => {});
         }
       }
     } catch {
@@ -1390,7 +1438,62 @@ let apiServers: {
   https: https.Server | null;
 } | null = null;
 
+let lanApiStarting = false;
+
+async function ensureLanApiStarted(): Promise<void> {
+  if (apiServers || lanApiStarting) return;
+  if (isLicenseRequired()) {
+    const st = await getLicenseStatus();
+    if (!st.licensed) return;
+  }
+  lanApiStarting = true;
+  try {
+    apiServers = await startApiServer();
+    try {
+      const { startMdnsAdvertiser } = await import('./services/mdnsAdvertiser');
+      const hostSettings = await coreServices
+        .readSettings()
+        .catch(() => ({}) as any);
+      void startMdnsAdvertiser({
+        httpPort: 3333,
+        httpsPort: 3443,
+        appVersion: app.getVersion(),
+        restaurantName: String(
+          (hostSettings as any)?.restaurantName || '',
+        ).trim(),
+      });
+    } catch {
+      // discovery is a convenience, not required
+    }
+  } finally {
+    lanApiStarting = false;
+  }
+}
+
+function licenseToBillingDto(st: Awaited<ReturnType<typeof getLicenseStatus>>) {
+  if (!st.required) {
+    return { status: 'ACTIVE' as const, billingEnabled: false };
+  }
+  return {
+    status: (st.status || (st.licensed ? 'ACTIVE' : 'PAUSED')) as
+      | 'ACTIVE'
+      | 'PAST_DUE'
+      | 'PAUSED',
+    billingEnabled: true,
+    currentPeriodEnd: st.currentPeriodEnd ?? null,
+    message: st.message ?? null,
+  };
+}
+
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return;
+  configureHostRuntime({
+    getMainWindow: () => mainWindow,
+    createMainWindow: () => {
+      if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+    },
+    getIconPath: () => APP_ICON_PATH,
+  });
   // Set macOS dock icon (BrowserWindow icon doesn't affect dock on macOS)
   if (process.platform === 'darwin' && APP_ICON_PATH) {
     try {
@@ -1444,31 +1547,20 @@ app.whenReady().then(async () => {
     console.warn('[startup] pruneExpiredSessions failed:', e),
   );
   createWindow();
+  setupHostTray();
   setupAutoUpdater();
-  apiServers = await startApiServer();
-  // Advertise the LAN API server on mDNS so the standalone KDS app
-  // (and future LAN waiter apps) can auto-discover the POS host. Pure
-  // JS implementation — no native deps, safe to fail.
-  try {
-    const { startMdnsAdvertiser } = await import('./services/mdnsAdvertiser');
-    const settings = await coreServices.readSettings().catch(() => ({}) as any);
-    const businessCode = String(
-      (settings as any)?.cloud?.businessCode || '',
-    ).trim();
-    void startMdnsAdvertiser({
-      httpPort: 3333,
-      httpsPort: 3443,
-      appVersion: app.getVersion(),
-      businessCode,
-      restaurantName: String((settings as any)?.restaurantName || '').trim(),
-    });
-  } catch {
-    // ignore — discovery is a convenience, not required
+  const hostSettings = await coreServices
+    .readSettings()
+    .catch(() => ({}) as any);
+  applyOpenAtLogin(isOpenAtLoginEnabled(hostSettings));
+  await ensureLanApiStarted();
+  if (pendingLicenseUrl) {
+    const queued = pendingLicenseUrl;
+    pendingLicenseUrl = null;
+    await handleLicenseProtocolUrl(queued);
   }
-  // In cloud mode, also act as an on-prem Printer Station (pull queued print jobs and print locally).
+  // Local printer retry queue (LAN API is independent).
   startPrinterStationLoop();
-  // Offline outbox: retry queued cloud writes when connectivity returns.
-  startOutboxLoop();
   // Notifications: automatically delete notifications older than 1 week (DB retention).
   startNotificationRetentionLoop(prisma, { days: 7 });
   startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
@@ -1480,80 +1572,92 @@ app.whenReady().then(async () => {
   startAutoCloseShiftsLoop();
   // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
   startAutoNoShowReservationsLoop();
+  // Reservations: auto-complete SEATED parties when their duration elapses.
+  reservationsService.startReservationDurationLoop();
   // Reservations: import confirmed bookings from Google Calendar iCal feed.
   startGoogleCalendarSyncLoop();
-  // Memory monitoring: track memory usage to detect leaks (runs every minute)
-  if (
-    process.env.NODE_ENV !== 'production' ||
-    process.env.MEMORY_MONITORING === 'true'
-  ) {
-    startMemoryMonitoring(60000); // Check every minute
-  }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    showMainWindow();
   });
 });
 
 app.on('window-all-closed', () => {
+  // Background host: the LAN API must keep serving tablets even with no UI.
+  if (isBackgroundHostEnabled()) return;
   if (process.platform !== 'darwin') app.quit();
 });
 
 let isShuttingDown = false;
-app.on('before-quit', async (event) => {
+app.on('before-quit', (event) => {
   // Allow Electron to call this multiple times; only do real work once.
   if (isShuttingDown) return;
+
+  // preventDefault must run in this turn. Awaiting first lets Electron exit
+  // before the LAN API has a chance to close (and before a quit prompt).
+  if (isBackgroundHostEnabled() && !isQuitConfirmed()) {
+    event.preventDefault();
+    void promptQuitDialog().then((confirmed) => {
+      if (!confirmed) return;
+      allowNextQuit();
+      app.quit();
+    });
+    return;
+  }
+
   isShuttingDown = true;
+  destroyHostTray();
 
   // Always synchronously cancel timers/listeners that don't need to await anything.
   cleanupUpdater();
-  stopMemoryMonitoring();
   stopNotificationRetentionLoop();
   stopKdsAutoBumpLoop();
   stopAutoVoidStaleTicketsLoop();
   stopAutoCloseShiftsLoop();
   stopAutoNoShowReservationsLoop();
+  reservationsService.stopReservationDurationLoop();
   stopGoogleCalendarSyncLoop();
   stopPrinterStationLoop();
-  stopOutboxLoop();
-  try {
-    const { stopMdnsAdvertiser } = await import('./services/mdnsAdvertiser');
-    await stopMdnsAdvertiser();
-  } catch {
-    // ignore
-  }
-  try {
-    // Lazy import to avoid a circular reference at module load.
-    const sec = await import('./services/security');
-    sec.stopRateLimitSweeper?.();
-  } catch {
-    // ignore
-  }
 
   // Async work below — defer the actual quit until our cleanup completes so we
   // don't leave open SQLite handles / TCP listeners.
   event.preventDefault();
-  try {
-    await Promise.race([
-      Promise.all([
-        new Promise<void>((resolve) => {
-          if (!apiServers?.http) return resolve();
-          apiServers.http.close(() => resolve());
-        }),
-        new Promise<void>((resolve) => {
-          if (!apiServers?.https) return resolve();
-          apiServers.https.close(() => resolve());
-        }),
-        prisma.$disconnect().catch(() => undefined),
-      ]),
-      // Don't block quit forever if something is stuck.
-      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
-    ]);
-  } catch {
-    // ignore — we are quitting anyway
-  } finally {
-    app.exit(0);
-  }
+  void (async () => {
+    try {
+      try {
+        const { stopMdnsAdvertiser } = await import(
+          './services/mdnsAdvertiser'
+        );
+        await stopMdnsAdvertiser();
+      } catch {
+        // ignore
+      }
+      try {
+        const sec = await import('./services/security');
+        sec.stopRateLimitSweeper?.();
+      } catch {
+        // ignore
+      }
+      await Promise.race([
+        Promise.all([
+          new Promise<void>((resolve) => {
+            if (!apiServers?.http) return resolve();
+            apiServers.http.close(() => resolve());
+          }),
+          new Promise<void>((resolve) => {
+            if (!apiServers?.https) return resolve();
+            apiServers.https.close(() => resolve());
+          }),
+          prisma.$disconnect().catch(() => undefined),
+        ]),
+        new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    } catch {
+      // ignore — we are quitting anyway
+    } finally {
+      app.exit(0);
+    }
+  })();
 });
 
 // Updater IPC handlers
@@ -1635,54 +1739,6 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
       })
       .catch(() => {});
     await throttleAfterPinFailure(_e.sender.id, 'auth:loginWithPin');
-  }
-
-  // Local failed: try cloud login when cloud is configured (sync data on success)
-  const cfg = await getCloudConfig().catch(() => null);
-  if (cfg && user?.externalId) {
-    const cloudUserId = Number(user.externalId);
-    if (Number.isFinite(cloudUserId)) {
-      try {
-        const loginRes = await cloudJson<{ user: any; token: string }>(
-          'POST',
-          '/auth/login',
-          {
-            businessCode: cfg.businessCode,
-            pin,
-            userId: cloudUserId,
-          },
-        );
-        if (loginRes?.token && loginRes?.user) {
-          const session = {
-            token: loginRes.token,
-            businessCode: cfg.businessCode,
-            role: loginRes.user.role,
-            userId: loginRes.user.id,
-          };
-          setCloudSession(session);
-          setCloudSessionForSender(_e.sender.id, session);
-          await syncFromCloudAfterLogin(loginRes.token, loginRes.user.id, pin);
-          clearPinFailures(_e.sender.id);
-          const userData = {
-            id: user.id,
-            displayName: user.displayName,
-            role: user.role,
-            active: user.active,
-            createdAt: user.createdAt.toISOString(),
-            sessionToken: await createSession(_e.sender.id, user),
-          };
-          setSentryUser(user.id, user.displayName, user.role);
-          addBreadcrumb(
-            'User logged in via cloud (synced to local)',
-            'auth',
-            'info',
-          );
-          return userData;
-        }
-      } catch {
-        // Cloud login failed, fall through to return null
-      }
-    }
   }
 
   return null;
@@ -1779,9 +1835,6 @@ ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
 });
 
 ipcHandle('auth:logoutAdmin', async (_e) => {
-  // Clear any cloud session (used for cloud backup feature)
-  clearCloudAdminSession();
-  clearCloudSessionForSender(_e.sender.id);
   await revokeSession(_e.sender.id);
   forceLogoutSender(_e.sender, 'logout');
   return true;
@@ -1811,7 +1864,6 @@ ipcHandle('auth:resumeSession', async (_e, payload) => {
 
 /** Explicit sign-out for the POS and reservations shells. */
 ipcHandle('auth:endSession', async (_e) => {
-  clearCloudSessionForSender(_e.sender.id);
   await revokeSession(_e.sender.id);
   return true;
 });
@@ -1881,22 +1933,7 @@ ipcHandle('auth:createUser', async (_e, payload) => {
 
 ipcHandle('auth:listUsers', async (_e, payload) => {
   // Local-first: use local DB for users
-  let users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
-  // When local is empty and cloud is configured, sync users from cloud first
-  if (users.length === 0) {
-    const cfg = await getCloudConfig().catch(() => null);
-    if (cfg) {
-      const syncResult = await syncUsersFromCloud();
-      if (syncResult.error) {
-        addBreadcrumb(
-          `Cloud user sync failed: ${syncResult.error}`,
-          'auth',
-          'warning',
-        );
-      }
-      users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
-    }
-  }
+  const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
   const includeAdmins = (payload as any)?.includeAdmins !== false;
   const filtered = includeAdmins
     ? users
@@ -2253,11 +2290,6 @@ async function readSettings() {
     result.security = { ...result.security };
     delete result.security.apiSecret;
   }
-  // Never expose cloud access password to renderer. Admin can re-enter it if needed.
-  if (result?.cloud && typeof result.cloud === 'object') {
-    result.cloud = { ...result.cloud };
-    delete result.cloud.accessPassword;
-  }
   if (result?.fiscal && typeof result.fiscal === 'object') {
     result.fiscal = { ...result.fiscal };
     if (result.fiscal.authToken) {
@@ -2307,66 +2339,14 @@ ipcHandle('settings:get', async (_e) => {
 
 ipcHandle('settings:update', async (_e, input) => {
   await assertMaySaveSettings(_e.sender.id, input);
-  // If cloud is enabled, validate business code + access password before persisting.
-  // This prevents saving wrong values and then having a confusing "no users" login screen.
-  try {
-    const envCloudUrl = String(process.env.POS_CLOUD_URL || '').trim();
-    const nextCodeRaw = String(
-      (input as any)?.cloud?.businessCode || '',
-    ).trim();
-    const nextPwRaw = String(
-      (input as any)?.cloud?.accessPassword || '',
-    ).trim();
-    if (envCloudUrl && (nextCodeRaw || nextPwRaw)) {
-      const businessCode = nextCodeRaw
-        .replace(/[^0-9A-Za-z_-]/g, '')
-        .toUpperCase()
-        .slice(0, 24);
-      if (!businessCode) throw new Error('Business code is required.');
-      if (nextPwRaw.length < 6)
-        throw new Error('Business password is required (min 6 chars).');
-      // Verify against cloud by attempting to list users (admin must always exist for a tenant).
-      const url = `${envCloudUrl.replace(/\/+$/g, '')}/auth/public-users?businessCode=${encodeURIComponent(businessCode)}&includeAdmins=1`;
-      const ac = new AbortController();
-      const t = setTimeout(() => ac.abort(), 10_000);
-      const r = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          'x-business-password': nextPwRaw,
-        } as any,
-        signal: ac.signal,
-      } as any).finally(() => clearTimeout(t));
-      const data = await r.json().catch(() => null);
-      if (!r.ok) {
-        const errText = String((data as any)?.error || '').trim();
-        // Common operational issue: cloud backend was deployed but Cloud SQL migrations were not applied.
-        // Prisma then throws "column does not exist" for newly added fields.
-        if (/does not exist/i.test(errText) && /business\./i.test(errText)) {
-          throw new Error(
-            'Cloud backend database is missing migrations. Ask the provider to run: `cd server && npx prisma migrate deploy` against the Cloud SQL DATABASE_URL.',
-          );
-        }
-        throw new Error(
-          errText || 'Invalid Business code or Business password.',
-        );
-      }
-      if (!Array.isArray(data) || data.length === 0) {
-        throw new Error('Invalid Business code or Business password.');
-      }
-      // Normalize the code back into the input so it is stored consistently.
-      (input as any).cloud = { ...((input as any).cloud || {}), businessCode };
-    }
-  } catch (e: any) {
-    const msg = String(e?.name || '')
-      .toLowerCase()
-      .includes('abort')
-      ? 'Cloud backend timed out. Check your internet connection and try again.'
-      : String(e?.message || e || 'Invalid cloud settings');
-    throw new Error(msg);
-  }
   // Merge and persist in SyncState, so admin changes survive restarts
   const merged = await coreServices.updateSettings(input);
+  if (
+    (input as any)?.host &&
+    Object.prototype.hasOwnProperty.call((input as any).host, 'openAtLogin')
+  ) {
+    applyOpenAtLogin(isOpenAtLoginEnabled(merged));
+  }
   // Also reflect table areas into Area table if provided
   if (Array.isArray((input as any).tableAreas)) {
     const areas = (input as any).tableAreas as {
@@ -2697,8 +2677,12 @@ ipcHandle('printer:listSerialPorts', async () => {
 });
 
 ipcHandle('offline:getStatus', async () => {
-  // Return outbox status for the UI indicator (only count items ready to sync, not waiting for retry)
-  return await getOutboxStatus();
+  const queued = await prisma.printJob
+    .count({
+      where: { status: { in: ['RETRY', 'QUEUED'] as any } },
+    })
+    .catch(() => 0);
+  return { queued };
 });
 
 // PR 3: expose the printer-retry queue so a future "Pending prints"
@@ -2766,75 +2750,63 @@ ipcHandle('system:openExternal', async (_e, payload) => {
   }
 });
 
-ipcHandle('billing:getStatus', async (_e) => {
-  const cloud = await getCloudConfig().catch(() => null);
-  if (!cloud) {
-    return { status: 'ACTIVE', billingEnabled: false };
-  }
-  try {
-    return await cloudJson('GET', '/billing/status', undefined, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    });
-  } catch (e: any) {
-    // If the cloud is unreachable, don't hard-lock the POS; treat as active but surface message.
-    return {
-      status: 'ACTIVE',
-      billingEnabled: true,
-      message: String(e?.message || 'Could not check billing status'),
-    };
-  }
+ipcHandle('billing:getStatus', async () => {
+  return licenseToBillingDto(await getLicenseStatus());
 });
 
-ipcHandle('billing:getStatusLive', async (_e) => {
-  const cloud = await getCloudConfig().catch(() => null);
-  if (!cloud) {
-    return { status: 'ACTIVE', billingEnabled: false };
-  }
-  try {
-    return await cloudJson('GET', '/billing/status?live=1', undefined, {
-      requireAuth: true,
-      senderId: _e.sender.id,
-    });
-  } catch (e: any) {
-    return {
-      status: 'ACTIVE',
-      billingEnabled: true,
-      message: String(e?.message || 'Could not check billing status'),
-    };
-  }
+ipcHandle('billing:getStatusLive', async () => {
+  return licenseToBillingDto(await getLicenseStatus());
 });
 
-ipcHandle('billing:createCheckoutSession', async (_e) => {
-  const cloud = await getCloudConfig().catch(() => null);
-  if (!cloud)
-    return { error: 'Cloud billing is not configured on this device' };
-  try {
-    return await cloudJson(
-      'POST',
-      '/admin/billing/create-checkout',
-      {},
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-  } catch (e: any) {
-    return { error: String(e?.message || 'Could not create checkout session') };
-  }
+ipcHandle('billing:createCheckoutSession', async () => {
+  return { error: 'Subscribe from the license screen with your billing email' };
 });
 
-ipcHandle('billing:createPortalSession', async (_e) => {
-  const cloud = await getCloudConfig().catch(() => null);
-  if (!cloud)
-    return { error: 'Cloud billing is not configured on this device' };
-  try {
-    return await cloudJson(
-      'POST',
-      '/admin/billing/create-portal',
-      {},
-      { requireAuth: true, senderId: _e.sender.id },
-    );
-  } catch (e: any) {
-    return { error: String(e?.message || 'Could not create portal session') };
+ipcHandle('billing:createPortalSession', async () => {
+  return await createPortalSession();
+});
+
+ipcHandle('license:getStatus', async () => {
+  return await getLicenseStatus();
+});
+
+ipcHandle('license:createCheckout', async (_e, input) => {
+  const email = String((input as any)?.email || '').trim();
+  const r = await createCheckout(email);
+  if (r.url) {
+    try {
+      await shell.openExternal(r.url);
+    } catch {
+      // renderer can still show the URL if we returned it
+    }
   }
+  if (r.alreadyLicensed) await afterLicenseUnlocked();
+  return r;
+});
+
+ipcHandle('license:activateSession', async (_e, input) => {
+  const sessionId = String((input as any)?.sessionId || '').trim();
+  const r = await activateSession(sessionId);
+  if (r.ok) await afterLicenseUnlocked();
+  return r;
+});
+
+ipcHandle('license:activateKey', async (_e, input) => {
+  const key = String((input as any)?.key || '').trim();
+  const r = await activateKey(key);
+  if (r.ok) await afterLicenseUnlocked();
+  return r;
+});
+
+ipcHandle('license:restore', async (_e, input) => {
+  const email = String((input as any)?.email || '').trim();
+  const r = await restoreByEmail(email);
+  if (r.ok) await afterLicenseUnlocked();
+  return r;
+});
+
+ipcHandle('license:createPortalSession', async () => {
+  return await createPortalSession();
 });
 
 // Print ticket over ESC/POS
@@ -3002,7 +2974,13 @@ ipcHandle('tickets:print', async (_e, input) => {
       } catch {
         // ignore
       }
-      return false;
+      // Same shape as the LAN `/print/ticket` 502 so the renderer can
+      // keep the table open instead of treating this as a printer hiccup.
+      return {
+        ok: false,
+        code: 'FISCAL_FAILED',
+        error: outcome.message,
+      };
     }
     payload = outcome.payload;
     const fiscalWarning = String(
@@ -3733,52 +3711,6 @@ ipcHandle('backups:restore', async (_e, input) => {
   return await restoreDbBackup(name);
 });
 
-ipcHandle('backups:uploadToCloud', async (_e, input) => {
-  const name = String((input as any)?.name || '').trim();
-  const cloud = await getCloudConfig().catch(() => null);
-  if (!cloud) return { ok: false, error: 'Cloud not configured' };
-  const pw = await getCloudAccessPassword().catch(() => null);
-  if (!pw) return { ok: false, error: 'Cloud access password not set' };
-  const dir = getBackupsDir();
-  const safeName = name ? String(name).replace(/[^0-9A-Za-z._-]/g, '') : '';
-  const filePath = safeName
-    ? join(dir, safeName.endsWith('.db') ? safeName : `${safeName}.db`)
-    : null;
-  let toUpload = filePath && fs.existsSync(filePath) ? filePath : null;
-  if (!toUpload) {
-    const created = await createDbBackupNow();
-    if (!created.ok || !created.file)
-      return { ok: false, error: created.error || 'Backup failed' };
-    toUpload = created.file;
-  }
-  try {
-    const fileBuffer = fs.readFileSync(toUpload);
-    const filename = basename(toUpload);
-    const formData = new FormData();
-    formData.append('file', new Blob([fileBuffer]), filename);
-    const url = `${cloud.backendUrl.replace(/\/+$/, '')}/backups/upload`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'x-business-code': cloud.businessCode,
-        'x-business-password': pw,
-      } as any,
-      body: formData as any,
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      return { ok: false, error: String(err?.error || res.statusText) };
-    }
-    return { ok: true };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e || 'Upload failed') };
-  }
-});
-
-ipcHandle('sync:fromCloud', async (_e) => {
-  return syncFromCloudManual();
-});
-
 async function getEnabledStations(): Promise<string[]> {
   try {
     const settings: any = await readSettings();
@@ -4120,11 +4052,10 @@ ipcHandle('kds:getTicketDetail', async (_e, input) => {
 });
 
 ipcHandle('kds:debug', async () => {
-  const cloud = await getCloudConfig().catch(() => null);
   const schemaReady = await ensureKdsLocalSchema();
   const enabledStations = await getEnabledStations();
   const out: any = {
-    mode: cloud ? 'cloud+local-kds' : 'local',
+    mode: 'local',
     schemaReady,
     enabledStations,
     lastError: __kdsLastError,
@@ -5067,23 +4998,6 @@ ipcHandle('admin:getSecurityLog', async (_e, input) => {
   return getSecurityLog(limit);
 });
 
-// Memory monitoring (admin only)
-ipcHandle('admin:getMemoryStats', async () => {
-  const stats = getMemoryStats();
-  const currentUsage = getMemoryUsage();
-  return {
-    current: stats.current,
-    average: stats.average,
-    peak: stats.peak,
-    trend: stats.trend,
-    formatted: formatMemoryUsage(currentUsage),
-  };
-});
-
-ipcHandle('admin:exportMemorySnapshot', async () => {
-  return await exportMemorySnapshot();
-});
-
 // =====================================================================
 // Admin Business Review — analytics over arbitrary periods.
 // All compute is local-first (no cloud round trip); the local SQLite DB
@@ -5753,7 +5667,9 @@ ipcHandle('layout:save', async (_e, { area, nodes }) => {
   // be able to overwrite it. This used to read the caller's identity out of
   // the payload, which meant anyone could claim to be an admin by passing an
   // admin's id. The session is the only trustworthy source.
-  if (getSession(_e.sender.id)?.role !== 'ADMIN') return false;
+  if (getSession(_e.sender.id)?.role !== 'ADMIN') {
+    throw new Error('forbidden');
+  }
   await prisma.syncState.upsert({
     where: { key: globalLayoutKey(a) },
     create: { key: globalLayoutKey(a), valueJson: { nodes } },

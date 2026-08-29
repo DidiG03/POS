@@ -6,6 +6,10 @@ import type {
   ReservationUpdateInput,
 } from '@shared/ipc';
 import { broadcastReservationsChanged } from './realtime';
+import {
+  DEFAULT_RESERVATION_DURATION_MIN,
+  reservationOccupiesTable,
+} from '@shared/reservationDuration';
 
 // All reservation business logic lives here so the Electron IPC layer
 // (src/main/index.ts) and the LAN HTTP layer (src/main/api.ts) share the
@@ -167,6 +171,9 @@ export async function listReservationsForDay(input: {
 }): Promise<ReservationDTO[]> {
   const dateIso = String(input?.dateIso || '');
   if (!dateIso) return [];
+  // Persist Përfunduar for seated parties whose duration has elapsed so
+  // list/floor chips match the grey tables. Safe if nothing is due.
+  await completeExpiredSeatedReservations().catch(() => 0);
   const { start, end } = dayBounds(dateIso);
   const where: any = { startsAt: { gte: start, lte: end } };
   if (input?.area) where.area = String(input.area);
@@ -239,7 +246,12 @@ export async function createReservation(
   const startsAt = new Date(String(input?.startsAtIso || ''));
   if (!Number.isFinite(startsAt.getTime())) throw new Error('invalid startsAt');
   const partySize = clampInt(input?.partySize, 1, 200, 2);
-  const durationMin = clampInt(input?.durationMin, 15, 720, 120);
+  const durationMin = clampInt(
+    input?.durationMin,
+    15,
+    720,
+    DEFAULT_RESERVATION_DURATION_MIN,
+  );
   const tableLabel = input?.tableLabel ? String(input.tableLabel) : null;
   // Validate explicitly so a malformed renderer payload can't sneak invalid
   // enum values past Prisma at runtime.
@@ -305,7 +317,12 @@ export async function updateReservation(
     if (Number.isFinite(d.getTime())) data.startsAt = d;
   }
   if (typeof input?.durationMin !== 'undefined')
-    data.durationMin = clampInt(input.durationMin, 15, 720, 120);
+    data.durationMin = clampInt(
+      input.durationMin,
+      15,
+      720,
+      DEFAULT_RESERVATION_DURATION_MIN,
+    );
   if (typeof input?.note !== 'undefined')
     data.note = input.note ? String(input.note) : null;
   // Merge incoming changes onto the existing row to detect double-booking
@@ -390,4 +407,77 @@ export async function deleteReservation(input: {
     area: existing?.area ?? null,
   });
   return true;
+}
+
+/**
+ * Walk-ins / seated parties store how long they hold the table. When that
+ * window ends, flip them to COMPLETED so the floor goes grey without a
+ * host tapping Përfunduar.
+ */
+export async function completeExpiredSeatedReservations(
+  nowMs = Date.now(),
+): Promise<number> {
+  const seated = await prisma.reservation.findMany({
+    where: { status: 'SEATED' as any },
+    select: {
+      id: true,
+      area: true,
+      startsAt: true,
+      durationMin: true,
+    },
+    take: 200,
+  });
+  const expired = seated.filter(
+    (r) =>
+      !reservationOccupiesTable(
+        {
+          status: 'SEATED',
+          startsAt: r.startsAt,
+          durationMin: Number((r as any).durationMin || 0),
+        },
+        nowMs,
+      ),
+  );
+  if (!expired.length) return 0;
+  const ids = expired.map((r) => r.id);
+  await prisma.reservation.updateMany({
+    where: { id: { in: ids }, status: 'SEATED' as any },
+    data: { status: 'COMPLETED' as any },
+  });
+  for (const r of expired) {
+    broadcastReservationsChanged({
+      kind: 'status',
+      id: Number(r.id),
+      dateIso: new Date(r.startsAt).toISOString(),
+      area: r.area,
+      status: 'COMPLETED',
+    });
+  }
+  return expired.length;
+}
+
+let durationLoopTimer: ReturnType<typeof setInterval> | null = null;
+let durationLoopRunning = false;
+
+export function startReservationDurationLoop(): void {
+  if (durationLoopTimer) return;
+  const run = async () => {
+    if (durationLoopRunning) return;
+    durationLoopRunning = true;
+    try {
+      await completeExpiredSeatedReservations();
+    } catch {
+      // ignore — next tick retries
+    } finally {
+      durationLoopRunning = false;
+    }
+  };
+  void run();
+  durationLoopTimer = setInterval(() => void run(), 30_000);
+}
+
+export function stopReservationDurationLoop(): void {
+  if (!durationLoopTimer) return;
+  clearInterval(durationLoopTimer);
+  durationLoopTimer = null;
 }

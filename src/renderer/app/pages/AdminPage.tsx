@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
-import {
-  normalizeStock,
-  StockAvailabilityPanel,
-  type StockPanelMenuCategory,
-} from '../../components/StockAvailabilityPanel';
-import { reservationStatusLabel } from '../../utils/reservationLabels';
 
 type Overview = {
   activeUsers: number;
@@ -22,25 +16,6 @@ type Overview = {
   revenueTodayVat?: number;
   fiscalEnabled?: boolean;
   coversToday?: number;
-  reservationsTotalToday?: number;
-  reservationsCoversToday?: number;
-  reservationsAvgPartyToday?: number;
-  reservationsByStatusToday?: {
-    BOOKED?: number;
-    SEATED?: number;
-    COMPLETED?: number;
-    NO_SHOW?: number;
-    CANCELLED?: number;
-  };
-  reservationsUpcomingToday?: number;
-  reservationsNoShowRateToday?: number;
-  nextReservationToday?: {
-    timeIso: string;
-    customerName: string;
-    partySize: number;
-    area: string;
-    tableLabel: string | null;
-  } | null;
 };
 
 type AdminShift = {
@@ -122,6 +97,22 @@ function IconTrash() {
   );
 }
 
+function IconKebab() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className="pos-icon"
+      aria-hidden
+    >
+      <circle cx="12" cy="5" r="1.75" />
+      <circle cx="12" cy="12" r="1.75" />
+      <circle cx="12" cy="19" r="1.75" />
+    </svg>
+  );
+}
+
 export default function AdminPage() {
   const { t } = useTranslation();
   const [ov, setOv] = useState<Overview | null>(null);
@@ -153,6 +144,7 @@ export default function AdminPage() {
   const [userQuery, setUserQuery] = useState('');
   const [showAdmins, setShowAdmins] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const [showStaffMenu, setShowStaffMenu] = useState(false);
   const [showAddStaffModal, setShowAddStaffModal] = useState(false);
   const [editingStaff, setEditingStaff] = useState<{
     id: number;
@@ -171,13 +163,8 @@ export default function AdminPage() {
     const t = window.setTimeout(() => setStaffStatus(null), 4000);
     return () => window.clearTimeout(t);
   }, [staffStatus]);
-  const [dataSource, setDataSource] = useState<'cloud' | 'local'>('local');
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const [billingPaused, setBillingPaused] = useState(false);
-  const [stockMenuCats, setStockMenuCats] = useState<StockPanelMenuCategory[]>(
-    [],
-  );
-  const [stockSaving, setStockSaving] = useState(false);
   const me = useAdminSessionStore((s) => s.user);
   // Simplified view: hide sales trends entirely
 
@@ -193,21 +180,8 @@ export default function AdminPage() {
       try {
         const s = await window.api.settings.get().catch(() => null as any);
         if (cancelled) return;
-        const backendUrl = String((s as any)?.cloud?.backendUrl || '').trim();
-        const businessCode = String(
-          (s as any)?.cloud?.businessCode || '',
-        ).trim();
         const cur = String((s as any)?.currency || '').trim();
         if (cur) safeSet(setCurrency, cur);
-        safeSet(setDataSource, 'local');
-        if (backendUrl && !businessCode) {
-          safeSet(setAdminNotice, t('adminOverview.cloudBusinessCodeMissing'));
-          safeSet(setOv, null as any);
-          safeSet(setShifts, []);
-          safeSet(setTopSelling, null as any);
-          safeSet(setUsers, []);
-          return;
-        }
       } catch {
         // ignore
       }
@@ -253,20 +227,7 @@ export default function AdminPage() {
     return () => {
       cancelled = true;
     };
-  }, [dataSource, me?.id, me?.role, t]);
-
-  async function refreshStockMenu() {
-    try {
-      const data = await window.api.menu.listCategoriesWithItems();
-      setStockMenuCats(data as StockPanelMenuCategory[]);
-    } catch {
-      setStockMenuCats([]);
-    }
-  }
-
-  useEffect(() => {
-    void refreshStockMenu();
-  }, []);
+  }, [me?.id, me?.role, t]);
 
   // Removed sales trends fetch for simplified overview
   const openUserIds = useMemo(
@@ -306,19 +267,6 @@ export default function AdminPage() {
     }),
     [openUserIds.size, users],
   );
-
-  const stockTotals = useMemo(() => {
-    let low = 0;
-    let out = 0;
-    for (const c of stockMenuCats) {
-      for (const it of c.items || []) {
-        const level = normalizeStock(it.stockLevel);
-        if (level === 'LOW') low += 1;
-        if (level === 'OUT') out += 1;
-      }
-    }
-    return { low, out, attention: low + out };
-  }, [stockMenuCats]);
 
   async function refreshUsers() {
     setUsers(await window.api.auth.listUsers());
@@ -473,14 +421,6 @@ export default function AdminPage() {
             <h2 className="text-base font-semibold">
               {t('adminOverview.todaySnapshot')}
             </h2>
-            <p className="text-xs text-gray-400">
-              {t('adminOverview.todaySnapshotHelp')}
-            </p>
-          </div>
-          <div className="text-xs text-gray-400">
-            {dataSource === 'cloud'
-              ? t('adminOverview.loadedFromCloud')
-              : t('adminOverview.loadedFromLocal')}
           </div>
         </div>
         <div className="grid gap-3 grid-cols-1 min-[520px]:grid-cols-2 xl:grid-cols-5 min-w-0 [&>*]:min-w-0">
@@ -521,104 +461,63 @@ export default function AdminPage() {
         </div>
       </section>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)] gap-4">
-        <ReservationsTodayCard ov={ov} />
-
-        <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-base font-semibold">
-                {t('adminOverview.operations')}
-              </h2>
-              <p className="text-xs text-gray-400">
-                {t('adminOverview.operationsHelp')}
-              </p>
+      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">
+              {t('adminOverview.operations')}
+            </h2>
+            <p className="text-xs text-gray-400">
+              {t('adminOverview.operationsHelp')}
+            </p>
+          </div>
+          <button
+            className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
+            onClick={() => {
+              setShiftFilter('ALL');
+              setShiftView('SHIFTS');
+              setShiftRange('TODAY');
+              setShowShiftsModal(true);
+              void refreshShifts();
+            }}
+            type="button"
+          >
+            {t('adminOverview.viewAll')}
+          </button>
+        </div>
+        <div className="space-y-2">
+          {openShifts.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 px-3 py-4 text-sm text-gray-400">
+              {t('adminOverview.noOpenShifts')}
             </div>
-            <button
-              className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
-              onClick={() => {
-                setShiftFilter('ALL');
-                setShiftView('SHIFTS');
-                setShiftRange('TODAY');
-                setShowShiftsModal(true);
-                void refreshShifts();
-              }}
-              type="button"
-            >
-              {t('adminOverview.viewAll')}
-            </button>
-          </div>
-          <div className="grid grid-cols-3 gap-2 mb-3">
-            <MiniStat
-              label={t('adminOverview.openShifts')}
-              value={openShifts.length}
-            />
-            <MiniStat
-              label={t('stockPanel.lowStock')}
-              value={stockTotals.low}
-            />
-            <MiniStat
-              label={t('stockPanel.outOfStock')}
-              value={stockTotals.out}
-            />
-          </div>
-          <div className="space-y-2">
-            {openShifts.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 px-3 py-4 text-sm text-gray-400">
-                {t('adminOverview.noOpenShifts')}
-              </div>
-            ) : (
-              openShifts.slice(0, 4).map((s) => (
-                <div
-                  key={s.id}
-                  className="rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="font-medium truncate">{s.userName}</div>
-                      <div className="text-xs text-gray-400">
-                        {new Date(s.openedAt).toLocaleString()}
-                      </div>
+          ) : (
+            openShifts.slice(0, 4).map((s) => (
+              <div
+                key={s.id}
+                className="rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{s.userName}</div>
+                    <div className="text-xs text-gray-400">
+                      {new Date(s.openedAt).toLocaleString()}
                     </div>
-                    <div className="text-right">
-                      <div className="font-mono tabular-nums text-sm font-semibold">
-                        {Number.isFinite(s.durationHours)
-                          ? s.durationHours.toFixed(2)
-                          : '—'}
-                      </div>
-                      <div className="text-[11px] uppercase tracking-wide text-gray-500">
-                        {t('adminOverview.hours')}
-                      </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-mono tabular-nums text-sm font-semibold">
+                      {Number.isFinite(s.durationHours)
+                        ? s.durationHours.toFixed(2)
+                        : '—'}
+                    </div>
+                    <div className="text-[11px] uppercase tracking-wide text-gray-500">
+                      {t('adminOverview.hours')}
                     </div>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        </section>
-      </div>
-
-      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4 min-w-0 overflow-hidden">
-        <StockAvailabilityPanel
-          categories={stockMenuCats}
-          disabled={billingPaused || stockSaving}
-          onChangeLevel={async (itemId, stockLevel, opts) => {
-            setStockSaving(true);
-            try {
-              const payload: Record<string, unknown> = {
-                id: itemId,
-                stockLevel,
-              };
-              if (stockLevel === 'LOW' && opts?.stockRemaining != null) {
-                payload.stockRemaining = opts.stockRemaining;
-              }
-              await window.api.menu.updateItem(payload as any);
-              await refreshStockMenu();
-            } finally {
-              setStockSaving(false);
-            }
-          }}
-        />
+              </div>
+            ))
+          )}
+        </div>
       </section>
 
       {showShiftsModal && (
@@ -907,7 +806,7 @@ export default function AdminPage() {
       )}
 
       <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold">
               {t('adminOverview.staffMembers')}
@@ -919,30 +818,64 @@ export default function AdminPage() {
               })}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="text-xs opacity-80 flex items-center gap-2 select-none rounded-lg border border-gray-700 bg-gray-900/50 px-2.5 py-2">
-              <input
-                type="checkbox"
-                checked={showAdmins}
-                onChange={(e) => setShowAdmins(e.target.checked)}
-              />
-              {t('adminOverview.showAdmins')}
-            </label>
-            <label className="text-xs opacity-80 flex items-center gap-2 select-none rounded-lg border border-gray-700 bg-gray-900/50 px-2.5 py-2">
-              <input
-                type="checkbox"
-                checked={showInactive}
-                onChange={(e) => setShowInactive(e.target.checked)}
-              />
-              {t('adminOverview.showInactive')}
-            </label>
+          <div
+            className="relative shrink-0"
+            tabIndex={-1}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                setShowStaffMenu(false);
+              }
+            }}
+          >
             <button
-              className="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-sm disabled:opacity-60 cursor-pointer"
-              disabled={billingPaused}
-              onClick={() => setShowAddStaffModal(true)}
+              type="button"
+              className="pos-icon-btn cursor-pointer relative"
+              aria-label={t('adminOverview.staffMenu')}
+              aria-haspopup="menu"
+              aria-expanded={showStaffMenu}
+              onClick={() => setShowStaffMenu((v) => !v)}
             >
-              {t('adminOverview.addStaff')}
+              <IconKebab />
+              {showAdmins || showInactive ? (
+                <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              ) : null}
             </button>
+            {showStaffMenu ? (
+              <div
+                role="menu"
+                className="absolute right-0 mt-2 w-56 rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-lg z-50"
+              >
+                <label className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showAdmins}
+                    onChange={(e) => setShowAdmins(e.target.checked)}
+                  />
+                  {t('adminOverview.showAdmins')}
+                </label>
+                <label className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showInactive}
+                    onChange={(e) => setShowInactive(e.target.checked)}
+                  />
+                  {t('adminOverview.showInactive')}
+                </label>
+                <div className="my-1 border-t border-gray-700" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-800 disabled:opacity-60 cursor-pointer"
+                  disabled={billingPaused}
+                  onClick={() => {
+                    setShowStaffMenu(false);
+                    setShowAddStaffModal(true);
+                  }}
+                >
+                  {t('adminOverview.addStaff')}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -1179,192 +1112,6 @@ function formatMoney(amount: number, currency: string): string {
   } catch {
     return `${n.toFixed(2)} ${currency || 'EUR'}`;
   }
-}
-
-// ---------- Reservations day-summary card ----------
-
-function ReservationsTodayCard({ ov }: { ov: Overview | null }) {
-  const { t } = useTranslation();
-  const total = ov?.reservationsTotalToday ?? 0;
-  const covers = ov?.reservationsCoversToday ?? 0;
-  const avg = ov?.reservationsAvgPartyToday ?? 0;
-  const upcoming = ov?.reservationsUpcomingToday ?? 0;
-  const noShowRate = ov?.reservationsNoShowRateToday ?? 0;
-  const by = ov?.reservationsByStatusToday || {};
-  const next = ov?.nextReservationToday ?? null;
-
-  function nextRelative(iso: string): string {
-    const when = new Date(iso).getTime();
-    if (!Number.isFinite(when)) return '';
-    const diffMs = when - Date.now();
-    const mins = Math.round(diffMs / 60_000);
-    if (mins <= 0) return t('adminOverview.now');
-    if (mins < 60) return t('adminOverview.inMinutes', { mins });
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
-    return m === 0
-      ? t('adminOverview.inHours', { hours: h })
-      : t('adminOverview.inHoursMinutes', { hours: h, mins: m });
-  }
-
-  function openReservations() {
-    void (window.api as any).reservations?.openWindow?.();
-  }
-
-  return (
-    <div className="bg-gray-800 rounded p-4 col-span-1 min-w-0 overflow-hidden">
-      <div className="flex items-center justify-between gap-3 mb-3 min-w-0">
-        <div className="min-w-0 flex-1">
-          <div className="text-sm opacity-70">
-            {t('adminOverview.reservationsToday')}
-          </div>
-          <div className="text-xs opacity-60 break-words">
-            {total === 0
-              ? t('adminOverview.noReservationsToday')
-              : t('adminOverview.reservationsSummary', {
-                  count: total,
-                  covers: t('reservations.covers', { count: covers }),
-                })}
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={openReservations}
-          className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
-        >
-          {t('adminOverview.openPanel')}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 min-w-0 [&>*]:min-w-0">
-        <MiniStat label={t('common.covers')} value={covers} />
-        <MiniStat label={t('adminOverview.parties')} value={total} />
-        <MiniStat
-          label={t('adminOverview.avgParty')}
-          value={avg > 0 ? avg.toFixed(1) : '—'}
-        />
-        <MiniStat
-          label={t('adminOverview.upcoming')}
-          value={upcoming}
-          hint={
-            upcoming > 0 && next
-              ? `${formatTime(next.timeIso)} · ${next.customerName}`
-              : undefined
-          }
-        />
-      </div>
-
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <StatusPill
-          label={reservationStatusLabel(t, 'BOOKED')}
-          cls="bg-amber-900/60 border-amber-700 text-amber-100"
-          value={by.BOOKED ?? 0}
-        />
-        <StatusPill
-          label={reservationStatusLabel(t, 'SEATED')}
-          cls="bg-rose-900/60 border-rose-700 text-rose-100"
-          value={by.SEATED ?? 0}
-        />
-        <StatusPill
-          label={reservationStatusLabel(t, 'COMPLETED')}
-          cls="bg-emerald-900/60 border-emerald-700 text-emerald-100"
-          value={by.COMPLETED ?? 0}
-        />
-        <StatusPill
-          label={reservationStatusLabel(t, 'NO_SHOW')}
-          cls="bg-gray-700/70 border-gray-500 text-gray-100"
-          value={by.NO_SHOW ?? 0}
-        />
-        <StatusPill
-          label={reservationStatusLabel(t, 'CANCELLED')}
-          cls="bg-zinc-700/60 border-zinc-500 text-zinc-200"
-          value={by.CANCELLED ?? 0}
-        />
-        <div className="ml-auto text-xs opacity-80">
-          {t('adminOverview.noShowRate')}:{' '}
-          <span
-            className={`font-semibold ${
-              noShowRate >= 25
-                ? 'text-rose-300'
-                : noShowRate >= 10
-                  ? 'text-amber-300'
-                  : 'text-emerald-300'
-            }`}
-            title={t('adminOverview.noShowRateTitle')}
-          >
-            {noShowRate}%
-          </span>
-        </div>
-      </div>
-
-      {next && (
-        <div className="mt-3 text-xs opacity-80 border-t border-gray-700/70 pt-2 break-words">
-          {t('adminOverview.nextUp')}:{' '}
-          <span className="font-mono">{formatTime(next.timeIso)}</span> ·{' '}
-          <span className="font-medium">{next.customerName}</span> ·{' '}
-          {next.partySize} {t('adminOverview.pax')} ·{' '}
-          {next.tableLabel ? `${next.area} ${next.tableLabel}` : next.area} ·{' '}
-          <span className="opacity-70">{nextRelative(next.timeIso)}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MiniStat({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: number | string;
-  hint?: string;
-}) {
-  return (
-    <div className="bg-gray-900/60 rounded px-3 py-2 min-w-0 overflow-hidden">
-      <div className="text-[11px] uppercase tracking-wide opacity-60 truncate">
-        {label}
-      </div>
-      <div className="text-lg sm:text-xl font-semibold tabular-nums break-words leading-tight">
-        {value}
-      </div>
-      {hint && (
-        <div className="text-[11px] opacity-60 truncate" title={hint}>
-          {hint}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StatusPill({
-  label,
-  cls,
-  value,
-}: {
-  label: string;
-  cls: string;
-  value: number;
-}) {
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded border ${cls} ${
-        value === 0 ? 'opacity-50' : ''
-      }`}
-    >
-      <span>{label}</span>
-      <span className="font-mono tabular-nums">{value}</span>
-    </span>
-  );
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return (
-    String(d.getHours()).padStart(2, '0') +
-    ':' +
-    String(d.getMinutes()).padStart(2, '0')
-  );
 }
 
 function Stat({

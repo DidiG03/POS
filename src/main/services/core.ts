@@ -47,7 +47,7 @@ export async function withTableLock<T>(
  *
  * Why: `coreServices.readSettings()` is called from every print, every
  * KDS poll, every printer-station tick, and on every API request that
- * needs to know the restaurant name / VAT rate / cloud config. Each
+ * needs to know the restaurant name / VAT rate / host config. Each
  * call hits SQLite + JSON.parse + merge. During a busy service that
  * adds up to thousands of redundant queries an hour.
  *
@@ -81,13 +81,12 @@ function buildEnvDefaults() {
     // also editing `.env`. Env vars still work as a true last-resort
     // fallback inside `printDispatcher` when no profile is saved.
     enableAdmin: process.env.ENABLE_ADMIN === 'true',
+    host: {
+      openAtLogin: true,
+    },
     security: {
       allowLan: process.env.POS_ALLOW_LAN === 'true',
       requirePairingCode: process.env.POS_REQUIRE_PAIRING_CODE !== 'false',
-    },
-    cloud: {
-      backendUrl: process.env.POS_CLOUD_URL || undefined,
-      businessCode: process.env.POS_BUSINESS_CODE || undefined,
     },
     kds: {
       enabledStations: ['KITCHEN'],
@@ -112,33 +111,6 @@ async function loadSettingsFromDb(): Promise<any> {
   if (envDefaults.enableAdmin) {
     merged.enableAdmin = true;
   }
-  // backendUrl is locked to env and cannot be overridden by UI/settings
-  // — prevents a compromised UI from re-pointing the POS to an attacker
-  // backend.
-  if (envDefaults?.cloud?.backendUrl) {
-    merged.cloud = {
-      ...(merged.cloud || {}),
-      backendUrl: envDefaults.cloud.backendUrl,
-    };
-  } else {
-    merged.cloud = { ...(merged.cloud || {}), backendUrl: undefined };
-  }
-  // Kill switch: drop the env-provided backendUrl so every consumer (login,
-  // sync, the overview "business code missing" banner) treats the POS as
-  // local-only. Two independent sources can flip it:
-  //   • settings `cloud.disabled` — the in-app admin toggle (reversible in UI)
-  //   • env `POS_CLOUD_DISABLED=true` — operator override that wins even when
-  //     the installer baked POS_CLOUD_URL into the registry.
-  // The flag is stored separately from backendUrl, so clearing either source
-  // restores the env URL on the next read.
-  const envCloudDisabled =
-    String(process.env.POS_CLOUD_DISABLED || '')
-      .trim()
-      .toLowerCase() === 'true';
-  if (merged.cloud?.disabled || envCloudDisabled) {
-    merged.cloud = { ...(merged.cloud || {}), backendUrl: undefined };
-  }
-
   // Backward compat: if only legacy `printer` exists, expose it as a
   // single-entry `printers[]` so the new dispatcher path always sees
   // an array. Real upgrades happen the next time the user saves in the
@@ -213,6 +185,7 @@ export const coreServices = {
       };
     if (input?.security)
       merged.security = { ...(current.security || {}), ...input.security };
+    if (input?.host) merged.host = { ...(current.host || {}), ...input.host };
     if (input?.kds) merged.kds = { ...(current.kds || {}), ...input.kds };
     if (input?.googleCalendar) {
       merged.googleCalendar = {
@@ -292,15 +265,6 @@ export const coreServices = {
       if (!nextToken && prevToken) {
         merged.fiscal.authToken = prevToken;
       }
-    }
-    if (input?.cloud) {
-      // Only businessCode is user-editable; backendUrl remains locked to env.
-      merged.cloud = { ...(current.cloud || {}), ...(input.cloud || {}) };
-      if (merged.cloud) delete (merged.cloud as any).backendUrl;
-      merged.cloud = {
-        ...(merged.cloud || {}),
-        backendUrl: (current as any)?.cloud?.backendUrl,
-      };
     }
     await prisma.syncState.upsert({
       where: { key: 'settings' },

@@ -60,8 +60,6 @@ const KDS_WINDOWS = ['kds'] as const;
 
 export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // ---------------------------------------------------------------- admin
-  'admin:exportMemorySnapshot': { allow: ADMIN },
-  'admin:getMemoryStats': { allow: ADMIN },
   'admin:getOverview': { allow: ADMIN },
   'admin:getReview': { allow: ADMIN },
   'admin:getSalesTrends': { allow: ADMIN },
@@ -110,7 +108,6 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'backups:create': { allow: ADMIN },
   'backups:list': { allow: ADMIN },
   'backups:restore': { allow: ADMIN },
-  'backups:uploadToCloud': { allow: ADMIN },
 
   // -------------------------------------------------------------- billing
   'billing:createCheckoutSession': { allow: ADMIN },
@@ -118,6 +115,27 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // Checked during boot to decide whether the app is usable at all.
   'billing:getStatus': { allow: 'public' },
   'billing:getStatusLive': { allow: ADMIN },
+
+  // -------------------------------------------------------------- license
+  // First-run paywall, before any user exists.
+  'license:getStatus': { allow: 'public' },
+  'license:createCheckout': {
+    allow: 'public',
+    rateLimit: { maxAttempts: 10, windowMs: 60 * 1000 },
+  },
+  'license:activateSession': {
+    allow: 'public',
+    rateLimit: { maxAttempts: 20, windowMs: 60 * 1000 },
+  },
+  'license:activateKey': {
+    allow: 'public',
+    rateLimit: { maxAttempts: 20, windowMs: 60 * 1000 },
+  },
+  'license:restore': {
+    allow: 'public',
+    rateLimit: { maxAttempts: 8, windowMs: 60 * 60 * 1000 },
+  },
+  'license:createPortalSession': { allow: ADMIN },
 
   // --------------------------------------------------------------- covers
   'covers:getLast': { allow: POS },
@@ -216,10 +234,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'settings:testPrint': { allow: ADMIN },
   'settings:testPrintProfile': { allow: ADMIN },
   'settings:testPrintVerbose': { allow: ADMIN },
-  // Normally ADMIN, but first-run provisioning has to write the cloud business
-  // code and password before any user exists to log in as. The handler allows
-  // exactly that narrow case and requires an ADMIN session for everything else.
-  'settings:update': { allow: 'public' },
+  'settings:update': { allow: ADMIN },
 
   // --------------------------------------------------------------- shifts
   'shifts:clockIn': { allow: 'session' },
@@ -229,9 +244,6 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // before anyone authenticates. It returns user ids only, and that screen
   // already lists every staff member by name.
   'shifts:listOpen': { allow: 'public' },
-
-  // ----------------------------------------------------------------- sync
-  'sync:fromCloud': { allow: ADMIN },
 
   // --------------------------------------------------------------- system
   'system:openExternal': { allow: 'session' },

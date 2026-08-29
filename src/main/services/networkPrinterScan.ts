@@ -8,7 +8,12 @@
  *   1. Probes TCP 9100 only (JetDirect / raw ESC/POS). 515 is ignored.
  *   2. Asks whatever answered for printer status (`DLE EOT`) and drops
  *      anything that replies with HTTP, SSH, TLS, SMTP, …
- *   3. Listens for mDNS `_pdl-datastream._tcp` (the JetDirect name).
+ *   3. A SYN that never connects is not a printer. Firewalls that drop
+ *      packets instead of RST used to time out as “open”, so a /24
+ *      showed 253 printers.
+ *   4. If a crowd of hosts accept 9100 but send no ESC/POS status,
+ *      they are dropped — only DLE EOT hits and mDNS names remain.
+ *   5. Listens for mDNS `_pdl-datastream._tcp` (the JetDirect name).
  *      `_ipp._tcp` and `_printer._tcp` are skipped — those are usually
  *      computers sharing a queue, not a till printer.
  *
@@ -25,14 +30,19 @@ export const RAW_PRINTER_PORT = 9100;
 export const PROBE_TIMEOUT_MS = 400;
 export const SCAN_CONCURRENCY = 48;
 export const MDNS_WAIT_MS = 2500;
+/** Silent 9100 sockets above this are a filtered LAN, not a printer farm. */
+export const MAX_UNCONFIRMED_TCP = 8;
 
 /** ESC/POS real-time printer status. Does not print anything. */
 const DLE_EOT_PRINTER_STATUS = Buffer.from([0x10, 0x04, 0x01]);
 
+/** `printer` = DLE EOT status. `open` = connected, silent JetDirect. `closed` = no printer. */
+export type ProbeResult = 'printer' | 'open' | 'closed';
+
 export type PrinterProbe = (
   host: string,
   timeoutMs: number,
-) => Promise<boolean>;
+) => Promise<ProbeResult>;
 
 export interface LanInterface {
   address: string;
@@ -141,6 +151,18 @@ export function classify9100Response(
   return 'accept';
 }
 
+/** Map a finished 9100 socket to a scan result. No connect → not a printer. */
+export function resultFrom9100Socket(
+  connected: boolean,
+  data: Buffer,
+): ProbeResult {
+  if (!connected) return 'closed';
+  const kind = classify9100Response(data);
+  if (kind === 'reject') return 'closed';
+  if (kind === 'printer') return 'printer';
+  return 'open';
+}
+
 export function looksLikeNonPrinterBanner(data: Buffer): boolean {
   if (!data.length) return false;
   if (data[0] === 0x16 && data[1] === 0x03) return true; // TLS Client/Server Hello
@@ -163,43 +185,46 @@ export function looksLikeNonPrinterBanner(data: Buffer): boolean {
 export function probeEscposPrinter(
   host: string,
   timeoutMs: number,
-): Promise<boolean> {
+): Promise<ProbeResult> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     const chunks: Buffer[] = [];
+    let connected = false;
     let settled = false;
-    const done = (ok: boolean) => {
+    const finish = (result: ProbeResult) => {
       if (settled) return;
       settled = true;
       socket.destroy();
-      resolve(ok);
+      resolve(result);
     };
+    const finishFromSocket = () =>
+      finish(resultFrom9100Socket(connected, Buffer.concat(chunks)));
     socket.setTimeout(Math.max(80, timeoutMs));
     socket.once('connect', () => {
+      connected = true;
+      socket.setTimeout(Math.max(80, timeoutMs));
       try {
         socket.write(DLE_EOT_PRINTER_STATUS);
       } catch {
-        done(false);
+        finish('closed');
       }
     });
     socket.on('data', (d: Buffer) => {
       chunks.push(d);
       const kind = classify9100Response(Buffer.concat(chunks));
-      if (kind === 'reject') done(false);
-      else if (kind === 'printer') done(true);
+      if (kind === 'reject') finish('closed');
+      else if (kind === 'printer') finish('printer');
     });
-    socket.once('timeout', () => {
-      done(classify9100Response(Buffer.concat(chunks)) !== 'reject');
-    });
-    socket.once('error', () => done(false));
+    socket.once('timeout', finishFromSocket);
+    socket.once('error', () => finish('closed'));
     socket.once('close', () => {
       if (settled) return;
-      done(classify9100Response(Buffer.concat(chunks)) !== 'reject');
+      finishFromSocket();
     });
     try {
       socket.connect(RAW_PRINTER_PORT, host);
     } catch {
-      done(false);
+      finish('closed');
     }
   });
 }
@@ -343,12 +368,20 @@ export async function scanNetworkPrinters(options?: {
     options?.discoverMdns || (() => discoverMdnsPrinters(MDNS_WAIT_MS))
   )().catch(() => [] as MdnsHit[]);
 
-  const tcpHits: Array<{ ip: string; port: number }> = [];
+  const confirmed: string[] = [];
+  const unconfirmed: string[] = [];
   await mapPool(hosts, concurrency, async (host) => {
-    if (await probe(host, timeoutMs)) {
-      tcpHits.push({ ip: host, port: RAW_PRINTER_PORT });
-    }
+    const result = await probe(host, timeoutMs);
+    if (result === 'printer') confirmed.push(host);
+    else if (result === 'open') unconfirmed.push(host);
   });
+  // A filtered LAN times out on every address. Cheap silent printers
+  // are real, but not 200 of them — keep only confirmed + mDNS then.
+  const tcpIps =
+    unconfirmed.length > MAX_UNCONFIRMED_TCP
+      ? confirmed
+      : [...confirmed, ...unconfirmed];
+  const tcpHits = tcpIps.map((ip) => ({ ip, port: RAW_PRINTER_PORT }));
 
   const mdns = (await mdnsPromise).filter(
     (p) => isPrivateIpv4(p.ip) && Number(p.port) === RAW_PRINTER_PORT,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   useReservationSessionStore,
@@ -13,6 +13,7 @@ import {
 } from '../utils/reservationEvents';
 import type { ReservationDTO } from '@shared/ipc';
 import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
+import { reservationOccupiesTable } from '@shared/reservationDuration';
 
 export type ReservationsContext = {
   me: { id: number; displayName: string; role: string };
@@ -27,7 +28,12 @@ export type ReservationsContext = {
   tableLabels: string[];
   freeTableLabels: string[];
   openEditor: (initial?: Partial<ReservationDTO> | null) => void;
-  openWalkIn: () => void;
+  openWalkIn: (opts?: { tableLabel?: string }) => void;
+  /** List view: Sot sits in this layout; Filtrat opens the list filter sheet. */
+  listFiltersOpen: boolean;
+  setListFiltersOpen: (open: boolean) => void;
+  listFiltersActive: boolean;
+  setListFiltersActive: (active: boolean) => void;
   /**
    * Same-device refresh signal. The Floor and List pages already react to
    * `pos:reservationsChanged` (SSE/IPC from other devices), but when the
@@ -100,14 +106,11 @@ function toDateInputValue(d: Date): string {
   );
 }
 
-// Reservations are "live" (occupy a table) only while BOOKED or SEATED.
-function isLiveStatus(s: string): boolean {
-  return s === 'BOOKED' || s === 'SEATED';
-}
-
 export default function ReservationsLayout() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
+  const isListView = /\/list\/?$/.test(location.pathname);
   const me = useReservationSessionStore((s) => s.user);
   const setUser = useReservationSessionStore((s) => s.setUser);
 
@@ -123,6 +126,17 @@ export default function ReservationsLayout() {
   const [editorInitial, setEditorInitial] =
     useState<Partial<ReservationDTO> | null>(null);
   const [walkInOpen, setWalkInOpen] = useState(false);
+  const [walkInTableLabel, setWalkInTableLabel] = useState<
+    string | undefined
+  >();
+  const [listFiltersOpen, setListFiltersOpen] = useState(false);
+  const [listFiltersActive, setListFiltersActive] = useState(false);
+
+  useEffect(() => {
+    if (isListView) return;
+    setListFiltersOpen(false);
+    setListFiltersActive(false);
+  }, [isListView]);
 
   // Shared lookup tables — fetched once here and reused by both pages.
   const [tableLabels, setTableLabels] = useState<string[]>([]);
@@ -144,7 +158,10 @@ export default function ReservationsLayout() {
     setEditorInitial(initial ?? null);
     setEditorOpen(true);
   }, []);
-  const openWalkIn = useCallback(() => setWalkInOpen(true), []);
+  const openWalkIn = useCallback((opts?: { tableLabel?: string }) => {
+    setWalkInTableLabel(opts?.tableLabel || undefined);
+    setWalkInOpen(true);
+  }, []);
 
   const notifyReservationsChanged = useCallback(
     (
@@ -260,9 +277,10 @@ export default function ReservationsLayout() {
         });
         if (cancelled) return;
         const busy = new Set<string>();
+        const now = Date.now();
         for (const r of list) {
           if (!r.tableLabel) continue;
-          if (isLiveStatus(r.status)) busy.add(r.tableLabel);
+          if (reservationOccupiesTable(r, now)) busy.add(r.tableLabel);
         }
         setBusyLabels(busy);
       } catch {
@@ -291,8 +309,10 @@ export default function ReservationsLayout() {
       }
     };
     window.addEventListener('pos:reservationsChanged', onChanged);
+    const tick = window.setInterval(() => void load(), 30_000);
     return () => {
       cancelled = true;
+      window.clearInterval(tick);
       window.removeEventListener('pos:reservationsChanged', onChanged);
     };
   }, [area, date]);
@@ -316,6 +336,10 @@ export default function ReservationsLayout() {
       openEditor,
       openWalkIn,
       notifyReservationsChanged,
+      listFiltersOpen,
+      setListFiltersOpen,
+      listFiltersActive,
+      setListFiltersActive,
     }),
     [
       me,
@@ -329,6 +353,10 @@ export default function ReservationsLayout() {
       openEditor,
       openWalkIn,
       notifyReservationsChanged,
+      listFiltersOpen,
+      setListFiltersOpen,
+      listFiltersActive,
+      setListFiltersActive,
     ],
   );
 
@@ -446,6 +474,20 @@ export default function ReservationsLayout() {
           >
             {t('reservations.today')}
           </button>
+          {isListView && (
+            <button
+              type="button"
+              onClick={() => setListFiltersOpen(true)}
+              className={`rounded-lg border px-3 py-2 text-sm transition-colors sm:py-1.5 ${
+                listFiltersActive
+                  ? 'border-blue-500 bg-blue-700 hover:bg-blue-600'
+                  : 'border-gray-700 bg-gray-800 hover:bg-gray-700'
+              }`}
+              title={t('reservations.filtersTitle')}
+            >
+              {t('reservations.filters')}
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2 min-w-0 sm:ml-2">
@@ -475,7 +517,7 @@ export default function ReservationsLayout() {
           <button
             type="button"
             className="px-3 py-2 sm:py-1.5 rounded bg-rose-700 hover:bg-rose-600 text-sm font-medium disabled:opacity-60"
-            onClick={openWalkIn}
+            onClick={() => openWalkIn()}
             disabled={!area || !me?.id}
             title={t('reservations.seatNowTitle')}
           >
@@ -500,11 +542,15 @@ export default function ReservationsLayout() {
       {me?.id && (
         <WalkInDialog
           open={walkInOpen}
-          onClose={() => setWalkInOpen(false)}
+          onClose={() => {
+            setWalkInOpen(false);
+            setWalkInTableLabel(undefined);
+          }}
           area={area}
           actorId={me.id}
           tableLabels={tableLabels}
           freeTableLabels={freeTableLabels}
+          initialTableLabel={walkInTableLabel}
           // Refresh the local pages immediately. The service broadcasts the
           // same event to every other client via SSE/IPC — we just don't
           // wait on that round-trip for the device that made the change,

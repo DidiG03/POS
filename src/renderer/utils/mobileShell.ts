@@ -59,6 +59,14 @@ export async function initMobileShell(): Promise<void> {
       // plugin missing — ignore
     }
 
+    // Light tap buzz on buttons / tappable controls.
+    try {
+      const { initButtonHaptics } = await import('./haptics');
+      await initButtonHaptics();
+    } catch {
+      // ignore
+    }
+
     // Hide the splash screen now that the renderer is mounted.
     try {
       const { SplashScreen } = await import('@capacitor/splash-screen');

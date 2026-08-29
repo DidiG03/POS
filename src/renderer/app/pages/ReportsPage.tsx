@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { describeTicketNote } from '@shared/utils/transferNote';
 import { useSessionStore } from '../../stores/session';
 
 type Overview = {
@@ -210,19 +211,6 @@ export default function ReportsPage() {
       {/* Tickets: fills remaining viewport; each column scrolls independently on lg+ */}
       {user && (
         <section className="flex min-h-0 flex-1 flex-col">
-          <div className="mb-3 flex shrink-0 items-center justify-between">
-            <div className="text-base font-semibold">
-              {t('reports.tickets')}
-            </div>
-            <div className="text-xs opacity-70">
-              {ticketsApiMissing
-                ? t('reports.updateRequired')
-                : ticketLoading
-                  ? t('reports.refreshing')
-                  : t('reports.autoRefresh')}
-            </div>
-          </div>
-
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-3 lg:grid-rows-1 lg:items-stretch [&>*]:min-h-0 lg:[&>*]:max-h-full">
             <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
@@ -417,9 +405,25 @@ function ReceiptCard({
       {open && (
         <div className="px-3 py-2 font-mono">
           {ticket?.note ? (
-            <div className="text-xs mb-2">
-              <span className="font-semibold">{t('common.note')}:</span>{' '}
-              {String(ticket.note)}
+            <div className="text-xs mb-2 space-y-0.5">
+              {(() => {
+                const { history, userNote } = describeTicketNote(ticket.note);
+                return (
+                  <>
+                    {history.map((line, i) => (
+                      <div key={`${line}-${i}`}>{line}</div>
+                    ))}
+                    {userNote ? (
+                      <div>
+                        <span className="font-semibold">
+                          {t('common.note')}:
+                        </span>{' '}
+                        {userNote}
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
             </div>
           ) : null}
 
@@ -571,9 +575,25 @@ function VoidedReceiptCard({
       {open && (
         <div className="px-3 py-2 font-mono">
           {ticket?.note ? (
-            <div className="text-xs mb-2">
-              <span className="font-semibold">{t('common.note')}:</span>{' '}
-              {String(ticket.note)}
+            <div className="text-xs mb-2 space-y-0.5">
+              {(() => {
+                const { history, userNote } = describeTicketNote(ticket.note);
+                return (
+                  <>
+                    {history.map((line, i) => (
+                      <div key={`${line}-${i}`}>{line}</div>
+                    ))}
+                    {userNote ? (
+                      <div>
+                        <span className="font-semibold">
+                          {t('common.note')}:
+                        </span>{' '}
+                        {userNote}
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
             </div>
           ) : null}
 

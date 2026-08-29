@@ -27,7 +27,6 @@ export default defineConfig({
       'tests/**',
       'dist/**',
       'dist-installers/**',
-      'server/**',
     ],
   },
 });

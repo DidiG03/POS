@@ -32,6 +32,7 @@ const AdminSettingsPage = React.lazy(
   () => import('./app/pages/AdminSettingsPage'),
 );
 const AdminMenuPage = React.lazy(() => import('./app/pages/AdminMenuPage'));
+const AdminStockPage = React.lazy(() => import('./app/pages/AdminStockPage'));
 const AdminReviewPage = React.lazy(() => import('./app/pages/AdminReviewPage'));
 const KdsPage = React.lazy(() => import('./app/pages/KdsPage'));
 const KdsSetupPage = React.lazy(() => import('./app/pages/KdsSetupPage'));
@@ -293,6 +294,7 @@ export const routes: RouteObject[] = [
         element: withSuspense(<AdminUserTicketsPage />),
       },
       { path: 'menu', element: withSuspense(<AdminMenuPage />) },
+      { path: 'stock', element: withSuspense(<AdminStockPage />) },
       { path: 'settings', element: withSuspense(<AdminSettingsPage />) },
     ],
   },

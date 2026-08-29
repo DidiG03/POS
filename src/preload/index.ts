@@ -96,9 +96,6 @@ const api: Api = {
       ipcRenderer.invoke('admin:getSalesTrends', input),
     getSecurityLog: (limit?: number) =>
       ipcRenderer.invoke('admin:getSecurityLog', { limit }),
-    getMemoryStats: () => ipcRenderer.invoke('admin:getMemoryStats'),
-    exportMemorySnapshot: () =>
-      ipcRenderer.invoke('admin:exportMemorySnapshot'),
     getReview: (input) => ipcRenderer.invoke('admin:getReview', input),
   },
   kds: {
@@ -142,9 +139,6 @@ const api: Api = {
     create: () => ipcRenderer.invoke('backups:create'),
     restore: (input: { name: string }) =>
       ipcRenderer.invoke('backups:restore', input),
-    uploadToCloud: (input?: { name?: string }) =>
-      ipcRenderer.invoke('backups:uploadToCloud', input || {}),
-    syncFromCloud: () => ipcRenderer.invoke('sync:fromCloud'),
   },
   reports: {
     getMyOverview: (userId: number) =>
@@ -167,6 +161,26 @@ const api: Api = {
   },
   offline: {
     getStatus: () => ipcRenderer.invoke('offline:getStatus'),
+  },
+  license: {
+    getStatus: () => ipcRenderer.invoke('license:getStatus'),
+    createCheckout: (input: { email: string }) =>
+      ipcRenderer.invoke('license:createCheckout', input),
+    activateSession: (input: { sessionId: string }) =>
+      ipcRenderer.invoke('license:activateSession', input),
+    activateKey: (input: { key: string }) =>
+      ipcRenderer.invoke('license:activateKey', input),
+    restore: (input: { email: string }) =>
+      ipcRenderer.invoke('license:restore', input),
+    createPortalSession: () =>
+      ipcRenderer.invoke('license:createPortalSession'),
+    onUpdated: (cb: () => void) => {
+      const listener = () => cb();
+      ipcRenderer.on('license:updated', listener);
+      return () => {
+        ipcRenderer.removeListener('license:updated', listener);
+      };
+    },
   },
   billing: {
     getStatus: () => ipcRenderer.invoke('billing:getStatus'),

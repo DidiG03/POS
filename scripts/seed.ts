@@ -22,14 +22,6 @@ async function main() {
       { name: 'Greek Salad', sku: 'GSAL', categoryId: food.id, price: 5.9, vatRate: 0.2, active: true },
     ],
   });
-
-  await prisma.table.createMany({
-    data: [
-      { label: 'T1', area: 'Main Hall', seats: 4 },
-      { label: 'T2', area: 'Main Hall', seats: 4 },
-      { label: 'T3', area: 'Terrace', seats: 4 },
-    ],
-  });
 }
 
 main()

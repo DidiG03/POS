@@ -6,6 +6,12 @@ export function makeFormatAmount() {
   };
 }
 
+/** Euro always shows cents — waiters quote it to guests paying in EUR. */
+export function formatEur(amount: number): string {
+  const v = Number.isFinite(amount) ? amount : 0;
+  return `€${v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+}
+
 /** Format a number with at most `maxFractionDigits` decimal places (avoids float noise). */
 export function formatNumberMaxDecimals(
   n: number,

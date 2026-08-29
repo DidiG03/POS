@@ -1,40 +1,123 @@
+/**
+ * Billing-only API: Stripe Checkout + license keys.
+ * No Postgres. Stripe is the source of truth; keys are HMAC of customer id.
+ */
 import express from 'express';
 import cors from 'cors';
-import { ZodError } from 'zod';
+import Stripe from 'stripe';
 import { env, requireEnv } from './env.js';
-import { authMiddleware } from './auth/middleware.js';
-import { isClockOnlyRole } from './auth/roles.js';
-import { prisma } from './db.js';
-import { authRouter } from './routes/auth.js';
-import { menuRouter } from './routes/menu.js';
-import { shiftsRouter } from './routes/shifts.js';
-import { ticketsRouter } from './routes/tickets.js';
-import { adminRouter } from './routes/admin.js';
-import { notificationsRouter } from './routes/notifications.js';
-import { tablesRouter } from './routes/tables.js';
-import { coversRouter } from './routes/covers.js';
-import { layoutRouter } from './routes/layout.js';
-import { requestsRouter } from './routes/requests.js';
-import { printJobsRouter } from './routes/printJobs.js';
-import { reportsRouter } from './routes/reports.js';
-import { billingRouter } from './routes/billing.js';
-import { stripeWebhookHandler } from './routes/stripeWebhook.js';
-import { backupsRouter } from './routes/backups.js';
+import {
+  issueLicenseKey,
+  normalizeLicenseEmail,
+  parseLicenseKey,
+} from './licenseKey.js';
 
 requireEnv();
 
-const app = express();
-// Stripe webhook needs RAW body (must be registered before express.json).
-app.post('/stripe/webhook', express.raw({ type: 'application/json', limit: '2mb' }), stripeWebhookHandler);
-app.use(express.json({ limit: '2mb' }));
+const stripe = new Stripe(env.stripeSecretKey);
 
-// CORS: in production, refuse to fall back to a permissive allow-all.
-// In development we still allow `true` to make local tooling easier.
-if (!env.corsOrigins.length && env.nodeEnv === 'production') {
-  console.warn(
-    '[security] CORS_ORIGINS is empty in production — refusing to enable cross-origin requests.',
-  );
+const ACTIVE_SUB_STATUSES = new Set(['active', 'trialing']);
+
+type SubInfo = {
+  customerId: string;
+  email: string;
+  status: 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
+  periodEnd: string | null;
+  subscriptionId: string | null;
+};
+
+function mapSubStatus(raw: string): SubInfo['status'] {
+  const s = raw.toLowerCase();
+  if (s === 'active' || s === 'trialing') return 'ACTIVE';
+  if (s === 'past_due' || s === 'unpaid' || s === 'incomplete')
+    return 'PAST_DUE';
+  return 'PAUSED';
 }
+
+async function subscriptionForCustomer(
+  customerId: string,
+): Promise<{ status: string; periodEnd: number | null; id: string } | null> {
+  const list = await stripe.subscriptions.list({
+    customer: customerId,
+    status: 'all',
+    limit: 10,
+  });
+  const preferred =
+    list.data.find((s) => ACTIVE_SUB_STATUSES.has(String(s.status))) ||
+    list.data.find((s) => String(s.status) === 'past_due') ||
+    list.data[0] ||
+    null;
+  if (!preferred) return null;
+  const periodEnd = Number((preferred as any).current_period_end || 0);
+  return {
+    status: String(preferred.status || ''),
+    periodEnd: periodEnd > 0 ? periodEnd : null,
+    id: preferred.id,
+  };
+}
+
+async function findCustomerByEmail(
+  email: string,
+): Promise<Stripe.Customer | null> {
+  const list = await stripe.customers.list({ email, limit: 10 });
+  return list.data[0] || null;
+}
+
+async function licenseInfoForCustomer(
+  customer: Stripe.Customer,
+  emailFallback: string,
+): Promise<(SubInfo & { licenseKey: string }) | null> {
+  const email = normalizeLicenseEmail(customer.email || emailFallback || '');
+  if (!email) return null;
+  const sub = await subscriptionForCustomer(customer.id);
+  if (!sub) return null;
+  const status = mapSubStatus(sub.status);
+  return {
+    customerId: customer.id,
+    email,
+    status,
+    periodEnd: sub.periodEnd
+      ? new Date(sub.periodEnd * 1000).toISOString()
+      : null,
+    subscriptionId: sub.id,
+    licenseKey: issueLicenseKey(customer.id, email, env.licenseSigningSecret),
+  };
+}
+
+const restoreHits = new Map<string, { count: number; resetAt: number }>();
+function allowRestore(ip: string): boolean {
+  const now = Date.now();
+  const cur = restoreHits.get(ip);
+  if (!cur || cur.resetAt <= now) {
+    restoreHits.set(ip, { count: 1, resetAt: now + 60 * 60 * 1000 });
+    return true;
+  }
+  if (cur.count >= 8) return false;
+  cur.count += 1;
+  return true;
+}
+
+const app = express();
+app.post(
+  '/stripe/webhook',
+  express.raw({ type: 'application/json', limit: '2mb' }),
+  (req, res) => {
+    if (!env.stripeWebhookSecret) {
+      return res.status(200).json({ ok: true, ignored: true });
+    }
+    const sig = String(req.headers['stripe-signature'] || '');
+    try {
+      stripe.webhooks.constructEvent(req.body, sig, env.stripeWebhookSecret);
+    } catch {
+      return res.status(400).json({ error: 'invalid signature' });
+    }
+    // No local DB to update — the POS redeems Checkout session ids / keys
+    // against Stripe on demand.
+    return res.status(200).json({ ok: true });
+  },
+);
+
+app.use(express.json({ limit: '32kb' }));
 app.use(
   cors({
     origin:
@@ -43,94 +126,247 @@ app.use(
         : env.nodeEnv === 'production'
           ? false
           : true,
-    credentials: false,
   }),
 );
-app.use(authMiddleware);
-
-// Enforce "clock-only" roles (KP/CHEF/HEAD_CHEF): they may only use /shifts and /auth endpoints.
-app.use((req, res, next) => {
-  const auth = (req as any).auth;
-  if (auth && isClockOnlyRole(auth.role)) {
-    const p = String((req as any).path || '');
-    if (!p.startsWith('/shifts') && !p.startsWith('/auth')) {
-      return res.status(403).json({ error: 'forbidden' });
-    }
-  }
-  return next();
-});
-
-// Billing gate: when enabled and business is unpaid, block POS routes (but still allow auth + billing routes).
-app.use(async (req, res, next) => {
-  if (!env.billingEnabled) return next();
-  const auth = (req as any).auth;
-  if (!auth?.businessId) return next();
-  const p = String((req as any).path || '');
-  // Always allow auth, billing, admin, and shifts (so staff can still clock in/out even when POS is paused).
-  if (
-    p === '/health' ||
-    p.startsWith('/auth') ||
-    p.startsWith('/billing') ||
-    p.startsWith('/admin') ||
-    p.startsWith('/shifts') ||
-    p.startsWith('/stripe/webhook')
-  ) {
-    return next();
-  }
-  try {
-    const biz = await prisma.business.findUnique({ where: { id: auth.businessId } }).catch(() => null as any);
-    const st = String((biz as any)?.billingStatus || 'ACTIVE').toUpperCase();
-    // Critical: require an actual subscription per business.
-    // Otherwise new tenants (default billingStatus=ACTIVE) would incorrectly be treated as "paid".
-    const hasSub = Boolean(String((biz as any)?.stripeSubscriptionId || '').trim());
-    const paused = !hasSub || st === 'PAST_DUE' || st === 'PAUSED';
-    if (paused) {
-      return res.status(402).json({
-        error: 'billing_required',
-        status: !hasSub ? 'PAUSED' : (st === 'PAST_DUE' ? 'PAST_DUE' : 'PAUSED'),
-      });
-    }
-  } catch {
-    // If billing check fails (DB), don't hard-lock everything; allow request through.
-  }
-  return next();
-});
 
 app.get('/health', (_req, res) => res.status(200).json({ ok: true }));
 
-app.use('/auth', authRouter);
-app.use('/menu', menuRouter);
-app.use('/shifts', shiftsRouter);
-app.use('/tickets', ticketsRouter);
-app.use('/admin', adminRouter);
-app.use('/billing', billingRouter);
-app.use('/notifications', notificationsRouter);
-app.use('/tables', tablesRouter);
-app.use('/covers', coversRouter);
-app.use('/layout', layoutRouter);
-app.use('/requests', requestsRouter);
-app.use('/print-jobs', printJobsRouter);
-app.use('/reports', reportsRouter);
-app.use('/backups', backupsRouter);
-
-// Error handler (keeps Cloud Run logs useful but doesn't leak internals to clients)
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('API error', err);
-  if (err instanceof ZodError) {
-    return res.status(400).json({ error: 'invalid request', issues: err.issues });
-  }
-  if (err && typeof err === 'object' && typeof err.statusCode === 'number') {
-    // 4xx errors are typically safe to surface (the message is intentional).
-    if (err.statusCode >= 400 && err.statusCode < 500) {
-      return res.status(err.statusCode).json({ error: err.message || 'error' });
+app.post('/checkout/create', async (req, res) => {
+  try {
+    const email = normalizeLicenseEmail(String(req.body?.email || ''));
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ error: 'Valid email is required' });
     }
+    const existing = await findCustomerByEmail(email);
+    if (existing) {
+      const info = await licenseInfoForCustomer(existing, email);
+      if (info && info.status === 'ACTIVE') {
+        return res.status(200).json({
+          alreadyLicensed: true,
+          licenseKey: info.licenseKey,
+          email: info.email,
+          status: info.status,
+          currentPeriodEnd: info.periodEnd,
+        });
+      }
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: existing?.id,
+      customer_email: existing?.id ? undefined : email,
+      line_items: [{ price: env.stripePriceId, quantity: 1 }],
+      allow_promotion_codes: true,
+      success_url: `${env.appBaseUrl}/return?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${env.appBaseUrl}/return?ok=0`,
+      client_reference_id: email.slice(0, 200),
+      metadata: { email },
+    });
+    return res.status(200).json({ url: session.url, alreadyLicensed: false });
+  } catch (e: any) {
+    console.error('checkout/create', e);
+    return res
+      .status(500)
+      .json({ error: String(e?.message || 'Could not start checkout') });
   }
-  // Never leak internal error messages (Prisma stack traces, SQL hints, file paths, etc.)
-  // The full error is logged above; clients only get a generic message.
-  return res.status(500).json({ error: 'internal error' });
 });
 
-app.listen(env.port, () => {
-  console.log(`POS server listening on :${env.port}`);
+app.post('/license/activate-session', async (req, res) => {
+  try {
+    const sessionId = String(req.body?.sessionId || '').trim();
+    if (!sessionId.startsWith('cs_')) {
+      return res.status(400).json({ error: 'Invalid checkout session' });
+    }
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['customer'],
+    });
+    const paid =
+      session.status === 'complete' ||
+      session.payment_status === 'paid' ||
+      session.payment_status === 'no_payment_required';
+    if (!paid) {
+      return res.status(402).json({ error: 'Payment not completed' });
+    }
+    const customer =
+      typeof session.customer === 'object' && session.customer
+        ? (session.customer as Stripe.Customer)
+        : session.customer
+          ? await stripe.customers.retrieve(String(session.customer))
+          : null;
+    if (!customer || customer.deleted) {
+      return res.status(400).json({ error: 'No customer on session' });
+    }
+    const email = normalizeLicenseEmail(
+      customer.email ||
+        session.customer_details?.email ||
+        session.customer_email ||
+        '',
+    );
+    const info = await licenseInfoForCustomer(
+      customer as Stripe.Customer,
+      email,
+    );
+    if (!info) {
+      return res.status(402).json({ error: 'No active subscription yet' });
+    }
+    return res.status(200).json({
+      licenseKey: info.licenseKey,
+      email: info.email,
+      status: info.status,
+      currentPeriodEnd: info.periodEnd,
+    });
+  } catch (e: any) {
+    console.error('license/activate-session', e);
+    return res
+      .status(500)
+      .json({ error: String(e?.message || 'Could not activate license') });
+  }
 });
 
+app.post('/license/validate', async (req, res) => {
+  try {
+    const parsed = parseLicenseKey(
+      String(req.body?.key || ''),
+      env.licenseSigningSecret,
+    );
+    if (!parsed) return res.status(400).json({ error: 'Invalid license key' });
+    const customer = await stripe.customers.retrieve(parsed.cid);
+    if (!customer || (customer as Stripe.DeletedCustomer).deleted) {
+      return res.status(404).json({ error: 'License not found' });
+    }
+    const info = await licenseInfoForCustomer(
+      customer as Stripe.Customer,
+      parsed.em,
+    );
+    if (!info) {
+      return res.status(200).json({
+        valid: false,
+        status: 'PAUSED' as const,
+        email: parsed.em,
+      });
+    }
+    return res.status(200).json({
+      valid: info.status === 'ACTIVE',
+      status: info.status,
+      email: info.email,
+      currentPeriodEnd: info.periodEnd,
+      licenseKey: info.licenseKey,
+    });
+  } catch (e: any) {
+    console.error('license/validate', e);
+    return res
+      .status(500)
+      .json({ error: String(e?.message || 'Could not validate license') });
+  }
+});
+
+app.post('/license/restore', async (req, res) => {
+  const ip = String(
+    req.headers['x-forwarded-for'] || req.socket.remoteAddress || '',
+  )
+    .split(',')[0]
+    .trim();
+  if (!allowRestore(ip || 'unknown')) {
+    return res.status(429).json({ error: 'Too many restore attempts' });
+  }
+  try {
+    const email = normalizeLicenseEmail(String(req.body?.email || ''));
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+    const customer = await findCustomerByEmail(email);
+    if (!customer) {
+      // Same message as no-sub to avoid email enumeration.
+      return res.status(200).json({
+        found: false,
+        message: 'If this email has an active subscription, the key is below.',
+      });
+    }
+    const info = await licenseInfoForCustomer(customer, email);
+    if (!info || info.status !== 'ACTIVE') {
+      return res.status(200).json({
+        found: false,
+        message: 'If this email has an active subscription, the key is below.',
+      });
+    }
+    return res.status(200).json({
+      found: true,
+      licenseKey: info.licenseKey,
+      email: info.email,
+      status: info.status,
+      currentPeriodEnd: info.periodEnd,
+    });
+  } catch (e: any) {
+    console.error('license/restore', e);
+    return res
+      .status(500)
+      .json({ error: String(e?.message || 'Could not restore license') });
+  }
+});
+
+app.post('/license/portal', async (req, res) => {
+  try {
+    const parsed = parseLicenseKey(
+      String(req.body?.key || ''),
+      env.licenseSigningSecret,
+    );
+    if (!parsed) return res.status(400).json({ error: 'Invalid license key' });
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: parsed.cid,
+      return_url: `${env.appBaseUrl}/return`,
+    });
+    return res.status(200).json({ url: portal.url });
+  } catch (e: any) {
+    console.error('license/portal', e);
+    return res
+      .status(500)
+      .json({ error: String(e?.message || 'Could not open billing portal') });
+  }
+});
+
+app.get('/return', (req, res) => {
+  const sessionId = String(req.query.session_id || '').trim();
+  const ok = String(req.query.ok || '').trim() !== '0';
+  const deep = sessionId
+    ? `codeorbit-pos://activate?session_id=${encodeURIComponent(sessionId)}`
+    : '';
+  const title = ok && sessionId ? 'Payment received' : 'Returned from Stripe';
+  const body =
+    ok && sessionId
+      ? 'Return to Code Orbit POS. If the app does not open, it will pick up this payment automatically — or paste your email under “I already paid”.'
+      : 'No payment was completed. You can close this tab and try again in the app.';
+  res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8')
+    .send(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${title}</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background:#0b1220; color:#e5e7eb; margin:0; padding:24px; }
+      .card { max-width:640px; margin:0 auto; background:#111827; border:1px solid #374151; border-radius:12px; padding:20px; }
+      a { color:#93c5fd; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>${title}</h1>
+      <p>${body}</p>
+      ${
+        deep
+          ? `<p><a href="${deep}">Open Code Orbit POS</a></p>
+<script>location.href=${JSON.stringify(deep)};</script>`
+          : ''
+      }
+    </div>
+  </body>
+</html>`);
+});
+
+export default app;
+
+if (!process.env.VERCEL) {
+  app.listen(env.port, () => {
+    console.log(`POS billing listening on :${env.port}`);
+  });
+}

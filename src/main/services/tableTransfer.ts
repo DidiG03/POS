@@ -82,9 +82,10 @@ async function writeOpenAtMap(map: Record<string, string>) {
  * Build a short, readable transfer tag (prepended to the existing note).
  * {@link parseTransferTag} understands these plus older quoted/legacy shapes.
  *
- *   [TRANSFER from <Area> <Label>]
- *   [TRANSFER from <Area> <Label> · now <NewWaiter>]  (table move + new owner)
+ *   [TRANSFER from <Area> <Label> → <Area> <Label>]
+ *   [TRANSFER from … → … · now <NewWaiter>]  (table move + new owner)
  *   [TRANSFER <FromName> → <ToName>]  (owner change, same table)
+ *   Multiple tags stack so waiter then table then … stay on the ticket.
  *
  * Destination for moved-out source rows:
  *   [TRANSFER moved-out → <Area> <Label>]
@@ -181,14 +182,15 @@ export function parseTransferTag(
     const parts = inner.split(/\s*·\s*now\s+/);
     const locStr = parts[0].trim();
     const newOwnerHint = parts[1]?.trim() ?? null;
+    const fromLoc = locStr.split(/\s*(?:→|->)\s+/)[0]?.trim() || locStr;
     let fromArea: string | undefined;
     let fromLabel: string | undefined;
-    const idx = locStr.lastIndexOf(' ');
+    const idx = fromLoc.lastIndexOf(' ');
     if (idx > 0) {
-      fromArea = locStr.slice(0, idx);
-      fromLabel = locStr.slice(idx + 1);
+      fromArea = fromLoc.slice(0, idx);
+      fromLabel = fromLoc.slice(idx + 1);
     } else {
-      fromArea = locStr;
+      fromArea = fromLoc;
     }
     return {
       kind: 'MOVED',
@@ -420,13 +422,11 @@ export async function transferTableLocal(
   );
   const newOwnerName = newOwner ? String(newOwner.displayName) : '';
   const fromLoc = `${fromArea} ${fromLabel}`.trim();
-
-  // Create a new ticket snapshot that represents the transferred state.
-  // The transfer tag is stored for audit; user notes exclude prior tags.
+  const toLoc = `${toArea} ${toLabel}`.trim();
   const transferTag = movingTable
     ? changingOwner
-      ? `[TRANSFER from ${fromLoc} · now ${newOwnerName}]`
-      : `[TRANSFER from ${fromLoc}]`
+      ? `[TRANSFER from ${fromLoc} → ${toLoc} · now ${newOwnerName}]`
+      : `[TRANSFER from ${fromLoc} → ${toLoc}]`
     : `[TRANSFER ${fromOwnerName} → ${newOwnerName}]`;
   const nextNote = buildTransferTicketNote(transferTag, last.note);
 

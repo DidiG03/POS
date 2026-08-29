@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertPrintAccepted,
   isDurableOp,
+  isFiscalSaleBlocked,
   isMoneyOp,
   isPermanentFailure,
   needsManualReconciliation,
@@ -75,7 +76,7 @@ describe('assertPrintAccepted', () => {
   });
 
   it('throws when the host reports a hard failure', () => {
-    // The IPC handler returns `false` when fiscalization is rejected.
+    // Empty / malformed IPC replies still come back as `false`.
     expect(() => assertPrintAccepted(false)).toThrow(/not recorded/i);
   });
 
@@ -111,6 +112,21 @@ describe('assertPrintAccepted', () => {
       expect(e.permanent).toBe(true);
     }
   });
+
+  it('carries a retryable fiscal failure code through', () => {
+    try {
+      assertPrintAccepted({
+        ok: false,
+        code: 'FISCAL_FAILED',
+        error: 'easyPos timeout',
+      });
+      throw new Error('expected a throw');
+    } catch (e: any) {
+      expect(e.code).toBe('FISCAL_FAILED');
+      expect(e.permanent).toBeUndefined();
+      expect(isFiscalSaleBlocked(e)).toBe(true);
+    }
+  });
 });
 
 describe('failure permanence', () => {
@@ -134,6 +150,13 @@ describe('failure permanence', () => {
     const e = { code: 'PAYMENT_NOT_RECORDED' };
     expect(isPermanentFailure(e)).toBe(false);
     expect(needsManualReconciliation(e)).toBe(false);
+  });
+
+  it('blocks the sale when fiscalization refused the invoice', () => {
+    expect(isFiscalSaleBlocked({ code: 'FISCAL_REJECTED' })).toBe(true);
+    expect(isFiscalSaleBlocked({ code: 'FISCAL_FAILED' })).toBe(true);
+    expect(isFiscalSaleBlocked({ code: 'FISCAL_NEEDS_REVIEW' })).toBe(true);
+    expect(isFiscalSaleBlocked({ code: 'PAYMENT_NOT_RECORDED' })).toBe(false);
   });
 });
 

@@ -147,21 +147,6 @@ function defaultAreaColor(variant: AreaVariant): string {
   }
 }
 
-function generateDefaultTables(count: number): FloorTableNode[] {
-  const width = 760;
-  const height = 460;
-  const cx = width / 2;
-  const cy = height / 2;
-  const radius = Math.min(cx, cy) - 60;
-  const n = Math.max(0, count);
-  return Array.from({ length: n }).map((_, i) => {
-    const angle = (i / Math.max(1, n)) * Math.PI * 2;
-    const x = cx + radius * Math.cos(angle);
-    const y = cy + radius * Math.sin(angle);
-    return { id: i + 1, kind: 'TABLE', label: `T${i + 1}`, x, y };
-  });
-}
-
 function nextAreaId(cur: FloorNode[] | null): number {
   const ids = (cur || []).map((n) => n.id);
   const min = ids.length ? Math.min(...ids) : 0;
@@ -259,35 +244,50 @@ type FloorCanvasProps = {
   userId: number;
   area: string;
   scope?: string; // layout namespace; default 'pos'
-  defaultCount?: number; // when no saved layout exists
   editable: boolean;
   onEditableChange?: (next: boolean) => void;
   /** Grow to fill a parent flex column (reservations floor). Default uses viewport-based height for modals. */
   fillAvailableHeight?: boolean;
+  /** Drop rounded border so the floor can bleed to the page edges. */
+  flush?: boolean;
+  /** Extra inset for the read-only auto-fit (waiter overlays). */
+  fitPadding?: number;
+  emptyMessage?: string;
   // Visual overrides
   colorByLabel?: ColorMap;
+  /** Applied when colorByLabel is set but this table has no entry (host free tables). */
+  unlistedColorClass?: string;
   badgeByLabel?: BadgeMap;
   // Interactions
   onTableClick?: (label: string) => void;
+  /** Fired after the layout for `area` is loaded (saved nodes, or empty). */
+  onLayoutReady?: (info: { area: string; tableCount: number }) => void;
 };
 
 export default function FloorCanvas({
   userId,
   area,
   scope = 'pos',
-  defaultCount = 8,
   editable,
   onEditableChange,
   fillAvailableHeight = false,
+  flush = false,
+  fitPadding,
+  emptyMessage,
   colorByLabel,
+  unlistedColorClass,
   badgeByLabel,
   onTableClick,
+  onLayoutReady,
 }: FloorCanvasProps) {
   const [nodes, setNodes] = useState<FloorNode[] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const outerRef = useRef<HTMLDivElement | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // True when this instance is the admin layout editor (has a toolbar).
+  const isEditor = typeof onEditableChange === 'function';
   // Track the actual visible canvas size so the read-only auto-fit
   // transform can stretch the layout to fill the full canvas — both
   // axes — instead of leaving big empty bands on the right / bottom.
@@ -299,35 +299,62 @@ export default function FloorCanvas({
   // update) — never on per-node edits — so the editor re-centres the
   // layout on load/resize without snapping back to centre mid-drag.
   const [layoutVersion, setLayoutVersion] = useState(0);
+  const onLayoutReadyRef = useRef(onLayoutReady);
+  onLayoutReadyRef.current = onLayoutReady;
 
-  // Load layout on user/area/scope change.
+  // Load layout on user/area/scope change. Never invent T1…N — tables exist
+  // only where an admin placed them in Settings → Table Areas → Edit layout.
   useEffect(() => {
     let cancelled = false;
+    setNodes(null);
+    setSaveError(null);
     (async () => {
-      if (!userId || !area) return;
+      if (!area) {
+        setNodes([]);
+        setDirty(false);
+        onLayoutReadyRef.current?.({ area, tableCount: 0 });
+        return;
+      }
       const saved = await (window as any).api.layout
         .get(userId, area, scope)
         .catch(() => null);
       if (cancelled) return;
-      if (Array.isArray(saved) && saved.length) {
-        setNodes(normaliseSavedNodes(saved));
-        setDirty(false);
-        setLayoutVersion((v) => v + 1);
-        return;
-      }
-      setNodes(generateDefaultTables(defaultCount));
+      const next =
+        Array.isArray(saved) && saved.length ? normaliseSavedNodes(saved) : [];
+      setNodes(next);
       setDirty(false);
       setLayoutVersion((v) => v + 1);
+      const tableCount = next.filter((n) => !isFloorAreaNode(n)).length;
+      onLayoutReadyRef.current?.({ area, tableCount });
     })();
     return () => {
       cancelled = true;
     };
-  }, [userId, area, scope, defaultCount]);
+  }, [userId, area, scope]);
 
   // Latest nodes, readable without making memos/callbacks depend on every
   // edit (which would otherwise recompute the editor centring on each drag).
   const nodesRef = useRef<FloorNode[] | null>(nodes);
   nodesRef.current = nodes;
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const isEditorRef = useRef(isEditor);
+  isEditorRef.current = isEditor;
+
+  // Persist a dirty editor draft when leaving the area or closing the modal
+  // (Done). Waiter floors only read the shared key, so closing without Save
+  // used to drop the only copy of the tables.
+  useEffect(() => {
+    const uid = userId;
+    const a = area;
+    const sc = scope;
+    return () => {
+      if (!isEditorRef.current || !dirtyRef.current) return;
+      const draft = nodesRef.current;
+      if (!draft?.length) return;
+      void (window as any).api.layout.save(uid, a, draft, sc);
+    };
+  }, [userId, area, scope]);
 
   // Editor centring offset: translate-only (scale 1) so the loaded layout
   // sits centred in the canvas exactly like the read-only waiter view,
@@ -509,9 +536,23 @@ export default function FloorCanvas({
   const save = useCallback(async () => {
     if (!nodes) return;
     setSaving(true);
+    setSaveError(null);
     try {
-      await (window as any).api.layout.save(userId, area, nodes, scope);
+      const ok = await (window as any).api.layout.save(
+        userId,
+        area,
+        nodes,
+        scope,
+      );
+      if (ok === false) {
+        setSaveError('Could not save the floor layout.');
+        return;
+      }
       setDirty(false);
+    } catch (e: any) {
+      setSaveError(
+        String(e?.message || e || 'Could not save the floor layout.'),
+      );
     } finally {
       setSaving(false);
     }
@@ -520,11 +561,7 @@ export default function FloorCanvas({
   const tables = useMemo(() => (nodes || []).filter(isFloorTableNode), [nodes]);
   const areas = useMemo(() => (nodes || []).filter(isFloorAreaNode), [nodes]);
 
-  // The edit toolbar is only rendered when the host page provides an
-  // `onEditableChange` callback. Waiter and Host floor views render
-  // the canvas read-only — only the AdminSettings → Table Areas editor
-  // owns the toggle and the +Table / +Shape / Save controls.
-  const showToolbar = typeof onEditableChange === 'function';
+  const showToolbar = isEditor;
 
   // Observe the outer canvas wrapper so the read-only auto-fit
   // transform always uses the latest visible dimensions.
@@ -563,7 +600,9 @@ export default function FloorCanvas({
     const cw = Math.max(0, canvasSize.w);
     const ch = Math.max(0, canvasSize.h);
     if (cw < 200 || ch < 200) return identity;
-    const pad = 12;
+    const pad = Number.isFinite(Number(fitPadding))
+      ? Math.max(0, Number(fitPadding))
+      : 12;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -606,7 +645,7 @@ export default function FloorCanvas({
     const tx = (cw - bw * scaleX) / 2 - minX * scaleX;
     const ty = (ch - bh * scaleY) / 2 - minY * scaleY;
     return { scale, scaleX, scaleY, tx, ty };
-  }, [editable, nodes, canvasSize.w, canvasSize.h]);
+  }, [editable, nodes, canvasSize.w, canvasSize.h, fitPadding]);
 
   // -------- Pinch-to-zoom + drag-to-pan (read-only canvas) --------
   // Layered ON TOP of the auto-fit transform: hosts can pinch to zoom
@@ -774,7 +813,9 @@ export default function FloorCanvas({
   return (
     <div
       className={
-        fillAvailableHeight ? 'flex min-h-0 flex-1 flex-col gap-2' : 'space-y-2'
+        fillAvailableHeight
+          ? `flex min-h-0 flex-1 flex-col ${flush ? 'h-full gap-0' : 'gap-2'}`
+          : 'space-y-2'
       }
     >
       {showToolbar && (
@@ -850,10 +891,13 @@ export default function FloorCanvas({
                 type="button"
                 disabled={saving || !dirty}
                 className={`px-3 py-1.5 rounded text-sm ${dirty ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 opacity-60'}`}
-                onClick={save}
+                onClick={() => void save()}
               >
                 {saving ? 'Saving…' : dirty ? 'Save layout' : 'Saved'}
               </button>
+              {saveError ? (
+                <span className="text-xs text-rose-300">{saveError}</span>
+              ) : null}
             </>
           )}
         </div>
@@ -867,7 +911,9 @@ export default function FloorCanvas({
           visible canvas regardless of the inner transform's scale. */}
       <div
         ref={outerRef}
-        className={`relative rounded-lg border border-gray-700 bg-black ${
+        className={`relative bg-black ${
+          flush ? '' : 'rounded-lg border border-gray-700'
+        } ${
           fillAvailableHeight ? 'min-h-0 flex-1' : shellStaticHeightClasses
         } ${editable ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden touch-none'}`}
         // Subtle floor grid so admins can eyeball alignment in the editor
@@ -972,15 +1018,18 @@ export default function FloorCanvas({
                   onTableClick?.(t.label);
                 }}
                 onDelete={() => handleDelete(t.id)}
-                colorClass={colorByLabel?.[t.label]}
+                colorClass={
+                  colorByLabel?.[t.label] ?? unlistedColorClass ?? undefined
+                }
                 badge={badgeByLabel?.[t.label] ?? undefined}
               />
             ))}
             {(!nodes || nodes.length === 0) && (
               <div className="absolute inset-0 flex items-center justify-center text-sm opacity-70 text-center px-4">
-                {showToolbar
-                  ? 'Empty floor — switch to Edit layout to add tables and shapes.'
-                  : 'No layout yet — ask an admin to set up this area in Settings → Table Areas.'}
+                {emptyMessage ||
+                  (showToolbar
+                    ? 'Empty floor — use + Table and + Shape, then Save layout.'
+                    : 'No layout yet — ask an admin to set up this area in Settings → Table Areas.')}
               </div>
             )}
             {editable && selectedId != null && (
@@ -1252,12 +1301,12 @@ function ShapePreview({
 }) {
   if (kind === 'table') {
     if (shape === 'square') {
-      return <div className="w-5 h-5 bg-emerald-600 rounded-sm" />;
+      return <div className="w-5 h-5 bg-zinc-600 rounded-sm" />;
     }
     if (shape === 'rect') {
-      return <div className="w-7 h-4 bg-emerald-600 rounded-sm" />;
+      return <div className="w-7 h-4 bg-zinc-600 rounded-sm" />;
     }
-    return <div className="w-5 h-5 bg-emerald-600 rounded-full" />;
+    return <div className="w-5 h-5 bg-zinc-600 rounded-full" />;
   }
   // area variant icons
   switch (variant) {
@@ -1775,6 +1824,7 @@ function Circle({
     // button to overflow past the table edge without being clipped.
     <div
       ref={ref}
+      data-haptic={editable ? 'off' : 'light'}
       className={`absolute ${editable ? 'cursor-move' : 'cursor-pointer'} select-none`}
       style={{
         left: pos.x,

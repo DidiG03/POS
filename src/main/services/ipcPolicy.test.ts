@@ -60,14 +60,15 @@ describe('IPC policy shape', () => {
       'auth:logoutAdmin',
       'auth:resumeSession',
       'billing:getStatus',
+      'license:activateKey',
+      'license:activateSession',
+      'license:createCheckout',
+      'license:getStatus',
+      'license:restore',
       'network:getIps',
       'offline:getStatus',
       'reservations:openWindow',
       'settings:get',
-      // Public at the channel level only so first-run cloud provisioning can
-      // run before any user exists; the handler still demands an ADMIN session
-      // for every other payload. See `assertMaySaveSettings`.
-      'settings:update',
       'shifts:listOpen',
       'updater:getStatus',
     ];
@@ -85,12 +86,10 @@ describe('IPC policy shape', () => {
       'auth:updateUser',
       'backups:create',
       'backups:restore',
-      'backups:uploadToCloud',
       'layout:save',
       'menu:deleteCategory',
       'menu:deleteItem',
       'settings:setPrinter',
-      'sync:fromCloud',
     ];
     for (const channel of mustBeAdmin) {
       expect(IPC_POLICIES[channel]?.allow, channel).toEqual(['ADMIN']);

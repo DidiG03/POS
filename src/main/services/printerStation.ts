@@ -2,7 +2,6 @@ import { BrowserWindow } from 'electron';
 
 import { prisma } from '@db/client';
 
-import { getCloudConfig } from './cloud';
 import { coreServices } from './core';
 import {
   RETRY_MAX_ATTEMPTS,
@@ -24,13 +23,8 @@ import {
  *   1. RETRY rows (PR 3) — prints that failed transiently and were
  *      persisted for an automatic retry. Runs on every install.
  *
- *   2. QUEUED rows — only ever produced by the cloud-mode
- *      `/print-jobs/enqueue` HTTP endpoint, where a remote dashboard
- *      pushes a print at this POS. Skipped on local-only installs.
- *
  * Cadence is adaptive (PR 3): we sleep until the next RETRY row's
- * `nextAttemptAt`, or until the QUEUED idle interval if cloud mode is
- * on, or until 5 minutes of nothing-to-do otherwise. `setRetryWakeup`
+ * `nextAttemptAt`, or until 5 minutes of nothing-to-do otherwise. `setRetryWakeup`
  * lets `enqueuePrintRetry` interrupt our sleep early so a fresh retry
  * doesn't have to wait out a long idle nap. This is dramatically
  * cheaper than the old fixed 2.5 s setInterval (which was firing
@@ -41,13 +35,10 @@ import {
 let started = false;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
-let cloudPollEnabled = false;
 let stopping = false;
 
 /** Maximum nap when nothing is pending. */
 const IDLE_INTERVAL_MS = 5 * 60_000;
-/** Cloud-mode poll cadence — kept small so cloud-pushed prints feel snappy. */
-const CLOUD_POLL_INTERVAL_MS = 5_000;
 
 function broadcast(channel: string, payload: any) {
   try {
@@ -167,15 +158,13 @@ async function tick(): Promise<{ idle: boolean }> {
   running = true;
   try {
     const dueRetries = await loadDuePrintRetries(10);
-    const queuedJobs = cloudPollEnabled
-      ? await prisma.printJob
-          .findMany({
-            where: { status: 'QUEUED' as any },
-            orderBy: { createdAt: 'asc' },
-            take: 10,
-          })
-          .catch(() => [])
-      : [];
+    const queuedJobs = await prisma.printJob
+      .findMany({
+        where: { status: 'QUEUED' as any },
+        orderBy: { createdAt: 'asc' },
+        take: 10,
+      })
+      .catch(() => []);
 
     if (!dueRetries.length && !queuedJobs.length) return { idle: true };
 
@@ -226,8 +215,6 @@ async function tick(): Promise<{ idle: boolean }> {
  * Schedule the next tick. Strategy:
  *   - If a RETRY row is due NOW, run almost immediately (250 ms).
  *   - Else if a RETRY row is pending in the future, sleep until then.
- *   - Else if cloud mode is on, poll every CLOUD_POLL_INTERVAL_MS for
- *     QUEUED rows.
  *   - Else nap for IDLE_INTERVAL_MS (cheap heartbeat in case the
  *     wake-up callback was missed during a Prisma reconnect).
  */
@@ -240,9 +227,8 @@ async function schedule(): Promise<void> {
       const ms = Math.max(250, next.getTime() - Date.now());
       delay = Math.min(delay, ms);
     }
-    if (cloudPollEnabled) delay = Math.min(delay, CLOUD_POLL_INTERVAL_MS);
   } catch {
-    delay = CLOUD_POLL_INTERVAL_MS; // safe fallback
+    delay = IDLE_INTERVAL_MS;
   }
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => {
@@ -261,13 +247,7 @@ export async function startPrinterStationLoop(): Promise<void> {
   started = true;
   stopping = false;
 
-  // Cloud config decides whether we poll for QUEUED rows. The retry
-  // queue runs on every install regardless.
-  const cfg = await getCloudConfig().catch(() => null);
-  cloudPollEnabled = Boolean(cfg);
-  console.log(
-    `[PrinterStation] Loop started (cloudPoll=${cloudPollEnabled}, retryQueue=enabled)`,
-  );
+  console.log('[PrinterStation] Loop started (retryQueue=enabled)');
 
   // When `enqueuePrintRetry` persists a new row, wake up early so we
   // don't sleep through it.
@@ -304,7 +284,6 @@ export function stopPrinterStationLoop(): void {
   }
   setRetryWakeup(null);
   started = false;
-  cloudPollEnabled = false;
 }
 
 /** Allow callers to check exhaustion bound — used by tests + future UI. */

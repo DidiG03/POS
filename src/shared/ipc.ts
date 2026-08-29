@@ -90,24 +90,19 @@ export interface SettingsDTO {
     usbProductId?: number;
   };
   enableAdmin?: boolean;
-  tableCountMainHall?: number;
-  tableCountTerrace?: number;
   tableAreas?: TableAreaDTO[];
   security?: {
     allowLan?: boolean;
     requirePairingCode?: boolean;
     pairingCode?: string;
   };
-  cloud?: {
-    backendUrl?: string; // e.g. https://api.example.com
-    businessCode?: string; // tenant code, e.g.  Code Orbit
-    // Provider-supplied shared secret used to access certain public cloud endpoints.
-    // NOTE: this should remain stored only on the POS host; do not expose to tablets via /settings.
-    accessPassword?: string;
-    // Admin kill switch. When true, the POS ignores the env-provided
-    // backendUrl and behaves as if no cloud is configured (local-only),
-    // even though POS_CLOUD_URL is baked in by the installer. Reversible.
-    disabled?: boolean;
+  /**
+   * Desktop host process. Closing the till window keeps this app (and the
+   * LAN API tablets depend on) running in the tray until someone Quits.
+   */
+  host?: {
+    /** Start this app when the computer signs in. Default true. */
+    openAtLogin?: boolean;
   };
   /** Albanian fiskalizimi via certified middleware (e.g. easyPos). */
   fiscal?: {
@@ -658,6 +653,40 @@ export interface ApiOffline {
   getStatus(): Promise<{ queued: number }>;
 }
 
+export type LicenseStatus = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
+
+export interface LicenseStatusDTO {
+  required: boolean;
+  licensed: boolean;
+  email?: string;
+  key?: string;
+  status?: LicenseStatus;
+  currentPeriodEnd?: string | null;
+  message?: string | null;
+  billingConfigured: boolean;
+}
+
+export interface ApiLicense {
+  getStatus(): Promise<LicenseStatusDTO>;
+  createCheckout(input: { email: string }): Promise<{
+    url?: string;
+    alreadyLicensed?: boolean;
+    error?: string;
+  }>;
+  activateSession(input: { sessionId: string }): Promise<{
+    ok: boolean;
+    error?: string;
+  }>;
+  activateKey(input: { key: string }): Promise<{ ok: boolean; error?: string }>;
+  restore(input: { email: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    message?: string;
+  }>;
+  createPortalSession(): Promise<{ url?: string; error?: string }>;
+  onUpdated?(cb: () => void): () => void;
+}
+
 export type BillingState = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
 
 export interface BillingStatusDTO {
@@ -692,6 +721,7 @@ export interface Api {
   backups: ApiBackups;
   reports: ApiReports;
   offline: ApiOffline;
+  license: ApiLicense;
   billing: ApiBilling;
   system: ApiSystem;
   layout: ApiLayout;
@@ -791,15 +821,6 @@ export interface ApiBackups {
   restore(input: {
     name: string;
   }): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }>;
-  uploadToCloud(input?: {
-    name?: string;
-  }): Promise<{ ok: boolean; error?: string }>;
-  syncFromCloud(): Promise<{
-    usersSynced: number;
-    menuItemsSynced: number;
-    menuSynced: boolean;
-    error?: string;
-  }>;
 }
 
 export interface KdsTicketDTO {
@@ -949,19 +970,6 @@ export interface SecurityLogEntry {
   details: any;
 }
 
-export interface MemoryStats {
-  current: { heapUsed: number; rss: number; timestamp: number };
-  average: { heapUsed: number; rss: number };
-  peak: { heapUsed: number; rss: number; timestamp: number };
-  trend: 'increasing' | 'decreasing' | 'stable';
-  formatted: {
-    heapUsed: string;
-    heapTotal: string;
-    rss: string;
-    external: string;
-  };
-}
-
 export interface ApiAdmin {
   getOverview(): Promise<AdminOverviewDTO>;
   openWindow(): Promise<boolean>;
@@ -994,8 +1002,6 @@ export interface ApiAdmin {
     range: 'daily' | 'weekly' | 'monthly';
   }): Promise<SalesTrendDTO>;
   getSecurityLog(limit?: number): Promise<SecurityLogEntry[]>;
-  getMemoryStats(): Promise<MemoryStats>;
-  exportMemorySnapshot(): Promise<string>;
   /**
    * Aggregated business analytics for the Review tab. Computes KPIs, time-
    * series, top items, hour/weekday breakdowns, and per-waiter performance

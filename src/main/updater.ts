@@ -15,6 +15,7 @@
 import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
+import { allowNextQuit } from './services/hostRuntime';
 
 // Dev detection MUST use `app.isPackaged`, not NODE_ENV: the bundler does not
 // inline `process.env.NODE_ENV`, so in a packaged (double-clicked) app it's
@@ -132,6 +133,7 @@ export const updaterHandlers = {
     }
     clearAutoInstallTimer();
     addBreadcrumb('Installing update and restarting', 'updater', 'info');
+    allowNextQuit();
     autoUpdater.quitAndInstall(false, true);
     return { success: true };
   },
@@ -309,6 +311,7 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
             'info',
           );
           try {
+            allowNextQuit();
             autoUpdater.quitAndInstall(true, true);
           } catch (error) {
             captureException(

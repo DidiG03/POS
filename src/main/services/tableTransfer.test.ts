@@ -129,6 +129,13 @@ describe('parseTransferTag', () => {
     expect(out?.byUserName).toBe('Al"ice');
   });
 
+  it('parses short MOVED tags that include the destination table', () => {
+    const out = parseTransferTag('[TRANSFER from Main Hall T1 → Terrace T4]');
+    expect(out?.kind).toBe('MOVED');
+    expect(out?.fromArea).toBe('Main Hall');
+    expect(out?.fromLabel).toBe('T1');
+  });
+
   it('parses short MOVED tags without quotes or ids', () => {
     const out = parseTransferTag('[TRANSFER from Main Hall T1]');
     expect(out).toEqual({

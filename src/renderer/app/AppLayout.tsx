@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../stores/session';
@@ -108,6 +108,8 @@ export default function AppLayout() {
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const navigate = useNavigate();
+  const location = useLocation();
+  const flushTablesFloor = location.pathname.includes('/app/tables');
   const [hasOpen, setHasOpen] = useState<boolean>(false);
   const [confirmModal, setConfirmModal] = useState<boolean>(false);
   const isBrowserClient =
@@ -170,7 +172,7 @@ export default function AppLayout() {
   }, [isBrowserClient]);
 
   // Offline/sync indicator: browser tablets show the local IndexedDB queue;
-  // Electron host shows the cloud outbox (when configured).
+  // Electron host shows pending local print retries.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -253,7 +255,7 @@ export default function AppLayout() {
     };
   }, [isBrowserClient]);
 
-  // Billing gate (cloud mode): if unpaid, pause POS until payment is completed.
+  // Billing overlay: if the subscription lapses while already signed in.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -384,74 +386,71 @@ export default function AppLayout() {
         className="bg-gray-800 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-2 sm:gap-3"
       >
         <div className="flex items-center gap-2 min-w-0 justify-start flex-1 sm:flex-initial">
-          <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
-            <span className="hidden sm:inline">{user?.displayName}</span>
-            <span className="sm:hidden">{user?.displayName}</span>
-          </div>
-          {user && (
-            <>
-              {hasOpen && (
+          {user && hasOpen ? (
+            <button
+              type="button"
+              className="font-semibold min-w-0 truncate text-sm sm:text-base cursor-pointer rounded px-1.5 py-1 -ml-1.5 hover:bg-gray-700/50"
+              title={t('layout.clockOut')}
+              aria-label={t('layout.clockOut')}
+              onClick={() => {
+                if (!clockOnly) {
+                  const { openMap } = useTableStatus.getState();
+                  const anyOpen = Object.values(openMap).some(Boolean);
+                  if (anyOpen) {
+                    toast.warn(t('layout.clockOutBlockedBody'), {
+                      title: t('layout.clockOutBlockedTitle'),
+                    });
+                    return;
+                  }
+                }
+                setConfirmModal(true);
+              }}
+            >
+              {user.displayName}
+            </button>
+          ) : (
+            <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
+              {user?.displayName}
+            </div>
+          )}
+          {user && confirmModal && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-9999">
+              <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-center">
+                    {t('layout.clockOutConfirmTitle')}
+                  </h2>
+                  <button
+                    onClick={() => setConfirmModal(false)}
+                    className="cursor-pointer"
+                  >
+                    x
+                  </button>
+                </div>
                 <button
-                  className="cursor-pointer hover:underline text-xs sm:text-sm whitespace-nowrap text-gray-300 px-1.5 py-1 rounded hover:bg-gray-700/50"
+                  className="w-full bg-red-600 text-white py-1 px-2 cursor-pointer hover:bg-red-700"
                   onClick={async () => {
-                    if (!clockOnly) {
-                      const { openMap } = useTableStatus.getState();
-                      const anyOpen = Object.values(openMap).some(Boolean);
-                      if (anyOpen) {
-                        toast.warn(t('layout.clockOutBlockedBody'), {
-                          title: t('layout.clockOutBlockedTitle'),
-                        });
-                        return;
-                      }
+                    const r: any = await window.api.shifts.clockOut(user.id);
+                    // Server now refuses to close a shift while the
+                    // waiter still owns open tables. Show the reason
+                    // (alert is enough here — this header has no
+                    // toast root) and keep them logged in so they
+                    // can finish/transfer the table.
+                    if (r && typeof r === 'object' && r.ok === false) {
+                      window.alert(
+                        String(r.error || t('layout.clockOutOpenTables')),
+                      );
+                      setConfirmModal(false);
+                      return;
                     }
-                    setConfirmModal(true);
+                    setHasOpen(false);
+                    forceLogout(t('common.clockedOut'));
                   }}
                 >
                   {t('layout.clockOut')}
                 </button>
-              )}
-              {confirmModal && (
-                <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-9999">
-                  <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
-                    <div className="flex items-center justify-between mb-3">
-                      <h2 className="text-center">
-                        {t('layout.clockOutConfirmTitle')}
-                      </h2>
-                      <button
-                        onClick={() => setConfirmModal(false)}
-                        className="cursor-pointer"
-                      >
-                        x
-                      </button>
-                    </div>
-                    <button
-                      className="w-full bg-red-600 text-white py-1 px-2 cursor-pointer hover:bg-red-700"
-                      onClick={async () => {
-                        const r: any = await window.api.shifts.clockOut(
-                          user.id,
-                        );
-                        // Server now refuses to close a shift while the
-                        // waiter still owns open tables. Show the reason
-                        // (alert is enough here — this header has no
-                        // toast root) and keep them logged in so they
-                        // can finish/transfer the table.
-                        if (r && typeof r === 'object' && r.ok === false) {
-                          window.alert(
-                            String(r.error || t('layout.clockOutOpenTables')),
-                          );
-                          setConfirmModal(false);
-                          return;
-                        }
-                        setHasOpen(false);
-                        forceLogout(t('common.clockedOut'));
-                      }}
-                    >
-                      {t('layout.clockOut')}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
+              </div>
+            </div>
           )}
         </div>
 
@@ -637,7 +636,11 @@ export default function AppLayout() {
           )}
         </nav>
       </header>
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden py-2 sm:py-4 safe-pb safe-x">
+      <main
+        className={`flex min-h-0 flex-1 flex-col overflow-hidden ${
+          flushTablesFloor ? '' : 'py-2 sm:py-4 safe-pb safe-x'
+        }`}
+      >
         <div className="flex min-h-0 flex-1 flex-col">
           <Outlet />
         </div>

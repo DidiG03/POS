@@ -16,19 +16,6 @@ import FloorCanvas from '../components/FloorCanvas';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
 
-type MemoryStats = {
-  current: { heapUsed: number; rss: number; timestamp: number };
-  average: { heapUsed: number; rss: number };
-  peak: { heapUsed: number; rss: number; timestamp: number };
-  trend: 'increasing' | 'decreasing' | 'stable';
-  formatted: {
-    heapUsed: string;
-    heapTotal: string;
-    rss: string;
-    external: string;
-  };
-};
-
 type Section =
   | { key: 'printer'; label: string }
   | { key: 'areas'; label: string }
@@ -37,8 +24,6 @@ type Section =
   | { key: 'preferences'; label: string }
   | { key: 'fiscal'; label: string }
   | { key: 'backups'; label: string }
-  | { key: 'memory'; label: string }
-  | { key: 'cloud'; label: string }
   | { key: 'updates'; label: string }
   | { key: 'billing'; label: string }
   | { key: 'lan'; label: string }
@@ -52,8 +37,6 @@ const sections: Section[] = [
   { key: 'preferences', label: 'Preferences' },
   { key: 'fiscal', label: 'Fiskalizimi' },
   { key: 'backups', label: 'Backups' },
-  { key: 'memory', label: 'Memory Monitoring' },
-  { key: 'cloud', label: 'Log In to Cloud' },
   { key: 'updates', label: 'System Updates' },
   { key: 'billing', label: 'Billing' },
   { key: 'lan', label: 'LAN / Tablets' },
@@ -225,46 +208,6 @@ function SectionIcon({ k }: { k: Section['key'] }) {
         </svg>
       </IconWrap>
     );
-  if (k === 'memory')
-    return (
-      <IconWrap>
-        <svg {...common} viewBox="0 0 24 24" fill="none">
-          <path
-            d="M7 7h10v10H7V7Z"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M4 10h2M4 14h2M18 10h2M18 14h2M10 4v2M14 4v2M10 18v2M14 18v2"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            opacity="0.8"
-          />
-        </svg>
-      </IconWrap>
-    );
-  if (k === 'cloud')
-    return (
-      <IconWrap>
-        <svg {...common} viewBox="0 0 24 24" fill="none">
-          <path
-            d="M20 17.5a4.5 4.5 0 0 0-2.8-8.4A5 5 0 0 0 7.3 8.3 4 4 0 0 0 8 16h11.5A3.5 3.5 0 0 0 20 17.5Z"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M12 11v6m0 0 2-2m-2 2-2-2"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </IconWrap>
-    );
   if (k === 'updates')
     return (
       <IconWrap>
@@ -395,8 +338,6 @@ export default function AdminSettingsPage() {
         {selected === 'preferences' && <PreferencesSettings />}
         {selected === 'fiscal' && <FiscalSettings />}
         {selected === 'backups' && <BackupsSettings />}
-        {selected === 'memory' && <MemoryMonitorSection />}
-        {selected === 'cloud' && <CloudSettings />}
         {selected === 'updates' && <SystemUpdatesSettings />}
         {selected === 'billing' && <BillingSettings />}
         {selected === 'lan' && <LanSettings />}
@@ -595,8 +536,8 @@ function BillingSettings() {
     setErr(null);
     setLoading(true);
     try {
-      const s = await ((window.api as any).billing.getStatusLive?.() ??
-        (window.api as any).billing.getStatus());
+      const s = await (window.api.license?.getStatus?.() ??
+        window.api.billing.getStatus());
       setStatus(s);
     } catch (e: any) {
       setErr(String(e?.message || 'Could not load billing status'));
@@ -610,61 +551,30 @@ function BillingSettings() {
     void refresh();
   }, []);
 
-  const billingEnabled = Boolean(status?.billingEnabled);
-  const st = String(status?.status || 'ACTIVE').toUpperCase();
+  const licensed = Boolean(status?.licensed) || status?.required === false;
+  const st = String(
+    status?.status || (licensed ? 'ACTIVE' : 'PAUSED'),
+  ).toUpperCase();
   const periodEnd = status?.currentPeriodEnd
     ? new Date(status.currentPeriodEnd).toLocaleString()
     : null;
-  const cancelAt = status?.cancelAt
-    ? new Date(status.cancelAt).toLocaleString()
-    : null;
-  const cancelRequestedAt = status?.cancelRequestedAt
-    ? new Date(status.cancelRequestedAt).toLocaleString()
-    : null;
-  const pausedAt = status?.pausedAt
-    ? new Date(status.pausedAt).toLocaleString()
-    : null;
-  const cancellationWarning =
-    billingEnabled &&
-    (Boolean(status?.cancelAt) ||
-      (st === 'PAUSED' &&
-        (String(status?.message || '')
-          .toLowerCase()
-          .includes('canceled') ||
-          Boolean(status?.pausedAt) ||
-          Boolean(status?.cancelRequestedAt))));
+  const email = String(status?.email || '');
+  const key = String(status?.key || '');
 
   async function openUrl(url?: string | null) {
     const u = String(url || '').trim();
     if (!u) return;
-    // Electron: open in OS browser; Browser clients: window.open polyfill exists.
-    await (window.api as any).system
+    await window.api.system
       ?.openExternal?.(u)
       .catch(() => window.open(u, '_blank', 'noopener,noreferrer'));
-  }
-
-  async function payNow() {
-    setBusy(true);
-    setErr(null);
-    try {
-      const r = await (window.api as any).billing.createCheckoutSession();
-      if (r?.error) {
-        setErr(String(r.error));
-        return;
-      }
-      await openUrl(r?.url);
-    } catch (e: any) {
-      setErr(String(e?.message || 'Could not start payment'));
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function manageBilling() {
     setBusy(true);
     setErr(null);
     try {
-      const r = await (window.api as any).billing.createPortalSession?.();
+      const r = await (window.api.license?.createPortalSession?.() ??
+        window.api.billing.createPortalSession?.());
       if (r?.error) {
         setErr(String(r.error));
         return;
@@ -677,13 +587,23 @@ function BillingSettings() {
     }
   }
 
+  async function copyKey() {
+    if (!key) return;
+    try {
+      await navigator.clipboard.writeText(key);
+    } catch {
+      // ignore
+    }
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="font-semibold">Billing</div>
           <div className="text-xs opacity-70">
-            Manage your POS subscription and keep the system active.
+            Stripe subscription for this till. Reinstall with the same email or
+            paste the license key to restore without paying again.
           </div>
         </div>
         <button
@@ -698,32 +618,13 @@ function BillingSettings() {
       {loading ? (
         <div className="opacity-70">Loading…</div>
       ) : (
-        <div className="rounded border border-gray-700 bg-gray-900/40 p-3">
-          {!billingEnabled && (
+        <div className="rounded border border-gray-700 bg-gray-900/40 p-3 space-y-3">
+          {!status?.required && !status?.billingConfigured ? (
             <div className="text-sm opacity-80">
-              Billing is not enabled for this deployment.
+              Billing is not required in this development session.
             </div>
-          )}
-          {billingEnabled && (
+          ) : (
             <>
-              {cancellationWarning && (
-                <div className="mb-3 rounded border border-amber-700 bg-amber-900/20 p-3 text-amber-200 text-sm">
-                  <div className="font-semibold">Subscription cancellation</div>
-                  <div className="mt-1 opacity-90">
-                    {st === 'PAUSED'
-                      ? 'This subscription was canceled. The POS is paused until you subscribe again.'
-                      : cancelAt
-                        ? `This subscription is set to cancel at period end: ${cancelAt}`
-                        : 'This subscription has a cancellation request.'}
-                  </div>
-                  <div className="mt-2 text-xs opacity-80">
-                    {cancelRequestedAt && (
-                      <div>Cancel requested: {cancelRequestedAt}</div>
-                    )}
-                    {pausedAt && <div>Paused at: {pausedAt}</div>}
-                  </div>
-                </div>
-              )}
               <div className="flex flex-wrap items-center gap-2">
                 <span
                   className={`text-xs px-2 py-1 rounded border ${
@@ -746,24 +647,37 @@ function BillingSettings() {
                   </span>
                 )}
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  className="px-3 py-2 rounded bg-blue-700 hover:bg-blue-600 text-sm disabled:opacity-50"
-                  onClick={() => void payNow()}
-                  disabled={busy}
-                  type="button"
-                >
-                  Pay / Subscribe
-                </button>
-                <button
-                  className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-50"
-                  onClick={() => void manageBilling()}
-                  disabled={busy}
-                  type="button"
-                >
-                  Manage billing
-                </button>
-              </div>
+              {email && (
+                <div className="text-sm">
+                  <span className="opacity-70">Email: </span>
+                  {email}
+                </div>
+              )}
+              {key && (
+                <div className="text-sm">
+                  <div className="opacity-70 mb-1">License key</div>
+                  <div className="flex gap-2">
+                    <code className="flex-1 text-xs bg-gray-800 rounded px-2 py-2 break-all">
+                      {key}
+                    </code>
+                    <button
+                      className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                      type="button"
+                      onClick={() => void copyKey()}
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              )}
+              <button
+                className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-50"
+                onClick={() => void manageBilling()}
+                disabled={busy || !key}
+                type="button"
+              >
+                Manage billing
+              </button>
             </>
           )}
         </div>
@@ -1871,6 +1785,22 @@ function FiscalReviewPanel() {
   );
 }
 
+function IconKebab() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className="pos-icon"
+      aria-hidden
+    >
+      <circle cx="12" cy="5" r="1.75" />
+      <circle cx="12" cy="12" r="1.75" />
+      <circle cx="12" cy="19" r="1.75" />
+    </svg>
+  );
+}
+
 function BackupsSettings() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<
@@ -1878,20 +1808,7 @@ function BackupsSettings() {
   >([]);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [cloudConfigured, setCloudConfigured] = useState(false);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const s: any = await window.api.settings.get();
-        const url = String(s?.cloud?.backendUrl || '').trim();
-        const code = String(s?.cloud?.businessCode || '').trim();
-        setCloudConfigured(Boolean(url && code));
-      } catch {
-        setCloudConfigured(false);
-      }
-    })();
-  }, []);
+  const [showMenu, setShowMenu] = useState(false);
 
   async function reload() {
     setLoading(true);
@@ -1920,99 +1837,75 @@ function BackupsSettings() {
 
   return (
     <div>
-      <div className="text-lg font-semibold mb-3">Backups</div>
-      <div className="text-xs opacity-70 mb-3">
-        Backups are stored on this POS computer. Restoring will overwrite the
-        current database and restart the app. When cloud is configured, you can
-        sync data from the cloud or upload backups to the cloud.
-      </div>
-
-      <div className="flex flex-wrap gap-2 mb-3">
-        <button
-          className="flex-1 px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-          disabled={busy != null}
-          onClick={async () => {
-            setBusy('create');
-            setStatus(null);
-            try {
-              const r = await (window.api as any).backups.create();
-              if (!r?.ok) setStatus(r?.error || 'Backup failed');
-              else setStatus('Backup created.');
-              await reload();
-            } catch (e: any) {
-              setStatus(e?.message || 'Backup failed');
-            } finally {
-              setBusy(null);
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="text-lg font-semibold">Backups</div>
+        <div
+          className="relative shrink-0"
+          tabIndex={-1}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setShowMenu(false);
             }
           }}
         >
-          {busy === 'create' ? 'Creating…' : 'Backup now'}
-        </button>
-        <button
-          className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-60"
-          disabled={busy != null}
-          onClick={() => void reload()}
-        >
-          Refresh
-        </button>
-        {cloudConfigured && (
-          <>
-            <button
-              className="px-3 py-2 rounded bg-violet-700 hover:bg-violet-800 disabled:opacity-60"
-              disabled={busy != null}
-              onClick={async () => {
-                setBusy('sync');
-                setStatus(null);
-                try {
-                  const syncFn = (window.api as any).backups?.syncFromCloud;
-                  if (typeof syncFn !== 'function') {
-                    setStatus(
-                      'Sync not available. Please restart the app and try again.',
-                    );
-                    return;
+          <button
+            type="button"
+            className="pos-icon-btn cursor-pointer"
+            aria-label="Backup actions"
+            aria-haspopup="menu"
+            aria-expanded={showMenu}
+            disabled={busy != null}
+            onClick={() => setShowMenu((v) => !v)}
+          >
+            <IconKebab />
+          </button>
+          {showMenu ? (
+            <div
+              role="menu"
+              className="absolute right-0 mt-2 w-56 rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-lg z-50"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-800 disabled:opacity-60 cursor-pointer"
+                disabled={busy != null}
+                onClick={async () => {
+                  setShowMenu(false);
+                  setBusy('create');
+                  setStatus(null);
+                  try {
+                    const r = await (window.api as any).backups.create();
+                    if (!r?.ok) setStatus(r?.error || 'Backup failed');
+                    else setStatus('Backup created.');
+                    await reload();
+                  } catch (e: any) {
+                    setStatus(e?.message || 'Backup failed');
+                  } finally {
+                    setBusy(null);
                   }
-                  const r = await syncFn();
-                  if (r?.error) setStatus(r.error);
-                  else if (r?.usersSynced === 0 && r?.menuItemsSynced === 0)
-                    setStatus('No users or menu in cloud.');
-                  else if (!r?.menuSynced)
-                    setStatus(
-                      `Synced ${r?.usersSynced ?? 0} users. Log in to Cloud (Settings) to sync menu.`,
-                    );
-                  else
-                    setStatus(
-                      `Synced ${r?.usersSynced ?? 0} users and ${r?.menuItemsSynced ?? 0} menu items.`,
-                    );
-                } catch (e: any) {
-                  setStatus(e?.message || 'Sync failed');
-                } finally {
-                  setBusy(null);
-                }
-              }}
-            >
-              {busy === 'sync' ? 'Syncing…' : 'Sync from cloud'}
-            </button>
-            <button
-              className="px-3 py-2 rounded bg-sky-700 hover:bg-sky-800 disabled:opacity-60"
-              disabled={busy != null}
-              onClick={async () => {
-                setBusy('upload');
-                setStatus(null);
-                try {
-                  const r = await (window.api as any).backups.uploadToCloud({});
-                  if (!r?.ok) setStatus(r?.error || 'Upload failed');
-                  else setStatus('Backup uploaded to cloud.');
-                } catch (e: any) {
-                  setStatus(e?.message || 'Upload failed');
-                } finally {
-                  setBusy(null);
-                }
-              }}
-            >
-              {busy === 'upload' ? 'Uploading…' : 'Upload to cloud'}
-            </button>
-          </>
-        )}
+                }}
+              >
+                {busy === 'create' ? 'Creating…' : 'Backup now'}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-800 disabled:opacity-60 cursor-pointer"
+                disabled={busy != null}
+                onClick={() => {
+                  setShowMenu(false);
+                  void reload();
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="text-xs opacity-70 mb-3">
+        Backups are stored on this POS computer. Restoring will overwrite the
+        current database and restart the app.
       </div>
 
       {status && <div className="text-xs opacity-80 mb-3">{status}</div>}
@@ -2035,29 +1928,6 @@ function BackupsSettings() {
                 </div>
               </div>
               <div className="flex gap-2">
-                {cloudConfigured && (
-                  <button
-                    className="px-3 py-2 rounded bg-sky-700 hover:bg-sky-800 disabled:opacity-60"
-                    disabled={busy != null}
-                    onClick={async () => {
-                      setBusy(`upload:${b.name}`);
-                      setStatus(null);
-                      try {
-                        const r = await (
-                          window.api as any
-                        ).backups.uploadToCloud({ name: b.name });
-                        if (!r?.ok) setStatus(r?.error || 'Upload failed');
-                        else setStatus(`Uploaded ${b.name} to cloud.`);
-                      } catch (e: any) {
-                        setStatus(e?.message || 'Upload failed');
-                      } finally {
-                        setBusy(null);
-                      }
-                    }}
-                  >
-                    Upload
-                  </button>
-                )}
                 <button
                   className="px-3 py-2 rounded bg-rose-700 hover:bg-rose-800 disabled:opacity-60"
                   disabled={busy != null}
@@ -3710,10 +3580,7 @@ function PrinterProfileCard({
 
 function AreasSettings() {
   const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
-  const [editingArea, setEditingArea] = useState<{
-    name: string;
-    count: number;
-  } | null>(null);
+  const [editingArea, setEditingArea] = useState<string | null>(null);
   useEffect(() => {
     (async () => {
       const s = await window.api.settings.get();
@@ -3726,9 +3593,7 @@ function AreasSettings() {
         <div className="text-lg font-semibold">Table Areas</div>
         <button
           className="text-blue-500 cursor-pointer"
-          onClick={() =>
-            setAreas((arr) => [...arr, { name: 'New Area', count: 4 }])
-          }
+          onClick={() => setAreas((arr) => [...arr, { name: '', count: 8 }])}
         >
           +
         </button>
@@ -3764,7 +3629,7 @@ function AreasSettings() {
                   );
                   return;
                 }
-                setEditingArea({ name: a.name, count: a.count });
+                setEditingArea(a.name);
               }}
             >
               Edit layout
@@ -3796,7 +3661,9 @@ function AreasSettings() {
           <button
             className="mt-2 px-3 py-2 rounded bg-emerald-700 w-full"
             onClick={async () => {
-              await window.api.settings.update({ tableAreas: areas });
+              await window.api.settings.update({
+                tableAreas: areas.filter((x) => String(x.name || '').trim()),
+              });
               toast.success('Table areas saved.');
             }}
           >
@@ -3807,8 +3674,7 @@ function AreasSettings() {
 
       {editingArea && (
         <AreaLayoutEditorModal
-          area={editingArea.name}
-          defaultCount={editingArea.count || 8}
+          area={editingArea}
           onClose={() => setEditingArea(null)}
         />
       )}
@@ -3823,11 +3689,9 @@ function AreasSettings() {
 // in src/main/services/realtime.ts.
 function AreaLayoutEditorModal({
   area,
-  defaultCount,
   onClose,
 }: {
   area: string;
-  defaultCount: number;
   onClose: () => void;
 }) {
   // FloorCanvas needs *some* userId for legacy IPC compatibility but the
@@ -3866,162 +3730,15 @@ function AreaLayoutEditorModal({
             area={area}
             editable={editable}
             onEditableChange={setEditable}
-            defaultCount={defaultCount}
             fillAvailableHeight
           />
         </div>
         <div className="px-4 py-2 border-t border-gray-700 text-xs opacity-70 shrink-0">
-          Changes save to the shared layout when you press
-          <span className="mx-1 text-blue-300">Save layout</span>and appear
-          immediately on every waiter and host device.
+          Place tables and shapes with + Table / + Shape, then press
+          <span className="mx-1 text-blue-300">Save layout</span>
+          or Done. Waiter and host floors show this same saved plan — nothing is
+          invented.
         </div>
-      </div>
-    </div>
-  );
-}
-
-function CloudSettings() {
-  const [loading, setLoading] = useState(true);
-  const [businessCode, setBusinessCode] = useState('');
-  const [accessPassword, setAccessPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [backendUrl, setBackendUrl] = useState('');
-  const [disabled, setDisabled] = useState(false);
-  const [toggling, setToggling] = useState(false);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const s = await window.api.settings.get();
-        setBackendUrl(String((s as any)?.cloud?.backendUrl || ''));
-        setBusinessCode(String((s as any)?.cloud?.businessCode || ''));
-        setDisabled(Boolean((s as any)?.cloud?.disabled));
-        // Never read back the stored password; user must re-enter if they want to change it.
-        setAccessPassword('');
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  if (loading) return <div className="opacity-70">Loading…</div>;
-
-  const toggleCloud = async (next: boolean) => {
-    setStatus(null);
-    setToggling(true);
-    try {
-      // Send only the flag so the businessCode/password validation in
-      // settings:update never runs while flipping the kill switch.
-      await window.api.settings.update({ cloud: { disabled: next } } as any);
-      setDisabled(next);
-      const s = await window.api.settings.get();
-      setBackendUrl(String((s as any)?.cloud?.backendUrl || ''));
-      setStatus(next ? 'Cloud disabled (local-only).' : 'Cloud enabled.');
-    } catch (e: any) {
-      setStatus(e?.message || 'Failed to update cloud state.');
-    } finally {
-      setToggling(false);
-    }
-  };
-
-  return (
-    <div>
-      <div className="text-lg font-semibold mb-3">Log In to Cloud</div>
-
-      <div className="mb-4 rounded border border-gray-700 bg-gray-800/50 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium">
-              {disabled ? 'Cloud is disabled' : 'Cloud is enabled'}
-            </div>
-            <div className="text-xs opacity-70">
-              {disabled
-                ? 'The POS runs local-only. No cloud sync or login, and the “business code missing” banner is hidden.'
-                : 'The POS uses the hosted backend when a business code is set.'}
-            </div>
-          </div>
-          <button
-            className={`shrink-0 px-3 py-2 rounded ${
-              disabled
-                ? 'bg-emerald-700 hover:bg-emerald-600'
-                : 'bg-red-700 hover:bg-red-600'
-            } disabled:opacity-60`}
-            type="button"
-            disabled={toggling}
-            onClick={() => toggleCloud(!disabled)}
-          >
-            {toggling ? 'Saving…' : disabled ? 'Enable cloud' : 'Disable cloud'}
-          </button>
-        </div>
-      </div>
-
-      <div
-        className={`space-y-2 ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
-      >
-        <div className="text-xs opacity-70">
-          Backend URL (managed by provider)
-        </div>
-        {/* <input className="bg-gray-700 rounded px-3 py-2 w-full opacity-70" value={backendUrl || '(not configured)'} readOnly /> */}
-        <input
-          className="bg-gray-700 rounded px-3 py-2 w-full"
-          placeholder="Business code (e.g.  Code Orbit)"
-          value={businessCode}
-          onChange={(e) => setBusinessCode(e.target.value.toUpperCase())}
-        />
-        <div className="text-xs opacity-70 mt-2">
-          Business password (provided by provider)
-        </div>
-        <div className="text-xs opacity-60">
-          You will not see the saved password again. If you need to change it,
-          re-enter a new one.
-        </div>
-        <div className="flex items-center gap-2">
-          <input
-            className="bg-gray-700 rounded px-3 py-2 w-full"
-            placeholder="Cloud access password"
-            value={accessPassword}
-            onChange={(e) => setAccessPassword(e.target.value)}
-            type={showPassword ? 'text' : 'password'}
-            autoComplete="off"
-          />
-          <button
-            className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-            type="button"
-            onClick={() => setShowPassword((v) => !v)}
-            title={showPassword ? 'Hide' : 'Show'}
-          >
-            {showPassword ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        <button
-          className="px-3 py-2 rounded bg-emerald-700 w-full"
-          onClick={async () => {
-            setStatus(null);
-            try {
-              const updated = await window.api.settings.update({
-                cloud: { businessCode, accessPassword },
-              } as any);
-              setBackendUrl(
-                String((updated as any)?.cloud?.backendUrl || backendUrl),
-              );
-              setBusinessCode(
-                String((updated as any)?.cloud?.businessCode || businessCode),
-              );
-              setAccessPassword('');
-              setStatus('Saved.');
-            } catch (e: any) {
-              setStatus(e?.message || 'Save failed.');
-            }
-          }}
-        >
-          Save Cloud Settings
-        </button>
-        <div className="text-xs opacity-70">
-          When set, the app will use the hosted backend for
-          staff/menu/shifts/tickets (printing remains local).
-        </div>
-        {status && <div className="text-xs opacity-80">{status}</div>}
       </div>
     </div>
   );
@@ -4173,12 +3890,13 @@ function AboutSettings() {
 }
 
 function LanSettings() {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [allowLan, setAllowLan] = useState(false);
   const [requirePairingCode, setRequirePairingCode] = useState(true);
   const [pairingCode, setPairingCode] = useState<string>('');
+  const [openAtLogin, setOpenAtLogin] = useState(true);
   const [ips, setIps] = useState<string[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -4192,6 +3910,7 @@ function LanSettings() {
           Boolean((s as any)?.security?.requirePairingCode ?? true),
         );
         setPairingCode(String((s as any)?.security?.pairingCode || ''));
+        setOpenAtLogin((s as any)?.host?.openAtLogin !== false);
         setIps(ipList || []);
       } finally {
         setLoading(false);
@@ -4238,23 +3957,31 @@ function LanSettings() {
         return `http://${primaryIp}:${LAN_HTTP}/renderer/?${q.toString()}#/`;
       })()
     : '';
-  const lanUrl = primaryIp ? `http://${primaryIp}:${LAN_HTTP}/renderer/#/` : '';
 
   async function saveSecurity(next: {
     allowLan?: boolean;
     requirePairingCode?: boolean;
     pairingCode?: string;
   }) {
-    setStatus(null);
-    const updated = await window.api.settings.update({ security: next } as any);
-    setAllowLan(Boolean((updated as any)?.security?.allowLan));
-    setRequirePairingCode(
-      Boolean((updated as any)?.security?.requirePairingCode ?? true),
-    );
-    setPairingCode(
-      String((updated as any)?.security?.pairingCode || next.pairingCode || ''),
-    );
-    setStatus('Saved.');
+    try {
+      const updated = await window.api.settings.update({
+        security: next,
+        host: { openAtLogin },
+      } as any);
+      setAllowLan(Boolean((updated as any)?.security?.allowLan));
+      setRequirePairingCode(
+        Boolean((updated as any)?.security?.requirePairingCode ?? true),
+      );
+      setPairingCode(
+        String(
+          (updated as any)?.security?.pairingCode || next.pairingCode || '',
+        ),
+      );
+      setOpenAtLogin((updated as any)?.host?.openAtLogin !== false);
+      toast.success('Saved.');
+    } catch (e: any) {
+      toast.error(String(e?.message || 'Save failed.'));
+    }
   }
 
   return (
@@ -4266,16 +3993,28 @@ function LanSettings() {
       ) : (
         <>
           <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3 opacity-80">
+            <div className="p-3 rounded bg-emerald-950/40 border border-emerald-800/60">
+              <div className="font-medium">
+                {t('adminLan.hostRunningTitle')}
+              </div>
+              <div className="text-xs opacity-80 mt-1">
+                {t('adminLan.hostRunningBody')}
+              </div>
+            </div>
+
+            <label className="flex items-center justify-between gap-3">
               <div>
-                <div className="font-medium">App access</div>
+                <div className="font-medium">{t('adminLan.openAtLogin')}</div>
                 <div className="text-xs opacity-70">
-                  The desktop app can always reach the POS locally. This cannot
-                  be disabled.
+                  {t('adminLan.openAtLoginHint')}
                 </div>
               </div>
-              <input type="checkbox" checked readOnly disabled />
-            </div>
+              <input
+                type="checkbox"
+                checked={openAtLogin}
+                onChange={(e) => setOpenAtLogin(e.target.checked)}
+              />
+            </label>
 
             <label className="flex items-center justify-between gap-3">
               <div>
@@ -4371,9 +4110,9 @@ function LanSettings() {
                       onClick={async () => {
                         try {
                           await navigator.clipboard.writeText(staffSetupUrl);
-                          setStatus('Copied tablet setup link.');
+                          toast.success('Copied tablet setup link.');
                         } catch {
-                          setStatus('Copy failed.');
+                          toast.error('Copy failed.');
                         }
                       }}
                     >
@@ -4397,191 +4136,9 @@ function LanSettings() {
                 </div>
               )}
             </div>
-
-            <div
-              className={`mt-3 p-3 rounded bg-gray-900/50 border border-gray-700 ${
-                allowLan ? '' : 'opacity-50 pointer-events-none'
-              }`}
-            >
-              <div className="text-sm font-semibold mb-2">
-                Plain URL{' '}
-                <span className="text-xs opacity-60">(browser, optional)</span>
-              </div>
-              {lanUrl ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    className="bg-gray-700 rounded px-3 py-2 flex-1"
-                    value={lanUrl}
-                    readOnly
-                  />
-                  <button
-                    className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(lanUrl);
-                        setStatus('Copied plain URL.');
-                      } catch {
-                        setStatus('Copy failed.');
-                      }
-                    }}
-                  >
-                    Copy
-                  </button>
-                </div>
-              ) : (
-                <div className="text-xs opacity-70">
-                  No Wi‑Fi IP detected. Connect to Wi‑Fi or Ethernet and reopen
-                  this page.
-                </div>
-              )}
-              <div className="text-xs opacity-70 mt-2">
-                Same app without setup parameters — tablets may need to use{' '}
-                <span className="font-medium">Configure server</span> and the
-                pairing code manually unless they opened the tablet setup link
-                above first.
-              </div>
-            </div>
-
-            {status && <div className="text-xs opacity-80 mt-2">{status}</div>}
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function MemoryMonitorSection() {
-  const [stats, setStats] = useState<MemoryStats | null>(null);
-  const [exporting, setExporting] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    let interval: number | null = null;
-    const loadStats = async () => {
-      try {
-        const data = await window.api.admin.getMemoryStats();
-        if (!cancelled) setStats(data);
-      } catch (e) {
-        if (!cancelled) console.error('Failed to load memory stats', e);
-      }
-    };
-
-    const start = () => {
-      if (interval != null) return;
-      loadStats();
-      interval = window.setInterval(loadStats, 5000);
-    };
-    const stop = () => {
-      if (interval != null) {
-        window.clearInterval(interval);
-        interval = null;
-      }
-    };
-
-    // PERF: pause polling when the admin tab is hidden so we don't spend
-    // CPU / IPC bandwidth refreshing memory stats nobody is looking at.
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') stop();
-      else start();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    if (document.visibilityState !== 'hidden') start();
-
-    return () => {
-      cancelled = true;
-      document.removeEventListener('visibilitychange', onVisibility);
-      stop();
-    };
-  }, []);
-
-  const handleExport = async () => {
-    setExporting(true);
-    try {
-      const path = await window.api.admin.exportMemorySnapshot();
-      toast.success(`Memory snapshot exported to: ${path}`, {
-        title: 'Exported',
-      });
-    } catch (e: any) {
-      toast.error(`Failed to export: ${e?.message || 'Unknown error'}`, {
-        title: 'Export failed',
-      });
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  if (!stats) {
-    return (
-      <div>
-        <div className="text-lg font-semibold mb-3">Memory Monitoring</div>
-        <div className="text-gray-400">Loading memory stats...</div>
-      </div>
-    );
-  }
-
-  const trendColor =
-    stats.trend === 'increasing'
-      ? 'text-yellow-400'
-      : stats.trend === 'decreasing'
-        ? 'text-green-400'
-        : 'text-gray-400';
-
-  return (
-    <div>
-      <div className="text-lg font-semibold mb-3">Memory Monitoring</div>
-      <div className="space-y-4">
-        <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-sm text-gray-400 mb-1">
-                Current Heap Used
-              </div>
-              <div className="text-lg font-semibold">
-                {stats.formatted.heapUsed}
-              </div>
-            </div>
-            <div>
-              <div className="text-sm text-gray-400 mb-1">
-                RSS (Total Memory)
-              </div>
-              <div className="text-lg font-semibold">{stats.formatted.rss}</div>
-            </div>
-            <div>
-              <div className="text-sm text-gray-400 mb-1">Peak Heap Used</div>
-              <div className="text-lg font-semibold">
-                {(stats.peak.heapUsed / 1024 / 1024).toFixed(2)} MB
-              </div>
-              <div className="text-xs text-gray-500">
-                {new Date(stats.peak.timestamp).toLocaleTimeString()}
-              </div>
-            </div>
-            <div>
-              <div className="text-sm text-gray-400 mb-1">Trend</div>
-              <div className={`text-lg font-semibold ${trendColor}`}>
-                {stats.trend === 'increasing'
-                  ? '⚠️ Increasing'
-                  : stats.trend === 'decreasing'
-                    ? '✓ Decreasing'
-                    : '→ Stable'}
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="pt-2">
-          <button
-            onClick={handleExport}
-            disabled={exporting}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-50"
-          >
-            {exporting ? 'Exporting...' : 'Export Memory Snapshot'}
-          </button>
-          <div className="text-xs text-gray-500 mt-2">
-            Memory is monitored automatically. Export snapshot for detailed
-            analysis.
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

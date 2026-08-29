@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ReservationDTO } from '@shared/ipc';
+import { DEFAULT_RESERVATION_DURATION_MIN } from '@shared/reservationDuration';
+import { ReservationDurationPicker } from './ReservationDurationPicker';
 
 export type WalkInDialogProps = {
   open: boolean;
@@ -11,16 +13,12 @@ export type WalkInDialogProps = {
   tableLabels: string[];
   // Subset of tableLabels that are currently free (no live reservation).
   freeTableLabels: string[];
+  /** Prefill the table dropdown when seating from a specific table sheet. */
+  initialTableLabel?: string;
   onSeated: (r: ReservationDTO) => void;
 };
 
 const QUICK_PARTY: number[] = [1, 2, 3, 4, 5, 6, 8];
-const QUICK_DURATIONS: { mins: number; label: string }[] = [
-  { mins: 60, label: '1h' },
-  { mins: 90, label: '1h30' },
-  { mins: 120, label: '2h' },
-  { mins: 180, label: '3h' },
-];
 
 // Strip Electron's ipcRenderer error wrapper so the user sees the real text.
 function cleanIpcMessage(e: any, fallback: string): string {
@@ -44,8 +42,8 @@ export default function WalkInDialog({
   onClose,
   area,
   actorId,
-  tableLabels,
   freeTableLabels,
+  initialTableLabel,
   onSeated,
 }: WalkInDialogProps) {
   const { t } = useTranslation();
@@ -53,44 +51,46 @@ export default function WalkInDialog({
   const [name, setName] = useState(walkInDefault);
   const [phone, setPhone] = useState('');
   const [partySize, setPartySize] = useState<number>(2);
-  const [durationMin, setDurationMin] = useState<number>(90);
+  const [durationMin, setDurationMin] = useState<number>(
+    DEFAULT_RESERVATION_DURATION_MIN,
+  );
   const [tableLabel, setTableLabel] = useState<string>('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset to sensible defaults each time the dialog opens.
+  const freeSorted = useMemo(
+    () => [...new Set(freeTableLabels)].sort(naturalSort),
+    [freeTableLabels],
+  );
+
+  // Reset the form each time the dialog opens (not on occupancy ticks).
   useEffect(() => {
     if (!open) return;
     setName(t('reservations.walkInDefault'));
     setPhone('');
     setPartySize(2);
-    setDurationMin(90);
+    setDurationMin(DEFAULT_RESERVATION_DURATION_MIN);
     setNote('');
     setError(null);
     setBusy(false);
-    // Auto-pick the first free table to remove a click in the common case.
-    const firstFree = [...freeTableLabels].sort(naturalSort)[0] || '';
-    setTableLabel(firstFree);
-  }, [open, freeTableLabels, t]);
+    const preferred = String(initialTableLabel || '').trim();
+    if (preferred && freeSorted.includes(preferred)) {
+      setTableLabel(preferred);
+      return;
+    }
+    setTableLabel(freeSorted[0] || '');
+    // freeSorted is read on open; occupancy while open is handled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialTableLabel, t]);
 
-  const tableOptions = useMemo(() => {
-    const seen = new Set<string>();
-    const out: { label: string; free: boolean }[] = [];
-    for (const l of [...freeTableLabels].sort(naturalSort)) {
-      if (!seen.has(l)) {
-        out.push({ label: l, free: true });
-        seen.add(l);
-      }
+  // If a selected table becomes occupied while the dialog is open, drop it.
+  useEffect(() => {
+    if (!open || !tableLabel) return;
+    if (!freeSorted.includes(tableLabel)) {
+      setTableLabel(freeSorted[0] || '');
     }
-    for (const l of [...tableLabels].sort(naturalSort)) {
-      if (!seen.has(l)) {
-        out.push({ label: l, free: false });
-        seen.add(l);
-      }
-    }
-    return out;
-  }, [tableLabels, freeTableLabels]);
+  }, [open, tableLabel, freeSorted]);
 
   if (!open) return null;
 
@@ -225,22 +225,10 @@ export default function WalkInDialog({
             <div className="text-xs opacity-70 mb-1">
               {t('reservations.duration')}
             </div>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {QUICK_DURATIONS.map((d) => (
-                <button
-                  key={d.mins}
-                  type="button"
-                  onClick={() => setDurationMin(d.mins)}
-                  className={`px-3 py-2 sm:py-1.5 rounded text-base sm:text-sm ${
-                    durationMin === d.mins
-                      ? 'bg-blue-600'
-                      : 'bg-gray-700 hover:bg-gray-600'
-                  }`}
-                >
-                  {d.label}
-                </button>
-              ))}
-            </div>
+            <ReservationDurationPicker
+              value={durationMin}
+              onChange={setDurationMin}
+            />
           </div>
 
           <label className="block">
@@ -251,17 +239,16 @@ export default function WalkInDialog({
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
             >
               <option value="">{t('reservations.noSpecificTable')}</option>
-              {tableOptions.map((tbl) => (
-                <option key={tbl.label} value={tbl.label}>
-                  {tbl.label}
-                  {tbl.free
-                    ? t('reservations.tableFreeSuffix')
-                    : t('reservations.tableBusySuffix')}
+              {freeSorted.map((label) => (
+                <option key={label} value={label}>
+                  {label}
                 </option>
               ))}
             </select>
             <div className="text-[11px] opacity-60 mt-1">
-              {t('reservations.freeTablesHint')}
+              {freeSorted.length === 0
+                ? t('reservations.noFreeTables')
+                : t('reservations.freeTablesHint')}
             </div>
           </label>
 

@@ -77,6 +77,14 @@ describe('mapCalendarEventToReservation', () => {
     expect(mapped.status).toBe('BOOKED');
   });
 
+  it('does not invent a hardcoded area when none is configured', () => {
+    const mapped = mapCalendarEventToReservation(
+      { ...baseEvent, description: 'phone: +355 69 123 4567' },
+      {},
+    );
+    expect(mapped.area).toBe('');
+  });
+
   it('marks cancelled events', () => {
     const mapped = mapCalendarEventToReservation(
       { ...baseEvent, cancelled: true },

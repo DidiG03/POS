@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { describeTicketNote } from '@shared/utils/transferNote';
 
 type TicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
 
@@ -60,7 +61,10 @@ function TransferredChip({
           .trim();
 
   const tooltipParts: string[] = [];
-  if (transfer) {
+  const history = describeTicketNote(note).history;
+  if (history.length) {
+    tooltipParts.push(...history);
+  } else if (transfer) {
     if (fromName || fromTable) {
       tooltipParts.push(
         fromName
@@ -342,11 +346,18 @@ function TicketCard({
         </div>
       </div>
 
-      {ticket.note && (
-        <div className="mt-3 rounded-lg border border-gray-700/70 bg-gray-950/30 px-3 py-2 text-xs text-gray-300">
-          Note: {ticket.note}
-        </div>
-      )}
+      {(() => {
+        const { history, userNote } = describeTicketNote(ticket.note);
+        if (!history.length && !userNote) return null;
+        return (
+          <div className="mt-3 rounded-lg border border-gray-700/70 bg-gray-950/30 px-3 py-2 text-xs text-gray-300 space-y-1">
+            {history.map((line, i) => (
+              <div key={`${line}-${i}`}>{line}</div>
+            ))}
+            {userNote ? <div>Note: {userNote}</div> : null}
+          </div>
+        );
+      })()}
 
       <div className="mt-3 space-y-1.5">
         {visibleLive.length === 0 ? (

@@ -76,6 +76,20 @@ function IconMenu() {
   );
 }
 
+function IconStock() {
+  return (
+    <NavIcon
+      paths={
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="m21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9"
+        />
+      }
+    />
+  );
+}
+
 function IconSettings() {
   return (
     <NavIcon
@@ -270,6 +284,16 @@ export default function AdminLayout() {
               <span className="hidden sm:inline">{t('adminLayout.menu')}</span>
             </NavLink>
             <NavLink
+              to="/admin/stock"
+              className={({ isActive }) =>
+                `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
+              }
+              title={t('stockPanel.title')}
+            >
+              <IconStock />
+              <span className="hidden sm:inline">{t('adminLayout.stock')}</span>
+            </NavLink>
+            <NavLink
               to="/admin/settings"
               className={({ isActive }) =>
                 `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
@@ -370,7 +394,7 @@ export default function AdminLayout() {
             onClick={async () => {
               // Clear persisted admin session so reopening /admin requires PIN again.
               setMe(null as any);
-              // Clear cloud admin token in main process (Electron) and force this window back to login.
+              // Force this window back to login.
               await window.api.auth.logoutAdmin().catch(() => {});
               setShowNotifications(false);
               setUnreadCount(0);
