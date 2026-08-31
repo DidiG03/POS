@@ -6,101 +6,27 @@ import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
 import { FailedSyncPanel } from '../components/FailedSyncPanel';
+import { BrandMark } from '../components/BrandMark';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
 import { toast } from '../stores/toasts';
 import { getOfflineQueueCount } from '../utils/offlineQueue';
-
-function IconTables() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={1.5}
-      stroke="currentColor"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"
-      />
-    </svg>
-  );
-}
-
-function IconReports() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M6 3h12v18H6V3Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9 7h6M9 11h6M9 15h4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconClock() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
-      <path
-        d="M12 7v5l3 2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function IconLogout() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M13 12H3m0 0 3-3M3 12l3 3"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  Modal,
+  StatusChip,
+  cn,
+} from '../components/ui';
+import {
+  IconBell,
+  IconClock,
+  IconLogout,
+  IconReports,
+  IconTables,
+  IconWifiOff,
+} from '../components/icons';
 
 export default function AppLayout() {
   const { t } = useTranslation();
@@ -329,143 +255,129 @@ export default function AppLayout() {
     billingEnabled &&
     (billingStatus === 'PAST_DUE' || billingStatus === 'PAUSED');
 
+  const navClass = ({ isActive }: { isActive: boolean }) =>
+    cn(
+      'pos-nav-link',
+      isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle',
+    );
+
+  const syncTone = !syncOk ? 'danger' : queued > 0 ? 'warn' : 'accent';
+  const syncTitle = !syncOk
+    ? t('common.offlineCannotReach')
+    : queued > 0
+      ? t('common.syncingQueued')
+      : t('common.allSynced');
+
   return (
-    <div className="h-full flex flex-col min-h-0">
-      {user && billingPaused && !clockOnly && (
-        <div className="fixed inset-0 bg-black/70 z-[9999] flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded bg-gray-900 border border-gray-700 p-5">
-            <div className="font-semibold text-lg">
-              {t('layout.billingPausedTitle')}
-            </div>
-            <div className="mt-2 text-sm opacity-80">
-              {t('layout.billingPausedBody')}
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                className="px-3 py-2 rounded bg-blue-700 hover:bg-blue-600 text-sm"
-                onClick={async () => {
-                  // Electron: open admin window (will prompt for admin PIN/login)
-                  await (window.api as any).admin
-                    ?.openWindow?.()
-                    .catch(() => false);
-                }}
-                type="button"
-              >
-                {t('layout.openAdminBilling')}
-              </button>
-              <button
-                className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-                onClick={() => window.location.reload()}
-                type="button"
-              >
-                {t('common.retry')}
-              </button>
-            </div>
-            {billingCheckedAt > 0 && (
-              <div className="mt-3 text-xs opacity-60">
-                {t('common.lastChecked', {
-                  time: new Date(billingCheckedAt).toLocaleTimeString(),
-                })}
-              </div>
-            )}
-          </div>
+    <div className="pos-app flex h-full min-h-0 flex-col">
+      <Modal
+        open={Boolean(user && billingPaused && !clockOnly)}
+        onClose={() => {}}
+        dismissable={false}
+        size="md"
+        title={t('layout.billingPausedTitle')}
+        footer={
+          <>
+            <Button onClick={() => window.location.reload()}>
+              {t('common.retry')}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={async () => {
+                // Electron: open admin window (will prompt for admin PIN/login)
+                await (window.api as any).admin
+                  ?.openWindow?.()
+                  .catch(() => false);
+              }}
+            >
+              {t('layout.openAdminBilling')}
+            </Button>
+          </>
+        }
+      >
+        <div className="text-[13px] leading-relaxed text-gray-300">
+          {t('layout.billingPausedBody')}
         </div>
-      )}
+        {billingCheckedAt > 0 && (
+          <div className="mt-3 text-[12px] text-gray-500">
+            {t('common.lastChecked', {
+              time: new Date(billingCheckedAt).toLocaleTimeString(),
+            })}
+          </div>
+        )}
+      </Modal>
+
       {isBrowserClient && (!netOk || !backendOk) && (
-        <div className="bg-amber-600 text-black text-xs px-4 py-2">
+        <div className="flex items-center justify-center gap-2 border-b border-amber-500/25 bg-amber-500/12 px-4 py-1.5 text-[12px] font-medium text-amber-200">
+          <IconWifiOff className="size-[15px] shrink-0" />
           {t('layout.networkBanner')}
         </div>
       )}
+
       <header
         // The header is the topmost on-screen element, so it owns the
-        // safe-area-top inset (notch / status-bar). We use `max(...)` so
-        // the header keeps its normal vertical breathing room on devices
-        // without a notch, but grows to clear the status bar on iPhones.
-        // Horizontal inset: `.safe-x` (see index.css) uses max(px, env(...))
-        // so desktop keeps padding; raw env() alone was overriding px-* with 0.
-        className="bg-gray-800 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-2 sm:gap-3"
+        // safe-area-top inset (notch / status-bar). `max(...)` keeps normal
+        // breathing room on devices without a notch but clears the status bar
+        // on iPhones. Horizontal inset comes from `.safe-x`.
+        className="pos-header safe-x flex shrink-0 items-center gap-3 pt-[max(0px,env(safe-area-inset-top))]"
+        style={{ minHeight: 'var(--pos-header-h)' }}
       >
-        <div className="flex items-center gap-2 min-w-0 justify-start flex-1 sm:flex-initial">
-          {user && hasOpen ? (
-            <button
-              type="button"
-              className="font-semibold min-w-0 truncate text-sm sm:text-base cursor-pointer rounded px-1.5 py-1 -ml-1.5 hover:bg-gray-700/50"
-              title={t('layout.clockOut')}
-              aria-label={t('layout.clockOut')}
-              onClick={() => {
-                if (!clockOnly) {
-                  const { openMap } = useTableStatus.getState();
-                  const anyOpen = Object.values(openMap).some(Boolean);
-                  if (anyOpen) {
-                    toast.warn(t('layout.clockOutBlockedBody'), {
-                      title: t('layout.clockOutBlockedTitle'),
-                    });
-                    return;
-                  }
-                }
-                setConfirmModal(true);
-              }}
-            >
-              {user.displayName}
-            </button>
-          ) : (
-            <div className="font-semibold min-w-0 truncate text-sm sm:text-base">
-              {user?.displayName}
-            </div>
-          )}
-          {user && confirmModal && (
-            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-9999">
-              <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-center">
-                    {t('layout.clockOutConfirmTitle')}
-                  </h2>
-                  <button
-                    onClick={() => setConfirmModal(false)}
-                    className="cursor-pointer"
-                  >
-                    x
-                  </button>
-                </div>
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <BrandMark size="sm" compact subtitle="" className="hidden sm:flex" />
+          <BrandMark
+            size="sm"
+            compact
+            wordmark={false}
+            className="shrink-0 sm:hidden"
+          />
+
+          {user ? (
+            <>
+              <span
+                className="hidden h-5 w-px shrink-0 bg-white/8 sm:block"
+                aria-hidden
+              />
+              {hasOpen ? (
                 <button
-                  className="w-full bg-red-600 text-white py-1 px-2 cursor-pointer hover:bg-red-700"
-                  onClick={async () => {
-                    const r: any = await window.api.shifts.clockOut(user.id);
-                    // Server now refuses to close a shift while the
-                    // waiter still owns open tables. Show the reason
-                    // (alert is enough here — this header has no
-                    // toast root) and keep them logged in so they
-                    // can finish/transfer the table.
-                    if (r && typeof r === 'object' && r.ok === false) {
-                      window.alert(
-                        String(r.error || t('layout.clockOutOpenTables')),
-                      );
-                      setConfirmModal(false);
-                      return;
+                  type="button"
+                  className="min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium text-gray-300 transition-colors hover:bg-white/6 hover:text-gray-50"
+                  style={{ minHeight: 0 }}
+                  title={t('layout.clockOut')}
+                  aria-label={t('layout.clockOut')}
+                  onClick={() => {
+                    if (!clockOnly) {
+                      const { openMap } = useTableStatus.getState();
+                      const anyOpen = Object.values(openMap).some(Boolean);
+                      if (anyOpen) {
+                        toast.warn(t('layout.clockOutBlockedBody'), {
+                          title: t('layout.clockOutBlockedTitle'),
+                        });
+                        return;
+                      }
                     }
-                    setHasOpen(false);
-                    forceLogout(t('common.clockedOut'));
+                    setConfirmModal(true);
                   }}
                 >
-                  {t('layout.clockOut')}
+                  {user.displayName}
                 </button>
-              </div>
-            </div>
-          )}
+              ) : (
+                <div className="min-w-0 truncate px-1.5 text-[13px] font-medium text-gray-400">
+                  {user.displayName}
+                </div>
+              )}
+            </>
+          ) : null}
         </div>
 
-        {/* Center nav — hidden on mobile to keep the header compact.
-            Mobile users only ever have one or two destinations and we
-            already gate role-restricted routes via RequireReportsAccess /
-            RequireKdsAccess in routes.tsx. */}
-        <div className="hidden sm:flex items-center justify-center min-w-0">
-          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap">
+        {/* Center nav — hidden on mobile to keep the header compact. Mobile
+            users only ever have one or two destinations and role-restricted
+            routes are gated in routes.tsx. */}
+        <nav className="hidden shrink-0 items-center sm:flex">
+          <div className="pos-segmented">
             {!isWaiter && (
               <NavLink
                 to="/app/clock"
-                className={({ isActive }) =>
-                  `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
-                }
+                className={navClass}
                 title={t('layout.clock')}
               >
                 <IconClock />
@@ -475,9 +387,7 @@ export default function AppLayout() {
             {!clockOnly && (
               <NavLink
                 to="/app/tables"
-                className={({ isActive }) =>
-                  `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
-                }
+                className={navClass}
                 title={t('layout.tables')}
               >
                 <IconTables />
@@ -487,9 +397,7 @@ export default function AppLayout() {
             {showReportsTab && (
               <NavLink
                 to="/app/reports"
-                className={({ isActive }) =>
-                  `pos-nav-link ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'}`
-                }
+                className={navClass}
                 title={t('layout.reports')}
               >
                 <IconReports />
@@ -497,43 +405,33 @@ export default function AppLayout() {
               </NavLink>
             )}
           </div>
-        </div>
+        </nav>
 
-        <nav className="flex items-center gap-2 sm:gap-3 min-w-0 justify-end">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
           {user && (
-            <div
-              className={`pos-status-chip hidden sm:flex ${
-                !syncOk
-                  ? 'border-rose-800 bg-rose-900/30 text-rose-100'
-                  : queued > 0
-                    ? 'border-amber-800 bg-amber-900/30 text-amber-100'
-                    : 'border-emerald-800 bg-emerald-900/30 text-emerald-100'
-              }`}
-              title={
-                !syncOk
-                  ? t('common.offlineCannotReach')
-                  : queued > 0
-                    ? t('common.syncingQueued')
-                    : t('common.allSynced')
-              }
+            <StatusChip
+              tone={syncTone}
+              title={syncTitle}
+              className="hidden sm:inline-flex"
             >
               {!syncOk
                 ? t('layout.syncIndicatorOffline')
                 : queued > 0
                   ? t('layout.syncIndicatorSyncing', { count: queued })
                   : t('layout.syncIndicatorOnline')}
-            </div>
+            </StatusChip>
           )}
-          {/* Mobile: just a colored dot. */}
+          {/* Mobile: the dot alone carries the same state. */}
           {user && (
             <span
-              className={`sm:hidden inline-block w-2.5 h-2.5 rounded-full ${
+              className={cn(
+                'mr-1 inline-block size-2 rounded-full sm:hidden',
                 !syncOk
-                  ? 'bg-rose-500'
+                  ? 'bg-rose-400'
                   : queued > 0
                     ? 'bg-amber-400'
-                    : 'bg-emerald-500'
-              }`}
+                    : 'bg-emerald-400',
+              )}
               aria-label={
                 !syncOk
                   ? t('common.offline')
@@ -541,17 +439,11 @@ export default function AppLayout() {
                     ? t('common.syncing', { count: queued })
                     : t('common.online')
               }
-              title={
-                !syncOk
-                  ? t('common.offlineCannotReach')
-                  : queued > 0
-                    ? t('common.syncingQueued')
-                    : t('common.allSynced')
-              }
+              title={syncTitle}
             />
           )}
 
-          {/* Notification bell (kept OUTSIDE the horizontal scroller so the dropdown isn't clipped) */}
+          {/* Kept OUTSIDE any horizontal scroller so the dropdown isn't clipped. */}
           <div
             className="relative inline-block"
             tabIndex={-1}
@@ -561,59 +453,55 @@ export default function AppLayout() {
             }}
           >
             <button
-              className="pos-icon-btn cursor-pointer"
+              className="pos-icon-btn"
               aria-label={t('common.notifications')}
               onClick={() => setShowNotifications((v) => !v)}
               type="button"
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                className="pos-icon"
-              >
-                <path d="M12 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 006 14h12a1 1 0 00.707-1.707L18 11.586V8a6 6 0 00-6-6zm0 20a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
-              </svg>
+              <IconBell />
               {unreadCount > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] px-1 rounded-full min-w-[1.1rem] text-center">
-                  {unreadCount}
+                <span className="absolute right-1.5 top-1.5 flex min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[14px] text-white tabular">
+                  {unreadCount > 9 ? '9+' : unreadCount}
                 </span>
               )}
             </button>
             {showNotifications && (
               <div
-                className="absolute right-0 mt-2 w-72 bg-gray-800 rounded border border-gray-700 shadow-lg z-50"
+                className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-80 overflow-hidden"
                 tabIndex={-1}
               >
-                <div className="p-3 text-sm">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="font-semibold">
-                      {t('common.notifications')}
-                    </div>
-                    {user && unreadCount > 0 && (
-                      <button
-                        className="text-xs text-blue-400 hover:underline"
-                        onClick={async () => {
-                          await window.api.notifications
-                            .markAllRead(user.id)
-                            .catch(() => {});
-                          setUnreadCount(0);
-                        }}
-                        type="button"
-                      >
-                        {t('common.markAllRead')}
-                      </button>
-                    )}
+                <div className="flex items-center justify-between gap-3 border-b border-white/7 px-3 py-2.5">
+                  <div className="text-[13px] font-semibold text-gray-100">
+                    {t('common.notifications')}
                   </div>
+                  {user && unreadCount > 0 && (
+                    <button
+                      className="rounded px-1 text-[12px] font-medium text-gray-400 hover:text-gray-100"
+                      style={{ minHeight: 0 }}
+                      onClick={async () => {
+                        await window.api.notifications
+                          .markAllRead(user.id)
+                          .catch(() => {});
+                        setUnreadCount(0);
+                      }}
+                      type="button"
+                    >
+                      {t('common.markAllRead')}
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-[70vh] overflow-auto p-2">
                   {user ? (
                     <NotificationsList
                       userId={user.id}
                       onCount={handleNotifCount}
                     />
                   ) : (
-                    <div className="opacity-70">
-                      {t('common.noNotifications')}
-                    </div>
+                    <EmptyState
+                      compact
+                      title={t('common.noNotifications')}
+                      icon={<IconBell />}
+                    />
                   )}
                   {user && <OwnerRequests userId={user.id} />}
                 </div>
@@ -623,7 +511,7 @@ export default function AppLayout() {
 
           {user && (
             <button
-              className="pos-danger-btn ml-0.5 cursor-pointer"
+              className="pos-icon-btn hover:!bg-rose-500/12 hover:!text-rose-300"
               onClick={() => {
                 forceLogout(t('common.loggedOut'));
               }}
@@ -634,17 +522,46 @@ export default function AppLayout() {
               <IconLogout />
             </button>
           )}
-        </nav>
+        </div>
       </header>
+
       <main
-        className={`flex min-h-0 flex-1 flex-col overflow-hidden ${
-          flushTablesFloor ? '' : 'py-2 sm:py-4 safe-pb safe-x'
-        }`}
+        className={cn(
+          'flex min-h-0 flex-1 flex-col overflow-hidden',
+          !flushTablesFloor && 'safe-pb safe-x py-3 sm:py-5',
+        )}
       >
         <div className="flex min-h-0 flex-1 flex-col">
           <Outlet />
         </div>
       </main>
+
+      {user && (
+        <ConfirmDialog
+          open={confirmModal}
+          title={t('layout.clockOutConfirmTitle')}
+          confirmLabel={t('layout.clockOut')}
+          cancelLabel={t('common.cancel')}
+          destructive
+          onCancel={() => setConfirmModal(false)}
+          onConfirm={async () => {
+            const r: any = await window.api.shifts.clockOut(user.id);
+            // The server refuses to close a shift while the waiter still owns
+            // open tables. Surface the reason and keep them signed in so they
+            // can finish or transfer the table.
+            if (r && typeof r === 'object' && r.ok === false) {
+              toast.error(String(r.error || t('layout.clockOutOpenTables')), {
+                title: t('layout.clockOutBlockedTitle'),
+              });
+              setConfirmModal(false);
+              return;
+            }
+            setHasOpen(false);
+            forceLogout(t('common.clockedOut'));
+          }}
+        />
+      )}
+
       <UpdateNotification />
       <PrinterNotification />
       <FailedSyncPanel />
@@ -688,22 +605,34 @@ function NotificationsList({
     (n) => !/requested to add items/i.test(n.message),
   );
   if (!filtered.length)
-    return <div className="opacity-70">{t('common.noNotifications')}</div>;
+    return (
+      <EmptyState
+        compact
+        icon={<IconBell />}
+        title={t('common.noNotifications')}
+      />
+    );
   return (
-    <ul className="max-h-72 overflow-auto space-y-2">
+    <ul className="space-y-1">
       {filtered.map((n) => (
-        <li key={n.id} className="p-2 rounded bg-gray-700/60">
-          <div className="flex items-center justify-between">
-            <span className="text-xs opacity-70">
+        <li
+          key={n.id}
+          className={cn(
+            'rounded-lg border px-2.5 py-2',
+            n.readAt
+              ? 'border-transparent bg-white/3'
+              : 'border-white/12 bg-white/[0.05]',
+          )}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-500 tabular">
               {formatNotificationTimestamp(n.createdAt, t)}
             </span>
-            {!n.readAt && (
-              <span className="text-[10px] bg-blue-600 rounded px-1">
-                {t('common.newBadge')}
-              </span>
-            )}
+            {!n.readAt && <Badge tone="accent">{t('common.newBadge')}</Badge>}
           </div>
-          <div className="mt-1">{n.message}</div>
+          <div className="mt-1 text-[13px] leading-snug text-gray-200">
+            {n.message}
+          </div>
         </li>
       ))}
     </ul>
@@ -735,41 +664,53 @@ function OwnerRequests({ userId }: { userId: number }) {
   }, [userId]);
   if (!rows.length) return null;
   return (
-    <div className="mt-3 border-t border-gray-700 pt-2 max-h-64 overflow-auto">
-      <div className="text-xs opacity-70 mb-1">{t('layout.orderRequests')}</div>
-      <ul className="space-y-2">
+    <div className="mt-2 border-t border-white/7 pt-2">
+      <div className="pos-section-label mb-1.5 px-1">
+        {t('layout.orderRequests')}
+      </div>
+      <ul className="space-y-1.5">
         {rows.map((r) => (
-          <li key={r.id} className="p-2 rounded bg-gray-700/60">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">
+          <li
+            key={r.id}
+            className="rounded-lg border border-white/7 bg-white/3 px-2.5 py-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 truncate text-[13px] font-medium text-gray-100">
                 {t('layout.requestNumber', {
                   area: r.area,
                   table: r.tableLabel,
                   id: r.id,
                 })}
               </div>
-              <span className="text-xs opacity-70">
+              <span className="shrink-0 text-[11px] text-gray-500 tabular">
                 {formatNotificationTimestamp(r.createdAt, t)}
               </span>
             </div>
-            {r.note && <div className="text-xs opacity-70 mt-1">{r.note}</div>}
-            <div className="mt-2 text-xs">
+            {r.note && (
+              <div className="mt-0.5 text-[12px] text-gray-400">{r.note}</div>
+            )}
+            <div className="mt-1.5 text-[12px] text-gray-300">
               {Array.isArray(r.items) && r.items.length ? (
-                <ul className="list-disc ml-4 space-y-0.5">
+                <ul className="space-y-0.5">
                   {r.items.map((it: any, idx: number) => (
-                    <li key={idx}>
-                      {String(it.name || t('common.item'))} ×
-                      {Number(it.qty || 1)}
+                    <li key={idx} className="flex justify-between gap-2">
+                      <span className="truncate">
+                        {String(it.name || t('common.item'))}
+                      </span>
+                      <span className="shrink-0 text-gray-500 tabular">
+                        ×{Number(it.qty || 1)}
+                      </span>
                     </li>
                   ))}
                 </ul>
               ) : (
-                <div className="opacity-70">{t('common.noItems')}</div>
+                <div className="text-gray-500">{t('common.noItems')}</div>
               )}
             </div>
             <div className="mt-2 flex gap-2">
-              <button
-                className="px-2 py-1 bg-emerald-700 rounded"
+              <Button
+                size="sm"
+                variant="primary"
                 onClick={async () => {
                   await window.api.requests
                     .approve(r.id, userId)
@@ -778,9 +719,9 @@ function OwnerRequests({ userId }: { userId: number }) {
                 }}
               >
                 {t('common.approve')}
-              </button>
-              <button
-                className="px-2 py-1 bg-rose-700 rounded"
+              </Button>
+              <Button
+                size="sm"
                 onClick={async () => {
                   await window.api.requests
                     .reject(r.id, userId)
@@ -789,7 +730,7 @@ function OwnerRequests({ userId }: { userId: number }) {
                 }}
               >
                 {t('common.reject')}
-              </button>
+              </Button>
             </div>
           </li>
         ))}
@@ -829,6 +770,5 @@ function formatNotificationTimestamp(
   const yy = String(d.getFullYear()).slice(-2);
   const hh = String(d.getHours()).padStart(2, '0');
   const min = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${mm}/${dd}/${yy} ${hh}-${min}-${ss}`;
+  return `${dd}/${mm}/${yy} ${hh}:${min}`;
 }

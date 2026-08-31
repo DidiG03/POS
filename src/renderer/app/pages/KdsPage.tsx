@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import logo512 from '../../../../public/logo512.png';
+import { BrandMark } from '../../components/BrandMark';
 import {
   ALL_KDS_STATIONS,
   kdsStationLabel,
@@ -1038,8 +1038,8 @@ export default function KdsPage() {
       className="h-full min-h-screen bg-gray-950 text-gray-100 p-4 flex flex-col outline-none"
     >
       <div className="flex items-center justify-between gap-4 mb-3">
-        <div>
-          <div className="text-xl font-semibold">{title}</div>
+        <div className="flex items-center gap-3 min-w-0">
+          <BrandMark size="sm" compact subtitle={title} />
         </div>
         <div className="flex items-center gap-2">
           <div
@@ -1304,11 +1304,7 @@ export default function KdsPage() {
         </div>
       ) : tickets.length === 0 && !loading ? (
         <div className="flex flex-1 items-center justify-center min-h-0 py-8">
-          <img
-            src={logo512}
-            alt="Ullishtja Agri Turizëm"
-            className="max-h-[45vh] max-w-[min(420px,75vw)] w-auto object-contain"
-          />
+          <BrandMark size="lg" />
         </div>
       ) : (
         <div

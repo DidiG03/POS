@@ -219,6 +219,8 @@ const api: Api = {
       ipcRenderer.invoke('tickets:voidTicket', payload),
     getTableTooltip: (area: string, tableLabel: string) =>
       ipcRenderer.invoke('tickets:getTableTooltip', { area, tableLabel }),
+    listPaidTables: (input: { dateIso: string }) =>
+      ipcRenderer.invoke('tickets:listPaidTables', input),
     print: (payload: any) => ipcRenderer.invoke('tickets:print', payload),
   },
   print: {

@@ -1,6 +1,7 @@
 import { prisma } from '@db/client';
 import { coreServices, withTableLock } from './core';
 import { broadcastTableStatusChanged } from './realtime';
+import { seatCoveringReservationForOpenTable } from './reservations';
 
 export type SetTableOpenOptions = {
   /** When true, skip SSE/IPC fan-out (rare — caller broadcasts separately). */
@@ -54,6 +55,10 @@ export async function applyTableOpenState(
     } catch {
       // ignore if KDS tables are not migrated yet
     }
+  }
+
+  if (open) {
+    await seatCoveringReservationForOpenTable(area, label);
   }
 
   if (!options?.skipBroadcast) {

@@ -198,7 +198,7 @@ export function ReservationTimeUpDialog({
           <button
             type="button"
             disabled={busy != null}
-            className="flex-1 px-3 py-3 sm:py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium disabled:opacity-60"
+            className="flex-1 px-3 py-3 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium disabled:opacity-60"
             onClick={() => void extendStay()}
           >
             {busy === 'extend'
@@ -208,7 +208,7 @@ export function ReservationTimeUpDialog({
           <button
             type="button"
             disabled={busy != null}
-            className="flex-1 px-3 py-3 sm:py-2 rounded bg-zinc-600 hover:bg-zinc-500 text-sm font-medium disabled:opacity-60"
+            className="flex-1 px-3 py-3 rounded bg-zinc-600 hover:bg-zinc-500 text-sm font-medium disabled:opacity-60"
             onClick={() => void freeTable()}
           >
             {busy === 'free' ? t('common.saving') : t('reservations.freeTable')}

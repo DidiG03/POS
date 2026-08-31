@@ -42,6 +42,9 @@ const ADMIN = ['ADMIN'] as const;
 /** Roles that can work the floor. Mirrors `isClockOnlyRole` in @shared/utils/roles. */
 const POS = ['ADMIN', 'CASHIER', 'WAITER'] as const;
 
+/** POS plus HOST so the reservations floor can see open tickets. */
+const POS_AND_HOST = ['ADMIN', 'CASHIER', 'WAITER', 'HOST'] as const;
+
 /** Roles that work tickets in the kitchen. */
 const KITCHEN = [
   'ADMIN',
@@ -254,13 +257,22 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'system:openExternal': { allow: 'session' },
 
   // --------------------------------------------------------------- tables
-  'tables:listOpen': { allow: POS },
+  // HOST (and the dedicated reservations window) may read which tables have
+  // an open POS ticket so the floor can paint them occupied and block merge.
+  'tables:listOpen': { allow: POS_AND_HOST, windows: RESERVATIONS_WINDOWS },
   'tables:setOpen': { allow: POS },
   'tables:transfer': { allow: POS },
 
   // -------------------------------------------------------------- tickets
   'tickets:getLatestForTable': { allow: POS },
-  'tickets:getTableTooltip': { allow: POS },
+  'tickets:getTableTooltip': {
+    allow: POS_AND_HOST,
+    windows: RESERVATIONS_WINDOWS,
+  },
+  'tickets:listPaidTables': {
+    allow: POS_AND_HOST,
+    windows: RESERVATIONS_WINDOWS,
+  },
   // A busy terminal fires these constantly; the ceiling is only there to stop
   // a runaway loop, not to pace normal service.
   'tickets:log': { allow: POS, rateLimit: { maxAttempts: 100 } },

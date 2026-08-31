@@ -28,11 +28,17 @@ const kdsTicketUpdateMany = vi.fn();
 const coversCreate = vi.fn();
 const broadcastTableStatusChanged = vi.fn();
 const broadcastTicketsChanged = vi.fn();
+const moveCoveringReservationForTableTransfer = vi.fn();
 
 vi.mock('./realtime', () => ({
   broadcastTableStatusChanged: (...a: any[]) =>
     broadcastTableStatusChanged(...a),
   broadcastTicketsChanged: (...a: any[]) => broadcastTicketsChanged(...a),
+}));
+
+vi.mock('./reservations', () => ({
+  moveCoveringReservationForTableTransfer: (...a: any[]) =>
+    moveCoveringReservationForTableTransfer(...a),
 }));
 
 vi.mock('@db/client', () => ({
@@ -280,6 +286,7 @@ describe('transferTableLocal — on-shift requirement', () => {
     kdsOrderFindFirst.mockResolvedValue(null);
     kdsTicketUpdateMany.mockResolvedValue({ count: 0 });
     coversCreate.mockResolvedValue({});
+    moveCoveringReservationForTableTransfer.mockResolvedValue(undefined);
   });
 
   it('rejects ownership transfer when the target waiter is not on shift', async () => {
@@ -359,6 +366,12 @@ describe('transferTableLocal — on-shift requirement', () => {
         covers: 2,
       },
     });
+    expect(moveCoveringReservationForTableTransfer).toHaveBeenCalledWith(
+      'Sallon',
+      'T1',
+      'Sallon',
+      'T2',
+    );
   });
 
   it('tags every source-session row with the moved-out marker when only moving the table', async () => {

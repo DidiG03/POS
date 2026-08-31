@@ -118,6 +118,39 @@ describe('IPC policy shape', () => {
     expect(IPC_POLICIES['layout:getMerges']?.windows).toEqual(['reservations']);
   });
 
+  it('lets the host floor read open POS tickets', () => {
+    expect(IPC_POLICIES['tables:listOpen']?.allow).toEqual([
+      'ADMIN',
+      'CASHIER',
+      'WAITER',
+      'HOST',
+    ]);
+    expect(IPC_POLICIES['tables:listOpen']?.windows).toEqual(['reservations']);
+    expect(IPC_POLICIES['tickets:getTableTooltip']?.allow).toEqual([
+      'ADMIN',
+      'CASHIER',
+      'WAITER',
+      'HOST',
+    ]);
+    expect(IPC_POLICIES['tickets:getTableTooltip']?.windows).toEqual([
+      'reservations',
+    ]);
+    expect(IPC_POLICIES['tickets:listPaidTables']?.allow).toEqual([
+      'ADMIN',
+      'CASHIER',
+      'WAITER',
+      'HOST',
+    ]);
+    expect(IPC_POLICIES['tickets:listPaidTables']?.windows).toEqual([
+      'reservations',
+    ]);
+    expect(IPC_POLICIES['tables:setOpen']?.allow).toEqual([
+      'ADMIN',
+      'CASHIER',
+      'WAITER',
+    ]);
+  });
+
   it('uses only known roles', () => {
     const knownRoles = new Set([
       'ADMIN',

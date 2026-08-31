@@ -15,6 +15,15 @@ import {
 } from '../../utils/reservationStatusWindow';
 import { PageSpinner } from '../../components/PageSpinner';
 import { afterPaint } from '../../utils/afterPaint';
+import { IconButton } from '../../components/ui';
+import { IconClose, IconEdit } from '../../components/icons';
+import {
+  reservationHasOpenTicket,
+  reservationHasPaidTicket,
+  ticketCoveringTableKeys,
+  uncoveredOpenTickets,
+  uncoveredPaidTables,
+} from '@shared/tableOccupancy';
 
 const STATUS_BADGE: Record<ReservationStatus, string> = {
   BOOKED: 'bg-amber-900/60 border-amber-700 text-amber-100',
@@ -31,6 +40,26 @@ function StatusChip({ status }: { status: ReservationStatus }) {
       className={`inline-flex items-center text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border ${STATUS_BADGE[status]}`}
     >
       {reservationStatusLabel(t, status)}
+    </span>
+  );
+}
+
+function OpenTicketChip() {
+  const { t } = useTranslation();
+  return (
+    <span
+      className={`inline-flex items-center text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border ${STATUS_BADGE.SEATED}`}
+    >
+      {t('reservations.openPosTicket')}
+    </span>
+  );
+}
+
+function PaidTicketChip() {
+  const { t } = useTranslation();
+  return (
+    <span className="inline-flex items-center text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border bg-emerald-800/50 border-emerald-600 text-emerald-100">
+      {t('reservations.paidPosTicket')}
     </span>
   );
 }
@@ -91,6 +120,14 @@ function isLiveListStatus(status: ReservationStatus): boolean {
   return status === 'BOOKED' || status === 'SEATED';
 }
 
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
 export default function ReservationsListPage() {
   const { t } = useTranslation();
   const ctx = useOutletContext<ReservationsContext>();
@@ -103,7 +140,11 @@ export default function ReservationsListPage() {
     listFiltersOpen,
     setListFiltersOpen,
     setListFiltersActive,
+    showDayOccupancy,
+    setShowDayOccupancy,
   } = ctx;
+  const openTables = ctx.openTables || [];
+  const paidTables = ctx.paidTables || [];
   const [reservations, setReservations] = useState<ReservationDTO[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [resReadyKey, setResReadyKey] = useState<string | null>(null);
@@ -128,6 +169,7 @@ export default function ReservationsListPage() {
     setAreaFilter('');
     setStatusFilter('');
     setShowFinished(false);
+    setShowDayOccupancy(false);
   }
 
   const reloadGen = useRef(0);
@@ -268,6 +310,53 @@ export default function ReservationsListPage() {
     });
   }, [sorted, query, statusFilter, areaFilter, showFinished, nowMs]);
 
+  const isToday = isSameLocalDay(date, new Date());
+
+  const uncoveredTickets = useMemo(() => {
+    if (!isToday) return [];
+    const liveKeys = ticketCoveringTableKeys(reservations, nowMs);
+    return uncoveredOpenTickets(openTables, liveKeys);
+  }, [isToday, reservations, openTables, nowMs]);
+
+  const uncoveredPaid = useMemo(() => {
+    if (!isToday) return [];
+    return uncoveredPaidTables(paidTables, reservations, openTables);
+  }, [isToday, paidTables, reservations, openTables]);
+
+  const filteredTickets = useMemo(() => {
+    if (statusFilter && statusFilter !== 'SEATED') return [];
+    const qText = norm(query.trim());
+    const useText = qText.length > 0;
+    const useArea = areaFilter.length > 0;
+    return uncoveredTickets.filter((row) => {
+      if (useArea && row.area !== areaFilter) return false;
+      if (useText) {
+        const tableHit = norm(row.label).includes(qText);
+        const areaHit = norm(row.area).includes(qText);
+        if (!tableHit && !areaHit) return false;
+      }
+      return true;
+    });
+  }, [uncoveredTickets, statusFilter, query, areaFilter]);
+
+  const filteredPaid = useMemo(() => {
+    const showPaidLeftover =
+      statusFilter === 'COMPLETED' || (!statusFilter && showFinished);
+    if (!showPaidLeftover) return [];
+    const qText = norm(query.trim());
+    const useText = qText.length > 0;
+    const useArea = areaFilter.length > 0;
+    return uncoveredPaid.filter((row) => {
+      if (useArea && row.area !== areaFilter) return false;
+      if (useText) {
+        const tableHit = norm(row.label).includes(qText);
+        const areaHit = norm(row.area).includes(qText);
+        if (!tableHit && !areaHit) return false;
+      }
+      return true;
+    });
+  }, [uncoveredPaid, statusFilter, showFinished, query, areaFilter]);
+
   const totalCovers = useMemo(
     () => filtered.reduce((s, r) => s + Number(r.partySize || 0), 0),
     [filtered],
@@ -277,21 +366,44 @@ export default function ReservationsListPage() {
     query.length > 0 ||
     areaFilter.length > 0 ||
     statusFilter !== '' ||
-    showFinished;
+    showFinished ||
+    showDayOccupancy;
 
   const coversLabel = t('reservations.covers', { count: totalCovers });
+  const displayedCount =
+    filtered.length + filteredTickets.length + filteredPaid.length;
 
   const universeCount = useMemo(() => {
-    if (showFinished || statusFilter !== '') return sorted.length;
-    return sorted.filter((r) =>
-      isLiveListStatus(
-        effectiveReservationStatus(r, nowMs) as ReservationStatus,
-      ),
-    ).length;
-  }, [sorted, showFinished, statusFilter, nowMs]);
+    const ticketN =
+      !statusFilter || statusFilter === 'SEATED' ? uncoveredTickets.length : 0;
+    const paidN =
+      statusFilter === 'COMPLETED' || (!statusFilter && showFinished)
+        ? uncoveredPaid.length
+        : 0;
+    if (showFinished || statusFilter !== '')
+      return sorted.length + ticketN + paidN;
+    return (
+      sorted.filter((r) =>
+        isLiveListStatus(
+          effectiveReservationStatus(r, nowMs) as ReservationStatus,
+        ),
+      ).length +
+      ticketN +
+      paidN
+    );
+  }, [
+    sorted,
+    showFinished,
+    statusFilter,
+    nowMs,
+    uncoveredTickets.length,
+    uncoveredPaid.length,
+  ]);
 
   const emptyListMessage =
-    sorted.length === 0
+    sorted.length === 0 &&
+    uncoveredTickets.length === 0 &&
+    uncoveredPaid.length === 0
       ? t('reservations.noReservationsDay')
       : !filtersActive
         ? t('reservations.noLiveReservations')
@@ -318,12 +430,12 @@ export default function ReservationsListPage() {
     ? t('reservations.loadingReservations')
     : filtersActive
       ? t('reservations.summaryFiltered', {
-          filtered: filtered.length,
+          filtered: displayedCount,
           total: universeCount,
           covers: coversLabel,
         })
       : t('reservations.summaryTotal', {
-          count: filtered.length,
+          count: displayedCount,
           covers: coversLabel,
         });
 
@@ -431,6 +543,20 @@ export default function ReservationsListPage() {
                 />
                 {t('reservations.showFinished')}
               </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={showDayOccupancy}
+                  onChange={(e) => setShowDayOccupancy(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 shrink-0"
+                />
+                <span>
+                  {t('reservations.showDayOccupancy')}
+                  <span className="block text-xs opacity-70 mt-0.5">
+                    {t('reservations.showDayOccupancyHint')}
+                  </span>
+                </span>
+              </label>
             </div>
             <div className="flex items-center gap-2 p-3 border-t border-gray-700">
               {filtersActive && (
@@ -445,8 +571,9 @@ export default function ReservationsListPage() {
               <button
                 type="button"
                 onClick={() => setListFiltersOpen(false)}
-                className="ml-auto px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium"
+                className="ml-auto inline-flex items-center gap-1.5 px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium"
               >
+                <IconClose />
                 {t('common.close')}
               </button>
             </div>
@@ -463,13 +590,77 @@ export default function ReservationsListPage() {
       <div className="relative min-h-[50vh]">
         {/* Mobile: stacked cards (a real table is unusable below ~700px). */}
         <div className="sm:hidden space-y-2">
-          {filtered.length === 0 && viewReady && (
-            <div className="rounded border border-gray-700 bg-gray-800 p-4 text-center text-sm opacity-70">
-              {emptyListMessage}
+          {filtered.length === 0 &&
+            filteredTickets.length === 0 &&
+            filteredPaid.length === 0 &&
+            viewReady && (
+              <div className="rounded border border-gray-700 bg-gray-800 p-4 text-center text-sm opacity-70">
+                {emptyListMessage}
+              </div>
+            )}
+          {filteredTickets.map((ticket) => (
+            <div
+              key={`ticket:${ticket.area}:${ticket.label}`}
+              className="w-full text-left rounded border border-rose-800/70 bg-gray-800 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="shrink-0">
+                    <div className="font-mono text-base">—</div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {t('reservations.openPosTicket')}
+                    </div>
+                  </div>
+                </div>
+                <OpenTicketChip />
+              </div>
+              <div className="mt-2 flex items-center gap-3 text-xs opacity-80">
+                <span>{ticket.area}</span>
+                <span>
+                  {t('reservations.tablePrefix', { label: ticket.label })}
+                </span>
+              </div>
             </div>
-          )}
+          ))}
+          {filteredPaid.map((paid) => (
+            <div
+              key={`paid:${paid.area}:${paid.label}:${paid.paidAt}`}
+              className="w-full text-left rounded border border-emerald-800/50 bg-gray-800 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="shrink-0">
+                    <div className="font-mono text-base">
+                      {formatReservationClock(paid.paidAt)}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {t('reservations.paidPosTicket')}
+                    </div>
+                  </div>
+                </div>
+                <PaidTicketChip />
+              </div>
+              <div className="mt-2 flex items-center gap-3 text-xs opacity-80">
+                <span>{paid.area}</span>
+                <span>
+                  {t('reservations.tablePrefix', { label: paid.label })}
+                </span>
+              </div>
+            </div>
+          ))}
           {filtered.map((r) => {
             const seatedAt = distinctSeatedAt(r.startsAt, r.seatedAt);
+            const ticketOpen = reservationHasOpenTicket(r, openTables, nowMs);
+            const ticketPaid = reservationHasPaidTicket(
+              r,
+              paidTables,
+              openTables,
+              reservations,
+            );
             return (
               <button
                 key={r.id}
@@ -505,11 +696,21 @@ export default function ReservationsListPage() {
                       )}
                     </div>
                   </div>
-                  <StatusChip
-                    status={
-                      effectiveReservationStatus(r, nowMs) as ReservationStatus
-                    }
-                  />
+                  <span className="flex flex-col items-end gap-1 shrink-0">
+                    <StatusChip
+                      status={
+                        effectiveReservationStatus(
+                          r,
+                          nowMs,
+                        ) as ReservationStatus
+                      }
+                    />
+                    {ticketOpen ? (
+                      <OpenTicketChip />
+                    ) : ticketPaid ? (
+                      <PaidTicketChip />
+                    ) : null}
+                  </span>
                 </div>
                 <div className="mt-2 flex items-center gap-3 text-xs opacity-80">
                   <span>{r.area}</span>
@@ -529,54 +730,115 @@ export default function ReservationsListPage() {
           })}
         </div>
 
-        {/* Tablet/desktop: full table. */}
-        <div className="hidden sm:block rounded border border-gray-700 bg-gray-800 overflow-hidden">
-          <table className="w-full text-sm">
+        {/* Tablet/desktop: full table. Scroll sideways if the tablet is narrow. */}
+        <div className="hidden sm:block rounded border border-gray-700 bg-gray-800 overflow-x-auto">
+          <table className="w-full min-w-[720px] text-sm">
             <thead className="bg-gray-900/60 text-xs uppercase tracking-wide">
               <tr>
-                <th className="text-left px-3 py-2">
+                <th className="text-left px-3 py-3">
                   {t('reservations.colTime')}
                 </th>
-                <th className="text-left px-3 py-2">
+                <th className="text-left px-3 py-3">
                   {t('reservations.colCustomer')}
                 </th>
-                <th className="text-left px-3 py-2">
+                <th className="text-left px-3 py-3">
                   {t('reservations.colParty')}
                 </th>
-                <th className="text-left px-3 py-2">
+                <th className="text-left px-3 py-3">
                   {t('reservations.colArea')}
                 </th>
-                <th className="text-left px-3 py-2">
+                <th className="text-left px-3 py-3">
                   {t('reservations.colTable')}
                 </th>
-                <th className="text-left px-3 py-2">
+                <th className="text-left px-3 py-3">
                   {t('reservations.colStatus')}
                 </th>
-                <th className="text-left px-3 py-2">
+                <th className="text-left px-3 py-3">
                   {t('reservations.colNote')}
                 </th>
-                <th className="text-right px-3 py-2">
+                <th className="text-right px-3 py-3">
                   {t('reservations.colActions')}
                 </th>
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && viewReady && (
-                <tr>
-                  <td colSpan={8} className="px-3 py-6 text-center opacity-70">
-                    {emptyListMessage}
+              {filtered.length === 0 &&
+                filteredTickets.length === 0 &&
+                filteredPaid.length === 0 &&
+                viewReady && (
+                  <tr>
+                    <td
+                      colSpan={8}
+                      className="px-3 py-6 text-center opacity-70"
+                    >
+                      {emptyListMessage}
+                    </td>
+                  </tr>
+                )}
+              {filteredTickets.map((ticket) => (
+                <tr
+                  key={`ticket:${ticket.area}:${ticket.label}`}
+                  className="border-t border-gray-700/60 bg-rose-950/20"
+                >
+                  <td className="px-3 py-3 font-mono">—</td>
+                  <td className="px-3 py-3">
+                    <div className="font-medium">
+                      {t('reservations.openPosTicket')}
+                    </div>
                   </td>
+                  <td className="px-3 py-3">—</td>
+                  <td className="px-3 py-3">{ticket.area}</td>
+                  <td className="px-3 py-3">{ticket.label}</td>
+                  <td className="px-3 py-3">
+                    <OpenTicketChip />
+                  </td>
+                  <td className="px-3 py-3">—</td>
+                  <td className="px-3 py-3" />
                 </tr>
-              )}
+              ))}
+              {filteredPaid.map((paid) => (
+                <tr
+                  key={`paid:${paid.area}:${paid.label}:${paid.paidAt}`}
+                  className="border-t border-gray-700/60 bg-emerald-950/15"
+                >
+                  <td className="px-3 py-3 font-mono">
+                    {formatReservationClock(paid.paidAt)}
+                  </td>
+                  <td className="px-3 py-3">
+                    <div className="font-medium">
+                      {t('reservations.paidPosTicket')}
+                    </div>
+                  </td>
+                  <td className="px-3 py-3">—</td>
+                  <td className="px-3 py-3">{paid.area}</td>
+                  <td className="px-3 py-3">{paid.label}</td>
+                  <td className="px-3 py-3">
+                    <PaidTicketChip />
+                  </td>
+                  <td className="px-3 py-3">—</td>
+                  <td className="px-3 py-3" />
+                </tr>
+              ))}
               {filtered.map((r) => {
                 const seatedAt = distinctSeatedAt(r.startsAt, r.seatedAt);
+                const ticketOpen = reservationHasOpenTicket(
+                  r,
+                  openTables,
+                  nowMs,
+                );
+                const ticketPaid = reservationHasPaidTicket(
+                  r,
+                  paidTables,
+                  openTables,
+                  reservations,
+                );
                 return (
                   <tr
                     key={r.id}
                     className="border-t border-gray-700/60 hover:bg-gray-700/30 cursor-pointer"
                     onClick={() => onRowPress(r)}
                   >
-                    <td className="px-3 py-2 font-mono">
+                    <td className="px-3 py-3 font-mono">
                       <div>{formatReservationClock(r.startsAt)}</div>
                       {seatedAt ? (
                         <div className="text-[10px] font-sans opacity-60">
@@ -585,7 +847,7 @@ export default function ReservationsListPage() {
                         </div>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-3">
                       <div className="font-medium">{r.customerName}</div>
                       {r.customerPhone && (
                         <div className="text-xs opacity-70">
@@ -593,36 +855,41 @@ export default function ReservationsListPage() {
                         </div>
                       )}
                     </td>
-                    <td className="px-3 py-2">{r.partySize}</td>
-                    <td className="px-3 py-2">{r.area}</td>
-                    <td className="px-3 py-2">{r.tableLabel || '—'}</td>
-                    <td className="px-3 py-2">
-                      <StatusChip
-                        status={
-                          effectiveReservationStatus(
-                            r,
-                            nowMs,
-                          ) as ReservationStatus
-                        }
-                      />
+                    <td className="px-3 py-3">{r.partySize}</td>
+                    <td className="px-3 py-3">{r.area}</td>
+                    <td className="px-3 py-3">{r.tableLabel || '—'}</td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <StatusChip
+                          status={
+                            effectiveReservationStatus(
+                              r,
+                              nowMs,
+                            ) as ReservationStatus
+                          }
+                        />
+                        {ticketOpen ? (
+                          <OpenTicketChip />
+                        ) : ticketPaid ? (
+                          <PaidTicketChip />
+                        ) : null}
+                      </div>
                     </td>
                     <td
-                      className="px-3 py-2 max-w-xs truncate"
+                      className="px-3 py-3 max-w-xs truncate"
                       title={r.note || ''}
                     >
                       {r.note || '—'}
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs"
+                    <td className="px-3 py-3 text-right">
+                      <IconButton
+                        label={t('reservations.edit')}
+                        icon={<IconEdit />}
                         onClick={(e) => {
                           e.stopPropagation();
                           onRowPress(r);
                         }}
-                      >
-                        {t('reservations.edit')}
-                      </button>
+                      />
                     </td>
                   </tr>
                 );

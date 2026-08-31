@@ -12,6 +12,7 @@ import {
   resolveTableFillColor,
 } from '@shared/floorTableStyle';
 import {
+  clientToFloorLayout,
   formatMergeLabel,
   mergeTableGroups,
   pruneMergeGroups,
@@ -298,6 +299,18 @@ function pickGroupBadge(
   return undefined;
 }
 
+function pickGroupUsageCount(
+  labels: string[],
+  usageCountByLabel?: Record<string, number>,
+): number | undefined {
+  if (!usageCountByLabel) return undefined;
+  const n = labels.reduce(
+    (sum, label) => sum + (Number(usageCountByLabel[label]) || 0),
+    0,
+  );
+  return n > 0 ? n : undefined;
+}
+
 function buildDisplayTables(
   tables: FloorTableNode[],
   mergeGroups: TableMergeGroup[],
@@ -325,11 +338,27 @@ function buildDisplayTables(
     const maxH = Math.max(...sizes.map((s) => s.h));
     const extra = Math.min(32, 10 * (members.length - 1));
     const seats = members.reduce((sum, m) => sum + (Number(m.seats) || 0), 0);
+    const midX = members.reduce((sum, m) => sum + m.x, 0) / members.length;
+    const midY = members.reduce((sum, m) => sum + m.y, 0) / members.length;
+    const minX = Math.min(...members.map((m) => m.x));
+    const maxX = Math.max(...members.map((m) => m.x));
+    const minY = Math.min(...members.map((m) => m.y));
+    const maxY = Math.max(...members.map((m) => m.y));
+    const pad = Math.max(maxW, maxH, 80);
+    const gx = Number(g.x);
+    const gy = Number(g.y);
+    const offFloor =
+      !Number.isFinite(gx) ||
+      !Number.isFinite(gy) ||
+      gx < minX - pad ||
+      gx > maxX + pad ||
+      gy < minY - pad ||
+      gy > maxY + pad;
     out.push({
       ...members[0],
       label: formatMergeLabel(g.labels),
-      x: g.x,
-      y: g.y,
+      x: offFloor ? midX : gx,
+      y: offFloor ? midY : gy,
       w: maxW + extra,
       h: Math.max(maxH, Math.round(maxH + extra * 0.35)),
       seats: seats || members[0].seats,
@@ -358,6 +387,8 @@ type FloorCanvasProps = {
   /** Applied when colorByLabel is set but this table has no entry (host free tables). */
   unlistedColorClass?: string;
   badgeByLabel?: BadgeMap;
+  /** When set, tables show a divider + this count under the label. */
+  usageCountByLabel?: Record<string, number>;
   // Interactions
   onTableClick?: (label: string, members?: string[]) => void;
   /** Press-and-hold or right-click on a table (host floor, not the layout editor). */
@@ -390,6 +421,7 @@ export default function FloorCanvas({
   colorByLabel,
   unlistedColorClass,
   badgeByLabel,
+  usageCountByLabel,
   onTableClick,
   onTableLongPress,
   onLayoutReady,
@@ -694,6 +726,15 @@ export default function FloorCanvas({
   onCommitMergesRef.current = onCommitMerges;
   const onMergeBlockedRef = useRef(onMergeBlocked);
   onMergeBlockedRef.current = onMergeBlocked;
+  const pointerToLayoutRef = useRef<
+    (
+      clientX: number,
+      clientY: number,
+    ) => {
+      x: number;
+      y: number;
+    }
+  >((clientX, clientY) => ({ x: clientX, y: clientY }));
 
   const membersOccupied = useCallback((labels: string[]) => {
     const check = isOccupiedRef.current;
@@ -748,8 +789,8 @@ export default function FloorCanvas({
         mergeGroupsRef.current,
         source.memberLabels,
         target.memberLabels,
-        (x + target.x) / 2,
-        (y + target.y) / 2,
+        (source.x + target.x) / 2,
+        (source.y + target.y) / 2,
       );
       onCommitMergesRef.current?.(next);
       return true;
@@ -865,6 +906,17 @@ export default function FloorCanvas({
     () => setUserZoom({ scale: 1, tx: 0, ty: 0 }),
     [],
   );
+  pointerToLayoutRef.current = (clientX, clientY) => {
+    const outer = outerRef.current?.getBoundingClientRect();
+    if (!outer) return { x: clientX, y: clientY };
+    return clientToFloorLayout(
+      clientX,
+      clientY,
+      outer,
+      userZoomRef.current,
+      viewTransform,
+    );
+  };
 
   useEffect(() => {
     const el = outerRef.current;
@@ -1221,12 +1273,6 @@ export default function FloorCanvas({
                   selected={selectedId === t.id}
                   mergeHighlight={mergeHoverKey === t.displayKey}
                   mergeDragEnabled={canMergeDrag}
-                  layoutScaleX={
-                    editable ? 1 : viewTransform.scaleX * userZoom.scale
-                  }
-                  layoutScaleY={
-                    editable ? 1 : viewTransform.scaleY * userZoom.scale
-                  }
                   onMove={handleMove}
                   onClick={() => {
                     if (editable) {
@@ -1256,6 +1302,9 @@ export default function FloorCanvas({
                       ? (x, y) => handleMergeDrop(t, x, y)
                       : undefined
                   }
+                  pointerToLayout={(clientX, clientY) =>
+                    pointerToLayoutRef.current(clientX, clientY)
+                  }
                   onMergeDragEnd={() => setMergeHoverKey(null)}
                   onDelete={() => handleDelete(t.id)}
                   colorClass={
@@ -1265,7 +1314,15 @@ export default function FloorCanvas({
                       unlistedColorClass,
                     ) ?? undefined
                   }
-                  badge={pickGroupBadge(t.memberLabels, badgeByLabel)}
+                  badge={
+                    pickGroupUsageCount(t.memberLabels, usageCountByLabel)
+                      ? undefined
+                      : pickGroupBadge(t.memberLabels, badgeByLabel)
+                  }
+                  usageCount={pickGroupUsageCount(
+                    t.memberLabels,
+                    usageCountByLabel,
+                  )}
                 />
               );
             })}
@@ -1955,34 +2012,37 @@ function Circle({
   selected,
   mergeHighlight,
   mergeDragEnabled,
-  layoutScaleX = 1,
-  layoutScaleY = 1,
   onMove,
   onClick,
   onLongPress,
   onMergeMove,
   onMergeDrop,
   onMergeDragEnd,
+  pointerToLayout,
   onDelete,
   colorClass,
   badge,
+  usageCount,
 }: {
   node: FloorTableNode;
   editable: boolean;
   selected?: boolean;
   mergeHighlight?: boolean;
   mergeDragEnabled?: boolean;
-  layoutScaleX?: number;
-  layoutScaleY?: number;
   onMove: (id: number, x: number, y: number) => void;
   onClick?: () => void;
   onLongPress?: (pos: { clientX: number; clientY: number }) => void;
   onMergeMove?: (x: number, y: number) => void;
   onMergeDrop?: (x: number, y: number) => boolean;
   onMergeDragEnd?: () => void;
+  pointerToLayout?: (
+    clientX: number,
+    clientY: number,
+  ) => { x: number; y: number };
   onDelete?: () => void;
   colorClass?: string;
   badge?: string;
+  usageCount?: number;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number }>({
@@ -2008,6 +2068,8 @@ function Circle({
   onMergeDropRef.current = onMergeDrop;
   const onMergeDragEndRef = useRef(onMergeDragEnd);
   onMergeDragEndRef.current = onMergeDragEnd;
+  const pointerToLayoutRef = useRef(pointerToLayout);
+  pointerToLayoutRef.current = pointerToLayout;
   const nodeRef = useRef(node);
   nodeRef.current = node;
 
@@ -2105,15 +2167,10 @@ function Circle({
     };
 
     const applyPosFromEvent = (e: PointerEvent) => {
-      const parent = el.parentElement!.getBoundingClientRect();
-      const sx = layoutScaleX > 0 ? layoutScaleX : 1;
-      const sy = layoutScaleY > 0 ? layoutScaleY : 1;
-      const layoutW = parent.width / sx;
-      const layoutH = parent.height / sy;
-      const relX = (e.clientX - parent.left) / sx;
-      const relY = (e.clientY - parent.top) / sy;
-      const newX = Math.max(16, Math.min(layoutW - 16, relX));
-      const newY = Math.max(16, Math.min(layoutH - 16, relY));
+      const mapped = pointerToLayoutRef.current?.(e.clientX, e.clientY);
+      if (!mapped) return;
+      const newX = mapped.x;
+      const newY = mapped.y;
       posRef.current = { x: newX, y: newY };
       if (rafRef.current == null) {
         rafRef.current = window.requestAnimationFrame(() => {
@@ -2202,7 +2259,7 @@ function Circle({
         rafRef.current = null;
       }
     };
-  }, [editable, mergeDragEnabled, layoutScaleX, layoutScaleY]);
+  }, [editable, mergeDragEnabled]);
 
   const shape: TableShape = node.shape ?? 'circle';
   const w = Math.max(36, Number(node.w) || (shape === 'rect' ? 100 : 64));
@@ -2282,15 +2339,22 @@ function Circle({
           >
             {node.label}
           </span>
-          {badge && (
+          {usageCount != null && usageCount > 0 ? (
+            <>
+              <span className="my-0.5 h-px w-5 bg-white/55" aria-hidden />
+              <span className="text-[11px] font-bold tabular-nums">
+                {usageCount}
+              </span>
+            </>
+          ) : badge ? (
             <span className="mt-0.5 text-[10px] font-semibold px-1 rounded bg-black/40 max-w-[80px] truncate">
               {badge}
             </span>
-          )}
+          ) : null}
         </div>
         {/* Capacity badge — bottom-right, hidden when a status badge
             is overriding it. */}
-        {node.seats && !badge && (
+        {node.seats && !badge && !(usageCount != null && usageCount > 0) && (
           <span className="absolute bottom-0.5 right-1 text-[10px] font-semibold opacity-80">
             {node.seats}
           </span>

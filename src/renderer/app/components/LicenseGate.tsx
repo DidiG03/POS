@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { BrandMark } from '../../components/BrandMark';
 
 type LicenseStatus = {
   required: boolean;
@@ -57,7 +58,7 @@ export default function LicenseGate({
   if (!isHost) return <>{children}</>;
   if (!status) {
     return (
-      <div className="h-full flex items-center justify-center bg-gray-950 text-gray-200">
+      <div className="h-full flex items-center justify-center pos-app pos-app--auth text-gray-200">
         {t('common.loading')}
       </div>
     );
@@ -114,11 +115,14 @@ export default function LicenseGate({
   }
 
   return (
-    <div className="h-full flex items-center justify-center bg-gray-950 text-gray-100 p-4">
-      <div className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-5 space-y-4">
+    <div className="h-full flex items-center justify-center pos-app pos-app--auth text-gray-100 p-4">
+      <div className="w-full max-w-md pos-surface-panel p-5 space-y-4">
+        <BrandMark size="md" />
         <div>
-          <div className="text-lg font-semibold">{t('license.title')}</div>
-          <div className="text-sm opacity-80 mt-1">{t('license.body')}</div>
+          <div className="text-lg font-semibold tracking-tight">
+            {t('license.title')}
+          </div>
+          <div className="text-sm text-gray-400 mt-1">{t('license.body')}</div>
         </div>
         {status.message && (
           <div className="text-xs text-amber-200/90">{status.message}</div>
@@ -126,7 +130,7 @@ export default function LicenseGate({
         <label className="block text-sm">
           <div className="mb-1 opacity-80">{t('license.email')}</div>
           <input
-            className="w-full bg-gray-800 rounded px-3 py-2"
+            className="pos-input"
             type="email"
             autoComplete="email"
             value={email}
@@ -136,7 +140,7 @@ export default function LicenseGate({
         </label>
         {mode === 'pay' ? (
           <button
-            className="w-full px-3 py-2 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50"
+            className="w-full pos-btn-primary disabled:opacity-50"
             disabled={Boolean(busy) || !email.includes('@')}
             type="button"
             onClick={() => void subscribe()}
@@ -147,7 +151,7 @@ export default function LicenseGate({
           </button>
         ) : (
           <button
-            className="w-full px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50"
+            className="w-full pos-btn-primary disabled:opacity-50"
             disabled={Boolean(busy) || !email.includes('@')}
             type="button"
             onClick={() => void restore()}

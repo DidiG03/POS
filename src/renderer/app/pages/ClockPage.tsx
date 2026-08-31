@@ -30,17 +30,22 @@ export default function ClockPage() {
       <div className="w-full max-w-xl pos-surface-panel p-5 sm:p-6">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
-            <div className="text-lg font-semibold">Clock in / out</div>
-            <div className="text-sm opacity-80">
-              Staff: <span className="font-semibold">{user.displayName}</span> •
-              Role:{' '}
-              <span className="font-mono">
+            <div className="text-lg font-semibold tracking-tight">
+              Clock in / out
+            </div>
+            <div className="text-sm text-gray-400 mt-0.5">
+              Staff:{' '}
+              <span className="font-semibold text-gray-100">
+                {user.displayName}
+              </span>{' '}
+              • Role:{' '}
+              <span className="font-mono text-gray-300">
                 {String((user as any).role || '').toUpperCase()}
               </span>
             </div>
           </div>
           <button
-            className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
+            className="pos-btn text-sm"
             onClick={() => navigate('/')}
             type="button"
           >
@@ -48,7 +53,7 @@ export default function ClockPage() {
           </button>
         </div>
 
-        <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4 mb-4">
+        <div className="pos-stat mb-4">
           <div className="flex items-center justify-between">
             <div>
               <div className="text-xs opacity-70 mb-1">Shift status</div>
@@ -59,11 +64,7 @@ export default function ClockPage() {
                 Opened at: {openedAt}
               </div>
             </div>
-            <button
-              className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
-              onClick={refresh}
-              type="button"
-            >
+            <button className="pos-btn text-sm" onClick={refresh} type="button">
               Refresh
             </button>
           </div>
@@ -77,7 +78,7 @@ export default function ClockPage() {
 
         <div className="flex gap-3">
           <button
-            className="flex-1 rounded-lg bg-emerald-700 py-3 text-base font-semibold text-white transition-colors hover:bg-emerald-600 disabled:opacity-60"
+            className="flex-1 pos-btn-primary py-3 text-base disabled:opacity-60"
             disabled={busy != null || isOpen}
             onClick={async () => {
               if (!user?.id) return;

@@ -9,6 +9,7 @@ import { formatMoneyCompact } from '../../utils/format';
 import { PageSpinner } from '../../components/PageSpinner';
 import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
 import FloorCanvas from '../components/FloorCanvas';
+import { sanitizeMergeGroups, type TableMergeGroup } from '@shared/tableMerge';
 
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
 
@@ -65,6 +66,7 @@ export default function TablesPage() {
 
   const [openLoaded, setOpenLoaded] = useState(false);
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
+  const [mergeGroups, setMergeGroups] = useState<TableMergeGroup[]>([]);
 
   useEffect(() => {
     (window as any).__tableStatusStore__ = { setOpen };
@@ -72,6 +74,38 @@ export default function TablesPage() {
       (window as any).__tableStatusStore__ = null;
     };
   }, [setOpen]);
+
+  const reloadMerges = useCallback(async () => {
+    if (!area) {
+      setMergeGroups([]);
+      return;
+    }
+    const groups = await window.api.layout.getMerges(area).catch(() => []);
+    setMergeGroups(sanitizeMergeGroups(groups));
+  }, [area]);
+
+  useEffect(() => {
+    void reloadMerges();
+  }, [reloadMerges]);
+
+  useEffect(() => {
+    const onMerges = (ev: any) => {
+      const detail = (ev?.detail || {}) as { area?: string };
+      if (detail.area && area && String(detail.area) !== String(area)) return;
+      void reloadMerges();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void reloadMerges();
+    };
+    window.addEventListener('pos:tableMergesChanged', onMerges);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      window.removeEventListener('pos:tableMergesChanged', onMerges);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [area, reloadMerges]);
 
   useEffect(() => {
     const onChanged = (ev: any) => {
@@ -516,13 +550,19 @@ export default function TablesPage() {
   ]);
 
   const handleTableClick = useCallback(
-    (label: string) => {
-      setSelectedTable({ id: 0, label, area });
+    (label: string, members?: string[]) => {
+      const labels = (members?.length ? members : [label]).filter(Boolean);
+      const openLabel =
+        labels.find((l) => isOpenFn(area, l)) || labels[0] || label;
+      setSelectedTable({ id: 0, label: openLabel, area });
       const action = pendingAction;
       if (action) setPendingAction(null);
-      if (isOpenFn(area, label)) {
+      if (isOpenFn(area, openLabel)) {
         void (async () => {
-          const data = await window.api.tickets.getLatestForTable(area, label);
+          const data = await window.api.tickets.getLatestForTable(
+            area,
+            openLabel,
+          );
           if (data)
             hydrate({ items: data.items as any, note: data.note || '' });
           else clear();
@@ -568,6 +608,7 @@ export default function TablesPage() {
             emptyMessage={t('tables.noLayout')}
             colorByLabel={colorByLabel}
             badgeByLabel={badgeByLabel}
+            mergeGroups={mergeGroups}
             onTableClick={handleTableClick}
           />
         ) : null}
@@ -578,10 +619,8 @@ export default function TablesPage() {
           {areas.map((a) => (
             <button
               key={a.name}
-              className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap min-h-0 transition-colors duration-150 ${
-                area === a.name
-                  ? 'bg-emerald-700 text-white'
-                  : 'bg-black/55 text-gray-200 hover:bg-black/70 border border-white/10'
+              className={`pos-floor-chip ${
+                area === a.name ? 'pos-floor-chip--active' : ''
               }`}
               onClick={() => setArea(a.name)}
             >
@@ -592,7 +631,7 @@ export default function TablesPage() {
       </div>
 
       <div className="absolute bottom-0 left-0 right-0 z-10 flex justify-center px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none">
-        <div className="pointer-events-auto flex items-stretch sm:items-center justify-center gap-1.5 sm:gap-2 rounded-xl bg-black/55 backdrop-blur-md border border-white/10 p-1.5 sm:p-2">
+        <div className="pointer-events-auto pos-floor-dock">
           <ModeButton
             active={viewMode === 'occupied'}
             onClick={() => setViewMode('occupied')}
@@ -640,10 +679,10 @@ function ModeButton({
 }) {
   return (
     <button
-      className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 rounded-lg transition-colors duration-150 min-h-0 ${
+      className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 rounded-md transition-colors duration-100 min-h-0 ${
         active
-          ? 'bg-emerald-600/90 text-white shadow-sm'
-          : 'bg-white/5 text-gray-200 hover:bg-white/10'
+          ? 'bg-gray-50 text-gray-900'
+          : 'text-gray-300 hover:bg-white/8 hover:text-gray-50'
       }`}
       onClick={onClick}
       title={label}

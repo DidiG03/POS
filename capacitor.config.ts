@@ -21,7 +21,7 @@ const config: CapacitorConfig = {
     // Match the WebView's native background so any momentary gap during
     // rotation, keyboard show/hide or splash transition is also dark
     // (otherwise iOS draws white behind the WebView).
-    backgroundColor: '#111827',
+    backgroundColor: '#0b1220',
     // Allow plain http to LAN backends (self-signed / local IPs).
     // For production you should ship a valid HTTPS endpoint and remove this.
     limitsNavigationsToAppBoundDomains: false,
@@ -52,7 +52,7 @@ const config: CapacitorConfig = {
       // hidden after default timeout" warning and avoids a flash if the JS
       // bundle takes more than ~500ms to parse on a cold start.
       launchAutoHide: false,
-      backgroundColor: '#111827',
+      backgroundColor: '#0b1220',
       androidSplashResourceName: 'splash',
       showSpinner: false,
     },

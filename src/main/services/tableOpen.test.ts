@@ -37,6 +37,12 @@ vi.mock('./realtime', () => ({
     broadcastTableStatusChanged(...a),
 }));
 
+const seatCoveringReservationForOpenTable = vi.fn();
+vi.mock('./reservations', () => ({
+  seatCoveringReservationForOpenTable: (...a: any[]) =>
+    seatCoveringReservationForOpenTable(...a),
+}));
+
 import { applyTableOpenState, setTableOpenWithSideEffects } from './tableOpen';
 
 describe('applyTableOpenState', () => {
@@ -47,6 +53,7 @@ describe('applyTableOpenState', () => {
     setTableOpen.mockResolvedValue(undefined);
     kdsOrderFindFirst.mockResolvedValue(null);
     kdsOrderUpdate.mockResolvedValue({});
+    seatCoveringReservationForOpenTable.mockResolvedValue(undefined);
   });
 
   it('sets openAt on first open and broadcasts', async () => {
@@ -69,6 +76,10 @@ describe('applyTableOpenState', () => {
       open: true,
     });
     expect(kdsOrderFindFirst).not.toHaveBeenCalled();
+    expect(seatCoveringReservationForOpenTable).toHaveBeenCalledWith(
+      'Sallon',
+      'T1',
+    );
   });
 
   it('does not reset openAt when re-opening an already-open table', async () => {
@@ -110,6 +121,7 @@ describe('applyTableOpenState', () => {
       label: 'T1',
       open: false,
     });
+    expect(seatCoveringReservationForOpenTable).not.toHaveBeenCalled();
   });
 
   it('honours skipBroadcast', async () => {

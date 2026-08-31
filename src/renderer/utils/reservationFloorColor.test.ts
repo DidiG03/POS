@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   RESERVATION_TABLE_FREE_CLASS,
+  RESERVATION_TABLE_OCCUPIED_CLASS,
   isLiveReservation,
+  reservationCountsTowardDayUse,
   reservationTableColorClass,
+  tableUseCountForDay,
 } from './reservationFloorColor';
 
 const booked = (
@@ -62,7 +65,7 @@ describe('reservationTableColorClass', () => {
         true,
         Date.parse('2026-08-27T19:30:00'),
       ),
-    ).toBe('bg-rose-700');
+    ).toBe(RESERVATION_TABLE_OCCUPIED_CLASS);
     expect(
       reservationTableColorClass(
         [booked('2026-08-27T23:00:00')],
@@ -88,5 +91,30 @@ describe('reservationTableColorClass', () => {
         now,
       ),
     ).toBe(RESERVATION_TABLE_FREE_CLASS);
+  });
+});
+
+describe('tableUseCountForDay', () => {
+  it('counts booked, seated and completed sittings and ignores cancelled', () => {
+    expect(
+      tableUseCountForDay([
+        booked('2026-08-27T12:00:00'),
+        seated('2026-08-27T19:00:00'),
+        completed('2026-08-27T15:00:00'),
+        { status: 'CANCELLED' },
+        { status: 'NO_SHOW' },
+      ]),
+    ).toBe(3);
+    expect(reservationCountsTowardDayUse('BOOKED')).toBe(true);
+    expect(reservationCountsTowardDayUse('CANCELLED')).toBe(false);
+  });
+
+  it('counts a ticket-only table once and does not add a ticket on top of a sitting', () => {
+    expect(tableUseCountForDay([], { openTicket: true })).toBe(1);
+    expect(
+      tableUseCountForDay([seated('2026-08-27T19:00:00')], {
+        openTicket: true,
+      }),
+    ).toBe(1);
   });
 });

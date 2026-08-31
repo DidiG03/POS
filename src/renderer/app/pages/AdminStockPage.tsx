@@ -6,6 +6,8 @@ import {
   StockAvailabilityPanel,
   type StockPanelMenuCategory,
 } from '../../components/StockAvailabilityPanel';
+import { Button, Card, PageHeader, Stat } from '../../components/ui';
+import { IconAlert, IconRefresh } from '../../components/icons';
 
 export default function AdminStockPage() {
   const { t } = useTranslation();
@@ -77,40 +79,49 @@ export default function AdminStockPage() {
   if (loading) return <PageSpinner message={t('stockPanel.loading')} />;
 
   return (
-    <div className="space-y-4">
-      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
-        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 className="text-base font-semibold">{t('stockPanel.title')}</h2>
-          </div>
-          <button
-            type="button"
-            className="self-start text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
+    <div className="mx-auto w-full max-w-[1400px] space-y-4 sm:space-y-5">
+      <PageHeader
+        title={t('stockPanel.title')}
+        actions={
+          <Button
+            icon={<IconRefresh />}
             onClick={() => void reload()}
+            disabled={saving}
           >
             {t('adminOverview.refresh')}
-          </button>
-        </div>
-        <div className="grid grid-cols-3 gap-2">
-          <MiniStat label={t('stockPanel.inStock')} value={totals.ok} />
-          <MiniStat label={t('stockPanel.lowStock')} value={totals.low} />
-          <MiniStat label={t('stockPanel.outOfStock')} value={totals.out} />
-        </div>
-      </section>
+          </Button>
+        }
+      />
+
+      <div className="grid grid-cols-3 gap-3">
+        <Stat label={t('stockPanel.inStock')} value={totals.ok} />
+        <Stat
+          label={t('stockPanel.lowStock')}
+          value={totals.low}
+          tone={totals.low > 0 ? 'warn' : 'default'}
+        />
+        <Stat
+          label={t('stockPanel.outOfStock')}
+          value={totals.out}
+          tone={totals.out > 0 ? 'danger' : 'default'}
+        />
+      </div>
 
       {err && (
-        <div className="bg-rose-900/30 border border-rose-700 text-rose-200 rounded-lg p-3 text-sm">
-          {err}
+        <div className="flex items-start gap-2 rounded-lg border border-rose-500/25 bg-rose-500/8 px-3 py-2.5 text-[13px] text-rose-200">
+          <IconAlert className="pos-icon mt-px shrink-0 text-rose-400" />
+          <span className="min-w-0">{err}</span>
         </div>
       )}
 
       {billingPaused && (
-        <div className="bg-amber-900/20 border border-amber-800 text-amber-200 rounded-lg p-3 text-sm">
-          {t('stockPanel.billingPaused')}
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2.5 text-[13px] text-amber-200">
+          <IconAlert className="pos-icon mt-px shrink-0 text-amber-400" />
+          <span className="min-w-0">{t('stockPanel.billingPaused')}</span>
         </div>
       )}
 
-      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4 min-w-0 overflow-hidden">
+      <Card className="min-w-0 overflow-hidden">
         <StockAvailabilityPanel
           categories={categories}
           disabled={billingPaused || saving}
@@ -135,18 +146,7 @@ export default function AdminStockPage() {
             }
           }}
         />
-      </section>
-    </div>
-  );
-}
-
-function MiniStat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-gray-500">
-        {label}
-      </div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">{value}</div>
+      </Card>
     </div>
   );
 }

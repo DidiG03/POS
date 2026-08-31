@@ -138,6 +138,7 @@ import {
   isTransferredOutNote,
 } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
+import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import {
   listMyActiveTickets,
   listMyPaidTickets,
@@ -593,7 +594,7 @@ function createWindow() {
     width: 1280,
     height: 800,
     show: !startHidden,
-    backgroundColor: '#111827',
+    backgroundColor: '#0b1220',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
       contextIsolation: true,
@@ -649,7 +650,7 @@ function createAdminWindow() {
   adminWindow = new BrowserWindow({
     width: 1100,
     height: 700,
-    backgroundColor: '#111827',
+    backgroundColor: '#0b1220',
     title: 'Admin -  Code Orbit POS',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
@@ -687,7 +688,7 @@ function createKdsWindow() {
   kdsWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    backgroundColor: '#111827',
+    backgroundColor: '#0b1220',
     title: 'Kitchen Display -  Code Orbit POS',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
@@ -720,7 +721,7 @@ function createReservationWindow() {
   reservationWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    backgroundColor: '#111827',
+    backgroundColor: '#0b1220',
     title: 'Reservations -  Code Orbit POS',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
@@ -3938,57 +3939,14 @@ ipcHandle('tickets:getLatestForTable', async (_e, input) => {
 
 // Tooltip stats for a table: covers, first ticket time, latest total
 ipcHandle('tickets:getTableTooltip', async (_e, input) => {
-  const area = String(input?.area || '');
-  const tableLabel = String(input?.tableLabel || '');
-  if (!area || !tableLabel) return null;
-  // Show only for currently open tables
-  const openRow = await prisma.syncState.findUnique({
-    where: { key: 'tables:open' },
-  });
-  const openMap = ((openRow?.valueJson as any) || {}) as Record<
-    string,
-    boolean
-  >;
-  const k = `${area}:${tableLabel}`;
-  if (!openMap[k]) return null;
-  // Session start time
-  const atRow = await prisma.syncState.findUnique({
-    where: { key: 'tables:openAt' },
-  });
-  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-  const sinceIso = atMap[k];
-  const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-  const since =
-    sinceParsed && Number.isFinite(sinceParsed.getTime()) ? sinceParsed : null;
-  const where: any = { area, tableLabel };
-  if (since) where.createdAt = { gte: since };
-  const [last, coversRow] = await Promise.all([
-    prisma.ticketLog.findFirst({ where, orderBy: { createdAt: 'desc' } }),
-    prisma.covers.findFirst({
-      where: {
-        area,
-        label: tableLabel,
-        ...(since ? { createdAt: { gte: since } as any } : {}),
-      },
-      orderBy: { id: 'desc' },
-    } as any),
-  ]);
-  const items = ((last?.itemsJson as any[]) || []).filter(
-    (it: any) => !it.voided,
+  return getTableTooltip(
+    String(input?.area || ''),
+    String(input?.tableLabel || ''),
   );
-  const total = items.reduce(
-    (s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1),
-    0,
-  );
-  return {
-    covers: coversRow?.covers ?? null,
-    firstAt: since
-      ? since.toISOString()
-      : last
-        ? new Date(last.createdAt).toISOString()
-        : null,
-    total,
-  };
+});
+
+ipcHandle('tickets:listPaidTables', async (_e, input) => {
+  return listPaidTablesForDay(String(input?.dateIso || ''));
 });
 
 /**

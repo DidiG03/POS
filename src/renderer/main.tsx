@@ -20,6 +20,7 @@ import { I18nextProvider, useTranslation } from 'react-i18next';
 import i18n from './i18n/config';
 import { LocaleSync } from './i18n/LocaleSync';
 import LicenseGate from './app/components/LicenseGate';
+import { BrandMark } from './components/BrandMark';
 import {
   getHttpBase,
   getHttpsBase,
@@ -127,7 +128,9 @@ if (!(window as any).api) {
     const pathname = String(path || '').split('?')[0];
     if (
       pathname.startsWith('/layout/merges') ||
-      pathname.startsWith('/reservations')
+      pathname.startsWith('/reservations') ||
+      pathname === '/tables/open' ||
+      pathname === '/tickets/tooltip'
     ) {
       // Host PIN first; the waiter token still works for merge saves.
       return hostApiToken() || readStoredToken(TOKEN_KEY_POS) || getToken();
@@ -842,6 +845,15 @@ if (!(window as any).api) {
         });
         return true;
       },
+      async getTableTooltip(area: string, tableLabel: string) {
+        return await goLan(
+          `/tickets/tooltip?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
+        );
+      },
+      async listPaidTables(input: { dateIso: string }) {
+        const dateIso = encodeURIComponent(String(input?.dateIso || ''));
+        return await goLan(`/tickets/paid-tables?dateIso=${dateIso}`);
+      },
       async print(input: any) {
         const r = await goLan('/print/ticket', {
           method: 'POST',
@@ -1255,10 +1267,11 @@ function BootScreen({
     if (canRetry && showLanSetup) setShowSetup(true);
   }, [canRetry, showLanSetup]);
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100 px-6">
-      <div className="flex flex-col items-center gap-4 w-full max-w-md">
+    <div className="min-h-screen flex items-center justify-center pos-app pos-app--auth text-gray-100 px-6">
+      <div className="flex flex-col items-center gap-5 w-full max-w-md">
+        <BrandMark size="lg" />
         <svg
-          className="w-7 h-7 animate-spin text-indigo-400"
+          className="pos-spinner"
           xmlns="http://www.w3.org/2000/svg"
           fill="none"
           viewBox="0 0 24 24"
@@ -1292,16 +1305,13 @@ function BootScreen({
         {(canRetry || showLanSetup) && (
           <div className="mt-2 flex flex-wrap items-center gap-2 justify-center">
             {canRetry && onRetry && (
-              <button
-                className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-                onClick={onRetry}
-              >
+              <button className="pos-btn text-sm" onClick={onRetry}>
                 {t('common.retry')}
               </button>
             )}
             {showLanSetup && (
               <button
-                className="px-4 py-2 rounded bg-indigo-700 hover:bg-indigo-600 text-sm"
+                className="pos-btn-primary text-sm"
                 onClick={() => {
                   if (isKdsApp) {
                     try {
@@ -1471,9 +1481,9 @@ function BackendSetupModal({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-md pos-surface-panel overflow-hidden"
       >
-        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
+        <div className="px-4 py-3 border-b border-white/8 flex items-center justify-between gap-3">
           <div className="font-semibold">{t('server.title')}</div>
           <button
             type="button"
@@ -1525,7 +1535,7 @@ function BackendSetupModal({
           <label className="block text-sm">
             <div className="opacity-80 mb-1">{t('server.hostLabel')}</div>
             <input
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
+              className="pos-input font-mono"
               placeholder={t('server.hostPlaceholder')}
               value={host}
               onChange={(e) => setHost(e.target.value)}
@@ -1541,7 +1551,7 @@ function BackendSetupModal({
             <label className="block text-sm">
               <div className="opacity-80 mb-1">{t('server.httpPort')}</div>
               <input
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
+                className="pos-input font-mono"
                 placeholder="3333"
                 value={httpPort}
                 onChange={(e) =>
@@ -1553,7 +1563,7 @@ function BackendSetupModal({
             <label className="block text-sm">
               <div className="opacity-80 mb-1">{t('server.httpsPort')}</div>
               <input
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono"
+                className="pos-input font-mono"
                 placeholder="3443"
                 value={httpsPort}
                 onChange={(e) =>
@@ -1566,7 +1576,7 @@ function BackendSetupModal({
           {error && <div className="text-sm text-rose-300">{error}</div>}
           <div className="flex flex-wrap gap-2 pt-2">
             <button
-              className="flex-1 min-w-[120px] px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60"
+              className="flex-1 min-w-[120px] pos-btn-primary disabled:opacity-60"
               type="button"
               disabled={saving}
               onClick={() => void handleSave()}
@@ -1574,18 +1584,14 @@ function BackendSetupModal({
               {saving ? t('common.saving') : t('server.saveReload')}
             </button>
             <button
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
+              className="pos-btn"
               type="button"
               onClick={handleClear}
               title={t('server.resetTitle')}
             >
               {t('server.reset')}
             </button>
-            <button
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-              type="button"
-              onClick={onClose}
-            >
+            <button className="pos-btn" type="button" onClick={onClose}>
               {t('common.cancel')}
             </button>
           </div>

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { ReservationsContext } from '../ReservationsLayout';
@@ -18,9 +25,12 @@ import {
 } from '../../utils/reservationStatusWindow';
 import { reservationStatusLabel } from '../../utils/reservationLabels';
 import {
+  RESERVATION_TABLE_DAY_USED_CLASS,
   RESERVATION_TABLE_FREE_CLASS,
+  RESERVATION_TABLE_OCCUPIED_CLASS,
   isLiveReservation,
   reservationTableColorClass,
+  tableUseCountForDay,
 } from '../../utils/reservationFloorColor';
 import { PageSpinner } from '../../components/PageSpinner';
 import { afterPaint } from '../../utils/afterPaint';
@@ -33,6 +43,11 @@ import {
   reservationOccupancyStartMs,
   reservationOccupiesTable,
 } from '@shared/reservationDuration';
+import {
+  reservationCoversOpenTicket,
+  reservationHasPaidTicket,
+} from '@shared/tableOccupancy';
+import { IconClose } from '../../components/icons';
 
 // Quick-action statuses surfaced in the per-table sheet.
 const QUICK_STATUSES: ReservationStatus[] = [
@@ -56,6 +71,8 @@ function statusChipClass(s: ReservationStatus): string {
       return 'bg-zinc-700/60 border-zinc-500 text-zinc-300 line-through';
   }
 }
+
+const PAID_CHIP_CLASS = 'bg-emerald-800/50 border-emerald-600 text-emerald-100';
 
 function quickButtonClass(s: ReservationStatus): string {
   switch (s) {
@@ -128,6 +145,22 @@ function clampMenuPos(x: number, y: number, width = 224, height = 360) {
   return { left, top };
 }
 
+function IconKebab() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className="pos-icon"
+      aria-hidden
+    >
+      <circle cx="12" cy="5" r="1.75" />
+      <circle cx="12" cy="12" r="1.75" />
+      <circle cx="12" cy="19" r="1.75" />
+    </svg>
+  );
+}
+
 function formatTime(iso: string): string {
   return formatReservationClock(iso);
 }
@@ -170,8 +203,20 @@ function badgeForReservation(
 export default function ReservationsFloorPage() {
   const { t } = useTranslation();
   const ctx = useOutletContext<ReservationsContext>();
-  const { me, area, date, openEditor, openWalkIn, notifyReservationsChanged } =
-    ctx;
+  const {
+    me,
+    area,
+    date,
+    openEditor,
+    openWalkIn,
+    notifyReservationsChanged,
+    listFiltersOpen,
+    setListFiltersOpen,
+    showDayOccupancy,
+    setShowDayOccupancy,
+    openTables,
+    paidTables,
+  } = ctx;
   const [reservations, setReservations] = useState<ReservationDTO[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [layoutReadyArea, setLayoutReadyArea] = useState<string | null>(null);
@@ -182,6 +227,11 @@ export default function ReservationsFloorPage() {
   const [sheetMembers, setSheetMembers] = useState<string[]>([]);
   const [sheetBusyId, setSheetBusyId] = useState<number | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
+  const [rowMenu, setRowMenu] = useState<{
+    id: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [sheetNowMs, setSheetNowMs] = useState(() => Date.now());
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [tableMenu, setTableMenu] = useState<{
@@ -191,6 +241,10 @@ export default function ReservationsFloorPage() {
     y: number;
   } | null>(null);
   const [mergeGroups, setMergeGroups] = useState<TableMergeGroup[]>([]);
+  const [sheetTicket, setSheetTicket] = useState<{
+    covers: number | null;
+    firstAt: string | null;
+  } | null>(null);
   const [menuError, setMenuError] = useState<string | null>(null);
   const reloadGen = useRef(0);
   const isToday = isSameLocalDay(date, new Date());
@@ -203,6 +257,15 @@ export default function ReservationsFloorPage() {
     const id = window.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!rowMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRowMenu(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [rowMenu]);
 
   useEffect(() => {
     if (!tableMenu) return;
@@ -342,13 +405,48 @@ export default function ReservationsFloorPage() {
     return map;
   }, [reservations]);
 
+  const openLabels = useMemo(() => {
+    const set = new Set<string>();
+    if (!area) return set;
+    for (const t of openTables) {
+      if (t.area === area && t.label) set.add(t.label);
+    }
+    return set;
+  }, [openTables, area]);
+
   const colorByLabel = useMemo(() => {
     const out: Record<string, string> = {};
     for (const [label, rs] of reservationsByLabel.entries()) {
+      if (showDayOccupancy) {
+        if (
+          tableUseCountForDay(rs, { openTicket: openLabels.has(label) }) > 0
+        ) {
+          out[label] = RESERVATION_TABLE_DAY_USED_CLASS;
+        }
+        continue;
+      }
       out[label] = reservationTableColorClass(rs, isToday, nowMs);
     }
+    for (const label of openLabels) {
+      out[label] = showDayOccupancy
+        ? RESERVATION_TABLE_DAY_USED_CLASS
+        : RESERVATION_TABLE_OCCUPIED_CLASS;
+    }
     return out;
-  }, [reservationsByLabel, isToday, nowMs]);
+  }, [reservationsByLabel, isToday, nowMs, showDayOccupancy, openLabels]);
+
+  const usageCountByLabel = useMemo(() => {
+    if (!showDayOccupancy) return undefined;
+    const out: Record<string, number> = {};
+    for (const [label, rs] of reservationsByLabel.entries()) {
+      const n = tableUseCountForDay(rs, { openTicket: openLabels.has(label) });
+      if (n > 0) out[label] = n;
+    }
+    for (const label of openLabels) {
+      if (out[label] == null) out[label] = 1;
+    }
+    return out;
+  }, [reservationsByLabel, showDayOccupancy, openLabels]);
 
   const badgeByLabel = useMemo(() => {
     const out: Record<string, string | null | undefined> = {};
@@ -368,13 +466,17 @@ export default function ReservationsFloorPage() {
   function openTableSheet(label: string, members?: string[]) {
     const labels = (members?.length ? members : [label]).filter(Boolean);
     const all = reservationsForLabels(labels, reservationsByLabel);
-    // A free table (no history at all) goes straight to the new-reservation form.
-    if (all.length === 0) {
+    const hasOpenTicket = labels.some((l) => openLabels.has(l));
+    // A free table (no history and no open POS ticket) goes straight to
+    // the new-reservation form.
+    if (all.length === 0 && !hasOpenTicket) {
       openEditor({ tableLabel: labels[0] || label, area });
       return;
     }
     setSheetError(null);
     setSheetBusyId(null);
+    setSheetTicket(null);
+    setRowMenu(null);
     setTableMenu(null);
     setSheetMembers(labels);
     setSheetLabel(formatMergeLabel(labels));
@@ -383,6 +485,26 @@ export default function ReservationsFloorPage() {
   function closeTableSheet() {
     setSheetLabel(null);
     setSheetMembers([]);
+    setSheetTicket(null);
+    setRowMenu(null);
+  }
+
+  function openRowMenu(id: number, e: ReactMouseEvent<HTMLButtonElement>) {
+    e.stopPropagation();
+    if (rowMenu?.id === id) {
+      setRowMenu(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const width = 224;
+    const height = 320;
+    const pos = clampMenuPos(
+      rect.right - width,
+      rect.bottom + 6,
+      width,
+      height,
+    );
+    setRowMenu({ id, x: pos.left, y: pos.top });
   }
 
   function openTableMenu(info: {
@@ -430,6 +552,7 @@ export default function ReservationsFloorPage() {
       );
       await reload({ silent: true });
       if (fromMenu) setTableMenu(null);
+      setRowMenu(null);
     } catch (e) {
       const msg = cleanIpcMessage(e, t('reservations.somethingWrong'));
       if (fromMenu) setMenuError(msg);
@@ -450,6 +573,43 @@ export default function ReservationsFloorPage() {
   }, [reservationsByLabel, sheetLabel, sheetMembers]);
 
   const sheetPrimaryLabel = sheetMembers[0] || sheetLabel || '';
+  const sheetOpenMember = sheetMembers.find((l) => openLabels.has(l)) || null;
+  const sheetTicketCovered = sheetReservations.some((r) =>
+    reservationCoversOpenTicket(r, sheetNowMs),
+  );
+  const rowMenuReservation = rowMenu
+    ? (sheetReservations.find((r) => r.id === rowMenu.id) ?? null)
+    : null;
+
+  useEffect(() => {
+    if (!sheetLabel || !area || !sheetOpenMember) {
+      setSheetTicket(null);
+      return;
+    }
+    let cancelled = false;
+    window.api.tickets
+      .getTableTooltip(area, sheetOpenMember)
+      .then((tip) => {
+        if (cancelled) return;
+        if (!tip) {
+          setSheetTicket(null);
+          return;
+        }
+        setSheetTicket({ covers: tip.covers, firstAt: tip.firstAt });
+      })
+      .catch(() => {
+        if (!cancelled) setSheetTicket(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sheetLabel, sheetOpenMember, area]);
+
+  useEffect(() => {
+    if (rowMenu && !sheetReservations.some((r) => r.id === rowMenu.id)) {
+      setRowMenu(null);
+    }
+  }, [rowMenu, sheetReservations]);
 
   const menuMembers = tableMenu?.members?.length
     ? tableMenu.members
@@ -471,6 +631,7 @@ export default function ReservationsFloorPage() {
   const menuHasHistory = tableMenu
     ? reservationsForLabels(menuMembers, reservationsByLabel).length > 0
     : false;
+  const menuHasOpenTicket = menuMembers.some((l) => openLabels.has(l));
   const menuMerged = menuMembers.length > 1;
   const menuDisplayLabel = menuMembers.length
     ? formatMergeLabel(menuMembers)
@@ -478,6 +639,68 @@ export default function ReservationsFloorPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
+      {listFiltersOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 sm:p-4"
+          onClick={() => setListFiltersOpen(false)}
+        >
+          <div
+            className="w-full sm:max-w-md bg-gray-800 border border-gray-700 sm:rounded-lg rounded-t-2xl shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-gray-700">
+              <div className="text-lg font-semibold">
+                {t('reservations.filters')}
+              </div>
+              <button
+                type="button"
+                className="px-3 py-2 rounded hover:bg-gray-700 text-lg leading-none"
+                onClick={() => setListFiltersOpen(false)}
+                title={t('common.close')}
+                aria-label={t('common.close')}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={showDayOccupancy}
+                  onChange={(e) => setShowDayOccupancy(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 shrink-0"
+                />
+                <span>
+                  {t('reservations.showDayOccupancy')}
+                  <span className="block text-xs opacity-70 mt-0.5">
+                    {t('reservations.showDayOccupancyHint')}
+                  </span>
+                </span>
+              </label>
+            </div>
+            <div className="flex items-center gap-2 p-3 border-t border-gray-700">
+              {showDayOccupancy && (
+                <button
+                  type="button"
+                  onClick={() => setShowDayOccupancy(false)}
+                  className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                >
+                  {t('reservations.clearFilters')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setListFiltersOpen(false)}
+                className="ml-auto inline-flex items-center gap-1.5 px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium"
+              >
+                <IconClose />
+                {t('common.close')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex shrink-0 items-center gap-2 flex-wrap">
         <div className="text-sm opacity-80">
           {viewReady
@@ -488,13 +711,34 @@ export default function ReservationsFloorPage() {
             : t('reservations.loadingReservations')}
         </div>
         <div className="hidden sm:flex items-center gap-3 text-xs flex-wrap sm:ml-auto">
-          <Legend
-            cls={RESERVATION_TABLE_FREE_CLASS}
-            label={t('reservations.legendFree')}
-          />
-          <Legend cls="bg-amber-600" label={t('reservations.legendBooked')} />
-          <Legend cls="bg-blue-600" label={t('reservations.legendSoon')} />
-          <Legend cls="bg-rose-700" label={t('reservations.legendSeated')} />
+          {showDayOccupancy ? (
+            <>
+              <Legend
+                cls={RESERVATION_TABLE_FREE_CLASS}
+                label={t('reservations.legendFree')}
+              />
+              <Legend
+                cls={RESERVATION_TABLE_DAY_USED_CLASS}
+                label={t('reservations.legendUsedToday')}
+              />
+            </>
+          ) : (
+            <>
+              <Legend
+                cls={RESERVATION_TABLE_FREE_CLASS}
+                label={t('reservations.legendFree')}
+              />
+              <Legend
+                cls="bg-amber-600"
+                label={t('reservations.legendBooked')}
+              />
+              <Legend cls="bg-blue-600" label={t('reservations.legendSoon')} />
+              <Legend
+                cls="bg-rose-700"
+                label={t('reservations.legendSeated')}
+              />
+            </>
+          )}
         </div>
       </div>
 
@@ -520,7 +764,8 @@ export default function ReservationsFloorPage() {
             fillAvailableHeight
             colorByLabel={colorByLabel}
             unlistedColorClass={RESERVATION_TABLE_FREE_CLASS}
-            badgeByLabel={badgeByLabel}
+            badgeByLabel={showDayOccupancy ? undefined : badgeByLabel}
+            usageCountByLabel={usageCountByLabel}
             onTableClick={(label, members) => openTableSheet(label, members)}
             onTableLongPress={openTableMenu}
             onLayoutReady={({ area: readyArea }) =>
@@ -530,7 +775,7 @@ export default function ReservationsFloorPage() {
             mergeGroups={mergeGroups}
             isTableOccupied={(label) =>
               occupyingLiveReservation(reservationsByLabel.get(label), nowMs) !=
-              null
+                null || openLabels.has(label)
             }
             onCommitMerges={(groups) => void commitMerges(groups)}
             onMergeBlocked={() => toast.error(t('reservations.mergeOccupied'))}
@@ -607,30 +852,32 @@ export default function ReservationsFloorPage() {
                 ✕
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2 px-4 py-3 border-b border-gray-700">
-              <button
-                type="button"
-                className="px-3 py-2 rounded bg-rose-700 hover:bg-rose-600 text-sm font-medium"
-                onClick={() => {
-                  openWalkIn({ tableLabel: sheetPrimaryLabel });
-                  closeTableSheet();
-                }}
-                title={t('reservations.seatNowTitle')}
-              >
-                {t('reservations.seatNow')}
-              </button>
-              <button
-                type="button"
-                className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium"
-                onClick={() => {
-                  openEditor({ tableLabel: sheetPrimaryLabel, area });
-                  closeTableSheet();
-                }}
-                title={t('reservations.newReservationTitle')}
-              >
-                {t('reservations.newReservation')}
-              </button>
-            </div>
+            {!sheetOpenMember ? (
+              <div className="grid grid-cols-2 gap-2 px-4 py-3 border-b border-gray-700">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded bg-rose-700 hover:bg-rose-600 text-sm font-medium"
+                  onClick={() => {
+                    openWalkIn({ tableLabel: sheetPrimaryLabel });
+                    closeTableSheet();
+                  }}
+                  title={t('reservations.seatNowTitle')}
+                >
+                  {t('reservations.seatNow')}
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-sm font-medium"
+                  onClick={() => {
+                    openEditor({ tableLabel: sheetPrimaryLabel, area });
+                    closeTableSheet();
+                  }}
+                  title={t('reservations.newReservationTitle')}
+                >
+                  {t('reservations.newReservation')}
+                </button>
+              </div>
+            ) : null}
 
             {sheetError && (
               <div className="mx-4 mt-3 text-sm text-rose-300">
@@ -639,10 +886,59 @@ export default function ReservationsFloorPage() {
             )}
 
             <div className="flex-1 overflow-y-auto divide-y divide-gray-700/70 sm:max-h-[70vh]">
-              {sheetReservations.length === 0 ? (
-                <div className="p-4 text-sm opacity-70">
-                  {t('reservations.noReservationsOnTable')}
+              {sheetOpenMember && !sheetTicketCovered ? (
+                <div className="p-3">
+                  <div className="flex items-start gap-3">
+                    <div className="shrink-0">
+                      <div className="font-mono text-sm">
+                        {sheetTicket?.firstAt
+                          ? formatReservationClock(sheetTicket.firstAt)
+                          : '—'}
+                      </div>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">
+                        {t('reservations.openPosTicket')}{' '}
+                        <span className="opacity-60 text-sm">
+                          ·{' '}
+                          {sheetTicket?.covers != null
+                            ? sheetTicket.covers
+                            : '—'}
+                        </span>
+                      </div>
+                      {sheetTicket?.firstAt ? (
+                        <div className="text-xs opacity-60 truncate">
+                          {formatReservationDuration(
+                            Math.max(
+                              0,
+                              Math.round(
+                                (sheetNowMs -
+                                  new Date(sheetTicket.firstAt).getTime()) /
+                                  60_000,
+                              ),
+                            ),
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span
+                        className={`text-[10px] uppercase tracking-wide border px-2 py-0.5 rounded ${statusChipClass(
+                          'SEATED',
+                        )}`}
+                      >
+                        {reservationStatusLabel(t, 'SEATED')}
+                      </span>
+                    </div>
+                  </div>
                 </div>
+              ) : null}
+              {sheetReservations.length === 0 ? (
+                sheetOpenMember ? null : (
+                  <div className="p-4 text-sm opacity-70">
+                    {t('reservations.noReservationsOnTable')}
+                  </div>
+                )
               ) : (
                 sheetReservations.map((r) => {
                   const busy = sheetBusyId === r.id;
@@ -650,7 +946,6 @@ export default function ReservationsFloorPage() {
                     r,
                     sheetNowMs,
                   ) as ReservationStatus;
-                  const isClosed = !isLiveReservation(shownStatus);
                   const occupyStart = reservationOccupancyStartMs(r);
                   const endMs =
                     occupyStart != null
@@ -659,7 +954,7 @@ export default function ReservationsFloorPage() {
                   const seatedAt = distinctSeatedAt(r.startsAt, r.seatedAt);
                   return (
                     <div key={r.id} className="p-3">
-                      <div className="flex items-center gap-3 flex-wrap">
+                      <div className="flex items-start gap-3">
                         <div className="shrink-0">
                           <div className="font-mono text-sm">
                             {formatTime(r.startsAt)}
@@ -698,79 +993,132 @@ export default function ReservationsFloorPage() {
                             {r.note ? ` · ${r.note}` : ''}
                           </div>
                         </div>
-                        <span
-                          className={`text-[10px] uppercase tracking-wide border px-2 py-0.5 rounded ${statusChipClass(
-                            shownStatus,
-                          )}`}
-                        >
-                          {reservationStatusLabel(t, shownStatus)}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          className="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-60"
-                          onClick={() => {
-                            openEditor(r);
-                            closeTableSheet();
-                          }}
-                        >
-                          {t('reservations.edit')}
-                        </button>
-                      </div>
-
-                      <div className="mt-2 flex items-center gap-1.5 flex-wrap pl-16">
-                        {QUICK_STATUSES.filter((s) => s !== shownStatus).map(
-                          (s) => {
-                            const tooEarly = isReservationQuickStatusTooEarly(
-                              sheetNowMs,
-                              r.startsAt,
-                              s,
-                            );
-                            const unlockAt = reservationQuickStatusUnlockHint(
-                              r.startsAt,
-                            );
-                            const statusLabel = reservationStatusLabel(t, s);
-                            return (
-                              <button
-                                key={s}
-                                type="button"
-                                disabled={busy || tooEarly}
-                                className={`px-2 py-1 rounded text-[11px] uppercase tracking-wide disabled:opacity-60 ${quickButtonClass(
-                                  s,
-                                )}`}
-                                onClick={() => void applyStatus(r, s)}
-                                title={
-                                  tooEarly
-                                    ? t('reservations.availableFrom', {
-                                        time: unlockAt,
-                                      })
-                                    : t('reservations.markAsStatus', {
-                                        status: statusLabel,
-                                      })
-                                }
-                              >
-                                {statusLabel}
-                              </button>
-                            );
-                          },
-                        )}
-                        {isClosed && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span
+                            className={`text-[10px] uppercase tracking-wide border px-2 py-0.5 rounded ${statusChipClass(
+                              shownStatus,
+                            )}`}
+                          >
+                            {reservationStatusLabel(t, shownStatus)}
+                          </span>
+                          {r.tableLabel &&
+                          openLabels.has(r.tableLabel) &&
+                          reservationCoversOpenTicket(r, sheetNowMs) ? (
+                            <span
+                              className={`text-[10px] uppercase tracking-wide border px-2 py-0.5 rounded ${statusChipClass(
+                                'SEATED',
+                              )}`}
+                            >
+                              {t('reservations.openPosTicket')}
+                            </span>
+                          ) : r.tableLabel &&
+                            reservationHasPaidTicket(
+                              r,
+                              paidTables,
+                              openTables,
+                              reservations,
+                            ) ? (
+                            <span
+                              className={`text-[10px] uppercase tracking-wide border px-2 py-0.5 rounded ${PAID_CHIP_CLASS}`}
+                            >
+                              {t('reservations.paidPosTicket')}
+                            </span>
+                          ) : null}
                           <button
                             type="button"
                             disabled={busy}
-                            className="px-2 py-1 rounded text-[11px] uppercase tracking-wide bg-amber-700 hover:bg-amber-600 disabled:opacity-60"
-                            onClick={() => void applyStatus(r, 'BOOKED')}
-                            title={t('reservations.reopenTitle')}
+                            className="pos-icon-btn cursor-pointer"
+                            aria-label={t('reservations.rowActions')}
+                            aria-haspopup="menu"
+                            aria-expanded={rowMenu?.id === r.id}
+                            title={t('reservations.rowActions')}
+                            onClick={(e) => openRowMenu(r.id, e)}
                           >
-                            {t('reservations.reopen')}
+                            <IconKebab />
                           </button>
-                        )}
+                        </div>
                       </div>
                     </div>
                   );
                 })
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {rowMenu && rowMenuReservation && (
+        <div className="fixed inset-0 z-50" onClick={() => setRowMenu(null)}>
+          <div
+            role="menu"
+            className="absolute w-56 rounded-lg border border-gray-600 bg-gray-800 shadow-2xl overflow-hidden py-1"
+            style={{ left: rowMenu.x, top: rowMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              disabled={sheetBusyId === rowMenuReservation.id}
+              className="w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 disabled:opacity-50"
+              onClick={() => {
+                openEditor(rowMenuReservation);
+                closeTableSheet();
+              }}
+            >
+              {t('reservations.edit')}
+            </button>
+            <div className="my-1 border-t border-gray-700" />
+            {QUICK_STATUSES.filter(
+              (s) =>
+                s !==
+                (effectiveReservationStatus(
+                  rowMenuReservation,
+                  sheetNowMs,
+                ) as ReservationStatus),
+            ).map((s) => {
+              const tooEarly = isReservationQuickStatusTooEarly(
+                sheetNowMs,
+                rowMenuReservation.startsAt,
+                s,
+              );
+              const unlockAt = reservationQuickStatusUnlockHint(
+                rowMenuReservation.startsAt,
+              );
+              const statusLabel = reservationStatusLabel(t, s);
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  role="menuitem"
+                  disabled={sheetBusyId === rowMenuReservation.id || tooEarly}
+                  className="w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 disabled:opacity-50"
+                  onClick={() => void applyStatus(rowMenuReservation, s)}
+                  title={
+                    tooEarly
+                      ? t('reservations.availableFrom', { time: unlockAt })
+                      : t('reservations.markAsStatus', {
+                          status: statusLabel,
+                        })
+                  }
+                >
+                  {t('reservations.markAsStatus', { status: statusLabel })}
+                </button>
+              );
+            })}
+            {!isLiveReservation(
+              effectiveReservationStatus(rowMenuReservation, sheetNowMs),
+            ) && (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={sheetBusyId === rowMenuReservation.id}
+                className="w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 disabled:opacity-50"
+                onClick={() => void applyStatus(rowMenuReservation, 'BOOKED')}
+                title={t('reservations.reopenTitle')}
+              >
+                {t('reservations.reopen')}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -798,6 +1146,10 @@ export default function ReservationsFloorPage() {
                     : ''}
                   {' · '}
                   {menuLive.customerName}
+                </div>
+              ) : menuHasOpenTicket ? (
+                <div className="text-xs opacity-70 mt-0.5">
+                  {t('reservations.openPosTicket')}
                 </div>
               ) : (
                 <div className="text-xs opacity-60 mt-0.5">
@@ -847,28 +1199,44 @@ export default function ReservationsFloorPage() {
                 })}
               {!menuLive && (
                 <>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-rose-700 hover:bg-rose-600"
-                    onClick={() => {
-                      openWalkIn({ tableLabel: tableMenu.label });
-                      setTableMenu(null);
-                    }}
-                  >
-                    {t('reservations.seatNow')}
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-500"
-                    onClick={() => {
-                      openEditor({ tableLabel: tableMenu.label, area });
-                      setTableMenu(null);
-                    }}
-                  >
-                    {t('reservations.newReservation')}
-                  </button>
+                  {!menuHasOpenTicket && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-rose-700 hover:bg-rose-600"
+                      onClick={() => {
+                        openWalkIn({ tableLabel: tableMenu.label });
+                        setTableMenu(null);
+                      }}
+                    >
+                      {t('reservations.seatNow')}
+                    </button>
+                  )}
+                  {menuHasOpenTicket && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-rose-800 hover:bg-rose-700"
+                      onClick={() =>
+                        openTableSheet(tableMenu.label, tableMenu.members)
+                      }
+                    >
+                      {t('reservations.openPosTicket')}
+                    </button>
+                  )}
+                  {!menuHasOpenTicket && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full text-left px-3 py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-500"
+                      onClick={() => {
+                        openEditor({ tableLabel: tableMenu.label, area });
+                        setTableMenu(null);
+                      }}
+                    >
+                      {t('reservations.newReservation')}
+                    </button>
+                  )}
                 </>
               )}
               {menuLive && (

@@ -136,6 +136,18 @@ describe('authorizeLanRoute', () => {
     );
   });
 
+  it('lets a host read open POS tickets without opening or transferring them', () => {
+    expect(authorizeLanRoute('GET', '/tables/open', 'HOST')).toBe('allow');
+    expect(authorizeLanRoute('GET', '/tickets/tooltip', 'HOST')).toBe('allow');
+    expect(authorizeLanRoute('POST', '/tables/open', 'HOST')).toBe('forbidden');
+    expect(authorizeLanRoute('POST', '/tables/transfer', 'HOST')).toBe(
+      'forbidden',
+    );
+    expect(authorizeLanRoute('GET', '/tickets/tooltip', 'WAITER')).toBe(
+      'allow',
+    );
+  });
+
   it('lets a waiter read their own notifications', () => {
     expect(authorizeLanRoute('GET', '/notifications', 'WAITER')).toBe('allow');
   });
@@ -233,6 +245,7 @@ describe('tablet client vs LAN policy', () => {
       'GET /auth/users',
       'GET /tables/open',
       'GET /layout/get',
+      'GET /reservations/merges',
       'GET /tickets/latest',
       'GET /covers/last',
       'POST /tickets',

@@ -5,6 +5,7 @@ import { useReservationSessionStore } from '../../stores/reservationSession';
 import type { UserDTO } from '@shared/ipc';
 
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
+import { BrandMark } from '../../components/BrandMark';
 
 // Mirrored from LoginPage so a tablet that paired through the staff
 // login is recognised here without re-entering the code.
@@ -195,12 +196,15 @@ export default function ReservationsLoginPage() {
 
   return (
     <div
-      className="min-h-dvh flex items-start sm:items-center justify-center bg-gray-900 text-gray-100 p-3 sm:p-4"
+      className="min-h-dvh flex flex-col items-center justify-center pos-app pos-app--auth text-gray-100 p-3 sm:p-4"
       style={{
         paddingTop: 'max(env(safe-area-inset-top), 0.75rem)',
         paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)',
       }}
     >
+      <div className="mb-5 sm:mb-6 shrink-0">
+        <BrandMark size="lg" subtitle={t('brand.reservations')} />
+      </div>
       <div className="w-full max-w-3xl pos-surface-panel p-5 sm:p-6">
         <div className="flex items-start justify-between gap-3 mb-6">
           <div className="flex items-start gap-3 min-w-0">
@@ -228,10 +232,10 @@ export default function ReservationsLoginPage() {
               </button>
             )}
             <div className="min-w-0">
-              <div className="text-2xl font-semibold">
+              <div className="text-lg font-semibold tracking-tight">
                 {t('reservations.title')}
               </div>
-              <div className="text-sm opacity-70">
+              <div className="text-sm text-gray-400">
                 {t('reservations.loginSubtitle')}
               </div>
             </div>
@@ -241,13 +245,13 @@ export default function ReservationsLoginPage() {
         {loading ? (
           <div className="opacity-70 text-sm">{t('common.loading')}</div>
         ) : sortedStaff.length === 0 ? (
-          <div className="bg-amber-900/30 border border-amber-700 rounded p-3 text-sm">
+          <div className="bg-amber-900/25 border border-amber-700/50 rounded-xl p-3 text-sm">
             {t('reservations.noHostAdminUsers')}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <div className="text-xs uppercase tracking-wide opacity-70 mb-2">
+              <div className="pos-section-label mb-2">
                 {t('reservations.whoIsLoggingIn')}
               </div>
               <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
@@ -255,10 +259,8 @@ export default function ReservationsLoginPage() {
                   <button
                     key={u.id}
                     type="button"
-                    className={`w-full text-left rounded px-3 py-2 border flex items-center justify-between gap-3 ${
-                      selectedId === u.id
-                        ? 'bg-blue-600 border-blue-400'
-                        : 'bg-gray-700 hover:bg-gray-600 border-gray-700'
+                    className={`pos-staff-tile ${
+                      selectedId === u.id ? 'pos-staff-tile--active' : ''
                     }`}
                     onClick={() => setSelectedId(u.id)}
                   >
@@ -282,7 +284,7 @@ export default function ReservationsLoginPage() {
             </div>
 
             <div>
-              <div className="text-xs uppercase tracking-wide opacity-70 mb-2">
+              <div className="pos-section-label mb-2">
                 {t('login.pinPlaceholder')}
               </div>
               <input
@@ -301,7 +303,7 @@ export default function ReservationsLoginPage() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') submit();
                 }}
-                className="w-full px-3 py-3 rounded bg-gray-900 text-center text-3xl tracking-[0.5em] font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                className="w-full px-3 py-3 rounded-xl pos-input text-center text-3xl tracking-[0.5em] font-mono"
                 style={{ fontSize: '20px' }}
               />
               {isBrowserClient && (
@@ -319,7 +321,7 @@ export default function ReservationsLoginPage() {
                     autoCapitalize="characters"
                     autoCorrect="off"
                     spellCheck={false}
-                    className="w-full px-3 py-3 rounded bg-gray-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-base"
+                    className="w-full px-3 py-3 rounded-xl pos-input text-base"
                     style={{ fontSize: '16px' }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') submit();
@@ -330,7 +332,7 @@ export default function ReservationsLoginPage() {
               <button
                 type="button"
                 disabled={submitting}
-                className="mt-4 w-full px-3 py-3 rounded bg-emerald-600 hover:bg-emerald-500 font-semibold disabled:opacity-50"
+                className="mt-4 w-full pos-btn-primary py-3 disabled:opacity-50"
                 onClick={submit}
               >
                 {submitting

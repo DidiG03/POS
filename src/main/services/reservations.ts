@@ -5,8 +5,17 @@ import type {
   ReservationStatus,
   ReservationUpdateInput,
 } from '@shared/ipc';
+import {
+  occupancyOverlapsInstant,
+  reservationCoversOpenTicket,
+  reservationKeepsTableAssignment,
+} from '@shared/tableOccupancy';
 import { broadcastReservationsChanged } from './realtime';
-import { DEFAULT_RESERVATION_DURATION_MIN } from '@shared/reservationDuration';
+import { coreServices } from './core';
+import {
+  DEFAULT_RESERVATION_DURATION_MIN,
+  reservationOccupiesTable,
+} from '@shared/reservationDuration';
 
 // All reservation business logic lives here so the Electron IPC layer
 // (src/main/index.ts) and the LAN HTTP layer (src/main/api.ts) share the
@@ -91,11 +100,32 @@ export async function assertNoTableConflict(args: {
   tableLabel: string | null;
   startsAt: Date;
   durationMin: number;
+  /**
+   * Skip the open-ticket guard when this reservation already holds the
+   * table (host seated them; waiter then opened the ticket — same sitting).
+   */
+  skipOpenTicket?: boolean;
 }): Promise<void> {
   const tableLabel = (args.tableLabel || '').trim();
   if (!tableLabel) return;
   const area = args.area.trim();
   if (!area) return;
+  // An unpaid ticket blocks a walk-in / overlapping slot, not a later
+  // booking tonight (e.g. T8 at 22:00 while lunch is still open).
+  const ticketBlocksSlot =
+    !args.skipOpenTicket &&
+    occupancyOverlapsInstant(args.startsAt, args.durationMin, Date.now());
+  if (ticketBlocksSlot) {
+    const open = await coreServices.isTableOpen(area, tableLabel);
+    if (open) {
+      throw Object.assign(
+        new Error(
+          `Table ${tableLabel} has an open ticket. Pay or transfer it before reserving.`,
+        ),
+        { statusCode: 409, code: 'TABLE_OPEN_TICKET' },
+      );
+    }
+  }
   const startMs = args.startsAt.getTime();
   if (!Number.isFinite(startMs)) return;
   const durMs =
@@ -339,6 +369,13 @@ export async function updateReservation(
     tableLabel: mergedTable,
     startsAt: new Date(mergedStart),
     durationMin: mergedDuration,
+    skipOpenTicket: reservationKeepsTableAssignment(
+      {
+        area: String((existing as any).area || ''),
+        tableLabel: ((existing as any).tableLabel as string | null) ?? null,
+      },
+      { area: mergedArea, tableLabel: mergedTable },
+    ),
   });
   const updated = await prisma.reservation.update({
     where: { id },
@@ -415,4 +452,121 @@ export async function deleteReservation(input: {
     area: existing?.area ?? null,
   });
   return true;
+}
+
+/**
+ * When a waiter opens a ticket, seat the BOOKED reservation that already
+ * covers this table so the host row does not stay BOOKED with a ticket chip.
+ * No host/admin check — this is an internal side effect of POS table open.
+ */
+export async function seatCoveringReservationForOpenTable(
+  area: string,
+  tableLabel: string,
+): Promise<void> {
+  try {
+    const a = String(area || '').trim();
+    const label = String(tableLabel || '').trim();
+    if (!a || !label) return;
+    const now = Date.now();
+    const { start, end } = dayBounds(new Date().toISOString());
+    const rows = await prisma.reservation.findMany({
+      where: {
+        area: a,
+        tableLabel: label,
+        status: 'BOOKED',
+        startsAt: { gte: start, lte: end },
+      },
+      take: 20,
+    });
+    const match = (rows as any[])
+      .map((r) => mapReservation(r))
+      .filter((r) => reservationCoversOpenTicket(r, now))
+      .sort((x, y) => Date.parse(x.startsAt) - Date.parse(y.startsAt))[0];
+    if (!match) return;
+    const updated = await prisma.reservation.update({
+      where: { id: match.id },
+      data: { status: 'SEATED', seatedAt: new Date() },
+    });
+    const dto = await withCreatedByName(updated);
+    broadcastReservationsChanged({
+      kind: 'status',
+      id: dto.id,
+      dateIso: dto.startsAt,
+      area: dto.area,
+      status: dto.status,
+    });
+  } catch {
+    // never block opening a table
+  }
+}
+
+/**
+ * Follow a covering live reservation when the waiter moves the ticket.
+ * Skip if the destination already has an occupying sitting.
+ */
+export async function moveCoveringReservationForTableTransfer(
+  fromArea: string,
+  fromLabel: string,
+  toArea: string,
+  toLabel: string,
+): Promise<void> {
+  try {
+    const fa = String(fromArea || '').trim();
+    const fl = String(fromLabel || '').trim();
+    const ta = String(toArea || '').trim();
+    const tl = String(toLabel || '').trim();
+    if (!fa || !fl || !ta || !tl) return;
+    if (fa === ta && fl === tl) return;
+    const now = Date.now();
+    const { start, end } = dayBounds(new Date().toISOString());
+    const fromRows = await prisma.reservation.findMany({
+      where: {
+        area: fa,
+        tableLabel: fl,
+        status: { in: ['BOOKED', 'SEATED'] as any },
+        startsAt: { gte: start, lte: end },
+      },
+    });
+    const covering = (fromRows as any[])
+      .map((r) => mapReservation(r))
+      .filter(
+        (r) =>
+          reservationCoversOpenTicket(r, now) ||
+          (r.status === 'SEATED' && reservationOccupiesTable(r, now)),
+      )
+      .sort((a, b) => {
+        const seated =
+          (a.status === 'SEATED' ? 0 : 1) - (b.status === 'SEATED' ? 0 : 1);
+        if (seated !== 0) return seated;
+        return Date.parse(a.startsAt) - Date.parse(b.startsAt);
+      })[0];
+    if (!covering) return;
+
+    const destRows = await prisma.reservation.findMany({
+      where: {
+        area: ta,
+        tableLabel: tl,
+        status: { in: ['BOOKED', 'SEATED'] as any },
+        startsAt: { gte: start, lte: end },
+      },
+    });
+    const destBusy = (destRows as any[]).some((row) =>
+      reservationOccupiesTable(mapReservation(row), now),
+    );
+    if (destBusy) return;
+
+    const updated = await prisma.reservation.update({
+      where: { id: covering.id },
+      data: { area: ta, tableLabel: tl },
+    });
+    const dto = await withCreatedByName(updated);
+    broadcastReservationsChanged({
+      kind: 'updated',
+      id: dto.id,
+      dateIso: dto.startsAt,
+      area: dto.area,
+    });
+  } catch {
+    // never block the ticket transfer
+  }
 }

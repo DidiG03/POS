@@ -20,6 +20,17 @@ import {
   reservationStayElapsed,
 } from '@shared/reservationDuration';
 import { ReservationTimeUpDialog } from './components/ReservationTimeUpDialog';
+import { BrandMark } from '../components/BrandMark';
+import { Button, Select, cn } from '../components/ui';
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconFilter,
+  IconGrid,
+  IconList,
+  IconLogout,
+  IconPlus,
+} from '../components/icons';
 
 export type ReservationsContext = {
   me: { id: number; displayName: string; role: string };
@@ -33,6 +44,10 @@ export type ReservationsContext = {
   // same data and the editor / walk-in dialog can be triggered from anywhere).
   tableLabels: string[];
   freeTableLabels: string[];
+  /** Tables with an unpaid waiter ticket. Occupied until paid. */
+  openTables: { area: string; label: string }[];
+  /** Latest waiter payment per table for the selected day. */
+  paidTables: { area: string; label: string; paidAt: string }[];
   openEditor: (initial?: Partial<ReservationDTO> | null) => void;
   openWalkIn: (opts?: { tableLabel?: string }) => void;
   /** List view: Sot sits in this layout; Filtrat opens the list filter sheet. */
@@ -40,6 +55,9 @@ export type ReservationsContext = {
   setListFiltersOpen: (open: boolean) => void;
   listFiltersActive: boolean;
   setListFiltersActive: (active: boolean) => void;
+  /** Floor overlay: paint tables used that day red and show a use-count. */
+  showDayOccupancy: boolean;
+  setShowDayOccupancy: (on: boolean) => void;
   /**
    * Same-device refresh signal. The Floor and List pages already react to
    * `pos:reservationsChanged` (SSE/IPC from other devices), but when the
@@ -137,6 +155,7 @@ export default function ReservationsLayout() {
   >();
   const [listFiltersOpen, setListFiltersOpen] = useState(false);
   const [listFiltersActive, setListFiltersActive] = useState(false);
+  const [showDayOccupancy, setShowDayOccupancy] = useState(false);
 
   useEffect(() => {
     if (isListView) return;
@@ -149,6 +168,12 @@ export default function ReservationsLayout() {
   const [todayReservations, setTodayReservations] = useState<ReservationDTO[]>(
     [],
   );
+  const [openTables, setOpenTables] = useState<
+    { area: string; label: string }[]
+  >([]);
+  const [paidTables, setPaidTables] = useState<
+    { area: string; label: string; paidAt: string }[]
+  >([]);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const setDate = useCallback(
@@ -269,19 +294,14 @@ export default function ReservationsLayout() {
     };
   }, [area, loadLayoutTableLabels]);
 
-  // Fetch today's reservations for the active area: walk-in free tables +
-  // the time-up prompt (seated stays that have run out).
+  // Today's reservations (all areas): walk-in free tables, editor occupancy,
+  // and the time-up prompt (seated stays that have run out).
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      if (!area) {
-        setTodayReservations([]);
-        return;
-      }
       try {
         const list = await window.api.reservations.list({
           dateIso: startOfLocalDay(new Date()).toISOString(),
-          area,
         });
         if (cancelled) return;
         setTodayReservations(Array.isArray(list) ? list : []);
@@ -294,7 +314,6 @@ export default function ReservationsLayout() {
       try {
         const detail = (ev?.detail || {}) as {
           dateIso?: string;
-          area?: string | null;
         };
         if (detail.dateIso) {
           const a = new Date(detail.dateIso);
@@ -305,7 +324,6 @@ export default function ReservationsLayout() {
             a.getDate() === today.getDate();
           if (!same) return;
         }
-        if (detail.area && area && String(detail.area) !== String(area)) return;
         void load();
       } catch {
         void load();
@@ -318,7 +336,69 @@ export default function ReservationsLayout() {
       window.clearInterval(tick);
       window.removeEventListener('pos:reservationsChanged', onChanged);
     };
-  }, [area]);
+  }, []);
+
+  const reloadOpenTables = useCallback(async () => {
+    try {
+      const open = await window.api.tables.listOpen();
+      if (Array.isArray(open)) setOpenTables(open);
+    } catch {
+      // Older tills may not let HOST read open tables.
+    }
+  }, []);
+
+  const reloadPaidTables = useCallback(async () => {
+    try {
+      const paid = await window.api.tickets.listPaidTables({
+        dateIso: date.toISOString(),
+      });
+      if (Array.isArray(paid)) setPaidTables(paid);
+    } catch {
+      // Older tills may not expose paid-table lookup to HOST.
+    }
+  }, [date]);
+
+  useEffect(() => {
+    void reloadOpenTables();
+  }, [reloadOpenTables]);
+
+  useEffect(() => {
+    void reloadPaidTables();
+  }, [reloadPaidTables]);
+
+  useEffect(() => {
+    const onChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as
+        | { area?: string; label?: string; open?: boolean }
+        | undefined;
+      const a = detail?.area;
+      const l = detail?.label;
+      const o = detail?.open;
+      if (a && l && typeof o === 'boolean') {
+        setOpenTables((prev) => {
+          const next = prev.filter((t) => !(t.area === a && t.label === l));
+          if (o) next.push({ area: a, label: l });
+          return next;
+        });
+      }
+      void reloadOpenTables();
+      void reloadPaidTables();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void reloadOpenTables();
+        void reloadPaidTables();
+      }
+    };
+    window.addEventListener('pos:tablesChanged', onChanged);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      window.removeEventListener('pos:tablesChanged', onChanged);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [reloadOpenTables, reloadPaidTables]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 5_000);
@@ -328,16 +408,47 @@ export default function ReservationsLayout() {
   const busyLabels = useMemo(() => {
     const busy = new Set<string>();
     for (const r of todayReservations) {
+      if (area && r.area !== area) continue;
       if (!r.tableLabel) continue;
       if (reservationOccupiesTable(r, nowMs)) busy.add(r.tableLabel);
     }
+    for (const t of openTables) {
+      if (area && t.area !== area) continue;
+      if (t.label) busy.add(t.label);
+    }
     return busy;
-  }, [todayReservations, nowMs]);
+  }, [todayReservations, openTables, area, nowMs]);
+
+  const isTableBusy = useCallback(
+    (areaName: string, label: string) => {
+      const a = String(areaName || '');
+      const l = String(label || '');
+      if (!a || !l) return false;
+      return todayReservations.some(
+        (r) =>
+          r.area === a &&
+          r.tableLabel === l &&
+          reservationOccupiesTable(r, nowMs),
+      );
+    },
+    [todayReservations, nowMs],
+  );
+
+  const isTableOpenTicket = useCallback(
+    (areaName: string, label: string) => {
+      const a = String(areaName || '');
+      const l = String(label || '');
+      if (!a || !l) return false;
+      return openTables.some((t) => t.area === a && t.label === l);
+    },
+    [openTables],
+  );
 
   const overdueSeated = useMemo(() => {
     return todayReservations
       .filter(
         (r) =>
+          (!area || r.area === area) &&
           Boolean(r.tableLabel) &&
           r.status === 'SEATED' &&
           reservationStayElapsed(r, nowMs),
@@ -355,7 +466,7 @@ export default function ReservationsLayout() {
             : null;
         return (aEnd ?? 0) - (bEnd ?? 0) || a.id - b.id;
       });
-  }, [todayReservations, nowMs]);
+  }, [todayReservations, nowMs, area]);
   const timeUpReservation = overdueSeated[0] ?? null;
 
   const freeTableLabels = useMemo(
@@ -374,6 +485,8 @@ export default function ReservationsLayout() {
       goRelativeDays,
       tableLabels,
       freeTableLabels,
+      openTables,
+      paidTables,
       openEditor,
       openWalkIn,
       notifyReservationsChanged,
@@ -381,6 +494,8 @@ export default function ReservationsLayout() {
       setListFiltersOpen,
       listFiltersActive,
       setListFiltersActive,
+      showDayOccupancy,
+      setShowDayOccupancy,
     }),
     [
       me,
@@ -391,6 +506,8 @@ export default function ReservationsLayout() {
       goRelativeDays,
       tableLabels,
       freeTableLabels,
+      openTables,
+      paidTables,
       openEditor,
       openWalkIn,
       notifyReservationsChanged,
@@ -398,6 +515,8 @@ export default function ReservationsLayout() {
       setListFiltersOpen,
       listFiltersActive,
       setListFiltersActive,
+      showDayOccupancy,
+      setShowDayOccupancy,
     ],
   );
 
@@ -408,137 +527,135 @@ export default function ReservationsLayout() {
 
   return (
     <div
-      className="min-h-dvh flex flex-col bg-gray-900 text-gray-100"
+      className="min-h-dvh flex flex-col pos-app text-gray-100"
       style={{
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
-      {/* Top bar:
-          - phones: title + sign-out on row 1, full-width nav on row 2
-          - tablet/desktop: classic 3-column grid */}
+      {/* Top bar: brand, view switcher, identity. Owns the safe-area-top inset
+          like the staff AppLayout so it clears the notch without exposing the
+          black native view background. */}
       <header
-        // Same approach as the staff AppLayout: own the safe-area-top
-        // inset so the header clears the iPhone status bar / notch
-        // without ever exposing the black native view background.
-        className="bg-gray-800 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sm:pt-[max(0.75rem,env(safe-area-inset-top))] safe-x flex flex-col gap-2 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:gap-2 sm:items-center"
+        className="pos-header safe-x flex shrink-0 items-center gap-3 pt-[max(0px,env(safe-area-inset-top))]"
+        style={{ minHeight: 'var(--pos-header-h)' }}
       >
-        <div className="flex items-center justify-between gap-3 min-w-0 sm:justify-start">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="font-semibold whitespace-nowrap">
-              {t('reservations.title')}
-            </div>
-            <div className="opacity-70 text-xs truncate hidden xs:block sm:block">
-              {me?.displayName} ({String(me?.role || '').toUpperCase()})
-            </div>
-          </div>
-          <button
-            type="button"
-            className="sm:hidden pos-signout-btn"
-            onClick={signOut}
-            title={t('reservations.signOut')}
-          >
-            {t('reservations.signOut')}
-          </button>
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <BrandMark
+            size="sm"
+            compact
+            subtitle={t('reservations.title')}
+            className="hidden sm:flex"
+          />
+          <BrandMark size="sm" compact wordmark={false} className="sm:hidden" />
         </div>
 
-        <nav className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:justify-center sm:gap-2">
+        <nav className="pos-segmented shrink-0">
           <NavLink
             to="/reservations/app"
             end
             className={({ isActive }) =>
-              `pos-nav-link justify-center ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'} w-full`
+              cn(
+                'pos-nav-link',
+                isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle',
+              )
             }
           >
-            {t('reservations.floor')}
+            <IconGrid />
+            <span>{t('reservations.floor')}</span>
           </NavLink>
           <NavLink
             to="/reservations/app/list"
             className={({ isActive }) =>
-              `pos-nav-link justify-center ${isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle'} w-full`
+              cn(
+                'pos-nav-link',
+                isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle',
+              )
             }
           >
-            {t('reservations.list')}
+            <IconList />
+            <span>{t('reservations.list')}</span>
           </NavLink>
         </nav>
 
-        <div className="hidden sm:flex items-center gap-2 justify-end">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+          <span className="hidden min-w-0 truncate text-[13px] text-gray-400 sm:block">
+            {me?.displayName}
+          </span>
           <button
             type="button"
-            className="hidden sm:inline-flex pos-signout-btn"
+            className="pos-icon-btn hover:!bg-rose-500/12 hover:!text-rose-300"
             onClick={signOut}
             title={t('reservations.signOut')}
+            aria-label={t('reservations.signOut')}
           >
-            {t('reservations.signOut')}
+            <IconLogout />
           </button>
         </div>
       </header>
 
-      {/* Day / area / actions bar.
-          On phones the buttons drop to their own full-width row at the
-          bottom so they're easy to tap; on desktop everything sits inline. */}
-      <div className="border-b border-gray-700 bg-gray-800 py-2 safe-x flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap sm:gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => goRelativeDays(-1)}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 text-lg leading-none text-gray-100 transition-colors hover:bg-gray-700"
-            title={t('reservations.previousDay')}
-            aria-label={t('reservations.previousDay')}
-          >
-            ‹
-          </button>
-          <input
-            type="date"
-            value={toDateInputValue(date)}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (!v) return;
-              const [y, m, d] = v.split('-').map(Number);
-              setDate(new Date(y, m - 1, d));
-            }}
-            // 16px font-size avoids the auto-zoom Safari triggers on smaller text.
-            className="cursor-pointer rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-base hover:bg-gray-700 sm:text-sm"
-          />
-          <button
-            type="button"
-            onClick={() => goRelativeDays(1)}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 text-lg leading-none text-gray-100 transition-colors hover:bg-gray-700"
-            title={t('reservations.nextDay')}
-            aria-label={t('reservations.nextDay')}
-          >
-            ›
-          </button>
-          <button
-            type="button"
-            onClick={() => setDate(new Date())}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm transition-colors hover:bg-gray-700 sm:py-1.5"
-          >
-            {t('reservations.today')}
-          </button>
-          {isListView && (
+      {/* Day / area / actions bar. On phones the primary actions drop to their
+          own full-width row so they stay comfortable to tap. */}
+      <div className="pos-toolbar safe-x flex flex-col gap-2 py-2 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {/* Grouped stepper: the date and its arrows read as one control. */}
+          <div className="flex items-center overflow-hidden rounded-lg border border-white/12 bg-gray-800">
             <button
               type="button"
-              onClick={() => setListFiltersOpen(true)}
-              className={`rounded-lg border px-3 py-2 text-sm transition-colors sm:py-1.5 ${
-                listFiltersActive
-                  ? 'border-blue-500 bg-blue-700 hover:bg-blue-600'
-                  : 'border-gray-700 bg-gray-800 hover:bg-gray-700'
-              }`}
-              title={t('reservations.filtersTitle')}
+              onClick={() => goRelativeDays(-1)}
+              className="flex items-center justify-center px-2 text-gray-400 transition-colors hover:bg-white/6 hover:text-gray-100"
+              style={{ height: 'var(--pos-control-h)', minHeight: 0 }}
+              title={t('reservations.previousDay')}
+              aria-label={t('reservations.previousDay')}
             >
-              {t('reservations.filters')}
+              <IconChevronLeft />
             </button>
-          )}
+            <input
+              type="date"
+              value={toDateInputValue(date)}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (!v) return;
+                const [y, m, d] = v.split('-').map(Number);
+                setDate(new Date(y, m - 1, d));
+              }}
+              className="cursor-pointer border-x border-white/12 bg-transparent px-2.5 text-[13px] text-gray-100 tabular focus:outline-none"
+              style={{ height: 'var(--pos-control-h)', minHeight: 0 }}
+            />
+            <button
+              type="button"
+              onClick={() => goRelativeDays(1)}
+              className="flex items-center justify-center px-2 text-gray-400 transition-colors hover:bg-white/6 hover:text-gray-100"
+              style={{ height: 'var(--pos-control-h)', minHeight: 0 }}
+              title={t('reservations.nextDay')}
+              aria-label={t('reservations.nextDay')}
+            >
+              <IconChevronRight />
+            </button>
+          </div>
+          <Button onClick={() => setDate(new Date())}>
+            {t('reservations.today')}
+          </Button>
+          <Button
+            icon={<IconFilter />}
+            onClick={() => setListFiltersOpen(true)}
+            title={t('reservations.filtersTitle')}
+            className={cn(
+              (listFiltersActive || showDayOccupancy) &&
+                '!border-white/20 !bg-white/10 !text-gray-50',
+            )}
+          >
+            {t('reservations.filters')}
+          </Button>
         </div>
 
-        <div className="flex items-center gap-2 min-w-0 sm:ml-2">
-          <span className="text-xs opacity-70 hidden sm:inline">
+        <div className="flex min-w-0 items-center gap-2 sm:ml-1">
+          <span className="pos-section-label hidden shrink-0 sm:inline">
             {t('reservations.area')}
           </span>
-          <select
+          <Select
             value={area}
             onChange={(e) => setArea(e.target.value)}
-            className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-base hover:bg-gray-700 sm:flex-initial sm:py-1.5 sm:text-sm"
+            className="min-w-0 flex-1 sm:w-40 sm:flex-initial"
           >
             {areas.length === 0 && (
               <option value="">{t('reservations.noAreas')}</option>
@@ -548,35 +665,30 @@ export default function ReservationsLayout() {
                 {a.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
-        {/* Action buttons. Pushed to the far right on desktop with `sm:ml-auto`;
-            on phones they drop to their own full-width 2-column row so each
-            button is comfortable to tap. */}
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2 sm:ml-auto">
-          <button
-            type="button"
-            className="px-3 py-2 sm:py-1.5 rounded bg-rose-700 hover:bg-rose-600 text-sm font-medium disabled:opacity-60"
+        <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex sm:items-center">
+          <Button
             onClick={() => openWalkIn()}
             disabled={!area || !me?.id}
             title={t('reservations.seatNowTitle')}
           >
             {t('reservations.seatNow')}
-          </button>
-          <button
-            type="button"
-            className="px-3 py-2 sm:py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-sm"
+          </Button>
+          <Button
+            variant="primary"
+            icon={<IconPlus />}
             onClick={() => openEditor({ area })}
             disabled={!me?.id}
             title={t('reservations.newReservationTitle')}
           >
             {t('reservations.newReservation')}
-          </button>
+          </Button>
         </div>
       </div>
 
-      <main className="flex flex-1 flex-col min-h-0 p-3 sm:p-4">
+      <main className="safe-x flex min-h-0 flex-1 flex-col py-3 sm:py-4">
         <Outlet context={ctx} />
       </main>
 
@@ -611,6 +723,8 @@ export default function ReservationsLayout() {
           defaultArea={area}
           areas={areas}
           getTableLabelsForArea={loadLayoutTableLabels}
+          isTableBusy={isTableBusy}
+          isTableOpenTicket={isTableOpenTicket}
           actorId={me.id}
           onSaved={(r) =>
             notifyReservationsChanged('updated', r.startsAt, r.area)

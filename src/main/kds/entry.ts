@@ -183,7 +183,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    backgroundColor: '#111827',
+    backgroundColor: '#0b1220',
     autoHideMenuBar: true,
     show: false,
     fullscreen: isProdKds,

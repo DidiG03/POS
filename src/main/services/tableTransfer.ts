@@ -4,6 +4,7 @@ import {
   broadcastTableStatusChanged,
   broadcastTicketsChanged,
 } from './realtime';
+import { moveCoveringReservationForTableTransfer } from './reservations';
 
 export type TransferTableInput = {
   fromArea: string;
@@ -545,6 +546,13 @@ export async function transferTableLocal(
     } catch {
       // ignore if KDS tables not migrated
     }
+
+    await moveCoveringReservationForTableTransfer(
+      fromArea,
+      fromLabel,
+      toArea,
+      toLabel,
+    );
   } else {
     // Not moving table: ensure openAt exists (no-op otherwise)
     if (!openAtMap[fromKey] && openMap[fromKey]) {

@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ReservationDTO, ReservationStatus } from '@shared/ipc';
-import {
-  isReservationQuickStatusTooEarly,
-  reservationQuickStatusUnlockHint,
-} from '../../utils/reservationStatusWindow';
 import { reservationStatusLabel } from '../../utils/reservationLabels';
 import {
   DEFAULT_RESERVATION_DURATION_MIN,
@@ -13,6 +9,17 @@ import {
   formatReservationClock,
 } from '@shared/reservationDuration';
 import { ReservationDurationPicker } from './ReservationDurationPicker';
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  Field,
+  Input,
+  Modal,
+  Select,
+  Textarea,
+} from '../../components/ui';
+import { occupancyOverlapsInstant } from '@shared/tableOccupancy';
 
 export type ReservationEditorProps = {
   open: boolean;
@@ -28,6 +35,10 @@ export type ReservationEditorProps = {
   defaultArea: string;
   /** Resolve TABLE labels from the saved layout for the picked area. */
   getTableLabelsForArea: (areaName: string) => Promise<string[]>;
+  /** True when the table has a live occupying reservation. */
+  isTableBusy?: (areaName: string, label: string) => boolean;
+  /** True when a waiter ticket is unpaid on the table (still bookable later). */
+  isTableOpenTicket?: (areaName: string, label: string) => boolean;
   actorId: number;
   onSaved: (r: ReservationDTO) => void;
   onDeleted?: (id: number) => void;
@@ -95,14 +106,6 @@ function timeFromIso(iso: string): string {
   );
 }
 
-const STATUSES: ReservationStatus[] = [
-  'BOOKED',
-  'SEATED',
-  'COMPLETED',
-  'NO_SHOW',
-  'CANCELLED',
-];
-
 // Electron's ipcRenderer wraps thrown main-process errors with a verbose
 // prefix like `Error invoking remote method 'reservations:create': Error: …`.
 // Strip it so the user only sees our friendly message text.
@@ -115,6 +118,18 @@ function cleanErrorMessage(e: any, fallback: string): string {
   return (m ? m[1] : raw).trim() || fallback;
 }
 
+function mapReservationConflict(
+  raw: string,
+  t: (key: string, opts?: Record<string, string>) => string,
+): string {
+  if (/open ticket/i.test(raw) || /TABLE_OPEN_TICKET/i.test(raw)) {
+    const m = raw.match(/Table\s+(\S+)/i);
+    const label = (m?.[1] || '').replace(/[.,]$/, '');
+    return t('reservations.tableOpenTicketConflict', { label });
+  }
+  return raw;
+}
+
 export default function ReservationEditor({
   open,
   onClose,
@@ -122,6 +137,8 @@ export default function ReservationEditor({
   areas,
   defaultArea,
   getTableLabelsForArea,
+  isTableBusy,
+  isTableOpenTicket,
   actorId,
   onSaved,
   onDeleted,
@@ -150,6 +167,7 @@ export default function ReservationEditor({
   const [labelsLoading, setLabelsLoading] = useState(false);
   const [layoutLabels, setLayoutLabels] = useState<string[]>([]);
   const [editNowMs, setEditNowMs] = useState(() => Date.now());
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!open || !isEdit) return;
@@ -162,6 +180,7 @@ export default function ReservationEditor({
     if (!open) return;
     setError(null);
     setBusy(false);
+    setConfirmDelete(false);
     const nowWall = new Date();
     const today = startOfLocalDay(nowWall);
 
@@ -292,7 +311,28 @@ export default function ReservationEditor({
       setError(t('reservations.chooseArea'));
       return;
     }
+    const keepCurrent =
+      Boolean(isEdit && initial?.id) &&
+      String(initial?.area || '') === formArea &&
+      String(initial?.tableLabel || '') === tableLabel;
     const startsAtIso = isoFromLocalDateAndTime(reservationDay, time);
+    if (tableLabel && isTableBusy?.(formArea, tableLabel) && !keepCurrent) {
+      setError(
+        t('reservations.tableOpenTicketConflict', { label: tableLabel }),
+      );
+      return;
+    }
+    if (
+      tableLabel &&
+      isTableOpenTicket?.(formArea, tableLabel) &&
+      !keepCurrent &&
+      occupancyOverlapsInstant(startsAtIso, durationMin, Date.now())
+    ) {
+      setError(
+        t('reservations.tableOpenTicketConflict', { label: tableLabel }),
+      );
+      return;
+    }
     const proposedMs = new Date(startsAtIso).getTime();
     if (!isEdit) {
       if (startOfLocalDay(reservationDay).getTime() < todayStart.getTime()) {
@@ -337,26 +377,12 @@ export default function ReservationEditor({
       onSaved(r);
       onClose();
     } catch (e: any) {
-      setError(cleanErrorMessage(e, t('reservations.saveFailed')));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function setStatus(status: ReservationStatus) {
-    if (!initial?.id) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await window.api.reservations.setStatus({
-        id: initial.id,
-        actorId,
-        status,
-      });
-      onSaved(r);
-      onClose();
-    } catch (e: any) {
-      setError(cleanErrorMessage(e, t('reservations.statusUpdateFailed')));
+      setError(
+        mapReservationConflict(
+          cleanErrorMessage(e, t('reservations.saveFailed')),
+          t,
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -364,109 +390,107 @@ export default function ReservationEditor({
 
   async function remove() {
     if (!initial?.id) return;
-    if (!window.confirm(t('reservations.deleteConfirm'))) return;
     setBusy(true);
     setError(null);
     try {
       await window.api.reservations.delete({ id: initial.id, actorId });
+      setConfirmDelete(false);
       onDeleted?.(initial.id);
       onClose();
     } catch (e: any) {
       setError(cleanErrorMessage(e, t('reservations.deleteFailed')));
+      setConfirmDelete(false);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        // Bottom-sheet on phones (full width, top-rounded), centered card on
-        // tablet/desktop. Use `dvh` so iOS Safari's collapsing toolbar doesn't
-        // hide form fields underneath itself.
-        className="w-full sm:max-w-lg max-h-[92dvh] sm:max-h-[90vh] bg-gray-800 border border-gray-700 sm:rounded-lg rounded-t-2xl shadow-2xl flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+    <>
+      <Modal
+        open={open}
+        onClose={onClose}
+        size="lg"
+        title={
+          isEdit
+            ? t('reservations.editReservation')
+            : t('reservations.newReservationTitleShort')
+        }
+        footer={
+          <>
+            {isEdit ? (
+              <Button
+                variant="danger"
+                className="mr-auto max-sm:mr-0 max-sm:flex-1"
+                disabled={busy}
+                onClick={() => setConfirmDelete(true)}
+              >
+                {t('reservations.delete')}
+              </Button>
+            ) : null}
+            <Button
+              variant="primary"
+              className="max-sm:flex-1"
+              loading={busy}
+              onClick={save}
+            >
+              {isEdit
+                ? t('reservations.saveChanges')
+                : t('reservations.createReservation')}
+            </Button>
+          </>
+        }
       >
-        <div className="flex items-center justify-between p-4 border-b border-gray-700/60">
-          <div className="text-lg font-semibold">
-            {isEdit
-              ? t('reservations.editReservation')
-              : t('reservations.newReservationTitleShort')}
-          </div>
-          <button
-            type="button"
-            className="px-3 py-2 rounded hover:bg-gray-700 text-lg leading-none"
-            onClick={onClose}
-            title={t('common.close')}
-            aria-label={t('common.close')}
-          >
-            ✕
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {isEdit && (
-            <div className="text-xs opacity-70">
-              {t('reservations.statusLabel')}:{' '}
-              <span className="uppercase tracking-wide">
-                {reservationStatusLabel(t, shownStatus)}
+        <div className="space-y-4">
+          {isEdit ? (
+            <div className="flex items-center gap-2">
+              <span className="pos-label m-0">
+                {t('reservations.statusLabel')}
               </span>
+              <Badge>{reservationStatusLabel(t, shownStatus)}</Badge>
             </div>
-          )}
+          ) : null}
 
-          <label className="block">
-            <div className="text-xs opacity-70 mb-1">
-              {t('reservations.customerName')}
-            </div>
-            <input
-              type="text"
+          <Field label={t('reservations.customerName')}>
+            <Input
               value={customerName}
               onChange={(e) => setCustomerName(e.target.value)}
-              // text-base (16px) prevents iOS Safari focus auto-zoom.
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
               placeholder={t('reservations.customerNamePlaceholder')}
               autoFocus
+              className="text-base"
+              disabled={busy}
             />
-          </label>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block">
-              <div className="text-xs opacity-70 mb-1">
-                {t('reservations.phoneOptional')}
-              </div>
-              <input
+          </Field>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t('reservations.phoneOptional')}>
+              <Input
                 type="tel"
                 value={customerPhone}
                 onChange={(e) => setCustomerPhone(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
                 placeholder="+355 ..."
                 inputMode="tel"
+                className="text-base"
+                disabled={busy}
               />
-            </label>
-            <label className="block">
-              <div className="text-xs opacity-70 mb-1">
-                {t('reservations.partySize')}
-              </div>
-              <input
+            </Field>
+            <Field label={t('reservations.partySize')}>
+              <Input
                 type="number"
                 min={1}
                 max={200}
                 value={partySize}
                 onChange={(e) => setPartySize(Number(e.target.value || 0))}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
                 inputMode="numeric"
+                className="text-base"
+                disabled={busy}
               />
-            </label>
+            </Field>
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <label className="block">
-              <div className="text-xs opacity-70 mb-1">
-                {t('reservations.date')}
-              </div>
-              <input
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t('reservations.date')}>
+              <Input
                 type="date"
                 value={toDateInputValue(reservationDay)}
                 min={minDateStrForPicker}
@@ -485,14 +509,18 @@ export default function ReservationEditor({
                     setTime((cur) => (cur < minT ? minT : cur));
                   }
                 }}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
+                className="text-base"
               />
-            </label>
-            <label className="block">
-              <div className="text-xs opacity-70 mb-1">
-                {t('reservations.time')}
-              </div>
-              <input
+            </Field>
+            <Field
+              label={t('reservations.time')}
+              hint={
+                seatedClock
+                  ? `${t('reservations.timeSeated')}: ${formatReservationClock(seatedClock)}`
+                  : undefined
+              }
+            >
+              <Input
                 type="time"
                 value={time}
                 min={minTimeToday}
@@ -502,40 +530,41 @@ export default function ReservationEditor({
                   if (minTimeToday && v < minTimeToday) v = minTimeToday;
                   setTime(v);
                 }}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base"
+                className="text-base"
               />
-              {seatedClock ? (
-                <div className="text-xs opacity-80 mt-1">
-                  {t('reservations.timeSeated')}:{' '}
-                  {formatReservationClock(seatedClock)}
-                </div>
-              ) : null}
-            </label>
-            <div className="block">
-              <div className="text-xs opacity-70 mb-1">
-                {t('reservations.duration')}
-              </div>
-              <ReservationDurationPicker
-                value={durationMin}
-                onChange={setDurationMin}
-                disabled={busy}
-              />
-            </div>
+            </Field>
           </div>
 
+          <Field label={t('reservations.duration')}>
+            <ReservationDurationPicker
+              value={durationMin}
+              onChange={setDurationMin}
+              disabled={busy}
+            />
+          </Field>
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label className="block">
-              <div className="text-xs opacity-70 mb-1">
-                {t('reservations.area')}
-              </div>
-              <select
+            <Field
+              label={t('reservations.area')}
+              hint={
+                labelsLoading
+                  ? t('reservations.loadingTables')
+                  : !labelsLoading &&
+                      formArea &&
+                      tableOptions.length === 0 &&
+                      areas.length > 0
+                    ? t('reservations.noTablesOnFloor')
+                    : undefined
+              }
+            >
+              <Select
                 value={formArea}
                 onChange={(e) => {
                   setFormArea(e.target.value);
                   setTableLabel('');
                 }}
                 disabled={areas.length === 0 || busy}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base disabled:opacity-50"
+                className="text-base"
               >
                 {areas.length === 0 ? (
                   <option value="">
@@ -548,109 +577,68 @@ export default function ReservationEditor({
                     </option>
                   ))
                 )}
-              </select>
-              {labelsLoading && (
-                <div className="text-[11px] opacity-60 mt-1">
-                  {t('reservations.loadingTables')}
-                </div>
-              )}
-              {!labelsLoading &&
-                formArea &&
-                tableOptions.length === 0 &&
-                areas.length > 0 && (
-                  <div className="text-[11px] text-amber-200/90 mt-1">
-                    {t('reservations.noTablesOnFloor')}
-                  </div>
-                )}
-            </label>
-            <label className="block">
-              <div className="text-xs opacity-70 mb-1">{t('common.table')}</div>
-              <select
+              </Select>
+            </Field>
+            <Field label={t('common.table')}>
+              <Select
                 value={tableLabel}
                 onChange={(e) => setTableLabel(e.target.value)}
                 disabled={!formArea || busy}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-base disabled:opacity-50"
+                className="text-base"
               >
                 <option value="">{t('reservations.noSpecificTable')}</option>
-                {tableOptions.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </label>
+                {tableOptions.map((l) => {
+                  const occupying = Boolean(isTableBusy?.(formArea, l));
+                  const ticketOpen = Boolean(isTableOpenTicket?.(formArea, l));
+                  const keepCurrent =
+                    isEdit &&
+                    String(initial?.area || '') === formArea &&
+                    String(initial?.tableLabel || '') === l;
+                  return (
+                    <option
+                      key={l}
+                      value={l}
+                      disabled={occupying && !keepCurrent}
+                    >
+                      {l}
+                      {occupying || ticketOpen
+                        ? t('reservations.tableBusySuffix')
+                        : ''}
+                    </option>
+                  );
+                })}
+              </Select>
+            </Field>
           </div>
-          <label className="block">
-            <div className="text-xs opacity-70 mb-1">{t('common.note')}</div>
-            <textarea
+
+          <Field label={t('common.note')}>
+            <Textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 min-h-[60px] text-base"
               placeholder={t('reservations.notePlaceholder')}
+              rows={3}
+              className="text-base"
+              disabled={busy}
             />
-          </label>
+          </Field>
 
-          {error && <div className="text-sm text-rose-300">{error}</div>}
+          {error ? (
+            <div className="text-[13px] text-rose-300">{error}</div>
+          ) : null}
         </div>
+      </Modal>
 
-        <div className="border-t border-gray-700/60 p-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={save}
-            className="px-3 py-3 sm:py-2 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 font-medium order-1 sm:order-none"
-          >
-            {busy
-              ? t('common.saving')
-              : isEdit
-                ? t('reservations.saveChanges')
-                : t('reservations.createReservation')}
-          </button>
-          {isEdit && (
-            <div className="sm:ml-auto flex items-center gap-1 flex-wrap order-2 sm:order-none">
-              {STATUSES.filter((s) => s !== shownStatus).map((s) => {
-                const startsAtIso = isoFromLocalDateAndTime(
-                  reservationDay,
-                  time,
-                );
-                const tooEarly = isReservationQuickStatusTooEarly(
-                  editNowMs,
-                  startsAtIso,
-                  s,
-                );
-                const unlockAt = reservationQuickStatusUnlockHint(startsAtIso);
-                const statusLabel = reservationStatusLabel(t, s);
-                return (
-                  <button
-                    key={s}
-                    type="button"
-                    disabled={busy || tooEarly}
-                    onClick={() => setStatus(s)}
-                    className="px-2 py-1.5 rounded text-xs uppercase tracking-wide bg-gray-700 hover:bg-gray-600 disabled:opacity-60"
-                    title={
-                      tooEarly
-                        ? t('reservations.availableFrom', { time: unlockAt })
-                        : t('reservations.markAsStatus', {
-                            status: statusLabel,
-                          })
-                    }
-                  >
-                    {statusLabel}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                disabled={busy}
-                onClick={remove}
-                className="px-2 py-1.5 rounded text-xs bg-rose-700 hover:bg-rose-600 disabled:opacity-60"
-              >
-                {t('reservations.delete')}
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        title={t('reservations.delete')}
+        body={t('reservations.deleteConfirm')}
+        confirmLabel={t('reservations.delete')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        busy={busy}
+        onConfirm={remove}
+        onCancel={() => setConfirmDelete(false)}
+      />
+    </>
   );
 }

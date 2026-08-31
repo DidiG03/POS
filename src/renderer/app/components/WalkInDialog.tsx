@@ -11,7 +11,8 @@ export type WalkInDialogProps = {
   actorId: number;
   // All known table labels in this area.
   tableLabels: string[];
-  // Subset of tableLabels that are currently free (no live reservation).
+  // Subset of tableLabels that are currently free (no live reservation
+  // and no unpaid waiter ticket).
   freeTableLabels: string[];
   /** Prefill the table dropdown when seating from a specific table sheet. */
   initialTableLabel?: string;
@@ -120,7 +121,16 @@ export default function WalkInDialog({
       onSeated(r);
       onClose();
     } catch (e) {
-      setError(cleanIpcMessage(e, t('reservations.somethingWrong')));
+      const raw = cleanIpcMessage(e, t('reservations.somethingWrong'));
+      if (/open ticket/i.test(raw) || /TABLE_OPEN_TICKET/i.test(raw)) {
+        setError(
+          t('reservations.tableOpenTicketConflict', {
+            label: tableLabel || '',
+          }),
+        );
+      } else {
+        setError(raw);
+      }
     } finally {
       setBusy(false);
     }
@@ -195,7 +205,7 @@ export default function WalkInDialog({
                   key={n}
                   type="button"
                   onClick={() => setPartySize(n)}
-                  className={`w-10 h-10 sm:w-9 sm:h-9 rounded text-base sm:text-sm ${
+                  className={`size-11 rounded text-base ${
                     partySize === n
                       ? 'bg-blue-600'
                       : 'bg-gray-700 hover:bg-gray-600'
@@ -214,7 +224,7 @@ export default function WalkInDialog({
                     Math.max(1, Math.min(200, Number(e.target.value) || 1)),
                   )
                 }
-                className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base sm:text-sm text-right"
+                className="h-11 w-16 bg-gray-900 border border-gray-700 rounded px-2 text-base text-right"
                 title={t('reservations.customPartySize')}
                 inputMode="numeric"
               />
@@ -270,7 +280,7 @@ export default function WalkInDialog({
         <div className="flex items-center gap-2 p-3 border-t border-gray-700">
           <button
             type="button"
-            className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+            className="flex-1 px-3 py-3 rounded bg-gray-700 hover:bg-gray-600 text-sm"
             onClick={onClose}
             disabled={busy}
           >
@@ -278,7 +288,7 @@ export default function WalkInDialog({
           </button>
           <button
             type="button"
-            className="ml-auto px-4 py-2.5 rounded bg-rose-700 hover:bg-rose-600 disabled:opacity-60 font-medium"
+            className="flex-[1.4] px-4 py-3 rounded bg-rose-700 hover:bg-rose-600 disabled:opacity-60 font-medium"
             onClick={seat}
             disabled={busy}
             title={t('reservations.seatNowTitle')}

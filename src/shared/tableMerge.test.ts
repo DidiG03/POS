@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clientToFloorLayout,
   formatMergeLabel,
   mergeMembersFor,
   mergeTableGroups,
@@ -95,5 +96,37 @@ describe('tablesTouching', () => {
         { x: 220, y: 100, w: 64, h: 64 },
       ),
     ).toBe(false);
+  });
+});
+
+describe('clientToFloorLayout', () => {
+  it('inverts auto-fit translate + scale so a table stays under the finger', () => {
+    const outer = { left: 10, top: 20 };
+    const zoom = { scale: 1, tx: 0, ty: 0 };
+    const view = { scaleX: 2, scaleY: 1.5, tx: 30, ty: 40 };
+    const layoutX = 100;
+    const layoutY = 50;
+    const clientX =
+      outer.left + zoom.tx + zoom.scale * (view.tx + view.scaleX * layoutX);
+    const clientY =
+      outer.top + zoom.ty + zoom.scale * (view.ty + view.scaleY * layoutY);
+    expect(clientToFloorLayout(clientX, clientY, outer, zoom, view)).toEqual({
+      x: layoutX,
+      y: layoutY,
+    });
+  });
+
+  it('inverts pinch-zoom on top of auto-fit', () => {
+    const outer = { left: 0, top: 0 };
+    const zoom = { scale: 2, tx: 8, ty: -4 };
+    const view = { scaleX: 1.2, scaleY: 1.2, tx: 15, ty: 25 };
+    const p = { x: 80, y: 60 };
+    const clientX =
+      outer.left + zoom.tx + zoom.scale * (view.tx + view.scaleX * p.x);
+    const clientY =
+      outer.top + zoom.ty + zoom.scale * (view.ty + view.scaleY * p.y);
+    const out = clientToFloorLayout(clientX, clientY, outer, zoom, view);
+    expect(out.x).toBeCloseTo(p.x);
+    expect(out.y).toBeCloseTo(p.y);
   });
 });

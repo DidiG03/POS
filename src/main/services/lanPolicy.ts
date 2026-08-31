@@ -30,6 +30,7 @@ export interface LanRoutePolicy {
 
 const ADMIN = ['ADMIN'] as const;
 const POS = ['ADMIN', 'CASHIER', 'WAITER'] as const;
+const POS_AND_HOST = ['ADMIN', 'CASHIER', 'WAITER', 'HOST'] as const;
 const HOST = ['ADMIN', 'HOST'] as const;
 
 export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
@@ -155,13 +156,15 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /shifts/clock-out': { allow: 'session' },
 
   // ---------------------------------------------------------------- tables
-  'GET /tables/open': { allow: POS },
+  'GET /tables/open': { allow: POS_AND_HOST },
   'POST /tables/open': { allow: POS },
   'POST /tables/transfer': { allow: POS },
 
   // --------------------------------------------------------------- tickets
   'POST /tickets': { allow: POS },
   'GET /tickets/latest': { allow: POS },
+  'GET /tickets/tooltip': { allow: POS_AND_HOST },
+  'GET /tickets/paid-tables': { allow: POS_AND_HOST },
   'POST /tickets/void-item': { allow: POS },
   'POST /tickets/void-ticket': { allow: POS },
 };

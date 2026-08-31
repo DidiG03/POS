@@ -26,6 +26,7 @@ import { formatEur, makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
 import { saneTableAreas } from '@shared/tableAreas';
+import { IconClose } from '../../components/icons';
 
 type MenuItemDTO = {
   id: number;
@@ -68,11 +69,11 @@ function readableTextColor(hex?: string | null): string {
   return lum > 0.6 ? '#0f172a' : '#ffffff';
 }
 
-const FALLBACK_TILE_BG = '#065f46'; // emerald-800 — matches the prior look
+const FALLBACK_TILE_BG = '#243044';
 const FAVOURITES_CAT_ID = -1;
 const COMMENTS_CAT_ID = -2;
-const COMMENT_TILE_BG = '#475569'; // slate-600 — distinct from menu categories
-const COMMENT_CUSTOM_BTN_BG = '#047857'; // emerald-700 — matches POS action green
+const COMMENT_TILE_BG = '#3d4d63';
+const COMMENT_CUSTOM_BTN_BG = '#2563eb';
 
 function mergeNoteFragment(existing: string, fragment: string): string {
   const base = String(existing || '').trim();
@@ -1354,7 +1355,7 @@ export default function OrderPage() {
   return (
     <div className="h-full min-h-0 flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3">
       {/* Mobile: switch between Menu and Ticket to avoid cramped 3-column layout */}
-      <div className="md:hidden pos-surface-panel p-2 flex items-center gap-2">
+      <div className="md:hidden pos-surface-panel p-1.5 flex items-center gap-1.5">
         <button
           className="pos-icon-btn shrink-0 cursor-pointer text-gray-100"
           onClick={() => navigate('/app/tables')}
@@ -1378,22 +1379,24 @@ export default function OrderPage() {
             />
           </svg>
         </button>
-        <button
-          className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition-colors duration-150 ${mobilePane === 'menu' ? 'bg-emerald-700 text-white' : 'bg-gray-700/90 text-gray-100 hover:bg-gray-600'}`}
-          onClick={() => setMobilePane('menu')}
-          type="button"
-        >
-          {t('order.menu')}
-        </button>
-        <button
-          className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition-colors duration-150 ${mobilePane === 'ticket' ? 'bg-emerald-700 text-white' : 'bg-gray-700/90 text-gray-100 hover:bg-gray-600'}`}
-          onClick={() => setMobilePane('ticket')}
-          type="button"
-        >
-          {lines.length
-            ? t('order.ticketCount', { count: lines.length })
-            : t('order.ticket')}
-        </button>
+        <div className="pos-segmented flex-1">
+          <button
+            className={`pos-segment flex-1 ${mobilePane === 'menu' ? 'pos-segment--active' : ''}`}
+            onClick={() => setMobilePane('menu')}
+            type="button"
+          >
+            {t('order.menu')}
+          </button>
+          <button
+            className={`pos-segment flex-1 ${mobilePane === 'ticket' ? 'pos-segment--active' : ''}`}
+            onClick={() => setMobilePane('ticket')}
+            type="button"
+          >
+            {lines.length
+              ? t('order.ticketCount', { count: lines.length })
+              : t('order.ticket')}
+          </button>
+        </div>
       </div>
 
       <div
@@ -1402,7 +1405,7 @@ export default function OrderPage() {
         <div className="flex gap-2 mb-3">
           <input
             placeholder={t('order.searchMenu')}
-            className="w-full rounded-lg bg-gray-700 p-2 transition-colors placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-600/50"
+            className="pos-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -1412,7 +1415,7 @@ export default function OrderPage() {
           <button
             key={FAVOURITES_CAT_ID}
             onClick={() => setSelectedCatId(FAVOURITES_CAT_ID)}
-            className={`py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900'}`}
+            className={`py-4 sm:py-7 px-2 border border-white/8 hover:bg-gray-800 cursor-pointer rounded-xl ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900/70'}`}
           >
             {t('order.favourites')}
           </button>
@@ -1420,8 +1423,10 @@ export default function OrderPage() {
           <button
             key={COMMENTS_CAT_ID}
             onClick={() => setSelectedCatId(COMMENTS_CAT_ID)}
-            className={`relative py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded overflow-hidden ${
-              selected?.id === COMMENTS_CAT_ID ? 'bg-gray-800' : 'bg-gray-900'
+            className={`relative py-4 sm:py-7 px-2 border border-white/8 hover:bg-gray-800 cursor-pointer rounded-xl overflow-hidden ${
+              selected?.id === COMMENTS_CAT_ID
+                ? 'bg-gray-800'
+                : 'bg-gray-900/70'
             }`}
             style={{
               boxShadow:
@@ -1452,8 +1457,8 @@ export default function OrderPage() {
               <button
                 key={c.id}
                 onClick={() => setSelectedCatId(c.id)}
-                className={`relative py-4 sm:py-7 px-2 border border-gray-700 hover:bg-gray-800 cursor-pointer rounded overflow-hidden ${
-                  isActive ? 'bg-gray-800' : 'bg-gray-900'
+                className={`relative py-4 sm:py-7 px-2 border border-white/8 hover:bg-gray-800 cursor-pointer rounded-xl overflow-hidden ${
+                  isActive ? 'bg-gray-800' : 'bg-gray-900/70'
                 }`}
                 style={
                   tabColor
@@ -1666,7 +1671,7 @@ export default function OrderPage() {
       </div>
 
       <div
-        className={`bg-gray-800 p-3 rounded flex flex-col min-h-0 h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
+        className={`bg-gray-800/80 p-3 rounded-xl border border-white/8 flex flex-col min-h-0 h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
       >
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold flex items-center gap-2">
@@ -1779,7 +1784,7 @@ export default function OrderPage() {
                       isVoided ? 'opacity-60' : ''
                     } ${
                       isSelected
-                        ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-gray-800'
+                        ? 'ring-2 ring-white/40 ring-offset-2 ring-offset-gray-800'
                         : canSelect
                           ? 'cursor-pointer hover:bg-gray-600/80'
                           : ''
@@ -2370,7 +2375,7 @@ export default function OrderPage() {
                           : t('order.printTicket')}
                     </button>
                     <button
-                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      className="flex-1 pos-btn-primary py-2 cursor-pointer disabled:cursor-not-allowed"
                       disabled={
                         !canPay ||
                         busyAction != null ||
@@ -2449,10 +2454,11 @@ export default function OrderPage() {
             <div className="flex items-center justify-between mb-3 shrink-0">
               <div className="text-lg font-semibold">{t('order.payment')}</div>
               <button
-                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={busyAction === 'pay'}
                 onClick={() => setShowPayment(false)}
               >
+                <IconClose />
                 {t('common.close')}
               </button>
             </div>
@@ -2838,7 +2844,7 @@ export default function OrderPage() {
                     </button>
                   </div>
                   <button
-                    className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:bg-emerald-700/60 disabled:cursor-not-allowed rounded py-4 font-semibold flex items-center justify-center gap-2"
+                    className="pos-btn-primary w-full py-4 text-[15px] disabled:cursor-not-allowed"
                     disabled={busyAction != null || !connectionOk}
                     onClick={async () => {
                       if (busyAction != null) return;
@@ -3030,9 +3036,10 @@ export default function OrderPage() {
                 {t('order.transferTable')}
               </div>
               <button
-                className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
                 onClick={() => setShowTransfer(false)}
               >
+                <IconClose />
                 {t('common.close')}
               </button>
             </div>
@@ -3184,7 +3191,7 @@ export default function OrderPage() {
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60"
+                className="flex-1 pos-btn-primary py-2"
                 disabled={
                   transferBusy ||
                   !canTransfer ||
@@ -3381,7 +3388,7 @@ export default function OrderPage() {
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex-1 pos-btn-primary py-2 disabled:cursor-not-allowed"
                 disabled={busyAction != null}
                 onClick={async () => {
                   if (busyAction != null) return;
@@ -3722,9 +3729,10 @@ export default function OrderPage() {
             <div className="flex gap-2">
               <button
                 type="button"
-                className="flex-1 bg-gray-600 hover:bg-gray-500 py-2 rounded"
+                className="flex-1 inline-flex items-center justify-center gap-1.5 bg-gray-600 hover:bg-gray-500 py-2 rounded"
                 onClick={() => setCustomCommentOpen(false)}
               >
+                <IconClose />
                 {t('common.close')}
               </button>
               <button

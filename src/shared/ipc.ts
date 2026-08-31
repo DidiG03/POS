@@ -1424,6 +1424,9 @@ export interface ApiTickets {
     firstAt: string | null;
     total: number;
   } | null>;
+  listPaidTables(input: {
+    dateIso: string;
+  }): Promise<{ area: string; label: string; paidAt: string }[]>;
   print(input: PrintTicketInput): Promise<boolean | PrintRejection>;
 }
 

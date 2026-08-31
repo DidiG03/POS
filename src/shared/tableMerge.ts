@@ -104,6 +104,37 @@ export function separateTableGroup(
   return sanitizeMergeGroups(groups.filter((g) => !g.labels.includes(label)));
 }
 
+export type FloorViewZoom = { scale: number; tx: number; ty: number };
+export type FloorViewFit = {
+  scaleX: number;
+  scaleY: number;
+  tx: number;
+  ty: number;
+};
+
+/**
+ * Map a pointer in client pixels to floor layout coordinates.
+ * Must invert the same nested CSS transforms FloorCanvas applies:
+ *   screen = outer + zoom.translate + zoom.scale * (fit.translate + fit.scale * layout)
+ */
+export function clientToFloorLayout(
+  clientX: number,
+  clientY: number,
+  outer: { left: number; top: number },
+  zoom: FloorViewZoom,
+  view: FloorViewFit,
+): { x: number; y: number } {
+  const zs = zoom.scale > 0 ? zoom.scale : 1;
+  const sx = view.scaleX > 0 ? view.scaleX : 1;
+  const sy = view.scaleY > 0 ? view.scaleY : 1;
+  const zx = (clientX - outer.left - (zoom.tx || 0)) / zs;
+  const zy = (clientY - outer.top - (zoom.ty || 0)) / zs;
+  return {
+    x: (zx - (view.tx || 0)) / sx,
+    y: (zy - (view.ty || 0)) / sy,
+  };
+}
+
 export function tablesTouching(
   a: MergeTableFootprint,
   b: MergeTableFootprint,

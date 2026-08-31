@@ -16,7 +16,7 @@ export function PageSpinner({
   const spinner = (
     <div className="flex flex-col items-center gap-3">
       <svg
-        className="w-7 h-7 animate-spin text-indigo-400"
+        className="pos-spinner"
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"

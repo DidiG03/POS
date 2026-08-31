@@ -28,6 +28,7 @@ import {
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
+import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
@@ -1076,12 +1077,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           '/notifications/mark-all-read',
           '/layout/merges',
           '/reservations/merges',
+          // HOST may read open POS tickets to paint the reservations floor.
+          // POST /tables/open stays POS-only via authorizeLanRoute.
+          '/tables/open',
+          '/tickets/tooltip',
+          '/tickets/paid-tables',
         ]);
         const isHostReservationsPath =
           (role === 'HOST' || role === 'ADMIN') &&
           (pathname === '/auth/users' ||
             pathname === '/settings' ||
             pathname === '/auth/verify-manager-pin' ||
+            pathname === '/tables/open' ||
+            pathname === '/tickets/tooltip' ||
+            pathname === '/tickets/paid-tables' ||
             pathname.startsWith('/reservations') ||
             pathname.startsWith('/layout') ||
             pathname.startsWith('/notifications'));
@@ -1385,6 +1394,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           },
           corsOrigin,
         );
+      }
+      if (req.method === 'GET' && pathname === '/tickets/tooltip') {
+        const area = String(parsed.query.area || '');
+        const tableLabel = String(
+          parsed.query.table || parsed.query.tableLabel || '',
+        );
+        if (!area || !tableLabel) return send(res, 400, 'invalid', corsOrigin);
+        const tip = await getTableTooltip(area, tableLabel);
+        return send(res, 200, tip, corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/tickets/paid-tables') {
+        const dateIso = String(parsed.query.dateIso || parsed.query.date || '');
+        const paid = await listPaidTablesForDay(dateIso);
+        return send(res, 200, paid, corsOrigin);
       }
 
       // KDS endpoints should be usable by dedicated kitchen devices without login.

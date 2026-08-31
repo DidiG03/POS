@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import { IconClose } from '../../components/icons';
 
 type Overview = {
   activeUsers: number;
@@ -415,7 +416,7 @@ export default function AdminPage() {
         </div>
       )}
 
-      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+      <section className="pos-card">
         <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-base font-semibold">
@@ -441,7 +442,7 @@ export default function AdminPage() {
             value={ov?.coversToday ?? 0}
           />
           <Stat title={t('adminOverview.openOrders')} value={ov?.openOrders} />
-          <div className="bg-gray-900/60 rounded-lg border border-gray-700/70 p-4 min-w-0 overflow-hidden">
+          <div className="pos-stat">
             <div className="text-sm opacity-70">
               {t('adminOverview.topSellingToday')}
             </div>
@@ -461,7 +462,7 @@ export default function AdminPage() {
         </div>
       </section>
 
-      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+      <section className="pos-card">
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold">
@@ -545,10 +546,11 @@ export default function AdminPage() {
                   {t('adminOverview.refresh')}
                 </button>
                 <button
-                  className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
                   onClick={() => setShowShiftsModal(false)}
                   type="button"
                 >
+                  <IconClose />
                   {t('common.close')}
                 </button>
               </div>
@@ -805,7 +807,7 @@ export default function AdminPage() {
         </div>
       )}
 
-      <section className="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+      <section className="pos-card">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold">
@@ -1132,12 +1134,12 @@ function Stat({
         : formatMoney(Number(value || 0), String(currency || 'EUR'))
       : (value ?? '—');
   return (
-    <div className="bg-gray-800 rounded p-4 min-w-0 overflow-hidden">
+    <div className="pos-stat">
       <div className="text-sm opacity-70 leading-snug">{title}</div>
       <div
         className={`mt-1 min-w-0 ${
           kind === 'money'
-            ? 'text-lg sm:text-xl md:text-2xl lg:text-3xl font-bold tabular-nums tracking-tight text-emerald-100 leading-tight break-words'
+            ? 'pos-stat-value text-lg sm:text-xl md:text-2xl lg:text-3xl leading-tight break-words'
             : 'text-xl sm:text-2xl font-semibold tabular-nums break-words'
         }`}
       >

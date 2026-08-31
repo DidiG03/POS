@@ -158,7 +158,9 @@ export default function ReportsPage() {
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden pr-1">
       <div className="flex shrink-0 items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">{t('reports.title')}</h2>
+        <h2 className="text-lg font-semibold tracking-tight">
+          {t('reports.title')}
+        </h2>
       </div>
 
       {loading && (
@@ -212,7 +214,7 @@ export default function ReportsPage() {
       {user && (
         <section className="flex min-h-0 flex-1 flex-col">
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-3 lg:grid-rows-1 lg:items-stretch [&>*]:min-h-0 lg:[&>*]:max-h-full">
-            <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
+            <div className="flex min-h-[min(28rem,45vh)] flex-col pos-card lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
                 <div className="font-medium">{t('reports.activeTickets')}</div>
                 <div className="text-xs opacity-70">{activeTickets.length}</div>
@@ -242,7 +244,7 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
+            <div className="flex min-h-[min(28rem,45vh)] flex-col pos-card lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
                 <div className="font-medium">{t('reports.paidToday')}</div>
                 <div className="text-xs opacity-70">{paidTickets.length}</div>
@@ -290,7 +292,7 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            <div className="flex min-h-[min(28rem,45vh)] flex-col rounded border border-gray-700 bg-gray-800 p-3 lg:min-h-0">
+            <div className="flex min-h-[min(28rem,45vh)] flex-col pos-card lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
                 <div className="font-medium">{t('reports.voidedToday')}</div>
                 <div className="text-xs opacity-70">{voidedTickets.length}</div>
@@ -327,9 +329,11 @@ export default function ReportsPage() {
 
 function StatCard({ title, value }: { title: string; value: string }) {
   return (
-    <div className="p-3 rounded bg-gray-800 border border-gray-700">
-      <div className="text-xs opacity-70">{title}</div>
-      <div className="text-lg mt-1">{value}</div>
+    <div className="pos-stat">
+      <div className="pos-section-label">{title}</div>
+      <div className="text-xl mt-1.5 font-semibold tabular-nums tracking-tight text-gray-50">
+        {value}
+      </div>
     </div>
   );
 }

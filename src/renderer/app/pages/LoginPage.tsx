@@ -4,6 +4,70 @@ import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { isClockOnlyRole } from '@shared/utils/roles';
+import { BrandMark } from '../../components/BrandMark';
+import {
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  Input,
+  SectionLabel,
+  StatusDot,
+  cn,
+} from '../../components/ui';
+import {
+  IconArrowLeft,
+  IconChevronRight,
+  IconUsers,
+} from '../../components/icons';
+
+function staffInitials(name: string): string {
+  const parts = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const first = parts[0]?.[0] || '';
+  const second = parts[1]?.[0] || '';
+  return (first + second).toUpperCase() || '?';
+}
+
+function StaffTile({
+  name,
+  selected,
+  onShift,
+  onClick,
+}: {
+  name: string;
+  selected: boolean;
+  onShift?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn('pos-staff-tile', selected && 'pos-staff-tile--active')}
+      onClick={onClick}
+    >
+      <span className="flex min-w-0 items-center gap-2.5">
+        <span className="pos-avatar">{staffInitials(name)}</span>
+        <span className="truncate text-[13px] font-medium text-gray-100">
+          {name}
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-2">
+        {onShift ? <StatusDot tone="accent" /> : null}
+        <IconChevronRight className="size-4 shrink-0 text-gray-500" />
+      </span>
+    </button>
+  );
+}
+
+/** Holds the shape of an empty staff column without inventing copy for it —
+ * the column heading above already says what belongs here. */
+function ColumnPlaceholder() {
+  return (
+    <div className="h-[52px] rounded-lg border border-dashed border-white/8" />
+  );
+}
 
 export default function LoginPage() {
   const { t, i18n } = useTranslation();
@@ -219,6 +283,9 @@ export default function LoginPage() {
 
   const [enableAdmin, setEnableAdmin] = useState(false);
 
+  const onShift = staff.filter((s) => openIds.includes(s.id));
+  const offShift = staff.filter((s) => !openIds.includes(s.id));
+
   return (
     <div
       // Pad the page by the iOS safe-area insets so the staff selection
@@ -226,11 +293,21 @@ export default function LoginPage() {
       // but keep `bg-gray-900` so the WebView still paints those zones
       // (no black bars). `max(...)` keeps the original p-3/sm:p-6 spacing
       // on devices without a safe area.
-      className="min-h-dvh flex items-center justify-center bg-gray-900 overflow-hidden px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+      className="min-h-dvh flex flex-col items-center justify-center pos-app pos-app--auth overflow-hidden px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
     >
-      <div className="rounded-xl bg-gray-800 p-5 sm:p-6 w-full max-w-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)]">
-        <div className="flex items-center justify-between mb-4 shrink-0 gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+      <div className="mb-6 shrink-0">
+        <BrandMark size="lg" subtitle={t('brand.tagline')} />
+      </div>
+      <div
+        className={cn(
+          'pos-surface-panel flex w-full flex-col overflow-hidden',
+          'max-h-[calc(100dvh-7rem)] sm:max-h-[calc(100dvh-9rem)]',
+          // The PIN step only needs one column, so the card narrows for it.
+          showPin ? 'max-w-[380px]' : 'max-w-2xl',
+        )}
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/7 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-1.5">
             {/* Back arrow shows only on the PIN screen so the user can
                 return to staff selection without it feeling like a modal
                 cancel. We reuse `setShowPin(false)` so all the existing
@@ -245,24 +322,12 @@ export default function LoginPage() {
                   setPin('');
                   setError(null);
                 }}
-                className="pos-icon-btn -ml-1 cursor-pointer text-gray-200"
+                className="pos-icon-btn -ml-2 shrink-0"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="pos-icon"
-                  aria-hidden
-                >
-                  <path d="M15 18l-6-6 6-6" />
-                </svg>
+                <IconArrowLeft />
               </button>
             )}
-            <h1 className="text-xl font-semibold truncate">
+            <h1 className="truncate text-[15px] font-semibold tracking-tight text-gray-50">
               {showPin
                 ? selectedId
                   ? t('login.enterPinFor', {
@@ -277,9 +342,9 @@ export default function LoginPage() {
             </h1>
           </div>
           {!showPin && !isAdminContext && (
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                size="sm"
                 onClick={async () => {
                   // On Electron, openWindow() spawns the dedicated reservation
                   // window. On the mobile / browser shell it returns false, in
@@ -297,201 +362,187 @@ export default function LoginPage() {
                 title={t('login.reservationsTitle')}
               >
                 {t('login.reservations')}
-              </button>
+              </Button>
               {!isBrowserClient && enableAdmin && (
-                <button
-                  className="rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-600"
-                  onClick={() => window.api.admin.openWindow()}
-                >
+                <Button size="sm" onClick={() => window.api.admin.openWindow()}>
                   {t('common.admin')}
-                </button>
+                </Button>
               )}
             </div>
           )}
         </div>
-        {notice && (
-          <div className="mb-4 p-3 rounded bg-amber-900/30 border border-amber-700 text-amber-200 text-sm">
-            {notice}
-          </div>
-        )}
-        {isAdminContext && !showPin && !staffLoading && staff.length === 0 && (
-          <div className="mb-4 p-3 rounded border border-gray-700 bg-gray-800/40">
-            <div className="text-sm font-medium mb-2">
-              {t('login.firstAdminTitle')}
+
+        <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
+          {notice && (
+            <div className="shrink-0 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[13px] text-amber-200">
+              {notice}
             </div>
-            <div className="text-xs opacity-70 mb-3">
-              {t('login.firstAdminHelp')}
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                className="bg-gray-700 rounded px-3 py-2 flex-1"
-                placeholder={t('login.firstAdminNamePlaceholder')}
-                value={firstAdminName}
-                onChange={(e) => setFirstAdminName(e.target.value)}
-                autoComplete="off"
-              />
-              <input
-                className="bg-gray-700 rounded px-3 py-2 sm:w-40"
-                placeholder={t('login.firstAdminPinPlaceholder')}
-                value={firstAdminPin}
-                onChange={(e) =>
-                  setFirstAdminPin(
-                    e.target.value.replace(/\D/g, '').slice(0, 8),
-                  )
-                }
-                inputMode="numeric"
-                autoComplete="off"
-              />
-              <button
-                className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60"
-                disabled={
-                  creatingFirstAdmin ||
-                  firstAdminName.trim().length < 2 ||
-                  firstAdminPin.length < 4
-                }
-                onClick={async () => {
-                  setError(null);
-                  setCreatingFirstAdmin(true);
-                  try {
-                    await window.api.auth.createUser({
-                      displayName: firstAdminName.trim(),
-                      role: 'ADMIN',
-                      pin: firstAdminPin,
-                      active: true,
-                    } as any);
-                    setNotice(t('login.firstAdminCreated'));
-                    setFirstAdminName('');
-                    setFirstAdminPin('');
-                    setReloadNonce((n) => n + 1);
-                  } catch (e: any) {
-                    setError(e?.message || t('login.firstAdminCreateFailed'));
-                  } finally {
-                    setCreatingFirstAdmin(false);
-                  }
-                }}
-              >
-                {creatingFirstAdmin
-                  ? t('login.firstAdminCreating')
-                  : t('login.firstAdminCreate')}
-              </button>
-            </div>
-          </div>
-        )}
-        {!showPin && isAdminContext ? (
-          <div className="flex flex-col min-h-0 flex-1">
-            <div className="text-sm mb-2 opacity-80 shrink-0">
-              {t('login.admins')}
-            </div>
-            <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
-              {staff.map((s) => (
-                <button
-                  key={s.id}
-                  className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
-                  onClick={() => {
-                    setSelectedId(s.id);
-                    setPin('');
-                    setError(null);
-                    setShowPin(true);
-                  }}
-                >
-                  <span>{s.displayName}</span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    className="w-4 h-4 opacity-70"
-                  >
-                    <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
-                  </svg>
-                </button>
-              ))}
-              {staff.length === 0 && (
-                <div className="opacity-70 text-sm">
-                  {staffLoading
-                    ? t('login.loadingStaff')
-                    : t('login.noAdminUsersShort')}
+          )}
+          {isAdminContext &&
+            !showPin &&
+            !staffLoading &&
+            staff.length === 0 && (
+              <div className="shrink-0 rounded-lg border border-white/7 bg-gray-900 p-3.5">
+                <div className="text-[13px] font-semibold text-gray-100">
+                  {t('login.firstAdminTitle')}
                 </div>
-              )}
-            </div>
-          </div>
-        ) : !showPin && !isAdminContext ? (
-          <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
-            <div className="flex flex-col min-h-0">
-              <div className="text-sm mb-2 opacity-80 shrink-0">
-                {t('login.notClockedIn')}
+                <div className="mt-0.5 text-[12px] text-gray-400">
+                  {t('login.firstAdminHelp')}
+                </div>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    className="flex-1"
+                    placeholder={t('login.firstAdminNamePlaceholder')}
+                    value={firstAdminName}
+                    onChange={(e) => setFirstAdminName(e.target.value)}
+                    autoComplete="off"
+                  />
+                  <Input
+                    className="sm:w-36"
+                    placeholder={t('login.firstAdminPinPlaceholder')}
+                    value={firstAdminPin}
+                    onChange={(e) =>
+                      setFirstAdminPin(
+                        e.target.value.replace(/\D/g, '').slice(0, 8),
+                      )
+                    }
+                    inputMode="numeric"
+                    autoComplete="off"
+                  />
+                  <Button
+                    variant="primary"
+                    loading={creatingFirstAdmin}
+                    disabled={
+                      firstAdminName.trim().length < 2 ||
+                      firstAdminPin.length < 4
+                    }
+                    onClick={async () => {
+                      setError(null);
+                      setCreatingFirstAdmin(true);
+                      try {
+                        await window.api.auth.createUser({
+                          displayName: firstAdminName.trim(),
+                          role: 'ADMIN',
+                          pin: firstAdminPin,
+                          active: true,
+                        } as any);
+                        setNotice(t('login.firstAdminCreated'));
+                        setFirstAdminName('');
+                        setFirstAdminPin('');
+                        setReloadNonce((n) => n + 1);
+                      } catch (e: any) {
+                        setError(
+                          e?.message || t('login.firstAdminCreateFailed'),
+                        );
+                      } finally {
+                        setCreatingFirstAdmin(false);
+                      }
+                    }}
+                  >
+                    {creatingFirstAdmin
+                      ? t('login.firstAdminCreating')
+                      : t('login.firstAdminCreate')}
+                  </Button>
+                </div>
               </div>
-              <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
-                {staff.length === 0 && !staffLoading && (
-                  <div className="opacity-70 text-sm py-4">
-                    {t('login.noStaffSync')}
-                  </div>
+            )}
+
+          {!showPin && isAdminContext ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <SectionLabel className="mb-2 shrink-0">
+                {t('login.admins')}
+              </SectionLabel>
+              <div className="min-h-0 flex-1 space-y-1.5 overflow-auto">
+                {staff.map((s) => (
+                  <StaffTile
+                    key={s.id}
+                    name={s.displayName}
+                    selected={selectedId === s.id}
+                    onClick={() => {
+                      setSelectedId(s.id);
+                      setPin('');
+                      setError(null);
+                      setShowPin(true);
+                    }}
+                  />
+                ))}
+                {staff.length === 0 && (
+                  <EmptyState
+                    compact
+                    icon={<IconUsers />}
+                    title={
+                      staffLoading
+                        ? t('login.loadingStaff')
+                        : t('login.noAdminUsersShort')
+                    }
+                  />
                 )}
-                {staff
-                  .filter((s) => !openIds.includes(s.id))
-                  .map((s) => (
-                    <button
+              </div>
+            </div>
+          ) : !showPin && !isAdminContext ? (
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="flex min-h-0 flex-col">
+                <SectionLabel className="mb-2 shrink-0">
+                  {t('login.notClockedIn')}
+                </SectionLabel>
+                <div className="min-h-0 flex-1 space-y-1.5 overflow-auto">
+                  {staff.length === 0 && !staffLoading ? (
+                    <EmptyState
+                      compact
+                      icon={<IconUsers />}
+                      title={t('login.noStaffSync')}
+                    />
+                  ) : offShift.length === 0 ? (
+                    <ColumnPlaceholder />
+                  ) : null}
+                  {offShift.map((s) => (
+                    <StaffTile
                       key={s.id}
-                      className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
+                      name={s.displayName}
+                      selected={selectedId === s.id}
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
                         setError(null);
                         setShowPin(true);
                       }}
-                    >
-                      <span>{s.displayName}</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        className="w-4 h-4 opacity-70"
-                      >
-                        <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
-                      </svg>
-                    </button>
+                    />
                   ))}
+                </div>
               </div>
-            </div>
-            <div className="flex flex-col min-h-0">
-              <div className="text-sm mb-2 opacity-80 shrink-0">
-                {t('login.clockedIn')}
-              </div>
-              <div className="space-y-2 overflow-auto pr-2 flex-1 min-h-0">
-                {staff
-                  .filter((s) => openIds.includes(s.id))
-                  .map((s) => (
-                    <button
+              <div className="flex min-h-0 flex-col">
+                <SectionLabel className="mb-2 shrink-0">
+                  {t('login.clockedIn')}
+                </SectionLabel>
+                <div className="min-h-0 flex-1 space-y-1.5 overflow-auto">
+                  {onShift.length === 0 && !staffLoading ? (
+                    <ColumnPlaceholder />
+                  ) : null}
+                  {onShift.map((s) => (
+                    <StaffTile
                       key={s.id}
-                      className={`w-full rounded cursor-pointer px-3 py-2 border flex items-center justify-between ${selectedId === s.id ? 'bg-emerald-800 border-emerald-500' : 'bg-gray-700 border-transparent'}`}
+                      name={s.displayName}
+                      selected={selectedId === s.id}
+                      onShift
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
                         setError(null);
                         setShowPin(true);
                       }}
-                    >
-                      <span>{s.displayName}</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        className="w-4 h-4 opacity-70"
-                      >
-                        <path d="M12 1.75a5.25 5.25 0 00-5.25 5.25v2.25H5.25A2.25 2.25 0 003 11.5v7.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V11.5a2.25 2.25 0 00-2.25-2.25H17.25V7A5.25 5.25 0 0012 1.75zm-3.75 7.5V7A3.75 3.75 0 0112 3.25 3.75 3.75 0 0115.75 7v2.25h-7.5z" />
-                      </svg>
-                    </button>
+                    />
                   ))}
+                </div>
               </div>
             </div>
-          </div>
-        ) : null}
-        {showPin && (
-          // Inline PIN screen — replaces the staff list inside the same
-          // card so it visually feels like a page transition, not a modal.
-          // The card frame and header stay so the user keeps the
-          // "I'm on the login page" context.
-          <div className="flex-1 min-h-0 flex flex-col items-center justify-start pt-2 sm:pt-6">
-            <div className="w-full max-w-sm flex flex-col gap-3">
+          ) : null}
+
+          {showPin && (
+            // Inline PIN screen — replaces the staff list inside the same
+            // card so it visually feels like a page transition, not a modal.
+            // The card frame and header stay so the user keeps the
+            // "I'm on the login page" context.
+            <div className="flex flex-col gap-3">
               {/* Mask PIN (dots/bullets). `inputMode="numeric"` + `pattern` keep a
                   digits-friendly keyboard on mobile. 20px font avoids Safari zoom. */}
               <input
@@ -506,7 +557,7 @@ export default function LoginPage() {
                 onChange={(e) =>
                   setPin(e.target.value.replace(/\D+/g, '').slice(0, 6))
                 }
-                className="w-full p-3 rounded bg-gray-700 focus:outline-none text-center text-2xl tracking-[0.5em] font-mono"
+                className="pos-input py-3 text-center tracking-[0.55em] tabular"
                 style={{ fontSize: '20px' }}
                 onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
               />
@@ -518,62 +569,48 @@ export default function LoginPage() {
                   placeholder={t('login.pairingPlaceholder')}
                   maxLength={12}
                   defaultValue={pairingCode}
-                  className="w-full p-3 rounded bg-gray-700 focus:outline-none"
+                  className="pos-input text-center tabular"
                   onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
                 />
               )}
-              {error && <div className="text-red-400 text-sm">{error}</div>}
-              <button
-                onClick={onSubmit}
-                className="w-full rounded-lg bg-emerald-600 py-3 text-base font-semibold text-white transition-colors hover:bg-emerald-700"
-              >
+              {error && (
+                <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-[13px] text-rose-200">
+                  {error}
+                </div>
+              )}
+              <Button variant="primary" size="lg" block onClick={onSubmit}>
                 {t('login.loginSubmit')}
-              </button>
+              </Button>
             </div>
-          </div>
-        )}
-
-        {!isAdminContext && showShiftConfirm && pendingUser && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center">
-            <div className="pos-surface-panel p-5 w-full max-w-sm">
-              <h2 className="text-center mb-3">
-                {t('login.startShiftTitle', {
-                  name: pendingUser.displayName,
-                })}
-              </h2>
-              <div className="flex gap-2 mt-2">
-                <button
-                  className="flex-1 rounded-lg bg-gray-600 py-2.5 text-sm font-medium transition-colors hover:bg-gray-500"
-                  onClick={() => {
-                    setShowShiftConfirm(false);
-                    setPendingUser(null);
-                  }}
-                >
-                  {t('common.cancel')}
-                </button>
-                <button
-                  className="flex-1 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700"
-                  onClick={async () => {
-                    try {
-                      const ae = document.activeElement as HTMLElement | null;
-                      if (ae && typeof ae.blur === 'function') ae.blur();
-                    } catch {
-                      // ignore
-                    }
-                    await window.api.shifts.clockIn(pendingUser.id);
-                    setShowShiftConfirm(false);
-                    setPendingUser(null);
-                    setUser(pendingUser);
-                    navigate(isKdsContext ? '/kds' : '/app/tables');
-                  }}
-                >
-                  {t('common.confirm')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
+      {!isAdminContext && pendingUser && (
+        <ConfirmDialog
+          open={showShiftConfirm}
+          title={t('login.startShiftTitle', { name: pendingUser.displayName })}
+          confirmLabel={t('common.confirm')}
+          cancelLabel={t('common.cancel')}
+          onCancel={() => {
+            setShowShiftConfirm(false);
+            setPendingUser(null);
+          }}
+          onConfirm={async () => {
+            try {
+              const ae = document.activeElement as HTMLElement | null;
+              if (ae && typeof ae.blur === 'function') ae.blur();
+            } catch {
+              // ignore
+            }
+            await window.api.shifts.clockIn(pendingUser.id);
+            setShowShiftConfirm(false);
+            setPendingUser(null);
+            setUser(pendingUser);
+            navigate(isKdsContext ? '/kds' : '/app/tables');
+          }}
+        />
+      )}
     </div>
   );
 }
