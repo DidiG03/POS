@@ -1,6 +1,6 @@
 {
   "name": "code-orbit-pos",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "private": true,
   "description": "Desktop POS for OneTap (Electron + React + Prisma)",
   "type": "module",
