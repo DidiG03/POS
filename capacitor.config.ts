@@ -7,7 +7,7 @@ const devServerUrl = process.env.CAP_SERVER_URL || '';
 
 const config: CapacitorConfig = {
   appId: 'com.codeorbit.waiter',
-  appName: 'Code Orbit Waiter',
+  appName: 'OneTap Waiter',
   webDir: 'dist/mobile',
   bundledWebRuntime: false,
   ios: {

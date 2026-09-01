@@ -300,6 +300,8 @@ model Covers {
   label     String
   covers    Int
   createdAt DateTime @default(now())
+
+  @@index([area, label, createdAt])
 }
 
 model TicketLog {
@@ -314,6 +316,8 @@ model TicketLog {
   /// Dedupes double-submit / retry on table transfer (destination row).
   idempotencyKey String? @unique
   createdAt  DateTime @default(now())
+
+  @@index([area, tableLabel, createdAt])
 }
 
 model KdsDayCounter {

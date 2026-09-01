@@ -1,5 +1,5 @@
 /**
- * First-run / re-pair screen for the standalone "Code Orbit KDS" app.
+ * First-run / re-pair screen for the standalone "OneTap KDS" app.
  *
  * Flow:
  *   1. Auto-discover POS hosts on the LAN (mDNS + HTTP scan of this Wi-Fi).
@@ -159,7 +159,7 @@ export default function KdsSetupPage() {
       <div className="w-full max-w-xl bg-gray-800 border border-gray-700 rounded-xl shadow-2xl p-6 space-y-5">
         <div>
           <div className="text-xs uppercase tracking-wide opacity-60">
-            Code Orbit KDS
+            OneTap KDS
           </div>
           <h1 className="text-xl font-semibold mt-1">Connect to your POS</h1>
           <p className="text-sm opacity-80 mt-1">

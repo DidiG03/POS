@@ -24,7 +24,7 @@ const settings = {
 } as unknown as SettingsDTO;
 
 const draft = {
-  app: 'Code Orbit POS',
+  app: 'OneTap POS',
   docId: 'doc-1',
   articles: [
     {

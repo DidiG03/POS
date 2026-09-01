@@ -3,7 +3,8 @@ import path from 'node:path';
 import Module from 'node:module';
 import fs from 'node:fs';
 
-app.setName('Code Orbit POS');
+app.setName('OneTap POS');
+process.title = 'OneTap POS';
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.codeorbit.pos');
 }

@@ -98,9 +98,11 @@ export default function LoginPage() {
     (location?.pathname || '').startsWith('/kds') ||
     (typeof window !== 'undefined' &&
       (window.location.hash || '').startsWith('#/kds'));
+  const hasHydrated = useSessionStore((s) => s.hasHydrated);
 
   const onSubmit = async () => {
     setError(null);
+    if (!hasHydrated) return;
     if (pin.length < 4) {
       setError(t('login.pinTooShort'));
       return;
@@ -578,7 +580,13 @@ export default function LoginPage() {
                   {error}
                 </div>
               )}
-              <Button variant="primary" size="lg" block onClick={onSubmit}>
+              <Button
+                variant="primary"
+                size="lg"
+                block
+                disabled={!hasHydrated}
+                onClick={onSubmit}
+              >
                 {t('login.loginSubmit')}
               </Button>
             </div>
@@ -603,11 +611,23 @@ export default function LoginPage() {
             } catch {
               // ignore
             }
-            await window.api.shifts.clockIn(pendingUser.id);
-            setShowShiftConfirm(false);
-            setPendingUser(null);
-            setUser(pendingUser);
-            navigate(isKdsContext ? '/kds' : '/app/tables');
+            try {
+              await window.api.shifts.clockIn(pendingUser.id);
+              setShowShiftConfirm(false);
+              setPendingUser(null);
+              setUser(pendingUser);
+              navigate(
+                isKdsContext
+                  ? '/kds'
+                  : isClockOnlyRole((pendingUser as any).role)
+                    ? '/app/clock'
+                    : '/app/tables',
+              );
+            } catch (e: any) {
+              setShowShiftConfirm(false);
+              const msg = String(e?.message || e || '').trim();
+              setError(msg || t('login.loginFailed'));
+            }
           }}
         />
       )}

@@ -584,7 +584,8 @@ html[data-shell='capacitor']
   }
 
   .pos-brand-mark {
-    color: var(--pos-accent);
+    color: #fff;
+    line-height: 0;
   }
 
   .pos-spinner {

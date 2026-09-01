@@ -244,6 +244,7 @@ describe('tablet client vs LAN policy', () => {
       'GET /requests/list-for-owner',
       'GET /auth/users',
       'GET /tables/open',
+      'GET /tables/floor-snapshot',
       'GET /layout/get',
       'GET /reservations/merges',
       'GET /tickets/latest',

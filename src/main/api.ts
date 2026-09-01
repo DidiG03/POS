@@ -24,16 +24,26 @@ import * as reservationsService from './services/reservations';
 import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
+  ensureSseKeepAlive,
 } from './services/realtime';
+import { getFloorSnapshot } from './services/floorSnapshot';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
+import {
+  closeTableAfterAcceptedPayment,
+  paymentPrintAccepted,
+  tableAlreadyPaidResult,
+  tableIsOpenForPayment,
+  withPaymentLock,
+} from './services/paymentSettle';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { authorizeLanRoute } from './services/lanPolicy';
+import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
 import { logSecurityEvent } from './services/security';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
@@ -490,12 +500,7 @@ function createCorsPolicy(isDev: boolean): CorsPolicy {
   //   Android     → http://localhost (default) or https://localhost (when
   //                 androidScheme:'https' is set in capacitor.config.ts)
   //   Older Ionic → ionic://localhost
-  const capacitorOrigins = [
-    'capacitor://localhost',
-    'ionic://localhost',
-    'http://localhost',
-    'https://localhost',
-  ];
+  const capacitorOrigins = [...CAPACITOR_WEBVIEW_ORIGINS];
   const allowList = new Set<string>([...extra, ...dev, ...capacitorOrigins]);
 
   return {
@@ -828,8 +833,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           (globalThis as any).__SSE_CLIENTS__ || new Set();
         const clients: Set<any> = (globalThis as any).__SSE_CLIENTS__;
         clients.add(client);
+        ensureSseKeepAlive();
         req.on('close', () => clients.delete(client));
         return;
+      }
+
+      if (req.method === 'GET' && pathname === '/health') {
+        return send(res, 200, { ok: true, t: Date.now() }, corsOrigin);
       }
 
       // Auth
@@ -1006,6 +1016,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/settings',
         '/offline/status',
         '/billing/status',
+        '/health',
       ]);
       const isPublic = publicPaths.has(pathname) || isStaticGet;
       let auth: AuthContext = null;
@@ -1183,6 +1194,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Menu
       if (req.method === 'GET' && pathname === '/menu/categories') {
+        res.setHeader(
+          'Cache-Control',
+          'private, max-age=5, stale-while-revalidate=60',
+        );
         const cats = await prisma.category.findMany({
           where: { active: true },
           orderBy: { sortOrder: 'asc' },
@@ -1732,7 +1747,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               where: { idempotencyKey: printIdempotencyKey } as any,
             })
             .catch(() => null);
-          if (existing) return send(res, 200, { ok: true }, corsOrigin);
+          if (existing)
+            return send(res, 200, { ok: true, printed: true }, corsOrigin);
         }
         const requested = {
           area: String(body?.area || ''),
@@ -1754,242 +1770,272 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             { ok: false, error: 'invalid payload' },
             corsOrigin,
           );
-        const settings = await coreServices.readSettings();
+        const payKindHint = String(requested?.meta?.kind || '').toUpperCase();
+        const runLanPrint = async () => {
+          const settings = await coreServices.readSettings();
 
-        // iOS/Android tablets and LAN browsers are separate devices that
-        // may run a stale bundle or be tampered with, so the totals they
-        // send are advisory. Recompute from the line items before this
-        // becomes a receipt, an audit row, or a fiscal record.
-        const enforcedTotals = await enforceAuthoritativePaymentTotals(
-          requested,
-          settings as any,
-          'lan',
-        );
-        const payload = enforcedTotals.payload;
+          // iOS/Android tablets and LAN browsers are separate devices that
+          // may run a stale bundle or be tampered with, so the totals they
+          // send are advisory. Recompute from the line items before this
+          // becomes a receipt, an audit row, or a fiscal record.
+          const enforcedTotals = await enforceAuthoritativePaymentTotals(
+            requested,
+            settings as any,
+            'lan',
+          );
+          const payload = enforcedTotals.payload;
 
-        // Track last payment time per table + payment adjustment alerts.
-        // Run before printing so it works for all printer modes — and
-        // even if the print itself fails (so we still detect anomalies).
-        try {
-          const meta: any = payload?.meta || {};
-          const kind = String(meta?.kind || '').toUpperCase();
-          if (kind === 'PAYMENT') {
-            const k = `${payload.area}:${payload.tableLabel}`;
-            const payRow = await prisma.syncState
-              .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
-              .catch(() => null as any);
-            const map = ((payRow?.valueJson as any) || {}) as Record<
-              string,
-              string
-            >;
-            map[k] = new Date().toISOString();
-            if (payRow?.key) {
-              await prisma.syncState
-                .update({
-                  where: { key: 'antitheft:lastPaymentAt' },
-                  data: { valueJson: map } as any,
-                })
-                .catch(() => null);
-            } else {
-              await prisma.syncState
-                .create({
-                  data: {
-                    key: 'antitheft:lastPaymentAt',
-                    valueJson: map,
-                  } as any,
-                })
-                .catch(() => null);
-            }
-
-            // Suspicious-pattern alerting for payment adjustments (discounts / service charge removal).
-            const userId = Number(meta?.userId || 0);
-            const discountAmt = Number(meta?.discountAmount || 0);
-            const scEnabled = Boolean(meta?.serviceChargeEnabled);
-            const scApplied = Boolean(meta?.serviceChargeApplied);
-            const scAmt = Number(meta?.serviceChargeAmount || 0);
-            if (userId) {
-              const windowMinutes = 60;
-              const cooldownMinutes = 60;
-              const now = Date.now();
-              const cur = payAdjustByUser.get(userId);
-              if (!cur || cur.resetAt <= now) {
-                payAdjustByUser.set(userId, {
-                  discountCount: 0,
-                  serviceRemovalCount: 0,
-                  resetAt: now + windowMinutes * 60 * 1000,
-                  lastAlertAt: cur?.lastAlertAt || 0,
-                });
-              }
-              const st = payAdjustByUser.get(userId)!;
-              if (Number.isFinite(discountAmt) && discountAmt > 0)
-                st.discountCount += 1;
-              if (
-                scEnabled &&
-                !scApplied &&
-                Number.isFinite(scAmt) &&
-                scAmt > 0
-              )
-                st.serviceRemovalCount += 1;
-              payAdjustByUser.set(userId, st);
-
-              const actor = await prisma.user
-                .findUnique({ where: { id: userId } })
+          // Track last payment time per table + payment adjustment alerts.
+          // Run before printing so it works for all printer modes — and
+          // even if the print itself fails (so we still detect anomalies).
+          try {
+            const meta: any = payload?.meta || {};
+            const kind = String(meta?.kind || '').toUpperCase();
+            if (kind === 'PAYMENT') {
+              const k = `${payload.area}:${payload.tableLabel}`;
+              const payRow = await prisma.syncState
+                .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
                 .catch(() => null as any);
-              const actorName = actor?.displayName
-                ? String(actor.displayName)
-                : `User #${userId}`;
-              const admins = await prisma.user
-                .findMany({
-                  where: { role: 'ADMIN', active: true } as any,
-                  take: 50,
-                })
-                .catch(() => []);
-              const canAlert =
-                !st.lastAlertAt ||
-                now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
+              const map = ((payRow?.valueJson as any) || {}) as Record<
+                string,
+                string
+              >;
+              map[k] = new Date().toISOString();
+              if (payRow?.key) {
+                await prisma.syncState
+                  .update({
+                    where: { key: 'antitheft:lastPaymentAt' },
+                    data: { valueJson: map } as any,
+                  })
+                  .catch(() => null);
+              } else {
+                await prisma.syncState
+                  .create({
+                    data: {
+                      key: 'antitheft:lastPaymentAt',
+                      valueJson: map,
+                    } as any,
+                  })
+                  .catch(() => null);
+              }
 
-              if (canAlert && st.discountCount >= 5) {
-                const msg =
-                  `Unusual activity (auto-check): ${st.discountCount} discounted payments by ${actorName} in the last ${windowMinutes} minutes. ` +
-                  `This can be normal during promotions; please review if unexpected.`;
-                for (const a of admins as any[]) {
-                  await prisma.notification
-                    .create({
-                      data: {
-                        userId: a.id,
-                        type: 'SECURITY' as any,
-                        message: msg,
-                      } as any,
-                    })
-                    .catch(() => {});
+              // Suspicious-pattern alerting for payment adjustments (discounts / service charge removal).
+              const userId = Number(meta?.userId || 0);
+              const discountAmt = Number(meta?.discountAmount || 0);
+              const scEnabled = Boolean(meta?.serviceChargeEnabled);
+              const scApplied = Boolean(meta?.serviceChargeApplied);
+              const scAmt = Number(meta?.serviceChargeAmount || 0);
+              if (userId) {
+                const windowMinutes = 60;
+                const cooldownMinutes = 60;
+                const now = Date.now();
+                const cur = payAdjustByUser.get(userId);
+                if (!cur || cur.resetAt <= now) {
+                  payAdjustByUser.set(userId, {
+                    discountCount: 0,
+                    serviceRemovalCount: 0,
+                    resetAt: now + windowMinutes * 60 * 1000,
+                    lastAlertAt: cur?.lastAlertAt || 0,
+                  });
                 }
-                st.lastAlertAt = now;
+                const st = payAdjustByUser.get(userId)!;
+                if (Number.isFinite(discountAmt) && discountAmt > 0)
+                  st.discountCount += 1;
+                if (
+                  scEnabled &&
+                  !scApplied &&
+                  Number.isFinite(scAmt) &&
+                  scAmt > 0
+                )
+                  st.serviceRemovalCount += 1;
                 payAdjustByUser.set(userId, st);
-              } else if (canAlert && st.serviceRemovalCount >= 3) {
-                const msg =
-                  `Unusual activity (auto-check): ${st.serviceRemovalCount} service charge removals by ${actorName} in the last ${windowMinutes} minutes. ` +
-                  `This can be normal during corrections; please review if unexpected.`;
-                for (const a of admins as any[]) {
-                  await prisma.notification
-                    .create({
-                      data: {
-                        userId: a.id,
-                        type: 'SECURITY' as any,
-                        message: msg,
-                      } as any,
-                    })
-                    .catch(() => {});
+
+                const actor = await prisma.user
+                  .findUnique({ where: { id: userId } })
+                  .catch(() => null as any);
+                const actorName = actor?.displayName
+                  ? String(actor.displayName)
+                  : `User #${userId}`;
+                const admins = await prisma.user
+                  .findMany({
+                    where: { role: 'ADMIN', active: true } as any,
+                    take: 50,
+                  })
+                  .catch(() => []);
+                const canAlert =
+                  !st.lastAlertAt ||
+                  now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
+
+                if (canAlert && st.discountCount >= 5) {
+                  const msg =
+                    `Unusual activity (auto-check): ${st.discountCount} discounted payments by ${actorName} in the last ${windowMinutes} minutes. ` +
+                    `This can be normal during promotions; please review if unexpected.`;
+                  for (const a of admins as any[]) {
+                    await prisma.notification
+                      .create({
+                        data: {
+                          userId: a.id,
+                          type: 'SECURITY' as any,
+                          message: msg,
+                        } as any,
+                      })
+                      .catch(() => {});
+                  }
+                  st.lastAlertAt = now;
+                  payAdjustByUser.set(userId, st);
+                } else if (canAlert && st.serviceRemovalCount >= 3) {
+                  const msg =
+                    `Unusual activity (auto-check): ${st.serviceRemovalCount} service charge removals by ${actorName} in the last ${windowMinutes} minutes. ` +
+                    `This can be normal during corrections; please review if unexpected.`;
+                  for (const a of admins as any[]) {
+                    await prisma.notification
+                      .create({
+                        data: {
+                          userId: a.id,
+                          type: 'SECURITY' as any,
+                          message: msg,
+                        } as any,
+                      })
+                      .catch(() => {});
+                  }
+                  st.lastAlertAt = now;
+                  payAdjustByUser.set(userId, st);
                 }
-                st.lastAlertAt = now;
-                payAdjustByUser.set(userId, st);
               }
             }
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
-        }
 
-        let fiscalPayload = payload;
-        const payKind = String(payload?.meta?.kind || '').toUpperCase();
-        if (payKind === 'PAYMENT') {
-          const outcome = await fiscalizePaymentOnce(payload, settings as any, {
-            idempotencyKey: printIdempotencyKey || undefined,
+          let fiscalPayload = payload;
+          const payKind = String(payload?.meta?.kind || '').toUpperCase();
+          if (payKind === 'PAYMENT') {
+            if (
+              !(await tableIsOpenForPayment(payload.area, payload.tableLabel))
+            ) {
+              return send(res, 409, tableAlreadyPaidResult(), corsOrigin);
+            }
+            const outcome = await fiscalizePaymentOnce(
+              payload,
+              settings as any,
+              {
+                idempotencyKey: printIdempotencyKey || undefined,
+              },
+            );
+            if (outcome.kind === 'needs-review') {
+              // Retrying could file a second invoice with the tax service.
+              // `permanent` moves it to the tablet's failed-sync surface
+              // instead of the retry loop; admins were already notified.
+              return send(
+                res,
+                409,
+                {
+                  ok: false,
+                  code: 'FISCAL_NEEDS_REVIEW',
+                  error: outcome.message,
+                  permanent: true,
+                },
+                corsOrigin,
+              );
+            }
+            if (outcome.kind === 'rejected') {
+              // Refused, and it will be refused identically next time. Same
+              // treatment as a review case so the tablet stops retrying.
+              return send(
+                res,
+                409,
+                {
+                  ok: false,
+                  code: 'FISCAL_REJECTED',
+                  error: outcome.message,
+                  permanent: true,
+                },
+                corsOrigin,
+              );
+            }
+            if (outcome.kind !== 'ok') {
+              return send(
+                res,
+                502,
+                {
+                  ok: false,
+                  code: 'FISCAL_FAILED',
+                  error: outcome.message,
+                  message: outcome.message,
+                },
+                corsOrigin,
+              );
+            }
+            fiscalPayload = outcome.payload;
+          }
+
+          // Single dispatch: hands off mode selection, profile picking,
+          // and ORDER/category routing to `printDispatcher`. Used to be
+          // ~150 lines of mode branching here; moving it out also fixed
+          // the iOS routing gap (this HTTP route now respects per-station
+          // / per-category printer assignments, just like the Electron
+          // path does).
+          const r = await dispatchTicket(fiscalPayload, settings as any, {
+            // iOS / web waiters get the same automatic retry safety net
+            // as the Electron app (PR 3).
+            persistRetryOnTransientFailure: true,
           });
-          if (outcome.kind === 'needs-review') {
-            // Retrying could file a second invoice with the tax service.
-            // `permanent` moves it to the tablet's failed-sync surface
-            // instead of the retry loop; admins were already notified.
-            return send(
-              res,
-              409,
-              {
-                ok: false,
-                code: 'FISCAL_NEEDS_REVIEW',
-                error: outcome.message,
-                permanent: true,
-              },
-              corsOrigin,
-            );
-          }
-          if (outcome.kind === 'rejected') {
-            // Refused, and it will be refused identically next time. Same
-            // treatment as a review case so the tablet stops retrying.
-            return send(
-              res,
-              409,
-              {
-                ok: false,
-                code: 'FISCAL_REJECTED',
-                error: outcome.message,
-                permanent: true,
-              },
-              corsOrigin,
-            );
-          }
-          if (outcome.kind !== 'ok') {
-            return send(
-              res,
-              502,
-              {
-                ok: false,
-                code: 'FISCAL_FAILED',
-                error: outcome.message,
-                message: outcome.message,
-              },
-              corsOrigin,
-            );
-          }
-          fiscalPayload = outcome.payload;
-        }
 
-        // Single dispatch: hands off mode selection, profile picking,
-        // and ORDER/category routing to `printDispatcher`. Used to be
-        // ~150 lines of mode branching here; moving it out also fixed
-        // the iOS routing gap (this HTTP route now respects per-station
-        // / per-category printer assignments, just like the Electron
-        // path does).
-        const r = await dispatchTicket(fiscalPayload, settings as any, {
-          // iOS / web waiters get the same automatic retry safety net
-          // as the Electron app (PR 3).
-          persistRetryOnTransientFailure: true,
-        });
-
-        // Receipt-history / audit row, matching the Electron path. This
-        // is also what makes `printIdempotencyKey` above effective, so a
-        // tablet retry is recognised as already-processed.
-        try {
-          await prisma.printJob.create({
-            data: {
-              type: 'RECEIPT' as any,
-              payloadJson: fiscalPayload,
-              status: r.ok ? ('SENT' as any) : ('FAILED' as any),
-              ...(printIdempotencyKey
-                ? { idempotencyKey: printIdempotencyKey }
-                : {}),
-            } as any,
-          });
-        } catch (e: any) {
-          // P2002 = a concurrent identical payment won the race; its row
-          // is the audit record and this one is a duplicate.
-          if (!(e?.code === 'P2002' && printIdempotencyKey)) {
-            // Without this row the payment is absent from receipt history
-            // and the shift summary, and if it was fiscalized the tax
-            // service holds an invoice this POS cannot show.
-            await reportAuditWriteFailure({
-              area: String(body?.area || ''),
-              tableLabel: String(body?.tableLabel || ''),
-              actorUserId: Number(body?.meta?.userId || 0) || undefined,
-              error: String(e?.message || e),
+          // Receipt-history / audit row, matching the Electron path. This
+          // is also what makes `printIdempotencyKey` above effective, so a
+          // tablet retry is recognised as already-processed.
+          try {
+            await prisma.printJob.create({
+              data: {
+                type: 'RECEIPT' as any,
+                payloadJson: fiscalPayload,
+                status: r.ok ? ('SENT' as any) : ('FAILED' as any),
+                ...(printIdempotencyKey
+                  ? { idempotencyKey: printIdempotencyKey }
+                  : {}),
+              } as any,
             });
+          } catch (e: any) {
+            // P2002 = a concurrent identical payment won the race; its row
+            // is the audit record and this one is a duplicate.
+            if (!(e?.code === 'P2002' && printIdempotencyKey)) {
+              // Without this row the payment is absent from receipt history
+              // and the shift summary, and if it was fiscalized the tax
+              // service holds an invoice this POS cannot show.
+              await reportAuditWriteFailure({
+                area: String(body?.area || ''),
+                tableLabel: String(body?.tableLabel || ''),
+                actorUserId: Number(body?.meta?.userId || 0) || undefined,
+                error: String(e?.message || e),
+              });
+            }
           }
-        }
 
-        return send(
-          res,
-          r.ok ? 200 : 500,
-          { ok: r.ok, error: r.firstError },
-          corsOrigin,
-        );
+          if (payKind === 'PAYMENT') {
+            await closeTableAfterAcceptedPayment(
+              payload.area,
+              payload.tableLabel,
+            );
+          }
+
+          return send(
+            res,
+            payKind === 'PAYMENT' || r.ok ? 200 : 500,
+            payKind === 'PAYMENT'
+              ? paymentPrintAccepted(r.ok)
+              : { ok: r.ok, error: r.firstError },
+            corsOrigin,
+          );
+        };
+
+        if (payKindHint === 'PAYMENT') {
+          return withPaymentLock(
+            requested.area,
+            requested.tableLabel,
+            runLanPrint,
+          );
+        }
+        return runLanPrint();
       }
       if (req.method === 'POST' && pathname === '/tickets/void-item') {
         const {
@@ -2406,6 +2452,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
+      if (req.method === 'GET' && pathname === '/tables/floor-snapshot') {
+        const area = String(parsed.query.area || '').trim();
+        const snap = await getFloorSnapshot(area || undefined);
+        res.setHeader(
+          'Cache-Control',
+          'private, max-age=2, stale-while-revalidate=10',
+        );
+        return send(res, 200, snap, corsOrigin);
+      }
 
       // Table transfer (move table and/or ownership transfer)
       if (req.method === 'POST' && pathname === '/tables/transfer') {
@@ -2770,6 +2825,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Settings: get and update (for browser clients)
       if (req.method === 'GET' && pathname === '/settings') {
+        res.setHeader(
+          'Cache-Control',
+          'private, max-age=5, stale-while-revalidate=30',
+        );
         const base = await coreServices.readSettings();
         // Enrich with table areas from DB so mobile/browser clients see the
         // same areas as the Electron app (which augments via main/index.ts).

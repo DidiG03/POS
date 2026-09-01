@@ -17,25 +17,63 @@
 // failure to broadcast must not roll back the underlying DB write.
 import { BrowserWindow } from 'electron';
 
-type SseClient = { res: { write: (chunk: string) => void } };
+type SseClient = {
+  res: {
+    write: (chunk: string) => void;
+    writableEnded?: boolean;
+    destroyed?: boolean;
+    writable?: boolean;
+  };
+};
+
+/**
+ * Push a chunk to every SSE subscriber and drop sockets that are already
+ * dead. Tablets that vanish without a TCP close used to stay in the Set
+ * forever (write throws, we ignored it) and collect a ping every 15s.
+ */
+export function writeSseToClients(
+  clients: Set<SseClient>,
+  chunk: string,
+): void {
+  for (const c of [...clients]) {
+    const { res } = c;
+    if (res.writableEnded || res.destroyed || res.writable === false) {
+      clients.delete(c);
+      continue;
+    }
+    try {
+      c.res.write(chunk);
+    } catch {
+      clients.delete(c);
+    }
+  }
+}
 
 /**
  * Broadcast `event: <name>\ndata: <json>\n\n` to every SSE client.
- * Silently drops clients whose write throws — the SSE GET handler is
- * responsible for cleaning up disconnected clients.
+ * Dead sockets are pruned in `writeSseToClients`.
  */
+let sseKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Comment-free named ping so tablets know the SSE socket is still alive. */
+export function ensureSseKeepAlive(): void {
+  if (sseKeepAliveTimer) return;
+  sseKeepAliveTimer = setInterval(() => {
+    broadcastSse('ping', { t: Date.now() });
+  }, 15_000);
+  try {
+    sseKeepAliveTimer.unref?.();
+  } catch {
+    // ignore
+  }
+}
+
 function broadcastSse(eventName: string, payload: unknown): void {
   try {
     const clients: Set<SseClient> =
       (globalThis as any).__SSE_CLIENTS__ || new Set();
     const evt = `event: ${eventName}\ndata: ${JSON.stringify(payload ?? null)}\n\n`;
-    clients.forEach((c) => {
-      try {
-        c.res.write(evt);
-      } catch {
-        // ignore — disconnected client
-      }
-    });
+    writeSseToClients(clients, evt);
   } catch {
     // ignore — no global SSE registry yet (server not started)
   }

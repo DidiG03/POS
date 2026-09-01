@@ -3,7 +3,7 @@ import { defineConfig } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 
 /**
- * Build configuration for the standalone "Code Orbit KDS" Electron app.
+ * Build configuration for the standalone "OneTap KDS" Electron app.
  *
  * Layout:
  *   dist/kds/

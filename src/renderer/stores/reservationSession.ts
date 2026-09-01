@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { UserDTO } from '@shared/ipc';
+import { mergeSessionPersist } from './sessionPersist';
 
 interface ReservationSessionState {
   user: UserDTO | null;
@@ -43,6 +44,7 @@ export const useReservationSessionStore = create<ReservationSessionState>()(
         expiresAtMs: state.expiresAtMs,
         sessionToken: state.sessionToken,
       }),
+      merge: (persisted, current) => mergeSessionPersist(persisted, current),
       migrate: (persisted: any, version) => {
         // v1 had no token; those sessions must re-authenticate once.
         if (version === 1) return { ...(persisted ?? {}), sessionToken: null };

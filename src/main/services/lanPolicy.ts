@@ -156,7 +156,12 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /shifts/clock-out': { allow: 'session' },
 
   // ---------------------------------------------------------------- tables
+  'GET /health': {
+    allow: 'public',
+    note: 'cheap reachability probe; tablets use this instead of fetching settings',
+  },
   'GET /tables/open': { allow: POS_AND_HOST },
+  'GET /tables/floor-snapshot': { allow: POS },
   'POST /tables/open': { allow: POS },
   'POST /tables/transfer': { allow: POS },
 

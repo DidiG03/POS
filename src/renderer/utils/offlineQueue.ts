@@ -140,6 +140,9 @@ const FISCAL_SALE_BLOCKED_CODES = new Set([
   'FISCAL_FAILED',
 ]);
 
+/** Another waiter already closed this sitting. Do not queue a second invoice. */
+const SALE_ALREADY_SETTLED_CODES = new Set(['TABLE_ALREADY_PAID']);
+
 /**
  * True when a human has to resolve this before the sale can be completed.
  * Distinct from an ordinary permanent rejection (table closed, validation)
@@ -152,6 +155,10 @@ export function needsManualReconciliation(e: any): boolean {
 /** True when fiscalization blocked the sale — the table must stay open. */
 export function isFiscalSaleBlocked(e: any): boolean {
   return FISCAL_SALE_BLOCKED_CODES.has(String(e?.code || ''));
+}
+
+export function isSaleAlreadySettled(e: any): boolean {
+  return SALE_ALREADY_SETTLED_CODES.has(String(e?.code || ''));
 }
 
 /** True when retrying cannot change the outcome. */
@@ -254,7 +261,18 @@ function isNativeCapacitor(): boolean {
   );
 }
 
-/** Map every error we want to forgive (i.e. "try again later"). */
+/**
+ * Restaurant Wi‑Fi often has no internet while the POS host is on LAN.
+ * `navigator.onLine === false` is not proof the till is unreachable —
+ * money, kitchen tickets, and table closes must try the host first.
+ */
+export function shouldEnqueueWithoutLiveAttempt(op: OfflineOp): boolean {
+  if (DURABLE_OPS.has(op)) return false;
+  if (typeof navigator === 'undefined') return false;
+  if (isNativeCapacitor()) return false;
+  return navigator.onLine === false;
+}
+
 function isLikelyOfflineError(e: any): boolean {
   if (!e) return false;
   const msg = String(e?.message || e || '').toLowerCase();
@@ -287,6 +305,40 @@ function jitter(ms: number): number {
 function computeBackoffMs(attempts: number): number {
   // 1s, 2s, 4s, 8s, 16s, 30s (cap), 30s, …
   return jitter(Math.min(30_000, 1000 * Math.pow(2, Math.min(8, attempts))));
+}
+
+export const OFFLINE_WAKE_MIN_MS = 250;
+export const OFFLINE_WAKE_MAX_MS = 30_000;
+/** After an offline abort, items may still be due now — wait this long, don't hammer. */
+export const OFFLINE_WAKE_OFFLINE_MS = 5_000;
+
+/**
+ * When to run the next `sync()` for items sitting on `nextAttemptAt`.
+ * Returns null when the queue is empty (nothing to wake).
+ */
+export function nextOfflineWakeDelayMs(
+  items: Array<{ nextAttemptAt?: number }>,
+  now = Date.now(),
+): number | null {
+  if (!items.length) return null;
+  let soonestFuture: number | null = null;
+  let hasDue = false;
+  for (const it of items) {
+    const at = Number(it.nextAttemptAt || 0);
+    if (!at || at <= now) {
+      hasDue = true;
+      continue;
+    }
+    if (soonestFuture == null || at < soonestFuture) soonestFuture = at;
+  }
+  if (soonestFuture != null) {
+    return Math.max(
+      OFFLINE_WAKE_MIN_MS,
+      Math.min(OFFLINE_WAKE_MAX_MS, soonestFuture - now),
+    );
+  }
+  if (hasDue) return OFFLINE_WAKE_OFFLINE_MS;
+  return null;
 }
 
 /**
@@ -395,6 +447,7 @@ class OfflineQueue {
   private dbPromise: Promise<IDBDatabase>;
   private onlineHandler: (() => void) | null = null;
   private startupTimer: number | null = null;
+  private wakeTimer: number | null = null;
   private syncing = false;
   // Serialises store read-modify-write critical sections (enqueue, the
   // commit phase of sync, retryFailed) so two writers can't clobber each
@@ -479,6 +532,26 @@ class OfflineQueue {
       window.clearTimeout(this.startupTimer);
       this.startupTimer = null;
     }
+    this.clearWake();
+  }
+
+  private clearWake() {
+    if (typeof window === 'undefined') return;
+    if (this.wakeTimer != null) {
+      window.clearTimeout(this.wakeTimer);
+      this.wakeTimer = null;
+    }
+  }
+
+  private armWake(items: Array<{ nextAttemptAt?: number }>) {
+    if (typeof window === 'undefined') return;
+    this.clearWake();
+    const delay = nextOfflineWakeDelayMs(items);
+    if (delay == null) return;
+    this.wakeTimer = window.setTimeout(() => {
+      this.wakeTimer = null;
+      void this.sync();
+    }, delay);
   }
 
   /**
@@ -581,14 +654,6 @@ class OfflineQueue {
   async sync(): Promise<{ sent: number; remaining: number }> {
     if (this.syncing)
       return { sent: 0, remaining: await this.getPendingCount() };
-    if (
-      typeof navigator !== 'undefined' &&
-      !navigator.onLine &&
-      !isNativeCapacitor()
-    ) {
-      return { sent: 0, remaining: await this.getPendingCount() };
-    }
-
     this.syncing = true;
     let sent = 0;
     try {
@@ -703,11 +768,14 @@ class OfflineQueue {
         }
       }
 
-      let remaining = items.length;
       if (touched) {
-        remaining = await this.commitSync(removedIds, updates);
+        await this.commitSync(removedIds, updates);
       }
-      return { sent, remaining };
+      const leftover = (await this.getAll())
+        .map(this.normalize)
+        .filter((it): it is OfflineQueueItem => it !== null);
+      this.armWake(leftover);
+      return { sent, remaining: leftover.length };
     } finally {
       this.syncing = false;
     }
@@ -984,13 +1052,17 @@ export const offlineQueue = getGlobalOfflineQueue();
  * replay offline.
  *
  * Behaviour:
- *   - If the browser reports we're offline → enqueue immediately,
- *     return `{ queued: true }`.
- *   - Otherwise dispatch the call live. On success → `{ queued: false }`.
+ *   - Always try the live host first for money / kitchen / table-close
+ *     writes. Tablets on restaurant LAN often have `navigator.onLine ===
+ *     false` (no internet) while the POS host is reachable.
+ *   - Advisory ops may enqueue immediately when the browser says offline.
+ *   - On success → `{ queued: false }`.
  *   - On a network-shaped error → enqueue + return `{ queued: true }`.
  *   - On a fiscal refusal (`FISCAL_*`) → re-throw without enqueueing so
  *     the pay UI can keep the table open. Retrying a refused invoice
  *     after closing the table is what emptied T1 while easyPos said no.
+ *   - On `TABLE_ALREADY_PAID` → re-throw without enqueueing (the sitting
+ *     is already settled on the host).
  *   - On any other failure of a MONEY op that isn't a permanent
  *     rejection → enqueue (printer / transport after the host accepted
  *     the sale), so a Wi-Fi drop still records the payment.
@@ -1006,11 +1078,7 @@ export async function tryOrQueue<T = unknown>(
   if (!dispatcher) {
     throw new Error(`Unknown offline op: ${op}`);
   }
-  if (
-    typeof navigator !== 'undefined' &&
-    !navigator.onLine &&
-    !isNativeCapacitor()
-  ) {
+  if (shouldEnqueueWithoutLiveAttempt(op)) {
     await offlineQueue.enqueue(op, args, options);
     return { queued: true };
   }
@@ -1041,6 +1109,9 @@ export async function tryOrQueue<T = unknown>(
     // and the waiter will pay again (possibly CARD, or a smaller cash
     // amount under the 500,000 ALL individual cash cap).
     if (isFiscalSaleBlocked(e)) {
+      throw e;
+    }
+    if (isSaleAlreadySettled(e)) {
       throw e;
     }
     if (isLikelyOfflineError(e)) {

@@ -68,7 +68,7 @@ async function discoverViaMdns(waitMs: number): Promise<DiscoveredPosHost[]> {
             name:
               restaurantName ||
               String((svc as any).name || '').trim() ||
-              'Code Orbit POS',
+              'OneTap POS',
             host,
             httpPort: Number(svc.port) || POS_LAN_HTTP_PORT,
             httpsPort: Number(txt.https) || undefined,

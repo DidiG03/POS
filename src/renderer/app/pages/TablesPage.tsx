@@ -10,6 +10,14 @@ import { PageSpinner } from '../../components/PageSpinner';
 import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
 import FloorCanvas from '../components/FloorCanvas';
 import { sanitizeMergeGroups, type TableMergeGroup } from '@shared/tableMerge';
+import type { FloorSnapshot, FloorTableSnapshot } from '@shared/ipc';
+import { pollIntervalMs } from '../../utils/netQuality';
+import {
+  peekFloorSnapshot,
+  peekLatestTicket,
+  peekSettings,
+  prefetchHotReads,
+} from '../../utils/posReadCache';
 
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
 
@@ -38,9 +46,19 @@ function toInitials(name: string): string {
 
 export default function TablesPage() {
   const { t } = useTranslation();
-  const [area, setArea] = useState<string>('');
-  const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
-  const [areasReady, setAreasReady] = useState(false);
+  const cachedSettings = peekSettings<any>();
+  const cachedAreas = cachedSettings
+    ? saneTableAreas(cachedSettings?.tableAreas)
+    : [];
+  const [area, setArea] = useState<string>(() =>
+    pickConfiguredArea('', cachedAreas),
+  );
+  const [areas, setAreas] = useState<{ name: string; count: number }[]>(
+    () => cachedAreas,
+  );
+  const [areasReady, setAreasReady] = useState(
+    () => cachedAreas.length > 0 || Boolean(cachedSettings),
+  );
   const { user } = useSessionStore();
   const [viewMode, setViewMode] = useState<ViewMode>('occupied');
   const [currency, setCurrency] = useState<string>('EUR');
@@ -64,7 +82,13 @@ export default function TablesPage() {
     [openMap],
   );
 
-  const [openLoaded, setOpenLoaded] = useState(false);
+  const [openLoaded, setOpenLoaded] = useState(() => {
+    const snap = peekFloorSnapshot(pickConfiguredArea('', cachedAreas));
+    return (
+      Boolean(snap?.tables?.length) ||
+      Object.keys(useTableStatus.getState().openMap).length > 0
+    );
+  });
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
   const [mergeGroups, setMergeGroups] = useState<TableMergeGroup[]>([]);
 
@@ -143,6 +167,35 @@ export default function TablesPage() {
   >({});
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
+  const applySnapshot = useCallback(
+    (snap: FloorSnapshot, names: Record<number, string>) => {
+      const tables: FloorTableSnapshot[] = Array.isArray(snap?.tables)
+        ? snap.tables
+        : [];
+      setAll(tables.map((r) => ({ area: r.area, label: r.label })));
+      const initials: Record<string, string> = {};
+      const owners: Record<string, number> = {};
+      const metrics: Record<string, { covers: number | null; total: number }> =
+        {};
+      const opened: Record<string, string> = {};
+      for (const row of tables) {
+        const k = `${row.area}:${row.label}`;
+        if (row.userId) {
+          owners[k] = row.userId;
+          const name = names[row.userId];
+          if (name) initials[k] = toInitials(name);
+        }
+        metrics[k] = { covers: row.covers, total: row.total };
+        if (row.openedAt) opened[k] = row.openedAt;
+      }
+      setInitialsByTable(initials);
+      setOwnerByTable(owners);
+      setMetricsByTable(metrics);
+      setOpenedAtByTable(opened);
+    },
+    [setAll],
+  );
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -169,7 +222,22 @@ export default function TablesPage() {
         if (!cancelled) setAreasReady(true);
       }
     };
+    const cached = peekSettings<any>();
+    if (cached) {
+      setCurrency(
+        String(cached?.currency || 'EUR')
+          .trim()
+          .toUpperCase() || 'EUR',
+      );
+      const nextAreas = saneTableAreas(cached?.tableAreas);
+      if (nextAreas.length) {
+        setAreas(nextAreas);
+        setArea((current) => pickConfiguredArea(current, nextAreas));
+        setAreasReady(true);
+      }
+    }
     void load();
+    void prefetchHotReads();
     const onVisible = () => {
       if (document.visibilityState === 'visible') void load();
     };
@@ -185,58 +253,67 @@ export default function TablesPage() {
   const pollGenRef = useRef(0);
   useEffect(() => {
     const gen = ++pollGenRef.current;
-    setOpenLoaded(false);
     let timer: ReturnType<typeof setTimeout>;
     let cancelled = false;
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
-    const fetchOnce = async () => {
+    const cachedSnap = peekFloorSnapshot('');
+    if (cachedSnap) {
+      applySnapshot(cachedSnap, userMap);
+      setOpenLoaded(true);
+    }
+
+    const load = async (showError = false) => {
       try {
         if (isHidden()) {
           if (!cancelled && gen === pollGenRef.current) setOpenLoaded(true);
           return;
         }
-        const open = await window.api.tables.listOpen();
+        const api = window.api as any;
+        let snap: FloorSnapshot | null = null;
+        if (typeof api.tables?.getFloorSnapshot === 'function') {
+          snap = await api.tables.getFloorSnapshot();
+        }
         if (cancelled || gen !== pollGenRef.current) return;
-        if (Array.isArray(open)) setAll(open);
+        if (snap && Array.isArray(snap.tables)) {
+          applySnapshot(snap, userMap);
+        } else {
+          const open = await window.api.tables.listOpen();
+          if (cancelled || gen !== pollGenRef.current) return;
+          if (Array.isArray(open)) setAll(open);
+        }
         setOpenLoaded(true);
         setOpenLoadError(null);
       } catch {
         if (!cancelled && gen === pollGenRef.current) {
           setOpenLoaded(true);
-          setOpenLoadError(
-            'Loading occupied tables… (slow/offline network). Retrying…',
-          );
+          if (showError) {
+            setOpenLoadError(
+              'Loading occupied tables… (slow/offline network). Retrying…',
+            );
+          }
         }
       }
     };
 
     const poll = async () => {
-      try {
-        if (isHidden()) return;
-        const open = await window.api.tables.listOpen();
-        if (cancelled || gen !== pollGenRef.current) return;
-        if (Array.isArray(open)) setAll(open);
-      } catch {
-        // ignore poll errors
-      } finally {
-        if (!cancelled && gen === pollGenRef.current) {
-          timer = setTimeout(poll, isHidden() ? 12000 : 4000);
-        }
+      await load(false);
+      if (!cancelled && gen === pollGenRef.current) {
+        timer = setTimeout(poll, pollIntervalMs(4000, isHidden()));
       }
     };
 
-    fetchOnce().then(() => {
+    void load(true).then(() => {
       if (!cancelled && gen === pollGenRef.current) {
-        timer = setTimeout(poll, 4000);
+        timer = setTimeout(poll, pollIntervalMs(4000, isHidden()));
       }
     });
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [setAll]);
+  }, [applySnapshot, setAll, userMap]);
 
   const openLabelsInArea = useMemo(() => {
     if (!area) return [] as string[];
@@ -247,55 +324,14 @@ export default function TablesPage() {
   }, [area, openMapKey, openMap]);
 
   useEffect(() => {
-    if (!openLoaded || !area) return;
-    let cancelled = false;
-    const labels = openLabelsInArea;
-
-    (async () => {
-      const badgeUpdates: [string, string][] = [];
-      const ownerUpdates: [string, number][] = [];
-      await Promise.all(
-        labels.map(async (label) => {
-          const k = `${area}:${label}`;
-          try {
-            const data = await window.api.tickets.getLatestForTable(
-              area,
-              label,
-            );
-            if (cancelled) return;
-            if (data?.userId) ownerUpdates.push([k, data.userId]);
-            if (data?.userId && userMap[data.userId])
-              badgeUpdates.push([k, toInitials(userMap[data.userId])]);
-          } catch {
-            // ignore
-          }
-        }),
-      );
-      if (cancelled) return;
-      setInitialsByTable((prev) => {
-        const next: Record<string, string> = {};
-        for (const [key, val] of Object.entries(prev)) {
-          if (!key.startsWith(`${area}:`)) next[key] = val;
-        }
-        for (const [k, v] of badgeUpdates) next[k] = v;
-        return next;
-      });
-      setOwnerByTable((prev) => {
-        const next: Record<string, number> = {};
-        for (const [key, val] of Object.entries(prev)) {
-          if (!key.startsWith(`${area}:`)) next[key] = val as number;
-        }
-        for (const [k, v] of ownerUpdates) next[k] = v;
-        return next;
-      });
-    })();
-
-    return () => {
-      cancelled = true;
+    const refresh = () => {
+      const api = window.api as any;
+      if (typeof api.tables?.getFloorSnapshot !== 'function') return;
+      void api.tables
+        .getFloorSnapshot()
+        .then((snap: FloorSnapshot) => applySnapshot(snap, userMap))
+        .catch(() => undefined);
     };
-  }, [openLoaded, area, openLabelsInArea, userMap]);
-
-  useEffect(() => {
     const onTicketsChanged = (ev: any) => {
       try {
         const detail = (ev?.detail || {}) as {
@@ -314,173 +350,18 @@ export default function TablesPage() {
           if (name)
             setInitialsByTable((prev) => ({ ...prev, [k]: toInitials(name) }));
         }
-        (async () => {
-          try {
-            const data = await window.api.tickets.getLatestForTable(a, label);
-            const lid = Number(data?.userId || 0);
-            if (!lid) return;
-            setOwnerByTable((prev) => ({ ...prev, [k]: lid }));
-            const nm = userMap[lid];
-            if (nm)
-              setInitialsByTable((prev) => ({
-                ...prev,
-                [k]: toInitials(nm),
-              }));
-          } catch {
-            // ignore
-          }
-        })();
+        refresh();
       } catch {
         // ignore
       }
     };
     window.addEventListener('pos:ticketsChanged', onTicketsChanged);
-    return () =>
+    window.addEventListener('pos:tablesChanged', refresh);
+    return () => {
       window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
-  }, [area, userMap]);
-
-  useEffect(() => {
-    if (!openLoaded || !area) return;
-    if (viewMode !== 'covers' && viewMode !== 'revenue') return;
-    let cancelled = false;
-    const labels = openLabelsInArea;
-
-    const load = async () => {
-      if (
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'hidden'
-      )
-        return;
-      if (!labels.length) {
-        setMetricsByTable((prev) => {
-          const next: Record<string, { covers: number | null; total: number }> =
-            {};
-          for (const [k, v] of Object.entries(prev))
-            if (!k.startsWith(`${area}:`)) next[k] = v;
-          return next;
-        });
-        return;
-      }
-
-      const updates: Array<[string, { covers: number | null; total: number }]> =
-        [];
-      const queue = [...labels];
-      const concurrency = Math.min(6, queue.length);
-      const workers = Array.from({ length: concurrency }).map(async () => {
-        while (queue.length && !cancelled) {
-          const label = queue.shift()!;
-          try {
-            const [last, covers] = await Promise.all([
-              (window as any).api.tickets
-                .getLatestForTable(area, label)
-                .catch(() => null),
-              (window as any).api.covers.getLast(area, label).catch(() => null),
-            ]);
-            const items = Array.isArray(last?.items) ? last.items : [];
-            const total = items
-              .filter((it: any) => !it?.voided)
-              .reduce(
-                (s: number, it: any) =>
-                  s + Number(it?.unitPrice || 0) * Number(it?.qty || 1),
-                0,
-              );
-            const cov = covers ?? last?.covers ?? null;
-            updates.push([
-              `${area}:${label}`,
-              { covers: cov, total: Number(total || 0) },
-            ]);
-          } catch {
-            // ignore
-          }
-        }
-      });
-      await Promise.all(workers);
-      if (cancelled) return;
-
-      setMetricsByTable((prev) => {
-        const next: Record<string, { covers: number | null; total: number }> = {
-          ...prev,
-        };
-        for (const [k, v] of updates) next[k] = v;
-        for (const k of Object.keys(next)) {
-          if (!k.startsWith(`${area}:`)) continue;
-          const l = k.split(':').slice(1).join(':');
-          if (!labels.includes(l)) delete next[k];
-        }
-        return next;
-      });
+      window.removeEventListener('pos:tablesChanged', refresh);
     };
-
-    void load();
-    const t = window.setInterval(load, 12000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-  }, [openLoaded, area, viewMode, openLabelsInArea]);
-
-  useEffect(() => {
-    if (!openLoaded || !area) return;
-    if (viewMode !== 'time') return;
-    let cancelled = false;
-    const labels = openLabelsInArea;
-
-    const load = async () => {
-      if (
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'hidden'
-      )
-        return;
-      if (!labels.length) {
-        setOpenedAtByTable((prev) => {
-          const next: Record<string, string> = {};
-          for (const [k, v] of Object.entries(prev))
-            if (!k.startsWith(`${area}:`)) next[k] = v;
-          return next;
-        });
-        return;
-      }
-
-      const updates: Array<[string, string]> = [];
-      const queue = [...labels];
-      const concurrency = Math.min(6, queue.length);
-      const workers = Array.from({ length: concurrency }).map(async () => {
-        while (queue.length && !cancelled) {
-          const label = queue.shift()!;
-          try {
-            const tip = await (window as any).api.tickets
-              .getTableTooltip(area, label)
-              .catch(() => null);
-            const iso = String((tip as any)?.firstAt || '');
-            if (iso) updates.push([`${area}:${label}`, iso]);
-          } catch {
-            // ignore
-          }
-        }
-      });
-      await Promise.all(workers);
-      if (cancelled) return;
-
-      setOpenedAtByTable((prev) => {
-        const next: Record<string, string> = { ...prev };
-        for (const [k, v] of updates) next[k] = v;
-        for (const k of Object.keys(next)) {
-          if (!k.startsWith(`${area}:`)) continue;
-          const l = k.split(':').slice(1).join(':');
-          if (!labels.includes(l)) delete next[k];
-        }
-        return next;
-      });
-    };
-
-    void load();
-    const t = window.setInterval(load, 15000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-  }, [openLoaded, area, viewMode, openLabelsInArea]);
-
+  }, [area, userMap, applySnapshot]);
   useEffect(() => {
     if (viewMode !== 'time') return;
     if (!openLabelsInArea.length) return;
@@ -558,16 +439,11 @@ export default function TablesPage() {
       const action = pendingAction;
       if (action) setPendingAction(null);
       if (isOpenFn(area, openLabel)) {
-        void (async () => {
-          const data = await window.api.tickets.getLatestForTable(
-            area,
-            openLabel,
-          );
-          if (data)
-            hydrate({ items: data.items as any, note: data.note || '' });
-          else clear();
-          navigate('/app/order');
-        })();
+        const cached = peekLatestTicket(area, openLabel);
+        if (cached?.items) {
+          hydrate({ items: cached.items as any, note: cached.note || '' });
+        }
+        navigate('/app/order');
         return;
       }
       clear();
@@ -585,7 +461,7 @@ export default function TablesPage() {
     ],
   );
 
-  if (!openLoaded || !areasReady) {
+  if (!areasReady && !openLoaded) {
     return <PageSpinner message={openLoadError || t('tables.loading')} />;
   }
 

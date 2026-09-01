@@ -1,5 +1,5 @@
 /**
- * Standalone "Code Orbit KDS" Electron app.
+ * Standalone "OneTap KDS" Electron app.
  *
  * The KDS bundle does NOT carry the POS database, the LAN API server,
  * printer drivers, or auto-updater for the POS — it's a thin client
@@ -27,6 +27,8 @@ import {
   setupAutoUpdater,
   updaterHandlers,
 } from '../updater';
+
+app.setName('OneTap KDS');
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -123,8 +125,8 @@ async function quitKdsApp(): Promise<boolean> {
     buttons: ['Cancel', 'Quit KDS'],
     defaultId: 0,
     cancelId: 0,
-    title: 'Code Orbit KDS',
-    message: 'Quit Code Orbit KDS?',
+    title: 'OneTap KDS',
+    message: 'Quit OneTap KDS?',
     detail: 'You can reopen it from the desktop or Start menu.',
   };
   const { response } = win
@@ -183,6 +185,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    title: 'OneTap KDS',
     backgroundColor: '#0b1220',
     autoHideMenuBar: true,
     show: false,

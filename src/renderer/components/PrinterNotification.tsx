@@ -37,9 +37,11 @@ export function PrinterNotification() {
       const title =
         d.kind === 'fiscal'
           ? 'Fiskalizimi'
-          : d.kind
-            ? 'Printer problem'
-            : 'Printer';
+          : d.kind === 'receipt'
+            ? 'Receipt'
+            : d.kind
+              ? 'Printer problem'
+              : 'Printer';
       if (level === 'info') toast.info(message, { title, detail });
       else if (level === 'warn') toast.warn(message, { title, detail });
       else toast.error(message, { title, detail });

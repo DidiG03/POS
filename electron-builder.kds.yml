@@ -1,4 +1,4 @@
-# electron-builder config for the standalone "Code Orbit KDS" installer.
+# electron-builder config for the standalone "OneTap KDS" installer.
 #
 # This is intentionally separate from `package.json#build` (which is the
 # POS installer). Building the KDS:
@@ -20,7 +20,7 @@
 #   POS update never reboots a running kitchen display.
 
 appId: com.codeorbit.kds
-productName: Code Orbit KDS
+productName: OneTap KDS
 
 # CI runs `pnpm serial:rebuild` for POS only; KDS excludes serialport.
 npmRebuild: false
@@ -35,7 +35,7 @@ directories:
 extraMetadata:
   name: code-orbit-kds
   main: dist/kds/main/index.js
-  productName: Code Orbit KDS
+  productName: OneTap KDS
 
 # Only ship what the KDS needs. Explicitly exclude Prisma, serialport,
 # the POS main bundle, and the seeded SQLite database.
@@ -79,7 +79,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   installerIcon: build-resources/icon.ico
   uninstallerIcon: build-resources/icon.ico
-  shortcutName: Code Orbit KDS
+  shortcutName: OneTap KDS
 
 publish:
   provider: github

@@ -34,6 +34,7 @@ import {
   paginateTicketBlocks,
   withCardChrome,
 } from './kdsPagination';
+import { pollIntervalMs } from '../../utils/netQuality';
 
 type Station = KdsStation;
 type Tab = 'NEW' | 'DONE' | 'SETTINGS';
@@ -639,9 +640,8 @@ export default function KdsPage() {
     }
 
     let alive = true;
-    let pollTimer: any = null;
-
-    const POLL_MS = 3000; // reduce churn vs 2s
+    let pollTimer: number | null = null;
+    let running = false;
 
     const loadTickets = async () => {
       if (!alive) return;
@@ -669,14 +669,30 @@ export default function KdsPage() {
     };
 
     const start = () => {
-      if (pollTimer) return;
-      void loadTickets();
-      pollTimer = setInterval(loadTickets, POLL_MS);
+      if (running) return;
+      running = true;
+      const poll = () => {
+        void loadTickets().finally(() => {
+          if (!alive || !running) return;
+          pollTimer = window.setTimeout(poll, pollIntervalMs(3000));
+        });
+      };
+      poll();
     };
 
     const stop = () => {
-      if (pollTimer) clearInterval(pollTimer);
+      running = false;
+      if (pollTimer) window.clearTimeout(pollTimer);
       pollTimer = null;
+    };
+
+    let sseDebounce: number | null = null;
+    const onSse = () => {
+      if (sseDebounce != null) window.clearTimeout(sseDebounce);
+      sseDebounce = window.setTimeout(() => {
+        sseDebounce = null;
+        void loadTickets();
+      }, 400);
     };
 
     const onVis = () => {
@@ -694,15 +710,20 @@ export default function KdsPage() {
     } catch {
       // ignore
     }
+    window.addEventListener('pos:ticketsChanged', onSse);
+    window.addEventListener('pos:tablesChanged', onSse);
 
     return () => {
       alive = false;
       stop();
+      if (sseDebounce != null) window.clearTimeout(sseDebounce);
       try {
         document.removeEventListener('visibilitychange', onVis);
       } catch {
         // ignore
       }
+      window.removeEventListener('pos:ticketsChanged', onSse);
+      window.removeEventListener('pos:tablesChanged', onSse);
     };
   }, [station, tab, cooker]);
 
@@ -1341,7 +1362,7 @@ export default function KdsPage() {
                   <div
                     key={`${station}-${tab}-${t.ticketId}`}
                     data-kds-ticket-idx={ticketIdx}
-                    className={`relative mb-3 bg-gray-900 border rounded p-3 transition-shadow ${
+                    className={`relative mb-3 bg-gray-900 border rounded p-3 transition-shadow [content-visibility:auto] [contain-intrinsic-size:auto_240px] ${
                       timerUrgency
                         ? kdsTimerUrgencyCardAccent(timerUrgency)
                         : ''

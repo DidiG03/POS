@@ -128,7 +128,7 @@ async function startOAuthLoopbackServer(
         res.end(
           htmlResponse(
             'Google Calendar connected',
-            'Your account is linked. You can close this browser tab and return to Code Orbit POS.',
+            'Your account is linked. You can close this browser tab and return to OneTap POS.',
           ),
         );
         finishResolve(code);

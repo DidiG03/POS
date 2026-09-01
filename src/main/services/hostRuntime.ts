@@ -135,7 +135,7 @@ function maybeNotifyHidden(): void {
   if (process.platform !== 'win32') return;
   try {
     tray.displayBalloon({
-      title: 'Code Orbit POS is still running',
+      title: 'OneTap POS is still running',
       content:
         'Tablets and iPads stay connected. Click this icon to open the till. Choose Quit to stop.',
     });
@@ -159,7 +159,7 @@ export function setupHostTray(): void {
   if (tray) return;
   const image = loadTrayImage(opts?.getIconPath());
   tray = image ? new Tray(image) : new Tray(nativeImage.createEmpty());
-  tray.setToolTip('Code Orbit POS — tablets stay connected');
+  tray.setToolTip('OneTap POS — tablets stay connected');
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
@@ -234,7 +234,7 @@ export async function promptQuitDialog(): Promise<boolean> {
       defaultId: 0,
       cancelId: 0,
       noLink: true,
-      message: 'Quit Code Orbit POS?',
+      message: 'Quit OneTap POS?',
       detail:
         'iPads and tablets will stop working until this app is opened again on this computer.',
     };

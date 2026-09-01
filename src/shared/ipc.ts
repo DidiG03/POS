@@ -1511,9 +1511,36 @@ export interface ApiNotifications {
   markAllRead(userId: number): Promise<boolean>;
 }
 
+export type FloorTableSnapshot = {
+  area: string;
+  label: string;
+  openedAt: string | null;
+  userId: number | null;
+  covers: number | null;
+  total: number;
+  items: {
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate?: number;
+    note?: string;
+    voided?: boolean;
+  }[];
+  note: string | null;
+};
+
+export type FloorSnapshot = {
+  tables: FloorTableSnapshot[];
+};
+
 export interface ApiTables {
   setOpen(area: string, label: string, open: boolean): Promise<boolean>;
   listOpen(): Promise<{ area: string; label: string }[]>;
+  /**
+   * Occupied tables for one area (or every area) in a single round-trip:
+   * owner, covers, running total, opened-at, and the current ticket lines.
+   */
+  getFloorSnapshot(area?: string): Promise<FloorSnapshot>;
   transfer(input: TransferTableInput): Promise<TransferTableResult>;
 }
 

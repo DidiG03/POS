@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { UserDTO } from '@shared/ipc';
+import { mergeSessionPersist } from './sessionPersist';
 
 interface AdminSessionState {
   user: UserDTO | null;
@@ -39,6 +40,7 @@ export const useAdminSessionStore = create<AdminSessionState>()(
         expiresAtMs: state.expiresAtMs,
         sessionToken: state.sessionToken,
       }),
+      merge: (persisted, current) => mergeSessionPersist(persisted, current),
       migrate: (persisted: any, version) => {
         if (version === 1) {
           return {

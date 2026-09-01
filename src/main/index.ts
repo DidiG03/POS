@@ -138,6 +138,14 @@ import {
   isTransferredOutNote,
 } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
+import {
+  closeTableAfterAcceptedPayment,
+  paymentPrintAccepted,
+  tableAlreadyPaidResult,
+  tableIsOpenForPayment,
+  withPaymentLock,
+} from './services/paymentSettle';
+import { getFloorSnapshot } from './services/floorSnapshot';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import {
   listMyActiveTickets,
@@ -593,6 +601,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    title: 'OneTap POS',
     show: !startHidden,
     backgroundColor: '#0b1220',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
@@ -651,7 +660,7 @@ function createAdminWindow() {
     width: 1100,
     height: 700,
     backgroundColor: '#0b1220',
-    title: 'Admin -  Code Orbit POS',
+    title: 'Admin - OneTap POS',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
       contextIsolation: true,
@@ -689,7 +698,7 @@ function createKdsWindow() {
     width: 1200,
     height: 800,
     backgroundColor: '#0b1220',
-    title: 'Kitchen Display -  Code Orbit POS',
+    title: 'Kitchen Display - OneTap POS',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
       contextIsolation: true,
@@ -722,7 +731,7 @@ function createReservationWindow() {
     width: 1200,
     height: 800,
     backgroundColor: '#0b1220',
-    title: 'Reservations -  Code Orbit POS',
+    title: 'Reservations - OneTap POS',
     ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
     webPreferences: {
       contextIsolation: true,
@@ -2820,7 +2829,7 @@ ipcHandle('tickets:print', async (_e, input) => {
     if (existing) {
       // Same logical payment/print already recorded — retries must not
       // duplicate notifications, audit PrintJobs, or dispatch again.
-      return true;
+      return { ok: true, printed: true };
     }
   }
 
@@ -2829,274 +2838,297 @@ ipcHandle('tickets:print', async (_e, input) => {
   const items = (input?.items as any[]) || [];
   const recordOnly = Boolean((input as any)?.recordOnly);
   if (!area || !tableLabel || items.length === 0) return false;
+  const kindHint = String((input as any)?.meta?.kind || '').toUpperCase();
 
-  // Use internal settings (includes fiscal auth token). `readSettings()`
-  // strips secrets before sending to the renderer.
-  const settings = await coreServices.readSettings();
+  const runPrint = async () => {
+    // Use internal settings (includes fiscal auth token). `readSettings()`
+    // strips secrets before sending to the renderer.
+    const settings = await coreServices.readSettings();
 
-  // Local-first: print directly via local PrintJob
-  const requested = {
-    area,
-    tableLabel,
-    covers: input?.covers ?? null,
-    items,
-    note: input?.note ?? null,
-    userName: input?.userName || undefined,
-    meta: (input as any)?.meta ?? undefined,
-  } as any;
+    // Local-first: print directly via local PrintJob
+    const requested = {
+      area,
+      tableLabel,
+      covers: input?.covers ?? null,
+      items,
+      note: input?.note ?? null,
+      userName: input?.userName || undefined,
+      meta: (input as any)?.meta ?? undefined,
+    } as any;
 
-  // The renderer's totals are a display value. Recompute from the line
-  // items we are about to print before any of it becomes a receipt, an
-  // audit row, or a fiscal record.
-  const enforcedTotals = await enforceAuthoritativePaymentTotals(
-    requested,
-    settings as any,
-    'ipc',
-  );
-  let payload = enforcedTotals.payload;
-  const meta = (payload?.meta as any) || null;
-  if (enforcedTotals.mismatch) {
-    broadcastPrinterEvent({
-      level: 'warn',
-      kind: 'totals',
-      message: 'Payment total was recalculated from the ticket items.',
-      detail: enforcedTotals.mismatch,
-      at: Date.now(),
-      context: { area, tableLabel, kind: 'PAYMENT' },
-    });
-  }
-
-  // If this is a payment receipt and includes a discount, add an admin-visible notification entry.
-  // (Admin UI lists all notifications, grouped by userName, so we store it against the waiter userId.)
-  try {
-    const kind = String(meta?.kind || '');
-    const userId = Number(meta?.userId || 0);
-    const discountAmt = Number(meta?.discountAmount || 0);
-    if (
-      kind === 'PAYMENT' &&
-      userId &&
-      Number.isFinite(discountAmt) &&
-      discountAmt > 0
-    ) {
-      const before = Number(meta?.totalBefore ?? meta?.total ?? 0);
-      const after = Number(
-        meta?.totalAfter ?? Math.max(0, before - discountAmt),
-      );
-      const dtype = String(meta?.discountType || '').toUpperCase();
-      const dval = meta?.discountValue;
-      const dLabel =
-        dtype === 'PERCENT' && Number.isFinite(Number(dval))
-          ? `${Number(dval)}%`
-          : dtype === 'AMOUNT' && Number.isFinite(Number(dval))
-            ? `${Number(dval).toFixed(2)}`
-            : 'custom';
-      const reason = String(meta?.discountReason || '').trim();
-      const approvedBy = String(meta?.managerApprovedByName || '').trim();
-      const msg =
-        `Discount applied (${dLabel}) on ${area} Table ${tableLabel}: -${discountAmt.toFixed(2)} ` +
-        `(total ${before.toFixed(2)} → ${after.toFixed(2)})` +
-        `${meta?.method ? ` · method ${String(meta.method)}` : ''}` +
-        `${reason ? ` · reason: ${reason}` : ''}` +
-        `${approvedBy ? ` · approved by: ${approvedBy}` : ' · NO MANAGER APPROVAL'}`;
-      // Notify actor + all admins
-      await prisma.notification.create({
-        data: { userId, type: 'OTHER' as any, message: msg } as any,
-      });
-      const admins = await prisma.user
-        .findMany({
-          where: { role: 'ADMIN', active: true },
-          select: { id: true },
-        } as any)
-        .catch(() => []);
-      for (const a of admins as any[]) {
-        await prisma.notification
-          .create({
-            data: {
-              userId: Number(a.id),
-              type: 'OTHER' as any,
-              message: msg,
-            } as any,
-          })
-          .catch(() => {});
-      }
-    }
-  } catch {
-    // do not block printing/logging
-  }
-
-  const kind = String(meta?.kind || '').toUpperCase();
-  if (kind === 'PAYMENT') {
-    const outcome = await fiscalizePaymentOnce(payload, settings as any, {
-      idempotencyKey: idempotencyKey || undefined,
-    });
-    if (outcome.kind !== 'ok') {
+    // The renderer's totals are a display value. Recompute from the line
+    // items we are about to print before any of it becomes a receipt, an
+    // audit row, or a fiscal record.
+    const enforcedTotals = await enforceAuthoritativePaymentTotals(
+      requested,
+      settings as any,
+      'ipc',
+    );
+    let payload = enforcedTotals.payload;
+    const meta = (payload?.meta as any) || null;
+    if (enforcedTotals.mismatch) {
       broadcastPrinterEvent({
-        level: 'error',
-        kind: 'fiscal',
-        message: outcome.message,
-        detail: outcome.message,
+        level: 'warn',
+        kind: 'totals',
+        message: 'Payment total was recalculated from the ticket items.',
+        detail: enforcedTotals.mismatch,
         at: Date.now(),
         context: { area, tableLabel, kind: 'PAYMENT' },
       });
-      if (outcome.kind === 'needs-review') {
-        // Admins were already notified by `fiscalizePaymentOnce`. Retrying
-        // could file a second invoice, so tell the caller to stop.
+    }
+
+    // If this is a payment receipt and includes a discount, add an admin-visible notification entry.
+    // (Admin UI lists all notifications, grouped by userName, so we store it against the waiter userId.)
+    try {
+      const kind = String(meta?.kind || '');
+      const userId = Number(meta?.userId || 0);
+      const discountAmt = Number(meta?.discountAmount || 0);
+      if (
+        kind === 'PAYMENT' &&
+        userId &&
+        Number.isFinite(discountAmt) &&
+        discountAmt > 0
+      ) {
+        const before = Number(meta?.totalBefore ?? meta?.total ?? 0);
+        const after = Number(
+          meta?.totalAfter ?? Math.max(0, before - discountAmt),
+        );
+        const dtype = String(meta?.discountType || '').toUpperCase();
+        const dval = meta?.discountValue;
+        const dLabel =
+          dtype === 'PERCENT' && Number.isFinite(Number(dval))
+            ? `${Number(dval)}%`
+            : dtype === 'AMOUNT' && Number.isFinite(Number(dval))
+              ? `${Number(dval).toFixed(2)}`
+              : 'custom';
+        const reason = String(meta?.discountReason || '').trim();
+        const approvedBy = String(meta?.managerApprovedByName || '').trim();
+        const msg =
+          `Discount applied (${dLabel}) on ${area} Table ${tableLabel}: -${discountAmt.toFixed(2)} ` +
+          `(total ${before.toFixed(2)} → ${after.toFixed(2)})` +
+          `${meta?.method ? ` · method ${String(meta.method)}` : ''}` +
+          `${reason ? ` · reason: ${reason}` : ''}` +
+          `${approvedBy ? ` · approved by: ${approvedBy}` : ' · NO MANAGER APPROVAL'}`;
+        // Notify actor + all admins
+        await prisma.notification.create({
+          data: { userId, type: 'OTHER' as any, message: msg } as any,
+        });
+        const admins = await prisma.user
+          .findMany({
+            where: { role: 'ADMIN', active: true },
+            select: { id: true },
+          } as any)
+          .catch(() => []);
+        for (const a of admins as any[]) {
+          await prisma.notification
+            .create({
+              data: {
+                userId: Number(a.id),
+                type: 'OTHER' as any,
+                message: msg,
+              } as any,
+            })
+            .catch(() => {});
+        }
+      }
+    } catch {
+      // do not block printing/logging
+    }
+
+    const kind = String(meta?.kind || '').toUpperCase();
+    if (kind === 'PAYMENT') {
+      if (!(await tableIsOpenForPayment(area, tableLabel))) {
+        return tableAlreadyPaidResult();
+      }
+      const outcome = await fiscalizePaymentOnce(payload, settings as any, {
+        idempotencyKey: idempotencyKey || undefined,
+      });
+      if (outcome.kind !== 'ok') {
+        broadcastPrinterEvent({
+          level: 'error',
+          kind: 'fiscal',
+          message: outcome.message,
+          detail: outcome.message,
+          at: Date.now(),
+          context: { area, tableLabel, kind: 'PAYMENT' },
+        });
+        if (outcome.kind === 'needs-review') {
+          // Admins were already notified by `fiscalizePaymentOnce`. Retrying
+          // could file a second invoice, so tell the caller to stop.
+          return {
+            ok: false,
+            code: 'FISCAL_NEEDS_REVIEW',
+            error: outcome.message,
+            permanent: true,
+          };
+        }
+        if (outcome.kind === 'rejected') {
+          // Nothing was filed, but the same request will be refused again
+          // until the configuration is fixed. Park it where an admin can see
+          // it and release it, rather than retrying it into the ground.
+          return {
+            ok: false,
+            code: 'FISCAL_REJECTED',
+            error: outcome.message,
+            permanent: true,
+          };
+        }
+        try {
+          const uid = Number(meta?.userId || 0);
+          if (uid) {
+            await prisma.notification.create({
+              data: {
+                userId: uid,
+                type: 'OTHER' as any,
+                message: `Fiskalizimi failed on ${area} Table ${tableLabel}: ${outcome.message}`,
+              } as any,
+            });
+          }
+        } catch {
+          // ignore
+        }
+        // Same shape as the LAN `/print/ticket` 502 so the renderer can
+        // keep the table open instead of treating this as a printer hiccup.
         return {
           ok: false,
-          code: 'FISCAL_NEEDS_REVIEW',
+          code: 'FISCAL_FAILED',
           error: outcome.message,
-          permanent: true,
         };
       }
-      if (outcome.kind === 'rejected') {
-        // Nothing was filed, but the same request will be refused again
-        // until the configuration is fixed. Park it where an admin can see
-        // it and release it, rather than retrying it into the ground.
-        return {
-          ok: false,
-          code: 'FISCAL_REJECTED',
-          error: outcome.message,
-          permanent: true,
-        };
+      payload = outcome.payload;
+      const fiscalWarning = String(
+        (payload as any)?.meta?.fiscalWarning || '',
+      ).trim();
+      if (fiscalWarning) {
+        broadcastPrinterEvent({
+          level: 'warn',
+          kind: 'fiscal',
+          message: fiscalWarning,
+          detail: fiscalWarning,
+          at: Date.now(),
+          context: { area, tableLabel, kind: 'PAYMENT' },
+        });
       }
+    }
+
+    // recordOnly = store receipt snapshot for history without printing.
+    if (recordOnly) {
       try {
-        const uid = Number(meta?.userId || 0);
+        await prisma.printJob.create({
+          data: {
+            type: 'RECEIPT' as any,
+            payloadJson: payload,
+            status: 'SENT' as any,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+          } as any,
+        });
+      } catch (e: any) {
+        if (!(e?.code === 'P2002' && idempotencyKey)) return false;
+      }
+      if (kind === 'PAYMENT') {
+        await closeTableAfterAcceptedPayment(area, tableLabel);
+        return paymentPrintAccepted(true);
+      }
+      return true;
+    }
+
+    // All the actual ESC/POS dispatch + routing lives in
+    // `printDispatcher.ts`. This handler keeps only the side effects:
+    // notifications + PrintJob history record.
+    const result: DispatchResult = await dispatchTicket(
+      payload,
+      settings as any,
+      // Persist transient failures into the RETRY queue (PR 3) so the
+      // printer-station loop can keep trying for ~4 min. The waiter
+      // still sees the immediate error toast — the queue is a quiet
+      // safety net for "actually, the kitchen printer came back 12 s
+      // later".
+      { persistRetryOnTransientFailure: true },
+    );
+    const ok = result.ok;
+    const failCount = result.failures;
+    const firstErr = result.firstError ?? null;
+
+    if (!ok) {
+      const c = classifyPrinterError(firstErr);
+      broadcastPrinterEvent({
+        // Payment already passed fiscalization — the till must not look
+        // like the sale failed just because the receipt printer is down.
+        level: kind === 'PAYMENT' ? 'warn' : 'error',
+        kind: c.kind,
+        message:
+          kind === 'PAYMENT'
+            ? 'Payment recorded. Receipt will print when the printer is back.'
+            : c.userMessage,
+        detail: firstErr,
+        at: Date.now(),
+        context: { area, tableLabel, kind, failures: failCount },
+      });
+      // Persist as an in-app notification (works for Electron + browser clients)
+      try {
+        const uid = Number((payload as any)?.meta?.userId || 0);
         if (uid) {
+          const msg =
+            failCount > 1
+              ? `${c.userMessage} (${failCount} print jobs failed)`
+              : c.userMessage;
           await prisma.notification.create({
-            data: {
-              userId: uid,
-              type: 'OTHER' as any,
-              message: `Fiskalizimi failed on ${area} Table ${tableLabel}: ${outcome.message}`,
-            } as any,
+            data: { userId: uid, type: 'OTHER' as any, message: msg } as any,
           });
         }
       } catch {
         // ignore
       }
-      // Same shape as the LAN `/print/ticket` 502 so the renderer can
-      // keep the table open instead of treating this as a printer hiccup.
-      return {
-        ok: false,
-        code: 'FISCAL_FAILED',
-        error: outcome.message,
-      };
     }
-    payload = outcome.payload;
-    const fiscalWarning = String(
-      (payload as any)?.meta?.fiscalWarning || '',
-    ).trim();
-    if (fiscalWarning) {
-      broadcastPrinterEvent({
-        level: 'warn',
-        kind: 'fiscal',
-        message: fiscalWarning,
-        detail: fiscalWarning,
-        at: Date.now(),
-        context: { area, tableLabel, kind: 'PAYMENT' },
-      });
-    }
-  }
-
-  // recordOnly = store receipt snapshot for history without printing.
-  if (recordOnly) {
+    // Store a PrintJob record (useful for receipt history). SENT/FAILED
+    // here just tracks the synchronous outcome; the QUEUED status is
+    // reserved for jobs the cloud poller hasn't picked up yet.
     try {
       await prisma.printJob.create({
         data: {
           type: 'RECEIPT' as any,
           payloadJson: payload,
-          status: 'SENT' as any,
+          status: ok ? ('SENT' as any) : ('FAILED' as any),
           ...(idempotencyKey ? { idempotencyKey } : {}),
         } as any,
       });
-      return true;
     } catch (e: any) {
-      if (e?.code === 'P2002' && idempotencyKey) return true;
-      return false;
-    }
-  }
-
-  // All the actual ESC/POS dispatch + routing lives in
-  // `printDispatcher.ts`. This handler keeps only the side effects:
-  // notifications + PrintJob history record.
-  const result: DispatchResult = await dispatchTicket(
-    payload,
-    settings as any,
-    // Persist transient failures into the RETRY queue (PR 3) so the
-    // printer-station loop can keep trying for ~4 min. The waiter
-    // still sees the immediate error toast — the queue is a quiet
-    // safety net for "actually, the kitchen printer came back 12 s
-    // later".
-    { persistRetryOnTransientFailure: true },
-  );
-  const ok = result.ok;
-  const failCount = result.failures;
-  const firstErr = result.firstError ?? null;
-
-  if (!ok) {
-    const c = classifyPrinterError(firstErr);
-    broadcastPrinterEvent({
-      level: 'error',
-      kind: c.kind,
-      message: c.userMessage,
-      detail: firstErr,
-      at: Date.now(),
-      context: { area, tableLabel, kind, failures: failCount },
-    });
-    // Persist as an in-app notification (works for Electron + browser clients)
-    try {
-      const uid = Number((payload as any)?.meta?.userId || 0);
-      if (uid) {
-        const msg =
-          failCount > 1
-            ? `${c.userMessage} (${failCount} print jobs failed)`
-            : c.userMessage;
-        await prisma.notification.create({
-          data: { userId: uid, type: 'OTHER' as any, message: msg } as any,
+      if (e?.code === 'P2002' && idempotencyKey) {
+        // Concurrent identical payment — treat as success (other call won).
+      } else {
+        // This row is the receipt, the revenue line in the shift summary,
+        // and the retry guard. Losing it silently used to mean a payment
+        // that existed only on paper (and, once fiscalized, only at the tax
+        // service). The fiscal identifiers survive in the claim record, but
+        // someone still has to know this happened.
+        const detail = String(e?.message || e);
+        broadcastPrinterEvent({
+          level: 'error',
+          kind: 'audit',
+          message: 'The receipt record could not be saved.',
+          detail,
+          at: Date.now(),
+          context: { area, tableLabel, kind },
+        });
+        await reportAuditWriteFailure({
+          area,
+          tableLabel,
+          actorUserId: Number((payload as any)?.meta?.userId || 0) || undefined,
+          error: detail,
         });
       }
-    } catch {
-      // ignore
     }
-  }
-  // Store a PrintJob record (useful for receipt history). SENT/FAILED
-  // here just tracks the synchronous outcome; the QUEUED status is
-  // reserved for jobs the cloud poller hasn't picked up yet.
-  try {
-    await prisma.printJob.create({
-      data: {
-        type: 'RECEIPT' as any,
-        payloadJson: payload,
-        status: ok ? ('SENT' as any) : ('FAILED' as any),
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-      } as any,
-    });
-  } catch (e: any) {
-    if (e?.code === 'P2002' && idempotencyKey) {
-      // Concurrent identical payment — treat as success (other call won).
-    } else {
-      // This row is the receipt, the revenue line in the shift summary,
-      // and the retry guard. Losing it silently used to mean a payment
-      // that existed only on paper (and, once fiscalized, only at the tax
-      // service). The fiscal identifiers survive in the claim record, but
-      // someone still has to know this happened.
-      const detail = String(e?.message || e);
-      broadcastPrinterEvent({
-        level: 'error',
-        kind: 'audit',
-        message: 'The receipt record could not be saved.',
-        detail,
-        at: Date.now(),
-        context: { area, tableLabel, kind },
-      });
-      await reportAuditWriteFailure({
-        area,
-        tableLabel,
-        actorUserId: Number((payload as any)?.meta?.userId || 0) || undefined,
-        error: detail,
-      });
+    if (kind === 'PAYMENT') {
+      await closeTableAfterAcceptedPayment(area, tableLabel);
+      return paymentPrintAccepted(ok);
     }
+    return ok;
+  };
+
+  if (kindHint === 'PAYMENT') {
+    return withPaymentLock(area, tableLabel, runPrint);
   }
-  return ok;
+  return runPrint();
 });
 
 // Waiter-facing ticket lists (receipt-style) - Local-first: always use local DB
@@ -3136,6 +3168,11 @@ ipcHandle('tables:listOpen', async (_e) => {
       const [area, label] = k.split(':');
       return { area, label };
     });
+});
+
+ipcHandle('tables:getFloorSnapshot', async (_e, input) => {
+  const area = String(input?.area || '').trim();
+  return getFloorSnapshot(area || undefined);
 });
 
 // Local-first: always use local transfer

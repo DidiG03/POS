@@ -443,7 +443,7 @@ export function buildEscposTicket(
     // Business contact (below Thank you)
     if (bizEmail) lines.push(escposText(`${bizEmail}\n`));
     if (bizWebsite) lines.push(escposText(`${bizWebsite}\n`));
-    lines.push(escposText('Powered by Code Orbit POS\n'));
+    lines.push(escposText('Powered by OneTap POS\n'));
     lines.push(cmdAlign('left'));
   }
   lines.push(escposText('\n'));
@@ -618,7 +618,7 @@ export function buildHtmlReceipt(
         ? ''
         : `<div class="footer small">Thank you!</div>
     ${contactHtml}
-    <div class="footer small">Powered by Code Orbit POS</div>`
+    <div class="footer small">Powered by OneTap POS</div>`
     }
   </body>
 </html>`;

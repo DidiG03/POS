@@ -16,6 +16,8 @@ import {
 } from '@shared/utils/roles';
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import { PageSpinner } from './components/PageSpinner';
+import { ConfirmDialog } from './components/ui';
+import { shouldDeferShiftGuard } from './stores/sessionPersist';
 
 const LoginPage = React.lazy(() => import('./app/pages/LoginPage'));
 const TablesPage = React.lazy(() => import('./app/pages/TablesPage'));
@@ -62,7 +64,10 @@ function withSuspenseNoFallback(el: React.ReactElement) {
 }
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
+  const { t } = useTranslation();
   const user = useSessionStore((s) => s.user);
+  const hasHydrated = useSessionStore((s) => s.hasHydrated);
+  const authenticatedAt = useSessionStore((s) => s.authenticatedAt);
   // If running in browser (not Electron), require an open shift. This catches
   // the case where a persisted Zustand session (across page reloads) outlives
   // the actual shift — without this guard a clocked-out staffer could resume
@@ -73,51 +78,103 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
   const isKdsContext =
     typeof window !== 'undefined' &&
     (window.location.hash || '').startsWith('#/kds');
-  // `ok` defaults to true so we never flash the login screen while the async
-  // check is in flight; we only flip it to false when the server has
-  // CONCLUSIVELY told us the shift is gone.
-  const [ok, setOk] = React.useState<boolean>(true);
+  const clockOnly = Boolean(user && isClockOnlyRole((user as any).role));
+  // Keep the waiter on the floor. A missing shift used to swap in LoginPage
+  // while the JWT was still live, which bounced PIN → Tables → PIN.
+  const [needsShift, setNeedsShift] = React.useState(false);
+  const [shiftBusy, setShiftBusy] = React.useState(false);
   useEffect(() => {
-    if (!isBrowser || isKdsContext || !user?.id) {
-      setOk(true);
+    const userId = user?.id;
+    if (
+      shouldDeferShiftGuard({
+        hasHydrated,
+        isBrowser,
+        isKdsContext,
+        userId,
+        authenticatedAt,
+      })
+    ) {
+      setNeedsShift(false);
+      return;
+    }
+    if (!userId) {
+      setNeedsShift(false);
       return;
     }
     let cancelled = false;
     let attempts = 0;
-    // Retry with backoff because a clock-in that completed milliseconds ago
-    // may not be visible on the next read (the API call we made on the
-    // login screen and this guard's call can race). Without this the user
-    // sees /app/tables flash and then bounce back to the login screen.
     const check = async (): Promise<void> => {
       if (cancelled) return;
       try {
-        const open = await (window as any).api.shifts.getOpen(user.id);
+        const open = await (window as any).api.shifts.getOpen(userId);
         if (cancelled) return;
         if (open) {
-          setOk(true);
+          setNeedsShift(false);
           return;
         }
-        if (attempts < 2) {
+        if (attempts < 4) {
           attempts += 1;
-          window.setTimeout(check, 600);
+          window.setTimeout(check, 500);
           return;
         }
-        setOk(false);
+        // Clock-only roles already sit on /app/clock. Waiters keep Tables
+        // and get a start-shift prompt instead of the PIN screen.
+        setNeedsShift(!clockOnly);
       } catch {
-        // Transient network/server error — never sign the user out from a
-        // routing guard. The server-side handlers still reject any sensitive
-        // action when the shift is missing, so this is safe.
-        if (!cancelled) setOk(true);
+        if (!cancelled) setNeedsShift(false);
       }
     };
     void check();
     return () => {
       cancelled = true;
     };
-  }, [isBrowser, isKdsContext, user?.id]);
+  }, [
+    isBrowser,
+    isKdsContext,
+    user?.id,
+    hasHydrated,
+    authenticatedAt,
+    clockOnly,
+  ]);
+  if (!hasHydrated) return <SuspenseFallback />;
   if (!user) return withSuspenseNoFallback(<LoginPage />);
-  if (isBrowser && !ok) return withSuspenseNoFallback(<LoginPage />);
-  return children;
+  return (
+    <>
+      {children}
+      <ConfirmDialog
+        open={isBrowser && needsShift}
+        title={t('login.startShiftTitle', { name: user.displayName })}
+        body={t('login.resumeShiftBody')}
+        confirmLabel={t('common.confirm')}
+        cancelLabel={t('common.cancel')}
+        busy={shiftBusy}
+        onConfirm={() => {
+          void (async () => {
+            setShiftBusy(true);
+            try {
+              await (window as any).api.shifts.clockIn(user.id);
+              setNeedsShift(false);
+            } catch {
+              // Stay on the prompt; PIN bounce is worse than a retry.
+            } finally {
+              setShiftBusy(false);
+            }
+          })();
+        }}
+        onCancel={() => {
+          try {
+            window.dispatchEvent(
+              new CustomEvent('pos:forceLogout', {
+                detail: { reason: t('login.notClockedIn') },
+              }),
+            );
+          } catch {
+            // ignore
+          }
+        }}
+      />
+    </>
+  );
 }
 
 function RequireAdmin({ children }: { children: React.ReactElement }) {
@@ -233,7 +290,7 @@ function RequireReportsAccess({ children }: { children: React.ReactElement }) {
 // so a waiter who pastes a /kds deep link doesn't end up on a screen
 // they can't act on. Electron stays open (the kitchen PC needs it).
 //
-// The standalone "Code Orbit KDS" Electron app sets `__KDS_APP__ = true`
+// The standalone "OneTap KDS" Electron app sets `__KDS_APP__ = true`
 // from its preload — that build is a kitchen-only kiosk so we skip the
 // login/role gate entirely.
 function RequireKdsAccess({ children }: { children: React.ReactElement }) {

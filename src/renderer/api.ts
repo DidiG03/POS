@@ -1,5 +1,5 @@
 import { newIdempotencyKey } from './utils/idempotency';
-import { offlineQueue, tryOrQueue } from './utils/offlineQueue';
+import { tryOrQueue } from './utils/offlineQueue';
 
 export interface TicketLinePayload {
   sku?: string;
@@ -31,11 +31,10 @@ export interface TicketPayload {
 /**
  * Public renderer entry point for sending a ticket.
  *
- * - When clearly offline → enqueues directly (instant return, no
- *   awaited round-trip through a doomed network).
  * - When online → tries the live IPC, falls back to the queue ONLY on
  *   transport-shaped errors. Real validation/auth errors still
- *   surface to the caller.
+ *   surface to the caller. `navigator.onLine` is ignored for this write:
+ *   restaurant LAN still works when the tablet has no internet.
  *
  * Returns a small status so callers can react to *permanent* server
  * rejections (table closed, owned by another waiter, etc.) without
@@ -67,11 +66,6 @@ export async function logTicket(
     idempotencyKey: payload.idempotencyKey || newIdempotencyKey(),
   };
 
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    await offlineQueue.enqueue('tickets.log', normalized);
-    return { ok: true, queued: true };
-  }
-
   try {
     const r = await tryOrQueue('tickets.log', normalized);
     return { ok: true, queued: Boolean(r?.queued) };
@@ -102,10 +96,11 @@ export async function logTicket(
  */
 export async function printTicket(
   input: import('@shared/ipc').PrintTicketInput,
-): Promise<void> {
+): Promise<{ queued: boolean }> {
   const payload = {
     ...input,
     idempotencyKey: input.idempotencyKey || newIdempotencyKey(),
   };
-  await tryOrQueue('tickets.print', payload);
+  const r = await tryOrQueue('tickets.print', payload);
+  return { queued: Boolean(r?.queued) };
 }

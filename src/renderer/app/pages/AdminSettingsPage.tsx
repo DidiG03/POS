@@ -3734,10 +3734,12 @@ function AreaLayoutEditorModal({
           />
         </div>
         <div className="px-4 py-2 border-t border-gray-700 text-xs opacity-70 shrink-0">
-          Place tables and shapes with + Table / + Shape, then press
+          Place tables on the dashed dining room — they snap to a block grid so
+          edges line up. Use
+          <span className="mx-1 text-amber-200">Preview floor</span>
+          to see the waiter view, then
           <span className="mx-1 text-blue-300">Save layout</span>
-          or Done. Waiter and host floors show this same saved plan — nothing is
-          invented.
+          or Done.
         </div>
       </div>
     </div>

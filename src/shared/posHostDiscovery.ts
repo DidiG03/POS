@@ -63,7 +63,7 @@ export function hostFromDebugBody(
     httpsPort: Number(rec.httpsPort) || undefined,
     restaurantName,
     businessCode: String(rec.businessCode || '').trim() || undefined,
-    name: restaurantName || 'Code Orbit POS',
+    name: restaurantName || 'OneTap POS',
     source,
   };
 }
@@ -83,7 +83,7 @@ export function mergeDiscoveredPosHosts(
         ...h,
         host,
         httpPort,
-        name: h.name || h.restaurantName || 'Code Orbit POS',
+        name: h.name || h.restaurantName || 'OneTap POS',
       });
       continue;
     }

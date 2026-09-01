@@ -66,7 +66,7 @@ export async function startMdnsAdvertiser(
     bonjour = new Bonjour();
     const lanHost = primaryLanIpv4();
     service = bonjour.publish({
-      name: `Code Orbit POS @ ${safeHost()}`,
+      name: `OneTap POS @ ${safeHost()}`,
       type: 'codeorbit-pos',
       protocol: 'tcp',
       port: input.httpPort,

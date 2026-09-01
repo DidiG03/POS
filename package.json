@@ -1,8 +1,8 @@
 {
   "name": "code-orbit-pos",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "private": true,
-  "description": "Desktop POS for  Code Orbit Agroturizem (Electron + React + Prisma)",
+  "description": "Desktop POS for OneTap (Electron + React + Prisma)",
   "type": "module",
   "main": "dist/main/index.js",
   "author": "",
@@ -49,7 +49,7 @@
   },
   "build": {
     "appId": "com.codeorbit.pos",
-    "productName": "Code Orbit POS",
+    "productName": "OneTap POS",
     "directories": {
       "buildResources": "build-resources"
     },
@@ -82,7 +82,7 @@
       }
     ],
     "protocols": {
-      "name": "Code Orbit POS",
+      "name": "OneTap POS",
       "schemes": [
         "codeorbit-pos"
       ]
@@ -94,8 +94,8 @@
       "category": "public.app-category.business",
       "icon": "build-resources/icon.icns",
       "extendInfo": {
-        "CFBundleName": "Code Orbit POS",
-        "CFBundleDisplayName": "Code Orbit POS"
+        "CFBundleName": "OneTap POS",
+        "CFBundleDisplayName": "OneTap POS"
       }
     },
     "win": {

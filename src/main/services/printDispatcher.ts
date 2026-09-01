@@ -630,7 +630,7 @@ export function buildTestPrintBuffer(
     paperWidthMm?: 58 | 80;
   } = {},
 ): Buffer {
-  const title = opts.title || 'Code Orbit POS Test Print';
+  const title = opts.title || 'OneTap POS Test Print';
   const layout = layoutFromSettings({
     printers: [{ id: 'default', paperWidthMm: opts.paperWidthMm }],
   });

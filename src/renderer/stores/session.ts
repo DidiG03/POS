@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { UserDTO } from '@shared/ipc';
+import { mergeSessionPersist } from './sessionPersist';
 
 interface SessionState {
   user: UserDTO | null;
@@ -11,7 +12,11 @@ interface SessionState {
    * payload we send somewhere else.
    */
   sessionToken: string | null;
+  /** In-memory only: when this PIN login landed. Used to avoid a shift-guard bounce. */
+  authenticatedAt: number;
+  hasHydrated: boolean;
   setUser: (u: UserDTO | null) => void;
+  setHasHydrated: (v: boolean) => void;
 }
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
@@ -22,16 +27,25 @@ export const useSessionStore = create<SessionState>()(
       user: null,
       expiresAtMs: null,
       sessionToken: null,
+      authenticatedAt: 0,
+      hasHydrated: false,
+      setHasHydrated: (v) => set({ hasHydrated: v }),
       setUser: (u: UserDTO | null) =>
         set((state) => {
-          if (!u) return { user: null, expiresAtMs: null, sessionToken: null };
+          if (!u) {
+            return {
+              user: null,
+              expiresAtMs: null,
+              sessionToken: null,
+              authenticatedAt: 0,
+            };
+          }
           const { sessionToken, ...rest } = u;
           return {
             user: rest as UserDTO,
             expiresAtMs: Date.now() + SESSION_TTL_MS,
-            // Callers that refresh the user object without re-authenticating
-            // (a role refresh, say) must not wipe the token.
             sessionToken: sessionToken ?? state.sessionToken,
+            authenticatedAt: Date.now(),
           };
         }),
     }),
@@ -43,6 +57,10 @@ export const useSessionStore = create<SessionState>()(
         expiresAtMs: state.expiresAtMs,
         sessionToken: state.sessionToken,
       }),
+      merge: (persisted, current) => mergeSessionPersist(persisted, current),
+      onRehydrateStorage: () => (_state, _error) => {
+        useSessionStore.setState({ hasHydrated: true });
+      },
       migrate: (persisted: any, version) => {
         // v1 stored only { user }. v2 added expiresAtMs. v3 adds sessionToken;
         // sessions from older versions have no token and must re-authenticate.
@@ -61,3 +79,11 @@ export const useSessionStore = create<SessionState>()(
     },
   ),
 );
+
+if (typeof window !== 'undefined') {
+  window.setTimeout(() => {
+    if (!useSessionStore.getState().hasHydrated) {
+      useSessionStore.setState({ hasHydrated: true });
+    }
+  }, 400);
+}

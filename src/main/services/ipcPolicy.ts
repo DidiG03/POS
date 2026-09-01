@@ -260,6 +260,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // HOST (and the dedicated reservations window) may read which tables have
   // an open POS ticket so the floor can paint them occupied and block merge.
   'tables:listOpen': { allow: POS_AND_HOST, windows: RESERVATIONS_WINDOWS },
+  'tables:getFloorSnapshot': { allow: POS },
   'tables:setOpen': { allow: POS },
   'tables:transfer': { allow: POS },
 

@@ -157,12 +157,12 @@ async function tick(): Promise<{ idle: boolean }> {
   if (running) return { idle: true };
   running = true;
   try {
-    const dueRetries = await loadDuePrintRetries(10);
+    const dueRetries = await loadDuePrintRetries(20);
     const queuedJobs = await prisma.printJob
       .findMany({
         where: { status: 'QUEUED' as any },
         orderBy: { createdAt: 'asc' },
-        take: 10,
+        take: 20,
       })
       .catch(() => []);
 

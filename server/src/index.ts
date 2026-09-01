@@ -333,7 +333,7 @@ app.get('/return', (req, res) => {
   const title = ok && sessionId ? 'Payment received' : 'Returned from Stripe';
   const body =
     ok && sessionId
-      ? 'Return to Code Orbit POS. If the app does not open, it will pick up this payment automatically — or paste your email under “I already paid”.'
+      ? 'Return to OneTap POS. If the app does not open, it will pick up this payment automatically — or paste your email under “I already paid”.'
       : 'No payment was completed. You can close this tab and try again in the app.';
   res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8')
     .send(`<!doctype html>
@@ -354,7 +354,7 @@ app.get('/return', (req, res) => {
       <p>${body}</p>
       ${
         deep
-          ? `<p><a href="${deep}">Open Code Orbit POS</a></p>
+          ? `<p><a href="${deep}">Open OneTap POS</a></p>
 <script>location.href=${JSON.stringify(deep)};</script>`
           : ''
       }

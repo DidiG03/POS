@@ -27,6 +27,12 @@ import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
 import { saneTableAreas } from '@shared/tableAreas';
 import { IconClose } from '../../components/icons';
+import { pollIntervalMs } from '../../utils/netQuality';
+import {
+  invalidateFloorCache,
+  peekLatestTicket,
+  peekMenu,
+} from '../../utils/posReadCache';
 
 type MenuItemDTO = {
   id: number;
@@ -179,8 +185,13 @@ function loadCustomCommentButtons(): Record<string, string[]> {
 
 export default function OrderPage() {
   const { t } = useTranslation();
-  const [categories, setCategories] = useState<MenuCategoryDTO[]>([]);
-  const [selectedCatId, setSelectedCatId] = useState<number | null>(null);
+  const cachedMenu = peekMenu<MenuCategoryDTO[]>();
+  const [categories, setCategories] = useState<MenuCategoryDTO[]>(() =>
+    Array.isArray(cachedMenu) ? cachedMenu : [],
+  );
+  const [selectedCatId, setSelectedCatId] = useState<number | null>(() =>
+    Array.isArray(cachedMenu) && cachedMenu[0] ? cachedMenu[0].id : null,
+  );
   const [query, setQuery] = useState('');
   const {
     lines,
@@ -212,7 +223,9 @@ export default function OrderPage() {
   const { selectedTable, setPendingAction, setSelectedTable } =
     useOrderContext();
   const { setOpen, setAll, isOpen } = useTableStatus();
-  const [openLoaded, setOpenLoaded] = useState(false);
+  const [openLoaded, setOpenLoaded] = useState(
+    () => Object.keys(useTableStatus.getState().openMap).length > 0,
+  );
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
   const [ticketLoaded, setTicketLoaded] = useState(false);
   const [showCovers, setShowCovers] = useState(false);
@@ -282,16 +295,9 @@ export default function OrderPage() {
   const [busyAction, setBusyAction] = useState<
     'send' | 'pay' | 'void' | 'request' | null
   >(null);
-  const isBrowserClient =
-    typeof window !== 'undefined' &&
-    Boolean((window as any).__BROWSER_CLIENT__);
-  const backendOk =
-    typeof window !== 'undefined'
-      ? (window as any).__BACKEND_OK__ !== false
-      : true;
-  const netOk =
-    typeof navigator === 'undefined' ? true : navigator.onLine !== false;
-  const connectionOk = !isBrowserClient || (netOk && backendOk);
+  // Writes go through the durable queue. Never freeze Send/Pay because a
+  // heartbeat timed out on congested Wi-Fi — that is the rush-hour failure.
+  const connectionOk = true;
   const [mobilePane, setMobilePane] = useState<'menu' | 'ticket'>('menu');
   const [ticketSyncing, setTicketSyncing] = useState(false);
 
@@ -403,8 +409,6 @@ export default function OrderPage() {
   const orderPollGenRef = useRef(0);
   useEffect(() => {
     const gen = ++orderPollGenRef.current;
-    setOpenLoaded(false);
-    setTicketLoaded(false);
     let timer: any;
     let cancelled = false;
     const fetchOnce = async () => {
@@ -443,13 +447,13 @@ export default function OrderPage() {
         // ignore poll errors
       } finally {
         if (!cancelled && gen === orderPollGenRef.current) {
-          timer = setTimeout(poll, hidden ? 12000 : 4000);
+          timer = setTimeout(poll, pollIntervalMs(4000, hidden));
         }
       }
     };
     fetchOnce().then(() => {
       if (!cancelled && gen === orderPollGenRef.current) {
-        timer = setTimeout(poll, 4000);
+        timer = setTimeout(poll, pollIntervalMs(4000, false));
       }
     });
     return () => {
@@ -520,7 +524,16 @@ export default function OrderPage() {
         setTicketLoaded(true);
         return;
       }
-      setTicketLoaded(false);
+      const cached = peekLatestTicket(selectedTable.area, selectedTable.label);
+      if (cached?.items) {
+        useTicketStore.getState().hydrate({
+          items: cached.items as any,
+          note: cached.note || '',
+        });
+        setTicketLoaded(true);
+      } else {
+        setTicketLoaded(false);
+      }
       try {
         const latest = await window.api.tickets.getLatestForTable(
           selectedTable.area,
@@ -1166,9 +1179,9 @@ export default function OrderPage() {
         typeof document !== 'undefined' &&
         document.visibilityState === 'hidden';
       if (!hidden) void refreshTableOwner(area, label);
-      timer = setTimeout(tick, hidden ? 12_000 : 4_000);
+      timer = setTimeout(tick, pollIntervalMs(4000, hidden));
     };
-    timer = setTimeout(tick, 4_000);
+    timer = setTimeout(tick, pollIntervalMs(4000, false));
     const onVis = () => {
       if (document.visibilityState === 'visible') {
         void refreshTableOwner(area, label);
@@ -1324,7 +1337,7 @@ export default function OrderPage() {
             .catch(() => {});
         }
       } finally {
-        if (alive) timer = setTimeout(tick, 4000);
+        if (alive) timer = setTimeout(tick, pollIntervalMs(4000, false));
       }
     };
     tick();
@@ -1334,9 +1347,15 @@ export default function OrderPage() {
     };
   }, [user?.id, selectedTable?.area, selectedTable?.label, ownerId]);
 
+  const cachedTicket =
+    selectedTable && isTableOpen
+      ? peekLatestTicket(selectedTable.area, selectedTable.label)
+      : null;
   const shouldBlockForLoading =
-    !openLoaded ||
-    (openLoaded && Boolean(selectedTable) && isTableOpen && !ticketLoaded);
+    !cachedTicket &&
+    lines.length === 0 &&
+    categories.length === 0 &&
+    (!openLoaded || !ticketLoaded);
 
   if (shouldBlockForLoading) {
     return (
@@ -1746,7 +1765,9 @@ export default function OrderPage() {
                     : busyAction === 'void'
                       ? t('order.voiding')
                       : busyAction === 'pay'
-                        ? t('order.processingPayment')
+                        ? vatEnabled
+                          ? t('order.registeringFiscal')
+                          : t('order.processingPayment')
                         : t('order.pleaseWait')
               }
             />
@@ -2325,6 +2346,14 @@ export default function OrderPage() {
                                     )
                                 : 0,
                             },
+                          }).then((printed) => {
+                            if (printed?.queued) {
+                              toast.warn(
+                                isFireOrder
+                                  ? t('order.kitchenPrintQueued')
+                                  : t('order.ticketPrintQueued'),
+                              );
+                            }
                           });
                           // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
                           setOpen(
@@ -2473,10 +2502,14 @@ export default function OrderPage() {
                   aria-hidden
                 />
                 <div className="text-base font-medium">
-                  {t('order.processingPaymentOverlay')}
+                  {vatEnabled
+                    ? t('order.registeringFiscal')
+                    : t('order.processingPaymentOverlay')}
                 </div>
                 <div className="text-xs opacity-70">
-                  {t('order.recordingPayment')}
+                  {vatEnabled
+                    ? t('order.recordingPaymentFiscal')
+                    : t('order.recordingPayment')}
                 </div>
               </div>
             )}
@@ -2851,9 +2884,10 @@ export default function OrderPage() {
                       if (!connectionOk) return;
                       setBusyAction('pay');
                       // Close the table only after the host accepted the
-                      // payment (or queued it because the POS was offline).
-                      // Fiscal refusals throw — the table must stay open
-                      // with its items so the waiter can pay again.
+                      // payment. Fiscal refusals and "could not reach till"
+                      // keep the sitting open. The host also closes the
+                      // table as part of a successful PAYMENT so two
+                      // waiters cannot fiscalize the same sitting.
                       let paymentAccepted = false;
                       try {
                         const needsDiscountApproval =
@@ -2909,72 +2943,96 @@ export default function OrderPage() {
                         //     (PRINTER_TIMEOUT_MS, default 5 s). The
                         //     printer-station loop keeps trying for
                         //     ~4 min after that.
-                        // Fiscal refusals throw. Printer hiccups after
-                        // the sale is recorded return `{ queued: true }`
-                        // and we still close the table.
+                        // Fiscal refusals throw. After the host records
+                        // the sale, a down printer returns `{ ok: true,
+                        // printed: false }` and we still close the table.
                         try {
-                          await tryOrQueue('payments.record', {
-                            area: selectedTable.area,
-                            tableLabel: selectedTable.label,
-                            covers: lastCovers ?? null,
-                            items,
-                            note: orderNote || null,
-                            userName: user?.displayName || undefined,
-                            recordOnly: !printReceipt,
-                            idempotencyKey: paymentIdempotencyKey,
-                            meta: {
-                              kind: 'PAYMENT',
-                              userId: user?.id ?? null,
-                              method: paymentMethod,
-                              paidAt: new Date().toISOString(),
-                              amountPaid: Number(amountPaid),
-                              vatEnabled,
-                              baseTotal: totals.total,
-                              serviceChargeEnabled: serviceChargeCfg.enabled,
-                              serviceChargeApplied: serviceChargeCfg.enabled
-                                ? applyServiceCharge
-                                : false,
-                              serviceChargeMode: serviceChargeCfg.mode,
-                              serviceChargeValue: serviceChargeCfg.value,
-                              serviceChargeAmount,
-                              totalBefore: totalBeforeDiscount,
-                              discountType,
-                              discountValue:
-                                discountType === 'NONE'
-                                  ? null
-                                  : Number(
-                                      String(discountValue || '').replace(
-                                        ',',
-                                        '.',
+                          const payResult = await tryOrQueue(
+                            'payments.record',
+                            {
+                              area: selectedTable.area,
+                              tableLabel: selectedTable.label,
+                              covers: lastCovers ?? null,
+                              items,
+                              note: orderNote || null,
+                              userName: user?.displayName || undefined,
+                              recordOnly: !printReceipt,
+                              idempotencyKey: paymentIdempotencyKey,
+                              meta: {
+                                kind: 'PAYMENT',
+                                userId: user?.id ?? null,
+                                method: paymentMethod,
+                                paidAt: new Date().toISOString(),
+                                amountPaid: Number(amountPaid),
+                                vatEnabled,
+                                baseTotal: totals.total,
+                                serviceChargeEnabled: serviceChargeCfg.enabled,
+                                serviceChargeApplied: serviceChargeCfg.enabled
+                                  ? applyServiceCharge
+                                  : false,
+                                serviceChargeMode: serviceChargeCfg.mode,
+                                serviceChargeValue: serviceChargeCfg.value,
+                                serviceChargeAmount,
+                                totalBefore: totalBeforeDiscount,
+                                discountType,
+                                discountValue:
+                                  discountType === 'NONE'
+                                    ? null
+                                    : Number(
+                                        String(discountValue || '').replace(
+                                          ',',
+                                          '.',
+                                        ),
                                       ),
-                                    ),
-                              discountAmount,
-                              discountReason:
-                                (discountReason || '').trim() || null,
-                              totalAfter: totalDue,
-                              managerApprovedById:
-                                managerApprovedBy?.userId ?? null,
-                              managerApprovedByName:
-                                managerApprovedBy?.userName ?? null,
+                                discountAmount,
+                                discountReason:
+                                  (discountReason || '').trim() || null,
+                                totalAfter: totalDue,
+                                managerApprovedById:
+                                  managerApprovedBy?.userId ?? null,
+                                managerApprovedByName:
+                                  managerApprovedBy?.userName ?? null,
+                              },
                             },
-                          });
-                          paymentAccepted = true;
+                          );
+                          if (payResult.queued) {
+                            // Host never confirmed the sale. With fiskalizimi
+                            // on, closing now would free the table before an
+                            // invoice exists.
+                            toast.error(t('order.paymentNeedsTill'), {
+                              title: t('order.paymentBlocked'),
+                            });
+                          } else {
+                            paymentAccepted = true;
+                            const printed = (payResult.result as any)?.printed;
+                            if (printed === false) {
+                              toast.warn(t('order.paymentRecordedPrintQueued'));
+                            }
+                          }
                         } catch (e: any) {
-                          const detail = String(e?.message || '').trim();
-                          toast.error(detail || t('order.paymentNotRecorded'), {
-                            title: t('order.paymentBlocked'),
-                          });
+                          if (String(e?.code || '') === 'TABLE_ALREADY_PAID') {
+                            toast.info(t('order.alreadyPaid'));
+                            paymentAccepted = true;
+                          } else {
+                            const detail = String(e?.message || '').trim();
+                            toast.error(
+                              detail || t('order.paymentNotRecorded'),
+                              {
+                                title: t('order.paymentBlocked'),
+                              },
+                            );
+                          }
                         }
                       } finally {
-                        // Close only when the sale was accepted or
-                        // queued for a transport retry. A fiscal 400
-                        // from easyPos must not free the table.
+                        // Close only when the host accepted the sale (or
+                        // another waiter already settled this sitting).
                         if (paymentAccepted) {
                           setOpen(
                             selectedTable.area,
                             selectedTable.label,
                             false,
                           );
+                          invalidateFloorCache();
                           try {
                             await tryOrQueue(
                               'tables.setOpen',
@@ -3004,7 +3062,11 @@ export default function OrderPage() {
                           className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"
                           aria-hidden
                         />
-                        <span>{t('order.processingPaymentOverlay')}</span>
+                        <span>
+                          {vatEnabled
+                            ? t('order.registeringFiscal')
+                            : t('order.processingPaymentOverlay')}
+                        </span>
                       </>
                     ) : (
                       <span className="flex flex-col items-center leading-tight">

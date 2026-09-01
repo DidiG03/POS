@@ -1,5 +1,5 @@
 /**
- * Preload for the standalone "Code Orbit KDS" Electron app.
+ * Preload for the standalone "OneTap KDS" Electron app.
  *
  * Intentionally tiny:
  *   - exposes `window.kdsApp`  — setup / discovery / connection test IPC

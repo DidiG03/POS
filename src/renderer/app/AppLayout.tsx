@@ -10,6 +10,7 @@ import { BrandMark } from '../components/BrandMark';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
 import { toast } from '../stores/toasts';
 import { getOfflineQueueCount } from '../utils/offlineQueue';
+import { isHostUnreachable } from '../utils/netQuality';
 import {
   Badge,
   Button,
@@ -166,15 +167,16 @@ export default function AppLayout() {
     const tick = async () => {
       if (isHidden()) return;
       try {
-        // Lightweight backend heartbeat. main.tsx includes timeouts/retries.
-        await window.api.settings.get();
+        const ping = (window.api as any).health?.ping;
+        if (typeof ping === 'function') await ping();
+        else await window.api.settings.get();
         if (!cancelled) setBackendOk(true);
       } catch {
-        if (!cancelled) setBackendOk(false);
+        if (!cancelled) setBackendOk(!isHostUnreachable());
       }
     };
     tick();
-    const t = window.setInterval(tick, 15000);
+    const t = window.setInterval(tick, 20_000);
     return () => {
       cancelled = true;
       window.clearInterval(t);

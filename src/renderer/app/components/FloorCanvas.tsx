@@ -12,6 +12,16 @@ import {
   resolveTableFillColor,
 } from '@shared/floorTableStyle';
 import {
+  FLOOR_GRID,
+  FLOOR_ROOM_H,
+  FLOOR_ROOM_W,
+  firstFreeOnGrid,
+  floorNodeBox,
+  snapCenter,
+  snapGrid,
+  snapSize,
+} from '@shared/floorGrid';
+import {
   clientToFloorLayout,
   formatMergeLabel,
   mergeTableGroups,
@@ -90,7 +100,7 @@ const TABLE_SHAPE_PRESETS: Array<{
 }> = [
   { shape: 'circle', label: 'Round (2-4)', w: 64, h: 64, seats: 2 },
   { shape: 'square', label: 'Square (4)', w: 64, h: 64, seats: 4 },
-  { shape: 'rect', label: 'Rectangle (6)', w: 100, h: 56, seats: 6 },
+  { shape: 'rect', label: 'Rectangle (6)', w: 96, h: 64, seats: 6 },
 ];
 
 const AREA_VARIANT_PRESETS: Array<{
@@ -103,23 +113,23 @@ const AREA_VARIANT_PRESETS: Array<{
   {
     variant: 'rect',
     label: 'Plain area',
-    w: 220,
-    h: 140,
+    w: 224,
+    h: 144,
     defaultLabel: 'Area',
   },
-  { variant: 'wall', label: 'Wall', w: 220, h: 16, defaultLabel: '' },
+  { variant: 'wall', label: 'Wall', w: 224, h: 16, defaultLabel: '' },
   {
     variant: 'bar',
     label: 'Bar / Counter',
-    w: 220,
-    h: 50,
+    w: 224,
+    h: 48,
     defaultLabel: 'Bar',
   },
-  { variant: 'door', label: 'Door', w: 60, h: 16, defaultLabel: 'Door' },
+  { variant: 'door', label: 'Door', w: 64, h: 16, defaultLabel: 'Door' },
   { variant: 'plant', label: 'Plant', w: 48, h: 48, defaultLabel: '' },
   { variant: 'pillar', label: 'Pillar', w: 32, h: 32, defaultLabel: '' },
   { variant: 'window', label: 'Window', w: 160, h: 16, defaultLabel: '' },
-  { variant: 'stairs', label: 'Stairs', w: 120, h: 60, defaultLabel: 'Stairs' },
+  { variant: 'stairs', label: 'Stairs', w: 128, h: 64, defaultLabel: 'Stairs' },
 ];
 
 const SHAPE_COLOR_PALETTE: string[] = [
@@ -507,33 +517,31 @@ export default function FloorCanvas({
     };
   }, [userId, area, scope]);
 
-  // Editor centring offset: translate-only (scale 1) so the loaded layout
-  // sits centred in the canvas exactly like the read-only waiter view,
-  // while editing stays 1:1. Recomputed on load / resize — NOT on node
-  // edits — so dragging a single table never snaps the whole floor around.
+  // Editor centring offset: translate-only (scale 1) so the dining-room
+  // plate (and any pieces on it) sit centred in the canvas like the
+  // waiter view, while editing stays 1:1. Recomputed on load / resize —
+  // NOT on node edits — so dragging a single table never snaps the
+  // whole floor around.
   const editorOffset = useMemo(() => {
     const zero = { tx: 0, ty: 0 };
     if (!editable) return zero;
     const cur = nodesRef.current || [];
-    if (!cur.length) return zero;
     const cw = Math.max(0, canvasSize.w);
     const ch = Math.max(0, canvasSize.h);
     if (cw < 50 || ch < 50) return zero;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
+    // Always include the dining-room rectangle so an empty editor still
+    // has a visible starting point instead of a blank void.
+    let minX = 0;
+    let minY = 0;
+    let maxX = FLOOR_ROOM_W;
+    let maxY = FLOOR_ROOM_H;
     for (const n of cur as any[]) {
       if (!n) continue;
       const x = Number(n.x || 0);
       const y = Number(n.y || 0);
-      const isArea = String(n.kind || 'TABLE') === 'AREA';
-      const halfW = isArea
-        ? Math.max(0, Number(n.w || 0)) / 2
-        : Math.max(32, Number(n.w || 64) / 2);
-      const halfH = isArea
-        ? Math.max(0, Number(n.h || 0)) / 2
-        : Math.max(32, Number(n.h || 64) / 2);
+      const box = floorNodeBox(n);
+      const halfW = box.w / 2;
+      const halfH = box.h / 2;
       minX = Math.min(minX, x - halfW);
       minY = Math.min(minY, y - halfH);
       maxX = Math.max(maxX, x + halfW);
@@ -551,19 +559,24 @@ export default function FloorCanvas({
     return { tx: (cw - bw) / 2 - minX, ty: (ch - bh) / 2 - minY };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editable, layoutVersion, canvasSize.w, canvasSize.h]);
-  const editorOffsetRef = useRef(editorOffset);
-  editorOffsetRef.current = editorOffset;
 
   const handleMove = useCallback((id: number, x: number, y: number) => {
     setNodes((prev) =>
-      (prev || []).map((n) => (n.id === id ? { ...(n as any), x, y } : n)),
+      (prev || []).map((n) => {
+        if (n.id !== id) return n;
+        const box = floorNodeBox(n);
+        const snapped = snapCenter(x, y, box.w, box.h);
+        return { ...(n as any), x: snapped.x, y: snapped.y };
+      }),
     );
     setDirty(true);
   }, []);
 
   const handleAreaResize = useCallback((id: number, w: number, h: number) => {
     setNodes((prev) =>
-      (prev || []).map((n) => (n.id === id ? { ...(n as any), w, h } : n)),
+      (prev || []).map((n) =>
+        n.id === id ? { ...(n as any), w: snapSize(w), h: snapSize(h) } : n,
+      ),
     );
     setDirty(true);
   }, []);
@@ -605,16 +618,54 @@ export default function FloorCanvas({
     return () => window.removeEventListener('mousedown', onDocClick);
   }, [addMenu]);
 
+  // Arrow keys nudge the selected piece by one grid cell.
+  useEffect(() => {
+    if (!editable || selectedId == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      )
+        return;
+      const delta: Record<string, [number, number]> = {
+        ArrowLeft: [-FLOOR_GRID, 0],
+        ArrowRight: [FLOOR_GRID, 0],
+        ArrowUp: [0, -FLOOR_GRID],
+        ArrowDown: [0, FLOOR_GRID],
+      };
+      const d = delta[e.key];
+      if (!d) return;
+      e.preventDefault();
+      const id = selectedId;
+      setNodes((prev) =>
+        (prev || []).map((n) => {
+          if (n.id !== id) return n;
+          const box = floorNodeBox(n);
+          const snapped = snapCenter(n.x, n.y, box.w, box.h);
+          return { ...(n as any), x: snapped.x + d[0], y: snapped.y + d[1] };
+        }),
+      );
+      setDirty(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editable, selectedId]);
+
   const addTableOfShape = useCallback(
     (preset: { shape: TableShape; w: number; h: number; seats: number }) => {
       setNodes((prev) => {
         const cur = prev || [];
-        const rect = canvasRef.current?.getBoundingClientRect();
-        const off = editorOffsetRef.current;
-        const cw = rect?.width ?? 480;
-        const ch = rect?.height ?? 360;
-        const x = Math.max(60, cw * 0.5 - off.tx);
-        const y = Math.max(60, ch * 0.5 - off.ty);
+        const w = snapSize(preset.w);
+        const h = snapSize(preset.h);
+        const occupied = cur.map((n) => {
+          const box = floorNodeBox(n);
+          return { x: n.x, y: n.y, w: box.w, h: box.h };
+        });
+        const pos = firstFreeOnGrid(occupied, w, h);
         const usedIds = new Set(cur.map((n) => n.id).filter((n) => n > 0));
         let id = 1;
         while (usedIds.has(id)) id++;
@@ -623,11 +674,11 @@ export default function FloorCanvas({
           id,
           kind: 'TABLE',
           label,
-          x,
-          y,
+          x: pos.x,
+          y: pos.y,
           shape: preset.shape,
-          w: preset.w,
-          h: preset.h,
+          w,
+          h,
           seats: preset.seats,
         };
         setSelectedId(id);
@@ -649,20 +700,21 @@ export default function FloorCanvas({
       setNodes((prev) => {
         const cur = prev || [];
         const id = nextAreaId(cur);
-        const rect = canvasRef.current?.getBoundingClientRect();
-        const off = editorOffsetRef.current;
-        const cw = rect?.width ?? 480;
-        const ch = rect?.height ?? 360;
-        const x = Math.max(120, cw * 0.5 - off.tx);
-        const y = Math.max(120, ch * 0.4 - off.ty);
+        const w = snapSize(preset.w);
+        const h = snapSize(preset.h);
+        const occupied = cur.map((n) => {
+          const box = floorNodeBox(n);
+          return { x: n.x, y: n.y, w: box.w, h: box.h };
+        });
+        const pos = firstFreeOnGrid(occupied, w, h);
         const node: FloorAreaNode = {
           id,
           kind: 'AREA',
           label: preset.defaultLabel,
-          x,
-          y,
-          w: preset.w,
-          h: preset.h,
+          x: pos.x,
+          y: pos.y,
+          w,
+          h,
           variant: preset.variant,
         };
         setSelectedId(id);
@@ -677,9 +729,35 @@ export default function FloorCanvas({
   // Per-node patch helper used by the inspector to update shape/colour/etc.
   const patchNode = useCallback((id: number, patch: Partial<FloorNode>) => {
     setNodes((prev) =>
-      (prev || []).map((n) =>
-        n.id === id ? ({ ...(n as any), ...(patch as any) } as FloorNode) : n,
-      ),
+      (prev || []).map((n) => {
+        if (n.id !== id) return n;
+        const next = { ...(n as any), ...(patch as any) } as FloorNode;
+        if ('w' in patch && next.w != null) {
+          (next as any).w = snapSize(Number(next.w));
+        }
+        if ('h' in patch && next.h != null) {
+          (next as any).h = snapSize(Number(next.h));
+        }
+        if ('w' in patch || 'h' in patch || 'x' in patch || 'y' in patch) {
+          const box = floorNodeBox(next);
+          const snapped = snapCenter(next.x, next.y, box.w, box.h);
+          next.x = snapped.x;
+          next.y = snapped.y;
+        }
+        return next;
+      }),
+    );
+    setDirty(true);
+  }, []);
+
+  const alignToGrid = useCallback(() => {
+    setNodes((prev) =>
+      (prev || []).map((n) => {
+        const w = snapSize(floorNodeBox(n).w);
+        const h = snapSize(floorNodeBox(n).h);
+        const snapped = snapCenter(n.x, n.y, w, h);
+        return { ...(n as any), x: snapped.x, y: snapped.y, w, h };
+      }),
     );
     setDirty(true);
   }, []);
@@ -1084,7 +1162,7 @@ export default function FloorCanvas({
             className={`px-3 py-1.5 rounded text-sm ${editable ? 'bg-amber-600 hover:bg-amber-500' : 'bg-gray-700 hover:bg-gray-600'}`}
             onClick={() => onEditableChange?.(!editable)}
           >
-            {editable ? 'Editing…' : 'Edit layout'}
+            {editable ? 'Preview floor' : 'Edit layout'}
           </button>
           {editable && (
             <>
@@ -1148,6 +1226,22 @@ export default function FloorCanvas({
               </div>
               <button
                 type="button"
+                className="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600"
+                onClick={alignToGrid}
+                title="Snap every piece to the block grid"
+              >
+                Align to grid
+              </button>
+              <span className="text-[11px] opacity-60 ml-1 hidden sm:inline">
+                Pieces snap in {FLOOR_GRID}px blocks. Preview is the waiter
+                view. Arrow keys nudge.
+              </span>
+            </>
+          )}
+          {(editable || dirty) && (
+            <>
+              <button
+                type="button"
                 disabled={saving || !dirty}
                 className={`px-3 py-1.5 rounded text-sm ${dirty ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 opacity-60'}`}
                 onClick={() => void save()}
@@ -1165,9 +1259,8 @@ export default function FloorCanvas({
       {/* Outer shell provides the visual frame. In editor mode it
           allows horizontal scroll for design widths > viewport. In
           read-only mode we auto-fit so no scroll is needed and the
-          floor stretches to fill the entire canvas. The grid is
-          rendered on the OUTER wrapper so it always covers the full
-          visible canvas regardless of the inner transform's scale. */}
+          floor stretches to fill the entire canvas. The editor grid
+          lives on the dining-room plate (same coords as the pieces). */}
       <div
         ref={outerRef}
         className={`relative bg-black ${
@@ -1175,13 +1268,15 @@ export default function FloorCanvas({
         } ${
           fillAvailableHeight ? 'min-h-0 flex-1' : shellStaticHeightClasses
         } ${editable ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden touch-none'}`}
-        // Subtle floor grid so admins can eyeball alignment in the editor
-        // and waiters/hosts get a sense of scale. Pure CSS, no asset.
-        style={{
-          backgroundImage:
-            'linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)',
-          backgroundSize: '40px 40px',
-        }}
+        style={
+          editable
+            ? { backgroundColor: '#07090c' }
+            : {
+                backgroundImage:
+                  'linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)',
+                backgroundSize: '40px 40px',
+              }
+        }
       >
         {!editable && isZoomed && (
           <button
@@ -1245,10 +1340,48 @@ export default function FloorCanvas({
                   } as React.CSSProperties)
             }
             onClick={(e) => {
-              // Click on empty canvas deselects.
-              if (editable && e.target === e.currentTarget) setSelectedId(null);
+              // Click on empty canvas / dining room deselects.
+              if (!editable) return;
+              const t = e.target as HTMLElement | null;
+              if (
+                e.target === e.currentTarget ||
+                t?.closest('[data-floor-room]')
+              )
+                setSelectedId(null);
             }}
           >
+            {editable && (
+              <div
+                data-floor-room
+                className="absolute pointer-events-none"
+                style={{
+                  left: 0,
+                  top: 0,
+                  width: FLOOR_ROOM_W,
+                  height: FLOOR_ROOM_H,
+                  backgroundColor: 'rgba(17, 24, 39, 0.92)',
+                  backgroundImage:
+                    'linear-gradient(rgba(251,191,36,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(251,191,36,0.07) 1px, transparent 1px)',
+                  backgroundSize: `${FLOOR_GRID}px ${FLOOR_GRID}px`,
+                  boxShadow: '0 0 0 2px rgba(251, 191, 36, 0.45)',
+                  borderRadius: 4,
+                }}
+              >
+                <div className="absolute left-2 top-1.5 text-[10px] uppercase tracking-wider text-amber-200/80 font-semibold">
+                  Dining room
+                </div>
+                <div className="absolute left-1/2 -translate-x-1/2 bottom-1.5 text-[10px] uppercase tracking-wider text-amber-100/90 font-semibold flex flex-col items-center leading-tight">
+                  <span className="opacity-50 text-xs">▾</span>
+                  Entrance
+                </div>
+                {(!nodes || nodes.length === 0) && (
+                  <div className="absolute inset-0 flex items-center justify-center text-sm text-amber-100/70 text-center px-8">
+                    Start here — this box is the dining room. Tables snap to the
+                    grid. Use Preview floor to see how waiters view it.
+                  </div>
+                )}
+              </div>
+            )}
             {areas.map((a) => (
               <MemoAreaRect
                 key={`a-${a.id}`}
@@ -1326,7 +1459,7 @@ export default function FloorCanvas({
                 />
               );
             })}
-            {(!nodes || nodes.length === 0) && (
+            {(!nodes || nodes.length === 0) && !editable && (
               <div className="absolute inset-0 flex items-center justify-center text-sm opacity-70 text-center px-4">
                 {emptyMessage ||
                   (showToolbar
@@ -1334,20 +1467,23 @@ export default function FloorCanvas({
                     : 'No layout yet — ask an admin to set up this area in Settings → Table Areas.')}
               </div>
             )}
-            {editable && selectedId != null && (
-              <Inspector
-                node={(nodes || []).find((n) => n.id === selectedId) || null}
-                onChange={patchNode}
-                onClose={() => setSelectedId(null)}
-                onDelete={(id) => {
-                  handleDelete(id);
-                  setSelectedId(null);
-                }}
-                onRelabel={handleAreaRename}
-              />
-            )}
           </div>
         </div>
+        {/* Keep the inspector on the visible frame, not inside the
+            translated dining-room canvas — otherwise fullscreen
+            centring pushes it off the right edge. */}
+        {editable && selectedId != null && (
+          <Inspector
+            node={(nodes || []).find((n) => n.id === selectedId) || null}
+            onChange={patchNode}
+            onClose={() => setSelectedId(null)}
+            onDelete={(id) => {
+              handleDelete(id);
+              setSelectedId(null);
+            }}
+            onRelabel={handleAreaRename}
+          />
+        )}
       </div>
     </div>
   );
@@ -1375,7 +1511,7 @@ function Inspector({
   if (!node) return null;
   const isTable = isFloorTableNode(node);
   return (
-    <div className="absolute top-2 right-2 w-60 bg-gray-800/95 border border-gray-700 rounded-lg shadow-xl text-sm z-30 backdrop-blur">
+    <div className="absolute top-2 right-2 w-60 max-h-[calc(100%-16px)] overflow-y-auto bg-gray-800/95 border border-gray-700 rounded-lg shadow-xl text-sm z-30 backdrop-blur pointer-events-auto">
       <div className="px-3 py-2 border-b border-gray-700 flex items-center gap-2">
         <span className="text-xs uppercase tracking-wide opacity-70">
           {isTable ? 'Table' : 'Shape'}
@@ -1740,21 +1876,28 @@ function AreaRect({
       const dy = e.clientY - startRef.current.py;
       const n = nodeRef.current;
       if (modeRef.current === 'DRAG') {
-        onMoveRef.current(
-          n.id,
+        const snapped = snapCenter(
           startRef.current.x + dx,
           startRef.current.y + dy,
+          n.w,
+          n.h,
         );
+        onMoveRef.current(n.id, snapped.x, snapped.y);
       } else {
-        const addW =
-          modeRef.current === 'E' || modeRef.current === 'SE' ? dx : 0;
-        const addH =
-          modeRef.current === 'S' || modeRef.current === 'SE' ? dy : 0;
-        onResizeRef.current(
-          n.id,
-          Math.max(80, startRef.current.w + addW),
-          Math.max(80, startRef.current.h + addH),
-        );
+        // Keep the top-left on a grid line while growing by whole cells,
+        // so walls and tables stay flush after a resize.
+        const left = snapGrid(startRef.current.x - startRef.current.w / 2);
+        const top = snapGrid(startRef.current.y - startRef.current.h / 2);
+        let w = startRef.current.w;
+        let h = startRef.current.h;
+        if (modeRef.current === 'E' || modeRef.current === 'SE') {
+          w = snapSize(startRef.current.w + dx);
+        }
+        if (modeRef.current === 'S' || modeRef.current === 'SE') {
+          h = snapSize(startRef.current.h + dy);
+        }
+        onResizeRef.current(n.id, w, h);
+        onMoveRef.current(n.id, left + w / 2, top + h / 2);
       }
       e.preventDefault();
     };
@@ -2084,23 +2227,32 @@ function Circle({
     if (!el || !editable) return;
     draggingRef.current = false;
     dragDistanceRef.current = 0;
+    const start = { x: 0, y: 0, px: 0, py: 0 };
     const onPointerDown = (e: PointerEvent) => {
       draggingRef.current = true;
       dragDistanceRef.current = 0;
+      const n = nodeRef.current;
+      start.x = n.x;
+      start.y = n.y;
+      start.px = e.clientX;
+      start.py = e.clientY;
       (el as any).setPointerCapture?.(e.pointerId);
       e.preventDefault();
     };
     const onPointerMove = (e: PointerEvent) => {
       if (!draggingRef.current) return;
-      const parent = el.parentElement!.getBoundingClientRect();
-      const relX = e.clientX - parent.left;
-      const relY = e.clientY - parent.top;
-      const newX = Math.max(16, Math.min(parent.width - 16, relX));
-      const newY = Math.max(16, Math.min(parent.height - 16, relY));
-      const dx = newX - posRef.current.x;
-      const dy = newY - posRef.current.y;
+      const n = nodeRef.current;
+      const box = floorNodeBox(n);
+      const snapped = snapCenter(
+        start.x + (e.clientX - start.px),
+        start.y + (e.clientY - start.py),
+        box.w,
+        box.h,
+      );
+      const dx = snapped.x - posRef.current.x;
+      const dy = snapped.y - posRef.current.y;
       dragDistanceRef.current += Math.sqrt(dx * dx + dy * dy);
-      posRef.current = { x: newX, y: newY };
+      posRef.current = snapped;
 
       if (rafRef.current == null) {
         rafRef.current = window.requestAnimationFrame(() => {
@@ -2120,22 +2272,29 @@ function Circle({
       }
       if (wasDragging) {
         const finalPos = posRef.current;
-        setPos(finalPos);
-        onMoveRef.current(nodeRef.current.id, finalPos.x, finalPos.y);
-        if (dragDistanceRef.current > 6)
+        if (dragDistanceRef.current > 6) {
+          setPos(finalPos);
+          onMoveRef.current(nodeRef.current.id, finalPos.x, finalPos.y);
           suppressClickUntilRef.current = Date.now() + 300;
+        } else {
+          posRef.current = {
+            x: nodeRef.current.x,
+            y: nodeRef.current.y,
+          };
+          setPos(posRef.current);
+        }
       }
       e.preventDefault();
     };
     el.addEventListener('pointerdown', onPointerDown);
-    el.addEventListener('pointermove', onPointerMove);
-    el.addEventListener('pointerup', onPointerUp);
-    el.addEventListener('pointercancel', onPointerUp);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
     return () => {
       el.removeEventListener('pointerdown', onPointerDown);
-      el.removeEventListener('pointermove', onPointerMove);
-      el.removeEventListener('pointerup', onPointerUp);
-      el.removeEventListener('pointercancel', onPointerUp);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
       if (rafRef.current != null) {
         window.cancelAnimationFrame(rafRef.current);
         rafRef.current = null;

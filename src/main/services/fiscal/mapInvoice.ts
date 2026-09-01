@@ -335,7 +335,7 @@ export function buildEasyPosInvoiceDraft(
   }
 
   const draft: EasyPosInvoiceDraft = {
-    app: 'Code Orbit POS',
+    app: 'OneTap POS',
     articles,
     payment,
   };

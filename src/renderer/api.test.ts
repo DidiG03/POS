@@ -88,18 +88,15 @@ describe('logTicket', () => {
     expect(lastCall().args.idempotencyKey).toBe('intent-queued-1');
   });
 
-  it('stamps a key on the offline enqueue path too', async () => {
+  it('stamps a key even when the OS reports offline (LAN still tried live)', async () => {
     setOnline(false);
     const r = await logTicket({
       ...baseTicket,
       idempotencyKey: 'intent-offline-1',
     });
-    expect(r).toEqual({ ok: true, queued: true });
-    expect(tryOrQueue).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const queued = enqueue.mock.calls[0] as unknown as [string, any];
-    expect(queued[0]).toBe('tickets.log');
-    expect(queued[1].idempotencyKey).toBe('intent-offline-1');
+    expect(r).toEqual({ ok: true, queued: false });
+    expect(tryOrQueue).toHaveBeenCalledTimes(1);
+    expect(lastCall().args.idempotencyKey).toBe('intent-offline-1');
   });
 });
 

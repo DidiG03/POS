@@ -14,8 +14,13 @@ import {
   isFiscalSaleBlocked,
   isMoneyOp,
   isPermanentFailure,
+  isSaleAlreadySettled,
   needsManualReconciliation,
+  nextOfflineWakeDelayMs,
+  OFFLINE_WAKE_MAX_MS,
+  OFFLINE_WAKE_OFFLINE_MS,
   planEviction,
+  shouldEnqueueWithoutLiveAttempt,
   type OfflineOp,
 } from './offlineQueue';
 
@@ -73,6 +78,9 @@ describe('assertPrintAccepted', () => {
     expect(() => assertPrintAccepted(true)).not.toThrow();
     expect(() => assertPrintAccepted(undefined)).not.toThrow();
     expect(() => assertPrintAccepted({ ok: true })).not.toThrow();
+    expect(() =>
+      assertPrintAccepted({ ok: true, printed: false, queued: true }),
+    ).not.toThrow();
   });
 
   it('throws when the host reports a hard failure', () => {
@@ -157,6 +165,31 @@ describe('failure permanence', () => {
     expect(isFiscalSaleBlocked({ code: 'FISCAL_FAILED' })).toBe(true);
     expect(isFiscalSaleBlocked({ code: 'FISCAL_NEEDS_REVIEW' })).toBe(true);
     expect(isFiscalSaleBlocked({ code: 'PAYMENT_NOT_RECORDED' })).toBe(false);
+  });
+
+  it('does not queue a second invoice when the sitting is already paid', () => {
+    expect(isSaleAlreadySettled({ code: 'TABLE_ALREADY_PAID' })).toBe(true);
+    expect(isSaleAlreadySettled({ code: 'FISCAL_FAILED' })).toBe(false);
+  });
+});
+
+describe('shouldEnqueueWithoutLiveAttempt', () => {
+  it('never skips the live host for money or kitchen writes', () => {
+    const desc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { onLine: false },
+    });
+    try {
+      expect(shouldEnqueueWithoutLiveAttempt('payments.record')).toBe(false);
+      expect(shouldEnqueueWithoutLiveAttempt('tickets.log')).toBe(false);
+      expect(shouldEnqueueWithoutLiveAttempt('tickets.print')).toBe(false);
+      expect(shouldEnqueueWithoutLiveAttempt('tables.setOpen')).toBe(false);
+      expect(shouldEnqueueWithoutLiveAttempt('covers.save')).toBe(true);
+    } finally {
+      if (desc) Object.defineProperty(globalThis, 'navigator', desc);
+      else delete (globalThis as any).navigator;
+    }
   });
 });
 
@@ -269,5 +302,34 @@ describe('planEviction', () => {
     ]);
     expect(plan.kept).toHaveLength(500);
     expect(plan.evicted).toEqual([]);
+  });
+});
+
+describe('nextOfflineWakeDelayMs', () => {
+  it('returns null when the queue is empty', () => {
+    expect(nextOfflineWakeDelayMs([])).toBeNull();
+  });
+
+  it('wakes at the soonest future nextAttemptAt, capped at 30s', () => {
+    const now = 1_000_000;
+    expect(
+      nextOfflineWakeDelayMs(
+        [{ nextAttemptAt: now + 2_000 }, { nextAttemptAt: now + 80_000 }],
+        now,
+      ),
+    ).toBe(2_000);
+    expect(nextOfflineWakeDelayMs([{ nextAttemptAt: now + 80_000 }], now)).toBe(
+      OFFLINE_WAKE_MAX_MS,
+    );
+  });
+
+  it('uses a short delay when items are due now (offline abort)', () => {
+    const now = 1_000_000;
+    expect(nextOfflineWakeDelayMs([{ nextAttemptAt: 0 }], now)).toBe(
+      OFFLINE_WAKE_OFFLINE_MS,
+    );
+    expect(nextOfflineWakeDelayMs([{ nextAttemptAt: now - 1 }], now)).toBe(
+      OFFLINE_WAKE_OFFLINE_MS,
+    );
   });
 });

@@ -1,7 +1,7 @@
 {
   "brand": {
-    "name": "Code Orbit",
-    "product": "Code Orbit POS",
+    "name": "OneTap",
+    "product": "OneTap POS",
     "tagline": "Pika e shitjes",
     "admin": "Admin",
     "reservations": "Rezervime"
@@ -118,7 +118,7 @@
     "foundOne": "U gjet {{name}}. Ruaje, ose zgjidh tjetrën nëse nuk është till-i i duhur."
   },
   "license": {
-    "title": "Aktivizo Code Orbit POS",
+    "title": "Aktivizo OneTap POS",
     "body": "Abonohu me Stripe për ta përdorur këtë kasa. Ri-instalimi nuk të tarifon sërish — rikthe me të njëjtin email ose ngjit çelësin e licencës.",
     "email": "Email i faturimit",
     "subscribe": "Paguaj me Stripe",
@@ -136,7 +136,7 @@
     "billingPausedTitle": "POS i ndalur — duhet pagesa",
     "billingPausedBody": "Pagesa e abonimit është vonuar ose joaktive. POS është i kyçur derisa një administrator të përfundojë pagesën.",
     "openAdminBilling": "Hap faturimin e admin",
-    "networkBanner": "Rrjeti është i ngadaltë/jashtë linje. Prisni — veprime si Dërgo/Paguaj mund të çaktivohen për të shmangur gabimet.",
+    "networkBanner": "Duke punuar jashtë linje — Dërgo dhe Paguaj funksionojnë. Porositë sinkronizohen kur kthehet lidhja.",
     "clockOut": "Mbyll turnin",
     "clockOutBlockedTitle": "Nuk mund të mbyllësh turnin",
     "clockOutBlockedBody": "Nuk mund të mbyllësh turnin përderisa ke tavolina të hapura. Mbylli porositë së pari.",
@@ -188,7 +188,7 @@
     "reservations": "Rezervime",
     "businessCodeTitle": "Kodi i biznesit",
     "businessCodeHelp": "Shkruaj kodin e biznesit për të ngarkuar administratorët. Kur funksionon, kjo pyetje zhduket.",
-    "businessCodePlaceholder": "Kodi i biznesit (p.sh. Code Orbit)",
+    "businessCodePlaceholder": "Kodi i biznesit (p.sh. OneTap)",
     "businessPasswordLabel": "Fjalëkalimi i biznesit (nga ofruesi)",
     "businessPasswordPlaceholder": "Fjalëkalimi i biznesit",
     "checkingCode": "Duke kontrolluar kodin e biznesit…",
@@ -214,6 +214,7 @@
     "pinPlaceholder": "PIN",
     "pairingPlaceholder": "Kodi i çiftimit (nga Admin)",
     "startShiftTitle": "Të nisësh turnin për {{name}}?",
+    "resumeShiftBody": "Je i futur, por nuk ka turn të hapur. Nise turnin për të vazhduar punën në sallë.",
     "failedLoadOccupied": "Duke ngarkuar tavolinat e zëna… (rrjet i ngadaltë/jashtë linje). Duke riprovuar…"
   },
   "routes": {
@@ -465,7 +466,14 @@
     "processingPaymentOverlay": "Duke përpunuar pagesën…",
     "paymentBlocked": "Pagesa nuk u regjistrua",
     "paymentNotRecorded": "Tavolina mbetet e hapur. Rregullo gabimin dhe paguaj përsëri.",
+    "paymentNeedsTill": "Nuk arrin kasën. Tavolina mbetet e hapur — prek Paguaj përsëri.",
+    "paymentRecordedPrintQueued": "Pagesa u regjistrua. Fatura printohet kur printeri kthehet.",
+    "alreadyPaid": "Kjo tavolinë është paguar tashmë.",
+    "kitchenPrintQueued": "Porosia u dërgua. Printeri i kuzhinës do të riprovojë.",
+    "ticketPrintQueued": "Printimi u vu në radhë. Printeri do të riprovojë.",
+    "registeringFiscal": "Duke regjistruar faturën fiskale…",
     "recordingPayment": "Duke regjistruar pagesën dhe duke printuar faturën",
+    "recordingPaymentFiscal": "Fiskalizimi, pastaj printeri i faturës",
     "orderSummary": "Përmbledhje porosie",
     "selectGuestsPayment": "Zgjidh të ftuarit për pagesë",
     "splitBill": "Ndaj baraz",

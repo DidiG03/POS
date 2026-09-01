@@ -1,11 +1,12 @@
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 
 type BrandSize = 'sm' | 'md' | 'lg';
 
 const ICON: Record<BrandSize, string> = {
-  sm: 'size-[18px]',
-  md: 'size-6',
-  lg: 'size-8',
+  sm: 'size-8',
+  md: 'size-9',
+  lg: 'size-14',
 };
 
 const TITLE: Record<BrandSize, string> = {
@@ -20,6 +21,7 @@ const SUB: Record<BrandSize, string> = {
   lg: 'text-[12px]',
 };
 
+/** Circular OneTap mark — rings on a blue disc, no square backdrop. */
 export function BrandOrbitIcon({
   className = '',
   title,
@@ -27,31 +29,31 @@ export function BrandOrbitIcon({
   className?: string;
   title?: string;
 }) {
+  const gid = useId().replace(/:/g, '');
+  const fill = `onetap-disc-${gid}`;
   return (
     <svg
-      viewBox="0 0 32 32"
+      viewBox="0 0 64 64"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={className}
+      className={`block ${className}`}
       aria-hidden={title ? undefined : true}
       role={title ? 'img' : undefined}
     >
       {title ? <title>{title}</title> : null}
-      <rect
-        x="3.5"
-        y="3.5"
-        width="25"
-        height="25"
-        rx="5.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-      <path
-        d="M11 11.5h10M11 16h7.5M11 20.5h5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
+      <defs>
+        <radialGradient id={fill} cx="50%" cy="36%" r="64%">
+          <stop offset="0%" stopColor="#6b8ae8" />
+          <stop offset="42%" stopColor="#2f4db8" />
+          <stop offset="100%" stopColor="#12183a" />
+        </radialGradient>
+      </defs>
+      <circle cx="32" cy="32" r="31" fill={`url(#${fill})`} />
+      <circle cx="32" cy="32" r="30" stroke="#F0EEF8" strokeWidth="3.25" />
+      <circle cx="32" cy="32" r="21.5" stroke="#fff" strokeWidth="1.7" />
+      <circle cx="32" cy="32" r="14.75" stroke="#fff" strokeWidth="1.7" />
+      <circle cx="32" cy="32" r="8.25" stroke="#fff" strokeWidth="1.7" />
+      <circle cx="32" cy="32" r="3.35" fill="#fff" />
     </svg>
   );
 }
@@ -78,7 +80,10 @@ export function BrandMark({
       className={`flex min-w-0 items-center ${compact ? 'gap-2' : 'gap-2.5'} ${className}`}
     >
       <span className="pos-brand-mark shrink-0">
-        <BrandOrbitIcon className={ICON[size]} />
+        <BrandOrbitIcon
+          className={ICON[size]}
+          title={wordmark ? undefined : name}
+        />
       </span>
       {wordmark ? (
         <div className="min-w-0 leading-none">

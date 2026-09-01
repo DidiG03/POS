@@ -1,7 +1,7 @@
 {
   "brand": {
-    "name": "Code Orbit",
-    "product": "Code Orbit POS",
+    "name": "OneTap",
+    "product": "OneTap POS",
     "tagline": "Point of sale",
     "admin": "Admin",
     "reservations": "Reservations"
@@ -118,7 +118,7 @@
     "foundOne": "Found {{name}}. You can save, or pick another if this is the wrong till."
   },
   "license": {
-    "title": "Activate Code Orbit POS",
+    "title": "Activate OneTap POS",
     "body": "Subscribe with Stripe to use this till. Reinstalling does not charge again — restore with the same email or paste your license key.",
     "email": "Billing email",
     "subscribe": "Pay with Stripe",
@@ -136,7 +136,7 @@
     "billingPausedTitle": "POS paused — payment required",
     "billingPausedBody": "Your subscription payment is overdue or inactive. The POS is locked until an admin completes payment.",
     "openAdminBilling": "Open Admin Billing",
-    "networkBanner": "Network is slow/offline. Please wait — actions like Send/Pay may be disabled to prevent mistakes.",
+    "networkBanner": "Working offline — Send and Pay still work. Orders will sync when the connection returns.",
     "clockOut": "Clock out",
     "clockOutBlockedTitle": "Cannot clock out",
     "clockOutBlockedBody": "You can't clock out while you still have open tables. Please close all open orders first.",
@@ -188,7 +188,7 @@
     "reservations": "Reservations",
     "businessCodeTitle": "Business code",
     "businessCodeHelp": "Enter your business code to load admin users. After it works, this prompt will disappear.",
-    "businessCodePlaceholder": "Business code (e.g.  Code Orbit)",
+    "businessCodePlaceholder": "Business code (e.g. OneTap)",
     "businessPasswordLabel": "Business password (provided by provider)",
     "businessPasswordPlaceholder": "Business password",
     "checkingCode": "Checking Business code…",
@@ -214,6 +214,7 @@
     "pinPlaceholder": "PIN",
     "pairingPlaceholder": "Pairing code (from Admin)",
     "startShiftTitle": "Start shift for {{name}}?",
+    "resumeShiftBody": "You are signed in, but there is no open shift. Start one to keep working the floor.",
     "failedLoadOccupied": "Loading occupied tables… (slow/offline network). Retrying…"
   },
   "routes": {
@@ -465,7 +466,14 @@
     "processingPaymentOverlay": "Processing payment…",
     "paymentBlocked": "Payment not recorded",
     "paymentNotRecorded": "The table is still open. Fix the error and pay again.",
+    "paymentNeedsTill": "Cannot reach the till. The table stays open — tap Pay again.",
+    "paymentRecordedPrintQueued": "Payment recorded. Receipt will print when the printer is back.",
+    "alreadyPaid": "This table was already paid.",
+    "kitchenPrintQueued": "Order sent. Kitchen printer will retry.",
+    "ticketPrintQueued": "Print queued. The printer will retry.",
+    "registeringFiscal": "Registering fiscal invoice…",
     "recordingPayment": "Recording payment and printing receipt",
+    "recordingPaymentFiscal": "Fiskalizimi, then the receipt printer",
     "orderSummary": "Order summary",
     "selectGuestsPayment": "Select the guests for payment",
     "splitBill": "Split equally",

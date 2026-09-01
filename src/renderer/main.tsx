@@ -29,6 +29,26 @@ import {
   syncBackendHostToLocalStorage,
 } from './utils/backendHost';
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
+import {
+  getPreferredScheme,
+  lanBases,
+  markSseOpen,
+  noteSseEvent,
+  recordFailure,
+  recordSuccess,
+  readRetryAttempts,
+  setPreferredScheme,
+} from './utils/netQuality';
+import { installPosReadCache, peekSettings } from './utils/posReadCache';
+import { clearInflight, dedupe } from './utils/swrCache';
+import {
+  lanAuthGeneration,
+  lanDedupeKey,
+  readLanToken,
+  shouldForceLogoutOn401,
+  writeLanToken,
+} from './utils/lanAuthToken';
+import { SHIFT_GUARD_GRACE_MS } from './stores/sessionPersist';
 // PWA registration disabled for desktop build
 
 void initMobileShell();
@@ -74,21 +94,20 @@ if (!(window as any).api) {
     return isReservationsShell() ? TOKEN_KEY_HOST : TOKEN_KEY_POS;
   }
 
-  function readStoredToken(key: string): string | null {
+  function storageOrNull(): Storage | null {
     try {
-      return localStorage.getItem(key);
+      return localStorage;
     } catch {
       return null;
     }
   }
 
+  function readStoredToken(key: string): string | null {
+    return readLanToken(key, storageOrNull());
+  }
+
   function writeStoredToken(key: string, t: string | null) {
-    try {
-      if (t) localStorage.setItem(key, t);
-      else localStorage.removeItem(key);
-    } catch {
-      // ignore
-    }
+    writeLanToken(key, t, storageOrNull());
   }
 
   /** Prefer the host PIN token for the reservations panel and merge saves. */
@@ -119,6 +138,7 @@ if (!(window as any).api) {
       if (t && (isReservationsShell() || isHostOrAdminRole(jwtRole(t)))) {
         writeStoredToken(TOKEN_KEY_HOST, t);
       }
+      clearInflight('lan:');
     } catch (e) {
       void e;
     }
@@ -159,7 +179,8 @@ if (!(window as any).api) {
   };
   pickBackend();
   /** Tablets on LAN Wi‑Fi often need more than 5s; desktops stay snappy. */
-  const CLIENT_TIMEOUT_MS = IS_NATIVE_SHELL ? 12_000 : 5_000;
+  const CLIENT_TIMEOUT_MS = IS_NATIVE_SHELL ? 8_000 : 4_000;
+  const CLIENT_GET_TIMEOUT_MS = IS_NATIVE_SHELL ? 5_000 : 3_000;
   /**
    * `/print/*` hits the host, then fiskalizimi, then TCP to the printer.
    *
@@ -247,6 +268,7 @@ if (!(window as any).api) {
 
   const handleSseEvent = (eventName: string, payload: unknown) => {
     lastSseEventAt = Date.now();
+    noteSseEvent();
     // Any incoming message proves the socket is healthy — reset backoff
     // so a future drop reconnects fast instead of compounding from the
     // last failure window.
@@ -288,9 +310,11 @@ if (!(window as any).api) {
       es.addEventListener('open', () => {
         lastSseEventAt = Date.now();
         sseBackoffMs = 1000;
+        markSseOpen(true);
       });
 
       es.addEventListener('error', () => {
+        markSseOpen(false);
         // The browser's built-in retry is opaque and inconsistent across
         // platforms (especially Android WebView). Drop the socket and
         // reschedule with our own backoff so we always recover.
@@ -304,6 +328,10 @@ if (!(window as any).api) {
         // by the next health tick, the watchdog will force a reconnect.
       });
 
+      es.addEventListener('ping', () => {
+        lastSseEventAt = Date.now();
+        noteSseEvent();
+      });
       es.addEventListener('tables', (ev: any) => {
         try {
           const data = JSON.parse(ev.data || '{}');
@@ -451,14 +479,18 @@ if (!(window as any).api) {
     timeoutMs = CLIENT_TIMEOUT_MS,
   ) {
     let lastErr: any = null;
-    for (let i = 0; i <= attempts; i++) {
+    const tries = Math.max(1, attempts);
+    for (let i = 0; i < tries; i++) {
       try {
-        return await fetchWithTimeout(url, init, timeoutMs);
+        const started = Date.now();
+        const res = await fetchWithTimeout(url, init, timeoutMs);
+        recordSuccess(Date.now() - started);
+        return res;
       } catch (e: any) {
         lastErr = e;
-        if (!isRetryableNetworkError(e) || i === attempts) throw e;
-        // small exponential backoff: 250ms, 500ms, 1000ms...
-        const delay = Math.min(1500, 250 * Math.pow(2, i));
+        recordFailure();
+        if (!isRetryableNetworkError(e) || i === tries - 1) throw e;
+        const delay = Math.min(800, 150 * Math.pow(2, i));
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -528,55 +560,81 @@ if (!(window as any).api) {
   // hitting an admin path). Treating 403 as expiry bounced tablets straight
   // back to the PIN screen with no error, because AppLayout always fetches
   // /billing/status and /notifications after login.
-  function maybeForceLogout(status: number, token: string | null) {
-    if (token && status === 401) forceLogout('Session expired');
+  function maybeForceLogout(
+    status: number,
+    token: string | null,
+    requestGeneration: number,
+  ) {
+    if (
+      shouldForceLogoutOn401(status, token, getToken(), {
+        request: requestGeneration,
+        current: lanAuthGeneration(),
+      })
+    ) {
+      forceLogout('Session expired');
+    }
   }
 
-  function lanRequestTimeoutMs(path: string): number {
-    return path.includes('/print') ? LAN_PRINT_TIMEOUT_MS : CLIENT_TIMEOUT_MS;
+  function lanRequestTimeoutMs(path: string, method: string): number {
+    if (path.includes('/print')) return LAN_PRINT_TIMEOUT_MS;
+    if (method === 'GET' || method === 'HEAD') return CLIENT_GET_TIMEOUT_MS;
+    return CLIENT_TIMEOUT_MS;
   }
 
   // Always call the host LAN API (even when cloud mode is enabled).
   async function goLan(path: string, opts?: RequestInit) {
     const token = tokenForLanPath(path);
+    const requestGeneration = lanAuthGeneration();
+    const method = String(opts?.method || 'GET').toUpperCase();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(IS_NATIVE_SHELL ? { 'X-POS-Client': 'native' } : {}),
       ...(((opts?.headers as any) || {}) as any),
     };
-    const timeoutMs = lanRequestTimeoutMs(path);
-    // Prefer HTTP first to avoid self-signed cert warnings in browsers, then fallback to HTTPS
-    try {
+    const timeoutMs = lanRequestTimeoutMs(path, method);
+    const attempts =
+      method === 'GET' || method === 'HEAD' ? readRetryAttempts() : 2;
+    const bases = lanBases(getHttpBase(), getHttpsBase());
+
+    const run = async (base: string) => {
       const r = await fetchWithRetry(
-        getHttpBase() + path,
+        base + path,
         { ...opts, headers },
-        2,
+        attempts,
         timeoutMs,
       );
       if (!r.ok) {
-        maybeForceLogout(r.status, token);
+        maybeForceLogout(r.status, token, requestGeneration);
         const { message, code, permanent } = await readErrorMessage(r);
         throw new HttpError(r.status, message, code, permanent);
       }
+      if (base.startsWith('https:')) setPreferredScheme('https');
+      else setPreferredScheme('http');
       const ct = r.headers.get('content-type') || '';
       return ct.includes('application/json') ? r.json() : r.text();
-    } catch (e: any) {
-      if (!isRetryableNetworkError(e)) throw e;
-      const r2 = await fetchWithRetry(
-        getHttpsBase() + path,
-        { ...opts, headers },
-        2,
-        timeoutMs,
-      );
-      if (!r2.ok) {
-        maybeForceLogout(r2.status, token);
-        const { message, code, permanent } = await readErrorMessage(r2);
-        throw new HttpError(r2.status, message, code, permanent);
+    };
+
+    const execute = async () => {
+      let lastErr: any = null;
+      for (let i = 0; i < bases.length; i++) {
+        try {
+          return await run(bases[i]);
+        } catch (e: any) {
+          lastErr = e;
+          if (!isRetryableNetworkError(e)) throw e;
+          // Once HTTP is known to work, a timeout is congestion — not a
+          // reason to wait a second HTTPS handshake on the same slow link.
+          if (getPreferredScheme() === 'http') throw e;
+        }
       }
-      const ct2 = r2.headers.get('content-type') || '';
-      return ct2.includes('application/json') ? r2.json() : r2.text();
+      throw lastErr;
+    };
+
+    if (method === 'GET' || method === 'HEAD') {
+      return dedupe(lanDedupeKey(method, path, token), execute);
     }
+    return execute();
   }
 
   (window as any).api = {
@@ -865,24 +923,24 @@ if (!(window as any).api) {
         if (r && typeof r === 'object' && (r as any).ok === false) {
           return r;
         }
-        const ok = !!(r && r.ok === true);
-        if (!ok) {
-          const err =
-            r && (r.error || r.message) ? String(r.error || r.message) : '';
+        const printed = r && typeof r === 'object' ? (r as any).printed : true;
+        if (r && (r as any).ok === true && printed === false) {
+          const isPay =
+            String(input?.meta?.kind || '').toUpperCase() === 'PAYMENT';
           window.dispatchEvent(
             new CustomEvent('printer:event', {
               detail: {
-                level: 'error',
-                kind: 'PRINT',
-                message:
-                  'Printer failed to print. Check paper/power and the IP/port settings.',
-                detail: err || undefined,
+                level: 'warn',
+                kind: isPay ? 'receipt' : 'PRINT',
+                message: isPay
+                  ? 'Payment recorded. Receipt will print when the printer is back.'
+                  : 'Order sent. Kitchen printer will retry.',
                 at: Date.now(),
               },
             }),
           );
         }
-        return ok;
+        return r && typeof r === 'object' ? r : { ok: true };
       },
     },
     tables: {
@@ -895,6 +953,12 @@ if (!(window as any).api) {
       },
       async listOpen() {
         return await goLan('/tables/open');
+      },
+      async getFloorSnapshot(area?: string) {
+        const path = area
+          ? `/tables/floor-snapshot?area=${encodeURIComponent(String(area))}`
+          : '/tables/floor-snapshot';
+        return await goLan(path);
       },
       async transfer(input: any) {
         return await goLan('/tables/transfer', {
@@ -915,6 +979,11 @@ if (!(window as any).api) {
         return await goLan(
           `/covers/last?area=${encodeURIComponent(area)}&label=${encodeURIComponent(label)}`,
         );
+      },
+    },
+    health: {
+      async ping() {
+        return await goLan('/health');
       },
     },
     admin: {
@@ -1226,6 +1295,8 @@ if (!(window as any).api) {
   };
   (window as any).__BROWSER_CLIENT__ = true;
 }
+
+installPosReadCache();
 
 // Standalone KDS app: bridge auto-updater IPC exposed by preload.
 if ((window as any).__KDS_APP__ && (window as any).kdsApp?.updater) {
@@ -1655,10 +1726,16 @@ function Root() {
     // Session expiry for Electron (persisted zustand sessions).
     // Browser clients already rely on API token expiry; they will trigger pos:forceLogout on 401.
     const tick = () => {
+      if (!useSessionStore.getState().hasHydrated) return;
       const staff = useSessionStore.getState() as any;
       const admin = useAdminSessionStore.getState() as any;
       const now = Date.now();
+      const staffGrace =
+        typeof staff?.authenticatedAt === 'number' &&
+        staff.authenticatedAt > 0 &&
+        now - staff.authenticatedAt < SHIFT_GUARD_GRACE_MS;
       const staffExpired =
+        !staffGrace &&
         staff?.user &&
         typeof staff?.expiresAtMs === 'number' &&
         staff.expiresAtMs > 0 &&
@@ -1701,7 +1778,23 @@ function Root() {
       setBackendUnreachable(false);
       setMsg(t('boot.connecting'));
       setDetail(undefined);
-      const maxAttempts = isKdsApp ? 3 : 12;
+      const cachedSettings = !isKdsApp ? peekSettings() : undefined;
+      if (cachedSettings) {
+        await resumeMainProcessSession().catch(() => {});
+        if (cancelled) return;
+        setReady(true);
+        setBackendUnreachable(false);
+        setMsg(t('boot.starting'));
+        setDetail(undefined);
+        void Promise.all([
+          (window as any).api.settings.get().catch(() => null),
+          (window as any).api.auth.listUsers().catch(() => null),
+        ]).then(() => {
+          if (!cancelled) offlineQueue.sync().catch(() => {});
+        });
+        return;
+      }
+      const maxAttempts = isKdsApp ? 3 : 8;
       // Retry with exponential backoff. This prevents random "failed fetch" errors on slow networks.
       for (let attempt = 0; attempt < maxAttempts && !cancelled; attempt++) {
         try {
@@ -1747,8 +1840,10 @@ function Root() {
               await (window as any).api.kds.debug();
             }
           } else {
-            await (window as any).api.settings.get();
-            await (window as any).api.auth.listUsers();
+            await Promise.all([
+              (window as any).api.settings.get(),
+              (window as any).api.auth.listUsers(),
+            ]);
           }
           if (cancelled) return;
           // Hand the main process the token from our last login so it can

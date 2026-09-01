@@ -141,7 +141,7 @@ jobs:
           write_update_yml "$CANONICAL_KDS" dist-installers/kds/kds.yml "$CANONICAL_KDS_NAME"
           cp dist-installers/kds/kds.yml dist-installers/kds/latest-kds.yml
 
-          NOTES="Windows client installers for Code Orbit POS ${VERSION} and Code Orbit KDS ${VERSION}."
+          NOTES="Windows client installers for OneTap POS ${VERSION} and OneTap KDS ${VERSION}."
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Updating existing release $TAG"
           else

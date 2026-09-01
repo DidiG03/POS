@@ -232,6 +232,8 @@ const api: Api = {
     setOpen: (area: string, label: string, open: boolean) =>
       ipcRenderer.invoke('tables:setOpen', { area, label, open }),
     listOpen: () => ipcRenderer.invoke('tables:listOpen'),
+    getFloorSnapshot: (area?: string) =>
+      ipcRenderer.invoke('tables:getFloorSnapshot', { area }),
     transfer: (input) => ipcRenderer.invoke('tables:transfer', input),
   },
   notifications: {
