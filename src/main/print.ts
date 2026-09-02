@@ -6,6 +6,7 @@ import { BrowserWindow } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { withTimeout } from './services/withTimeout';
 import {
   ESC_POS_FONT_A,
   ESC_POS_PC850,
@@ -624,6 +625,9 @@ export function buildHtmlReceipt(
 </html>`;
 }
 
+/** Upper bound on rendering and handing a receipt to the OS print spooler. */
+const SYSTEM_PRINT_TIMEOUT_MS = 20_000;
+
 export async function printHtmlToSystemPrinter(opts: {
   html: string;
   deviceName?: string;
@@ -642,9 +646,16 @@ export async function printHtmlToSystemPrinter(opts: {
   });
   try {
     const url = `data:text/html;charset=utf-8,${encodeURIComponent(opts.html)}`;
-    await win.loadURL(url);
-    const result = await new Promise<{ ok: boolean; error?: string }>(
-      (resolve) => {
+    await withTimeout(
+      win.loadURL(url),
+      SYSTEM_PRINT_TIMEOUT_MS,
+      'Print render',
+    );
+    // A stalled driver can leave this callback unfired forever, which would
+    // wedge the single print queue behind it. The window is destroyed in the
+    // `finally` below, which abandons the job.
+    const result = await withTimeout(
+      new Promise<{ ok: boolean; error?: string }>((resolve) => {
         win.webContents.print(
           { silent, deviceName: opts.deviceName, printBackground: true },
           (success, reason) => {
@@ -655,7 +666,9 @@ export async function printHtmlToSystemPrinter(opts: {
             );
           },
         );
-      },
+      }),
+      SYSTEM_PRINT_TIMEOUT_MS,
+      'System print',
     );
     return result;
   } catch (e: any) {
@@ -668,6 +681,9 @@ export async function printHtmlToSystemPrinter(opts: {
     }
   }
 }
+
+/** Upper bound on how long the CUPS `lp` helper may take to accept a job. */
+const CUPS_TIMEOUT_MS = 15_000;
 
 export async function sendToCupsRawPrinter(opts: {
   deviceName?: string;
@@ -692,12 +708,34 @@ export async function sendToCupsRawPrinter(opts: {
     (resolve) => {
       const p = spawn('lp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
       let err = '';
+      let settled = false;
+      const finish = (r: { ok: boolean; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        resolve(r);
+      };
+      // A paused or wedged CUPS queue never lets `lp` exit. The print pipeline
+      // runs one job at a time, so waiting forever here stops every other
+      // receipt on this terminal — kill it and report a normal failure so the
+      // retry queue can deal with it.
+      const deadline = setTimeout(() => {
+        try {
+          p.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        finish({
+          ok: false,
+          error: `lp did not respond within ${CUPS_TIMEOUT_MS}ms`,
+        });
+      }, CUPS_TIMEOUT_MS);
       p.stderr.on('data', (b) => (err += String(b)));
       p.on('error', (e) =>
-        resolve({ ok: false, error: String((e as any)?.message || e) }),
+        finish({ ok: false, error: String((e as any)?.message || e) }),
       );
       p.on('close', (code) =>
-        resolve(
+        finish(
           code === 0
             ? { ok: true }
             : { ok: false, error: err.trim() || `lp exited with code ${code}` },
