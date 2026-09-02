@@ -1403,18 +1403,29 @@ export interface ApiTickets {
     area: string;
     tableLabel: string;
     item: {
+      sku?: string;
       name: string;
       qty?: number;
       unitPrice: number;
       vatRate?: number;
       note?: string;
     };
+    actorRole?: string;
+    /** Manager approval, when `requireManagerPinForVoid` is on. */
+    approvedByAdminId?: number;
+    approvedByAdminName?: string;
+    /** Proof the manager PIN was actually entered — see `approvalTokens`. */
+    approvedByAdminToken?: string;
   }): Promise<boolean>;
   voidTicket(input: {
     userId: number;
     area: string;
     tableLabel: string;
     reason?: string;
+    actorRole?: string;
+    approvedByAdminId?: number;
+    approvedByAdminName?: string;
+    approvedByAdminToken?: string;
   }): Promise<boolean>;
   getTableTooltip(
     area: string,

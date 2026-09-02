@@ -50,6 +50,7 @@ import {
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
 import { findVoidableLineIndex } from '@shared/voidLine';
+import { resolveStaticFilePath } from './services/staticPath';
 import { isTransferredOutNote } from './services/tableTransfer';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
 import { app } from 'electron';
@@ -713,21 +714,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Static site (serve built renderer or proxy to remote origin)
       if (req.method === 'GET' && isStaticGet) {
-        let filePath = '';
+        // Every branch below goes through `resolveStaticFilePath`, which keeps
+        // the result inside the renderer directory. These GETs are
+        // unauthenticated, so an unchecked join would expose the whole disk.
+        let filePath: string | null = '';
         if (
           pathname === '/' ||
           pathname === '/renderer' ||
           pathname === '/renderer/'
         ) {
-          filePath = join(RENDERER_DIR, 'index.html');
+          filePath = resolveStaticFilePath(RENDERER_DIR, 'index.html');
         } else if (pathname.startsWith('/renderer/')) {
-          filePath = join(RENDERER_DIR, pathname.replace('/renderer/', ''));
+          filePath = resolveStaticFilePath(
+            RENDERER_DIR,
+            pathname.slice('/renderer/'.length),
+          );
         } else if (
           pathname === '/index.html' ||
           pathname.startsWith('/assets/') ||
           pathname.startsWith('/favicon')
         ) {
-          filePath = join(RENDERER_DIR, pathname.replace(/^\//, ''));
+          filePath = resolveStaticFilePath(RENDERER_DIR, pathname);
+        }
+        if (filePath === null) {
+          return send(res, 404, { error: 'not found' }, corsOrigin);
         }
         if (filePath) {
           // If proxy origin configured, fetch from it and stream through
