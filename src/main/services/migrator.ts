@@ -240,6 +240,26 @@ export async function runPendingMigrations(
     let convergedOnly = true;
     let failure: string | null = null;
 
+    // One migration, one transaction. Applying the statements one at a time
+    // in autocommit meant a file that failed halfway left the earlier DDL
+    // committed but the migration unrecorded, so the next boot replayed it
+    // against a half-changed schema and could converge it to "applied" with
+    // the remaining statements never having run. That leaves a database whose
+    // shape nobody can reason about, and it surfaces as a screen crashing on
+    // a missing column days later. This mirrors `prisma migrate deploy`,
+    // which is what the shipped seed database is built with.
+    let inTransaction = false;
+    try {
+      await prisma.$executeRawUnsafe('BEGIN');
+      inTransaction = true;
+    } catch (e: any) {
+      // An engine that will not start a transaction still gets the migration
+      // applied — the old, non-atomic behaviour is better than not upgrading.
+      console.warn(
+        `[migrator] Could not open a transaction for ${name}: ${e?.message || e}`,
+      );
+    }
+
     for (const statement of statements) {
       try {
         await prisma.$executeRawUnsafe(statement);
@@ -255,20 +275,28 @@ export async function runPendingMigrations(
       }
     }
 
-    if (failure) {
-      // Leave it unrecorded so the next boot retries.
-      result.failed = { name, error: failure };
-      console.error(`[migrator] Migration ${name} failed: ${failure}`);
-      break;
+    // Bookkeeping joins the same transaction, so "schema changed" and
+    // "migration recorded" can never disagree.
+    if (!failure) {
+      try {
+        await recordMigration(name, checksumOf(contents), executed);
+      } catch (e: any) {
+        failure = `bookkeeping write failed: ${e?.message || e}`;
+      }
     }
 
-    try {
-      await recordMigration(name, checksumOf(contents), executed);
-    } catch (e: any) {
-      result.failed = {
-        name,
-        error: `bookkeeping write failed: ${e?.message || e}`,
-      };
+    if (inTransaction) {
+      try {
+        await prisma.$executeRawUnsafe(failure ? 'ROLLBACK' : 'COMMIT');
+      } catch (e: any) {
+        if (!failure) failure = `commit failed: ${e?.message || e}`;
+      }
+    }
+
+    if (failure) {
+      // Leave it unrecorded so the next boot retries from a clean schema.
+      result.failed = { name, error: failure };
+      console.error(`[migrator] Migration ${name} failed: ${failure}`);
       break;
     }
 

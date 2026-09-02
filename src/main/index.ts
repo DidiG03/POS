@@ -185,6 +185,7 @@ import {
   kdsStationListWhere,
   purgeKdsDoneTicketsForStation,
   startKdsRetentionLoop,
+  stopKdsRetentionLoop,
 } from './services/kdsRetention';
 import {
   recallKdsTicket,
@@ -1564,7 +1565,11 @@ app.whenReady().then(async () => {
   await pruneExpiredSessions().catch((e) =>
     console.warn('[startup] pruneExpiredSessions failed:', e),
   );
-  createWindow();
+  // Startup is asynchronous (migrations run first), and a second launch or a
+  // tray activation during that window already opens the till through
+  // `createMainWindow`. Creating one unconditionally here would orphan it and
+  // leave two POS windows fighting over the same tables.
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   setupHostTray();
   setupAutoUpdater();
   const hostSettings = await coreServices
@@ -1633,6 +1638,9 @@ app.on('before-quit', (event) => {
   stopAutoNoShowReservationsLoop();
   stopGoogleCalendarSyncLoop();
   stopPrinterStationLoop();
+  // Left running, its 60s purge could fire while prisma.$disconnect() is in
+  // flight below and error out mid-shutdown.
+  stopKdsRetentionLoop();
 
   // Async work below — defer the actual quit until our cleanup completes so we
   // don't leave open SQLite handles / TCP listeners.
