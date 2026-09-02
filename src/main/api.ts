@@ -45,7 +45,11 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { authorizeLanRoute } from './services/lanPolicy';
 import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
 import { logSecurityEvent } from './services/security';
-import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
+import {
+  latestRowPerSession,
+  sumTicketLinesNetVat,
+} from '@shared/ticketRevenue';
+import { isTransferredOutNote } from './services/tableTransfer';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
 import { app } from 'electron';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
@@ -62,7 +66,10 @@ import {
   localDayStart,
   purgeKdsDoneTicketsForStation,
 } from './services/kdsRetention';
-import { getCurrentSessionOwnerId } from './services/tableSession';
+import {
+  getCurrentSessionOwnerId,
+  getCurrentTableSessionKey,
+} from './services/tableSession';
 import { finalizeShiftAfterClockOut } from './services/shiftSummary';
 import {
   listMyActiveTickets,
@@ -1312,6 +1319,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               }
             }
 
+            // Same cumulative-snapshot tagging as the Electron IPC path —
+            // see `getCurrentTableSessionKey`.
+            const sessionKey = await getCurrentTableSessionKey(
+              sanitizedArea,
+              sanitizedTableLabel,
+            ).catch(() => null);
+
             try {
               await prisma.ticketLog.create({
                 data: {
@@ -1322,7 +1336,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                   itemsJson: items ?? [],
                   note: sanitizedNote,
                   ...(idempotencyKey ? { idempotencyKey } : {}),
-                },
+                  ...(sessionKey ? { sessionKey } : {}),
+                } as any,
               });
             } catch (e: any) {
               if (e?.code === 'P2002' && idempotencyKey) {
@@ -2967,7 +2982,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                   lte: new Date(new Date().setHours(23, 59, 59, 999)),
                 },
               },
-              select: { itemsJson: true },
+              select: {
+                itemsJson: true,
+                note: true,
+                area: true,
+                tableLabel: true,
+                sessionKey: true,
+                createdAt: true,
+              } as any,
             })
             .catch(() => []),
         ]);
@@ -2976,8 +2998,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const fiscalDefaultVatRate = Number(
           (settings as any)?.defaultVatRate || 0,
         );
-        const revenueTodayNet = (revenueRows as any[]).reduce(
-          (s, r) =>
+        // Match the Electron overview exactly: drop transfer source rows and
+        // collapse each sitting to its newest snapshot, or tablets report
+        // higher takings than the till they're paired to.
+        const livingRevenueRows = latestRowPerSession(
+          (revenueRows as any[]).filter(
+            (r: any) => !isTransferredOutNote(r?.note),
+          ),
+        );
+        const revenueTodayNet = livingRevenueRows.reduce(
+          (s, r: any) =>
             s +
             sumTicketLinesNetVat(
               r.itemsJson,
@@ -2986,8 +3016,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             ).net,
           0,
         );
-        const revenueTodayVat = (revenueRows as any[]).reduce(
-          (s, r) =>
+        const revenueTodayVat = livingRevenueRows.reduce(
+          (s, r: any) =>
             s +
             sumTicketLinesNetVat(
               r.itemsJson,
@@ -3065,7 +3095,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               lte: buckets[buckets.length - 1].to,
             },
           },
-          select: { createdAt: true, itemsJson: true },
+          select: {
+            createdAt: true,
+            itemsJson: true,
+            note: true,
+            area: true,
+            tableLabel: true,
+            sessionKey: true,
+          } as any,
           orderBy: { createdAt: 'asc' },
         });
         const points = buckets.map((b) => ({
@@ -3073,13 +3110,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           total: 0,
           orders: 0,
         }));
-        for (const r of rows) {
+        const sessionRows = latestRowPerSession(
+          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+        );
+        for (const r of sessionRows as any[]) {
           const when = new Date(r.createdAt);
           const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
           if (idx === -1) continue;
-          const net = (r.itemsJson as any[]).reduce(
+          const net = ((r.itemsJson as any[]) || []).reduce(
             (s: number, it: any) =>
-              s + Number(it.unitPrice) * Number(it.qty || 1),
+              it?.voided ? s : s + Number(it.unitPrice) * Number(it.qty || 1),
             0,
           );
           points[idx].total += net;
@@ -3098,7 +3138,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               userId: auth!.userId,
               createdAt: { gte: start, lte: end },
             },
-            select: { itemsJson: true },
+            select: {
+              itemsJson: true,
+              note: true,
+              area: true,
+              tableLabel: true,
+              sessionKey: true,
+              createdAt: true,
+            } as any,
           })
           .catch(() => []);
         const settings = await coreServices.readSettings();
@@ -3106,8 +3153,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const fiscalDefaultVatRate = Number(
           (settings as any)?.defaultVatRate || 0,
         );
-        const revenueTodayNet = (rows as any[]).reduce(
-          (s, r) =>
+        const liveRows = latestRowPerSession(
+          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+        );
+        const revenueTodayNet = liveRows.reduce(
+          (s, r: any) =>
             s +
             sumTicketLinesNetVat(
               r.itemsJson,
@@ -3116,8 +3166,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             ).net,
           0,
         );
-        const revenueTodayVat = (rows as any[]).reduce(
-          (s, r) =>
+        const revenueTodayVat = liveRows.reduce(
+          (s, r: any) =>
             s +
             sumTicketLinesNetVat(
               r.itemsJson,

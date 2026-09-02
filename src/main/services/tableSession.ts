@@ -20,6 +20,37 @@ export async function getTableSessionStartedAt(
 }
 
 /**
+ * Stable identifier for one dining session at `(area, label)`.
+ *
+ * TicketLog rows are cumulative snapshots — every "send to kitchen" stores the
+ * whole ticket again — so reports have to know which rows belong to the same
+ * sitting. The session start timestamp is already tracked in `tables:openAt`
+ * and a table cannot be re-seated without that value changing, which makes it
+ * the natural grouping key. See `latestRowPerSession` in `@shared/ticketRevenue`.
+ */
+export function buildTableSessionKey(
+  area: string,
+  label: string,
+  startedAtIso: string,
+): string {
+  return `${area}\u0000${label}\u0000${startedAtIso}`;
+}
+
+/**
+ * Session key for the table's current open session, or `null` when the table
+ * has no `tables:openAt` entry to bound it (rows then fall back to the
+ * snapshot-shape heuristic in `latestRowPerSession`).
+ */
+export async function getCurrentTableSessionKey(
+  area: string,
+  label: string,
+): Promise<string | null> {
+  const startedAt = await getTableSessionStartedAt(area, label);
+  if (!startedAt) return null;
+  return buildTableSessionKey(area, label, startedAt.toISOString());
+}
+
+/**
  * Returns the userId of the waiter who owns the CURRENT open session
  * for `(area, tableLabel)`, or `null` if either:
  *   - the table has no `tables:openAt` entry (can't bound the session), or

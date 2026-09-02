@@ -45,6 +45,7 @@ import {
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import {
   effectiveVatRate,
+  latestRowPerSession,
   splitGrossVat,
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
@@ -195,6 +196,7 @@ dotenv.config();
 
 import {
   getCurrentSessionOwnerId,
+  getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
 
@@ -3494,8 +3496,16 @@ ipcHandle('admin:getOverview', async (_e) => {
         where: { createdAt: { gte: todayStart, lte: todayEnd } },
         // `note` is needed so we can exclude rows that were marked
         // "moved-out" by a table transfer (the destination row carries
-        // the items now — see `isTransferredOutNote`).
-        select: { itemsJson: true, note: true } as any,
+        // the items now — see `isTransferredOutNote`). The session columns
+        // let `latestRowPerSession` drop superseded snapshots.
+        select: {
+          itemsJson: true,
+          note: true,
+          area: true,
+          tableLabel: true,
+          sessionKey: true,
+          createdAt: true,
+        } as any,
       })
       .catch(() => []),
     // Pull all cover writes that happened today. A waiter may save covers
@@ -3547,9 +3557,11 @@ ipcHandle('admin:getOverview', async (_e) => {
       ),
   ]);
   // Skip rows tagged as "moved-out" — their revenue is already counted
-  // on the destination table row created by the transfer flow.
-  const livingRevenueRows = (revenueRows as any[]).filter(
-    (r: any) => !isTransferredOutNote(r?.note),
+  // on the destination table row created by the transfer flow. Then collapse
+  // each sitting to its newest snapshot, otherwise a table fired three times
+  // is billed three times over.
+  const livingRevenueRows = latestRowPerSession(
+    (revenueRows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   );
   const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const revenueTodayNet = livingRevenueRows.reduce((s, r) => {
@@ -3863,6 +3875,14 @@ ipcHandle('tickets:log', async (_e, payload) => {
         ? ((payload as any).kdsFireItems as any[])
         : undefined;
 
+      // Every send stores the whole ticket again, so tag the row with the
+      // session it belongs to — reports count the newest snapshot per session
+      // rather than adding each fire on top of the last.
+      const sessionKey = await getCurrentTableSessionKey(
+        sanitizedArea,
+        sanitizedTableLabel,
+      ).catch(() => null);
+
       try {
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
           await expireStaleMenuStock(tx);
@@ -3875,7 +3895,8 @@ ipcHandle('tickets:log', async (_e, payload) => {
               itemsJson: items ?? [],
               note: sanitizedNote,
               ...(idempotencyKey ? { idempotencyKey } : {}),
-            },
+              ...(sessionKey ? { sessionKey } : {}),
+            } as any,
           });
           await consumeMenuStockForTicketLines(tx, stockConsumeLines);
         });
@@ -4535,8 +4556,10 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   // Admin ticket list: hide source-session rows superseded by a table
   // move. Those rows still exist for audit/reports but would show as a
   // duplicate card next to the destination row (same items, two cards).
-  const visibleRows = (rows as any[]).filter(
-    (r: any) => !isTransferredOutNote(r?.note),
+  // Intermediate snapshots of one sitting are hidden for the same reason —
+  // the newest row already carries every line the waiter sent.
+  const visibleRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   );
 
   // Status resolution per ticket-log row:
@@ -4886,13 +4909,24 @@ ipcHandle('admin:getTopSellingToday', async (_e) => {
     where: { createdAt: { gte: start, lte: end } },
     // Pull `note` so transfer-out source rows can be skipped — their
     // items already count on the destination ticket.
-    select: { itemsJson: true, note: true } as any,
+    select: {
+      itemsJson: true,
+      note: true,
+      area: true,
+      tableLabel: true,
+      sessionKey: true,
+      createdAt: true,
+    } as any,
   });
   const map = new Map<string, { qty: number; revenue: number }>();
-  for (const r of rows) {
-    if (isTransferredOutNote((r as any).note)) continue;
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows) {
     const items = (r.itemsJson as any[]) || [];
     for (const it of items) {
+      // A voided dish was never sold — it must not top the chart.
+      if (it?.voided) continue;
       const name = String(it.name || 'Item');
       const qty = Number(it.qty || 1);
       const revenue = Number(it.unitPrice || 0) * qty;
@@ -4963,19 +4997,30 @@ ipcHandle('admin:getSalesTrends', async (_e, input) => {
     where: {
       createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to },
     },
-    select: { createdAt: true, itemsJson: true, note: true } as any,
+    select: {
+      createdAt: true,
+      itemsJson: true,
+      note: true,
+      area: true,
+      tableLabel: true,
+      sessionKey: true,
+    } as any,
     orderBy: { createdAt: 'asc' },
   });
   const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
-  for (const r of rows) {
-    // Source rows of a table transfer don't represent independent
-    // revenue — the destination row in this same bucket already does.
-    if (isTransferredOutNote((r as any).note)) continue;
-    const when = new Date(r.createdAt);
+  // Source rows of a table transfer don't represent independent revenue — the
+  // destination row in this same bucket already does. One sitting is also one
+  // order however many times it was fired.
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows) {
+    const when = new Date(r.createdAt as any);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
-    const net = (r.itemsJson as any[]).reduce(
-      (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
+    const net = ((r.itemsJson as any[]) || []).reduce(
+      (s: number, it: any) =>
+        it?.voided ? s : s + Number(it.unitPrice) * Number(it.qty || 1),
       0,
     );
     result[idx].total += net;
@@ -5080,6 +5125,7 @@ ipcHandle('admin:getReview', async (_e, input) => {
     covers: number | null;
     itemsJson: any;
     note: string | null;
+    sessionKey: string | null;
   };
 
   const fetchRows = async (s: Date, e: Date): Promise<AggRow[]> => {
@@ -5098,11 +5144,16 @@ ipcHandle('admin:getReview', async (_e, input) => {
           covers: true,
           itemsJson: true,
           note: true,
+          sessionKey: true,
         } as any,
         orderBy: { createdAt: 'asc' },
       })
       .catch(() => [])) as unknown as AggRow[];
-    return rows.filter((r) => !isTransferredOutNote(r?.note));
+    // One sitting contributes one ticket, however many times it was fired —
+    // the rows are cumulative snapshots of the same check.
+    return latestRowPerSession(
+      rows.filter((r) => !isTransferredOutNote(r?.note)),
+    );
   };
 
   const summarize = (
@@ -5424,11 +5475,18 @@ ipcHandle('reports:getMyOverview', async (_e, input) => {
       where: { userId, createdAt: { gte: start, lte: end } },
       // `note` is required to drop transferred-out source rows so the
       // waiter's "today's revenue" matches what was actually paid.
-      select: { itemsJson: true, note: true } as any,
+      select: {
+        itemsJson: true,
+        note: true,
+        area: true,
+        tableLabel: true,
+        sessionKey: true,
+        createdAt: true,
+      } as any,
     })
     .catch(() => []);
-  const liveRows = (rows as any[]).filter(
-    (r: any) => !isTransferredOutNote(r?.note),
+  const liveRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   );
   const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const revenueTodayNet = liveRows.reduce((s: number, r: any) => {
@@ -5484,11 +5542,20 @@ ipcHandle('reports:getMyTopSellingToday', async (_e, input) => {
   const end = new Date(new Date().setHours(23, 59, 59, 999));
   const rows = await prisma.ticketLog.findMany({
     where: { userId, createdAt: { gte: start, lte: end } },
-    select: { itemsJson: true, note: true } as any,
+    select: {
+      itemsJson: true,
+      note: true,
+      area: true,
+      tableLabel: true,
+      sessionKey: true,
+      createdAt: true,
+    } as any,
   });
   const map = new Map<string, { qty: number; revenue: number }>();
-  for (const r of rows) {
-    if (isTransferredOutNote((r as any).note)) continue;
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows) {
     const items = (r.itemsJson as any[]) || [];
     for (const it of items) {
       if (it?.voided) continue;
@@ -5560,13 +5627,22 @@ ipcHandle('reports:getMySalesTrends', async (_e, input) => {
           lte: buckets[buckets.length - 1].to,
         },
       },
-      select: { createdAt: true, itemsJson: true, note: true } as any,
+      select: {
+        createdAt: true,
+        itemsJson: true,
+        note: true,
+        area: true,
+        tableLabel: true,
+        sessionKey: true,
+      } as any,
       orderBy: { createdAt: 'asc' },
     })
     .catch(() => []);
   const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
-  for (const r of rows as any[]) {
-    if (isTransferredOutNote((r as any).note)) continue;
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows as any[]) {
     const when = new Date(r.createdAt);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
@@ -5782,6 +5858,13 @@ ipcHandle('requests:approve', async (_e, input) => {
       }
     }
     const merged = Array.from(map.values());
+    // Approving a colleague's add-items request extends the open ticket, so
+    // the appended snapshot has to join the session rather than read as a
+    // second sale on the same table.
+    const sessionKey = await getCurrentTableSessionKey(
+      r.area,
+      r.tableLabel,
+    ).catch(() => null);
     await prisma.ticketLog.create({
       data: {
         userId: r.ownerId,
@@ -5790,7 +5873,8 @@ ipcHandle('requests:approve', async (_e, input) => {
         covers: last?.covers ?? null,
         itemsJson: merged,
         note: last?.note ?? null,
-      },
+        ...(sessionKey ? { sessionKey } : {}),
+      } as any,
     });
   } catch {
     // ignore

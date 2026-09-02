@@ -315,9 +315,13 @@ model TicketLog {
   note       String?
   /// Dedupes double-submit / retry on table transfer (destination row).
   idempotencyKey String? @unique
+  /// Groups the cumulative snapshots of one dining session so reports can
+  /// count the newest one instead of every fire. See `latestRowPerSession`.
+  sessionKey String?
   createdAt  DateTime @default(now())
 
   @@index([area, tableLabel, createdAt])
+  @@index([sessionKey])
 }
 
 model KdsDayCounter {

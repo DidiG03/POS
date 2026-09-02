@@ -86,6 +86,9 @@ const ALLOWED_LOCAL_ONLY: Record<string, string[]> = {
   MenuItem: ['stockLevel', 'stockRemaining', 'stockDay'],
   // Printer-offline retry queue lives only on the LAN POS host (SQLite).
   PrintJob: ['attempts', 'lastError', 'nextAttemptAt', 'printerProfileId'],
+  // Dining-session grouping is derived from the LAN host's `tables:openAt`
+  // map, which the cloud schema has no equivalent of.
+  TicketLog: ['sessionKey'],
 };
 
 // Enum values legitimately present only locally (server/cloud queue path differs).
