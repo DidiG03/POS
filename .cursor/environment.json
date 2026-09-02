@@ -1,0 +1,4 @@
+{
+  "name": "OneTap POS",
+  "install": "pnpm install --frozen-lockfile && pnpm db:generate && bash .cursor/setup-dev-db.sh"
+}

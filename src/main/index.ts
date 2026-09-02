@@ -146,6 +146,7 @@ import {
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import {
   closeTableAfterAcceptedPayment,
+  closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
@@ -201,10 +202,12 @@ import {
 dotenv.config();
 
 import {
+  findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
   getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
+import { splitTableKey } from '@shared/utils/tableKey';
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -864,8 +867,9 @@ function startAutoVoidStaleTicketsLoop() {
       if (staleKeys.length === 0) return;
 
       for (const k of staleKeys) {
-        const [area, tableLabel] = String(k).split(':');
-        if (!area || !tableLabel) continue;
+        const parsed = splitTableKey(String(k));
+        if (!parsed) continue;
+        const { area, label: tableLabel } = parsed;
 
         // Find an actor userId for local mirroring/audit (use last ticket owner if possible).
         const last = await prisma.ticketLog
@@ -1109,8 +1113,9 @@ function startAutoCloseShiftsLoop() {
       const usersWithOpenTickets = new Set<number>();
       if (openTableKeys.length) {
         for (const key of openTableKeys) {
-          const [area, tableLabel] = String(key).split(':');
-          if (!area || !tableLabel) continue;
+          const parsed = splitTableKey(String(key));
+          if (!parsed) continue;
+          const { area, label: tableLabel } = parsed;
           const last = await prisma.ticketLog
             .findFirst({
               where: { area, tableLabel },
@@ -2840,7 +2845,12 @@ ipcHandle('tickets:print', async (_e, input) => {
     if (existing) {
       // Same logical payment/print already recorded — retries must not
       // duplicate notifications, audit PrintJobs, or dispatch again.
-      return { ok: true, printed: true };
+      // Still free the table if the first attempt died after the PrintJob.
+      return closeTableAfterIdempotentPayment(
+        String(input?.area || ''),
+        String(input?.tableLabel || ''),
+        String((input as any)?.meta?.kind || ''),
+      );
     }
   }
 
@@ -3178,10 +3188,8 @@ ipcHandle('tables:listOpen', async (_e) => {
   const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
   return Object.entries(map)
     .filter(([, v]) => Boolean(v))
-    .map(([k]) => {
-      const [area, label] = k.split(':');
-      return { area, label };
-    });
+    .map(([k]) => splitTableKey(k))
+    .filter((p): p is { area: string; label: string } => Boolean(p));
 });
 
 ipcHandle('tables:getFloorSnapshot', async (_e, input) => {
@@ -4207,6 +4215,7 @@ ipcHandle('kds:recall', async (_e, input) => {
     station: String((input as any)?.station || 'KITCHEN'),
     ticketId: (input as any)?.ticketId,
     itemIdx: (input as any)?.itemIdx,
+    cooker: Boolean((input as any)?.cooker),
   });
 });
 
@@ -4414,11 +4423,9 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   } catch {
     // ignore
   }
-  // Also append a void marker in the latest ticket log for this table (if exists)
-  const last = await prisma.ticketLog.findFirst({
-    where: { area, tableLabel },
-    orderBy: { createdAt: 'desc' },
-  });
+  // Also append a void marker in the latest ticket log for this sitting.
+  // Unscoped findFirst would rewrite the previous paid-out ticket after pay → reopen.
+  const last = await findLatestTicketLogForCurrentSession(area, tableLabel);
   if (last) {
     const items = (last.itemsJson as any[]) || [];
     const idx = findVoidableLineIndex(items, item);
@@ -4543,11 +4550,8 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   } catch {
     // ignore
   }
-  // Mark all items in the latest ticket as voided for admin view
-  const last = await prisma.ticketLog.findFirst({
-    where: { area, tableLabel },
-    orderBy: { createdAt: 'desc' },
-  });
+  // Mark all items in the current sitting as voided. Never touch a prior ticket.
+  const last = await findLatestTicketLogForCurrentSession(area, tableLabel);
   if (last) {
     const items = ((last.itemsJson as any[]) || []).map((it: any) => ({
       ...it,
@@ -5570,8 +5574,9 @@ ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
     .map(([k]) => k);
   const latests = await Promise.all(
     openKeys.map(async (k: string) => {
-      const [area, label] = k.split(':');
-      if (!area || !label) return false;
+      const parsed = splitTableKey(k);
+      if (!parsed) return false;
+      const { area, label } = parsed;
       const last = await prisma.ticketLog
         .findFirst({
           where: { area, tableLabel: label },

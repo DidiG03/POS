@@ -9,6 +9,7 @@ import {
   viewKitchenItemsForCooker,
   type CookerTab,
 } from '@shared/kdsCooker';
+import { splitTableKey } from '@shared/utils/tableKey';
 
 export type KdsListOptions = {
   /** This screen is the cooker's display (first of the two kitchen stages). */
@@ -78,8 +79,9 @@ export async function formatKdsTicketListRows(
   const ownerByTable = new Map<string, number>();
   await Promise.all(
     tableKeys.map(async (key) => {
-      const [area, ...rest] = key.split(':');
-      const tableLabel = rest.join(':');
+      const parsed = splitTableKey(key);
+      if (!parsed) return;
+      const { area, label: tableLabel } = parsed;
       const ownerId = await getSessionOwnerId(area, tableLabel);
       if (ownerId) ownerByTable.set(key, ownerId);
     }),

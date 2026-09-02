@@ -8,6 +8,7 @@
  */
 
 import { prisma } from '@db/client';
+import { splitTableKey } from '@shared/utils/tableKey';
 import { coreServices } from './core';
 import { isTransferredOutNote } from './tableTransfer';
 import {
@@ -44,21 +45,24 @@ export async function listMyActiveTickets(userId: number): Promise<any[]> {
 
   const tickets = await Promise.all(
     openKeys.map(async (k) => {
-      const [area, tableLabel] = k.split(':');
-      if (!area || !tableLabel) return null;
-      const last = await prisma.ticketLog
-        .findFirst({
-          where: { area, tableLabel },
-          orderBy: { createdAt: 'desc' },
-        })
-        .catch(() => null);
-      if (!last || Number(last.userId) !== Number(userId)) return null;
+      const parsed = splitTableKey(k);
+      if (!parsed) return null;
+      const { area, label: tableLabel } = parsed;
       const sinceIso = atMap[k];
       const sinceParsed = sinceIso ? new Date(sinceIso) : null;
       const since =
         sinceParsed && Number.isFinite(sinceParsed.getTime())
           ? sinceParsed
           : null;
+      const ownerWhere: any = { area, tableLabel };
+      if (since) ownerWhere.createdAt = { gte: since };
+      const last = await prisma.ticketLog
+        .findFirst({
+          where: ownerWhere,
+          orderBy: { createdAt: 'desc' },
+        })
+        .catch(() => null);
+      if (!last || Number(last.userId) !== Number(userId)) return null;
       const where: any = { area, tableLabel };
       if (since) where.createdAt = { gte: since };
       const [rows, coversRow, u] = await Promise.all([

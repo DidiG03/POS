@@ -27,11 +27,14 @@ import {
   ensureSseKeepAlive,
 } from './services/realtime';
 import { getFloorSnapshot } from './services/floorSnapshot';
+import { findLatestTicketLogForCurrentSession } from './services/tableSession';
+import { splitTableKey } from '@shared/utils/tableKey';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import {
   closeTableAfterAcceptedPayment,
+  closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
@@ -1582,11 +1585,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/kds/recall') {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
-        const { station, ticketId, itemIdx } = await parseJson(req);
+        const { station, ticketId, itemIdx, cooker } = await parseJson(req);
         const result = await recallKdsTicket(prisma, {
           station: String(station || 'KITCHEN'),
           ticketId,
           itemIdx,
+          cooker: Boolean(cooker),
         });
         return send(res, 200, result, corsOrigin);
       }
@@ -1773,8 +1777,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               where: { idempotencyKey: printIdempotencyKey } as any,
             })
             .catch(() => null);
-          if (existing)
-            return send(res, 200, { ok: true, printed: true }, corsOrigin);
+          if (existing) {
+            const closed = await closeTableAfterIdempotentPayment(
+              String(body?.area || ''),
+              String(body?.tableLabel || ''),
+              String(body?.meta?.kind || ''),
+            );
+            return send(res, 200, closed, corsOrigin);
+          }
         }
         const requested = {
           area: String(body?.area || ''),
@@ -2139,10 +2149,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             data: { userId: Number(userId), type: 'OTHER' as any, message },
           })
           .catch(() => {});
-        const last = await prisma.ticketLog.findFirst({
-          where: { area, tableLabel },
-          orderBy: { createdAt: 'desc' },
-        });
+        const last = await findLatestTicketLogForCurrentSession(
+          String(area),
+          String(tableLabel),
+        );
         if (last) {
           const items = (last.itemsJson as any[]) || [];
           const idx = findVoidableLineIndex(items, item);
@@ -2264,10 +2274,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             data: { userId: Number(userId), type: 'OTHER' as any, message },
           })
           .catch(() => {});
-        const last = await prisma.ticketLog.findFirst({
-          where: { area, tableLabel },
-          orderBy: { createdAt: 'desc' },
-        });
+        const last = await findLatestTicketLogForCurrentSession(
+          String(area),
+          String(tableLabel),
+        );
         if (last) {
           const items = ((last.itemsJson as any[]) || []).map((it: any) => ({
             ...it,
@@ -2469,10 +2479,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           200,
           Object.entries(map)
             .filter(([, v]) => Boolean(v))
-            .map(([k]) => {
-              const [area, label] = k.split(':');
-              return { area, label };
-            }),
+            .map(([k]) => splitTableKey(k))
+            .filter((p): p is { area: string; label: string } => Boolean(p)),
           corsOrigin,
         );
       }
@@ -3197,8 +3205,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           .map(([k]) => k);
         const latestMatches = await Promise.all(
           openKeys.map(async (k) => {
-            const [area, label] = k.split(':');
-            if (!area || !label) return false;
+            const parsed = splitTableKey(k);
+            if (!parsed) return false;
+            const { area, label } = parsed;
             const last = await prisma.ticketLog
               .findFirst({
                 where: { area, tableLabel: label },
@@ -3236,13 +3245,24 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               userId: auth!.userId,
               createdAt: { gte: start, lte: end },
             },
-            select: { itemsJson: true },
+            select: {
+              itemsJson: true,
+              note: true,
+              area: true,
+              tableLabel: true,
+              sessionKey: true,
+              createdAt: true,
+            } as any,
           })
           .catch(() => []);
         const map = new Map<string, { qty: number; revenue: number }>();
-        for (const r of rows as any[]) {
+        const sessionRows = latestRowPerSession(
+          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+        );
+        for (const r of sessionRows as any[]) {
           const items = (r.itemsJson as any[]) || [];
           for (const it of items) {
+            if (it?.voided) continue;
             const name = String(it.name || 'Item');
             const qty = Number(it.qty || 1);
             const revenue = Number(it.unitPrice || 0) * qty;
@@ -3311,7 +3331,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 lte: buckets[buckets.length - 1].to,
               },
             },
-            select: { createdAt: true, itemsJson: true },
+            select: {
+              createdAt: true,
+              itemsJson: true,
+              note: true,
+              area: true,
+              tableLabel: true,
+              sessionKey: true,
+            } as any,
             orderBy: { createdAt: 'asc' },
           })
           .catch(() => []);
@@ -3320,13 +3347,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           total: 0,
           orders: 0,
         }));
-        for (const r of rows as any[]) {
+        const trendRows = latestRowPerSession(
+          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+        );
+        for (const r of trendRows as any[]) {
           const when = new Date(r.createdAt);
           const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
           if (idx === -1) continue;
-          const net = (r.itemsJson as any[]).reduce(
+          const net = ((r.itemsJson as any[]) || []).reduce(
             (s: number, it: any) =>
-              s + Number(it.unitPrice) * Number(it.qty || 1),
+              it?.voided ? s : s + Number(it.unitPrice) * Number(it.qty || 1),
             0,
           );
           points[idx].total += net;

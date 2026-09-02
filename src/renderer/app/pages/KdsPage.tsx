@@ -558,10 +558,15 @@ export default function KdsPage() {
         })
         .catch(() => false);
       bumping.current.delete(ticket.ticketId);
-      if (!ok && !twoStageMain && !isCookerScreen) {
-        // Restore the card we optimistically removed (the next poll reconciles
-        // the two-stage case, where we only edited items in place).
-        patchBoard((arr) => [ticket, ...arr]);
+      if (!ok) {
+        // Put the card back exactly as it was, whichever optimistic edit we
+        // made: dropping any partially-edited copy first covers the two-stage
+        // and cooker paths, where the card stayed on the board with its lines
+        // already struck through.
+        patchBoard((arr) => [
+          ticket,
+          ...arr.filter((t) => t.ticketId !== ticket.ticketId),
+        ]);
       }
     },
     [clearItemSelection, patchBoard],
@@ -613,24 +618,20 @@ export default function KdsPage() {
         .catch(() => false);
       bumpingItems.current.delete(inFlightKey);
       if (!ok) {
-        // The line is still pending on the host. Leaving it struck through on
-        // screen means the kitchen stops cooking something the pass expects.
+        // The line is still pending on the host. Leaving it struck through
+        // means the kitchen stops cooking something the pass is expecting, so
+        // restore the ticket and say why.
         setErr(
           'That item could not be bumped. Check the connection to the POS host.',
         );
-        const seq = claimBoardWrite();
-        const rows = (await window.api.kds
-          .listTickets({
-            station: stationRef.current,
-            status: tabRef.current,
-            limit: tabRef.current === 'NEW' ? 120 : 80,
-            cooker: cookerRef.current,
-          })
-          .catch(() => null)) as KdsTicket[] | null;
-        if (Array.isArray(rows)) commitBoard(seq, rows);
+        patchBoard((arr) =>
+          arr.some((t) => t.ticketId === ticketId)
+            ? arr.map((t) => (t.ticketId === ticketId ? ticket : t))
+            : [ticket, ...arr],
+        );
       }
     },
-    [claimBoardWrite, clearItemSelection, commitBoard, patchBoard],
+    [clearItemSelection, patchBoard],
   );
 
   const bumpTicketRef = useRef(bumpTicket);
@@ -934,7 +935,9 @@ export default function KdsPage() {
           return;
         case 'bumpSlot': {
           if (tabRef.current !== 'NEW') return;
-          const ticket = list[action.slot - 1];
+          const page = ticketPagesRef.current[listPageRef.current] ?? [];
+          const globalIdx = page[action.slot - 1];
+          const ticket = globalIdx != null ? list[globalIdx] : undefined;
           if (ticket) void bumpTicketRef.current(ticket);
           return;
         }
@@ -954,7 +957,10 @@ export default function KdsPage() {
           if (tabRef.current !== 'NEW') return;
           void (async () => {
             const res = await window.api.kds
-              .recall({ station: stationRef.current })
+              .recall({
+                station: stationRef.current,
+                cooker: cookerRef.current,
+              })
               .catch(() => ({ ok: false, ticketId: null }));
             if (!res?.ok) return;
             applyTab('NEW');
@@ -982,9 +988,11 @@ export default function KdsPage() {
             station: typeof stationRef.current;
             ticketId: number;
             itemIdx?: number;
+            cooker?: boolean;
           } = {
             station: stationRef.current,
             ticketId: ticket.ticketId,
+            cooker: cookerRef.current,
           };
           if (itemListIdx != null) {
             const it = ticket.items[itemListIdx];

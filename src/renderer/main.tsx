@@ -39,7 +39,13 @@ import {
   readRetryAttempts,
   setPreferredScheme,
 } from './utils/netQuality';
-import { installPosReadCache, peekSettings } from './utils/posReadCache';
+import {
+  installPosReadCache,
+  peekSettings,
+  invalidateFloorCache,
+  invalidateFloorSnapshots,
+  invalidateTicketCache,
+} from './utils/posReadCache';
 import { clearInflight, dedupe } from './utils/swrCache';
 import {
   lanAuthGeneration,
@@ -273,6 +279,29 @@ if (!(window as any).api) {
     // so a future drop reconnects fast instead of compounding from the
     // last failure window.
     sseBackoffMs = 1000;
+    try {
+      const p = (payload || {}) as {
+        area?: string;
+        label?: string;
+        tableLabel?: string;
+        open?: boolean;
+      };
+      if (eventName === 'pos:ticketsChanged') {
+        const area = String(p.area || '');
+        const label = String(p.tableLabel || p.label || '');
+        if (area && label) invalidateTicketCache(area, label);
+        invalidateFloorSnapshots();
+      } else if (eventName === 'pos:tablesChanged') {
+        const area = String(p.area || '');
+        const label = String(p.label || p.tableLabel || '');
+        if (area && label && p.open === false) {
+          invalidateTicketCache(area, label);
+        }
+        invalidateFloorCache();
+      }
+    } catch {
+      // cache invalidation is best-effort
+    }
     try {
       window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
     } catch {
@@ -1056,6 +1085,7 @@ if (!(window as any).api) {
         const body: Record<string, unknown> = { station };
         if (ticketId) body.ticketId = ticketId;
         if (itemIdx != null && Number.isFinite(itemIdx)) body.itemIdx = itemIdx;
+        if (input?.cooker) body.cooker = true;
         const r = await goLan('/kds/recall', {
           method: 'POST',
           body: JSON.stringify(body),

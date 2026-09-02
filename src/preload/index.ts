@@ -116,6 +116,7 @@ const api: Api = {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';
       ticketId?: number;
       itemIdx?: number;
+      cooker?: boolean;
     }) => ipcRenderer.invoke('kds:recall', input),
     bumpItem: (input: {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';

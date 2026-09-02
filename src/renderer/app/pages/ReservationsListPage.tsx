@@ -24,6 +24,7 @@ import {
   uncoveredOpenTickets,
   uncoveredPaidTables,
 } from '@shared/tableOccupancy';
+import { reservationCountsTowardDayUse } from '../../utils/reservationFloorColor';
 
 const STATUS_BADGE: Record<ReservationStatus, string> = {
   BOOKED: 'bg-amber-900/60 border-amber-700 text-amber-100',
@@ -295,7 +296,11 @@ export default function ReservationsListPage() {
       const status = effectiveReservationStatus(r, nowMs) as ReservationStatus;
       if (useStatus) {
         if (status !== statusFilter) return false;
-      } else if (!showFinished && !isLiveListStatus(status)) {
+      } else if (showFinished) {
+        // keep every status
+      } else if (showDayOccupancy) {
+        if (!reservationCountsTowardDayUse(status)) return false;
+      } else if (!isLiveListStatus(status)) {
         return false;
       }
       if (useArea && r.area !== areaFilter) return false;
@@ -308,7 +313,15 @@ export default function ReservationsListPage() {
       }
       return true;
     });
-  }, [sorted, query, statusFilter, areaFilter, showFinished, nowMs]);
+  }, [
+    sorted,
+    query,
+    statusFilter,
+    areaFilter,
+    showFinished,
+    showDayOccupancy,
+    nowMs,
+  ]);
 
   const isToday = isSameLocalDay(date, new Date());
 
@@ -341,7 +354,8 @@ export default function ReservationsListPage() {
 
   const filteredPaid = useMemo(() => {
     const showPaidLeftover =
-      statusFilter === 'COMPLETED' || (!statusFilter && showFinished);
+      statusFilter === 'COMPLETED' ||
+      (!statusFilter && (showFinished || showDayOccupancy));
     if (!showPaidLeftover) return [];
     const qText = norm(query.trim());
     const useText = qText.length > 0;
@@ -355,7 +369,14 @@ export default function ReservationsListPage() {
       }
       return true;
     });
-  }, [uncoveredPaid, statusFilter, showFinished, query, areaFilter]);
+  }, [
+    uncoveredPaid,
+    statusFilter,
+    showFinished,
+    showDayOccupancy,
+    query,
+    areaFilter,
+  ]);
 
   const totalCovers = useMemo(
     () => filtered.reduce((s, r) => s + Number(r.partySize || 0), 0),
@@ -377,11 +398,23 @@ export default function ReservationsListPage() {
     const ticketN =
       !statusFilter || statusFilter === 'SEATED' ? uncoveredTickets.length : 0;
     const paidN =
-      statusFilter === 'COMPLETED' || (!statusFilter && showFinished)
+      statusFilter === 'COMPLETED' ||
+      (!statusFilter && (showFinished || showDayOccupancy))
         ? uncoveredPaid.length
         : 0;
     if (showFinished || statusFilter !== '')
       return sorted.length + ticketN + paidN;
+    if (showDayOccupancy) {
+      return (
+        sorted.filter((r) =>
+          reservationCountsTowardDayUse(
+            effectiveReservationStatus(r, nowMs) as ReservationStatus,
+          ),
+        ).length +
+        ticketN +
+        paidN
+      );
+    }
     return (
       sorted.filter((r) =>
         isLiveListStatus(
@@ -394,6 +427,7 @@ export default function ReservationsListPage() {
   }, [
     sorted,
     showFinished,
+    showDayOccupancy,
     statusFilter,
     nowMs,
     uncoveredTickets.length,
@@ -553,7 +587,7 @@ export default function ReservationsListPage() {
                 <span>
                   {t('reservations.showDayOccupancy')}
                   <span className="block text-xs opacity-70 mt-0.5">
-                    {t('reservations.showDayOccupancyHint')}
+                    {t('reservations.showDayOccupancyListHint')}
                   </span>
                 </span>
               </label>

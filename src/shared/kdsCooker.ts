@@ -72,6 +72,42 @@ export function bumpReadyKitchenItems(items: any[], at: string): any[] {
   });
 }
 
+/** Cook un-bumps a whole ticket: clear `cookerBumped` on active KITCHEN lines. */
+export function cookerUnbumpAllKitchenItems(items: any[]): any[] {
+  return (Array.isArray(items) ? items : []).map((it) => {
+    if (!isKitchenItem(it) || it?.voided || it?.bumped || !it?.cookerBumped) {
+      return it;
+    }
+    const next = { ...it };
+    delete next.cookerBumped;
+    delete next.cookerBumpedAt;
+    return next;
+  });
+}
+
+/** Cook un-bumps a single KITCHEN line back to the cooker's NEW tab. */
+export function cookerUnbumpSingleKitchenItem(
+  items: any[],
+  idx: number,
+): any[] {
+  const next = (Array.isArray(items) ? items : []).slice();
+  const it = next[idx];
+  if (
+    !it ||
+    !isKitchenItem(it) ||
+    it?.voided ||
+    it?.bumped ||
+    !it?.cookerBumped
+  ) {
+    return next;
+  }
+  const cleared = { ...it };
+  delete cleared.cookerBumped;
+  delete cleared.cookerBumpedAt;
+  next[idx] = cleared;
+  return next;
+}
+
 /** True when the main screen must block the final bump for this item. */
 export function isItemLockedForMain(it: any): boolean {
   return !it?.voided && !it?.bumped && !it?.cookerBumped;

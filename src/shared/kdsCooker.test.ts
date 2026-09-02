@@ -3,6 +3,8 @@ import {
   bumpReadyKitchenItems,
   cookerBumpAllKitchenItems,
   cookerBumpSingleKitchenItem,
+  cookerUnbumpAllKitchenItems,
+  cookerUnbumpSingleKitchenItem,
   isItemLockedForMain,
   isTwoStageKitchen,
   viewKitchenItemsForCooker,
@@ -54,6 +56,31 @@ describe('cooker bumps', () => {
     expect(cookerBumpSingleKitchenItem(items, 0, at)[0].cookerBumped).toBe(
       undefined,
     );
+  });
+});
+
+describe('cooker unbumps', () => {
+  it('cookerUnbumpAllKitchenItems clears cooked kitchen lines only', () => {
+    const items = [
+      kitchen('Steak', { cookerBumped: true, cookerBumpedAt: at }),
+      kitchen('Soup', { bumped: true, cookerBumped: true }),
+      bar('Coke', { cookerBumped: true }),
+    ];
+    const out = cookerUnbumpAllKitchenItems(items);
+    expect(out[0].cookerBumped).toBeUndefined();
+    expect(out[0].cookerBumpedAt).toBeUndefined();
+    expect(out[1].cookerBumped).toBe(true);
+    expect(out[2].cookerBumped).toBe(true);
+  });
+
+  it('cookerUnbumpSingleKitchenItem restores one line', () => {
+    const items = [
+      kitchen('Steak', { cookerBumped: true }),
+      kitchen('Soup', { cookerBumped: true }),
+    ];
+    const out = cookerUnbumpSingleKitchenItem(items, 1);
+    expect(out[0].cookerBumped).toBe(true);
+    expect(out[1].cookerBumped).toBeUndefined();
   });
 });
 

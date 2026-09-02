@@ -2,6 +2,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { IconClose } from '../../components/icons';
+import { KebabMenu } from '../components/SettingsChrome';
+import { Button } from '../../components/ui/Button';
+import {
+  Field,
+  Input,
+  SearchInput,
+  Select,
+  Switch,
+} from '../../components/ui/Field';
+import { Badge } from '../../components/ui/Badge';
+import { EmptyState } from '../../components/ui/Surface';
+import { Segmented } from '../../components/ui/Segmented';
+import { cn } from '../../components/ui/cn';
 
 type Overview = {
   activeUsers: number;
@@ -29,88 +42,81 @@ type AdminShift = {
   isOpen: boolean;
 };
 
-function IconPencil() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M12 20h9"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+type StaffRole =
+  | 'WAITER'
+  | 'CASHIER'
+  | 'ADMIN'
+  | 'KP'
+  | 'CHEF'
+  | 'HEAD_CHEF'
+  | 'FOOD_RUNNER'
+  | 'HOST'
+  | 'BUSSER'
+  | 'BARTENDER'
+  | 'BARBACK'
+  | 'CLEANER';
+
+const STAFF_ROLES: StaffRole[] = [
+  'WAITER',
+  'CASHIER',
+  'ADMIN',
+  'KP',
+  'CHEF',
+  'HEAD_CHEF',
+  'FOOD_RUNNER',
+  'HOST',
+  'BUSSER',
+  'BARTENDER',
+  'BARBACK',
+  'CLEANER',
+];
+
+function roleLabel(
+  t: (key: string, opts?: { defaultValue?: string }) => string,
+  role: string,
+) {
+  return t(`adminOverview.roles.${role}`, { defaultValue: role });
 }
 
-function IconTrash() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M3 6h18"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8 6V4h8v2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M6 6l1 16h10l1-16"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10 11v6"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M14 11v6"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
+function formatShiftDuration(
+  hours: number,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (!Number.isFinite(hours) || hours < 0) return '—';
+  const totalMin = Math.max(0, Math.round(hours * 60));
+  const days = Math.floor(totalMin / (24 * 60));
+  const hrs = Math.floor((totalMin % (24 * 60)) / 60);
+  const mins = totalMin % 60;
+  if (days > 0)
+    return t('adminOverview.durationDaysHours', { days, hours: hrs });
+  if (hrs > 0 && mins > 0)
+    return t('adminOverview.durationHoursMins', { hours: hrs, mins });
+  if (hrs > 0) return t('adminOverview.durationHoursOnly', { hours: hrs });
+  return t('adminOverview.durationMins', { mins });
 }
 
-function IconKebab() {
+function RoleSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: StaffRole;
+  onChange: (next: StaffRole) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      className="pos-icon"
-      aria-hidden
+    <Select
+      value={value}
+      onChange={(e) => onChange(e.target.value as StaffRole)}
+      disabled={disabled}
     >
-      <circle cx="12" cy="5" r="1.75" />
-      <circle cx="12" cy="12" r="1.75" />
-      <circle cx="12" cy="19" r="1.75" />
-    </svg>
+      {STAFF_ROLES.map((r) => (
+        <option key={r} value={r}>
+          {roleLabel(t, r)}
+        </option>
+      ))}
+    </Select>
   );
 }
 
@@ -145,7 +151,6 @@ export default function AdminPage() {
   const [userQuery, setUserQuery] = useState('');
   const [showAdmins, setShowAdmins] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
-  const [showStaffMenu, setShowStaffMenu] = useState(false);
   const [showAddStaffModal, setShowAddStaffModal] = useState(false);
   const [editingStaff, setEditingStaff] = useState<{
     id: number;
@@ -408,23 +413,64 @@ export default function AdminPage() {
     );
   }, [shifts]);
 
+  const quietDay =
+    !ov?.revenueTodayNet && !ov?.coversToday && !ov?.openOrders && !topSelling;
+
+  async function setStaffActive(id: number, name: string, active: boolean) {
+    setStaffStatus(null);
+    try {
+      await window.api.auth.updateUser({ id, active } as any);
+      setStaffStatus({
+        kind: 'success',
+        message: active
+          ? t('adminOverview.enabledUser', { name })
+          : t('adminOverview.disabledUser', { name }),
+      });
+      await refreshUsers();
+    } catch (e: any) {
+      setStaffStatus({
+        kind: 'error',
+        message:
+          e?.message ||
+          (active
+            ? t('adminOverview.enableFailed')
+            : t('adminOverview.disableFailed')),
+      });
+    }
+  }
+
+  async function deleteStaff(id: number, name: string) {
+    const ok = window.confirm(t('adminOverview.deleteConfirm', { name, id }));
+    if (!ok) return;
+    setStaffStatus(null);
+    try {
+      await window.api.auth.deleteUser({ id, hard: true } as any);
+      setStaffStatus({
+        kind: 'success',
+        message: t('adminOverview.deletedUser', { name }),
+      });
+      await refreshUsers();
+    } catch (e: any) {
+      setStaffStatus({
+        kind: 'error',
+        message: e?.message || t('adminOverview.deleteFailed'),
+      });
+    }
+  }
+
   return (
     <div className="space-y-4">
-      {adminNotice && (
-        <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded-lg p-3 text-sm">
+      {adminNotice ? (
+        <div className="rounded-lg border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[13px] text-amber-200">
           {adminNotice}
         </div>
-      )}
+      ) : null}
 
-      <section className="pos-card">
-        <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 className="text-base font-semibold">
-              {t('adminOverview.todaySnapshot')}
-            </h2>
-          </div>
-        </div>
-        <div className="grid gap-3 grid-cols-1 min-[520px]:grid-cols-2 xl:grid-cols-5 min-w-0 [&>*]:min-w-0">
+      <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)] p-4">
+        <h2 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-400">
+          {t('adminOverview.todaySnapshot')}
+        </h2>
+        <div className="grid grid-cols-1 gap-x-6 gap-y-4 min-[520px]:grid-cols-2 xl:grid-cols-5">
           <Stat
             title={t('adminOverview.revenueTodayNet')}
             value={ov ? (ov.revenueTodayNet ?? 0) : null}
@@ -442,38 +488,36 @@ export default function AdminPage() {
             value={ov?.coversToday ?? 0}
           />
           <Stat title={t('adminOverview.openOrders')} value={ov?.openOrders} />
-          <div className="pos-stat">
-            <div className="text-sm opacity-70">
-              {t('adminOverview.topSellingToday')}
-            </div>
-            <div className="mt-1 text-base sm:text-lg font-semibold break-words">
-              {topSelling ? topSelling.name : '—'}
-            </div>
-            {topSelling && (
-              <div className="text-sm opacity-80 mt-1 break-words">
-                {t('adminOverview.qty')}: {topSelling.qty} •{' '}
-                {t('adminOverview.revenue')}:{' '}
-                <span className="font-semibold tabular-nums">
-                  {formatMoney(topSelling.revenue, currency)}
-                </span>
-              </div>
-            )}
-          </div>
+          <Stat
+            title={t('adminOverview.topSellingToday')}
+            value={topSelling ? topSelling.name : '—'}
+            kind="text"
+            hint={
+              topSelling
+                ? `${t('adminOverview.qty')}: ${topSelling.qty} · ${t('adminOverview.revenue')}: ${formatMoney(topSelling.revenue, currency)}`
+                : t('adminOverview.noTopSeller')
+            }
+          />
         </div>
+        {quietDay ? (
+          <p className="mt-4 text-[12px] text-gray-500">
+            {t('adminOverview.emptyTodayHint')}
+          </p>
+        ) : null}
       </section>
 
-      <section className="pos-card">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">
+      <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)]">
+        <div className="flex items-start justify-between gap-3 border-b border-white/7 px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-[14px] font-semibold tracking-tight text-gray-50">
               {t('adminOverview.operations')}
             </h2>
-            <p className="text-xs text-gray-400">
+            <p className="mt-0.5 text-[12px] text-gray-500">
               {t('adminOverview.operationsHelp')}
             </p>
           </div>
-          <button
-            className="text-xs px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600"
+          <Button
+            size="sm"
             onClick={() => {
               setShiftFilter('ALL');
               setShiftView('SHIFTS');
@@ -481,55 +525,63 @@ export default function AdminPage() {
               setShowShiftsModal(true);
               void refreshShifts();
             }}
-            type="button"
           >
             {t('adminOverview.viewAll')}
-          </button>
+          </Button>
         </div>
-        <div className="space-y-2">
-          {openShifts.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 px-3 py-4 text-sm text-gray-400">
-              {t('adminOverview.noOpenShifts')}
-            </div>
-          ) : (
-            openShifts.slice(0, 4).map((s) => (
+        {openShifts.length === 0 ? (
+          <EmptyState
+            compact
+            title={t('adminOverview.noOpenShifts')}
+            description={t('adminOverview.noOpenShiftsHint')}
+          />
+        ) : (
+          <div className="divide-y divide-white/6">
+            {openShifts.slice(0, 4).map((s) => (
               <div
                 key={s.id}
-                className="rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2"
+                className="flex items-center justify-between gap-3 px-4 py-2.5"
               >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="font-medium truncate">{s.userName}</div>
-                    <div className="text-xs text-gray-400">
-                      {new Date(s.openedAt).toLocaleString()}
-                    </div>
+                <div className="min-w-0">
+                  <div className="truncate text-[13px] font-medium text-gray-100">
+                    {s.userName}
                   </div>
-                  <div className="text-right">
-                    <div className="font-mono tabular-nums text-sm font-semibold">
-                      {Number.isFinite(s.durationHours)
-                        ? s.durationHours.toFixed(2)
-                        : '—'}
-                    </div>
-                    <div className="text-[11px] uppercase tracking-wide text-gray-500">
-                      {t('adminOverview.hours')}
-                    </div>
+                  <div className="mt-0.5 text-[12px] text-gray-500">
+                    {t('adminOverview.sinceOpened', {
+                      when: new Date(s.openedAt).toLocaleString(),
+                    })}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="text-[13px] font-semibold tabular-nums text-gray-50">
+                    {formatShiftDuration(s.durationHours, t)}
                   </div>
                 </div>
               </div>
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {showShiftsModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-5xl p-4">
-            <div className="flex items-start justify-between gap-4 mb-3">
-              <div>
-                <div className="text-lg font-semibold">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+            onClick={() => setShowShiftsModal(false)}
+            aria-label={t('common.close')}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-white/10 bg-[var(--pos-surface)] shadow-2xl"
+          >
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/7 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-[15px] font-semibold">
                   {t('adminOverview.shiftHistory')}
                 </div>
-                <div className="text-xs opacity-70">
+                <div className="mt-0.5 text-[12px] text-gray-500">
                   {t('adminOverview.shiftTotals', {
                     total: shifts.length,
                     open: openShiftCount,
@@ -538,346 +590,274 @@ export default function AdminPage() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-                  onClick={refreshShifts}
-                  type="button"
-                >
-                  {t('adminOverview.refresh')}
-                </button>
-                <button
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                <Button size="sm" onClick={() => void refreshShifts()}>
+                  {t('common.refresh')}
+                </Button>
+                <Button
+                  size="sm"
+                  icon={<IconClose />}
                   onClick={() => setShowShiftsModal(false)}
-                  type="button"
                 >
-                  <IconClose />
                   {t('common.close')}
-                </button>
+                </Button>
               </div>
             </div>
 
-            <div className="flex flex-col md:flex-row md:items-center gap-2 mb-3">
-              <div className="flex items-center gap-2">
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftView === 'SHIFTS' ? 'bg-blue-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftView('SHIFTS')}
-                  type="button"
+            <div className="flex shrink-0 flex-col gap-2 border-b border-white/7 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Segmented
+                  size="sm"
+                  value={shiftView}
+                  onChange={setShiftView}
+                  options={[
+                    { value: 'SHIFTS', label: t('adminOverview.shifts') },
+                    { value: 'STAFF', label: t('adminOverview.byStaff') },
+                  ]}
+                />
+                <Select
+                  className="w-auto"
+                  value={shiftRange}
+                  onChange={(e) =>
+                    setShiftRange(
+                      e.target.value as
+                        | 'TODAY'
+                        | 'YESTERDAY'
+                        | 'WEEK'
+                        | 'MONTH'
+                        | 'ALL',
+                    )
+                  }
                 >
-                  {t('adminOverview.shifts')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftView === 'STAFF' ? 'bg-blue-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftView('STAFF')}
-                  type="button"
-                >
-                  {t('adminOverview.byStaff')}
-                </button>
-                <div className="w-px h-7 bg-gray-700 mx-1 hidden md:block" />
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'TODAY' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftRange('TODAY')}
-                  type="button"
-                >
-                  {t('adminOverview.today')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'YESTERDAY' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftRange('YESTERDAY')}
-                  type="button"
-                >
-                  {t('adminOverview.yesterday')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'WEEK' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftRange('WEEK')}
-                  type="button"
-                >
-                  {t('adminOverview.week')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'MONTH' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftRange('MONTH')}
-                  type="button"
-                >
-                  {t('adminOverview.month')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftRange === 'ALL' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftRange('ALL')}
-                  type="button"
-                >
-                  {t('adminOverview.allTime')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftFilter === 'OPEN' ? 'bg-emerald-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftFilter('OPEN')}
-                  type="button"
-                >
-                  {t('adminOverview.open')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftFilter === 'CLOSED' ? 'bg-emerald-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftFilter('CLOSED')}
-                  type="button"
-                >
-                  {t('adminOverview.closed')}
-                </button>
-                <button
-                  className={`px-3 py-1.5 rounded text-sm ${shiftFilter === 'ALL' ? 'bg-emerald-700' : 'bg-gray-800 hover:bg-gray-700'}`}
-                  onClick={() => setShiftFilter('ALL')}
-                  type="button"
-                >
-                  {t('adminOverview.all')}
-                </button>
+                  <option value="TODAY">{t('adminOverview.today')}</option>
+                  <option value="YESTERDAY">
+                    {t('adminOverview.yesterday')}
+                  </option>
+                  <option value="WEEK">{t('adminOverview.week')}</option>
+                  <option value="MONTH">{t('adminOverview.month')}</option>
+                  <option value="ALL">{t('adminOverview.allTime')}</option>
+                </Select>
+                {shiftView === 'SHIFTS' ? (
+                  <Segmented
+                    size="sm"
+                    value={shiftFilter}
+                    onChange={setShiftFilter}
+                    options={[
+                      { value: 'OPEN', label: t('adminOverview.open') },
+                      { value: 'CLOSED', label: t('adminOverview.closed') },
+                      { value: 'ALL', label: t('adminOverview.all') },
+                    ]}
+                  />
+                ) : null}
+                <div className="min-w-[200px] flex-1">
+                  <SearchInput
+                    value={shiftQuery}
+                    onValueChange={setShiftQuery}
+                    placeholder={t('adminOverview.searchShifts')}
+                  />
+                </div>
               </div>
-              <div className="flex-1" />
-              <input
-                className="bg-gray-800 rounded px-3 py-2 text-sm w-full md:w-[320px]"
-                placeholder={t('adminOverview.searchShifts')}
-                value={shiftQuery}
-                onChange={(e) => setShiftQuery(e.target.value)}
-              />
             </div>
 
-            {shiftView === 'SHIFTS' ? (
-              <div className="overflow-auto max-h-[70vh] border border-gray-800 rounded">
-                <table className="w-full text-sm">
-                  <thead className="text-left bg-gray-900 sticky top-0">
-                    <tr className="opacity-70">
-                      <th className="py-2 px-3">
-                        {t('adminOverview.colStatus')}
-                      </th>
-                      <th className="py-2 px-3">
-                        {t('adminOverview.colStaff')}
-                      </th>
-                      <th className="py-2 px-3">
-                        {t('adminOverview.colOpened')}
-                      </th>
-                      <th className="py-2 px-3">
-                        {t('adminOverview.colClosed')}
-                      </th>
-                      <th className="py-2 px-3 text-right">
-                        {t('adminOverview.colHours')}
-                      </th>
-                      <th className="py-2 px-3 text-right">
-                        {t('adminOverview.colShiftId')}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredShifts.length === 0 && (
-                      <tr className="border-t border-gray-800">
-                        <td className="py-3 px-3 opacity-70" colSpan={6}>
-                          {t('adminOverview.noShiftsFound')}
-                        </td>
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              {shiftView === 'SHIFTS' ? (
+                <div className="overflow-auto max-h-[70vh] border border-gray-800 rounded">
+                  <table className="w-full text-sm">
+                    <thead className="text-left bg-gray-900 sticky top-0">
+                      <tr className="opacity-70">
+                        <th className="py-2 px-3">
+                          {t('adminOverview.colStatus')}
+                        </th>
+                        <th className="py-2 px-3">
+                          {t('adminOverview.colStaff')}
+                        </th>
+                        <th className="py-2 px-3">
+                          {t('adminOverview.colOpened')}
+                        </th>
+                        <th className="py-2 px-3">
+                          {t('adminOverview.colClosed')}
+                        </th>
+                        <th className="py-2 px-3 text-right">
+                          {t('adminOverview.colHours')}
+                        </th>
+                        <th className="py-2 px-3 text-right">
+                          {t('adminOverview.colShiftId')}
+                        </th>
                       </tr>
-                    )}
-                    {filteredShifts.map((s) => (
-                      <tr key={s.id} className="border-t border-gray-800">
-                        <td className="py-2 px-3">
-                          <span
-                            className={`px-2 py-0.5 rounded border text-xs ${
-                              s.isOpen
-                                ? 'bg-emerald-900/30 border-emerald-700 text-emerald-100'
-                                : 'bg-gray-800 border-gray-700 text-gray-200'
-                            }`}
-                          >
-                            {s.isOpen
-                              ? t('adminOverview.shiftOpen')
-                              : t('adminOverview.shiftClosed')}
-                          </span>
-                        </td>
-                        <td className="py-2 px-3">
-                          <div className="font-medium">{s.userName}</div>
-                          <div className="text-xs opacity-70">
-                            {t('adminOverview.userNumber', { id: s.userId })}
-                          </div>
-                        </td>
-                        <td className="py-2 px-3 opacity-90">
-                          {new Date(s.openedAt).toLocaleString()}
-                        </td>
-                        <td className="py-2 px-3 opacity-90">
-                          {s.closedAt
-                            ? new Date(s.closedAt).toLocaleString()
-                            : '—'}
-                        </td>
-                        <td className="py-2 px-3 text-right font-mono">
-                          {Number.isFinite(s.durationHours)
-                            ? s.durationHours.toFixed(2)
-                            : '—'}
-                        </td>
-                        <td className="py-2 px-3 text-right font-mono opacity-80">
-                          {s.id}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="overflow-auto max-h-[70vh] border border-gray-800 rounded">
-                <table className="w-full text-sm">
-                  <thead className="text-left bg-gray-900 sticky top-0">
-                    <tr className="opacity-70">
-                      <th className="py-2 px-3">
-                        {t('adminOverview.colStaff')}
-                      </th>
-                      <th className="py-2 px-3 text-right">
-                        {t('adminOverview.open')}
-                      </th>
-                      <th className="py-2 px-3 text-right">
-                        {t('adminOverview.closed')}
-                      </th>
-                      <th className="py-2 px-3">
-                        {t('adminOverview.colLastOpened')}
-                      </th>
-                      <th className="py-2 px-3">
-                        {t('adminOverview.colLastClosed')}
-                      </th>
-                      <th className="py-2 px-3 text-right">
-                        {t('adminOverview.colTotalHours')}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {staffShiftSummary.length === 0 && (
-                      <tr className="border-t border-gray-800">
-                        <td className="py-3 px-3 opacity-70" colSpan={6}>
-                          {t('adminOverview.noShiftsFound')}
-                        </td>
-                      </tr>
-                    )}
-                    {staffShiftSummary
-                      .filter((r) => {
-                        const q = shiftQuery.trim().toLowerCase();
-                        if (!q) return true;
-                        return (
-                          String(r.userName || '')
-                            .toLowerCase()
-                            .includes(q) || String(r.userId).includes(q)
-                        );
-                      })
-                      .map((r) => (
-                        <tr
-                          key={r.userId}
-                          className="border-t border-gray-800 hover:bg-gray-800/40 cursor-pointer"
-                          onClick={() => {
-                            setShiftView('SHIFTS');
-                            setShiftFilter('ALL');
-                            setShiftQuery(String(r.userName || r.userId));
-                          }}
-                        >
+                    </thead>
+                    <tbody>
+                      {filteredShifts.length === 0 && (
+                        <tr className="border-t border-gray-800">
+                          <td className="py-3 px-3 opacity-70" colSpan={6}>
+                            {t('adminOverview.noShiftsFound')}
+                          </td>
+                        </tr>
+                      )}
+                      {filteredShifts.map((s) => (
+                        <tr key={s.id} className="border-t border-gray-800">
                           <td className="py-2 px-3">
-                            <div className="font-medium">{r.userName}</div>
+                            <Badge tone={s.isOpen ? 'accent' : 'neutral'} dot>
+                              {s.isOpen
+                                ? t('adminOverview.shiftOpen')
+                                : t('adminOverview.shiftClosed')}
+                            </Badge>
+                          </td>
+                          <td className="py-2 px-3">
+                            <div className="font-medium">{s.userName}</div>
                             <div className="text-xs opacity-70">
-                              {t('adminOverview.userNumber', { id: r.userId })}
+                              {t('adminOverview.userNumber', { id: s.userId })}
                             </div>
                           </td>
-                          <td className="py-2 px-3 text-right font-mono">
-                            {r.openCount}
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono">
-                            {r.closedCount}
+                          <td className="py-2 px-3 opacity-90">
+                            {new Date(s.openedAt).toLocaleString()}
                           </td>
                           <td className="py-2 px-3 opacity-90">
-                            {r.lastOpenedAt
-                              ? new Date(r.lastOpenedAt).toLocaleString()
+                            {s.closedAt
+                              ? new Date(s.closedAt).toLocaleString()
                               : '—'}
                           </td>
-                          <td className="py-2 px-3 opacity-90">
-                            {r.lastClosedAt
-                              ? new Date(r.lastClosedAt).toLocaleString()
-                              : '—'}
+                          <td className="py-2 px-3 text-right tabular-nums">
+                            {formatShiftDuration(s.durationHours, t)}
                           </td>
-                          <td className="py-2 px-3 text-right font-mono">
-                            {Number.isFinite(r.totalHours)
-                              ? r.totalHours.toFixed(2)
-                              : '—'}
+                          <td className="py-2 px-3 text-right font-mono opacity-80">
+                            {s.id}
                           </td>
                         </tr>
                       ))}
-                  </tbody>
-                </table>
-                <div className="px-3 py-2 text-xs opacity-70 border-t border-gray-800">
-                  {t('adminOverview.staffRowTip')}
+                    </tbody>
+                  </table>
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="overflow-auto max-h-[70vh] border border-gray-800 rounded">
+                  <table className="w-full text-sm">
+                    <thead className="text-left bg-gray-900 sticky top-0">
+                      <tr className="opacity-70">
+                        <th className="py-2 px-3">
+                          {t('adminOverview.colStaff')}
+                        </th>
+                        <th className="py-2 px-3 text-right">
+                          {t('adminOverview.open')}
+                        </th>
+                        <th className="py-2 px-3 text-right">
+                          {t('adminOverview.closed')}
+                        </th>
+                        <th className="py-2 px-3">
+                          {t('adminOverview.colLastOpened')}
+                        </th>
+                        <th className="py-2 px-3">
+                          {t('adminOverview.colLastClosed')}
+                        </th>
+                        <th className="py-2 px-3 text-right">
+                          {t('adminOverview.colTotalHours')}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {staffShiftSummary.length === 0 && (
+                        <tr className="border-t border-gray-800">
+                          <td className="py-3 px-3 opacity-70" colSpan={6}>
+                            {t('adminOverview.noShiftsFound')}
+                          </td>
+                        </tr>
+                      )}
+                      {staffShiftSummary
+                        .filter((r) => {
+                          const q = shiftQuery.trim().toLowerCase();
+                          if (!q) return true;
+                          return (
+                            String(r.userName || '')
+                              .toLowerCase()
+                              .includes(q) || String(r.userId).includes(q)
+                          );
+                        })
+                        .map((r) => (
+                          <tr
+                            key={r.userId}
+                            className="border-t border-gray-800 hover:bg-gray-800/40 cursor-pointer"
+                            onClick={() => {
+                              setShiftView('SHIFTS');
+                              setShiftFilter('ALL');
+                              setShiftQuery(String(r.userName || r.userId));
+                            }}
+                          >
+                            <td className="py-2 px-3">
+                              <div className="font-medium">{r.userName}</div>
+                              <div className="text-xs opacity-70">
+                                {t('adminOverview.userNumber', {
+                                  id: r.userId,
+                                })}
+                              </div>
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono">
+                              {r.openCount}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono">
+                              {r.closedCount}
+                            </td>
+                            <td className="py-2 px-3 opacity-90">
+                              {r.lastOpenedAt
+                                ? new Date(r.lastOpenedAt).toLocaleString()
+                                : '—'}
+                            </td>
+                            <td className="py-2 px-3 opacity-90">
+                              {r.lastClosedAt
+                                ? new Date(r.lastClosedAt).toLocaleString()
+                                : '—'}
+                            </td>
+                            <td className="py-2 px-3 text-right tabular-nums">
+                              {formatShiftDuration(r.totalHours, t)}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                  <div className="border-t border-white/7 px-3 py-2 text-[12px] text-gray-500">
+                    {t('adminOverview.staffRowTip')}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      <section className="pos-card">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">
+      <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)]">
+        <div className="flex items-start justify-between gap-3 border-b border-white/7 px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-[14px] font-semibold tracking-tight text-gray-50">
               {t('adminOverview.staffMembers')}
             </h2>
-            <p className="text-xs text-gray-400">
+            <p className="mt-0.5 text-[12px] text-gray-500">
               {t('adminOverview.staffHelp', {
                 active: staffTotals.active,
                 onShift: staffTotals.onShift,
               })}
             </p>
           </div>
-          <div
-            className="relative shrink-0"
-            tabIndex={-1}
-            onBlur={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                setShowStaffMenu(false);
-              }
-            }}
-          >
-            <button
-              type="button"
-              className="pos-icon-btn cursor-pointer relative"
-              aria-label={t('adminOverview.staffMenu')}
-              aria-haspopup="menu"
-              aria-expanded={showStaffMenu}
-              onClick={() => setShowStaffMenu((v) => !v)}
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              disabled={billingPaused}
+              onClick={() => setShowAddStaffModal(true)}
             >
-              <IconKebab />
-              {showAdmins || showInactive ? (
-                <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-emerald-400" />
-              ) : null}
-            </button>
-            {showStaffMenu ? (
-              <div
-                role="menu"
-                className="absolute right-0 mt-2 w-56 rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-lg z-50"
-              >
-                <label className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={showAdmins}
-                    onChange={(e) => setShowAdmins(e.target.checked)}
-                  />
-                  {t('adminOverview.showAdmins')}
-                </label>
-                <label className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={showInactive}
-                    onChange={(e) => setShowInactive(e.target.checked)}
-                  />
-                  {t('adminOverview.showInactive')}
-                </label>
-                <div className="my-1 border-t border-gray-700" />
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-800 disabled:opacity-60 cursor-pointer"
-                  disabled={billingPaused}
-                  onClick={() => {
-                    setShowStaffMenu(false);
-                    setShowAddStaffModal(true);
-                  }}
-                >
-                  {t('adminOverview.addStaff')}
-                </button>
-              </div>
-            ) : null}
+              {t('adminOverview.addStaff')}
+            </Button>
+            <KebabMenu
+              label={t('adminOverview.staffMenu')}
+              items={[
+                {
+                  label: showAdmins
+                    ? t('adminOverview.hideAdmins')
+                    : t('adminOverview.showAdmins'),
+                  onSelect: () => setShowAdmins((v) => !v),
+                },
+                {
+                  label: showInactive
+                    ? t('adminOverview.hideInactive')
+                    : t('adminOverview.showInactive'),
+                  onSelect: () => setShowInactive((v) => !v),
+                },
+              ]}
+            />
           </div>
         </div>
 
@@ -906,196 +886,98 @@ export default function AdminPage() {
           />
         )}
 
-        {staffStatus && (
+        {staffStatus ? (
           <div
             role="status"
-            className={`mb-3 text-sm rounded px-3 py-2 border ${
+            className={cn(
+              'mx-4 mt-3 rounded-lg border px-3 py-2 text-[13px]',
               staffStatus.kind === 'success'
-                ? 'bg-emerald-900/20 border-emerald-800 text-emerald-100'
-                : 'bg-rose-900/20 border-rose-800 text-rose-100'
-            }`}
+                ? 'border-emerald-800/70 bg-emerald-900/20 text-emerald-100'
+                : 'border-rose-800/70 bg-rose-900/20 text-rose-100',
+            )}
           >
             {staffStatus.message}
           </div>
-        )}
+        ) : null}
 
-        <div className="mt-4 mb-3">
-          <input
-            className="w-full bg-gray-900/70 border border-gray-700 rounded-lg px-3 py-2"
-            placeholder={t('adminOverview.searchStaff')}
+        <div className="px-4 py-3">
+          <SearchInput
             value={userQuery}
-            onChange={(e) => setUserQuery(e.target.value)}
+            onValueChange={setUserQuery}
+            placeholder={t('adminOverview.searchStaff')}
           />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
-          {staffList.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 px-3 py-4 text-sm text-gray-400">
-              {t('adminOverview.noStaffFound')}
-            </div>
-          ) : (
-            staffList.map((u) => (
-              <div
-                key={u.id}
-                className="rounded-lg border border-gray-700 bg-gray-900/50 p-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="truncate text-base font-semibold">
+        {staffList.length === 0 ? (
+          <EmptyState
+            compact
+            title={t('adminOverview.noStaffFound')}
+            className="pb-6"
+          />
+        ) : (
+          <div className="grid grid-cols-1 gap-px bg-white/6 sm:grid-cols-2 2xl:grid-cols-3">
+            {staffList.map((u) => {
+              const onShift = openUserIds.has(u.id);
+              return (
+                <div
+                  key={u.id}
+                  className="flex items-start gap-3 bg-[var(--pos-surface)] px-4 py-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="truncate text-[13px] font-semibold text-gray-50">
                         {u.displayName}
                       </div>
                       {!u.active ? (
-                        <span className="rounded-full border border-rose-700 bg-rose-900/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-rose-100">
-                          {t('adminOverview.showInactive')}
-                        </span>
-                      ) : openUserIds.has(u.id) ? (
-                        <span className="rounded-full border border-emerald-700 bg-emerald-900/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-100">
+                        <Badge tone="danger">
+                          {t('adminOverview.inactive')}
+                        </Badge>
+                      ) : onShift ? (
+                        <Badge tone="accent" dot>
                           {t('adminOverview.colOnShift')}
-                        </span>
+                        </Badge>
                       ) : null}
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-400">
-                      <span className="rounded bg-gray-950/80 px-2 py-0.5 font-mono">
-                        #{u.id}
-                      </span>
-                      <span className="rounded border border-gray-700 bg-gray-950/60 px-2 py-0.5">
-                        {u.role}
-                      </span>
-                      <span>
-                        {t('adminOverview.colCreated')}:{' '}
-                        {u.createdAt
-                          ? new Date(u.createdAt).toLocaleDateString()
-                          : '—'}
-                      </span>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px] text-gray-500">
+                      <span className="font-mono tabular-nums">#{u.id}</span>
+                      <span aria-hidden>·</span>
+                      <span>{roleLabel(t, u.role)}</span>
                     </div>
                   </div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    className="px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-xs cursor-pointer border border-gray-700"
-                    title={t('adminOverview.editStaffTitle')}
-                    onClick={() =>
-                      setEditingStaff({
-                        id: u.id,
-                        displayName: u.displayName,
-                        role: u.role,
-                        active: Boolean(u.active),
-                      })
-                    }
-                  >
-                    <IconPencil />
-                  </button>
-                  {u.active ? (
-                    <button
-                      className="px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-xs disabled:opacity-40 border border-gray-700"
-                      disabled={myId === u.id}
-                      title={
-                        myId === u.id
-                          ? t('adminOverview.disableSelfTitle')
-                          : t('adminOverview.disableUserTitle')
-                      }
-                      onClick={async () => {
-                        setStaffStatus(null);
-                        try {
-                          await window.api.auth.updateUser({
+                  <KebabMenu
+                    label={t('common.moreActions')}
+                    items={[
+                      {
+                        label: t('common.edit'),
+                        onSelect: () =>
+                          setEditingStaff({
                             id: u.id,
-                            active: false,
-                          } as any);
-                          setStaffStatus({
-                            kind: 'success',
-                            message: t('adminOverview.disabledUser', {
-                              name: u.displayName,
-                            }),
-                          });
-                          await refreshUsers();
-                        } catch (e: any) {
-                          setStaffStatus({
-                            kind: 'error',
-                            message:
-                              e?.message || t('adminOverview.disableFailed'),
-                          });
-                        }
-                      }}
-                    >
-                      {t('adminOverview.disable')}
-                    </button>
-                  ) : (
-                    <button
-                      className="px-2.5 py-1.5 rounded bg-emerald-800 hover:bg-emerald-700 text-xs"
-                      onClick={async () => {
-                        setStaffStatus(null);
-                        try {
-                          await window.api.auth.updateUser({
-                            id: u.id,
-                            active: true,
-                          } as any);
-                          setStaffStatus({
-                            kind: 'success',
-                            message: t('adminOverview.enabledUser', {
-                              name: u.displayName,
-                            }),
-                          });
-                          await refreshUsers();
-                        } catch (e: any) {
-                          setStaffStatus({
-                            kind: 'error',
-                            message:
-                              e?.message || t('adminOverview.enableFailed'),
-                          });
-                        }
-                      }}
-                    >
-                      {t('adminOverview.enable')}
-                    </button>
-                  )}
-
-                  <button
-                    className="ml-auto px-2.5 py-1.5 rounded bg-red-800 hover:bg-red-700 text-xs disabled:opacity-40"
-                    disabled={myId === u.id}
-                    title={
-                      myId === u.id
-                        ? t('adminOverview.deleteSelfTitle')
-                        : t('adminOverview.deleteUserTitle')
-                    }
-                    onClick={async () => {
-                      if (myId === u.id) return;
-                      const ok = window.confirm(
-                        t('adminOverview.deleteConfirm', {
-                          name: u.displayName,
-                          id: u.id,
-                        }),
-                      );
-                      if (!ok) return;
-                      setStaffStatus(null);
-                      try {
-                        await window.api.auth.deleteUser({
-                          id: u.id,
-                          hard: true,
-                        } as any);
-                        setStaffStatus({
-                          kind: 'success',
-                          message: t('adminOverview.deletedUser', {
-                            name: u.displayName,
+                            displayName: u.displayName,
+                            role: u.role,
+                            active: Boolean(u.active),
                           }),
-                        });
-                        await refreshUsers();
-                      } catch (e: any) {
-                        setStaffStatus({
-                          kind: 'error',
-                          message:
-                            e?.message || t('adminOverview.deleteFailed'),
-                        });
-                      }
-                    }}
-                  >
-                    <IconTrash />
-                  </button>
+                      },
+                      {
+                        label: u.active
+                          ? t('adminOverview.disable')
+                          : t('adminOverview.enable'),
+                        disabled: myId === u.id,
+                        onSelect: () =>
+                          void setStaffActive(u.id, u.displayName, !u.active),
+                      },
+                      {
+                        label: t('common.delete'),
+                        danger: true,
+                        disabled: myId === u.id,
+                        onSelect: () => void deleteStaff(u.id, u.displayName),
+                      },
+                    ]}
+                  />
                 </div>
-              </div>
-            ))
-          )}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -1121,47 +1003,47 @@ function Stat({
   value,
   kind = 'count',
   currency,
+  hint,
 }: {
   title: string;
   value: any;
   kind?: 'count' | 'money' | 'text';
   currency?: string;
+  hint?: string;
 }) {
   const display =
     kind === 'money'
       ? value == null
         ? '—'
         : formatMoney(Number(value || 0), String(currency || 'EUR'))
-      : (value ?? '—');
+      : kind === 'text'
+        ? (value ?? '—')
+        : value == null
+          ? '—'
+          : String(value);
+  const quiet =
+    display === '—' ||
+    display === '0' ||
+    /([^\d]|^)0([.,]00)?$/.test(String(display));
   return (
-    <div className="pos-stat">
-      <div className="text-sm opacity-70 leading-snug">{title}</div>
+    <div className="min-w-0">
+      <div className="text-[12px] font-medium leading-snug text-gray-400">
+        {title}
+      </div>
       <div
-        className={`mt-1 min-w-0 ${
-          kind === 'money'
-            ? 'pos-stat-value text-lg sm:text-xl md:text-2xl lg:text-3xl leading-tight break-words'
-            : 'text-xl sm:text-2xl font-semibold tabular-nums break-words'
-        }`}
+        className={cn(
+          'mt-1.5 min-w-0 break-words text-[22px] font-semibold tracking-tight tabular-nums',
+          quiet ? 'text-gray-500' : 'text-gray-50',
+        )}
       >
         {display}
       </div>
+      {hint ? (
+        <div className="mt-1 text-[11px] text-gray-500">{hint}</div>
+      ) : null}
     </div>
   );
 }
-
-type StaffRole =
-  | 'WAITER'
-  | 'CASHIER'
-  | 'ADMIN'
-  | 'KP'
-  | 'CHEF'
-  | 'HEAD_CHEF'
-  | 'FOOD_RUNNER'
-  | 'HOST'
-  | 'BUSSER'
-  | 'BARTENDER'
-  | 'BARBACK'
-  | 'CLEANER';
 
 function AddStaffModal({
   billingPaused,
@@ -1226,75 +1108,39 @@ function AddStaffModal({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-md overflow-hidden rounded-lg border border-white/10 bg-[var(--pos-surface)] shadow-2xl"
       >
-        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
-          <div className="font-semibold">{t('adminOverview.addStaff')}</div>
-          <button
-            type="button"
-            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
-            onClick={onClose}
-            aria-label={t('common.close')}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="pos-icon"
-            >
-              <path
-                d="M6 6l12 12M18 6 6 18"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
+        <div className="flex items-center justify-between gap-3 border-b border-white/7 px-4 py-3">
+          <div className="text-[15px] font-semibold">
+            {t('adminOverview.addStaff')}
+          </div>
+          <Button size="sm" icon={<IconClose />} onClick={onClose}>
+            {t('common.close')}
+          </Button>
         </div>
-        <div className="p-4 space-y-4">
-          {billingPaused && (
-            <div className="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
+        <div className="space-y-4 p-4">
+          {billingPaused ? (
+            <div className="rounded-lg border border-amber-800/60 bg-amber-900/20 px-3 py-2 text-[12px] text-amber-200">
               {t('adminOverview.billingPausedAddStaff')}
             </div>
-          )}
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">{t('adminOverview.fullName')}</div>
-            <input
-              className="w-full bg-gray-700 rounded px-3 py-2"
+          ) : null}
+          <Field label={t('adminOverview.fullName')}>
+            <Input
               placeholder={t('adminOverview.fullName')}
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={billingPaused}
             />
-          </label>
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">{t('adminOverview.role')}</div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
+          </Field>
+          <Field label={t('adminOverview.role')}>
+            <RoleSelect
               value={role}
-              onChange={(e) => setRole(e.target.value as StaffRole)}
+              onChange={setRole}
               disabled={billingPaused}
-            >
-              <option value="WAITER">WAITER</option>
-              <option value="CASHIER">CASHIER</option>
-              <option value="ADMIN">ADMIN</option>
-              <option value="KP">KP</option>
-              <option value="CHEF">CHEF</option>
-              <option value="HEAD_CHEF">HEAD_CHEF</option>
-              <option value="FOOD_RUNNER">FOOD_RUNNER</option>
-              <option value="HOST">HOST</option>
-              <option value="BUSSER">BUSSER</option>
-              <option value="BARTENDER">BARTENDER</option>
-              <option value="BARBACK">BARBACK</option>
-              <option value="CLEANER">CLEANER</option>
-            </select>
-          </label>
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">
-              {t('adminOverview.pinDigits')}
-            </div>
-            <input
-              className="w-full bg-gray-700 rounded px-3 py-2"
+            />
+          </Field>
+          <Field label={t('adminOverview.pinDigits')}>
+            <Input
               placeholder={t('adminOverview.pinDigits')}
               type="password"
               inputMode="numeric"
@@ -1304,33 +1150,30 @@ function AddStaffModal({
               }
               disabled={billingPaused}
             />
-          </label>
-          <label className="flex items-center gap-2 text-sm select-none">
-            <input
-              type="checkbox"
+          </Field>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[13px]">{t('adminOverview.active')}</span>
+            <Switch
               checked={active}
-              onChange={(e) => setActive(e.target.checked)}
+              onChange={setActive}
               disabled={billingPaused}
+              label={t('adminOverview.active')}
             />
-            {t('adminOverview.active')}
-          </label>
-          {error && <div className="text-sm text-rose-300">{error}</div>}
-          <div className="flex gap-2 pt-2">
-            <button
-              className="flex-1 px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60"
-              type="button"
+          </div>
+          {error ? (
+            <div className="text-[13px] text-rose-300">{error}</div>
+          ) : null}
+          <div className="flex gap-2 pt-1">
+            <Button
+              variant="primary"
+              className="flex-1"
               disabled={billingPaused || saving}
+              loading={saving}
               onClick={() => void handleSubmit()}
             >
               {saving ? t('adminOverview.adding') : t('adminOverview.add')}
-            </button>
-            <button
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-              type="button"
-              onClick={onClose}
-            >
-              {t('common.cancel')}
-            </button>
+            </Button>
+            <Button onClick={onClose}>{t('common.cancel')}</Button>
           </div>
         </div>
       </div>
@@ -1418,79 +1261,43 @@ function EditStaffModal({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-md overflow-hidden rounded-lg border border-white/10 bg-[var(--pos-surface)] shadow-2xl"
       >
-        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
-          <div className="font-semibold">
+        <div className="flex items-center justify-between gap-3 border-b border-white/7 px-4 py-3">
+          <div className="text-[15px] font-semibold">
             {t('adminOverview.editStaffId', { id: staff.id })}
           </div>
-          <button
-            type="button"
-            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
-            onClick={onClose}
-            aria-label={t('common.close')}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="pos-icon"
-            >
-              <path
-                d="M6 6l12 12M18 6 6 18"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
+          <Button size="sm" icon={<IconClose />} onClick={onClose}>
+            {t('common.close')}
+          </Button>
         </div>
-        <div className="p-4 space-y-4">
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">{t('adminOverview.fullName')}</div>
-            <input
-              className="w-full bg-gray-700 rounded px-3 py-2"
+        <div className="space-y-4 p-4">
+          <Field label={t('adminOverview.fullName')}>
+            <Input
               placeholder={t('adminOverview.fullName')}
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
-          </label>
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">{t('adminOverview.role')}</div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
+          </Field>
+          <Field
+            label={t('adminOverview.role')}
+            hint={
+              isSelf && staff.role === 'ADMIN'
+                ? t('adminOverview.cantChangeOwnRole')
+                : undefined
+            }
+          >
+            <RoleSelect
               value={role}
-              onChange={(e) => setRole(e.target.value as StaffRole)}
+              onChange={setRole}
               disabled={isSelf && staff.role === 'ADMIN'}
-            >
-              <option value="WAITER">WAITER</option>
-              <option value="CASHIER">CASHIER</option>
-              <option value="ADMIN">ADMIN</option>
-              <option value="KP">KP</option>
-              <option value="CHEF">CHEF</option>
-              <option value="HEAD_CHEF">HEAD_CHEF</option>
-              <option value="FOOD_RUNNER">FOOD_RUNNER</option>
-              <option value="HOST">HOST</option>
-              <option value="BUSSER">BUSSER</option>
-              <option value="BARTENDER">BARTENDER</option>
-              <option value="BARBACK">BARBACK</option>
-              <option value="CLEANER">CLEANER</option>
-            </select>
-            {isSelf && staff.role === 'ADMIN' && (
-              <div className="text-xs opacity-70 mt-1">
-                {t('adminOverview.cantChangeOwnRole')}
-              </div>
-            )}
-          </label>
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">
-              {t('adminOverview.newPin')}{' '}
-              <span className="opacity-60">
-                {t('adminOverview.newPinHint')}
-              </span>
-            </div>
-            <input
-              className="w-full bg-gray-700 rounded px-3 py-2"
+            />
+          </Field>
+          <Field
+            label={t('adminOverview.newPin')}
+            hint={t('adminOverview.newPinHint')}
+          >
+            <Input
               placeholder={t('adminOverview.pinDigitsShort')}
               type="password"
               inputMode="numeric"
@@ -1500,38 +1307,37 @@ function EditStaffModal({
                 setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
               }
             />
-          </label>
-          <label className="flex items-center gap-2 text-sm select-none">
-            <input
-              type="checkbox"
+          </Field>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[13px]">{t('adminOverview.active')}</div>
+              {isSelf ? (
+                <div className="text-[12px] text-gray-500">
+                  {t('adminOverview.cantDeactivateSelf')}
+                </div>
+              ) : null}
+            </div>
+            <Switch
               checked={active}
-              onChange={(e) => setActive(e.target.checked)}
+              onChange={setActive}
               disabled={isSelf}
+              label={t('adminOverview.active')}
             />
-            {t('adminOverview.active')}
-            {isSelf && (
-              <span className="text-xs opacity-70">
-                {t('adminOverview.cantDeactivateSelf')}
-              </span>
-            )}
-          </label>
-          {error && <div className="text-sm text-rose-300">{error}</div>}
-          <div className="flex gap-2 pt-2">
-            <button
-              className="flex-1 px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60"
-              type="button"
+          </div>
+          {error ? (
+            <div className="text-[13px] text-rose-300">{error}</div>
+          ) : null}
+          <div className="flex gap-2 pt-1">
+            <Button
+              variant="primary"
+              className="flex-1"
               disabled={saving || !dirty}
+              loading={saving}
               onClick={() => void handleSubmit()}
             >
               {saving ? t('common.saving') : t('adminOverview.saveChanges')}
-            </button>
-            <button
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600"
-              type="button"
-              onClick={onClose}
-            >
-              {t('common.cancel')}
-            </button>
+            </Button>
+            <Button onClick={onClose}>{t('common.cancel')}</Button>
           </div>
         </div>
       </div>

@@ -21,6 +21,7 @@ vi.mock('./tableOpen', () => ({
 import {
   TABLE_ALREADY_PAID,
   closeTableAfterAcceptedPayment,
+  closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
@@ -64,5 +65,24 @@ describe('paymentSettle', () => {
       'T1',
       expect.any(Function),
     );
+  });
+
+  it('closes a still-open table when a payment retry hits the PrintJob', async () => {
+    isTableOpen.mockResolvedValue(true);
+    const r = await closeTableAfterIdempotentPayment('Sallon', 'T1', 'PAYMENT');
+    expect(r).toEqual(paymentPrintAccepted(true));
+    expect(applyTableOpenState).toHaveBeenCalledWith('Sallon', 'T1', false);
+  });
+
+  it('does not re-close a table that the first payment already freed', async () => {
+    isTableOpen.mockResolvedValue(false);
+    await closeTableAfterIdempotentPayment('Sallon', 'T1', 'PAYMENT');
+    expect(applyTableOpenState).not.toHaveBeenCalled();
+  });
+
+  it('leaves kitchen tickets alone on an idempotent print hit', async () => {
+    await closeTableAfterIdempotentPayment('Sallon', 'T1', 'ORDER');
+    expect(applyTableOpenState).not.toHaveBeenCalled();
+    expect(withTableLock).not.toHaveBeenCalled();
   });
 });

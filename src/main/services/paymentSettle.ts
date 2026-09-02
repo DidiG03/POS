@@ -57,6 +57,25 @@ export async function closeTableAfterAcceptedPayment(
   await applyTableOpenState(area, label, false);
 }
 
+/**
+ * A retry that hit an existing PrintJob must still free the table when the
+ * first attempt recorded the sale but died before `tables:open` was cleared.
+ */
+export async function closeTableAfterIdempotentPayment(
+  area: string,
+  label: string,
+  kind: string,
+): Promise<PrintTicketOk> {
+  if (String(kind || '').toUpperCase() === 'PAYMENT' && area && label) {
+    await withPaymentLock(area, label, async () => {
+      if (await tableIsOpenForPayment(area, label)) {
+        await closeTableAfterAcceptedPayment(area, label);
+      }
+    });
+  }
+  return paymentPrintAccepted(true);
+}
+
 export function paymentPrintAccepted(printed: boolean): PrintTicketOk {
   return {
     ok: true,

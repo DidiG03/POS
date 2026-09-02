@@ -881,6 +881,7 @@ export interface ApiKds {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
     ticketId?: number;
     itemIdx?: number;
+    cooker?: boolean;
   }): Promise<{
     ok: boolean;
     ticketId?: number | null;
