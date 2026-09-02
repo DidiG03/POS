@@ -94,20 +94,14 @@ jobs:
           fi
 
           # electron-builder names installers from productName (OneTap POS /
-          # OneTap KDS). latest.yml must use those exact filenames or in-app
-          # updates 404. Also keep Code-Orbit aliases for older clients.
+          # OneTap KDS). latest.yml / kds.yml must use those exact filenames
+          # or in-app updates 404.
           CANONICAL_POS_NAME="OneTap-POS-Setup-${VERSION}.exe"
           CANONICAL_KDS_NAME="OneTap-KDS-Setup-${VERSION}.exe"
-          LEGACY_POS_NAME="Code-Orbit-POS-Setup-${VERSION}.exe"
-          LEGACY_KDS_NAME="Code-Orbit-KDS-Setup-${VERSION}.exe"
           CANONICAL_POS="dist/${CANONICAL_POS_NAME}"
           CANONICAL_KDS="dist-installers/kds/${CANONICAL_KDS_NAME}"
-          LEGACY_POS="dist/${LEGACY_POS_NAME}"
-          LEGACY_KDS="dist-installers/kds/${LEGACY_KDS_NAME}"
           cp "$POS_EXE" "$CANONICAL_POS"
           cp "$KDS_EXE" "$CANONICAL_KDS"
-          cp "$POS_EXE" "$LEGACY_POS"
-          cp "$KDS_EXE" "$LEGACY_KDS"
 
           # electron-builder emits `latest.yml` for POS but not `latest-kds.yml`
           # when building with `--publish never` and a custom KDS channel.
@@ -158,7 +152,7 @@ jobs:
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES"
           fi
 
-          UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" "$LEGACY_POS" "$LEGACY_KDS" )
+          UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" )
           shopt -s nullglob
           UPLOAD+=( dist/latest*.yml dist-installers/kds/kds.yml dist-installers/kds/latest*.yml )
           shopt -u nullglob
