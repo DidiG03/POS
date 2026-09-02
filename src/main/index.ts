@@ -49,6 +49,7 @@ import {
   splitGrossVat,
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
+import { findVoidableLineIndex } from '@shared/voidLine';
 import {
   isVatEnabledFromSettings,
   resolveVatEnabledFromMeta,
@@ -4381,9 +4382,7 @@ ipcHandle('tickets:voidItem', async (_e, input) => {
   });
   if (last) {
     const items = (last.itemsJson as any[]) || [];
-    const idx = items.findIndex(
-      (it: any) => it.name === item.name && !it?.voided,
-    );
+    const idx = findVoidableLineIndex(items, item);
     if (idx !== -1) {
       items[idx] = { ...items[idx], voided: true };
       await prisma.ticketLog.update({

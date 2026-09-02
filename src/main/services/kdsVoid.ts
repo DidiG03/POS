@@ -1,13 +1,7 @@
 import { prisma } from '@db/client';
 import { ensureKdsLocalSchema } from './kdsSchema';
 
-function itemMatchesVoidTarget(it: any, item: any): boolean {
-  const sku = String(item?.sku || '').trim();
-  const name = String(item?.name || '').trim();
-  const itSku = String(it?.sku || '').trim();
-  const itName = String(it?.name || '').trim();
-  return (sku && itSku && itSku === sku) || itName === name;
-}
+import { matchVoidableLine } from '@shared/voidLine';
 
 export async function applyKdsVoidTicket(input: {
   userId: number;
@@ -101,29 +95,33 @@ export async function applyKdsVoidItem(input: {
         where: { orderId: order.id },
         orderBy: { id: 'asc' },
       });
-      let voidedOne = false;
+
+      // Station routing splits one check across several KDS tickets, so pick
+      // the closest match across all of them rather than the first ticket
+      // that happens to hold a same-named dish.
+      let best: {
+        ticket: any;
+        items: any[];
+        index: number;
+        rank: number;
+      } | null = null;
       for (const t of tickets) {
-        if (voidedOne) break;
-        const itemsAll = Array.isArray(t.itemsJson)
-          ? (t.itemsJson as any[])
-          : [];
-        let changed = false;
-        const nextItems = itemsAll.map((it: any) => {
-          if (voidedOne || it?.voided) return it;
-          if (itemMatchesVoidTarget(it, input.item)) {
-            voidedOne = true;
-            changed = true;
-            return { ...it, voided: true };
-          }
-          return it;
-        });
-        if (changed) {
-          await tx.kdsTicket.update({
-            where: { id: t.id },
-            data: { itemsJson: nextItems },
-          });
+        const items = Array.isArray(t.itemsJson) ? (t.itemsJson as any[]) : [];
+        const match = matchVoidableLine(items, input.item);
+        if (match.index === -1) continue;
+        if (!best || match.rank < best.rank) {
+          best = { ticket: t, items, index: match.index, rank: match.rank };
         }
       }
+      if (!best) return;
+
+      const nextItems = best.items.map((it: any, i: number) =>
+        i === best!.index ? { ...it, voided: true } : it,
+      );
+      await tx.kdsTicket.update({
+        where: { id: best.ticket.id },
+        data: { itemsJson: nextItems },
+      });
     });
     return true;
   } catch {
