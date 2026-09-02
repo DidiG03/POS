@@ -654,6 +654,10 @@ function OwnerRequests({ userId }: { userId: number }) {
       createdAt: string;
     }>
   >([]);
+  // A tablet on shaky Wi-Fi gets double-tapped. Without this the same request
+  // is decided twice, and the second decision runs against a row the host has
+  // already moved on from.
+  const [deciding, setDeciding] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -713,22 +717,36 @@ function OwnerRequests({ userId }: { userId: number }) {
               <Button
                 size="sm"
                 variant="primary"
+                disabled={deciding != null}
                 onClick={async () => {
-                  await window.api.requests
-                    .approve(r.id, userId)
-                    .catch(() => {});
-                  setRows((prev) => prev.filter((x) => x.id !== r.id));
+                  if (deciding != null) return;
+                  setDeciding(r.id);
+                  try {
+                    await window.api.requests
+                      .approve(r.id, userId)
+                      .catch(() => {});
+                    setRows((prev) => prev.filter((x) => x.id !== r.id));
+                  } finally {
+                    setDeciding(null);
+                  }
                 }}
               >
                 {t('common.approve')}
               </Button>
               <Button
                 size="sm"
+                disabled={deciding != null}
                 onClick={async () => {
-                  await window.api.requests
-                    .reject(r.id, userId)
-                    .catch(() => {});
-                  setRows((prev) => prev.filter((x) => x.id !== r.id));
+                  if (deciding != null) return;
+                  setDeciding(r.id);
+                  try {
+                    await window.api.requests
+                      .reject(r.id, userId)
+                      .catch(() => {});
+                    setRows((prev) => prev.filter((x) => x.id !== r.id));
+                  } finally {
+                    setDeciding(null);
+                  }
                 }}
               >
                 {t('common.reject')}

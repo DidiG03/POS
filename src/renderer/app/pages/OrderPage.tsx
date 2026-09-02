@@ -1205,6 +1205,10 @@ export default function OrderPage() {
   useEffect(() => {
     if (ticketSyncing) return;
     const gen = hydrateGenRef.current;
+    // The ticket store is global. Without this the reply to a slow fetch can
+    // land after the waiter has already backed out and opened another table,
+    // writing the previous table's lines into the check they are looking at.
+    let cancelled = false;
     (async () => {
       if (!selectedTable) return;
       // Only hydrate for tables currently marked as open
@@ -1215,7 +1219,7 @@ export default function OrderPage() {
           selectedTable.label,
         );
         // Stale fetch — a void or new action happened while this was in flight
-        if (gen !== hydrateGenRef.current) return;
+        if (cancelled || gen !== hydrateGenRef.current) return;
         const items = Array.isArray(latest?.items) ? latest!.items : [];
         if (items.length) {
           useTicketStore
@@ -1245,6 +1249,9 @@ export default function OrderPage() {
         void e;
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [
     selectedTable?.area,
     selectedTable?.label,
@@ -1301,10 +1308,12 @@ export default function OrderPage() {
   // Owner: poll for approved requests for current table and apply to ticket.
   // Uses an `alive` flag so async work that resolves after unmount/cleanup
   // does not mutate the ticket store, and reschedules only while alive.
+  const appliedRequestIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!user || !selectedTable) return;
     if (!isOpen(selectedTable.area, selectedTable.label)) return;
     if (ownerId == null || Number(ownerId) !== Number(user.id)) return;
+    appliedRequestIdsRef.current = new Set();
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
@@ -1315,8 +1324,16 @@ export default function OrderPage() {
           selectedTable.label,
         );
         if (!alive) return;
-        if (Array.isArray(rows) && rows.length) {
-          for (const r of rows) {
+        // The host keeps returning a request until it is marked applied. When
+        // that call fails — a blip on the tablet's Wi-Fi is enough — the next
+        // poll four seconds later hands back the same request and the
+        // colleague's items land on the check a second time.
+        const fresh = (Array.isArray(rows) ? rows : []).filter(
+          (r: any) => !appliedRequestIdsRef.current.has(Number(r?.id)),
+        );
+        if (fresh.length) {
+          for (const r of fresh) {
+            appliedRequestIdsRef.current.add(Number(r.id));
             const items = Array.isArray(r.items) ? r.items : [];
             for (const it of items) {
               addItem({
@@ -1332,9 +1349,14 @@ export default function OrderPage() {
               }
             }
           }
-          await window.api.requests
-            .markApplied(rows.map((r: any) => r.id))
-            .catch(() => {});
+        }
+        // Retry the acknowledgement for everything we have applied and the
+        // host still considers outstanding, so it stops resending them.
+        const outstanding = (Array.isArray(rows) ? rows : [])
+          .map((r: any) => Number(r?.id))
+          .filter((id: number) => Number.isFinite(id));
+        if (outstanding.length) {
+          await window.api.requests.markApplied(outstanding).catch(() => {});
         }
       } finally {
         if (alive) timer = setTimeout(tick, pollIntervalMs(4000, false));

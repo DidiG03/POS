@@ -183,6 +183,7 @@ export default function KdsPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const bumping = useRef<Set<number>>(new Set());
+  const bumpingItems = useRef<Set<string>>(new Set());
   const errRef = useRef<string | null>(null);
   const ticketsRef = useRef<KdsTicket[]>([]);
   const tabRef = useRef<Tab>('NEW');
@@ -484,6 +485,28 @@ export default function KdsPage() {
     selectedItemIdxRef.current = null;
   }, []);
 
+  /**
+   * The board is written by the 3s poll, by SSE refreshes, by recall, and by
+   * optimistic bumps, all concurrently. Without ordering, a slow poll landing
+   * after a fast refresh puts stale tickets back on screen: fired orders
+   * vanish and bumped ones reappear until the next lucky round trip. Every
+   * write claims a sequence number and only the newest one is allowed to land.
+   */
+  const boardSeq = useRef(0);
+  const claimBoardWrite = useCallback(() => ++boardSeq.current, []);
+  const commitBoard = useCallback((seq: number, rows: KdsTicket[]) => {
+    if (seq !== boardSeq.current) return;
+    setTickets(rows);
+  }, []);
+  /** Optimistic edits supersede anything already in flight. */
+  const patchBoard = useCallback(
+    (update: (arr: KdsTicket[]) => KdsTicket[]) => {
+      claimBoardWrite();
+      setTickets(update);
+    },
+    [claimBoardWrite],
+  );
+
   const bumpTicket = useCallback(
     async (ticket: KdsTicket) => {
       if (tabRef.current !== 'NEW') return;
@@ -494,7 +517,7 @@ export default function KdsPage() {
       const twoStageMain = ticket.items.some((it) => it.locked || it.ready);
       const isCookerScreen = cookerRef.current;
       if (twoStageMain) {
-        setTickets((arr) =>
+        patchBoard((arr) =>
           arr
             .map((t) =>
               t.ticketId !== ticket.ticketId
@@ -516,7 +539,7 @@ export default function KdsPage() {
         );
       } else if (isCookerScreen) {
         // Cooker stage 1: flag lines cooked; they move to the Done tab here.
-        setTickets((arr) =>
+        patchBoard((arr) =>
           arr
             .map((t) =>
               t.ticketId !== ticket.ticketId ? t : markTicketCookerBumped(t),
@@ -524,7 +547,7 @@ export default function KdsPage() {
             .filter((t) => hasActiveItems(t, true)),
         );
       } else {
-        setTickets((arr) => arr.filter((x) => x.ticketId !== ticket.ticketId));
+        patchBoard((arr) => arr.filter((x) => x.ticketId !== ticket.ticketId));
       }
       clearItemSelection();
       const ok = await window.api.kds
@@ -538,10 +561,10 @@ export default function KdsPage() {
       if (!ok && !twoStageMain && !isCookerScreen) {
         // Restore the card we optimistically removed (the next poll reconciles
         // the two-stage case, where we only edited items in place).
-        setTickets((arr) => [ticket, ...arr]);
+        patchBoard((arr) => [ticket, ...arr]);
       }
     },
-    [clearItemSelection],
+    [clearItemSelection, patchBoard],
   );
 
   const bumpItem = useCallback(
@@ -561,7 +584,13 @@ export default function KdsPage() {
 
       const ticketId = ticket.ticketId;
       const isCookerScreen = cookerRef.current;
-      setTickets((arr) =>
+      // A bump-bar press repeats and cards get double-tapped; without this the
+      // same line is bumped twice, which on the cooker screen skips it a stage.
+      const inFlightKey = `${ticketId}:${itemIdx}`;
+      if (bumpingItems.current.has(inFlightKey)) return;
+      bumpingItems.current.add(inFlightKey);
+
+      patchBoard((arr) =>
         arr
           .map((t) =>
             t.ticketId !== ticketId
@@ -574,7 +603,7 @@ export default function KdsPage() {
       );
       clearItemSelection();
 
-      await window.api.kds
+      const ok = await window.api.kds
         .bumpItem({
           station: stationRef.current,
           ticketId,
@@ -582,8 +611,26 @@ export default function KdsPage() {
           cooker: cookerRef.current,
         } as any)
         .catch(() => false);
+      bumpingItems.current.delete(inFlightKey);
+      if (!ok) {
+        // The line is still pending on the host. Leaving it struck through on
+        // screen means the kitchen stops cooking something the pass expects.
+        setErr(
+          'That item could not be bumped. Check the connection to the POS host.',
+        );
+        const seq = claimBoardWrite();
+        const rows = (await window.api.kds
+          .listTickets({
+            station: stationRef.current,
+            status: tabRef.current,
+            limit: tabRef.current === 'NEW' ? 120 : 80,
+            cooker: cookerRef.current,
+          })
+          .catch(() => null)) as KdsTicket[] | null;
+        if (Array.isArray(rows)) commitBoard(seq, rows);
+      }
     },
-    [clearItemSelection],
+    [claimBoardWrite, clearItemSelection, commitBoard, patchBoard],
   );
 
   const bumpTicketRef = useRef(bumpTicket);
@@ -651,6 +698,7 @@ export default function KdsPage() {
       )
         return;
       if (errRef.current) setErr(null);
+      const seq = claimBoardWrite();
       try {
         const rows = (await window.api.kds.listTickets({
           station,
@@ -659,7 +707,7 @@ export default function KdsPage() {
           cooker,
         })) as any;
         if (!alive) return;
-        setTickets(Array.isArray(rows) ? (rows as KdsTicket[]) : []);
+        commitBoard(seq, Array.isArray(rows) ? (rows as KdsTicket[]) : []);
         setLoading(false);
       } catch (e: any) {
         if (!alive) return;
@@ -725,7 +773,7 @@ export default function KdsPage() {
       window.removeEventListener('pos:ticketsChanged', onSse);
       window.removeEventListener('pos:tablesChanged', onSse);
     };
-  }, [station, tab, cooker]);
+  }, [station, tab, cooker, claimBoardWrite, commitBoard]);
 
   useEffect(() => {
     const itemNavMode = (): 'new' | 'done' =>
@@ -913,6 +961,7 @@ export default function KdsPage() {
             setSelectedIdx(0);
             selectedIdxRef.current = 0;
             syncItemSelection(null);
+            const seq = claimBoardWrite();
             const rows = (await window.api.kds
               .listTickets({
                 station: stationRef.current,
@@ -921,7 +970,7 @@ export default function KdsPage() {
                 cooker: cookerRef.current,
               })
               .catch(() => [])) as KdsTicket[];
-            setTickets(Array.isArray(rows) ? rows : []);
+            commitBoard(seq, Array.isArray(rows) ? rows : []);
           })();
           return;
         case 'recallSelected': {
@@ -954,6 +1003,7 @@ export default function KdsPage() {
             setSelectedIdx(0);
             selectedIdxRef.current = 0;
             syncItemSelection(null);
+            const seq = claimBoardWrite();
             const rows = (await window.api.kds
               .listTickets({
                 station: stationRef.current,
@@ -962,7 +1012,7 @@ export default function KdsPage() {
                 cooker: cookerRef.current,
               })
               .catch(() => [])) as KdsTicket[];
-            setTickets(Array.isArray(rows) ? rows : []);
+            commitBoard(seq, Array.isArray(rows) ? rows : []);
           })();
           return;
         }
@@ -980,6 +1030,7 @@ export default function KdsPage() {
                 return;
               }
               setErr(null);
+              const seq = claimBoardWrite();
               const rows = (await window.api.kds
                 .listTickets({
                   station: stationRef.current,
@@ -988,7 +1039,7 @@ export default function KdsPage() {
                   cooker: cookerRef.current,
                 })
                 .catch(() => [])) as KdsTicket[];
-              setTickets(Array.isArray(rows) ? rows : []);
+              commitBoard(seq, Array.isArray(rows) ? rows : []);
               setSelectedIdx(0);
               selectedIdxRef.current = 0;
               syncItemSelection(null);
