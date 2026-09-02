@@ -30,9 +30,16 @@ import { IconClose } from '../../components/icons';
 import { pollIntervalMs } from '../../utils/netQuality';
 import {
   invalidateFloorCache,
+  invalidateTicketCache,
+  peekFloorSnapshot,
   peekLatestTicket,
   peekMenu,
 } from '../../utils/posReadCache';
+import {
+  cacheLooksLikeCurrentSession,
+  hasLocalCovers,
+  shouldKeepCoversOnlyTableOpen,
+} from '../../utils/tableSessionKeepOpen';
 
 type MenuItemDTO = {
   id: number;
@@ -157,6 +164,21 @@ function sortNaturalTableLabels(labels: string[]): string[] {
 
 function activeTicketItems<T extends { voided?: boolean }>(items: T[]): T[] {
   return items.filter((it) => !it?.voided);
+}
+
+/** Covers-only sits have no TicketLog yet — do not treat that as "table is free". */
+async function sessionHasCovers(
+  area: string,
+  label: string,
+  known: number | null | undefined,
+): Promise<boolean> {
+  if (hasLocalCovers(known)) return true;
+  try {
+    const last = await window.api.covers.getLast(area, label);
+    return typeof last === 'number' && last > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Persists waiter-created quick comment buttons across page reloads. */
@@ -525,7 +547,13 @@ export default function OrderPage() {
         return;
       }
       const cached = peekLatestTicket(selectedTable.area, selectedTable.label);
-      if (cached?.items) {
+      const snap = peekFloorSnapshot(selectedTable.area);
+      const openedAt = snap?.tables?.find(
+        (row) =>
+          row.area === selectedTable.area && row.label === selectedTable.label,
+      )?.openedAt;
+      const cacheFresh = cacheLooksLikeCurrentSession(cached, openedAt);
+      if (cached?.items && cacheFresh) {
         useTicketStore.getState().hydrate({
           items: cached.items as any,
           note: cached.note || '',
@@ -550,6 +578,7 @@ export default function OrderPage() {
               0 &&
             selectedTable
           ) {
+            invalidateTicketCache(selectedTable.area, selectedTable.label);
             setOpen(selectedTable.area, selectedTable.label, false);
             window.api.tables
               .setOpen(selectedTable.area, selectedTable.label, false)
@@ -574,8 +603,23 @@ export default function OrderPage() {
           useTicketStore
             .getState()
             .hydrate({ items: [], note: latest?.note || '' });
-          // Table open but no items (opened with covers, never added items) — free it
           if (selectedTable) {
+            const keepOpen = shouldKeepCoversOnlyTableOpen({
+              latestHadLines: false,
+              suppressClose: suppressFreeOnEmptyRef.current,
+              localCovers: coversKnown,
+              serverCovers: hasLocalCovers(coversKnown)
+                ? coversKnown
+                : (await sessionHasCovers(
+                      selectedTable.area,
+                      selectedTable.label,
+                      coversKnown,
+                    ))
+                  ? 1
+                  : null,
+            });
+            if (keepOpen) return;
+            invalidateTicketCache(selectedTable.area, selectedTable.label);
             setOpen(selectedTable.area, selectedTable.label, false);
             window.api.tables
               .setOpen(selectedTable.area, selectedTable.label, false)
@@ -619,10 +663,16 @@ export default function OrderPage() {
           selectedTable.label,
         );
         if (cancelled) return;
-        setCoversKnown(last ?? null);
+        setCoversKnown((prev) => {
+          if (typeof last === 'number' && last > 0) return last;
+          if (typeof prev === 'number' && prev > 0) return prev;
+          return last ?? null;
+        });
       } catch {
         if (cancelled) return;
-        setCoversKnown(null);
+        setCoversKnown((prev) =>
+          typeof prev === 'number' && prev > 0 ? prev : null,
+        );
       }
     })();
     return () => {
@@ -1151,17 +1201,52 @@ export default function OrderPage() {
       if (area !== selectedTable.area || tableLabel !== selectedTable.label) {
         return;
       }
+      invalidateTicketCache(selectedTable.area, selectedTable.label);
       const uid = Number(detail.userId);
       void refreshTableOwner(
         selectedTable.area,
         selectedTable.label,
         Number.isFinite(uid) && uid > 0 ? uid : null,
       );
+      const gen = hydrateGenRef.current;
+      const table = selectedTable;
+      void (async () => {
+        try {
+          const latest = await window.api.tickets.getLatestForTable(
+            table.area,
+            table.label,
+          );
+          if (gen !== hydrateGenRef.current) return;
+          const items = Array.isArray(latest?.items) ? latest!.items : [];
+          if (items.length) {
+            useTicketStore.getState().hydrate({
+              items: items as any,
+              note: latest?.note || '',
+            });
+            return;
+          }
+          if (suppressFreeOnEmptyRef.current || hasLocalCovers(coversKnown)) {
+            return;
+          }
+          const currentLines = useTicketStore.getState().lines;
+          if (currentLines.some((l) => l.staged)) return;
+          useTicketStore
+            .getState()
+            .hydrate({ items: [], note: latest?.note || '' });
+        } catch {
+          // next poll / hydrate effect will retry
+        }
+      })();
     };
     window.addEventListener('pos:ticketsChanged', onTicketsChanged);
     return () =>
       window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
-  }, [selectedTable?.area, selectedTable?.label, refreshTableOwner]);
+  }, [
+    selectedTable?.area,
+    selectedTable?.label,
+    refreshTableOwner,
+    coversKnown,
+  ]);
 
   // Tablets (and cloud) often miss the SSE ticket event. Re-read owner
   // while this table is open so a transfer on another device flips the
@@ -1237,6 +1322,9 @@ export default function OrderPage() {
             // Don't overwrite with empty — we may have just sent; server may not have synced yet
             return;
           }
+          if (suppressFreeOnEmptyRef.current || hasLocalCovers(coversKnown)) {
+            return;
+          }
           useTicketStore
             .getState()
             .hydrate({ items: [], note: latest?.note || '' });
@@ -1250,6 +1338,7 @@ export default function OrderPage() {
     selectedTable?.label,
     isOpen(selectedTable?.area || '', selectedTable?.label || ''),
     ticketSyncing,
+    coversKnown,
   ]);
 
   // If an open table's ticket becomes empty due to voids, free the table (turn green) after server check.
@@ -1266,6 +1355,7 @@ export default function OrderPage() {
       if (suppressFreeOnEmptyRef.current) return;
       const gen = hydrateGenRef.current;
       (async () => {
+        let latestHadLines = false;
         try {
           const latest = await window.api.tickets.getLatestForTable(
             selectedTable.area,
@@ -1273,6 +1363,7 @@ export default function OrderPage() {
           );
           if (gen !== hydrateGenRef.current) return;
           const items = Array.isArray(latest?.items) ? latest!.items : [];
+          latestHadLines = items.length > 0;
           if (
             items.length &&
             activeTicketItems(items as Array<{ voided?: boolean }>).length > 0
@@ -1288,6 +1379,20 @@ export default function OrderPage() {
           void e;
         }
         if (gen !== hydrateGenRef.current) return;
+        const keepOpen = shouldKeepCoversOnlyTableOpen({
+          latestHadLines,
+          suppressClose: suppressFreeOnEmptyRef.current,
+          localCovers: coversKnown,
+          serverCovers: (await sessionHasCovers(
+            selectedTable.area,
+            selectedTable.label,
+            coversKnown,
+          ))
+            ? 1
+            : null,
+        });
+        if (keepOpen) return;
+        invalidateTicketCache(selectedTable.area, selectedTable.label);
         setOpen(selectedTable.area, selectedTable.label, false);
         window.api.tables
           .setOpen(selectedTable.area, selectedTable.label, false)
@@ -3348,6 +3453,12 @@ export default function OrderPage() {
                     if (transferMode === 'TABLE') {
                       const toA = transferToArea.trim();
                       const toL = transferToLabel.trim();
+                      invalidateTicketCache(
+                        selectedTable.area,
+                        selectedTable.label,
+                      );
+                      invalidateTicketCache(toA, toL);
+                      invalidateFloorCache();
                       setOpen(selectedTable.area, selectedTable.label, false);
                       setOpen(toA, toL, true);
                       setSelectedTable({
@@ -3497,6 +3608,11 @@ export default function OrderPage() {
                       area: selectedTable.area,
                       label: selectedTable.label,
                     };
+                    // Pin the sit open before IPC: SSE can mark the table
+                    // occupied (and trigger hydrate/empty-close) before
+                    // covers.save returns, which used to free it again.
+                    suppressFreeOnEmptyRef.current = true;
+                    setCoversKnown(num);
                     // IMPORTANT: when opening a table in cloud mode,
                     // set "open" first so the cloud "openAt" timestamp
                     // exists BEFORE we write covers/tickets (tooltip
@@ -3647,6 +3763,7 @@ export default function OrderPage() {
                       .catch(() => {});
                   } finally {
                     setBusyAction(null);
+                    suppressFreeOnEmptyRef.current = false;
                   }
                 }}
               >

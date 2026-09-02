@@ -12,12 +12,13 @@
  */
 import { prisma } from '@db/client';
 import type { FloorSnapshot, FloorTableSnapshot } from '@shared/ipc';
+import { splitTableKey, tableKey } from '@shared/utils/tableKey';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 
 export type { FloorSnapshot, FloorTableSnapshot };
 
 export function tableSessionKey(area: string, label: string): string {
-  return `${area}:${label}`;
+  return tableKey(area, label);
 }
 
 export function ticketRunningTotal(
@@ -66,15 +67,6 @@ function parseIsoMs(iso: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-function splitOpenKey(k: string): { area: string; label: string } | null {
-  const idx = k.indexOf(':');
-  if (idx <= 0) return null;
-  const area = k.slice(0, idx);
-  const label = k.slice(idx + 1);
-  if (!area || !label) return null;
-  return { area, label };
-}
-
 export async function getFloorSnapshot(area?: string): Promise<FloorSnapshot> {
   const wantArea = String(area || '').trim();
   const [openRow, atRow] = await Promise.all([
@@ -94,7 +86,7 @@ export async function getFloorSnapshot(area?: string): Promise<FloorSnapshot> {
 
   for (const k in openMap) {
     if (!openMap[k]) continue;
-    const parts = splitOpenKey(k);
+    const parts = splitTableKey(k);
     if (!parts) continue;
     if (wantArea && parts.area !== wantArea) continue;
     openKeys.push(k);
@@ -108,19 +100,31 @@ export async function getFloorSnapshot(area?: string): Promise<FloorSnapshot> {
 
   if (openKeys.length === 0) return { tables: [] };
 
-  const areaFilter = wantArea || splitOpenKey(openKeys[0])!.area;
+  const areaFilter = wantArea || splitTableKey(openKeys[0])!.area;
   const sinceDate =
     oldestSince != null && Number.isFinite(oldestSince)
       ? new Date(oldestSince)
       : undefined;
+  const sinceFilter = sinceDate ? { createdAt: { gte: sinceDate } } : {};
+  const openPairs = openKeys
+    .map((k) => splitTableKey(k))
+    .filter((p): p is { area: string; label: string } => Boolean(p));
+  const ticketWhere = wantArea
+    ? { area: areaFilter, tableLabel: { in: labels }, ...sinceFilter }
+    : {
+        OR: openPairs.map((p) => ({ area: p.area, tableLabel: p.label })),
+        ...sinceFilter,
+      };
+  const coverWhere = wantArea
+    ? { area: areaFilter, label: { in: labels }, ...sinceFilter }
+    : {
+        OR: openPairs.map((p) => ({ area: p.area, label: p.label })),
+        ...sinceFilter,
+      };
 
   const [ticketRows, coverRows] = await Promise.all([
     prisma.ticketLog.findMany({
-      where: {
-        area: areaFilter,
-        tableLabel: { in: labels },
-        ...(sinceDate ? { createdAt: { gte: sinceDate } } : {}),
-      },
+      where: ticketWhere,
       orderBy: { createdAt: 'desc' },
       take: Math.min(400, Math.max(50, openKeys.length * 8)),
       select: {
@@ -134,11 +138,7 @@ export async function getFloorSnapshot(area?: string): Promise<FloorSnapshot> {
       },
     }),
     prisma.covers.findMany({
-      where: {
-        area: areaFilter,
-        label: { in: labels },
-        ...(sinceDate ? { createdAt: { gte: sinceDate } } : {}),
-      },
+      where: coverWhere,
       orderBy: { id: 'desc' },
       take: Math.min(400, Math.max(50, openKeys.length * 4)),
       select: {
@@ -193,7 +193,7 @@ export async function getFloorSnapshot(area?: string): Promise<FloorSnapshot> {
 
   const tables: FloorTableSnapshot[] = [];
   for (const k of openKeys) {
-    const parts = splitOpenKey(k)!;
+    const parts = splitTableKey(k)!;
     const ticket = latestTicket.get(k);
     const cover = latestCover.get(k);
     const items = Array.isArray(ticket?.itemsJson)

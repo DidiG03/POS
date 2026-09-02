@@ -18,6 +18,7 @@ import {
   peekSettings,
   prefetchHotReads,
 } from '../../utils/posReadCache';
+import { cacheLooksLikeCurrentSession } from '../../utils/tableSessionKeepOpen';
 
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
 
@@ -168,11 +169,46 @@ export default function TablesPage() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const applySnapshot = useCallback(
-    (snap: FloorSnapshot, names: Record<number, string>) => {
+    (
+      snap: FloorSnapshot,
+      names: Record<number, string>,
+      scopeArea?: string,
+    ) => {
       const tables: FloorTableSnapshot[] = Array.isArray(snap?.tables)
         ? snap.tables
         : [];
-      setAll(tables.map((r) => ({ area: r.area, label: r.label })));
+      if (scopeArea) {
+        const prefix = `${scopeArea}:`;
+        const others = Object.entries(useTableStatus.getState().openMap)
+          .filter(([k, open]) => open && !k.startsWith(prefix))
+          .map(([k]) => {
+            const idx = k.indexOf(':');
+            return { area: k.slice(0, idx), label: k.slice(idx + 1) };
+          })
+          .filter((e) => e.area && e.label);
+        setAll([
+          ...others,
+          ...tables.map((r) => ({ area: r.area, label: r.label })),
+        ]);
+      } else {
+        setAll(tables.map((r) => ({ area: r.area, label: r.label })));
+      }
+      const mergeScoped = <T,>(
+        setter: (
+          update: (prev: Record<string, T>) => Record<string, T>,
+        ) => void,
+        next: Record<string, T>,
+      ) => {
+        setter((prev) => {
+          if (!scopeArea) return next;
+          const prefix = `${scopeArea}:`;
+          const merged = { ...prev };
+          for (const k of Object.keys(merged)) {
+            if (k.startsWith(prefix)) delete merged[k];
+          }
+          return { ...merged, ...next };
+        });
+      };
       const initials: Record<string, string> = {};
       const owners: Record<string, number> = {};
       const metrics: Record<string, { covers: number | null; total: number }> =
@@ -188,10 +224,10 @@ export default function TablesPage() {
         metrics[k] = { covers: row.covers, total: row.total };
         if (row.openedAt) opened[k] = row.openedAt;
       }
-      setInitialsByTable(initials);
-      setOwnerByTable(owners);
-      setMetricsByTable(metrics);
-      setOpenedAtByTable(opened);
+      mergeScoped(setInitialsByTable, initials);
+      mergeScoped(setOwnerByTable, owners);
+      mergeScoped(setMetricsByTable, metrics);
+      mergeScoped(setOpenedAtByTable, opened);
     },
     [setAll],
   );
@@ -258,9 +294,9 @@ export default function TablesPage() {
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
-    const cachedSnap = peekFloorSnapshot('');
+    const cachedSnap = peekFloorSnapshot(area);
     if (cachedSnap) {
-      applySnapshot(cachedSnap, userMap);
+      applySnapshot(cachedSnap, userMap, area || undefined);
       setOpenLoaded(true);
     }
 
@@ -273,11 +309,11 @@ export default function TablesPage() {
         const api = window.api as any;
         let snap: FloorSnapshot | null = null;
         if (typeof api.tables?.getFloorSnapshot === 'function') {
-          snap = await api.tables.getFloorSnapshot();
+          snap = await api.tables.getFloorSnapshot(area || undefined);
         }
         if (cancelled || gen !== pollGenRef.current) return;
         if (snap && Array.isArray(snap.tables)) {
-          applySnapshot(snap, userMap);
+          applySnapshot(snap, userMap, area || undefined);
         } else {
           const open = await window.api.tables.listOpen();
           if (cancelled || gen !== pollGenRef.current) return;
@@ -313,7 +349,7 @@ export default function TablesPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [applySnapshot, setAll, userMap]);
+  }, [applySnapshot, area, setAll, userMap]);
 
   const openLabelsInArea = useMemo(() => {
     if (!area) return [] as string[];
@@ -328,8 +364,10 @@ export default function TablesPage() {
       const api = window.api as any;
       if (typeof api.tables?.getFloorSnapshot !== 'function') return;
       void api.tables
-        .getFloorSnapshot()
-        .then((snap: FloorSnapshot) => applySnapshot(snap, userMap))
+        .getFloorSnapshot(area || undefined)
+        .then((snap: FloorSnapshot) =>
+          applySnapshot(snap, userMap, area || undefined),
+        )
         .catch(() => undefined);
     };
     const onTicketsChanged = (ev: any) => {
@@ -440,7 +478,11 @@ export default function TablesPage() {
       if (action) setPendingAction(null);
       if (isOpenFn(area, openLabel)) {
         const cached = peekLatestTicket(area, openLabel);
-        if (cached?.items) {
+        const openedAt = openedAtByTable[`${area}:${openLabel}`];
+        const cacheFresh =
+          Boolean(cached?.items) &&
+          cacheLooksLikeCurrentSession(cached, openedAt);
+        if (cacheFresh && cached?.items) {
           hydrate({ items: cached.items as any, note: cached.note || '' });
         }
         navigate('/app/order');
@@ -458,6 +500,7 @@ export default function TablesPage() {
       hydrate,
       clear,
       navigate,
+      openedAtByTable,
     ],
   );
 

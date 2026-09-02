@@ -11,6 +11,11 @@ import {
   formatMoneyCompact,
   formatNumberMaxDecimals,
 } from '../../utils/format';
+import { EmptyState, PageHeader } from '../../components/ui/Surface';
+import { Field, Input, Select, Switch } from '../../components/ui/Field';
+import { Badge } from '../../components/ui/Badge';
+import { Table, TableFrame, Td, Th } from '../../components/ui/Table';
+import { cn } from '../../components/ui/cn';
 
 // ---------------------------------------------------------------------
 // Date helpers — all comparisons are computed in the operator's local
@@ -254,6 +259,72 @@ interface LineSeries {
   points: { x: number; y: number; tooltip: string }[];
 }
 
+function xPos(
+  x: number,
+  xMin: number,
+  xRange: number,
+  paddingLeft: number,
+  innerW: number,
+): number {
+  return paddingLeft + ((x - xMin) / xRange) * innerW;
+}
+
+/** Align current vs compare on calendar time when ranges overlap, else overlay by period offset. */
+function alignReviewChart(
+  current: Array<{ label: string; bucketIso: string }>,
+  compare: Array<{ label: string; bucketIso: string }> | null | undefined,
+): {
+  labels: { x: number; label: string }[];
+  currentX: number[];
+  compareX: number[];
+} {
+  const cur = current || [];
+  const cmp = compare || [];
+  if (cmp.length === 0) {
+    return {
+      labels: cur.map((p, i) => ({ x: i, label: p.label })),
+      currentX: cur.map((_, i) => i),
+      compareX: [],
+    };
+  }
+  const c0 = Date.parse(cur[0]?.bucketIso || '');
+  const c1 = Date.parse(cur[cur.length - 1]?.bucketIso || '');
+  const p0 = Date.parse(cmp[0]?.bucketIso || '');
+  const p1 = Date.parse(cmp[cmp.length - 1]?.bucketIso || '');
+  const overlap =
+    Number.isFinite(c0) &&
+    Number.isFinite(c1) &&
+    Number.isFinite(p0) &&
+    Number.isFinite(p1) &&
+    c0 <= p1 &&
+    p0 <= c1;
+  if (overlap) {
+    const byIso = new Map<string, string>();
+    for (const p of cmp) byIso.set(p.bucketIso, p.label);
+    for (const p of cur) byIso.set(p.bucketIso, p.label);
+    const isos = [...byIso.keys()].sort(
+      (a, b) => Date.parse(a) - Date.parse(b),
+    );
+    const index = new Map(isos.map((iso, i) => [iso, i]));
+    return {
+      labels: isos.map((iso, i) => ({
+        x: i,
+        label: byIso.get(iso) || iso,
+      })),
+      currentX: cur.map((p) => index.get(p.bucketIso) ?? 0),
+      compareX: cmp.map((p) => index.get(p.bucketIso) ?? 0),
+    };
+  }
+  const n = Math.max(cur.length - 1, 1);
+  return {
+    labels: cur.map((p, i) => ({ x: i, label: p.label })),
+    currentX: cur.map((_, i) => i),
+    compareX: cmp.map((_, i) =>
+      cmp.length <= 1 ? 0 : (i * n) / Math.max(1, cmp.length - 1),
+    ),
+  };
+}
+
 function LineChart({
   series,
   height = 240,
@@ -263,7 +334,7 @@ function LineChart({
   series: LineSeries[];
   height?: number;
   yLabel?: string;
-  xLabels: string[];
+  xLabels: { x: number; label: string }[];
 }) {
   const padding = { top: 16, right: 16, bottom: 32, left: 56 };
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -288,8 +359,14 @@ function LineChart({
   const yMaxRaw = Math.max(0, ...allY);
   const yMax = yMaxRaw > 0 ? niceCeil(yMaxRaw) : 1;
 
-  const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
-  const xStep = maxPoints > 1 ? innerW / (maxPoints - 1) : innerW;
+  const allX = [
+    ...series.flatMap((s) => s.points.map((p) => p.x)),
+    ...xLabels.map((l) => l.x),
+  ];
+  const xMin = allX.length ? Math.min(...allX) : 0;
+  const xMax = allX.length ? Math.max(...allX) : 1;
+  const xRange = Math.max(1e-6, xMax - xMin);
+  const toX = (x: number) => xPos(x, xMin, xRange, padding.left, innerW);
 
   const yTicks = 4;
   const ticks = Array.from(
@@ -297,7 +374,7 @@ function LineChart({
     (_, i) => (yMax * i) / yTicks,
   );
 
-  const showEvery = Math.max(1, Math.ceil(maxPoints / 8));
+  const showEvery = Math.max(1, Math.ceil(xLabels.length / 8));
 
   const [hover, setHover] = useState<{
     seriesIdx: number;
@@ -351,18 +428,20 @@ function LineChart({
           if (s.points.length === 0) return null;
           const path = s.points
             .map((p, i) => {
-              const x = padding.left + i * xStep;
+              const x = toX(p.x);
               const y = padding.top + innerH - (p.y / yMax) * innerH;
               return `${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
             })
             .join(' ');
+          const lastX = toX(s.points[s.points.length - 1]?.x ?? xMin);
+          const firstX = toX(s.points[0]?.x ?? xMin);
           const areaPath =
             sIdx === 0
-              ? `${path} L ${(padding.left + (s.points.length - 1) * xStep).toFixed(2)} ${(
-                  padding.top + innerH
-                ).toFixed(2)} L ${padding.left.toFixed(2)} ${(
-                  padding.top + innerH
-                ).toFixed(2)} Z`
+              ? `${path} L ${lastX.toFixed(2)} ${(padding.top + innerH).toFixed(
+                  2,
+                )} L ${firstX.toFixed(2)} ${(padding.top + innerH).toFixed(
+                  2,
+                )} Z`
               : '';
           return (
             <g key={s.label}>
@@ -378,7 +457,7 @@ function LineChart({
                 strokeLinejoin="round"
               />
               {s.points.map((p, i) => {
-                const x = padding.left + i * xStep;
+                const x = toX(p.x);
                 const y = padding.top + innerH - (p.y / yMax) * innerH;
                 return (
                   <circle
@@ -405,12 +484,12 @@ function LineChart({
         })}
 
         {/* x-axis labels */}
-        {xLabels.map((lbl, i) => {
+        {xLabels.map((tick, i) => {
           if (i % showEvery !== 0 && i !== xLabels.length - 1) return null;
-          const x = padding.left + i * xStep;
+          const x = toX(tick.x);
           return (
             <text
-              key={i}
+              key={`${tick.x}-${tick.label}`}
               x={x}
               y={padding.top + innerH + 16}
               textAnchor="middle"
@@ -418,7 +497,7 @@ function LineChart({
               fill="currentColor"
               opacity={0.7}
             >
-              {lbl}
+              {tick.label}
             </text>
           );
         })}
@@ -578,34 +657,44 @@ function KpiCard({
 }) {
   const { t } = useTranslation();
   const dir = delta == null ? 0 : delta > 0 ? 1 : delta < 0 ? -1 : 0;
-  const dirCls =
-    dir > 0 ? 'text-emerald-400' : dir < 0 ? 'text-rose-400' : 'text-gray-400';
   const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '–';
+  const bothZero = delta === 0 && (prev == null || prev === value);
   return (
-    <div className="bg-gray-800/70 border border-gray-700 rounded-lg p-3 sm:p-4 flex flex-col gap-1 min-w-0">
-      <div className="text-[11px] uppercase tracking-wide opacity-70">
+    <div className="min-w-0">
+      <div className="text-[12px] font-medium leading-snug text-gray-400">
         {label}
       </div>
-      <div className="text-xl sm:text-2xl font-semibold tabular-nums truncate">
+      <div className="mt-1.5 text-[22px] font-semibold tracking-tight tabular-nums text-gray-50">
         {value}
       </div>
-      {showComparison ? (
-        <div className="text-xs flex items-center gap-2 mt-0.5">
+      {showComparison && !bothZero ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
           {delta != null ? (
-            <span className={`${dirCls} tabular-nums`}>
+            <span
+              className={cn(
+                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium tabular-nums',
+                dir > 0 && 'bg-emerald-500/12 text-emerald-300',
+                dir < 0 && 'bg-rose-500/12 text-rose-300',
+                dir === 0 && 'bg-white/6 text-gray-400',
+              )}
+            >
               {arrow} {fmtPct(delta)}
             </span>
           ) : (
-            <span className="opacity-50">{t('adminReview.noComparison')}</span>
-          )}
-          {prev != null && (
-            <span className="opacity-60 truncate">
-              {t('adminReview.vs')} {prev}
+            <span className="text-gray-500">
+              {t('adminReview.noComparison')}
             </span>
           )}
+          {prev != null ? (
+            <span className="text-gray-500">
+              {t('adminReview.vsPrevious', { value: prev })}
+            </span>
+          ) : null}
         </div>
       ) : null}
-      {hint && <div className="text-[11px] opacity-50 mt-1">{hint}</div>}
+      {hint ? (
+        <div className="mt-1 text-[11px] text-gray-500">{hint}</div>
+      ) : null}
     </div>
   );
 }
@@ -618,13 +707,42 @@ function MetricGroup({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-gray-700 bg-gray-800/50 p-3">
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+    <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)] p-4">
+      <h2 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-400">
         {title}
       </h2>
-      <div className="grid grid-cols-1 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3 gap-2.5">
+      <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
         {children}
       </div>
+    </section>
+  );
+}
+
+function Panel({
+  title,
+  actions,
+  children,
+  className,
+}: {
+  title: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section
+      className={cn(
+        'rounded-lg border border-white/7 bg-[var(--pos-surface)] p-4',
+        className,
+      )}
+    >
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-[14px] font-semibold tracking-tight text-gray-50">
+          {title}
+        </h2>
+        {actions}
+      </div>
+      {children}
     </section>
   );
 }
@@ -753,15 +871,12 @@ export default function AdminReviewPage() {
   const currentGross = grossRevenueOf(summary);
   const compareGross = grossRevenueOf(compare);
 
-  // Build aligned x labels: the longer of the two series.
-  const chartLabels = useMemo<string[]>(() => {
-    if (!series) return [];
-    const cur = series.current || [];
-    const cmp = series.compare || [];
-    return cur.length >= cmp.length
-      ? cur.map((p) => p.label)
-      : cmp.map((p) => p.label);
-  }, [series]);
+  const aligned = useMemo(
+    () => alignReviewChart(series?.current || [], series?.compare),
+    [series],
+  );
+
+  const chartLabels = aligned.labels;
 
   const weekdayNames = useMemo(
     () => [
@@ -783,8 +898,8 @@ export default function AdminReviewPage() {
       {
         label: t('adminReview.current'),
         color: '#60a5fa',
-        points: cur.map((p) => ({
-          x: 0,
+        points: cur.map((p, i) => ({
+          x: aligned.currentX[i] ?? i,
           y: p.revenue,
           tooltip: t('adminReview.chartTooltip', {
             label: p.label,
@@ -798,8 +913,8 @@ export default function AdminReviewPage() {
       out.push({
         label: t('adminReview.compareSeries'),
         color: '#f59e0b',
-        points: series.compare.map((p) => ({
-          x: 0,
+        points: series.compare.map((p, i) => ({
+          x: aligned.compareX[i] ?? i,
           y: p.revenue,
           tooltip: t('adminReview.chartTooltip', {
             label: p.label,
@@ -810,7 +925,7 @@ export default function AdminReviewPage() {
       });
     }
     return out;
-  }, [series, fmtMoney, fmtNum, t]);
+  }, [series, aligned, fmtMoney, fmtNum, t]);
 
   const hourlyBars = useMemo(
     () =>
@@ -838,98 +953,78 @@ export default function AdminReviewPage() {
     }));
   }, [data?.weekday, fmtMoney, fmtNum, t, weekdayNames]);
 
+  const chartHasData = chartSeries.some((s) => s.points.some((p) => p.y > 0));
+  const hourlyHasData = hourlyBars.some((b) => b.value > 0);
+  const weekdayHasData = weekdayBars.some((b) => b.value > 0);
+
   return (
-    <div className="space-y-4">
-      {/* Header / controls */}
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-lg sm:text-xl font-semibold">
-              {t('adminReview.title')}
-            </h1>
-            <p className="text-xs opacity-70 mt-0.5">
-              {t('adminReview.subtitle')}
-            </p>
-          </div>
-
-          <div
-            className="flex flex-wrap items-center gap-1 rounded-lg border border-gray-700 bg-gray-900/50 p-1.5 w-full lg:w-auto shrink-0"
-            role="toolbar"
-            aria-label={t('adminReview.filtersAria')}
-          >
-            <label className="flex items-center gap-2 pl-2 pr-1 py-1 min-w-0 flex-1 sm:flex-none">
-              <span className="text-xs font-medium text-gray-400 shrink-0">
-                {t('adminReview.period')}
-              </span>
-              <select
-                value={presetId}
-                onChange={(e) => {
-                  const id = e.target.value as PresetId;
-                  if (id === 'custom') setPresetId('custom');
-                  else applyPreset(id);
-                }}
-                className="h-9 min-w-0 flex-1 sm:min-w-[200px] sm:max-w-[260px] bg-gray-950 border border-gray-600 rounded-md px-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
-              >
-                {PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {presetLabel(p.id, t)}
+    <div className="space-y-5">
+      <div className="flex flex-col gap-4">
+        <PageHeader
+          title={t('adminReview.title')}
+          description={t('adminReview.subtitle')}
+          actions={
+            <div
+              className="flex flex-wrap items-end gap-3"
+              role="toolbar"
+              aria-label={t('adminReview.filtersAria')}
+            >
+              <Field label={t('adminReview.period')}>
+                <Select
+                  className="min-w-[220px] sm:min-w-[280px]"
+                  value={presetId}
+                  onChange={(e) => {
+                    const id = e.target.value as PresetId;
+                    if (id === 'custom') setPresetId('custom');
+                    else applyPreset(id);
+                  }}
+                >
+                  {PRESETS.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {presetLabel(p.id, t)}
+                    </option>
+                  ))}
+                  <option value="custom">{t('adminReview.customRange')}</option>
+                </Select>
+              </Field>
+              <Field label={t('adminReview.bucket')}>
+                <Select
+                  value={granularity}
+                  onChange={(e) =>
+                    setGranularity(e.target.value as ReviewGranularity)
+                  }
+                >
+                  <option value="day">{t('adminReview.granularityDay')}</option>
+                  <option value="month">
+                    {t('adminReview.granularityMonth')}
                   </option>
-                ))}
-                <option value="custom">{t('adminReview.customRange')}</option>
-              </select>
-            </label>
-
-            <div
-              className="hidden sm:block w-px h-7 bg-gray-700 shrink-0"
-              aria-hidden
-            />
-
-            <label className="flex items-center gap-2 px-2 py-1 shrink-0">
-              <span className="text-xs font-medium text-gray-400">
-                {t('adminReview.bucket')}
-              </span>
-              <select
-                value={granularity}
-                onChange={(e) =>
-                  setGranularity(e.target.value as ReviewGranularity)
-                }
-                className="h-9 bg-gray-950 border border-gray-600 rounded-md px-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
-              >
-                <option value="day">{t('adminReview.granularityDay')}</option>
-                <option value="month">
-                  {t('adminReview.granularityMonth')}
-                </option>
-                <option value="year">{t('adminReview.granularityYear')}</option>
-              </select>
-            </label>
-
-            <div
-              className="hidden sm:block w-px h-7 bg-gray-700 shrink-0"
-              aria-hidden
-            />
-
-            <label className="flex items-center gap-2 h-9 px-3 cursor-pointer shrink-0 select-none">
-              <input
-                type="checkbox"
-                checked={compareEnabled}
-                onChange={(e) => setCompareEnabled(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-600 bg-gray-950 accent-blue-500"
-              />
-              <span className="text-sm text-gray-200">
-                {t('adminReview.compare')}
-              </span>
-            </label>
-          </div>
-        </div>
+                  <option value="year">
+                    {t('adminReview.granularityYear')}
+                  </option>
+                </Select>
+              </Field>
+              <div className="flex h-[var(--pos-control-h)] items-center gap-2 pb-px">
+                <Switch
+                  checked={compareEnabled}
+                  onChange={setCompareEnabled}
+                  label={t('adminReview.compare')}
+                />
+                <span className="text-[13px] text-gray-200">
+                  {t('adminReview.compare')}
+                </span>
+              </div>
+            </div>
+          }
+        />
 
         {presetId === 'custom' ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <fieldset className="bg-gray-900/60 border border-gray-700 rounded p-2 sm:p-3">
-              <legend className="text-xs px-1 opacity-70">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <fieldset className="rounded-lg border border-white/7 bg-[var(--pos-surface)] p-3">
+              <legend className="px-1 text-[12px] text-gray-400">
                 {t('adminReview.currentPeriod')}
               </legend>
-              <div className="flex items-center gap-2 flex-wrap">
-                <input
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
                   type="date"
                   value={curStart}
                   max={curEnd}
@@ -937,12 +1032,12 @@ export default function AdminReviewPage() {
                     setPresetId('custom');
                     setCurStart(e.target.value);
                   }}
-                  className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"
+                  className="w-auto"
                 />
-                <span className="opacity-60 text-xs">
+                <span className="text-[12px] text-gray-500">
                   {t('adminReview.dateTo')}
                 </span>
-                <input
+                <Input
                   type="date"
                   value={curEnd}
                   min={curStart}
@@ -950,22 +1045,21 @@ export default function AdminReviewPage() {
                     setPresetId('custom');
                     setCurEnd(e.target.value);
                   }}
-                  className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"
+                  className="w-auto"
                 />
               </div>
             </fieldset>
             <fieldset
-              className={`bg-gray-900/60 border rounded p-2 sm:p-3 ${
-                compareEnabled
-                  ? 'border-gray-700'
-                  : 'border-gray-800 opacity-50'
-              }`}
+              className={cn(
+                'rounded-lg border bg-[var(--pos-surface)] p-3',
+                compareEnabled ? 'border-white/7' : 'border-white/5 opacity-50',
+              )}
             >
-              <legend className="text-xs px-1 opacity-70">
+              <legend className="px-1 text-[12px] text-gray-400">
                 {t('adminReview.comparePeriod')}
               </legend>
-              <div className="flex items-center gap-2 flex-wrap">
-                <input
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
                   type="date"
                   value={cmpStart}
                   max={cmpEnd}
@@ -974,12 +1068,12 @@ export default function AdminReviewPage() {
                     setPresetId('custom');
                     setCmpStart(e.target.value);
                   }}
-                  className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm disabled:cursor-not-allowed"
+                  className="w-auto"
                 />
-                <span className="opacity-60 text-xs">
+                <span className="text-[12px] text-gray-500">
                   {t('adminReview.dateTo')}
                 </span>
-                <input
+                <Input
                   type="date"
                   value={cmpEnd}
                   min={cmpStart}
@@ -988,7 +1082,7 @@ export default function AdminReviewPage() {
                     setPresetId('custom');
                     setCmpEnd(e.target.value);
                   }}
-                  className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm disabled:cursor-not-allowed"
+                  className="w-auto"
                 />
               </div>
             </fieldset>
@@ -997,13 +1091,12 @@ export default function AdminReviewPage() {
       </div>
 
       {error && (
-        <div className="bg-rose-900/30 border border-rose-800 text-rose-100 rounded p-3 text-sm">
+        <div className="rounded-lg border border-rose-800 bg-rose-900/30 p-3 text-sm text-rose-100">
           {error}
         </div>
       )}
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 gap-3">
         <MetricGroup title={t('adminReview.groupSales')}>
           <KpiCard
             label={t('adminReview.revenueGross')}
@@ -1084,112 +1177,119 @@ export default function AdminReviewPage() {
         </MetricGroup>
       </div>
 
-      {/* Revenue chart */}
-      <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-semibold">
-            {t('adminReview.revenueOverTime')}
-          </h2>
-          <Legend
-            items={[
-              { label: t('adminReview.current'), color: '#60a5fa' },
-              ...(series?.compare
-                ? [{ label: t('adminReview.compareSeries'), color: '#f59e0b' }]
-                : []),
-            ]}
-          />
-        </div>
+      <Panel
+        title={t('adminReview.revenueOverTime')}
+        actions={
+          chartHasData ? (
+            <Legend
+              items={[
+                { label: t('adminReview.current'), color: '#60a5fa' },
+                ...(series?.compare
+                  ? [
+                      {
+                        label: t('adminReview.compareSeries'),
+                        color: '#f59e0b',
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          ) : null
+        }
+      >
         {loading && !data ? (
-          <div className="h-[240px] flex items-center justify-center opacity-60 text-sm">
+          <div className="flex h-[240px] items-center justify-center text-sm text-gray-500">
             {t('adminReview.loading')}
           </div>
-        ) : (
+        ) : chartHasData ? (
           <LineChart
             series={chartSeries}
             xLabels={chartLabels}
             height={260}
             yLabel={t('adminReview.revenueAxisGross', { currency })}
           />
-        )}
-      </div>
-
-      {/* Two-column: top items + hourly */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-          <h2 className="text-sm font-semibold mb-2">
-            {t('adminReview.topItemsTitleGross')}
-          </h2>
-          {data?.topItems?.length ? (
-            <table className="w-full text-sm">
-              <thead className="text-xs opacity-70">
-                <tr className="border-b border-gray-700/60">
-                  <th className="text-left py-1.5">{t('adminReview.item')}</th>
-                  <th className="text-right py-1.5">{t('adminReview.qty')}</th>
-                  <th className="text-right py-1.5">
-                    {t('adminReview.revenue')}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.topItems.map((it) => (
-                  <tr key={it.name} className="border-b border-gray-700/30">
-                    <td className="py-1.5 truncate max-w-[280px]">{it.name}</td>
-                    <td className="py-1.5 text-right tabular-nums">
-                      {fmtNum(it.qty)}
-                    </td>
-                    <td className="py-1.5 text-right tabular-nums">
-                      {fmtMoney(it.revenue)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="text-sm opacity-60 py-4">
-              {t('adminReview.noItemsSold')}
-            </div>
-          )}
-        </div>
-
-        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-          <h2 className="text-sm font-semibold mb-2">
-            {t('adminReview.salesByHour')}
-          </h2>
-          <BarChart data={hourlyBars} height={180} format={fmtMoney} />
-          <h2 className="text-sm font-semibold mt-4 mb-2">
-            {t('adminReview.salesByWeekday')}
-          </h2>
-          <BarChart
-            data={weekdayBars}
-            height={140}
-            format={fmtMoney}
-            color="#a78bfa"
+        ) : (
+          <EmptyState
+            compact
+            title={t('adminReview.emptyChart')}
+            description={t('adminReview.emptyChartHint')}
           />
-        </div>
+        )}
+      </Panel>
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <Panel title={t('adminReview.topItemsTitleGross')}>
+          {data?.topItems?.length ? (
+            <TableFrame>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>{t('adminReview.item')}</Th>
+                    <Th numeric>{t('adminReview.qty')}</Th>
+                    <Th numeric>{t('adminReview.revenue')}</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.topItems.map((it) => (
+                    <tr key={it.name}>
+                      <Td>
+                        <span className="block max-w-[240px] truncate">
+                          {it.name}
+                        </span>
+                      </Td>
+                      <Td numeric>{fmtNum(it.qty)}</Td>
+                      <Td numeric>{fmtMoney(it.revenue)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            </TableFrame>
+          ) : (
+            <EmptyState compact title={t('adminReview.noItemsSold')} />
+          )}
+        </Panel>
+
+        <Panel title={t('adminReview.salesByHour')}>
+          {hourlyHasData ? (
+            <BarChart data={hourlyBars} height={180} format={fmtMoney} />
+          ) : (
+            <EmptyState compact title={t('adminReview.emptyChart')} />
+          )}
+        </Panel>
+
+        <Panel title={t('adminReview.salesByWeekday')}>
+          {weekdayHasData ? (
+            <BarChart
+              data={weekdayBars}
+              height={180}
+              format={fmtMoney}
+              color="#a78bfa"
+            />
+          ) : (
+            <EmptyState compact title={t('adminReview.emptyChart')} />
+          )}
+        </Panel>
       </div>
 
-      {/* Waiter performance */}
-      <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-          <h2 className="text-sm font-semibold">
-            {t('adminReview.waiterPerformance')}
-          </h2>
-          <span className="text-xs opacity-60">
+      <Panel
+        title={t('adminReview.waiterPerformance')}
+        actions={
+          <span className="text-[12px] text-gray-500">
             {t('adminReview.staffWithSales', {
               count: data?.waiters?.length ?? 0,
             })}
           </span>
-        </div>
+        }
+      >
         <WaiterTable
           waiters={data?.waiters || []}
           fmtMoney={fmtMoney}
           fmtNum={fmtNum}
           totalRevenue={currentGross}
         />
-      </div>
+      </Panel>
 
-      {/* Period summary card at bottom for quick review */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <PeriodSummaryCard
           title={t('adminReview.currentPeriod')}
           summary={summary}
@@ -1211,14 +1311,14 @@ export default function AdminReviewPage() {
 
 function Legend({ items }: { items: { label: string; color: string }[] }) {
   return (
-    <div className="flex items-center gap-3 text-xs">
+    <div className="flex items-center gap-3 text-[12px] text-gray-400">
       {items.map((it) => (
         <div key={it.label} className="flex items-center gap-1.5">
           <span
-            className="inline-block w-2.5 h-2.5 rounded-sm"
+            className="inline-block size-2 rounded-sm"
             style={{ background: it.color }}
           />
-          <span className="opacity-80">{it.label}</span>
+          <span>{it.label}</span>
         </div>
       ))}
     </div>
@@ -1239,9 +1339,11 @@ function PeriodSummaryCard({
   const { t } = useTranslation();
   if (!summary) {
     return (
-      <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700 text-sm opacity-60">
-        {t('adminReview.periodNotSelected', { title })}
-      </div>
+      <Panel title={title}>
+        <p className="text-[13px] text-gray-500">
+          {t('adminReview.periodNotSelected', { title })}
+        </p>
+      </Panel>
     );
   }
   const start = new Date(summary.startIso);
@@ -1283,20 +1385,19 @@ function PeriodSummaryCard({
     },
   ];
   return (
-    <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-      <h2 className="text-sm font-semibold mb-2">{title}</h2>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+    <Panel title={title}>
+      <dl className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
         {rows.map((r) => (
           <div
             key={r.k}
-            className="flex items-center justify-between border-b border-gray-700/40 py-1"
+            className="flex items-baseline justify-between gap-3 border-b border-white/6 py-2 text-[13px]"
           >
-            <dt className="opacity-70">{r.k}</dt>
-            <dd className="tabular-nums">{r.v}</dd>
+            <dt className="text-gray-400">{r.k}</dt>
+            <dd className="tabular-nums text-gray-100">{r.v}</dd>
           </div>
         ))}
       </dl>
-    </div>
+    </Panel>
   );
 }
 
@@ -1340,15 +1441,12 @@ function WaiterTable({
   const max = Math.max(1, ...waiters.map((w) => w.revenue));
 
   if (waiters.length === 0) {
-    return (
-      <div className="text-sm opacity-60 py-4">
-        {t('adminReview.noWaiterActivity')}
-      </div>
-    );
+    return <EmptyState compact title={t('adminReview.noWaiterActivity')} />;
   }
 
   const headerBtn = (key: SortKey, label: string) => (
     <button
+      type="button"
       onClick={() =>
         setSort((s) => ({ key, desc: s.key === key ? !s.desc : true }))
       }
@@ -1362,95 +1460,73 @@ function WaiterTable({
   );
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm min-w-[720px]">
-        <thead className="text-xs opacity-70">
-          <tr className="border-b border-gray-700/60">
-            <th className="text-left py-1.5">{t('adminReview.staff')}</th>
-            <th className="text-left py-1.5">{t('adminReview.role')}</th>
-            <th className="text-right py-1.5">
-              {headerBtn('revenue', t('adminReview.revenue'))}
-            </th>
-            <th className="text-right py-1.5">
-              {headerBtn('orders', t('adminReview.orders'))}
-            </th>
-            <th className="text-right py-1.5">
-              {headerBtn('items', t('adminReview.items'))}
-            </th>
-            <th className="text-right py-1.5">
-              {headerBtn('covers', t('adminReview.covers'))}
-            </th>
-            <th className="text-right py-1.5">
+    <TableFrame>
+      <Table className="min-w-[720px]">
+        <thead>
+          <tr>
+            <Th>{t('adminReview.staff')}</Th>
+            <Th>{t('adminReview.role')}</Th>
+            <Th numeric>{headerBtn('revenue', t('adminReview.revenue'))}</Th>
+            <Th numeric>{headerBtn('orders', t('adminReview.orders'))}</Th>
+            <Th numeric>{headerBtn('items', t('adminReview.items'))}</Th>
+            <Th numeric>{headerBtn('covers', t('adminReview.covers'))}</Th>
+            <Th numeric>
               {headerBtn('avgTicket', t('adminReview.avgTicket'))}
-            </th>
-            <th className="text-right py-1.5">
-              {headerBtn('hoursWorked', t('adminReview.hours'))}
-            </th>
-            <th className="text-right py-1.5">
+            </Th>
+            <Th numeric>{headerBtn('hoursWorked', t('adminReview.hours'))}</Th>
+            <Th numeric>
               {headerBtn('revenuePerHour', t('adminReview.perHour'))}
-            </th>
+            </Th>
           </tr>
         </thead>
         <tbody>
           {sorted.map((w) => {
             const share = totalRevenue > 0 ? w.revenue / totalRevenue : 0;
             return (
-              <tr key={w.userId} className="border-b border-gray-700/30">
-                <td className="py-1.5">
+              <tr key={w.userId}>
+                <Td>
                   <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-full bg-gray-700 flex items-center justify-center text-xs font-semibold">
-                      {w.name.slice(0, 1).toUpperCase()}
-                    </div>
-                    <div className="truncate max-w-[180px]">
-                      <div className="truncate">{w.name}</div>
+                    <div className="pos-avatar">{w.name.slice(0, 1)}</div>
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{w.name}</div>
                       {!w.active && (
-                        <div className="text-[10px] uppercase tracking-wide text-rose-400">
-                          {t('adminReview.inactive')}
-                        </div>
+                        <Badge tone="danger">{t('adminReview.inactive')}</Badge>
                       )}
                     </div>
                   </div>
-                </td>
-                <td className="py-1.5 text-xs opacity-70">{w.role}</td>
-                <td className="py-1.5 text-right tabular-nums">
+                </Td>
+                <Td muted>{w.role}</Td>
+                <Td numeric>
                   <div className="flex items-center justify-end gap-2">
-                    <div className="w-20 h-1.5 bg-gray-700 rounded overflow-hidden">
+                    <div className="h-1.5 w-16 overflow-hidden rounded bg-gray-700">
                       <div
-                        className="h-full bg-emerald-500"
+                        className="h-full bg-blue-500"
                         style={{
                           width: `${Math.min(100, (w.revenue / max) * 100)}%`,
                         }}
                       />
                     </div>
                     <span>{fmtMoney(w.revenue)}</span>
-                    <span className="opacity-70 text-xs tabular-nums w-10 text-right">
+                    <span className="w-10 text-right text-[11px] text-gray-500 tabular-nums">
                       {fmtNum(share * 100)}%
                     </span>
                   </div>
-                </td>
-                <td className="py-1.5 text-right tabular-nums">
-                  {fmtNum(w.orders)}
-                </td>
-                <td className="py-1.5 text-right tabular-nums">
-                  {fmtNum(w.items)}
-                </td>
-                <td className="py-1.5 text-right tabular-nums">
-                  {fmtNum(w.covers)}
-                </td>
-                <td className="py-1.5 text-right tabular-nums">
-                  {fmtMoney(w.avgTicket)}
-                </td>
-                <td className="py-1.5 text-right tabular-nums">
+                </Td>
+                <Td numeric>{fmtNum(w.orders)}</Td>
+                <Td numeric>{fmtNum(w.items)}</Td>
+                <Td numeric>{fmtNum(w.covers)}</Td>
+                <Td numeric>{fmtMoney(w.avgTicket)}</Td>
+                <Td numeric>
                   {w.hoursWorked > 0 ? fmtNum(w.hoursWorked) : '—'}
-                </td>
-                <td className="py-1.5 text-right tabular-nums">
+                </Td>
+                <Td numeric>
                   {w.hoursWorked > 0 ? fmtMoney(w.revenuePerHour) : '—'}
-                </td>
+                </Td>
               </tr>
             );
           })}
         </tbody>
-      </table>
-    </div>
+      </Table>
+    </TableFrame>
   );
 }

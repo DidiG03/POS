@@ -1,4 +1,5 @@
 import { prisma } from '@db/client';
+import { tableKey } from '@shared/utils/tableKey';
 
 /** Lower bound for `(area, label)` rows tied to the current POS session. */
 export async function getTableSessionStartedAt(
@@ -12,11 +13,28 @@ export async function getTableSessionStartedAt(
     string,
     string
   >;
-  const openAtIso = openAtMap[`${area}:${label}`];
+  const openAtIso = openAtMap[tableKey(area, label)];
   if (!openAtIso) return null;
   const sessionStart = new Date(openAtIso);
   if (Number.isNaN(sessionStart.getTime())) return null;
   return sessionStart;
+}
+
+/**
+ * Latest TicketLog for the current sitting only. Returns null when the
+ * table is not open (no `tables:openAt`) so callers cannot mutate the
+ * previous paid-out ticket after a reopen.
+ */
+export async function findLatestTicketLogForCurrentSession(
+  area: string,
+  tableLabel: string,
+) {
+  const sessionStart = await getTableSessionStartedAt(area, tableLabel);
+  if (!sessionStart) return null;
+  return prisma.ticketLog.findFirst({
+    where: { area, tableLabel, createdAt: { gte: sessionStart } },
+    orderBy: { createdAt: 'desc' },
+  });
 }
 
 /**

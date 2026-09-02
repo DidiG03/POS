@@ -143,7 +143,7 @@ export const useTicketStore = create<TicketState>((set, _get) => ({
       })),
       orderNote: note || '',
     })),
-  clear: () => set({ lines: [] }),
+  clear: () => set({ lines: [], orderNote: '' }),
   markAllAsSent: () =>
     set((s) => ({ lines: s.lines.map((l) => ({ ...l, staged: false })) })),
 }));

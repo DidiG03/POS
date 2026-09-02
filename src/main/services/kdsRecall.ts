@@ -1,5 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
 
+import {
+  COOKER_STATION,
+  cookerUnbumpAllKitchenItems,
+  cookerUnbumpSingleKitchenItem,
+} from '@shared/kdsCooker';
 import { localDayStart } from './kdsRetention';
 
 function unbumpItem(it: any) {
@@ -70,12 +75,116 @@ async function recallWholeTicketRow(
   return { ok: true as const, ticketId: row.ticketId };
 }
 
+function cookerBumpedAtMs(it: any): number {
+  const t = new Date(String(it?.cookerBumpedAt || '')).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+async function persistCookerItems(
+  prisma: PrismaClient,
+  ticketId: number,
+  items: any[],
+) {
+  await (prisma as any).kdsTicket.update({
+    where: { id: ticketId },
+    data: { itemsJson: items },
+  });
+}
+
+async function recallCookerTicket(
+  prisma: PrismaClient,
+  input: {
+    station: string;
+    ticketId: number | null;
+    itemIdx: number | null;
+  },
+) {
+  const station = COOKER_STATION;
+  const ticketId = input.ticketId;
+  const itemIdx = input.itemIdx;
+
+  const loadNewRow = async (id: number) =>
+    (prisma as any).kdsTicketStation
+      .findFirst({
+        where: { ticketId: id, station, status: 'NEW' },
+        include: { ticket: true },
+      })
+      .catch(() => null);
+
+  if (ticketId && itemIdx != null && itemIdx >= 0) {
+    const row = await loadNewRow(ticketId);
+    if (!row?.ticket) return { ok: false as const, ticketId: null };
+    const itemsAll: any[] = Array.isArray(row.ticket.itemsJson)
+      ? row.ticket.itemsJson
+      : [];
+    if (itemIdx >= itemsAll.length)
+      return { ok: false as const, ticketId: null };
+    const nextItems = cookerUnbumpSingleKitchenItem(itemsAll, itemIdx);
+    await persistCookerItems(prisma, ticketId, nextItems);
+    return { ok: true as const, ticketId, itemRecalled: true as const };
+  }
+
+  if (ticketId) {
+    const row = await loadNewRow(ticketId);
+    if (!row?.ticket) return { ok: false as const, ticketId: null };
+    const itemsAll: any[] = Array.isArray(row.ticket.itemsJson)
+      ? row.ticket.itemsJson
+      : [];
+    await persistCookerItems(
+      prisma,
+      ticketId,
+      cookerUnbumpAllKitchenItems(itemsAll),
+    );
+    return { ok: true as const, ticketId };
+  }
+
+  const rows = await (prisma as any).kdsTicketStation
+    .findMany({
+      where: { station, status: 'NEW' },
+      include: { ticket: true },
+      orderBy: { ticket: { firedAt: 'desc' } },
+      take: 80,
+    })
+    .catch(() => []);
+  let best: { ticketId: number; items: any[] } | null = null;
+  let bestAt = 0;
+  for (const row of rows || []) {
+    const id = Number(row?.ticketId || row?.ticket?.id || 0);
+    const itemsAll: any[] = Array.isArray(row?.ticket?.itemsJson)
+      ? row.ticket.itemsJson
+      : [];
+    for (const it of itemsAll) {
+      if (
+        String(it?.station || '').toUpperCase() !== station ||
+        it?.voided ||
+        it?.bumped ||
+        !it?.cookerBumped
+      ) {
+        continue;
+      }
+      const at = cookerBumpedAtMs(it);
+      if (at >= bestAt) {
+        bestAt = at;
+        best = { ticketId: id, items: itemsAll };
+      }
+    }
+  }
+  if (!best?.ticketId) return { ok: false as const, ticketId: null };
+  await persistCookerItems(
+    prisma,
+    best.ticketId,
+    cookerUnbumpAllKitchenItems(best.items),
+  );
+  return { ok: true as const, ticketId: best.ticketId };
+}
+
 export async function recallKdsTicket(
   prisma: PrismaClient,
   input: {
     station: string;
     ticketId?: number | null;
     itemIdx?: number | null;
+    cooker?: boolean;
   },
 ) {
   const station = String(input.station || 'KITCHEN').toUpperCase();
@@ -86,6 +195,10 @@ export async function recallKdsTicket(
       : null;
 
   try {
+    if (input.cooker && station === COOKER_STATION) {
+      return await recallCookerTicket(prisma, { station, ticketId, itemIdx });
+    }
+
     if (ticketId && itemIdx != null && itemIdx >= 0) {
       const row = await (prisma as any).kdsTicketStation
         .findFirst({

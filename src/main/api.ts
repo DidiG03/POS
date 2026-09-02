@@ -27,11 +27,14 @@ import {
   ensureSseKeepAlive,
 } from './services/realtime';
 import { getFloorSnapshot } from './services/floorSnapshot';
+import { findLatestTicketLogForCurrentSession } from './services/tableSession';
+import { splitTableKey } from '@shared/utils/tableKey';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import {
   closeTableAfterAcceptedPayment,
+  closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
@@ -1556,11 +1559,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/kds/recall') {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
-        const { station, ticketId, itemIdx } = await parseJson(req);
+        const { station, ticketId, itemIdx, cooker } = await parseJson(req);
         const result = await recallKdsTicket(prisma, {
           station: String(station || 'KITCHEN'),
           ticketId,
           itemIdx,
+          cooker: Boolean(cooker),
         });
         return send(res, 200, result, corsOrigin);
       }
@@ -1747,8 +1751,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               where: { idempotencyKey: printIdempotencyKey } as any,
             })
             .catch(() => null);
-          if (existing)
-            return send(res, 200, { ok: true, printed: true }, corsOrigin);
+          if (existing) {
+            const closed = await closeTableAfterIdempotentPayment(
+              String(body?.area || ''),
+              String(body?.tableLabel || ''),
+              String(body?.meta?.kind || ''),
+            );
+            return send(res, 200, closed, corsOrigin);
+          }
         }
         const requested = {
           area: String(body?.area || ''),
@@ -2113,10 +2123,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             data: { userId: Number(userId), type: 'OTHER' as any, message },
           })
           .catch(() => {});
-        const last = await prisma.ticketLog.findFirst({
-          where: { area, tableLabel },
-          orderBy: { createdAt: 'desc' },
-        });
+        const last = await findLatestTicketLogForCurrentSession(
+          String(area),
+          String(tableLabel),
+        );
         if (last) {
           const items = (last.itemsJson as any[]) || [];
           const idx = items.findIndex(
@@ -2240,10 +2250,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             data: { userId: Number(userId), type: 'OTHER' as any, message },
           })
           .catch(() => {});
-        const last = await prisma.ticketLog.findFirst({
-          where: { area, tableLabel },
-          orderBy: { createdAt: 'desc' },
-        });
+        const last = await findLatestTicketLogForCurrentSession(
+          String(area),
+          String(tableLabel),
+        );
         if (last) {
           const items = ((last.itemsJson as any[]) || []).map((it: any) => ({
             ...it,
@@ -2445,10 +2455,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           200,
           Object.entries(map)
             .filter(([, v]) => Boolean(v))
-            .map(([k]) => {
-              const [area, label] = k.split(':');
-              return { area, label };
-            }),
+            .map(([k]) => splitTableKey(k))
+            .filter((p): p is { area: string; label: string } => Boolean(p)),
           corsOrigin,
         );
       }
@@ -3138,8 +3146,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           .map(([k]) => k);
         const latestMatches = await Promise.all(
           openKeys.map(async (k) => {
-            const [area, label] = k.split(':');
-            if (!area || !label) return false;
+            const parsed = splitTableKey(k);
+            if (!parsed) return false;
+            const { area, label } = parsed;
             const last = await prisma.ticketLog
               .findFirst({
                 where: { area, tableLabel: label },

@@ -709,6 +709,12 @@ class OfflineQueue {
           sent += 1;
           touched = true;
         } catch (e: any) {
+          if (isSaleAlreadySettled(e)) {
+            removedIds.add(it.id);
+            sent += 1;
+            touched = true;
+            continue;
+          }
           // Permanent server rejections (e.g. table is now closed,
           // table owned by another waiter, validation failure) will
           // never succeed on a retry. Drop them immediately and tell

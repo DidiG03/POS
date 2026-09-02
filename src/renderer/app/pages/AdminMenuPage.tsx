@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { type ParsedMenuRow, parseMenuWorkbook } from '../../utils/menuImport';
-import {
-  kdsCategoryLinkLabel,
-  kdsStationLabel,
-  type KdsStation,
-} from '@shared/kdsStations';
+import { type KdsStation } from '@shared/kdsStations';
 import { PageSpinner } from '../../components/PageSpinner';
 import {
   IconWarningTriangle,
   normalizeStock,
   type StockLevel,
 } from '../../components/StockAvailabilityPanel';
+import { KebabMenu } from '../components/SettingsChrome';
+import { Button, IconButton } from '../../components/ui/Button';
+import { Field, Input, Select, Switch } from '../../components/ui/Field';
+import { Badge } from '../../components/ui/Badge';
+import { EmptyState } from '../../components/ui/Surface';
+import { cn } from '../../components/ui/cn';
 
 type MenuItem = {
   id: number;
@@ -84,6 +87,48 @@ function guessDefaultKdsStation(name: string): KdsStation | null {
   return null;
 }
 
+function kdsLinkLabel(
+  t: (key: string) => string,
+  station: KdsStation | null | undefined,
+): string {
+  if (!station) return t('adminMenu.notOnKds');
+  return t(`kdsSettings.station${station}`);
+}
+
+function presetLabel(
+  t: (key: string, opts?: { defaultValue?: string }) => string,
+  name: string,
+) {
+  return t(`adminMenu.presets.${name.replace(/\s+/g, '')}`, {
+    defaultValue: name,
+  });
+}
+
+function vatPercent(rate: number): number {
+  const n = Number(rate);
+  if (!Number.isFinite(n)) return 0;
+  return n > 1 ? Math.round(n) : Math.round(n * 100);
+}
+
+function IconPlus() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="pos-icon"
+      aria-hidden
+    >
+      <path
+        d="M12 5v14M5 12h14"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function KdsStationSelect({
   value,
   onChange,
@@ -93,20 +138,20 @@ function KdsStationSelect({
   onChange: (next: KdsStation | '') => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
-    <select
-      className="bg-gray-700 rounded px-3 py-2 w-full"
+    <Select
       value={value}
       onChange={(e) => onChange((e.target.value || '') as KdsStation | '')}
       disabled={disabled}
     >
-      <option value="">Not on KDS</option>
+      <option value="">{t('adminMenu.notOnKds')}</option>
       {(['KITCHEN', 'BAR', 'DESSERT'] as KdsStation[]).map((st) => (
         <option key={st} value={st}>
-          {kdsStationLabel(st)}
+          {t(`kdsSettings.station${st}`)}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }
 
@@ -182,75 +227,6 @@ function IconUpload() {
   );
 }
 
-function IconPencil() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M12 20h9"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function IconTrash() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M3 6h18"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8 6V4h8v2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M6 6l1 16h10l1-16"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10 11v6"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M14 11v6"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 function Modal({
   title,
   subtitle,
@@ -262,6 +238,7 @@ function Modal({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
@@ -276,38 +253,36 @@ function Modal({
         type="button"
         className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
         onClick={onClose}
-        aria-label="Close modal"
+        aria-label={t('common.close')}
       />
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-2xl rounded-2xl border border-gray-700/80 bg-gradient-to-b from-gray-900 to-gray-950 text-gray-100 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-2xl overflow-hidden rounded-lg border border-white/10 bg-[var(--pos-surface)] text-gray-100 shadow-2xl"
       >
-        <div className="px-4 sm:px-5 py-3.5 border-b border-gray-700/70 flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-3 border-b border-white/7 px-4 py-3 sm:px-5">
           <div className="min-w-0">
-            <div className="font-semibold truncate">{title}</div>
+            <div className="truncate text-[15px] font-semibold">{title}</div>
             {subtitle !== undefined ? (
               subtitle && (
-                <div className="text-xs opacity-70 mt-0.5">{subtitle}</div>
+                <div className="mt-0.5 text-[12px] text-gray-500">
+                  {subtitle}
+                </div>
               )
             ) : (
-              <div className="text-xs opacity-70 mt-0.5">
-                Update details, then save changes.
+              <div className="mt-0.5 text-[12px] text-gray-500">
+                {t('adminMenu.modalHint')}
               </div>
             )}
           </div>
-          <button
-            type="button"
-            className="w-9 h-9 rounded-lg bg-gray-800/80 hover:bg-gray-700 border border-gray-700/80 flex items-center justify-center"
+          <IconButton
+            label={t('common.close')}
+            icon={<IconX />}
             onClick={onClose}
-            aria-label="Close"
-            title="Close"
-          >
-            <IconX />
-          </button>
+          />
         </div>
         <div className="p-4 sm:p-5">
-          <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 sm:p-5">
+          <div className="rounded-lg border border-white/7 bg-[var(--pos-canvas)] p-4 sm:p-5">
             {children}
           </div>
         </div>
@@ -317,6 +292,7 @@ function Modal({
 }
 
 export default function AdminMenuPage() {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [cats, setCats] = useState<MenuCategory[]>([]);
@@ -325,6 +301,8 @@ export default function AdminMenuPage() {
   const [billingPaused, setBillingPaused] = useState(false);
   const [editCategoryId, setEditCategoryId] = useState<number | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const initialLoad = useRef(true);
 
   const selected = useMemo(
     () => cats.find((c) => c.id === selectedId) || null,
@@ -340,7 +318,7 @@ export default function AdminMenuPage() {
 
   async function reload() {
     setErr(null);
-    setLoading(true);
+    if (initialLoad.current) setLoading(true);
     try {
       const data = await window.api.menu.listCategoriesWithItems();
       setCats(data as any);
@@ -348,8 +326,9 @@ export default function AdminMenuPage() {
       if (selectedId != null && !data?.some((c: any) => c.id === selectedId))
         setSelectedId(data?.[0]?.id ?? null);
     } catch (e: any) {
-      setErr(e?.message || 'Failed to load menu');
+      setErr(e?.message || t('adminMenu.loadFailed'));
     } finally {
+      initialLoad.current = false;
       setLoading(false);
     }
   }
@@ -407,300 +386,349 @@ export default function AdminMenuPage() {
     try {
       return await fn();
     } catch (e: any) {
-      setErr(e?.message || 'Action failed');
+      setErr(e?.message || t('adminMenu.actionFailed'));
       throw e;
     } finally {
       setSaving(null);
     }
   }
 
-  if (loading) return <PageSpinner message="Loading menu…" />;
+  const busy = saving != null || billingPaused;
+
+  async function addCategory() {
+    await withSaving('create-category', async () => {
+      const resp = await window.api.menu.createCategory({
+        name: resolvedNewCatName,
+        color: newCatColor,
+        kdsStation: newCatKdsStation || null,
+      } as any);
+      setNewCatName('');
+      setNewCatCustomName('');
+      setNewCatKdsStation('');
+      setShowAddCategory(false);
+      await reload();
+      const createdId = Number((resp as any)?.id || 0);
+      if (createdId) setSelectedId(createdId);
+    });
+  }
+
+  if (loading) return <PageSpinner message={t('adminMenu.loading')} />;
 
   return (
     <>
-      <div className="h-full min-h-0 grid grid-cols-1 md:grid-cols-12 gap-4">
-        <div className="md:col-span-4 bg-gray-800 rounded border border-gray-700 overflow-hidden min-h-0 flex flex-col">
-          <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-            <div className="font-semibold">Categories</div>
-            <div className="flex items-center gap-1">
-              <button
-                className="text-sm px-3 py-2 rounded bg-transparent hover:bg-gray-700 flex items-center gap-2 cursor-pointer disabled:opacity-60"
-                onClick={() => setShowImport(true)}
-                type="button"
-                title="Import menu from Excel/CSV"
-                disabled={billingPaused}
-              >
-                <IconUpload />
-                <span className="hidden lg:inline">Import</span>
-              </button>
-              <button
-                className="text-sm px-3 py-2 rounded bg-transparent hover:bg-gray-700 flex items-center gap-2 cursor-pointer"
-                onClick={() => void reload()}
-                type="button"
-                title="Refresh"
-              >
-                <IconRefresh />
-              </button>
-            </div>
-          </div>
-          <div className="p-4 border-b border-gray-700">
-            <div className="text-xs opacity-70 mb-2">Add category</div>
-            <div className="flex gap-2">
-              <select
-                className="bg-gray-700 rounded px-3 py-2 flex-1"
-                value={newCatName}
-                onChange={(e) => {
-                  const next = e.target.value as NewCategorySelection;
-                  setNewCatName(next);
-                  if (next === OTHER_CATEGORY) {
-                    setNewCatCustomName('');
-                    setNewCatKdsStation('');
-                  } else {
-                    setNewCatCustomName('');
-                    setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
-                  }
-                }}
-                title="Category preset"
-                disabled={saving != null || billingPaused}
-              >
-                <option value="">Select category…</option>
-                {CATEGORY_PRESETS.map((n) => {
-                  const taken = cats.some(
-                    (c) => c.name.trim().toLowerCase() === n.toLowerCase(),
-                  );
-                  return (
-                    <option key={n} value={n} disabled={taken}>
-                      {n}
-                      {taken ? ' (already exists)' : ''}
-                    </option>
-                  );
-                })}
-                <option value={OTHER_CATEGORY}>Other…</option>
-              </select>
-              <input
-                type="color"
-                className="w-12 h-10 rounded bg-gray-700 border border-gray-600"
-                value={newCatColor}
-                onChange={(e) => setNewCatColor(e.target.value)}
-                title="Category color"
-                disabled={saving != null || billingPaused}
-              />
-              <button
-                className="px-4 py-2 rounded bg-transparent hover:bg-gray-700 disabled:opacity-60 cursor-pointer"
-                disabled={!canAddCategory}
-                onClick={() =>
-                  void withSaving('create-category', async () => {
-                    const resp = await window.api.menu.createCategory({
-                      name: resolvedNewCatName,
-                      color: newCatColor,
-                      kdsStation: newCatKdsStation || null,
-                    } as any);
-                    setNewCatName('');
-                    setNewCatCustomName('');
-                    setNewCatKdsStation('');
-                    await reload();
-                    const createdId = Number((resp as any)?.id || 0);
-                    if (createdId) setSelectedId(createdId);
-                  })
-                }
-                type="button"
-              >
-                +
-              </button>
-            </div>
-            {newCatName === OTHER_CATEGORY && (
-              <div className="mt-2">
-                <div className="text-xs opacity-70 mb-1">Category name</div>
-                <input
-                  className="bg-gray-700 rounded px-3 py-2 w-full"
-                  placeholder="Enter category name…"
-                  value={newCatCustomName}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setNewCatCustomName(next);
-                    setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
-                  }}
-                  disabled={saving != null || billingPaused}
-                />
-                {newCatCustomName.trim() && newCatNameTaken ? (
-                  <div className="text-xs text-rose-400 mt-1">
-                    A category with this name already exists.
-                  </div>
-                ) : null}
+      <div className="flex h-full min-h-0 flex-col gap-3 md:flex-row">
+        <aside className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-lg border border-white/7 bg-[var(--pos-surface)] md:w-[340px]">
+          <div className="flex items-center gap-2 border-b border-white/7 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold text-gray-100">
+                {t('adminMenu.categories')}
               </div>
-            )}
-            <div className="mt-2">
-              <div className="text-xs opacity-70 mb-1">KDS display</div>
-              <KdsStationSelect
-                value={newCatKdsStation}
-                onChange={setNewCatKdsStation}
-                disabled={saving != null || billingPaused}
-              />
+              {cats.length > 0 ? (
+                <div className="text-[11px] text-gray-500">
+                  {t('adminMenu.categoryCount', { count: cats.length })}
+                </div>
+              ) : null}
             </div>
+            <IconButton
+              label={t('adminMenu.addCategory')}
+              icon={<IconPlus />}
+              disabled={busy}
+              onClick={() => setShowAddCategory((v) => !v)}
+            />
+            <IconButton
+              label={t('common.refresh')}
+              icon={<IconRefresh />}
+              onClick={() => void reload()}
+            />
+            <KebabMenu
+              label={t('common.moreActions')}
+              disabled={billingPaused}
+              items={[
+                {
+                  label: t('adminMenu.import'),
+                  onSelect: () => setShowImport(true),
+                  disabled: billingPaused,
+                },
+              ]}
+            />
           </div>
 
-          <div className="p-2 overflow-auto min-h-0">
+          {showAddCategory ? (
+            <div className="space-y-2 border-b border-white/7 px-3 py-3">
+              <div className="flex items-center gap-2">
+                <Select
+                  className="flex-1"
+                  value={newCatName}
+                  onChange={(e) => {
+                    const next = e.target.value as NewCategorySelection;
+                    setNewCatName(next);
+                    if (next === OTHER_CATEGORY) {
+                      setNewCatCustomName('');
+                      setNewCatKdsStation('');
+                    } else {
+                      setNewCatCustomName('');
+                      setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
+                    }
+                  }}
+                  title={t('adminMenu.addCategory')}
+                  disabled={busy}
+                >
+                  <option value="">{t('adminMenu.selectCategory')}</option>
+                  {CATEGORY_PRESETS.map((n) => {
+                    const taken = cats.some(
+                      (c) => c.name.trim().toLowerCase() === n.toLowerCase(),
+                    );
+                    return (
+                      <option key={n} value={n} disabled={taken}>
+                        {presetLabel(t, n)}
+                        {taken ? ` ${t('adminMenu.alreadyExists')}` : ''}
+                      </option>
+                    );
+                  })}
+                  <option value={OTHER_CATEGORY}>{t('adminMenu.other')}</option>
+                </Select>
+                <input
+                  type="color"
+                  className="h-[var(--pos-control-h)] w-10 shrink-0 cursor-pointer rounded border border-white/10 bg-transparent"
+                  value={newCatColor}
+                  onChange={(e) => setNewCatColor(e.target.value)}
+                  title={t('adminMenu.categoryColor')}
+                  disabled={busy}
+                />
+                <IconButton
+                  label={t('common.add')}
+                  icon={<IconPlus />}
+                  variant="primary"
+                  disabled={!canAddCategory}
+                  onClick={() => void addCategory()}
+                />
+              </div>
+              {newCatName === OTHER_CATEGORY ? (
+                <Field
+                  label={t('adminMenu.categoryName')}
+                  error={
+                    newCatCustomName.trim() && newCatNameTaken
+                      ? t('adminMenu.nameTaken')
+                      : undefined
+                  }
+                >
+                  <Input
+                    placeholder={t('adminMenu.categoryNamePlaceholder')}
+                    value={newCatCustomName}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setNewCatCustomName(next);
+                      setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
+                    }}
+                    disabled={busy}
+                  />
+                </Field>
+              ) : null}
+              {newCatName ? (
+                <Field label={t('adminMenu.kdsDisplay')}>
+                  <KdsStationSelect
+                    value={newCatKdsStation}
+                    onChange={setNewCatKdsStation}
+                    disabled={busy}
+                  />
+                </Field>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="min-h-0 flex-1 overflow-auto p-1.5">
             {cats.length === 0 ? (
-              <div className="p-3 text-sm opacity-70">No categories yet.</div>
+              <EmptyState
+                compact
+                title={t('adminMenu.noCategories')}
+                description={t('adminMenu.noCategoriesHint')}
+                action={
+                  showAddCategory ? undefined : (
+                    <Button
+                      size="sm"
+                      onClick={() => setShowAddCategory(true)}
+                      disabled={busy}
+                    >
+                      {t('adminMenu.addCategory')}
+                    </Button>
+                  )
+                }
+              />
             ) : (
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 {cats.map((c) => (
-                  <button
+                  <div
                     key={c.id}
-                    className={`w-full text-left px-3 py-2 rounded hover:bg-gray-700 ${selectedId === c.id ? 'bg-gray-700' : ''}`}
-                    onClick={() => setSelectedId(c.id)}
-                    type="button"
+                    className={cn(
+                      'pos-side-link w-full',
+                      selectedId === c.id
+                        ? 'pos-side-link--active'
+                        : 'pos-side-link--idle',
+                    )}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className="inline-block w-3 h-3 rounded"
-                          style={{ backgroundColor: c.color || '#374151' }}
-                        />
-                        <span className="font-medium truncate">{c.name}</span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-700 opacity-80 shrink-0">
-                          {kdsCategoryLinkLabel(c.kdsStation ?? null)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs px-2 py-0.5 rounded bg-gray-900/40 border border-gray-700 opacity-90">
-                          {c.items?.length || 0}
-                        </span>
-                        <button
-                          type="button"
-                          className="w-8 h-8 rounded bg-transparent hover:bg-gray-700 flex items-center justify-center disabled:opacity-60 cursor-pointer"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      onClick={() => setSelectedId(c.id)}
+                    >
+                      <span
+                        className="inline-block size-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: c.color || '#374151' }}
+                      />
+                      <span className="min-w-0 truncate">{c.name}</span>
+                      {c.kdsStation ? (
+                        <Badge className="shrink-0 text-[10px]">
+                          {kdsLinkLabel(t, c.kdsStation)}
+                        </Badge>
+                      ) : null}
+                    </button>
+                    <span className="shrink-0 text-[11px] tabular-nums text-gray-500">
+                      {c.items?.length || 0}
+                    </span>
+                    <KebabMenu
+                      label={t('common.moreActions')}
+                      disabled={busy}
+                      items={[
+                        {
+                          label: t('common.edit'),
+                          onSelect: () => {
                             setSelectedId(c.id);
                             setEditCategoryId(c.id);
-                          }}
-                          disabled={saving != null || billingPaused}
-                          aria-label={`Edit category ${c.name}`}
-                          title="Edit category"
-                        >
-                          <IconPencil />
-                        </button>
-                        <button
-                          type="button"
-                          className="w-8 h-8 cursor-pointer rounded bg-rose-700 hover:bg-rose-800 border border-rose-600 flex items-center justify-center disabled:opacity-60"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
+                          },
+                          disabled: busy,
+                        },
+                        {
+                          label: t('common.delete'),
+                          danger: true,
+                          disabled: busy,
+                          onSelect: () =>
                             void withSaving('delete-category', async () => {
                               const ok = window.confirm(
-                                `Delete category "${c.name}"?\n\nThis will also hide its items (soft delete).`,
+                                t('adminMenu.deleteCategoryConfirm', {
+                                  name: c.name,
+                                }),
                               );
                               if (!ok) return;
                               await window.api.menu.deleteCategory(c.id);
                               await reload();
-                            });
-                          }}
-                          disabled={saving != null || billingPaused}
-                          aria-label={`Delete category ${c.name}`}
-                          title="Delete category"
-                        >
-                          <IconTrash />
-                        </button>
-                      </div>
-                    </div>
-                  </button>
+                            }),
+                        },
+                      ]}
+                    />
+                  </div>
                 ))}
               </div>
             )}
           </div>
-        </div>
+        </aside>
 
-        <div className="md:col-span-8 bg-gray-800 rounded border border-gray-700 overflow-hidden min-h-0 flex flex-col">
-          <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-            <div className="font-semibold truncate">
-              {selected ? `Category: ${selected.name}` : 'Menu editor'}
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-white/7 bg-[var(--pos-surface)]">
+          <div className="flex items-center gap-2 border-b border-white/7 px-4 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px] font-semibold text-gray-100">
+                {selected ? selected.name : t('adminMenu.menuEditor')}
+              </div>
+              {selected ? (
+                <div className="text-[11px] text-gray-500">
+                  {t('adminMenu.itemCount', {
+                    count: selected.items?.length || 0,
+                  })}
+                </div>
+              ) : null}
             </div>
-            <div className="mb-3">
-              <button
-                className="px-4 py-2 rounded bg-transparent hover:bg-gray-700 disabled:opacity-60 font-medium flex items-center gap-2 cursor-pointer"
-                disabled={saving != null || billingPaused}
+            {saving ? (
+              <span className="text-[11px] text-gray-500">
+                {t('common.saving')}
+              </span>
+            ) : null}
+            {selected ? (
+              <Button
+                size="sm"
+                icon={<IconPlus />}
+                disabled={busy}
                 onClick={() => setShowAddItem(true)}
-                type="button"
               >
-                <span className="text-lg leading-none">+</span>
-              </button>
-            </div>
-            {saving && <div className="text-xs opacity-70">Saving…</div>}
+                {t('adminMenu.addItem')}
+              </Button>
+            ) : null}
           </div>
 
-          <div className="p-4 space-y-4 overflow-auto min-h-0">
-            {err && (
-              <div className="p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">
+          <div className="min-h-0 flex-1 overflow-auto">
+            {err ? (
+              <div className="m-3 rounded-lg border border-rose-700/60 bg-rose-900/25 px-3 py-2 text-[13px] text-rose-200">
                 {err}
               </div>
-            )}
-            {billingPaused && (
-              <div className="p-3 rounded bg-amber-900/20 border border-amber-800 text-amber-200 text-sm">
-                Billing is paused. You can view your menu, but adding or editing
-                menu items is disabled until payment is completed.
+            ) : null}
+            {billingPaused ? (
+              <div className="m-3 rounded-lg border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[13px] text-amber-200">
+                {t('adminMenu.billingPaused')}
               </div>
-            )}
+            ) : null}
 
             {!selected ? (
-              <div className="rounded border border-gray-700 bg-gray-900/30 p-6 text-sm opacity-80">
-                Select a category on the left to edit its details and items.
-              </div>
+              <EmptyState
+                title={t('adminMenu.menuEditor')}
+                description={t('adminMenu.selectCategoryHint')}
+              />
+            ) : selected.items.length === 0 ? (
+              <EmptyState
+                title={t('adminMenu.noItems')}
+                description={t('adminMenu.noItemsHint')}
+                action={
+                  <Button
+                    size="sm"
+                    icon={<IconPlus />}
+                    disabled={busy}
+                    onClick={() => setShowAddItem(true)}
+                  >
+                    {t('adminMenu.addItem')}
+                  </Button>
+                }
+              />
             ) : (
-              <>
-                <div className="rounded border border-gray-700 bg-gray-800/40 p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="font-semibold">Items</div>
-                    <div className="text-xs opacity-70">
-                      {selected.items?.length || 0} items
-                    </div>
-                  </div>
-
-                  {selected.items.length === 0 ? (
-                    <div className="opacity-70 text-sm">No items yet.</div>
-                  ) : (
-                    <div className="divide-y divide-gray-700 border border-gray-700 rounded overflow-hidden">
-                      {selected.items.map((it) => (
-                        <ItemRow
-                          key={it.id}
-                          item={it}
-                          kdsStation={selected.kdsStation ?? null}
-                          disabled={saving != null}
-                          onSave={(patch) =>
-                            withSaving('update-item', async () => {
-                              await window.api.menu.updateItem({
-                                id: it.id,
-                                ...patch,
-                              } as any);
-                              await reload();
-                            })
-                          }
-                          onDelete={() =>
-                            withSaving('delete-item', async () => {
-                              await window.api.menu.deleteItem(it.id);
-                              await reload();
-                            })
-                          }
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </>
+              <div className="divide-y divide-white/6">
+                {selected.items.map((it) => (
+                  <ItemRow
+                    key={it.id}
+                    item={it}
+                    kdsStation={selected.kdsStation ?? null}
+                    disabled={busy}
+                    onSave={(patch) =>
+                      withSaving('update-item', async () => {
+                        await window.api.menu.updateItem({
+                          id: it.id,
+                          ...patch,
+                        } as any);
+                        await reload();
+                      })
+                    }
+                    onDelete={() =>
+                      withSaving('delete-item', async () => {
+                        const ok = window.confirm(
+                          t('adminMenu.deleteItemConfirm', { name: it.name }),
+                        );
+                        if (!ok) return;
+                        await window.api.menu.deleteItem(it.id);
+                        await reload();
+                      })
+                    }
+                  />
+                ))}
+              </div>
             )}
           </div>
-        </div>
+        </section>
       </div>
 
       {editCategory && (
         <Modal
-          title={`Edit category: ${editCategory.name}`}
+          title={t('adminMenu.editCategory', { name: editCategory.name })}
           onClose={() => setEditCategoryId(null)}
         >
           <CategoryEditor
             category={editCategory}
             allCategories={cats}
-            disabled={saving != null || billingPaused}
+            disabled={busy}
             showDelete={false}
             onSave={(patch) =>
               withSaving('update-category', async () => {
@@ -719,12 +747,12 @@ export default function AdminMenuPage() {
 
       {showAddItem && selected && (
         <Modal
-          title={`Add item to ${selected.name}`}
-          subtitle="Fill in the details for the new menu item."
+          title={t('adminMenu.addItemTo', { name: selected.name })}
+          subtitle={t('adminMenu.addItemHint')}
           onClose={() => setShowAddItem(false)}
         >
           <AddItemForm
-            disabled={saving != null || billingPaused}
+            disabled={busy}
             onAdd={(data) =>
               withSaving('create-item', async () => {
                 await window.api.menu.createItem({
@@ -794,6 +822,7 @@ function MenuImportModal({
   onClose: () => void;
   onImported: () => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const [parsing, setParsing] = useState(false);
@@ -853,7 +882,7 @@ function MenuImportModal({
         setError('No menu rows were found in the file.');
       }
     } catch (e: any) {
-      setError(e?.message || 'Failed to read the file.');
+      setError(e?.message || t('adminMenu.parseFailed'));
     } finally {
       setParsing(false);
     }
@@ -874,7 +903,7 @@ function MenuImportModal({
       XLSX.utils.book_append_sheet(wb, ws, 'Menu');
       XLSX.writeFile(wb, 'menu-template.xlsx');
     } catch (e: any) {
-      setError(e?.message || 'Failed to create template.');
+      setError(e?.message || t('adminMenu.templateFailed'));
     }
   }
 
@@ -959,7 +988,7 @@ function MenuImportModal({
       setResult({ createdCategories, created, updated, skipped });
       await onImported();
     } catch (e: any) {
-      setError(e?.message || 'Import failed.');
+      setError(e?.message || t('adminMenu.importFailed'));
     } finally {
       setImporting(false);
     }
@@ -974,31 +1003,28 @@ function MenuImportModal({
         type="button"
         className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
         onClick={() => !importing && onClose()}
-        aria-label="Close modal"
+        aria-label={t('common.close')}
       />
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-4xl max-h-[92vh] flex flex-col rounded-2xl border border-gray-700/80 bg-gradient-to-b from-gray-900 to-gray-950 text-gray-100 shadow-2xl overflow-hidden"
+        className="relative flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-white/10 bg-[var(--pos-surface)] text-gray-100 shadow-2xl"
       >
-        <div className="px-4 sm:px-5 py-3.5 border-b border-gray-700/70 flex items-center justify-between gap-3 shrink-0">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/7 px-4 py-3 sm:px-5">
           <div className="min-w-0">
-            <div className="font-semibold truncate">Import menu from Excel</div>
-            <div className="text-xs opacity-70 mt-0.5">
-              Upload an .xlsx, .xls or .csv file. Columns are detected
-              automatically (Name, Price, Category, VAT, Kg, Station).
+            <div className="truncate text-[15px] font-semibold">
+              {t('adminMenu.importMenu')}
+            </div>
+            <div className="mt-0.5 text-[12px] text-gray-500">
+              {t('adminMenu.importHint')}
             </div>
           </div>
-          <button
-            type="button"
-            className="w-9 h-9 rounded-lg bg-gray-800/80 hover:bg-gray-700 border border-gray-700/80 flex items-center justify-center disabled:opacity-50"
-            onClick={onClose}
+          <IconButton
+            label={t('common.close')}
+            icon={<IconX />}
             disabled={importing}
-            aria-label="Close"
-            title="Close"
-          >
-            <IconX />
-          </button>
+            onClick={onClose}
+          />
         </div>
 
         <div className="p-4 sm:p-5 overflow-auto min-h-0 space-y-4">
@@ -1015,28 +1041,31 @@ function MenuImportModal({
           />
 
           <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              className="px-4 py-2 rounded bg-green-600 hover:bg-green-500 disabled:opacity-60 cursor-pointer flex items-center gap-2"
-              onClick={() => fileInputRef.current?.click()}
+            <Button
+              icon={<IconUpload />}
               disabled={parsing || importing || disabled}
+              onClick={() => fileInputRef.current?.click()}
             >
-              <IconUpload />
-              {fileName ? 'Choose another file' : 'Choose file'}
-            </button>
-            <button
-              type="button"
-              className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer text-sm"
-              onClick={() => void downloadTemplate()}
+              {fileName
+                ? t('adminMenu.chooseAnotherFile')
+                : t('adminMenu.chooseFile')}
+            </Button>
+            <Button
+              variant="secondary"
               disabled={importing}
+              onClick={() => void downloadTemplate()}
             >
-              Download template
-            </button>
+              {t('adminMenu.downloadTemplate')}
+            </Button>
             {fileName ? (
-              <span className="text-sm opacity-80 truncate">{fileName}</span>
+              <span className="truncate text-[13px] text-gray-400">
+                {fileName}
+              </span>
             ) : null}
             {parsing ? (
-              <span className="text-sm opacity-80">Parsing…</span>
+              <span className="text-[13px] text-gray-400">
+                {t('adminMenu.parsing')}
+              </span>
             ) : null}
           </div>
 
@@ -1048,14 +1077,26 @@ function MenuImportModal({
 
           {result ? (
             <div className="rounded-lg border border-emerald-700/60 bg-emerald-900/25 px-4 py-3 text-sm">
-              <div className="font-semibold text-emerald-300 mb-1">
-                Import complete
+              <div className="mb-1 font-semibold text-emerald-300">
+                {t('adminMenu.importComplete')}
               </div>
               <ul className="space-y-0.5 opacity-90">
-                <li>{result.createdCategories} categories created</li>
-                <li>{result.created} items added</li>
-                <li>{result.updated} items updated</li>
-                {result.skipped ? <li>{result.skipped} skipped</li> : null}
+                <li>
+                  {t('adminMenu.createdCategories', {
+                    count: result.createdCategories,
+                  })}
+                </li>
+                <li>
+                  {t('adminMenu.createdItems', { count: result.created })}
+                </li>
+                <li>
+                  {t('adminMenu.updatedItems', { count: result.updated })}
+                </li>
+                {result.skipped ? (
+                  <li>
+                    {t('adminMenu.skippedItems', { count: result.skipped })}
+                  </li>
+                ) : null}
               </ul>
             </div>
           ) : null}
@@ -1071,23 +1112,26 @@ function MenuImportModal({
           {plan.length && !result ? (
             <>
               <div className="flex flex-wrap items-center gap-4 text-sm">
-                <div className="opacity-80">
-                  <span className="font-semibold text-gray-100">
-                    {plan.length}
-                  </span>{' '}
-                  rows · {counts.create} new · {counts.update} existing
+                <div className="text-gray-400">
+                  {t('adminMenu.planSummary', {
+                    rows: plan.length,
+                    create: counts.create,
+                    update: counts.update,
+                  })}
                   {newCategories.length
-                    ? ` · ${newCategories.length} new categories`
+                    ? t('adminMenu.planNewCategories', {
+                        count: newCategories.length,
+                      })
                     : ''}
                 </div>
-                <label className="flex items-center gap-2 ml-auto cursor-pointer select-none">
+                <label className="ml-auto flex cursor-pointer select-none items-center gap-2">
                   <input
                     type="checkbox"
                     checked={updateExisting}
                     onChange={(e) => setUpdateExisting(e.target.checked)}
                     disabled={importing}
                   />
-                  Update prices of existing items
+                  {t('adminMenu.updateExisting')}
                 </label>
               </div>
 
@@ -1096,11 +1140,19 @@ function MenuImportModal({
                   <table className="w-full text-sm">
                     <thead className="sticky top-0 bg-gray-800 text-left text-xs uppercase tracking-wide opacity-80">
                       <tr>
-                        <th className="px-3 py-2">Category</th>
-                        <th className="px-3 py-2">Item</th>
-                        <th className="px-3 py-2 text-right">Price</th>
-                        <th className="px-3 py-2 text-right">VAT</th>
-                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">
+                          {t('adminMenu.colCategory')}
+                        </th>
+                        <th className="px-3 py-2">{t('adminMenu.colItem')}</th>
+                        <th className="px-3 py-2 text-right">
+                          {t('adminMenu.colPrice')}
+                        </th>
+                        <th className="px-3 py-2 text-right">
+                          {t('adminMenu.colVat')}
+                        </th>
+                        <th className="px-3 py-2">
+                          {t('adminMenu.colStatus')}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1131,14 +1183,18 @@ function MenuImportModal({
                           <td className="px-3 py-1.5">
                             {r.status === 'update' ? (
                               <span className="text-amber-300">
-                                {updateExisting ? 'Update' : 'Skip'}
+                                {updateExisting
+                                  ? t('adminMenu.statusUpdate')
+                                  : t('adminMenu.statusSkip')}
                               </span>
                             ) : r.status === 'new-category' ? (
                               <span className="text-sky-300">
-                                New + category
+                                {t('adminMenu.statusNewCategory')}
                               </span>
                             ) : (
-                              <span className="text-emerald-300">New</span>
+                              <span className="text-emerald-300">
+                                {t('adminMenu.statusNew')}
+                              </span>
                             )}
                           </td>
                         </tr>
@@ -1151,31 +1207,28 @@ function MenuImportModal({
           ) : null}
         </div>
 
-        <div className="px-4 sm:px-5 py-3 border-t border-gray-700/70 flex items-center justify-end gap-3 shrink-0">
+        <div className="flex shrink-0 items-center justify-end gap-3 border-t border-white/7 px-4 py-3 sm:px-5">
           {importing ? (
-            <span className="text-sm opacity-80 mr-auto">
-              Importing {progress.done}/{progress.total}…
+            <span className="mr-auto text-[13px] text-gray-400">
+              {t('adminMenu.importingProgress', {
+                done: progress.done,
+                total: progress.total,
+              })}
             </span>
           ) : null}
-          <button
-            type="button"
-            className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer disabled:opacity-60"
-            onClick={onClose}
-            disabled={importing}
-          >
-            {result ? 'Close' : 'Cancel'}
-          </button>
+          <Button variant="secondary" onClick={onClose} disabled={importing}>
+            {result ? t('common.close') : t('common.cancel')}
+          </Button>
           {!result ? (
-            <button
-              type="button"
-              className="px-4 py-2 rounded bg-green-600 hover:bg-green-500 cursor-pointer disabled:opacity-60"
+            <Button
               onClick={() => void runImport()}
               disabled={!plan.length || importing || disabled}
+              loading={importing}
             >
               {importing
-                ? 'Importing…'
-                : `Import ${plan.length} item${plan.length === 1 ? '' : 's'}`}
-            </button>
+                ? t('adminMenu.importing')
+                : t('adminMenu.importN', { count: plan.length })}
+            </Button>
           ) : null}
         </div>
       </div>
@@ -1195,6 +1248,7 @@ function AddItemForm({
     isKg: boolean;
   }) => Promise<any>;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [vat, setVat] = useState('0.2');
@@ -1202,83 +1256,64 @@ function AddItemForm({
 
   const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
 
+  function submit() {
+    onAdd({
+      name: name.trim(),
+      price: Number(price),
+      vatRate: vat ? Number(vat) : undefined,
+      isKg,
+    });
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <div className="text-xs opacity-70 mb-1">Item name</div>
-        <input
+      <Field label={t('adminMenu.itemName')}>
+        <Input
           autoFocus
-          className="bg-gray-700 rounded px-3 py-2 w-full"
-          placeholder="e.g. Margherita Pizza"
+          placeholder={t('adminMenu.itemNamePlaceholder')}
           value={name}
           onChange={(e) => setName(e.target.value)}
           disabled={disabled}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit)
-              onAdd({
-                name: name.trim(),
-                price: Number(price),
-                vatRate: vat ? Number(vat) : undefined,
-                isKg,
-              });
+            if (e.key === 'Enter' && canSubmit) submit();
           }}
         />
-      </div>
+      </Field>
 
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <div className="text-xs opacity-70 mb-1">Price</div>
-          <input
-            className="bg-gray-700 rounded px-3 py-2 w-full"
+        <Field label={t('adminMenu.price')}>
+          <Input
             placeholder="0.00"
             inputMode="decimal"
             value={price}
             onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
             disabled={disabled}
           />
-        </div>
-        <div>
-          <div className="text-xs opacity-70 mb-1">VAT rate</div>
-          <input
-            className="bg-gray-700 rounded px-3 py-2 w-full"
+        </Field>
+        <Field label={t('adminMenu.vatRate')}>
+          <Input
             placeholder="0.2"
             inputMode="decimal"
             value={vat}
             onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
             disabled={disabled}
           />
-        </div>
+        </Field>
       </div>
 
-      <div className="flex items-end pb-1">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={isKg}
-            onChange={(e) => setIsKg(e.target.checked)}
-            disabled={disabled}
-          />
-          Sold by kg
-        </label>
-      </div>
+      <label className="flex items-center gap-2 text-[13px]">
+        <input
+          type="checkbox"
+          checked={isKg}
+          onChange={(e) => setIsKg(e.target.checked)}
+          disabled={disabled}
+        />
+        {t('adminMenu.soldByKgLabel')}
+      </label>
 
-      <div className="flex justify-end pt-2">
-        <button
-          className="w-full px-5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium cursor-pointer"
-          disabled={!canSubmit}
-          onClick={() =>
-            onAdd({
-              name: name.trim(),
-              price: Number(price),
-              vatRate: vat ? Number(vat) : undefined,
-              isKg,
-            })
-          }
-          type="button"
-        >
-          Add Item
-        </button>
-      </div>
+      <Button block disabled={!canSubmit} onClick={submit}>
+        {t('adminMenu.addItem')}
+      </Button>
     </div>
   );
 }
@@ -1304,6 +1339,7 @@ function CategoryEditor({
   onDelete: () => Promise<any>;
   showDelete?: boolean;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState(category.name);
   const [color, setColor] = useState<string>(
     String(category.color || '#374151'),
@@ -1341,49 +1377,62 @@ function CategoryEditor({
     return null;
   }
 
+  const nextName = name.trim();
+  const preset = CATEGORY_PRESETS.find(
+    (p) => p.toLowerCase() === nextName.toLowerCase(),
+  );
+  const nameTaken = Boolean(
+    preset &&
+      allCategories.some(
+        (c) =>
+          Number(c.id) !== Number(category.id) &&
+          String(c.name || '').toLowerCase() === preset.toLowerCase(),
+      ),
+  );
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-        <div className="md:col-span-6">
-          <div className="text-xs opacity-70 mb-1">Name</div>
-          <select
-            className="bg-gray-700 rounded px-3 py-2 w-full"
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-12 md:items-end">
+        <Field
+          className="md:col-span-6"
+          label={t('adminMenu.name')}
+          error={nameTaken ? t('adminMenu.nameTaken') : undefined}
+        >
+          <Select
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={disabled}
           >
-            {/* If this category is legacy/custom, keep it selectable so we don't break existing data */}
             {!CATEGORY_PRESETS.some(
               (p) =>
                 p.toLowerCase() === String(category.name || '').toLowerCase(),
             ) && (
-              <option
-                value={category.name}
-              >{`Legacy: ${category.name}`}</option>
+              <option value={category.name}>
+                {t('adminMenu.legacy', { name: category.name })}
+              </option>
             )}
             {CATEGORY_PRESETS.map((n) => (
               <option key={n} value={n}>
-                {n}
+                {presetLabel(t, n)}
               </option>
             ))}
-          </select>
-        </div>
-        <div className="md:col-span-4">
-          <div className="text-xs opacity-70 mb-1">Color</div>
-          <div className="grid grid-cols-[3rem_1fr_auto] gap-2 items-center">
+          </Select>
+        </Field>
+        <Field className="md:col-span-6" label={t('adminMenu.color')}>
+          <div className="flex items-center gap-2">
             <input
               type="color"
-              className="w-12 h-10 rounded bg-gray-700 border border-gray-600"
+              className="h-[var(--pos-control-h)] w-12 shrink-0 cursor-pointer rounded border border-white/10 bg-transparent"
               value={color}
               onChange={(e) => {
                 setColor(e.target.value);
                 setColorText(e.target.value);
               }}
-              title="Pick color"
+              title={t('adminMenu.pickColor')}
               disabled={disabled}
             />
-            <input
-              className="bg-gray-700 rounded px-3 py-2 flex-1 min-w-[140px] font-mono"
+            <Input
+              className="font-mono"
               placeholder="#RRGGBB"
               value={colorText}
               onChange={(e) => setColorText(e.target.value)}
@@ -1396,51 +1445,28 @@ function CategoryEditor({
               }}
             />
           </div>
-        </div>
-        <div className="md:col-span-12">
-          <div className="text-xs opacity-70 mb-1">KDS display</div>
+        </Field>
+        <Field
+          className="md:col-span-12"
+          label={t('adminMenu.kdsDisplay')}
+          hint={t('adminMenu.kdsHint')}
+        >
           <KdsStationSelect
             value={kdsStation}
             onChange={setKdsStation}
             disabled={disabled}
           />
-          <div className="text-[10px] opacity-50 mt-1">
-            Items in this category only appear on the linked KDS screen.
-          </div>
-        </div>
-        {/* <div className="md:col-span-2">
-          <div className="text-xs opacity-70 mb-1">Sort</div>
-          <input
-            className="bg-gray-700 rounded px-3 py-2 w-full"
-            inputMode="numeric"
-            value={sortOrder}
-            onChange={(e) =>
-              setSortOrder(e.target.value.replace(/[^0-9]/g, ''))
-            }
-            disabled={disabled}
-          />
-        </div> */}
+        </Field>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-2 sm:justify-end pt-2">
-        <button
-          className="w-full px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium"
-          disabled={disabled}
+      <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:justify-end">
+        <Button
+          block
+          disabled={disabled || nameTaken}
           onClick={() => {
             const norm =
               normalizeColorInput(colorText) ?? (color ? String(color) : null);
-            const nextName = name.trim();
-            const preset = CATEGORY_PRESETS.find(
-              (p) => p.toLowerCase() === nextName.toLowerCase(),
-            );
-            if (preset) {
-              const takenByOther = allCategories.some(
-                (c) =>
-                  Number(c.id) !== Number(category.id) &&
-                  String(c.name || '').toLowerCase() === preset.toLowerCase(),
-              );
-              if (takenByOther) return;
-            }
+            if (nameTaken) return;
             onSave({
               name: name.trim(),
               color: norm,
@@ -1448,25 +1474,24 @@ function CategoryEditor({
               kdsStation: kdsStation || null,
             });
           }}
-          type="button"
         >
-          Save
-        </button>
-        {showDelete && (
-          <button
-            className="w-full sm:w-auto px-4 py-2 rounded-lg bg-rose-700 hover:bg-rose-800 disabled:opacity-60 flex items-center justify-center gap-2 font-medium"
+          {t('common.save')}
+        </Button>
+        {showDelete ? (
+          <Button
+            variant="danger"
             disabled={disabled}
             onClick={() => onDelete()}
-            type="button"
           >
-            <IconX />
-            Delete
-          </button>
-        )}
+            {t('common.delete')}
+          </Button>
+        ) : null}
       </div>
-      <div className="text-xs opacity-60">
-        Deleting a category will also hide its items (soft delete).
-      </div>
+      {showDelete ? (
+        <div className="text-[12px] text-gray-500">
+          {t('adminMenu.deleteCategoryHint')}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1492,73 +1517,97 @@ function ItemRow({
   }) => Promise<any>;
   onDelete: () => Promise<any>;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const active = Boolean(item.active);
   const stock = normalizeStock(item.stockLevel);
-  const stationLabel = kdsCategoryLinkLabel(kdsStation);
+  const skuShown =
+    Boolean(item.sku) &&
+    item.sku.trim().toLowerCase() !== item.name.trim().toLowerCase();
 
   return (
     <>
       <div
-        className={`px-3 py-2.5 flex items-center gap-3 ${active ? '' : 'opacity-50 bg-gray-900/20'}`}
-        title={active ? undefined : 'Disabled: hidden from waiter menu'}
+        className={cn(
+          'flex items-center gap-3 px-4 py-2.5',
+          !active && 'opacity-55',
+        )}
+        title={active ? undefined : t('adminMenu.itemHidden')}
       >
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <div
-            className={`font-medium truncate ${active ? '' : 'line-through text-gray-400'}`}
+            className={cn(
+              'truncate text-[13px] font-medium',
+              active ? 'text-gray-100' : 'text-gray-400 line-through',
+            )}
           >
             {item.name}
           </div>
-          <div className="text-[10px] opacity-50 mt-0.5">
-            {stationLabel} · VAT {item.vatRate} {item.isKg ? ' · kg' : ''} ·
-            SKU: {item.sku}
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            {kdsStation ? (
+              <Badge className="text-[10px]">
+                {kdsLinkLabel(t, kdsStation)}
+              </Badge>
+            ) : null}
+            <Badge className="text-[10px]">
+              {t('adminMenu.vat', { pct: vatPercent(item.vatRate) })}
+            </Badge>
+            {item.isKg ? (
+              <Badge className="text-[10px]">{t('adminMenu.soldByKg')}</Badge>
+            ) : null}
+            {skuShown ? (
+              <Badge className="text-[10px]">
+                {t('adminMenu.sku', { sku: item.sku })}
+              </Badge>
+            ) : null}
+            {stock === 'LOW' ? (
+              <Badge
+                tone="warn"
+                className="inline-flex items-center gap-0.5 text-[10px]"
+              >
+                <IconWarningTriangle className="size-3" />
+                {t('stockPanel.lowStock')}
+                {item.stockRemaining != null &&
+                Number.isFinite(Number(item.stockRemaining)) ? (
+                  <span className="tabular-nums">
+                    · {Math.max(0, Math.floor(Number(item.stockRemaining)))}
+                  </span>
+                ) : null}
+              </Badge>
+            ) : null}
+            {stock === 'OUT' ? (
+              <Badge tone="danger" className="text-[10px]">
+                {t('stockPanel.outOfStock')}
+              </Badge>
+            ) : null}
           </div>
         </div>
-        <div className="text-sm font-semibold tabular-nums whitespace-nowrap">
+        <div className="shrink-0 text-[14px] font-semibold tabular-nums text-gray-50">
           {Number(item.price).toFixed(2)}
         </div>
-        <span
-          className={`text-[10px] px-1.5 py-0.5 rounded ${active ? 'bg-emerald-900/50 text-emerald-300' : 'bg-rose-900/50 text-rose-300'}`}
-        >
-          {active ? 'On' : 'Off'}
-        </span>
-        {stock === 'LOW' && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-200 border border-amber-700/50 inline-flex items-center gap-0.5">
-            <IconWarningTriangle className="w-3 h-3 text-amber-300" />
-            Low
-            {item.stockRemaining != null &&
-            Number.isFinite(Number(item.stockRemaining)) ? (
-              <span className="tabular-nums opacity-90">
-                · {Math.max(0, Math.floor(Number(item.stockRemaining)))}
-              </span>
-            ) : null}
-          </span>
-        )}
-        {stock === 'OUT' && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-900/50 text-rose-200 border border-rose-800/60">
-            Out
-          </span>
-        )}
-        <button
-          type="button"
-          className="w-8 h-8 rounded bg-transparent hover:bg-gray-700 flex items-center justify-center disabled:opacity-60 cursor-pointer"
+        <Switch
+          checked={active}
           disabled={disabled}
-          onClick={() => setEditing(true)}
-          aria-label={`Edit ${item.name}`}
-          title="Edit item"
-        >
-          <IconPencil />
-        </button>
-        <button
-          type="button"
-          className="w-8 h-8 rounded bg-rose-700 hover:bg-rose-800 border border-rose-600 flex items-center justify-center disabled:opacity-60"
+          label={active ? t('adminMenu.itemActive') : t('adminMenu.itemHidden')}
+          onChange={(next) => void onSave({ active: next })}
+        />
+        <KebabMenu
+          label={t('common.moreActions')}
           disabled={disabled}
-          onClick={() => onDelete()}
-          aria-label={`Delete ${item.name}`}
-          title="Delete item"
-        >
-          <IconTrash />
-        </button>
+          items={[
+            {
+              label: t('common.edit'),
+              onSelect: () => setEditing(true),
+              disabled,
+            },
+            {
+              label: t('common.delete'),
+              danger: true,
+              disabled,
+              onSelect: () => void onDelete(),
+            },
+          ]}
+        />
       </div>
 
       {editing && (
@@ -1595,6 +1644,7 @@ function EditItemModal({
   }) => Promise<any>;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState(item.name);
   const [price, setPrice] = useState(String(item.price));
   const [vat, setVat] = useState(String(item.vatRate ?? 0.2));
@@ -1641,137 +1691,126 @@ function EditItemModal({
     name.trim().length > 0 && price.length > 0 && !disabled && stockQtyOk;
 
   return (
-    <Modal title={`Edit: ${item.name}`} onClose={onClose}>
+    <Modal
+      title={t('adminMenu.editItem', { name: item.name })}
+      onClose={onClose}
+    >
       <div className="space-y-4">
-        <div>
-          <div className="text-xs opacity-70 mb-1">Item name</div>
-          <input
+        <Field
+          label={t('adminMenu.itemName')}
+          hint={t('adminMenu.sku', { sku: item.sku })}
+        >
+          <Input
             autoFocus
-            className="bg-gray-700 rounded px-3 py-2 w-full"
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={disabled}
           />
-          <div className="text-[10px] opacity-50 mt-1">SKU: {item.sku}</div>
-        </div>
+        </Field>
 
         <div className="grid grid-cols-2 gap-4">
-          <div>
-            <div className="text-xs opacity-70 mb-1">Price</div>
-            <input
-              className="bg-gray-700 rounded px-3 py-2 w-full"
+          <Field label={t('adminMenu.price')}>
+            <Input
               placeholder="0.00"
               inputMode="decimal"
               value={price}
               onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
               disabled={disabled}
             />
-          </div>
-          <div>
-            <div className="text-xs opacity-70 mb-1">VAT rate</div>
-            <input
-              className="bg-gray-700 rounded px-3 py-2 w-full"
+          </Field>
+          <Field label={t('adminMenu.vatRate')}>
+            <Input
               placeholder="0.2"
               inputMode="decimal"
               value={vat}
               onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
               disabled={disabled}
             />
-          </div>
+          </Field>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <div className="text-xs opacity-70 mb-1">Waiter availability</div>
-            <select
-              className="bg-gray-700 rounded px-3 py-2 w-full"
-              value={stockLevel}
-              onChange={(e) => setStockLevel(e.target.value as StockLevel)}
-              disabled={disabled}
-            >
-              <option value="OK">In stock</option>
-              <option value="LOW">Low stock (warning)</option>
-              <option value="OUT">Out of stock (unavailable)</option>
-            </select>
-          </div>
-        </div>
+        <Field label={t('adminMenu.waiterAvailability')}>
+          <Select
+            value={stockLevel}
+            onChange={(e) => setStockLevel(e.target.value as StockLevel)}
+            disabled={disabled}
+          >
+            <option value="OK">{t('adminMenu.inStock')}</option>
+            <option value="LOW">{t('adminMenu.lowStockWarn')}</option>
+            <option value="OUT">{t('adminMenu.outOfStockUnavail')}</option>
+          </Select>
+        </Field>
 
-        {stockLevel === 'LOW' && (
-          <div>
-            <div className="text-xs opacity-70 mb-1">How many left (today)</div>
-            <input
+        {stockLevel === 'LOW' ? (
+          <Field
+            label={t('adminMenu.howManyLeft')}
+            hint={t('adminMenu.stockHint')}
+          >
+            <Input
               type="number"
               min={1}
               step={1}
-              className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+              className="max-w-xs"
               value={stockQty}
               onChange={(e) => setStockQty(e.target.value)}
               disabled={disabled}
             />
-            <p className="text-[10px] opacity-55 mt-1">
-              Each kitchen send reduces this count. At 0 the item becomes out of
-              stock. Resets after midnight.
-            </p>
-          </div>
-        )}
+          </Field>
+        ) : null}
 
-        <div className="flex flex-col gap-3 pb-1">
-          <label className="flex items-center gap-2 text-sm">
+        <div className="flex flex-col gap-3">
+          <label className="flex items-center gap-2 text-[13px]">
             <input
               type="checkbox"
               checked={isKg}
               onChange={(e) => setIsKg(e.target.checked)}
               disabled={disabled}
             />
-            Sold by kg
+            {t('adminMenu.soldByKgLabel')}
           </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={active}
-              onChange={(e) => setActive(e.target.checked)}
-              disabled={disabled}
-            />
-            <span className={active ? '' : 'text-rose-300'}>
-              {active ? 'Enabled' : 'Disabled'}
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[13px]">
+              {active ? t('adminMenu.enabled') : t('adminMenu.disabled')}
             </span>
-          </label>
+            <Switch
+              checked={active}
+              disabled={disabled}
+              label={
+                active ? t('adminMenu.itemActive') : t('adminMenu.itemHidden')
+              }
+              onChange={setActive}
+            />
+          </div>
         </div>
 
-        <div className="flex justify-end pt-2">
-          <button
-            className="w-full px-5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 font-medium"
-            disabled={!canSubmit}
-            onClick={() => {
-              const patch: {
-                name: string;
-                price: number;
-                vatRate: number;
-                isKg: boolean;
-                active: boolean;
-                stockLevel: StockLevel;
-                stockRemaining?: number | null;
-              } = {
-                name: name.trim(),
-                price: Number(price || 0),
-                vatRate: Number(vat || 0),
-                isKg,
-                active,
-                stockLevel,
-              };
-              if (stockLevel === 'LOW') {
-                patch.stockRemaining = Math.max(
-                  1,
-                  Math.floor(stockQtyNum || 1),
-                );
-              }
-              return onSave(patch);
-            }}
-            type="button"
-          >
-            Save Changes
-          </button>
-        </div>
+        <Button
+          block
+          disabled={!canSubmit}
+          onClick={() => {
+            const patch: {
+              name: string;
+              price: number;
+              vatRate: number;
+              isKg: boolean;
+              active: boolean;
+              stockLevel: StockLevel;
+              stockRemaining?: number | null;
+            } = {
+              name: name.trim(),
+              price: Number(price || 0),
+              vatRate: Number(vat || 0),
+              isKg,
+              active,
+              stockLevel,
+            };
+            if (stockLevel === 'LOW') {
+              patch.stockRemaining = Math.max(1, Math.floor(stockQtyNum || 1));
+            }
+            return onSave(patch);
+          }}
+        >
+          {t('common.save')}
+        </Button>
       </div>
     </Modal>
   );

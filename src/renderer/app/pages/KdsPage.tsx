@@ -535,10 +535,11 @@ export default function KdsPage() {
         })
         .catch(() => false);
       bumping.current.delete(ticket.ticketId);
-      if (!ok && !twoStageMain && !isCookerScreen) {
-        // Restore the card we optimistically removed (the next poll reconciles
-        // the two-stage case, where we only edited items in place).
-        setTickets((arr) => [ticket, ...arr]);
+      if (!ok) {
+        setTickets((arr) => {
+          const without = arr.filter((t) => t.ticketId !== ticket.ticketId);
+          return [ticket, ...without];
+        });
       }
     },
     [clearItemSelection],
@@ -574,7 +575,7 @@ export default function KdsPage() {
       );
       clearItemSelection();
 
-      await window.api.kds
+      const ok = await window.api.kds
         .bumpItem({
           station: stationRef.current,
           ticketId,
@@ -582,6 +583,14 @@ export default function KdsPage() {
           cooker: cookerRef.current,
         } as any)
         .catch(() => false);
+      if (!ok) {
+        setTickets((arr) => {
+          if (arr.some((t) => t.ticketId === ticketId)) {
+            return arr.map((t) => (t.ticketId === ticketId ? ticket : t));
+          }
+          return [ticket, ...arr];
+        });
+      }
     },
     [clearItemSelection],
   );
@@ -886,7 +895,9 @@ export default function KdsPage() {
           return;
         case 'bumpSlot': {
           if (tabRef.current !== 'NEW') return;
-          const ticket = list[action.slot - 1];
+          const page = ticketPagesRef.current[listPageRef.current] ?? [];
+          const globalIdx = page[action.slot - 1];
+          const ticket = globalIdx != null ? list[globalIdx] : undefined;
           if (ticket) void bumpTicketRef.current(ticket);
           return;
         }
@@ -906,7 +917,10 @@ export default function KdsPage() {
           if (tabRef.current !== 'NEW') return;
           void (async () => {
             const res = await window.api.kds
-              .recall({ station: stationRef.current })
+              .recall({
+                station: stationRef.current,
+                cooker: cookerRef.current,
+              })
               .catch(() => ({ ok: false, ticketId: null }));
             if (!res?.ok) return;
             applyTab('NEW');
@@ -933,9 +947,11 @@ export default function KdsPage() {
             station: typeof stationRef.current;
             ticketId: number;
             itemIdx?: number;
+            cooker?: boolean;
           } = {
             station: stationRef.current,
             ticketId: ticket.ticketId,
+            cooker: cookerRef.current,
           };
           if (itemListIdx != null) {
             const it = ticket.items[itemListIdx];

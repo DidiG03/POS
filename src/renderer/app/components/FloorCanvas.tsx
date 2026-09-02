@@ -6,6 +6,7 @@
 // saved here is forward-compatible with future refactors.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   DEFAULT_TABLE_COLOR,
   TABLE_COLOR_PALETTE,
@@ -131,6 +132,41 @@ const AREA_VARIANT_PRESETS: Array<{
   { variant: 'window', label: 'Window', w: 160, h: 16, defaultLabel: '' },
   { variant: 'stairs', label: 'Stairs', w: 128, h: 64, defaultLabel: 'Stairs' },
 ];
+
+function tableShapeLabel(
+  t: (key: string) => string,
+  shape: TableShape,
+): string {
+  if (shape === 'circle') return t('settingsFloor.shapeRound');
+  if (shape === 'square') return t('settingsFloor.shapeSquare');
+  return t('settingsFloor.shapeRect');
+}
+
+function areaVariantLabel(
+  t: (key: string) => string,
+  variant: AreaVariant,
+): string {
+  switch (variant) {
+    case 'rect':
+      return t('settingsFloor.plainArea');
+    case 'wall':
+      return t('settingsFloor.wall');
+    case 'bar':
+      return t('settingsFloor.barCounter');
+    case 'door':
+      return t('settingsFloor.door');
+    case 'plant':
+      return t('settingsFloor.plant');
+    case 'pillar':
+      return t('settingsFloor.pillar');
+    case 'window':
+      return t('settingsFloor.window');
+    case 'stairs':
+      return t('settingsFloor.stairs');
+    default:
+      return variant;
+  }
+}
 
 const SHAPE_COLOR_PALETTE: string[] = [
   '#6b7280', // slate gray
@@ -441,6 +477,7 @@ export default function FloorCanvas({
   onCommitMerges,
   onMergeBlocked,
 }: FloorCanvasProps) {
+  const { t } = useTranslation();
   const [nodes, setNodes] = useState<FloorNode[] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const outerRef = useRef<HTMLDivElement | null>(null);
@@ -1162,7 +1199,9 @@ export default function FloorCanvas({
             className={`px-3 py-1.5 rounded text-sm ${editable ? 'bg-amber-600 hover:bg-amber-500' : 'bg-gray-700 hover:bg-gray-600'}`}
             onClick={() => onEditableChange?.(!editable)}
           >
-            {editable ? 'Preview floor' : 'Edit layout'}
+            {editable
+              ? t('settingsFloor.preview')
+              : t('settingsFloor.editLayout')}
           </button>
           {editable && (
             <>
@@ -1174,7 +1213,7 @@ export default function FloorCanvas({
                     setAddMenu((m) => (m === 'table' ? null : 'table'))
                   }
                 >
-                  + Table ▾
+                  {t('settingsFloor.addTable')}
                 </button>
                 {addMenu === 'table' && (
                   <div
@@ -1189,7 +1228,9 @@ export default function FloorCanvas({
                         onClick={() => addTableOfShape(p)}
                       >
                         <ShapePreview kind="table" shape={p.shape} />
-                        <span className="text-sm">{p.label}</span>
+                        <span className="text-sm">
+                          {tableShapeLabel(t, p.shape)}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -1203,7 +1244,7 @@ export default function FloorCanvas({
                     setAddMenu((m) => (m === 'shape' ? null : 'shape'))
                   }
                 >
-                  + Shape ▾
+                  {t('settingsFloor.addShape')}
                 </button>
                 {addMenu === 'shape' && (
                   <div
@@ -1218,7 +1259,9 @@ export default function FloorCanvas({
                         onClick={() => addAreaOfVariant(p)}
                       >
                         <ShapePreview kind="area" variant={p.variant} />
-                        <span className="text-sm">{p.label}</span>
+                        <span className="text-sm">
+                          {areaVariantLabel(t, p.variant)}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -1228,13 +1271,12 @@ export default function FloorCanvas({
                 type="button"
                 className="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600"
                 onClick={alignToGrid}
-                title="Snap every piece to the block grid"
+                title={t('settingsFloor.alignTitle')}
               >
-                Align to grid
+                {t('settingsFloor.alignGrid')}
               </button>
               <span className="text-[11px] opacity-60 ml-1 hidden sm:inline">
-                Pieces snap in {FLOOR_GRID}px blocks. Preview is the waiter
-                view. Arrow keys nudge.
+                {t('settingsFloor.snapHint', { px: FLOOR_GRID })}
               </span>
             </>
           )}
@@ -1246,7 +1288,11 @@ export default function FloorCanvas({
                 className={`px-3 py-1.5 rounded text-sm ${dirty ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 opacity-60'}`}
                 onClick={() => void save()}
               >
-                {saving ? 'Saving…' : dirty ? 'Save layout' : 'Saved'}
+                {saving
+                  ? t('common.saving')
+                  : dirty
+                    ? t('settingsFloor.saveLayout')
+                    : t('settingsFloor.saved')}
               </button>
               {saveError ? (
                 <span className="text-xs text-rose-300">{saveError}</span>
@@ -1368,16 +1414,15 @@ export default function FloorCanvas({
                 }}
               >
                 <div className="absolute left-2 top-1.5 text-[10px] uppercase tracking-wider text-amber-200/80 font-semibold">
-                  Dining room
+                  {t('settingsFloor.diningRoom')}
                 </div>
                 <div className="absolute left-1/2 -translate-x-1/2 bottom-1.5 text-[10px] uppercase tracking-wider text-amber-100/90 font-semibold flex flex-col items-center leading-tight">
                   <span className="opacity-50 text-xs">▾</span>
-                  Entrance
+                  {t('settingsFloor.entrance')}
                 </div>
                 {(!nodes || nodes.length === 0) && (
                   <div className="absolute inset-0 flex items-center justify-center text-sm text-amber-100/70 text-center px-8">
-                    Start here — this box is the dining room. Tables snap to the
-                    grid. Use Preview floor to see how waiters view it.
+                    {t('settingsFloor.startHere')}
                   </div>
                 )}
               </div>
@@ -1463,8 +1508,8 @@ export default function FloorCanvas({
               <div className="absolute inset-0 flex items-center justify-center text-sm opacity-70 text-center px-4">
                 {emptyMessage ||
                   (showToolbar
-                    ? 'Empty floor — use + Table and + Shape, then Save layout.'
-                    : 'No layout yet — ask an admin to set up this area in Settings → Table Areas.')}
+                    ? t('settingsFloor.emptyHint')
+                    : t('settingsFloor.noLayoutYet'))}
               </div>
             )}
           </div>
@@ -1504,6 +1549,7 @@ function Inspector({
   onDelete: (id: number) => void;
   onRelabel: (id: number, label: string) => void;
 }) {
+  const { t } = useTranslation();
   const [label, setLabel] = useState(node?.label ?? '');
   useEffect(() => {
     setLabel(node?.label ?? '');
@@ -1514,7 +1560,7 @@ function Inspector({
     <div className="absolute top-2 right-2 w-60 max-h-[calc(100%-16px)] overflow-y-auto bg-gray-800/95 border border-gray-700 rounded-lg shadow-xl text-sm z-30 backdrop-blur pointer-events-auto">
       <div className="px-3 py-2 border-b border-gray-700 flex items-center gap-2">
         <span className="text-xs uppercase tracking-wide opacity-70">
-          {isTable ? 'Table' : 'Shape'}
+          {isTable ? t('common.table') : t('settingsFloor.shapeNoun')}
         </span>
         <span className="ml-auto" />
         <button
@@ -1550,7 +1596,9 @@ function Inspector({
         {isTable ? (
           <>
             <div>
-              <div className="text-xs opacity-70 mb-1">Shape</div>
+              <div className="text-xs opacity-70 mb-1">
+                {t('settingsFloor.shapeNoun')}
+              </div>
               <div className="flex gap-1">
                 {TABLE_SHAPE_PRESETS.map((p) => {
                   const active = (node.shape ?? 'circle') === p.shape;
@@ -1573,11 +1621,7 @@ function Inspector({
                     >
                       <ShapePreview kind="table" shape={p.shape} />
                       <span className="text-[10px] opacity-80">
-                        {p.shape === 'circle'
-                          ? 'Round'
-                          : p.shape === 'square'
-                            ? 'Square'
-                            : 'Rect'}
+                        {tableShapeLabel(t, p.shape)}
                       </span>
                     </button>
                   );
@@ -1643,7 +1687,9 @@ function Inspector({
         ) : (
           <>
             <div>
-              <div className="text-xs opacity-70 mb-1">Style</div>
+              <div className="text-xs opacity-70 mb-1">
+                {t('settingsFloor.shapeNoun')}
+              </div>
               <div className="grid grid-cols-4 gap-1">
                 {AREA_VARIANT_PRESETS.map((p) => {
                   const active = (node.variant ?? 'rect') === p.variant;
@@ -1651,7 +1697,7 @@ function Inspector({
                     <button
                       key={p.variant}
                       type="button"
-                      title={p.label}
+                      title={areaVariantLabel(t, p.variant)}
                       className={`flex flex-col items-center gap-1 px-1 py-2 rounded border ${
                         active
                           ? 'bg-emerald-700/40 border-emerald-500'

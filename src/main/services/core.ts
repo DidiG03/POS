@@ -1,4 +1,5 @@
 import { prisma } from '@db/client';
+import { splitTableKey } from '@shared/utils/tableKey';
 
 /**
  * Per-table in-process serialization for `tables:open` map mutations.
@@ -320,9 +321,7 @@ export const coreServices = {
     const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
     return Object.entries(map)
       .filter(([, v]) => Boolean(v))
-      .map(([k]) => {
-        const [area, label] = k.split(':');
-        return { area, label };
-      });
+      .map(([k]) => splitTableKey(k))
+      .filter((p): p is { area: string; label: string } => Boolean(p));
   },
 };
