@@ -223,6 +223,80 @@ describe('runPendingMigrations', () => {
     expect(inserts).toHaveLength(0);
   });
 
+  it('rolls a half-applied migration back instead of leaving the schema torn', async () => {
+    // Statement 1 succeeds, statement 2 fails. Without a transaction the
+    // first column survives while the migration stays unrecorded, so the
+    // retry replays it against a schema that has already half changed.
+    writeMigration(
+      '20260101000000_a',
+      'ALTER TABLE "A" ADD COLUMN "x" TEXT;\nALTER TABLE "Missing" ADD COLUMN "y" TEXT;',
+    );
+    executeRawUnsafe.mockImplementation(async (sql: string) => {
+      if (sql.includes('"Missing"')) {
+        throw new Error('SQLITE_ERROR: no such table: Missing');
+      }
+      return 0;
+    });
+
+    const r = await runPendingMigrations(dir);
+
+    expect(r.failed?.name).toBe('20260101000000_a');
+    const sqls = executeRawUnsafe.mock.calls.map((c) => String(c[0]));
+    expect(sqls).toContain('BEGIN');
+    expect(sqls).toContain('ROLLBACK');
+    expect(sqls).not.toContain('COMMIT');
+  });
+
+  it('commits the statements and the bookkeeping row together', async () => {
+    writeMigration('20260101000000_a', 'ALTER TABLE "A" ADD COLUMN "x" TEXT;');
+
+    const r = await runPendingMigrations(dir);
+
+    expect(r.applied).toEqual(['20260101000000_a']);
+    const sqls = executeRawUnsafe.mock.calls.map((c) => String(c[0]));
+    const begin = sqls.indexOf('BEGIN');
+    const insert = sqls.findIndex((s) =>
+      s.includes('INSERT INTO "_prisma_migrations"'),
+    );
+    const commit = sqls.indexOf('COMMIT');
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(insert).toBeGreaterThan(begin);
+    expect(commit).toBeGreaterThan(insert);
+  });
+
+  it('rolls back when only the bookkeeping write fails', async () => {
+    writeMigration('20260101000000_a', 'ALTER TABLE "A" ADD COLUMN "x" TEXT;');
+    executeRawUnsafe.mockImplementation(async (sql: string) => {
+      if (sql.includes('INSERT INTO "_prisma_migrations"')) {
+        throw new Error('SQLITE_BUSY: database is locked');
+      }
+      return 0;
+    });
+
+    const r = await runPendingMigrations(dir);
+
+    expect(r.failed?.error).toContain('bookkeeping write failed');
+    expect(executeRawUnsafe.mock.calls.map((c) => String(c[0]))).toContain(
+      'ROLLBACK',
+    );
+  });
+
+  it('still applies the migration when the engine refuses a transaction', async () => {
+    writeMigration('20260101000000_a', 'ALTER TABLE "A" ADD COLUMN "x" TEXT;');
+    executeRawUnsafe.mockImplementation(async (sql: string) => {
+      if (sql === 'BEGIN') throw new Error('cannot start a transaction');
+      return 0;
+    });
+
+    const r = await runPendingMigrations(dir);
+
+    expect(r.failed).toBeNull();
+    expect(r.applied).toEqual(['20260101000000_a']);
+    expect(executeRawUnsafe.mock.calls.map((c) => String(c[0]))).not.toContain(
+      'COMMIT',
+    );
+  });
+
   it('runs the pre-apply hook once, only when work is pending', async () => {
     const onBeforeApply = vi.fn(async () => {});
     writeMigration('20260101000000_a', 'ALTER TABLE "A" ADD COLUMN "x" TEXT;');

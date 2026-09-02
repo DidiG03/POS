@@ -1151,6 +1151,11 @@ export default function FloorCanvas({
   // for this area on any device, every other device's read-only floor
   // view refetches without a page refresh.
   useEffect(() => {
+    // The fetch below outlives the event that started it. If the waiter
+    // switches dining section (or leaves the floor) while it is in flight, a
+    // late reply would drop the previous area's table positions onto the view
+    // they are now looking at.
+    let cancelled = false;
     const onLayoutChanged = (ev: any) => {
       try {
         const detail = (ev?.detail || {}) as { area?: string };
@@ -1164,6 +1169,7 @@ export default function FloorCanvas({
             const saved = await (window as any).api.layout
               .get(userId, area, scope)
               .catch(() => null);
+            if (cancelled) return;
             if (!Array.isArray(saved)) return;
             setNodes(normaliseSavedNodes(saved));
             setDirty(false);
@@ -1177,8 +1183,10 @@ export default function FloorCanvas({
       }
     };
     window.addEventListener('pos:layoutChanged', onLayoutChanged);
-    return () =>
+    return () => {
+      cancelled = true;
       window.removeEventListener('pos:layoutChanged', onLayoutChanged);
+    };
   }, [area, userId, scope, editable, dirty]);
 
   const shellStaticHeightClasses =

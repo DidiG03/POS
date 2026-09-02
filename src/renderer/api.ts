@@ -36,15 +36,11 @@ export interface TicketPayload {
  *   surface to the caller. `navigator.onLine` is ignored for this write:
  *   restaurant LAN still works when the tablet has no internet.
  *
- * Returns a small status so callers can react to *permanent* server
- * rejections (table closed, owned by another waiter, etc.) without
- * having to catch on every site:
+ * Returns a small status so callers can react to server rejections (table
+ * closed, owned by another waiter, etc.) without having to catch on every
+ * site:
  *   - `{ ok: true }`         success or queued for later replay
- *   - `{ ok: false, ... }`   server rejected (toast it, undo optimistic UI)
- *
- * Generic / unknown errors are still swallowed to preserve the legacy
- * "best-effort log" semantics — the user already sees their order on
- * screen and we don't want a one-off bug to block service.
+ *   - `{ ok: false, ... }`   the order was not recorded anywhere
  */
 export type LogTicketResult =
   | { ok: true; queued?: boolean }
@@ -71,10 +67,7 @@ export async function logTicket(
     return { ok: true, queued: Boolean(r?.queued) };
   } catch (e: any) {
     // Server-side validation rejections (e.g. TABLE_CLOSED,
-    // TABLE_OWNED_BY_OTHER) carry `permanent: true` from the
-    // dispatcher. Bubble them up so the UI can show a clean toast and
-    // roll back the optimistic state. Anything else is treated like
-    // the legacy swallow.
+    // TABLE_OWNED_BY_OTHER) carry `permanent: true` from the dispatcher.
     if (e?.permanent === true) {
       return {
         ok: false,
@@ -82,7 +75,16 @@ export async function logTicket(
         code: e?.code ? String(e.code) : undefined,
       };
     }
-    return { ok: true };
+    // Anything else means `tryOrQueue` neither delivered the order nor
+    // managed to queue it — a broken IndexedDB, say. Reporting success here
+    // used to make the caller mark the lines as sent and print the chit, so
+    // the waiter watched an order they believed was in the kitchen quietly
+    // disappear with no failed-sync badge to hint at it.
+    return {
+      ok: false,
+      error: String(e?.message || 'Could not record the order'),
+      code: e?.code ? String(e.code) : 'LOG_FAILED',
+    };
   }
 }
 

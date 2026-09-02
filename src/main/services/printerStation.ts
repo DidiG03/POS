@@ -40,6 +40,32 @@ let stopping = false;
 /** Maximum nap when nothing is pending. */
 const IDLE_INTERVAL_MS = 5 * 60_000;
 
+/**
+ * Rows whose chit reached the printer but whose status could not be written
+ * back. They must never be attempted again, even though the database still
+ * says they are due.
+ */
+const sentButUnrecorded = new Set<number>();
+
+/** Record a successful print, retrying once in case the database was busy. */
+async function markPrintJobSent(id: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await prisma.printJob.update({
+        where: { id },
+        data: { status: 'SENT' as any, lastError: null } as any,
+      });
+      sentButUnrecorded.delete(Number(id));
+      return true;
+    } catch {
+      // SQLite returns SQLITE_BUSY under concurrent writes; a short pause is
+      // usually all it takes.
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  return false;
+}
+
 function broadcast(channel: string, payload: any) {
   try {
     for (const w of BrowserWindow.getAllWindows()) {
@@ -83,12 +109,18 @@ async function processRetryRow(
     retries: 0,
   });
   if (r.ok) {
-    await prisma.printJob
-      .update({
-        where: { id: row.id },
-        data: { status: 'SENT' as any, lastError: null } as any,
-      })
-      .catch(() => {});
+    // The paper is already out of the printer. If we cannot record that, the
+    // row stays due and the next tick prints the same chit again — the kitchen
+    // ends up cooking a duplicate order. Retry the write, and if the database
+    // is still unavailable park the row so the loop cannot pick it up.
+    const recorded = await markPrintJobSent(row.id);
+    if (!recorded) {
+      console.error(
+        `[PrinterRetry] Row #${row.id} printed but could not be marked SENT; ` +
+          'parking it so the ticket is not printed twice.',
+      );
+      sentButUnrecorded.add(Number(row.id));
+    }
     console.log(
       `[PrinterRetry] ✓ Row #${row.id} succeeded after ${row.attempts} attempt(s)`,
     );
@@ -145,10 +177,18 @@ async function processQueuedRow(row: any, settings: any): Promise<void> {
   const r = await dispatchTicket(payload, settings as any, {
     persistRetryOnTransientFailure: true,
   });
+  if (r.ok) {
+    // Same rule as the retry path: a chit that printed must never be picked up
+    // again just because we could not write down that it printed.
+    if (!(await markPrintJobSent(row.id))) {
+      sentButUnrecorded.add(Number(row.id));
+    }
+    return;
+  }
   await prisma.printJob
     .update({
       where: { id: row.id },
-      data: { status: (r.ok ? 'SENT' : 'FAILED') as any } as any,
+      data: { status: 'FAILED' as any } as any,
     })
     .catch(() => {});
 }
@@ -157,14 +197,22 @@ async function tick(): Promise<{ idle: boolean }> {
   if (running) return { idle: true };
   running = true;
   try {
-    const dueRetries = await loadDuePrintRetries(20);
-    const queuedJobs = await prisma.printJob
-      .findMany({
-        where: { status: 'QUEUED' as any },
-        orderBy: { createdAt: 'asc' },
-        take: 20,
-      })
-      .catch(() => []);
+    // Clear any backlog parked by a failed status write now that we get
+    // another chance at the database.
+    for (const id of [...sentButUnrecorded]) await markPrintJobSent(id);
+
+    const dueRetries = (await loadDuePrintRetries(20)).filter(
+      (row: any) => !sentButUnrecorded.has(Number(row?.id)),
+    );
+    const queuedJobs = (
+      await prisma.printJob
+        .findMany({
+          where: { status: 'QUEUED' as any },
+          orderBy: { createdAt: 'asc' },
+          take: 20,
+        })
+        .catch(() => [])
+    ).filter((row: any) => !sentButUnrecorded.has(Number(row?.id)));
 
     if (!dueRetries.length && !queuedJobs.length) return { idle: true };
 
@@ -278,6 +326,7 @@ export async function startPrinterStationLoop(): Promise<void> {
 
 export function stopPrinterStationLoop(): void {
   stopping = true;
+  sentButUnrecorded.clear();
   if (timer) {
     clearTimeout(timer);
     timer = null;

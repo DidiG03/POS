@@ -5,6 +5,7 @@ import {
   broadcastTicketsChanged,
 } from './realtime';
 import { moveCoveringReservationForTableTransfer } from './reservations';
+import { buildTableSessionKey } from './tableSession';
 
 export type TransferTableInput = {
   fromArea: string;
@@ -409,6 +410,10 @@ export async function transferTableLocal(
   // Move openAt timestamp (if any)
   const openAtMap = await readOpenAtMap();
   const fromAt = openAtMap[fromKey];
+  // A move carries the sitting over to the destination key, so resolve the
+  // timestamp it will land on now — the destination TicketLog row is written
+  // before the map update and has to share that session key.
+  const toAt = fromAt || new Date().toISOString();
 
   // Resolve display names for the structured audit tag.
   const fromOwner = currentOwnerId
@@ -434,6 +439,13 @@ export async function transferTableLocal(
   // Keep same waiter when only moving table; change owner only when transferring to another waiter
   const nextUserId = changingOwner ? Number(toUserId) : Number(currentOwnerId);
   let createdLog: { id: number };
+  // The moved ticket continues the same sitting, so the destination row joins
+  // the destination table's session instead of reading as a second sale.
+  const destinationSessionKey = buildTableSessionKey(
+    toArea,
+    toLabel,
+    movingTable ? toAt : fromAt || toAt,
+  );
   try {
     createdLog = await prisma.ticketLog.create({
       data: {
@@ -444,6 +456,7 @@ export async function transferTableLocal(
         itemsJson: last.itemsJson as any,
         note: nextNote,
         ...(transferIdem ? { idempotencyKey: transferIdem } : {}),
+        sessionKey: destinationSessionKey,
       } as any,
     });
   } catch (e: any) {
@@ -499,7 +512,7 @@ export async function transferTableLocal(
 
     // Move openAt timestamp if present, otherwise set now
     delete openAtMap[fromKey];
-    openAtMap[toKey] = fromAt || new Date().toISOString();
+    openAtMap[toKey] = toAt;
     await writeOpenAtMap(openAtMap);
 
     await prependMovedOutToPriorSessionRows();
@@ -554,9 +567,11 @@ export async function transferTableLocal(
       toLabel,
     );
   } else {
-    // Not moving table: ensure openAt exists (no-op otherwise)
+    // Not moving table: ensure openAt exists (no-op otherwise). Reuse the
+    // timestamp baked into `destinationSessionKey` so the handoff row and any
+    // later fire on this table agree on the session.
     if (!openAtMap[fromKey] && openMap[fromKey]) {
-      openAtMap[fromKey] = new Date().toISOString();
+      openAtMap[fromKey] = toAt;
       await writeOpenAtMap(openAtMap);
     }
     // Owner handoff on the same table: snapshot row is `createdLog`; prior

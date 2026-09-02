@@ -2,6 +2,12 @@ import type { SettingsDTO } from '@shared/ipc';
 import type { TicketPrintPayload } from '../../print';
 import { isEasyPosCloudApi } from './easypos';
 import { mapPaymentMethod, mapVatRateToCode } from './vat';
+// Deliberately the same rounding the payment total was computed with. A local
+// copy without the epsilon nudge disagreed with it on values that land just
+// under a half cent (1.005 is stored as 1.00499…), and easyPos rejects an
+// invoice whose lines and payment differ by a single cent — the table stays
+// open and staff retry the payment.
+import { roundMoney } from '@shared/pricing';
 
 function normalizeCloudOperatorCode(raw: string): string {
   const code = String(raw || '').trim();
@@ -41,11 +47,6 @@ function fiscalArticleSettings(settings: SettingsDTO) {
     cloudFallbackArticleId: String(fiscal.cloudFallbackArticleId || '').trim(),
     eurExchangeRate: Number(fiscal.eurExchangeRate),
   };
-}
-
-function roundMoney(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.round(value * 100) / 100;
 }
 
 function sumArticleTotal(articles: EasyPosInvoiceDraft['articles']): number {

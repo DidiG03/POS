@@ -103,6 +103,7 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
     }
     let cancelled = false;
     let attempts = 0;
+    let retryTimer: number | null = null;
     const check = async (): Promise<void> => {
       if (cancelled) return;
       try {
@@ -114,7 +115,7 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
         }
         if (attempts < 4) {
           attempts += 1;
-          window.setTimeout(check, 500);
+          retryTimer = window.setTimeout(check, 500);
           return;
         }
         // Clock-only roles already sit on /app/clock. Waiters keep Tables
@@ -127,6 +128,9 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
     void check();
     return () => {
       cancelled = true;
+      // Staff log in and out all shift; leaving these to fire keeps waking a
+      // terminal that runs for weeks without a restart.
+      if (retryTimer != null) window.clearTimeout(retryTimer);
     };
   }, [
     isBrowser,

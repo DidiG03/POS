@@ -1,9 +1,177 @@
 import { describe, expect, it } from 'vitest';
 import {
   effectiveVatRate,
+  latestRowPerSession,
   splitGrossVat,
   sumTicketLinesNetVat,
 } from './ticketRevenue';
+
+const line = (name: string, unitPrice: number, extra: object = {}) => ({
+  name,
+  qty: 1,
+  unitPrice,
+  ...extra,
+});
+
+describe('latestRowPerSession', () => {
+  it('keeps only the newest snapshot of a keyed session', () => {
+    const rows = [
+      {
+        sessionKey: 'A:1@t0',
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(1_000),
+        itemsJson: [line('Pizza', 10)],
+      },
+      {
+        sessionKey: 'A:1@t0',
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(2_000),
+        itemsJson: [line('Pizza', 10), line('Coke', 3)],
+      },
+    ];
+    const kept = latestRowPerSession(rows);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].itemsJson).toHaveLength(2);
+  });
+
+  it('counts a re-seated table as a separate session', () => {
+    const rows = [
+      {
+        sessionKey: 'A:1@lunch',
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(1_000),
+        itemsJson: [line('Pizza', 10)],
+      },
+      {
+        sessionKey: 'A:1@dinner',
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(9_000),
+        itemsJson: [line('Steak', 20)],
+      },
+    ];
+    expect(latestRowPerSession(rows)).toHaveLength(2);
+  });
+
+  it('collapses legacy unkeyed snapshots that extend the previous one', () => {
+    const rows = [
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(1_000),
+        itemsJson: [line('Pizza', 10)],
+      },
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(2_000),
+        itemsJson: [line('Pizza', 10), line('Coke', 3)],
+      },
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(3_000),
+        // Same lines, one of them voided later in the session.
+        itemsJson: [line('Pizza', 10, { voided: true }), line('Coke', 3)],
+      },
+    ];
+    const kept = latestRowPerSession(rows);
+    expect(kept).toHaveLength(1);
+    expect((kept[0].itemsJson as any[])[0].voided).toBe(true);
+  });
+
+  it('starts a new legacy session when the snapshot does not extend the last', () => {
+    const rows = [
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(1_000),
+        itemsJson: [line('Pizza', 10), line('Coke', 3)],
+      },
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(5_000),
+        itemsJson: [line('Steak', 20)],
+      },
+    ];
+    expect(latestRowPerSession(rows)).toHaveLength(2);
+  });
+
+  it('never merges snapshots from different tables', () => {
+    const rows = [
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: new Date(1_000),
+        itemsJson: [line('Pizza', 10)],
+      },
+      {
+        area: 'A',
+        tableLabel: '2',
+        createdAt: new Date(2_000),
+        itemsJson: [line('Pizza', 10), line('Coke', 3)],
+      },
+    ];
+    expect(latestRowPerSession(rows)).toHaveLength(2);
+  });
+
+  it('tolerates unordered input and rows with no timestamp', () => {
+    const rows = [
+      {
+        sessionKey: 'A:1@t0',
+        itemsJson: [line('Pizza', 10), line('Coke', 3)],
+        createdAt: new Date(2_000),
+      },
+      { sessionKey: 'A:1@t0', itemsJson: [line('Pizza', 10)] },
+    ];
+    const kept = latestRowPerSession(rows);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].itemsJson).toHaveLength(2);
+  });
+
+  it('returns an empty list for empty or invalid input', () => {
+    expect(latestRowPerSession([])).toEqual([]);
+    expect(latestRowPerSession(null as any)).toEqual([]);
+  });
+
+  it('collapses the revenue of a table fired three times to its final total', () => {
+    const snapshot = (names: [string, number][]) =>
+      names.map(([n, p]) => line(n, p));
+    const rows = [
+      {
+        sessionKey: 'A:1@t0',
+        createdAt: new Date(1_000),
+        itemsJson: snapshot([['Pizza', 10]]),
+      },
+      {
+        sessionKey: 'A:1@t0',
+        createdAt: new Date(2_000),
+        itemsJson: snapshot([
+          ['Pizza', 10],
+          ['Coke', 3],
+        ]),
+      },
+      {
+        sessionKey: 'A:1@t0',
+        createdAt: new Date(3_000),
+        itemsJson: snapshot([
+          ['Pizza', 10],
+          ['Coke', 3],
+          ['Coffee', 2],
+        ]),
+      },
+    ];
+    const total = latestRowPerSession(rows).reduce(
+      (sum, r) => sum + sumTicketLinesNetVat(r.itemsJson, false).net,
+      0,
+    );
+    expect(total).toBe(15);
+  });
+});
 
 describe('effectiveVatRate', () => {
   it('uses the line rate when it is a positive number', () => {

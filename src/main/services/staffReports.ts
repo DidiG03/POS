@@ -13,6 +13,7 @@ import { coreServices } from './core';
 import { isTransferredOutNote } from './tableTransfer';
 import {
   effectiveVatRate,
+  latestRowPerSession,
   splitGrossVat,
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
@@ -82,7 +83,9 @@ export async function listMyActiveTickets(userId: number): Promise<any[]> {
           .findUnique({ where: { id: last.userId } })
           .catch(() => null),
       ]);
-      const itemsAll = rows.flatMap((r: any) =>
+      // Each row is a full snapshot of the check, not the lines added by that
+      // send, so flattening them would show every earlier round twice.
+      const itemsAll = latestRowPerSession(rows as any[]).flatMap((r: any) =>
         Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [],
       );
       const items = itemsAll.filter((it: any) => !it?.voided);
@@ -230,7 +233,9 @@ export async function listMyVoidedTickets(
   const voidDefaultVatRate = Number((voidSettings as any)?.defaultVatRate || 0);
 
   const out: any[] = [];
-  for (const r of rows as any[]) {
+  // Snapshots repeat every line of the check, so a single voided dish appears
+  // on each row written after it — report the sitting once.
+  for (const r of latestRowPerSession(rows as any[])) {
     if (Number(r.userId) !== Number(userId)) continue;
     if (isTransferredOutNote(r.note)) continue;
     const itemsAll = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];

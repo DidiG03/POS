@@ -9,6 +9,110 @@ export function liveTicketLines(itemsJson: unknown): any[] {
   return arr.filter((it: any) => !it?.voided);
 }
 
+/** Shape of the TicketLog columns the session collapse needs. */
+export interface TicketSnapshotRow {
+  area?: string | null;
+  tableLabel?: string | null;
+  sessionKey?: string | null;
+  createdAt?: Date | string | number | null;
+  itemsJson?: unknown;
+}
+
+function rowTimeMs(row: TicketSnapshotRow): number {
+  const raw = row?.createdAt;
+  if (raw == null) return 0;
+  const t =
+    raw instanceof Date ? raw.getTime() : new Date(raw as any).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Identity of a line ignoring quantity and void state — those change in place. */
+function lineIdentity(line: any): string {
+  return [
+    String(line?.sku ?? ''),
+    String(line?.name ?? ''),
+    String(line?.note ?? ''),
+    String(line?.unitPrice ?? ''),
+  ].join('\u0000');
+}
+
+/**
+ * True when `next` looks like a later snapshot of the same dining session as
+ * `prev`: every line of `prev` is still present, in order, at the head of
+ * `next`. Sending an order appends the new lines to the ticket and re-sends the
+ * whole thing, so that prefix relation holds for the life of a session and
+ * breaks the moment the table is re-seated with a fresh ticket.
+ */
+function extendsSnapshot(prev: unknown, next: unknown): boolean {
+  const a = Array.isArray(prev) ? prev : [];
+  const b = Array.isArray(next) ? next : [];
+  if (b.length < a.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (lineIdentity(a[i]) !== lineIdentity(b[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * Collapse cumulative TicketLog snapshots down to one row per dining session.
+ *
+ * Every "send to kitchen" writes a full snapshot of the ticket, not just the
+ * newly fired lines (the kitchen gets the delta via `kdsFireItems`). Summing
+ * every row therefore counts a table that was fired three times three times
+ * over, and a line voided later still counts on the earlier snapshots that
+ * were never patched. Reports have to look at the newest snapshot of each
+ * session and nothing else.
+ *
+ * Rows written since `sessionKey` was introduced group exactly. Older rows have
+ * no key, so they fall back to the append-only prefix relation described on
+ * {@link extendsSnapshot}, which reconstructs the same grouping from the item
+ * lists themselves.
+ */
+export function latestRowPerSession<T extends TicketSnapshotRow>(
+  rows: readonly T[],
+): T[] {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const ordered = rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => rowTimeMs(a.row) - rowTimeMs(b.row) || a.index - b.index);
+
+  // Each slot holds the newest snapshot seen so far for one session. Slots keep
+  // the input position of their first row so the result preserves caller order.
+  type Slot = { row: T; index: number };
+  const slots: Slot[] = [];
+  const keyed = new Map<string, Slot>();
+  const perTable = new Map<string, Slot>();
+
+  for (const { row, index } of ordered) {
+    const sessionKey = String(row?.sessionKey ?? '').trim();
+    if (sessionKey) {
+      const slot = keyed.get(sessionKey);
+      if (slot) {
+        slot.row = row;
+        continue;
+      }
+      const fresh: Slot = { row, index };
+      keyed.set(sessionKey, fresh);
+      slots.push(fresh);
+      continue;
+    }
+
+    const tableKey = `${String(row?.area ?? '')}\u0000${String(
+      row?.tableLabel ?? '',
+    )}`;
+    const slot = perTable.get(tableKey);
+    if (slot && extendsSnapshot(slot.row?.itemsJson, row?.itemsJson)) {
+      slot.row = row;
+      continue;
+    }
+    const fresh: Slot = { row, index };
+    perTable.set(tableKey, fresh);
+    slots.push(fresh);
+  }
+
+  return slots.sort((a, b) => a.index - b.index).map((slot) => slot.row);
+}
+
 /**
  * Resolve the VAT rate to apply to a line. A line that carries no rate
  * (or a 0 rate from legacy/cloud-synced data) falls back to the business

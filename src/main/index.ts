@@ -18,7 +18,6 @@ import { join, dirname, resolve as resolvePath, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import fs from 'node:fs';
-import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 // Initialize Sentry early (before other imports that might throw)
 import {
@@ -45,9 +44,16 @@ import {
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import {
   effectiveVatRate,
+  latestRowPerSession,
   splitGrossVat,
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
+import { findVoidableLineIndex } from '@shared/voidLine';
+import {
+  isApprovalValidFor,
+  issueApprovalToken,
+} from './services/approvalTokens';
+import { actorIdentityAllows, resolveActorUserId } from './services/ipcActor';
 import {
   isVatEnabledFromSettings,
   resolveVatEnabledFromMeta,
@@ -180,6 +186,7 @@ import {
   kdsStationListWhere,
   purgeKdsDoneTicketsForStation,
   startKdsRetentionLoop,
+  stopKdsRetentionLoop,
 } from './services/kdsRetention';
 import {
   recallKdsTicket,
@@ -197,6 +204,7 @@ dotenv.config();
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
+  getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
 import { splitTableKey } from '@shared/utils/tableKey';
@@ -1562,7 +1570,11 @@ app.whenReady().then(async () => {
   await pruneExpiredSessions().catch((e) =>
     console.warn('[startup] pruneExpiredSessions failed:', e),
   );
-  createWindow();
+  // Startup is asynchronous (migrations run first), and a second launch or a
+  // tray activation during that window already opens the till through
+  // `createMainWindow`. Creating one unconditionally here would orphan it and
+  // leave two POS windows fighting over the same tables.
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   setupHostTray();
   setupAutoUpdater();
   const hostSettings = await coreServices
@@ -1631,6 +1643,9 @@ app.on('before-quit', (event) => {
   stopAutoNoShowReservationsLoop();
   stopGoogleCalendarSyncLoop();
   stopPrinterStationLoop();
+  // Left running, its 60s purge could fire while prisma.$disconnect() is in
+  // flight below and error out mid-shutdown.
+  stopKdsRetentionLoop();
 
   // Async work below — defer the actual quit until our cleanup completes so we
   // don't leave open SQLite handles / TCP listeners.
@@ -1801,16 +1816,7 @@ ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
       const st = failMap.get(senderId);
       if (st) failMap.set(senderId, { ...st, count: 0 });
       // Local-only short-lived approval token to prevent spoofing approvals.
-      const g2: any = globalThis as any;
-      if (!g2.__approvalTokensLocal) g2.__approvalTokensLocal = new Map();
-      const tokMap: Map<string, { userId: number; role: string; exp: number }> =
-        g2.__approvalTokensLocal;
-      const token = crypto.randomBytes(24).toString('base64url');
-      tokMap.set(token, {
-        userId: (u as any).id,
-        role: 'ADMIN',
-        exp: Date.now() + 5 * 60 * 1000,
-      });
+      const token = issueApprovalToken(Number((u as any).id), 'ADMIN');
       return {
         ok: true,
         userId: (u as any).id,
@@ -2090,7 +2096,9 @@ ipcHandle('auth:deleteUser', async (_e, payload) => {
 });
 
 // Shifts IPC - Local-first: always use local DB
-ipcHandle('shifts:getOpen', async (_e, { userId }) => {
+ipcHandle('shifts:getOpen', async (_e, { userId }, ctx) => {
+  // A waiter may only look at their own shift — see `ipcActor`.
+  userId = resolveActorUserId(ctx, userId);
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -2105,7 +2113,9 @@ ipcHandle('shifts:getOpen', async (_e, { userId }) => {
     : null;
 });
 
-ipcHandle('shifts:clockIn', async (_e, { userId }) => {
+ipcHandle('shifts:clockIn', async (_e, { userId }, ctx) => {
+  // Clocking a colleague in is time fraud; pin the shift to the sender.
+  userId = resolveActorUserId(ctx, userId);
   const already = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -2129,7 +2139,8 @@ ipcHandle('shifts:clockIn', async (_e, { userId }) => {
   };
 });
 
-ipcHandle('shifts:clockOut', async (_e, { userId, force }) => {
+ipcHandle('shifts:clockOut', async (_e, { userId, force }, ctx) => {
+  userId = resolveActorUserId(ctx, userId);
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -3142,21 +3153,24 @@ ipcHandle('tickets:print', async (_e, input) => {
 });
 
 // Waiter-facing ticket lists (receipt-style) - Local-first: always use local DB
-ipcHandle('reports:listMyActiveTickets', async (_e, input) => {
-  return await listMyActiveTickets(Number(input?.userId || 0));
+ipcHandle('reports:listMyActiveTickets', async (_e, input, ctx) => {
+  return await listMyActiveTickets(resolveActorUserId(ctx, input?.userId));
 });
 
-ipcHandle('reports:listMyPaidTickets', async (_e, input) => {
+ipcHandle('reports:listMyPaidTickets', async (_e, input, ctx) => {
   return await listMyPaidTickets(
-    Number(input?.userId || 0),
+    resolveActorUserId(ctx, input?.userId),
     input?.q,
     input?.limit,
   );
 });
 
 // Voided tickets/items report - Local-first
-ipcHandle('reports:listMyVoidedTickets', async (_e, input) => {
-  return await listMyVoidedTickets(Number(input?.userId || 0), input?.limit);
+ipcHandle('reports:listMyVoidedTickets', async (_e, input, ctx) => {
+  return await listMyVoidedTickets(
+    resolveActorUserId(ctx, input?.userId),
+    input?.limit,
+  );
 });
 
 // Persist open tables in SyncState - Local-first: always use local DB
@@ -3502,8 +3516,16 @@ ipcHandle('admin:getOverview', async (_e) => {
         where: { createdAt: { gte: todayStart, lte: todayEnd } },
         // `note` is needed so we can exclude rows that were marked
         // "moved-out" by a table transfer (the destination row carries
-        // the items now — see `isTransferredOutNote`).
-        select: { itemsJson: true, note: true } as any,
+        // the items now — see `isTransferredOutNote`). The session columns
+        // let `latestRowPerSession` drop superseded snapshots.
+        select: {
+          itemsJson: true,
+          note: true,
+          area: true,
+          tableLabel: true,
+          sessionKey: true,
+          createdAt: true,
+        } as any,
       })
       .catch(() => []),
     // Pull all cover writes that happened today. A waiter may save covers
@@ -3555,9 +3577,11 @@ ipcHandle('admin:getOverview', async (_e) => {
       ),
   ]);
   // Skip rows tagged as "moved-out" — their revenue is already counted
-  // on the destination table row created by the transfer flow.
-  const livingRevenueRows = (revenueRows as any[]).filter(
-    (r: any) => !isTransferredOutNote(r?.note),
+  // on the destination table row created by the transfer flow. Then collapse
+  // each sitting to its newest snapshot, otherwise a table fired three times
+  // is billed three times over.
+  const livingRevenueRows = latestRowPerSession(
+    (revenueRows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   );
   const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const revenueTodayNet = livingRevenueRows.reduce((s, r) => {
@@ -3774,11 +3798,22 @@ async function isKdsMasterEnabled(): Promise<boolean> {
 }
 
 // Tickets logging
-ipcHandle('tickets:log', async (_e, payload) => {
+ipcHandle('tickets:log', async (_e, payload, ctx) => {
   try {
     // Rate limit declared in IPC_POLICIES.
     const { userId, area, tableLabel, covers, items, note } = payload || {};
     if (!userId || !area || !tableLabel) return false;
+    // The row this writes decides who owns the table and who gets credited
+    // for the sale, and naming an admin here would skip the ownership check
+    // below outright. Refuse rather than silently re-attribute, so the
+    // renderer can surface it instead of the order quietly landing elsewhere.
+    if (!actorIdentityAllows(ctx, userId)) {
+      return {
+        ok: false,
+        error: 'Order does not match the signed-in user',
+        code: 'ACTOR_MISMATCH',
+      };
+    }
 
     const idempotencyKey = String(
       (payload as any)?.idempotencyKey ?? '',
@@ -3871,6 +3906,14 @@ ipcHandle('tickets:log', async (_e, payload) => {
         ? ((payload as any).kdsFireItems as any[])
         : undefined;
 
+      // Every send stores the whole ticket again, so tag the row with the
+      // session it belongs to — reports count the newest snapshot per session
+      // rather than adding each fire on top of the last.
+      const sessionKey = await getCurrentTableSessionKey(
+        sanitizedArea,
+        sanitizedTableLabel,
+      ).catch(() => null);
+
       try {
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
           await expireStaleMenuStock(tx);
@@ -3883,7 +3926,8 @@ ipcHandle('tickets:log', async (_e, payload) => {
               itemsJson: items ?? [],
               note: sanitizedNote,
               ...(idempotencyKey ? { idempotencyKey } : {}),
-            },
+              ...(sessionKey ? { sessionKey } : {}),
+            } as any,
           });
           await consumeMenuStockForTicketLines(tx, stockConsumeLines);
         });
@@ -4286,8 +4330,10 @@ ipcHandle('kds:bumpItem', async (_e, input) => {
 });
 
 // Void item: records a notification and returns true
-ipcHandle('tickets:voidItem', async (_e, input) => {
+ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   const userId = Number(input?.userId);
+  // Voids are the anti-theft audit trail; it has to name the real actor.
+  if (!actorIdentityAllows(ctx, userId)) return false;
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   const item = input?.item as any;
@@ -4295,6 +4341,9 @@ ipcHandle('tickets:voidItem', async (_e, input) => {
     input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
   const approvedByAdminName =
     input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
+  const approvedByAdminToken = String(
+    (input as any)?.approvedByAdminToken || '',
+  );
   if (!userId || !area || !tableLabel || !item?.name) return false;
 
   // Enforce admin PIN approval for voids if enabled in settings.
@@ -4313,6 +4362,13 @@ ipcHandle('tickets:voidItem', async (_e, input) => {
       (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
     if (requireApproval && !actorIsAdmin) {
       if (!approvedByAdminId) return false;
+      // An id on its own proves nothing — every active admin's id is on the
+      // login screen. Require the token `auth:verifyManagerPin` issues, the
+      // same rule the LAN route enforces, or a waiter can void their own
+      // items and pin the approval on a manager who never saw the ticket.
+      if (!isApprovalValidFor(approvedByAdminToken, approvedByAdminId)) {
+        return false;
+      }
       const approver = await prisma.user
         .findUnique({ where: { id: approvedByAdminId } })
         .catch(() => null);
@@ -4333,7 +4389,12 @@ ipcHandle('tickets:voidItem', async (_e, input) => {
   // after the table was transferred away — there's no money loss but
   // it corrupts attribution and bypasses the manager-approval audit
   // trail. Admin PIN approval still works as the override path.
-  if (!actorIsAdmin && !approvedByAdminId) {
+  // Only a verified approval may lift the ownership guard; an unbacked
+  // `approvedByAdminId` must not be enough to void another waiter's table.
+  if (
+    !actorIsAdmin &&
+    !isApprovalValidFor(approvedByAdminToken, approvedByAdminId)
+  ) {
     // Scope to the current session — see `getCurrentSessionOwnerId`.
     const ownerId = await getCurrentSessionOwnerId(area, tableLabel);
     if (ownerId !== null && ownerId !== Number(userId)) {
@@ -4367,9 +4428,7 @@ ipcHandle('tickets:voidItem', async (_e, input) => {
   const last = await findLatestTicketLogForCurrentSession(area, tableLabel);
   if (last) {
     const items = (last.itemsJson as any[]) || [];
-    const idx = items.findIndex(
-      (it: any) => it.name === item.name && !it?.voided,
-    );
+    const idx = findVoidableLineIndex(items, item);
     if (idx !== -1) {
       items[idx] = { ...items[idx], voided: true };
       await prisma.ticketLog.update({
@@ -4399,8 +4458,10 @@ ipcHandle('tickets:voidItem', async (_e, input) => {
   return true;
 });
 
-ipcHandle('tickets:voidTicket', async (_e, input) => {
+ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   const userId = Number(input?.userId);
+  // Voids are the anti-theft audit trail; it has to name the real actor.
+  if (!actorIdentityAllows(ctx, userId)) return false;
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   const reason = String(input?.reason || '');
@@ -4408,6 +4469,9 @@ ipcHandle('tickets:voidTicket', async (_e, input) => {
     input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
   const approvedByAdminName =
     input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
+  const approvedByAdminToken = String(
+    (input as any)?.approvedByAdminToken || '',
+  );
   if (!userId || !area || !tableLabel) return false;
 
   // Enforce admin PIN approval for voids if enabled in settings.
@@ -4425,6 +4489,13 @@ ipcHandle('tickets:voidTicket', async (_e, input) => {
       (!actor && actorRoleHint.toUpperCase() === 'ADMIN');
     if (requireApproval && !actorIsAdmin) {
       if (!approvedByAdminId) return false;
+      // An id on its own proves nothing — every active admin's id is on the
+      // login screen. Require the token `auth:verifyManagerPin` issues, the
+      // same rule the LAN route enforces, or a waiter can void their own
+      // items and pin the approval on a manager who never saw the ticket.
+      if (!isApprovalValidFor(approvedByAdminToken, approvedByAdminId)) {
+        return false;
+      }
       const approver = await prisma.user
         .findUnique({ where: { id: approvedByAdminId } })
         .catch(() => null);
@@ -4441,7 +4512,12 @@ ipcHandle('tickets:voidTicket', async (_e, input) => {
   // Ownership guard — same rule as `tickets:voidItem`. Stops a stale
   // device from wiping out a table that's been transferred away.
   // Scoped to the current session via `getCurrentSessionOwnerId`.
-  if (!actorIsAdmin && !approvedByAdminId) {
+  // Only a verified approval may lift the ownership guard; an unbacked
+  // `approvedByAdminId` must not be enough to void another waiter's table.
+  if (
+    !actorIsAdmin &&
+    !isApprovalValidFor(approvedByAdminToken, approvedByAdminId)
+  ) {
     const ownerId = await getCurrentSessionOwnerId(area, tableLabel);
     if (ownerId !== null && ownerId !== Number(userId)) {
       return false;
@@ -4539,8 +4615,10 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   // Admin ticket list: hide source-session rows superseded by a table
   // move. Those rows still exist for audit/reports but would show as a
   // duplicate card next to the destination row (same items, two cards).
-  const visibleRows = (rows as any[]).filter(
-    (r: any) => !isTransferredOutNote(r?.note),
+  // Intermediate snapshots of one sitting are hidden for the same reason —
+  // the newest row already carries every line the waiter sent.
+  const visibleRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   );
 
   // Status resolution per ticket-log row:
@@ -4680,9 +4758,9 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
 });
 
 // Notifications IPC
-ipcHandle('notifications:list', async (_e, input) => {
+ipcHandle('notifications:list', async (_e, input, ctx) => {
   const onlyUnread = Boolean(input?.onlyUnread);
-  const userId = Number(input?.userId);
+  const userId = resolveActorUserId(ctx, input?.userId);
   if (!userId) return [];
   const limit = Math.min(500, Math.max(1, Number(input?.limit || 100)));
   const rows = await prisma.notification.findMany({
@@ -4699,8 +4777,8 @@ ipcHandle('notifications:list', async (_e, input) => {
   }));
 });
 
-ipcHandle('notifications:markAllRead', async (_e, input) => {
-  const userId = Number(input?.userId);
+ipcHandle('notifications:markAllRead', async (_e, input, ctx) => {
+  const userId = resolveActorUserId(ctx, input?.userId);
   if (!userId) return false;
   await prisma.notification.updateMany({
     where: { userId, readAt: null },
@@ -4890,13 +4968,24 @@ ipcHandle('admin:getTopSellingToday', async (_e) => {
     where: { createdAt: { gte: start, lte: end } },
     // Pull `note` so transfer-out source rows can be skipped — their
     // items already count on the destination ticket.
-    select: { itemsJson: true, note: true } as any,
+    select: {
+      itemsJson: true,
+      note: true,
+      area: true,
+      tableLabel: true,
+      sessionKey: true,
+      createdAt: true,
+    } as any,
   });
   const map = new Map<string, { qty: number; revenue: number }>();
-  for (const r of rows) {
-    if (isTransferredOutNote((r as any).note)) continue;
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows) {
     const items = (r.itemsJson as any[]) || [];
     for (const it of items) {
+      // A voided dish was never sold — it must not top the chart.
+      if (it?.voided) continue;
       const name = String(it.name || 'Item');
       const qty = Number(it.qty || 1);
       const revenue = Number(it.unitPrice || 0) * qty;
@@ -4967,19 +5056,30 @@ ipcHandle('admin:getSalesTrends', async (_e, input) => {
     where: {
       createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to },
     },
-    select: { createdAt: true, itemsJson: true, note: true } as any,
+    select: {
+      createdAt: true,
+      itemsJson: true,
+      note: true,
+      area: true,
+      tableLabel: true,
+      sessionKey: true,
+    } as any,
     orderBy: { createdAt: 'asc' },
   });
   const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
-  for (const r of rows) {
-    // Source rows of a table transfer don't represent independent
-    // revenue — the destination row in this same bucket already does.
-    if (isTransferredOutNote((r as any).note)) continue;
-    const when = new Date(r.createdAt);
+  // Source rows of a table transfer don't represent independent revenue — the
+  // destination row in this same bucket already does. One sitting is also one
+  // order however many times it was fired.
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows) {
+    const when = new Date(r.createdAt as any);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
-    const net = (r.itemsJson as any[]).reduce(
-      (s: number, it: any) => s + Number(it.unitPrice) * Number(it.qty || 1),
+    const net = ((r.itemsJson as any[]) || []).reduce(
+      (s: number, it: any) =>
+        it?.voided ? s : s + Number(it.unitPrice) * Number(it.qty || 1),
       0,
     );
     result[idx].total += net;
@@ -5084,6 +5184,7 @@ ipcHandle('admin:getReview', async (_e, input) => {
     covers: number | null;
     itemsJson: any;
     note: string | null;
+    sessionKey: string | null;
   };
 
   const fetchRows = async (s: Date, e: Date): Promise<AggRow[]> => {
@@ -5102,11 +5203,16 @@ ipcHandle('admin:getReview', async (_e, input) => {
           covers: true,
           itemsJson: true,
           note: true,
+          sessionKey: true,
         } as any,
         orderBy: { createdAt: 'asc' },
       })
       .catch(() => [])) as unknown as AggRow[];
-    return rows.filter((r) => !isTransferredOutNote(r?.note));
+    // One sitting contributes one ticket, however many times it was fired —
+    // the rows are cumulative snapshots of the same check.
+    return latestRowPerSession(
+      rows.filter((r) => !isTransferredOutNote(r?.note)),
+    );
   };
 
   const summarize = (
@@ -5416,8 +5522,8 @@ ipcHandle('admin:getReview', async (_e, input) => {
   };
 });
 
-ipcHandle('reports:getMyOverview', async (_e, input) => {
-  const userId = Number(input?.userId || 0);
+ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
+  const userId = resolveActorUserId(ctx, input?.userId);
   if (!userId) return { revenueTodayNet: 0, revenueTodayVat: 0, openOrders: 0 };
   const settings = await readSettings().catch(() => ({}));
   const fiscalVatEnabled = isVatEnabledFromSettings(settings);
@@ -5428,11 +5534,18 @@ ipcHandle('reports:getMyOverview', async (_e, input) => {
       where: { userId, createdAt: { gte: start, lte: end } },
       // `note` is required to drop transferred-out source rows so the
       // waiter's "today's revenue" matches what was actually paid.
-      select: { itemsJson: true, note: true } as any,
+      select: {
+        itemsJson: true,
+        note: true,
+        area: true,
+        tableLabel: true,
+        sessionKey: true,
+        createdAt: true,
+      } as any,
     })
     .catch(() => []);
-  const liveRows = (rows as any[]).filter(
-    (r: any) => !isTransferredOutNote(r?.note),
+  const liveRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   );
   const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const revenueTodayNet = liveRows.reduce((s: number, r: any) => {
@@ -5482,18 +5595,27 @@ ipcHandle('reports:getMyOverview', async (_e, input) => {
   };
 });
 
-ipcHandle('reports:getMyTopSellingToday', async (_e, input) => {
-  const userId = Number(input?.userId || 0);
+ipcHandle('reports:getMyTopSellingToday', async (_e, input, ctx) => {
+  const userId = resolveActorUserId(ctx, input?.userId);
   if (!userId) return null;
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
   const rows = await prisma.ticketLog.findMany({
     where: { userId, createdAt: { gte: start, lte: end } },
-    select: { itemsJson: true, note: true } as any,
+    select: {
+      itemsJson: true,
+      note: true,
+      area: true,
+      tableLabel: true,
+      sessionKey: true,
+      createdAt: true,
+    } as any,
   });
   const map = new Map<string, { qty: number; revenue: number }>();
-  for (const r of rows) {
-    if (isTransferredOutNote((r as any).note)) continue;
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows) {
     const items = (r.itemsJson as any[]) || [];
     for (const it of items) {
       if (it?.voided) continue;
@@ -5514,8 +5636,8 @@ ipcHandle('reports:getMyTopSellingToday', async (_e, input) => {
   return best;
 });
 
-ipcHandle('reports:getMySalesTrends', async (_e, input) => {
-  const userId = Number(input?.userId || 0);
+ipcHandle('reports:getMySalesTrends', async (_e, input, ctx) => {
+  const userId = resolveActorUserId(ctx, input?.userId);
   const range = (input?.range as any) || 'daily';
   if (!userId) return { range, points: [] } as any;
   const today = new Date(new Date().setHours(0, 0, 0, 0));
@@ -5565,13 +5687,22 @@ ipcHandle('reports:getMySalesTrends', async (_e, input) => {
           lte: buckets[buckets.length - 1].to,
         },
       },
-      select: { createdAt: true, itemsJson: true, note: true } as any,
+      select: {
+        createdAt: true,
+        itemsJson: true,
+        note: true,
+        area: true,
+        tableLabel: true,
+        sessionKey: true,
+      } as any,
       orderBy: { createdAt: 'asc' },
     })
     .catch(() => []);
   const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
-  for (const r of rows as any[]) {
-    if (isTransferredOutNote((r as any).note)) continue;
+  const sessionRows = latestRowPerSession(
+    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+  for (const r of sessionRows as any[]) {
     const when = new Date(r.createdAt);
     const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
     if (idx === -1) continue;
@@ -5721,8 +5852,8 @@ ipcHandle('requests:create', async (_e, input) => {
 });
 
 // List pending requests for owner
-ipcHandle('requests:listForOwner', async (_e, input) => {
-  const ownerId = Number(input?.ownerId);
+ipcHandle('requests:listForOwner', async (_e, input, ctx) => {
+  const ownerId = resolveActorUserId(ctx, input?.ownerId);
   if (!ownerId) return [];
   const rows = await prisma.ticketRequest.findMany({
     where: { ownerId, status: 'PENDING' as any },
@@ -5740,9 +5871,10 @@ ipcHandle('requests:listForOwner', async (_e, input) => {
 });
 
 // Approve or reject
-ipcHandle('requests:approve', async (_e, input) => {
+ipcHandle('requests:approve', async (_e, input, ctx) => {
   const id = Number(input?.id);
-  const ownerId = Number(input?.ownerId);
+  // Deciding a request addressed to a colleague adds items to their check.
+  const ownerId = resolveActorUserId(ctx, input?.ownerId);
   if (!id || !ownerId) return false;
   const r = await prisma.ticketRequest.findUnique({ where: { id } });
   if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
@@ -5787,6 +5919,13 @@ ipcHandle('requests:approve', async (_e, input) => {
       }
     }
     const merged = Array.from(map.values());
+    // Approving a colleague's add-items request extends the open ticket, so
+    // the appended snapshot has to join the session rather than read as a
+    // second sale on the same table.
+    const sessionKey = await getCurrentTableSessionKey(
+      r.area,
+      r.tableLabel,
+    ).catch(() => null);
     await prisma.ticketLog.create({
       data: {
         userId: r.ownerId,
@@ -5795,7 +5934,8 @@ ipcHandle('requests:approve', async (_e, input) => {
         covers: last?.covers ?? null,
         itemsJson: merged,
         note: last?.note ?? null,
-      },
+        ...(sessionKey ? { sessionKey } : {}),
+      } as any,
     });
   } catch {
     // ignore
@@ -5812,9 +5952,9 @@ ipcHandle('requests:approve', async (_e, input) => {
   return true;
 });
 
-ipcHandle('requests:reject', async (_e, input) => {
+ipcHandle('requests:reject', async (_e, input, ctx) => {
   const id = Number(input?.id);
-  const ownerId = Number(input?.ownerId);
+  const ownerId = resolveActorUserId(ctx, input?.ownerId);
   if (!id || !ownerId) return false;
   const r = await prisma.ticketRequest.findUnique({ where: { id } });
   if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
@@ -5836,8 +5976,8 @@ ipcHandle('requests:reject', async (_e, input) => {
 });
 
 // Owner's OrderPage polls approved requests for current table
-ipcHandle('requests:pollApprovedForTable', async (_e, input) => {
-  const ownerId = Number(input?.ownerId);
+ipcHandle('requests:pollApprovedForTable', async (_e, input, ctx) => {
+  const ownerId = resolveActorUserId(ctx, input?.ownerId);
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!ownerId || !area || !tableLabel) return [];

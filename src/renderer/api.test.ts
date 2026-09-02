@@ -98,6 +98,29 @@ describe('logTicket', () => {
     expect(tryOrQueue).toHaveBeenCalledTimes(1);
     expect(lastCall().args.idempotencyKey).toBe('intent-offline-1');
   });
+
+  it('surfaces a permanent server rejection', async () => {
+    tryOrQueue.mockRejectedValueOnce(
+      Object.assign(new Error('Table is closed'), {
+        permanent: true,
+        code: 'TABLE_CLOSED',
+      }),
+    );
+    await expect(logTicket(baseTicket)).resolves.toEqual({
+      ok: false,
+      error: 'Table is closed',
+      code: 'TABLE_CLOSED',
+    });
+  });
+
+  it('reports failure when the order could be neither sent nor queued', async () => {
+    // Claiming success here loses the order silently: the caller marks the
+    // lines sent and prints a chit for something the kitchen never received.
+    tryOrQueue.mockRejectedValueOnce(new Error('IndexedDB unavailable'));
+    const r = await logTicket(baseTicket);
+    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ code: 'LOG_FAILED' });
+  });
 });
 
 describe('printTicket', () => {
