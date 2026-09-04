@@ -165,6 +165,7 @@ const api: Api = {
   },
   license: {
     getStatus: () => ipcRenderer.invoke('license:getStatus'),
+    getPlans: () => ipcRenderer.invoke('license:getPlans'),
     createCheckout: (input: {
       email: string;
       name?: string;

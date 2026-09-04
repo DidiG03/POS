@@ -10,7 +10,11 @@ import { BrandMark } from '../../components/BrandMark';
 import { Button, Field, Input, cn } from '../../components/ui';
 import { IconArrowLeft } from '../../components/icons';
 import { toast } from '../../stores/toasts';
-import type { LicenseEdition } from '@shared/ipc';
+import type {
+  LicenseEdition,
+  LicensePlanQuote,
+  LicensePlansDTO,
+} from '@shared/ipc';
 
 type LicenseStatus = {
   required: boolean;
@@ -23,7 +27,13 @@ type LicenseStatus = {
   billingConfigured?: boolean;
 };
 
-type GateView = 'welcome' | 'register' | 'business' | 'confirm' | 'login';
+type GateView =
+  | 'welcome'
+  | 'register'
+  | 'business'
+  | 'confirm'
+  | 'login'
+  | 'forgotKey';
 
 type RegisterDraft = {
   name: string;
@@ -36,6 +46,7 @@ type RegisterDraft = {
 type DetailField = 'name' | 'email' | 'phone' | 'businessName';
 
 const DRAFT_KEY = 'pos_onboarding_draft';
+const RESEND_COOLDOWN_SEC = 30;
 
 function emptyDraft(): RegisterDraft {
   return { name: '', email: '', phone: '', businessName: '', edition: null };
@@ -90,6 +101,22 @@ function isOffline(): boolean {
   }
 }
 
+function emptyPlans(): LicensePlansDTO {
+  return { restaurant: null, store: null };
+}
+
+function recurringPriceLabel(
+  t: (key: string, opts?: { price?: string; interval?: string }) => string,
+  plan: LicensePlanQuote | null | undefined,
+): string {
+  if (!plan?.formatted) return '';
+  const interval =
+    plan.interval === 'year'
+      ? t('license.intervalYear')
+      : t('license.intervalMonth');
+  return t('license.priceRecurring', { price: plan.formatted, interval });
+}
+
 export default function LicenseGate({
   children,
 }: {
@@ -110,6 +137,9 @@ export default function LicenseGate({
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [showFieldErrors, setShowFieldErrors] = useState(false);
+  const [keyEmailed, setKeyEmailed] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
+  const [plans, setPlans] = useState<LicensePlansDTO>(emptyPlans);
 
   const fail = useCallback(
     (message: string, detail?: string) => {
@@ -151,6 +181,14 @@ export default function LicenseGate({
   useEffect(() => {
     if (!isHost) return;
     setDraft(loadDraft());
+    void window.api.license
+      .getPlans()
+      .then((p) => {
+        if (p?.restaurant || p?.store) setPlans(p);
+      })
+      .catch(() => {
+        // prices stay hidden if billing is unreachable
+      });
   }, [isHost]);
 
   useEffect(() => {
@@ -166,6 +204,14 @@ export default function LicenseGate({
       if (typeof off === 'function') off();
     };
   }, [isHost, refresh]);
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const id = window.setTimeout(() => {
+      setResendIn((s) => Math.max(0, s - 1));
+    }, 1000);
+    return () => window.clearTimeout(id);
+  }, [resendIn]);
 
   if (!isHost) return <>{children}</>;
   if (!status) {
@@ -193,6 +239,7 @@ export default function LicenseGate({
   function goBack() {
     setShowFieldErrors(false);
     if (view === 'login' || view === 'register') setView('welcome');
+    else if (view === 'forgotKey') setView('login');
     else if (view === 'business') setView('register');
     else if (view === 'confirm') setView('business');
   }
@@ -243,6 +290,8 @@ export default function LicenseGate({
       }
       if (r?.alreadyLicensed) {
         toast.success(t('license.keySent', { email: draft.email.trim() }));
+        setKeyEmailed(true);
+        setResendIn(RESEND_COOLDOWN_SEC);
         goTo('login');
         return;
       }
@@ -290,7 +339,7 @@ export default function LicenseGate({
   }
 
   async function restore() {
-    if (busy) return;
+    if (busy || resendIn > 0) return;
     if (!isEmail(draft.email)) {
       setShowFieldErrors(true);
       fail(t('license.loginEmailInvalid'));
@@ -310,6 +359,8 @@ export default function LicenseGate({
         return;
       }
       toast.success(t('license.keySent', { email: draft.email.trim() }));
+      setKeyEmailed(true);
+      setResendIn(RESEND_COOLDOWN_SEC);
     } catch (e: unknown) {
       toast.fromError(e, t('license.restoreFailed'), {
         title: t('license.errorTitle'),
@@ -365,6 +416,8 @@ export default function LicenseGate({
             <BusinessChoice
               edition={draft.edition}
               invalid={showFieldErrors && !draft.edition}
+              restaurantPrice={recurringPriceLabel(t, plans.restaurant)}
+              storePrice={recurringPriceLabel(t, plans.store)}
               onPick={(edition) => {
                 setShowFieldErrors(false);
                 patchDraft({ edition });
@@ -377,24 +430,37 @@ export default function LicenseGate({
             <ConfirmPay
               draft={draft}
               busy={busy}
+              priceLabel={recurringPriceLabel(
+                t,
+                draft.edition === 'STORE' ? plans.store : plans.restaurant,
+              )}
               onPay={() => void subscribe()}
             />
           ) : null}
 
           {view === 'login' ? (
-            <LoginForm
-              email={draft.email}
+            <LoginKeyForm
               licenseKey={key}
               busy={busy}
+              onKey={setKey}
+              onActivate={() => void activate()}
+              onForgot={() => goTo('forgotKey')}
+            />
+          ) : null}
+
+          {view === 'forgotKey' ? (
+            <ForgotKeyForm
+              email={draft.email}
+              busy={busy}
+              keyEmailed={keyEmailed}
+              resendIn={resendIn}
               emailError={
                 showFieldErrors && !isEmail(draft.email)
                   ? t('license.loginEmailInvalid')
                   : undefined
               }
               onEmail={(email) => patchDraft({ email })}
-              onKey={setKey}
-              onRestore={() => void restore()}
-              onActivate={() => void activate()}
+              onSend={() => void restore()}
             />
           ) : null}
         </div>
@@ -503,11 +569,15 @@ function RegisterDetails({
 function BusinessChoice({
   edition,
   invalid,
+  restaurantPrice,
+  storePrice,
   onPick,
   onContinue,
 }: {
   edition: LicenseEdition | null;
   invalid: boolean;
+  restaurantPrice: string;
+  storePrice: string;
   onPick: (edition: LicenseEdition) => void;
   onContinue: () => void;
 }) {
@@ -527,6 +597,7 @@ function BusinessChoice({
           selected={edition === 'RESTAURANT'}
           invalid={invalid}
           title={t('license.businessRestaurant')}
+          price={restaurantPrice}
           hint={t('license.businessRestaurantHint')}
           onClick={() => onPick('RESTAURANT')}
         />
@@ -534,6 +605,7 @@ function BusinessChoice({
           selected={edition === 'STORE'}
           invalid={invalid}
           title={t('license.businessStore')}
+          price={storePrice}
           hint={t('license.businessStoreHint')}
           onClick={() => onPick('STORE')}
         />
@@ -549,12 +621,14 @@ function EditionCard({
   selected,
   invalid,
   title,
+  price,
   hint,
   onClick,
 }: {
   selected: boolean;
   invalid: boolean;
   title: string;
+  price?: string;
   hint: string;
   onClick: () => void;
 }) {
@@ -572,6 +646,11 @@ function EditionCard({
       )}
     >
       <div className="text-[14px] font-semibold text-gray-50">{title}</div>
+      {price ? (
+        <div className="mt-0.5 text-[15px] font-semibold tabular-nums text-gray-50">
+          {price}
+        </div>
+      ) : null}
       <div className="mt-0.5 text-[12px] leading-snug text-gray-400">
         {hint}
       </div>
@@ -582,10 +661,12 @@ function EditionCard({
 function ConfirmPay({
   draft,
   busy,
+  priceLabel,
   onPay,
 }: {
   draft: RegisterDraft;
   busy: string | null;
+  priceLabel: string;
   onPay: () => void;
 }) {
   const { t } = useTranslation();
@@ -595,6 +676,9 @@ function ConfirmPay({
       : t('license.businessRestaurant');
   const rows: Array<[string, string]> = [
     [t('license.confirmPlan'), plan],
+    ...(priceLabel
+      ? [[t('license.confirmPrice'), priceLabel] as [string, string]]
+      : []),
     [t('license.name'), draft.name.trim()],
     [t('license.email'), draft.email.trim()],
     [t('license.phone'), draft.phone.trim()],
@@ -630,30 +714,28 @@ function ConfirmPay({
         loading={busy === 'pay'}
         onClick={onPay}
       >
-        {busy === 'pay' ? t('license.openingStripe') : t('license.subscribe')}
+        {busy === 'pay'
+          ? t('license.openingStripe')
+          : priceLabel
+            ? t('license.subscribeFor', { price: priceLabel })
+            : t('license.subscribe')}
       </Button>
     </>
   );
 }
 
-function LoginForm({
-  email,
+function LoginKeyForm({
   licenseKey,
   busy,
-  emailError,
-  onEmail,
   onKey,
-  onRestore,
   onActivate,
+  onForgot,
 }: {
-  email: string;
   licenseKey: string;
   busy: string | null;
-  emailError?: string;
-  onEmail: (value: string) => void;
   onKey: (value: string) => void;
-  onRestore: () => void;
   onActivate: () => void;
+  onForgot: () => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -664,6 +746,72 @@ function LoginForm({
         </div>
         <div className="mt-1 text-sm text-gray-400">
           {t('license.loginBody')}
+        </div>
+      </div>
+      <GateInput
+        label={t('license.pasteKey')}
+        value={licenseKey}
+        autoComplete="off"
+        spellCheck={false}
+        inputClassName="font-mono text-xs"
+        onChange={(e) => onKey(e.target.value)}
+        placeholder="POS1...."
+      />
+      <Button
+        variant="primary"
+        block
+        size="lg"
+        loading={busy === 'key'}
+        onClick={onActivate}
+      >
+        {busy === 'key' ? t('common.loading') : t('license.activateKey')}
+      </Button>
+      <button
+        type="button"
+        className="w-full text-center text-[13px] text-gray-400 underline underline-offset-2 hover:text-gray-100"
+        onClick={onForgot}
+      >
+        {t('license.forgotKey')}
+      </button>
+    </>
+  );
+}
+
+function ForgotKeyForm({
+  email,
+  busy,
+  keyEmailed,
+  resendIn,
+  emailError,
+  onEmail,
+  onSend,
+}: {
+  email: string;
+  busy: string | null;
+  keyEmailed: boolean;
+  resendIn: number;
+  emailError?: string;
+  onEmail: (value: string) => void;
+  onSend: () => void;
+}) {
+  const { t } = useTranslation();
+  const coolingDown = resendIn > 0;
+  const sending = busy === 'restore';
+  const label = sending
+    ? t('license.sendingKey')
+    : coolingDown
+      ? t('license.resendIn', { seconds: resendIn })
+      : keyEmailed
+        ? t('license.resendKey')
+        : t('license.sendKey');
+  return (
+    <>
+      <div>
+        <div className="text-[18px] font-semibold tracking-tight sm:text-lg">
+          {t('license.forgotTitle')}
+        </div>
+        <div className="mt-1 text-sm text-gray-400">
+          {t('license.forgotBody')}
         </div>
       </div>
       <GateInput
@@ -679,25 +827,12 @@ function LoginForm({
         variant="primary"
         block
         size="lg"
-        loading={busy === 'restore'}
-        onClick={onRestore}
+        loading={sending}
+        disabled={coolingDown}
+        onClick={onSend}
       >
-        {busy === 'restore' ? t('license.sendingKey') : t('license.sendKey')}
+        {label}
       </Button>
-      <div className="space-y-2 border-t border-gray-700 pt-3">
-        <GateInput
-          label={t('license.pasteKey')}
-          value={licenseKey}
-          autoComplete="off"
-          spellCheck={false}
-          inputClassName="font-mono text-xs"
-          onChange={(e) => onKey(e.target.value)}
-          placeholder="POS1...."
-        />
-        <Button block size="lg" loading={busy === 'key'} onClick={onActivate}>
-          {busy === 'key' ? t('common.loading') : t('license.activateKey')}
-        </Button>
-      </div>
     </>
   );
 }

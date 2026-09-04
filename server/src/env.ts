@@ -15,7 +15,10 @@ export const env = {
   port: Number(process.env.PORT || 8080),
   stripeSecretKey: String(process.env.STRIPE_SECRET_KEY || '').trim(),
   stripeWebhookSecret: String(process.env.STRIPE_WEBHOOK_SECRET || '').trim(),
-  stripePriceId: String(process.env.STRIPE_PRICE_ID || '').trim(),
+  stripePriceIdRestaurant: String(
+    process.env.STRIPE_PRICE_ID_RESTAURANT || process.env.STRIPE_PRICE_ID || '',
+  ).trim(),
+  stripePriceIdStore: String(process.env.STRIPE_PRICE_ID_STORE || '').trim(),
   licenseSigningSecret: String(process.env.LICENSE_SIGNING_SECRET || '').trim(),
   appBaseUrl: String(process.env.APP_BASE_URL || '')
     .trim()
@@ -30,7 +33,12 @@ export const env = {
 
 export function requireEnv() {
   required('STRIPE_SECRET_KEY', env.stripeSecretKey, 8);
-  required('STRIPE_PRICE_ID', env.stripePriceId, 4);
+  required(
+    'STRIPE_PRICE_ID_RESTAURANT (or STRIPE_PRICE_ID)',
+    env.stripePriceIdRestaurant,
+    4,
+  );
+  required('STRIPE_PRICE_ID_STORE', env.stripePriceIdStore, 4);
   required('LICENSE_SIGNING_SECRET', env.licenseSigningSecret, 16);
   required('APP_BASE_URL', env.appBaseUrl, 8);
 }

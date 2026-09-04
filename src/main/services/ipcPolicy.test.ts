@@ -63,6 +63,7 @@ describe('IPC policy shape', () => {
       'license:activateKey',
       'license:activateSession',
       'license:createCheckout',
+      'license:getPlans',
       'license:getStatus',
       'license:restore',
       'network:getIps',

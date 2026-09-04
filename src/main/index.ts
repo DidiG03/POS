@@ -75,6 +75,7 @@ import {
   activateSession,
   createCheckout,
   createPortalSession,
+  getBillingPlans,
   getLicenseStatus,
   isLicenseRequired,
   registerLicenseProtocol,
@@ -2794,6 +2795,10 @@ ipcHandle('license:getStatus', async () => {
   return await getLicenseStatus();
 });
 
+ipcHandle('license:getPlans', async () => {
+  return await getBillingPlans();
+});
+
 ipcHandle('license:createCheckout', async (_e, input) => {
   const email = String((input as any)?.email || '').trim();
   const r = await createCheckout({
@@ -2810,7 +2815,6 @@ ipcHandle('license:createCheckout', async (_e, input) => {
       // renderer can still show the URL if we returned it
     }
   }
-  if (r.alreadyLicensed) await afterLicenseUnlocked();
   return r;
 });
 

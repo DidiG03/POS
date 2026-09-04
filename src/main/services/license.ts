@@ -5,6 +5,7 @@
 import { app, net } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { LicenseEdition } from '@shared/ipc';
 
 export type LicenseStatus = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
 
@@ -14,6 +15,19 @@ export interface StoredLicense {
   status: LicenseStatus;
   currentPeriodEnd: string | null;
   lastValidatedAt: number;
+  edition?: LicenseEdition;
+}
+
+export interface LicensePlanQuote {
+  amount: number;
+  currency: string;
+  interval: string;
+  formatted: string;
+}
+
+export interface LicensePlans {
+  restaurant: LicensePlanQuote | null;
+  store: LicensePlanQuote | null;
 }
 
 export interface LicensePublicStatus {
@@ -26,6 +40,7 @@ export interface LicensePublicStatus {
   currentPeriodEnd?: string | null;
   message?: string | null;
   billingConfigured: boolean;
+  edition?: LicenseEdition;
 }
 
 const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -92,7 +107,10 @@ async function billingFetch(url: string, init: RequestInit): Promise<Response> {
   return await fetch(url, init);
 }
 
-async function billingJson<T>(pathName: string, body: unknown): Promise<T> {
+async function billingRequest<T>(
+  pathName: string,
+  init: { method: 'GET' } | { method: 'POST'; body: unknown },
+): Promise<T> {
   const base = billingBase();
   if (!base)
     throw new Error('Billing server is not configured (POS_BILLING_URL)');
@@ -100,12 +118,14 @@ async function billingJson<T>(pathName: string, body: unknown): Promise<T> {
   const t = setTimeout(() => ac.abort(), 30_000);
   try {
     const res = await billingFetch(`${base}${pathName}`, {
-      method: 'POST',
+      method: init.method,
       headers: {
-        'Content-Type': 'application/json',
         Accept: 'application/json',
+        ...(init.method === 'POST'
+          ? { 'Content-Type': 'application/json' }
+          : {}),
       },
-      body: JSON.stringify(body),
+      body: init.method === 'POST' ? JSON.stringify(init.body) : undefined,
       signal: ac.signal,
     });
     const data = await res.json().catch(() => null);
@@ -126,12 +146,25 @@ async function billingJson<T>(pathName: string, body: unknown): Promise<T> {
   }
 }
 
+async function billingJson<T>(pathName: string, body: unknown): Promise<T> {
+  return billingRequest<T>(pathName, { method: 'POST', body });
+}
+
+function parseEdition(raw: unknown): LicenseEdition | undefined {
+  const v = String(raw || '')
+    .trim()
+    .toUpperCase();
+  return v === 'STORE' || v === 'RESTAURANT' ? v : undefined;
+}
+
 function persistFromRemote(r: {
   licenseKey?: string;
   email?: string;
   status?: string;
   currentPeriodEnd?: string | null;
+  edition?: string;
 }): StoredLicense {
+  const prev = readStoredLicense();
   const stored: StoredLicense = {
     key: String(r.licenseKey || ''),
     email: String(r.email || ''),
@@ -139,6 +172,7 @@ function persistFromRemote(r: {
       (String(r.status || 'ACTIVE').toUpperCase() as LicenseStatus) || 'ACTIVE',
     currentPeriodEnd: r.currentPeriodEnd ? String(r.currentPeriodEnd) : null,
     lastValidatedAt: Date.now(),
+    edition: parseEdition(r.edition) || prev?.edition,
   };
   if (!stored.key)
     throw new Error('Billing server did not return a license key');
@@ -177,6 +211,7 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       email?: string;
       currentPeriodEnd?: string | null;
       licenseKey?: string;
+      edition?: string;
     }>('/license/validate', { key: stored.key });
     const status = String(
       remote.status || 'PAUSED',
@@ -189,6 +224,7 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
         ? String(remote.currentPeriodEnd)
         : stored.currentPeriodEnd,
       lastValidatedAt: Date.now(),
+      edition: parseEdition(remote.edition) || stored.edition,
     };
     writeStoredLicense(next);
     const licensed = Boolean(remote.valid) && status === 'ACTIVE';
@@ -200,6 +236,7 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       status: next.status,
       currentPeriodEnd: next.currentPeriodEnd,
       billingConfigured: true,
+      edition: next.edition,
       message: licensed
         ? null
         : 'Subscription is not active. Update payment or restore your license.',
@@ -219,10 +256,26 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       status: stored.status,
       currentPeriodEnd: stored.currentPeriodEnd,
       billingConfigured: true,
+      edition: stored.edition,
       message: offlineOk
         ? 'Could not reach billing server; using the last successful check.'
         : String(e?.message || 'Could not validate license'),
     };
+  }
+}
+
+export async function getBillingPlans(): Promise<LicensePlans> {
+  try {
+    const r = await billingRequest<{
+      restaurant?: LicensePlanQuote;
+      store?: LicensePlanQuote;
+    }>('/plans', { method: 'GET' });
+    return {
+      restaurant: r.restaurant || null,
+      store: r.store || null,
+    };
+  } catch {
+    return { restaurant: null, store: null };
   }
 }
 
@@ -238,6 +291,10 @@ export async function createCheckout(input: {
   emailed?: boolean;
   error?: string;
 }> {
+  const edition = parseEdition(input.edition);
+  if (!edition) {
+    return { error: 'Choose Restaurant or Store to continue' };
+  }
   try {
     const r = await billingJson<{
       url?: string;
@@ -259,9 +316,7 @@ export async function createCheckout(input: {
       businessName: String(input.businessName || '')
         .trim()
         .slice(0, 200),
-      edition: String(input.edition || '')
-        .trim()
-        .toUpperCase(),
+      edition,
     });
     if (r.alreadyLicensed) {
       return {
@@ -285,6 +340,7 @@ export async function activateSession(sessionId: string): Promise<{
       email?: string;
       status?: string;
       currentPeriodEnd?: string | null;
+      edition?: string;
     }>('/license/activate-session', { sessionId });
     persistFromRemote(r);
     return { ok: true };
@@ -304,6 +360,7 @@ export async function activateKey(key: string): Promise<{
       email?: string;
       status?: string;
       currentPeriodEnd?: string | null;
+      edition?: string;
       error?: string;
     }>('/license/validate', { key });
     if (!r.valid) {

@@ -125,6 +125,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // -------------------------------------------------------------- license
   // First-run paywall, before any user exists.
   'license:getStatus': { allow: 'public' },
+  'license:getPlans': { allow: 'public' },
   'license:createCheckout': {
     allow: 'public',
     rateLimit: { maxAttempts: 10, windowMs: 60 * 1000 },

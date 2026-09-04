@@ -667,9 +667,22 @@ export interface LicenseStatusDTO {
   currentPeriodEnd?: string | null;
   message?: string | null;
   billingConfigured: boolean;
+  edition?: LicenseEdition;
 }
 
 export type LicenseEdition = 'RESTAURANT' | 'STORE';
+
+export interface LicensePlanQuote {
+  amount: number;
+  currency: string;
+  interval: string;
+  formatted: string;
+}
+
+export interface LicensePlansDTO {
+  restaurant: LicensePlanQuote | null;
+  store: LicensePlanQuote | null;
+}
 
 export interface LicenseCheckoutInput {
   email: string;
@@ -681,6 +694,7 @@ export interface LicenseCheckoutInput {
 
 export interface ApiLicense {
   getStatus(): Promise<LicenseStatusDTO>;
+  getPlans(): Promise<LicensePlansDTO>;
   createCheckout(input: LicenseCheckoutInput): Promise<{
     url?: string;
     alreadyLicensed?: boolean;

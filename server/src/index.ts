@@ -19,13 +19,130 @@ const stripe = new Stripe(env.stripeSecretKey);
 
 const ACTIVE_SUB_STATUSES = new Set(['active', 'trialing']);
 
+type LicenseEdition = 'RESTAURANT' | 'STORE';
+
+type PlanQuote = {
+  amount: number;
+  currency: string;
+  interval: string;
+  formatted: string;
+};
+
 type SubInfo = {
   customerId: string;
   email: string;
   status: 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
   periodEnd: string | null;
   subscriptionId: string | null;
+  edition: LicenseEdition;
 };
+
+const ZERO_DECIMAL = new Set([
+  'bif',
+  'clp',
+  'djf',
+  'gnf',
+  'jpy',
+  'kmf',
+  'krw',
+  'mga',
+  'pyg',
+  'rwf',
+  'ugx',
+  'vnd',
+  'vuv',
+  'xaf',
+  'xof',
+  'xpf',
+]);
+
+function parseEdition(raw: unknown): LicenseEdition | '' {
+  const v = String(raw || '')
+    .trim()
+    .toUpperCase();
+  return v === 'STORE' || v === 'RESTAURANT' ? v : '';
+}
+
+function priceIdForEdition(edition: LicenseEdition): string {
+  return edition === 'STORE'
+    ? env.stripePriceIdStore
+    : env.stripePriceIdRestaurant;
+}
+
+function editionFromPriceId(priceId: string): LicenseEdition | '' {
+  if (priceId && priceId === env.stripePriceIdStore) return 'STORE';
+  if (priceId && priceId === env.stripePriceIdRestaurant) return 'RESTAURANT';
+  return '';
+}
+
+function priceIdsFromSubscription(sub: Stripe.Subscription): string[] {
+  return (sub.items?.data || [])
+    .map((item) =>
+      typeof item.price === 'string'
+        ? item.price
+        : String(item.price?.id || ''),
+    )
+    .filter(Boolean);
+}
+
+function editionFromSubscription(sub: Stripe.Subscription): LicenseEdition {
+  const fromMeta = parseEdition(sub.metadata?.edition);
+  if (fromMeta) return fromMeta;
+  const ids = priceIdsFromSubscription(sub);
+  for (const id of ids) {
+    const edition = editionFromPriceId(id);
+    if (edition) return edition;
+  }
+  // Existing single-price subscribers stay on Restaurant.
+  return 'RESTAURANT';
+}
+
+function formatStripeAmount(
+  unitAmount: number | null | undefined,
+  currency: string,
+): string {
+  const cur = String(currency || 'eur').toLowerCase();
+  const amount = Number(unitAmount || 0);
+  const major = ZERO_DECIMAL.has(cur) ? amount : amount / 100;
+  return new Intl.NumberFormat('en', {
+    style: 'currency',
+    currency: cur.toUpperCase(),
+    minimumFractionDigits: Number.isInteger(major) ? 0 : 2,
+  }).format(major);
+}
+
+function quoteFromPrice(price: Stripe.Price): PlanQuote {
+  return {
+    amount: Number(price.unit_amount || 0),
+    currency: String(price.currency || 'eur'),
+    interval: String(price.recurring?.interval || 'month'),
+    formatted: formatStripeAmount(price.unit_amount, price.currency),
+  };
+}
+
+let plansCache: { at: number; restaurant: PlanQuote; store: PlanQuote } | null =
+  null;
+
+async function loadPlans(): Promise<{
+  restaurant: PlanQuote;
+  store: PlanQuote;
+}> {
+  const now = Date.now();
+  if (plansCache && now - plansCache.at < 5 * 60 * 1000) {
+    return {
+      restaurant: plansCache.restaurant,
+      store: plansCache.store,
+    };
+  }
+  const [restaurantPrice, storePrice] = await Promise.all([
+    stripe.prices.retrieve(env.stripePriceIdRestaurant),
+    stripe.prices.retrieve(env.stripePriceIdStore),
+  ]);
+  const restaurant = quoteFromPrice(restaurantPrice);
+  const store = quoteFromPrice(storePrice);
+  plansCache = { at: now, restaurant, store };
+  return { restaurant, store };
+}
 
 function mapSubStatus(raw: string): SubInfo['status'] {
   const s = raw.toLowerCase();
@@ -35,9 +152,12 @@ function mapSubStatus(raw: string): SubInfo['status'] {
   return 'PAUSED';
 }
 
-async function subscriptionForCustomer(
-  customerId: string,
-): Promise<{ status: string; periodEnd: number | null; id: string } | null> {
+async function subscriptionForCustomer(customerId: string): Promise<{
+  status: string;
+  periodEnd: number | null;
+  id: string;
+  edition: LicenseEdition;
+} | null> {
   const list = await stripe.subscriptions.list({
     customer: customerId,
     status: 'all',
@@ -54,6 +174,7 @@ async function subscriptionForCustomer(
     status: String(preferred.status || ''),
     periodEnd: periodEnd > 0 ? periodEnd : null,
     id: preferred.id,
+    edition: editionFromSubscription(preferred),
   };
 }
 
@@ -81,6 +202,7 @@ async function licenseInfoForCustomer(
       ? new Date(sub.periodEnd * 1000).toISOString()
       : null,
     subscriptionId: sub.id,
+    edition: sub.edition,
     licenseKey: issueLicenseKey(customer.id, email, env.licenseSigningSecret),
   };
 }
@@ -148,6 +270,18 @@ app.use(
 
 app.get('/health', (_req, res) => res.status(200).json({ ok: true }));
 
+app.get('/plans', async (_req, res) => {
+  try {
+    const plans = await loadPlans();
+    return res.status(200).json(plans);
+  } catch (e: any) {
+    console.error('plans', e);
+    return res
+      .status(500)
+      .json({ error: String(e?.message || 'Could not load plans') });
+  }
+});
+
 app.post('/checkout/create', async (req, res) => {
   try {
     const email = normalizeLicenseEmail(String(req.body?.email || ''));
@@ -174,9 +308,12 @@ app.post('/checkout/create', async (req, res) => {
       String(v || '')
         .trim()
         .slice(0, n);
-    const rawEdition = clip(req.body?.edition, 20).toUpperCase();
-    const edition =
-      rawEdition === 'STORE' || rawEdition === 'RESTAURANT' ? rawEdition : '';
+    const edition = parseEdition(req.body?.edition);
+    if (!edition) {
+      return res
+        .status(400)
+        .json({ error: 'Choose Restaurant or Store to continue' });
+    }
     const name = clip(req.body?.name, 200);
     const phone = clip(req.body?.phone, 40);
     const businessName = clip(req.body?.businessName, 200);
@@ -185,17 +322,20 @@ app.post('/checkout/create', async (req, res) => {
       mode: 'subscription',
       customer: existing?.id,
       customer_email: existing?.id ? undefined : email,
-      line_items: [{ price: env.stripePriceId, quantity: 1 }],
+      line_items: [{ price: priceIdForEdition(edition), quantity: 1 }],
       allow_promotion_codes: true,
       success_url: `${env.appBaseUrl}/return?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${env.appBaseUrl}/return?ok=0`,
       client_reference_id: email.slice(0, 200),
       metadata: {
         email,
+        edition,
         ...(name ? { name } : {}),
         ...(phone ? { phone } : {}),
         ...(businessName ? { businessName } : {}),
-        ...(edition ? { edition } : {}),
+      },
+      subscription_data: {
+        metadata: { email, edition },
       },
     });
     return res.status(200).json({ url: session.url, alreadyLicensed: false });
@@ -250,6 +390,7 @@ app.post('/license/activate-session', async (req, res) => {
       email: info.email,
       status: info.status,
       currentPeriodEnd: info.periodEnd,
+      edition: info.edition,
     });
   } catch (e: any) {
     console.error('license/activate-session', e);
@@ -287,6 +428,7 @@ app.post('/license/validate', async (req, res) => {
       email: info.email,
       currentPeriodEnd: info.periodEnd,
       licenseKey: info.licenseKey,
+      edition: info.edition,
     });
   } catch (e: any) {
     console.error('license/validate', e);
