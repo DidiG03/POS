@@ -2796,7 +2796,13 @@ ipcHandle('license:getStatus', async () => {
 
 ipcHandle('license:createCheckout', async (_e, input) => {
   const email = String((input as any)?.email || '').trim();
-  const r = await createCheckout(email);
+  const r = await createCheckout({
+    email,
+    name: String((input as any)?.name || '').trim(),
+    phone: String((input as any)?.phone || '').trim(),
+    businessName: String((input as any)?.businessName || '').trim(),
+    edition: String((input as any)?.edition || '').trim(),
+  });
   if (r.url) {
     try {
       await shell.openExternal(r.url);
@@ -2824,9 +2830,7 @@ ipcHandle('license:activateKey', async (_e, input) => {
 
 ipcHandle('license:restore', async (_e, input) => {
   const email = String((input as any)?.email || '').trim();
-  const r = await restoreByEmail(email);
-  if (r.ok) await afterLicenseUnlocked();
-  return r;
+  return await restoreByEmail(email);
 });
 
 ipcHandle('license:createPortalSession', async () => {

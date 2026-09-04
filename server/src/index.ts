@@ -11,6 +11,7 @@ import {
   normalizeLicenseEmail,
   parseLicenseKey,
 } from './licenseKey.js';
+import { sendLicenseKeyEmail } from './sendLicenseEmail.js';
 
 requireEnv();
 
@@ -84,6 +85,22 @@ async function licenseInfoForCustomer(
   };
 }
 
+async function emailKeyIfActive(
+  email: string,
+): Promise<{ sent: true } | { sent: false; reason: 'none' | 'email' }> {
+  const customer = await findCustomerByEmail(email);
+  if (!customer) return { sent: false, reason: 'none' };
+  const info = await licenseInfoForCustomer(customer, email);
+  if (!info || info.status !== 'ACTIVE') return { sent: false, reason: 'none' };
+  try {
+    await sendLicenseKeyEmail({ to: info.email, licenseKey: info.licenseKey });
+    return { sent: true };
+  } catch (e) {
+    console.error('license email', e);
+    return { sent: false, reason: 'email' };
+  }
+}
+
 const restoreHits = new Map<string, { count: number; resetAt: number }>();
 function allowRestore(ip: string): boolean {
   const now = Date.now();
@@ -139,17 +156,30 @@ app.post('/checkout/create', async (req, res) => {
     }
     const existing = await findCustomerByEmail(email);
     if (existing) {
-      const info = await licenseInfoForCustomer(existing, email);
-      if (info && info.status === 'ACTIVE') {
+      const mailed = await emailKeyIfActive(email);
+      if (mailed.sent) {
         return res.status(200).json({
           alreadyLicensed: true,
-          licenseKey: info.licenseKey,
-          email: info.email,
-          status: info.status,
-          currentPeriodEnd: info.periodEnd,
+          emailed: true,
+        });
+      }
+      if (mailed.reason === 'email') {
+        return res.status(500).json({
+          error: 'Could not email the license key. Try Already a customer.',
         });
       }
     }
+
+    const clip = (v: unknown, n: number) =>
+      String(v || '')
+        .trim()
+        .slice(0, n);
+    const rawEdition = clip(req.body?.edition, 20).toUpperCase();
+    const edition =
+      rawEdition === 'STORE' || rawEdition === 'RESTAURANT' ? rawEdition : '';
+    const name = clip(req.body?.name, 200);
+    const phone = clip(req.body?.phone, 40);
+    const businessName = clip(req.body?.businessName, 200);
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
@@ -160,7 +190,13 @@ app.post('/checkout/create', async (req, res) => {
       success_url: `${env.appBaseUrl}/return?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${env.appBaseUrl}/return?ok=0`,
       client_reference_id: email.slice(0, 200),
-      metadata: { email },
+      metadata: {
+        email,
+        ...(name ? { name } : {}),
+        ...(phone ? { phone } : {}),
+        ...(businessName ? { businessName } : {}),
+        ...(edition ? { edition } : {}),
+      },
     });
     return res.status(200).json({ url: session.url, alreadyLicensed: false });
   } catch (e: any) {
@@ -274,27 +310,18 @@ app.post('/license/restore', async (req, res) => {
     if (!email || !email.includes('@')) {
       return res.status(400).json({ error: 'Valid email is required' });
     }
-    const customer = await findCustomerByEmail(email);
-    if (!customer) {
-      // Same message as no-sub to avoid email enumeration.
-      return res.status(200).json({
-        found: false,
-        message: 'If this email has an active subscription, the key is below.',
-      });
+    const emailed = await emailKeyIfActive(email);
+    if (emailed.sent) {
+      return res.status(200).json({ sent: true });
     }
-    const info = await licenseInfoForCustomer(customer, email);
-    if (!info || info.status !== 'ACTIVE') {
-      return res.status(200).json({
-        found: false,
-        message: 'If this email has an active subscription, the key is below.',
+    if (emailed.reason === 'email') {
+      return res.status(500).json({
+        error: 'Could not send the license email. Try again.',
       });
     }
     return res.status(200).json({
-      found: true,
-      licenseKey: info.licenseKey,
-      email: info.email,
-      status: info.status,
-      currentPeriodEnd: info.periodEnd,
+      sent: false,
+      error: 'No active license for that email.',
     });
   } catch (e: any) {
     console.error('license/restore', e);

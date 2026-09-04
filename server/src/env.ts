@@ -24,6 +24,8 @@ export const env = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+  resendApiKey: String(process.env.RESEND_API_KEY || '').trim(),
+  licenseEmailFrom: String(process.env.LICENSE_EMAIL_FROM || '').trim(),
 };
 
 export function requireEnv() {

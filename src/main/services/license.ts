@@ -41,10 +41,13 @@ export function isLicenseRequired(): boolean {
   if (String(process.env.POS_LICENSE_BYPASS || '').trim() === '1') {
     return false;
   }
+  // Unpackaged `npm run dev` skips the license gate so LAN tablets stay
+  // usable. Set POS_LICENSE_REQUIRE=1 to preview the subscribe/restore
+  // screen without packaging (e.g. designing Store vs Restaurant checkout).
+  if (String(process.env.POS_LICENSE_REQUIRE || '').trim() === '1') {
+    return true;
+  }
   // Packaged builds bake POS_BILLING_URL in entry.ts and must be licensed.
-  // Unpackaged `npm run dev` keeps the till + LAN tablets usable even when
-  // that URL is in `.env` for billing UI work — otherwise merge/save 403s
-  // because the HTTP API never starts.
   try {
     if (!app.isPackaged) return false;
   } catch {
@@ -223,23 +226,48 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
   }
 }
 
-export async function createCheckout(email: string): Promise<{
+export async function createCheckout(input: {
+  email: string;
+  name?: string;
+  phone?: string;
+  businessName?: string;
+  edition?: string;
+}): Promise<{
   url?: string;
   alreadyLicensed?: boolean;
+  emailed?: boolean;
   error?: string;
 }> {
   try {
     const r = await billingJson<{
       url?: string;
       alreadyLicensed?: boolean;
+      emailed?: boolean;
       licenseKey?: string;
       email?: string;
       status?: string;
       currentPeriodEnd?: string | null;
       error?: string;
-    }>('/checkout/create', { email });
-    if (r.alreadyLicensed && r.licenseKey) {
-      persistFromRemote(r);
+    }>('/checkout/create', {
+      email: String(input.email || '').trim(),
+      name: String(input.name || '')
+        .trim()
+        .slice(0, 200),
+      phone: String(input.phone || '')
+        .trim()
+        .slice(0, 40),
+      businessName: String(input.businessName || '')
+        .trim()
+        .slice(0, 200),
+      edition: String(input.edition || '')
+        .trim()
+        .toUpperCase(),
+    });
+    if (r.alreadyLicensed) {
+      return {
+        alreadyLicensed: true,
+        emailed: Boolean(r.emailed),
+      };
     }
     return r;
   } catch (e: any) {
@@ -290,28 +318,37 @@ export async function activateKey(key: string): Promise<{
 
 export async function restoreByEmail(email: string): Promise<{
   ok: boolean;
+  emailed?: boolean;
   error?: string;
   message?: string;
 }> {
   try {
     const r = await billingJson<{
+      sent?: boolean;
       found?: boolean;
       licenseKey?: string;
       email?: string;
       status?: string;
       currentPeriodEnd?: string | null;
       message?: string;
+      error?: string;
     }>('/license/restore', { email });
-    if (!r.found || !r.licenseKey) {
+    if (r.sent) {
+      return { ok: true, emailed: true };
+    }
+    if (r.licenseKey) {
       return {
         ok: false,
-        message:
-          r.message ||
-          'No active subscription found for that email. Check the address or pay to subscribe.',
+        error:
+          'Could not email the license key. Paste a key you already have, or try again after billing mail is enabled.',
       };
     }
-    persistFromRemote(r);
-    return { ok: true };
+    return {
+      ok: false,
+      error: String(
+        r.error || r.message || 'No active license for that email.',
+      ),
+    };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || 'Could not restore') };
   }

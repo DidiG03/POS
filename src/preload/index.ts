@@ -165,8 +165,13 @@ const api: Api = {
   },
   license: {
     getStatus: () => ipcRenderer.invoke('license:getStatus'),
-    createCheckout: (input: { email: string }) =>
-      ipcRenderer.invoke('license:createCheckout', input),
+    createCheckout: (input: {
+      email: string;
+      name?: string;
+      phone?: string;
+      businessName?: string;
+      edition?: 'RESTAURANT' | 'STORE';
+    }) => ipcRenderer.invoke('license:createCheckout', input),
     activateSession: (input: { sessionId: string }) =>
       ipcRenderer.invoke('license:activateSession', input),
     activateKey: (input: { key: string }) =>
