@@ -23,17 +23,26 @@ permissions:
 
 jobs:
   build:
-    name: Build POS (${{ matrix.os }})
+    name: Build POS (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Windows POS + KDS are built by release-windows-client.yml.
+          # Native runners so Prisma + serialport match the installer arch.
+          # macos-latest is Apple Silicon; macos-15-intel is the Intel image
+          # (available until August 2027). Windows POS + KDS are published by
+          # release-windows-client.yml onto the same tag.
           - os: macos-latest
-            target: --mac
+            target: --mac --arm64
+            label: mac-arm64
+          - os: macos-15-intel
+            target: --mac --x64
+            label: mac-x64
           - os: ubuntu-latest
             target: --linux
+            label: linux
 
     steps:
       - name: Checkout
@@ -69,7 +78,7 @@ jobs:
       - name: Build renderer/main bundles
         run: pnpm build
 
-      - name: Build + publish installer
+      - name: Build installer
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -100,25 +109,145 @@ jobs:
             unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD || true
             echo "Windows code signing: disabled (no WIN_CSC_LINK secret)"
           fi
-          PUBLISH="always"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && \
-             [[ "${{ github.event.inputs.publish }}" == "false" ]]; then
-            PUBLISH="never"
-          fi
+          # Upload via the publish job (gh release upload) so Silicon + Intel
+          # land on the same published release. electron-builder --publish
+          # drafts were racing the Windows workflow and dropping Mac assets.
           pnpm exec -- electron-builder \
             ${{ matrix.target }} \
-            --publish "$PUBLISH"
+            --publish never
 
       - name: Upload installers as workflow artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pos-${{ matrix.os }}
+          name: pos-${{ matrix.label }}
           path: |
             dist/*.dmg
             dist/*.exe
             dist/*.AppImage
             dist/*.zip
+            dist/*.blockmap
             dist/latest*.yml
           if-no-files-found: warn
           retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: >-
+      github.event_name == 'push' ||
+      github.event.inputs.publish != 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pos-*
+          path: artifacts
+
+      - name: Publish installers to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${VERSION}"
+          fi
+          TITLE="${TAG#v}"
+
+          mkdir -p dist
+          find artifacts -type f \( \
+            -name '*.dmg' -o -name '*.blockmap' -o -name '*.AppImage' \
+            -o -name '*.zip' -o -name 'latest*.yml' \
+          \) -exec cp -v {} dist/ \;
+
+          ARM_DMG=$(ls dist/*-arm64.dmg 2>/dev/null | head -1 || true)
+          INTEL_DMG=$(ls dist/*-x64.dmg 2>/dev/null | head -1 || true)
+          if [[ ! -f "${ARM_DMG:-}" ]]; then
+            echo "::error::Missing macOS Apple Silicon installer (*-arm64.dmg)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
+          fi
+          if [[ ! -f "${INTEL_DMG:-}" ]]; then
+            echo "::error::Missing macOS Intel installer (*-x64.dmg)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
+          fi
+
+          node -e "
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const path = require('path');
+            const version = process.argv[1];
+            const outPath = process.argv[2];
+            const dmgs = process.argv.slice(3);
+            const files = dmgs.map((p) => {
+              const data = fs.readFileSync(p);
+              return {
+                url: path.basename(p),
+                sha512: crypto.createHash('sha512').update(data).digest('base64'),
+                size: data.length,
+              };
+            });
+            const primary = files.find((f) => f.url.includes('arm64')) || files[0];
+            const yml = [
+              'version: ' + version,
+              'files:',
+              ...files.flatMap((f) => [
+                '  - url: ' + f.url,
+                '    sha512: ' + f.sha512,
+                '    size: ' + f.size,
+              ]),
+              'path: ' + primary.url,
+              'sha512: ' + primary.sha512,
+              \"releaseDate: '\" + new Date().toISOString() + \"'\",
+              '',
+            ].join('\\n');
+            fs.writeFileSync(outPath, yml);
+          " "$VERSION" dist/latest-mac.yml "$ARM_DMG" "$INTEL_DMG"
+
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          {
+            echo "## OneTap POS ${VERSION}"
+            echo
+            echo "### Downloads"
+            echo "- macOS Apple Silicon: \`$(basename "$ARM_DMG")\`"
+            echo "- macOS Intel: \`$(basename "$INTEL_DMG")\`"
+            echo "- Windows: \`OneTap-POS-Setup-${VERSION}.exe\`"
+            echo "- Linux: AppImage attached to this release"
+            echo
+            echo "Windows POS and KDS installers are published onto this same tag."
+            echo
+            echo "### Changes since v0.2.26"
+            echo "- New subscription plan pricing in the license flow"
+            echo "- License purchase confirmation email"
+          } > "$NOTES_FILE"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Updating existing release $TAG"
+            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
+          fi
+
+          UPLOAD=()
+          shopt -s nullglob
+          UPLOAD+=( dist/*.dmg dist/*.blockmap dist/*.AppImage dist/*.zip dist/latest*.yml )
+          shopt -u nullglob
+          if [[ ${#UPLOAD[@]} -eq 0 ]]; then
+            echo "::error::No installer files found to upload"
+            exit 1
+          fi
+
+          gh release upload "$TAG" "${UPLOAD[@]}" --clobber
+          gh release edit "$TAG" --draft=false --latest
+
+          echo "Published to https://github.com/${{ github.repository }}/releases/tag/${TAG}"
