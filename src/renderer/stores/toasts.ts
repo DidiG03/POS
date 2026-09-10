@@ -45,7 +45,9 @@ export const useToastStore = create<ToastState>((set, get) => ({
     const id = genId();
     const createdAt = Date.now();
     const timeoutMs =
-      typeof t.timeoutMs === 'undefined' ? defaultTimeoutMs(t.level) : t.timeoutMs;
+      typeof t.timeoutMs === 'undefined'
+        ? defaultTimeoutMs(t.level)
+        : t.timeoutMs;
 
     set((s) => {
       const next: Toast = {
@@ -65,9 +67,12 @@ export const useToastStore = create<ToastState>((set, get) => ({
     if (timeoutMs != null) {
       const existing = timers.get(id);
       if (existing) window.clearTimeout(existing);
-      const timer = window.setTimeout(() => {
-        get().remove(id);
-      }, Math.max(250, timeoutMs));
+      const timer = window.setTimeout(
+        () => {
+          get().remove(id);
+        },
+        Math.max(250, timeoutMs),
+      );
       timers.set(id, timer);
     }
 
@@ -97,37 +102,49 @@ function normalizeErrorDetail(e: unknown): string | undefined {
 }
 
 export const toast = {
-  error(message: string, opts?: { title?: string; detail?: string; timeoutMs?: number | null }) {
+  error(
+    message: string,
+    opts?: { title?: string; detail?: string; timeoutMs?: number | null },
+  ) {
     useToastStore.getState().push({
       level: 'error',
-      title: opts?.title ?? 'Error',
+      title: opts?.title,
       message,
       detail: opts?.detail,
       timeoutMs: opts?.timeoutMs,
     });
   },
-  warn(message: string, opts?: { title?: string; detail?: string; timeoutMs?: number | null }) {
+  warn(
+    message: string,
+    opts?: { title?: string; detail?: string; timeoutMs?: number | null },
+  ) {
     useToastStore.getState().push({
       level: 'warn',
-      title: opts?.title ?? 'Warning',
+      title: opts?.title,
       message,
       detail: opts?.detail,
       timeoutMs: opts?.timeoutMs,
     });
   },
-  info(message: string, opts?: { title?: string; detail?: string; timeoutMs?: number | null }) {
+  info(
+    message: string,
+    opts?: { title?: string; detail?: string; timeoutMs?: number | null },
+  ) {
     useToastStore.getState().push({
       level: 'info',
-      title: opts?.title ?? 'Info',
+      title: opts?.title,
       message,
       detail: opts?.detail,
       timeoutMs: opts?.timeoutMs,
     });
   },
-  success(message: string, opts?: { title?: string; detail?: string; timeoutMs?: number | null }) {
+  success(
+    message: string,
+    opts?: { title?: string; detail?: string; timeoutMs?: number | null },
+  ) {
     useToastStore.getState().push({
       level: 'success',
-      title: opts?.title ?? 'Success',
+      title: opts?.title,
       message,
       detail: opts?.detail,
       timeoutMs: opts?.timeoutMs,
@@ -140,16 +157,16 @@ export const toast = {
   ) {
     const detail = normalizeErrorDetail(e);
     const message =
-      typeof (e as any)?.message === 'string' && String((e as any).message).trim()
+      typeof (e as any)?.message === 'string' &&
+      String((e as any).message).trim()
         ? String((e as any).message).trim()
         : fallbackMessage;
     useToastStore.getState().push({
       level: 'error',
-      title: opts?.title ?? 'Error',
+      title: opts?.title,
       message,
       detail,
       timeoutMs: opts?.timeoutMs,
     });
   },
 };
-

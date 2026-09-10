@@ -1,0 +1,593 @@
+import { type ReactNode, useMemo, useState } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  closestCorners,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+  type UniqueIdentifier,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { useTranslation } from 'react-i18next';
+import { partitionCourseBoardLines } from '@shared/ticketCourses';
+import {
+  isImmediateFireStation,
+  linesForCourseFire,
+} from '@shared/ticketCourseFire';
+import {
+  groupLinesBySeat,
+  isBillableLine,
+  seatLabel,
+} from '@shared/ticketSeats';
+import {
+  IconEdit,
+  IconGrip,
+  IconPrinter,
+  IconTrash,
+} from '../../components/icons';
+import { useTicketStore, type TicketLine } from '../../stores/ticket';
+
+const GROUP_PREFIX = 'group:';
+
+function groupSortableId(groupId: string): string {
+  return `${GROUP_PREFIX}${groupId}`;
+}
+
+function parseGroupSortableId(id: UniqueIdentifier): string | null {
+  const s = String(id);
+  return s.startsWith(GROUP_PREFIX) ? s.slice(GROUP_PREFIX.length) : null;
+}
+
+function SortableGroup({
+  groupId,
+  title,
+  activeHint,
+  active,
+  canEdit,
+  canDrop,
+  canRemove,
+  canFire,
+  fireDisabled,
+  onFire,
+  fireLabel,
+  canPrint,
+  printDisabled,
+  onPrint,
+  printLabel,
+  canRename,
+  renameLabel,
+  renamePlaceholder,
+  onRename,
+  reorderLabel,
+  removeLabel,
+  onActivate,
+  onRemove,
+  children,
+}: {
+  groupId: string;
+  title: string;
+  activeHint: string;
+  active: boolean;
+  canEdit: boolean;
+  canDrop: boolean;
+  canRemove: boolean;
+  canFire: boolean;
+  fireDisabled?: boolean;
+  onFire?: () => void;
+  fireLabel: string;
+  canPrint: boolean;
+  printDisabled?: boolean;
+  onPrint?: () => void;
+  printLabel: string;
+  canRename?: boolean;
+  renameLabel?: string;
+  renamePlaceholder?: string;
+  onRename?: (name: string) => void;
+  reorderLabel: string;
+  removeLabel: string;
+  onActivate: () => void;
+  onRemove: () => void;
+  children: ReactNode;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(title);
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: groupSortableId(groupId),
+    disabled: !canEdit,
+    data: { type: 'group', groupId },
+  });
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: `drop:${groupId}`,
+    data: { type: 'group-drop', groupId },
+    disabled: !canDrop,
+  });
+
+  function commitRename() {
+    if (!renaming) return;
+    setRenaming(false);
+    onRename?.(draftName);
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.55 : 1,
+      }}
+      className="space-y-1.5"
+    >
+      <div
+        className={`flex flex-wrap items-center gap-1 rounded-md border px-1.5 py-1 ${
+          active
+            ? 'border-[var(--pos-accent)] bg-[var(--pos-accent-soft)]'
+            : 'border-white/8 bg-gray-900/40'
+        }`}
+        onPointerDown={(e) => {
+          if (renaming) return;
+          if ((e.target as HTMLElement).closest('button, input')) return;
+          onActivate();
+        }}
+      >
+        {canEdit ? (
+          <button
+            type="button"
+            className="pos-icon-btn !w-8 !h-8 cursor-grab active:cursor-grabbing shrink-0"
+            aria-label={reorderLabel}
+            {...attributes}
+            {...listeners}
+          >
+            <IconGrip />
+          </button>
+        ) : null}
+        {renaming ? (
+          <input
+            autoFocus
+            className="min-w-[6.5rem] flex-1 bg-gray-900/80 border border-white/15 rounded px-2 py-1 text-sm font-semibold"
+            value={draftName}
+            maxLength={24}
+            placeholder={renamePlaceholder}
+            aria-label={renameLabel}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            onChange={(e) => setDraftName(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitRename();
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setDraftName(title);
+                setRenaming(false);
+              }
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className="min-w-0 text-left text-sm font-semibold py-1 px-1 rounded"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onActivate();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onActivate();
+            }}
+          >
+            {title}
+            {active ? (
+              <span className="block text-[11px] font-normal text-gray-400">
+                {activeHint}
+              </span>
+            ) : null}
+          </button>
+        )}
+        {canRename && !renaming ? (
+          <button
+            type="button"
+            className="pos-icon-btn !w-8 !h-8 shrink-0 ml-0.5 mr-1"
+            title={renameLabel}
+            aria-label={renameLabel}
+            onClick={(e) => {
+              e.stopPropagation();
+              setDraftName(title);
+              setRenaming(true);
+            }}
+          >
+            <IconEdit />
+          </button>
+        ) : null}
+        <div className="flex-1 min-w-0" />
+        {canFire ? (
+          <button
+            type="button"
+            className="shrink-0 text-xs font-semibold px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+            disabled={fireDisabled}
+            onClick={(e) => {
+              e.stopPropagation();
+              onFire?.();
+            }}
+          >
+            {fireLabel}
+          </button>
+        ) : null}
+        {canPrint ? (
+          <button
+            type="button"
+            className="pos-icon-btn !w-8 !h-8 shrink-0"
+            title={printLabel}
+            aria-label={printLabel}
+            disabled={printDisabled}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrint?.();
+            }}
+          >
+            <IconPrinter />
+          </button>
+        ) : null}
+        {canEdit && canRemove ? (
+          <button
+            type="button"
+            className="pos-icon-btn !w-8 !h-8 shrink-0"
+            title={removeLabel}
+            aria-label={removeLabel}
+            onClick={onRemove}
+          >
+            <IconTrash />
+          </button>
+        ) : null}
+      </div>
+      <div
+        ref={setDropRef}
+        className={`space-y-2 min-h-[2.25rem] rounded-md ${
+          isOver ? 'ring-1 ring-[var(--pos-accent)]' : ''
+        }`}
+        onPointerDown={() => onActivate()}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SortableLine({
+  line,
+  canEdit,
+  children,
+}: {
+  line: TicketLine;
+  canEdit: boolean;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: line.id,
+    disabled: !canEdit,
+    data: {
+      type: 'line',
+      courseId: line.courseId,
+      seatId: line.seatId,
+      lineId: line.id,
+    },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.45 : 1,
+      }}
+      className="flex items-stretch gap-1"
+    >
+      {canEdit ? (
+        <button
+          type="button"
+          className="pos-icon-btn !w-8 shrink-0 self-start mt-2 cursor-grab active:cursor-grabbing"
+          aria-label={t('order.reorderItem')}
+          {...attributes}
+          {...listeners}
+        >
+          <IconGrip />
+        </button>
+      ) : null}
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+export function TicketCourseBoard({
+  mode = 'course',
+  canEdit,
+  canAddCourse,
+  fireDisabled,
+  onFireCourse,
+  onPrintSeat,
+  printDisabled,
+  renderLine,
+}: {
+  mode?: 'course' | 'seat';
+  canEdit: boolean;
+  canAddCourse?: boolean;
+  fireDisabled?: boolean;
+  onFireCourse?: (courseId: string) => void;
+  onPrintSeat?: (seatId: string) => void;
+  printDisabled?: boolean;
+  renderLine: (line: TicketLine) => ReactNode;
+}) {
+  const { t } = useTranslation();
+  const lines = useTicketStore((s) => s.lines);
+  const courses = useTicketStore((s) => s.courses);
+  const seats = useTicketStore((s) => s.seats);
+  const activeCourseId = useTicketStore((s) => s.activeCourseId);
+  const activeSeatId = useTicketStore((s) => s.activeSeatId);
+  const addCourse = useTicketStore((s) => s.addCourse);
+  const addSeat = useTicketStore((s) => s.addSeat);
+  const removeCourse = useTicketStore((s) => s.removeCourse);
+  const removeSeat = useTicketStore((s) => s.removeSeat);
+  const setActiveCourseId = useTicketStore((s) => s.setActiveCourseId);
+  const setActiveSeatId = useTicketStore((s) => s.setActiveSeatId);
+  const reorderCourses = useTicketStore((s) => s.reorderCourses);
+  const reorderSeats = useTicketStore((s) => s.reorderSeats);
+  const moveLineToCourse = useTicketStore((s) => s.moveLineToCourse);
+  const moveLineToSeat = useTicketStore((s) => s.moveLineToSeat);
+  const renameSeat = useTicketStore((s) => s.renameSeat);
+  const seatMode = mode === 'seat';
+
+  const { drinks, groups } = useMemo(() => {
+    if (seatMode) {
+      return {
+        drinks: [] as TicketLine[],
+        groups: groupLinesBySeat(seats, lines).map((g) => ({
+          id: g.seat.id,
+          lines: g.lines,
+        })),
+      };
+    }
+    const partitioned = partitionCourseBoardLines(courses, lines);
+    return {
+      drinks: partitioned.drinks,
+      groups: partitioned.groups.map((g) => ({
+        id: g.course.id,
+        lines: g.lines,
+      })),
+    };
+  }, [seatMode, seats, courses, lines]);
+
+  const [dragging, setDragging] = useState<{
+    type: 'group' | 'line';
+    label: string;
+  } | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  );
+
+  const groupIds = groups.map((g) => groupSortableId(g.id));
+  const groupList = seatMode ? seats : courses;
+  const activeId = seatMode ? activeSeatId : activeCourseId;
+
+  function onDragStart(event: DragStartEvent) {
+    const type = event.active.data.current?.type;
+    if (type === 'group') {
+      const id = parseGroupSortableId(event.active.id);
+      const n = groupList.findIndex((g) => g.id === id);
+      setDragging({
+        type: 'group',
+        label: seatMode
+          ? seatLabel(seats, id, t('order.seatN', { n: n + 1 }))
+          : t('order.courseN', { n: n + 1 }),
+      });
+      return;
+    }
+    const line = lines.find((l) => l.id === event.active.id);
+    setDragging({ type: 'line', label: line?.name || '' });
+  }
+
+  function onDragEnd(event: DragEndEvent) {
+    setDragging(null);
+    const { active, over } = event;
+    if (!over) return;
+    const activeType = active.data.current?.type;
+    const overType = over.data.current?.type;
+    const overId = String(over.id);
+
+    if (activeType === 'group') {
+      const fromId = parseGroupSortableId(active.id);
+      const toId =
+        parseGroupSortableId(over.id) ||
+        (overType === 'group-drop'
+          ? String(over.data.current?.groupId || '')
+          : null);
+      if (!fromId || !toId || fromId === toId) return;
+      const from = groupList.findIndex((g) => g.id === fromId);
+      const to = groupList.findIndex((g) => g.id === toId);
+      if (seatMode) reorderSeats(from, to);
+      else reorderCourses(from, to);
+      return;
+    }
+
+    if (activeType !== 'line') return;
+    const line = lines.find((l) => l.id === event.active.id);
+    if (!seatMode && line && isImmediateFireStation(line.station)) return;
+    const lineId = String(active.id);
+    let toGroupId: string | null = null;
+    let toIndex = 0;
+
+    if (overType === 'group' || overType === 'group-drop') {
+      toGroupId = String(
+        over.data.current?.groupId || parseGroupSortableId(over.id) || '',
+      );
+      const dest = groups.find((g) => g.id === toGroupId);
+      toIndex = dest?.lines.length ?? 0;
+    } else {
+      const overLine = lines.find((l) => l.id === overId);
+      toGroupId = String(
+        (seatMode ? overLine?.seatId : overLine?.courseId) ||
+          over.data.current?.groupId ||
+          '',
+      );
+      const dest = groups.find((g) => g.id === toGroupId);
+      const overIndex = dest?.lines.findIndex((l) => l.id === overId) ?? 0;
+      toIndex = Math.max(0, overIndex);
+    }
+    if (!toGroupId) return;
+    if (seatMode) moveLineToSeat(lineId, toGroupId, toIndex);
+    else moveLineToCourse(lineId, toGroupId, toIndex);
+  }
+
+  const board = (
+    <div className="space-y-3">
+      {drinks.length ? (
+        <div className="space-y-1.5">
+          <div className="rounded-md border border-white/8 bg-gray-900/40 px-1.5 py-1">
+            <div className="text-sm font-semibold py-1 px-1">
+              {t('order.drinksSection')}
+            </div>
+            <div className="text-[11px] font-normal text-gray-400 px-1 pb-1">
+              {t('order.drinksSectionHint')}
+            </div>
+          </div>
+          <div className="space-y-2">
+            {drinks.map((line) => (
+              <div key={line.id}>{renderLine(line)}</div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <SortableContext items={groupIds} strategy={verticalListSortingStrategy}>
+        {groups.map((g, i) => {
+          const billable = g.lines.filter(
+            (l) => isBillableLine(l) && l.staged !== true,
+          );
+          const fallback = t(seatMode ? 'order.seatN' : 'order.courseN', {
+            n: i + 1,
+          });
+          return (
+            <SortableGroup
+              key={g.id}
+              groupId={g.id}
+              title={seatMode ? seatLabel(seats, g.id, fallback) : fallback}
+              activeHint={t(
+                seatMode ? 'order.seatActiveHint' : 'order.courseActiveHint',
+              )}
+              active={activeId === g.id}
+              canEdit={canEdit}
+              canDrop={canEdit || lines.some((l) => l.staged === true)}
+              canRemove={canEdit && groupList.length > 1}
+              canRename={seatMode}
+              renameLabel={t('order.renameSeat')}
+              renamePlaceholder={t('order.renameSeatPlaceholder')}
+              onRename={seatMode ? (name) => renameSeat(g.id, name) : undefined}
+              canFire={
+                !seatMode &&
+                Boolean(onFireCourse) &&
+                linesForCourseFire(lines, g.id).length > 0
+              }
+              fireDisabled={fireDisabled}
+              onFire={onFireCourse ? () => onFireCourse(g.id) : undefined}
+              fireLabel={t('order.fireCourse')}
+              canPrint={seatMode && Boolean(onPrintSeat) && billable.length > 0}
+              printDisabled={printDisabled}
+              onPrint={onPrintSeat ? () => onPrintSeat(g.id) : undefined}
+              printLabel={t('order.printSeatBill')}
+              reorderLabel={t(
+                seatMode ? 'order.reorderSeat' : 'order.reorderCourse',
+              )}
+              removeLabel={t(
+                seatMode ? 'order.removeSeat' : 'order.removeCourse',
+              )}
+              onActivate={() =>
+                seatMode ? setActiveSeatId(g.id) : setActiveCourseId(g.id)
+              }
+              onRemove={() =>
+                seatMode ? removeSeat(g.id) : removeCourse(g.id)
+              }
+            >
+              <SortableContext
+                items={g.lines.map((l) => l.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                {g.lines.length ? (
+                  g.lines.map((line) => (
+                    <SortableLine
+                      key={line.id}
+                      line={line}
+                      canEdit={
+                        line.voided !== true &&
+                        line.paid !== true &&
+                        (canEdit || line.staged === true)
+                      }
+                    >
+                      {renderLine(line)}
+                    </SortableLine>
+                  ))
+                ) : (
+                  <div className="text-xs opacity-50 px-2 py-3 border border-dashed border-white/10 rounded-md">
+                    {t('order.courseDropHere')}
+                  </div>
+                )}
+              </SortableContext>
+            </SortableGroup>
+          );
+        })}
+      </SortableContext>
+      {canEdit || canAddCourse ? (
+        <button
+          type="button"
+          className="w-full text-sm py-2 rounded-md border border-dashed border-white/15 hover:bg-gray-800"
+          onClick={() => (seatMode ? addSeat() : addCourse())}
+        >
+          {t(seatMode ? 'order.addSeat' : 'order.addCourse')}
+        </button>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCorners}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragCancel={() => setDragging(null)}
+    >
+      {board}
+      <DragOverlay>
+        {dragging ? (
+          <div className="rounded-md bg-gray-700 border border-white/15 px-3 py-2 text-sm shadow-lg">
+            {dragging.label}
+          </div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}

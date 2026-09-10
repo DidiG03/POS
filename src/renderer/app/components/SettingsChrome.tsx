@@ -8,22 +8,9 @@ import {
 import { createPortal } from 'react-dom';
 import { cn } from '../../components/ui/cn';
 import { Switch } from '../../components/ui/Field';
+import { IconKebab } from '../../components/icons';
 
-export function IconKebab() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      className="pos-icon"
-      aria-hidden
-    >
-      <circle cx="12" cy="5" r="1.75" />
-      <circle cx="12" cy="12" r="1.75" />
-      <circle cx="12" cy="19" r="1.75" />
-    </svg>
-  );
-}
+export { IconKebab };
 
 export type KebabItem = {
   label: string;
@@ -176,13 +163,13 @@ export function SettingsHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h2 className="text-[17px] font-semibold tracking-tight text-gray-50">
+        <h2 className="text-[17px] font-medium tracking-tight text-gray-100">
           {title}
         </h2>
         {description ? (
-          <p className="mt-1 max-w-xl text-[12px] leading-relaxed text-gray-500">
+          <p className="mt-1.5 max-w-xl text-[12px] leading-relaxed text-gray-500">
             {description}
           </p>
         ) : null}
@@ -212,17 +199,12 @@ export function SettingsCard({
   padded?: boolean;
 }) {
   return (
-    <section
-      className={cn(
-        'overflow-visible rounded-lg border border-white/7 bg-[var(--pos-canvas)]',
-        className,
-      )}
-    >
+    <section className={cn('admin-panel overflow-visible', className)}>
       {title != null || actions ? (
-        <div className="flex items-start justify-between gap-3 border-b border-white/7 px-4 py-3">
+        <div className="flex items-start justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
           <div className="min-w-0">
             {title != null ? (
-              <div className="text-[13px] font-semibold text-gray-100">
+              <div className="text-[13px] font-medium text-gray-200">
                 {title}
               </div>
             ) : null}

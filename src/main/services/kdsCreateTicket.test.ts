@@ -9,7 +9,7 @@ const kdsOrderFindFirst = vi.fn();
 const kdsDayCounterUpsert = vi.fn();
 const kdsDayCounterUpdate = vi.fn();
 const kdsOrderCreate = vi.fn();
-const kdsTicketFindFirst = vi.fn();
+const kdsTicketFindMany = vi.fn();
 const kdsTicketUpdate = vi.fn();
 const kdsTicketCreate = vi.fn();
 const kdsTicketStationFindFirst = vi.fn();
@@ -31,7 +31,7 @@ vi.mock('@db/client', () => ({
           update: (...a: any[]) => kdsDayCounterUpdate(...a),
         },
         kdsTicket: {
-          findFirst: (...a: any[]) => kdsTicketFindFirst(...a),
+          findMany: (...a: any[]) => kdsTicketFindMany(...a),
           update: (...a: any[]) => kdsTicketUpdate(...a),
           create: (...a: any[]) => kdsTicketCreate(...a),
         },
@@ -63,7 +63,10 @@ vi.mock('./kdsStationRouting', async (importOriginal) => {
     ...actual,
     loadKdsRoutingFromDb: (...a: any[]) => loadKdsRoutingFromDb(...a),
     decorateKdsTicketItemsFromCategory: (lines: any[]) =>
-      lines.map((l) => ({ ...l, station: 'KITCHEN' })),
+      lines.map((l) => ({
+        ...l,
+        station: l.station || 'KITCHEN',
+      })),
   };
 });
 
@@ -82,11 +85,13 @@ describe('createKdsTicketFromLog', () => {
     kdsTicketStationFindFirst.mockResolvedValue(null);
   });
 
-  it('merges fireItems into an existing NEW ticket instead of creating another', async () => {
-    kdsTicketFindFirst.mockResolvedValue({
-      id: 99,
-      itemsJson: [{ name: 'Soup', qty: 1, station: 'KITCHEN' }],
-    });
+  it('merges fireItems into an existing NEW ticket of the same course', async () => {
+    kdsTicketFindMany.mockResolvedValue([
+      {
+        id: 99,
+        itemsJson: [{ name: 'Soup', qty: 1, station: 'KITCHEN' }],
+      },
+    ]);
 
     const result = await createKdsTicketFromLog({
       userId: 1,
@@ -114,7 +119,7 @@ describe('createKdsTicketFromLog', () => {
   });
 
   it('creates a ticket when none is NEW on the open order', async () => {
-    kdsTicketFindFirst.mockResolvedValue(null);
+    kdsTicketFindMany.mockResolvedValue([]);
     kdsTicketCreate.mockResolvedValue({ id: 100 });
 
     const result = await createKdsTicketFromLog({
@@ -128,6 +133,87 @@ describe('createKdsTicketFromLog', () => {
     expect(result).toEqual({ orderNo: 5, ticketId: 100 });
     expect(kdsTicketCreate).toHaveBeenCalled();
     expect(kdsTicketUpdate).not.toHaveBeenCalled();
+  });
+
+  it('opens a new KDS card when the fire is a different course', async () => {
+    kdsTicketFindMany.mockResolvedValue([
+      {
+        id: 99,
+        itemsJson: [
+          { name: 'Soup', qty: 1, station: 'KITCHEN', courseId: 'c1' },
+        ],
+      },
+    ]);
+    kdsTicketCreate.mockResolvedValue({ id: 101 });
+
+    const result = await createKdsTicketFromLog({
+      userId: 1,
+      area: 'Sallon',
+      tableLabel: 'T1',
+      items: [],
+      fireItems: [{ name: 'Steak', qty: 1, categoryId: 1, courseId: 'c2' }],
+      note: 'no onion',
+      courseLabel: 'Course 2',
+    });
+
+    expect(result).toEqual({ orderNo: 5, ticketId: 101 });
+    expect(kdsTicketUpdate).not.toHaveBeenCalled();
+    expect(kdsTicketCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        note: 'Course 2 · no onion',
+        itemsJson: [
+          {
+            name: 'Steak',
+            qty: 1,
+            categoryId: 1,
+            courseId: 'c2',
+            station: 'KITCHEN',
+          },
+        ],
+      }),
+    });
+  });
+
+  it('writes drinks as their own card before the kitchen course', async () => {
+    kdsTicketFindMany.mockResolvedValue([]);
+    kdsTicketCreate
+      .mockResolvedValueOnce({ id: 200 })
+      .mockResolvedValueOnce({ id: 201 });
+
+    const result = await createKdsTicketFromLog({
+      userId: 1,
+      area: 'Sallon',
+      tableLabel: 'T1',
+      items: [],
+      fireItems: [
+        { name: 'Cola', qty: 1, station: 'BAR' },
+        { name: 'Soup', qty: 1, categoryId: 1, courseId: 'c1' },
+      ],
+      note: null,
+      courseLabel: 'Course 1',
+    });
+
+    expect(result).toEqual({ orderNo: 5, ticketId: 201 });
+    expect(kdsTicketCreate).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        note: null,
+        itemsJson: [{ name: 'Cola', qty: 1, station: 'BAR' }],
+      }),
+    });
+    expect(kdsTicketCreate).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        note: 'Course 1',
+        itemsJson: [
+          {
+            name: 'Soup',
+            qty: 1,
+            categoryId: 1,
+            courseId: 'c1',
+            station: 'KITCHEN',
+          },
+        ],
+      }),
+    });
   });
 
   it('does not create a ticket when KDS is turned off', async () => {

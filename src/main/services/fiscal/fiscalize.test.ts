@@ -141,6 +141,52 @@ describe('fiscalizePaymentOnce', () => {
     expect((await readFiscalClaim(KEY))?.state).toBe('REGISTERED');
   });
 
+  /**
+   * The whole at-most-once mechanism is keyed on the docId, and the docId
+   * comes from the caller's idempotency key. Minting one here when the
+   * caller sends none produces a *different* docId on every attempt, so
+   * each attempt takes its own claim, `/invoice/status` for it can only
+   * answer "not found", and the sale is filed once per retry. Refusing is
+   * the only outcome that cannot duplicate a tax document.
+   */
+  it('refuses a payment that arrives with no idempotency key', async () => {
+    const out = await fiscalizePaymentOnce(payment(), settings, {});
+
+    expect(out.kind).toBe('rejected');
+    if (out.kind !== 'rejected') throw new Error('unreachable');
+    expect(out.message).toMatch(/idempotencyKey/);
+    expect(createSale).not.toHaveBeenCalled();
+    expect(store.size).toBe(0);
+  });
+
+  it('refuses a key too long to be a legal docId instead of throwing', async () => {
+    const out = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: 'k'.repeat(201),
+    });
+
+    expect(out.kind).toBe('rejected');
+    if (out.kind !== 'rejected') throw new Error('unreachable');
+    expect(out.message).toMatch(/201 characters and the API allows 200/);
+    expect(createSale).not.toHaveBeenCalled();
+  });
+
+  it('pads a key too short to be a legal docId, deterministically', async () => {
+    createSale.mockResolvedValue({
+      nslf: 'NSLF-1',
+      nivf: 'NIVF-1',
+      status: 'accepted',
+    });
+
+    await fiscalizePaymentOnce(payment(), settings, { idempotencyKey: 'p1' });
+    const replay = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: 'p1',
+    });
+
+    // Same short key, same docId, so the claim store still recognises it.
+    expect(createSale).toHaveBeenCalledTimes(1);
+    expect(replay.kind).toBe('ok');
+  });
+
   it('never registers the same sale twice, however often it is replayed', async () => {
     createSale.mockResolvedValue({
       nslf: 'NSLF-1',
@@ -295,5 +341,171 @@ describe('fiscalizePaymentOnce', () => {
     expect(out.kind).toBe('retryable');
     // Unprotected registration is exactly how duplicates happen.
     expect(createSale).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The tax service refuses a cash invoice until the day's opening float has
+ * been declared, and the declaration has to come first — recognising the
+ * fault afterwards, which is what this used to do, means the sale has
+ * already been filed with no NIVF.
+ */
+describe('the opening cash balance', () => {
+  const cloudSettings = {
+    currency: 'ALL',
+    defaultVatRate: 0.2,
+    fiscal: {
+      enabled: true,
+      provider: 'easypos',
+      baseUrl: 'https://api.dev.easypos.al/fiscalisation-service/v1',
+      authToken: 'jwt',
+      integrationApp: 'generic',
+      defaultOperatorId: 'gh537ez280',
+      openingFloat: 5000,
+    },
+  } as unknown as SettingsDTO;
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function json(status: number, body: unknown) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as unknown as Response;
+  }
+
+  /** Bodies POSTed to /balance/initiate, in order. */
+  function initiateBodies(): any[] {
+    return fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith('/balance/initiate'))
+      .map(([, init]) => JSON.parse(String((init as any).body)));
+  }
+
+  beforeEach(() => {
+    createSale.mockResolvedValue({
+      nslf: 'NSLF-1',
+      nivf: 'NIVF-1',
+      status: 'accepted',
+    });
+    fetchMock = vi.fn().mockResolvedValue(json(200, { fcdc: 'FCDC-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  it('declares the float before the first cash invoice of the day', async () => {
+    const out = await fiscalizePaymentOnce(
+      payment({ meta: { kind: 'PAYMENT', method: 'CASH', totalAfter: 300 } }),
+      cloudSettings,
+      { idempotencyKey: KEY },
+    );
+
+    expect(out.kind).toBe('ok');
+    expect(initiateBodies()).toHaveLength(1);
+    expect(initiateBodies()[0].amount).toBe(5000);
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('declares it exactly once, however many cash sales follow', async () => {
+    for (const key of ['pay-1', 'pay-2', 'pay-3']) {
+      await fiscalizePaymentOnce(
+        payment({ meta: { kind: 'PAYMENT', method: 'CASH', totalAfter: 300 } }),
+        cloudSettings,
+        { idempotencyKey: key },
+      );
+    }
+
+    expect(initiateBodies()).toHaveLength(1);
+    expect(createSale).toHaveBeenCalledTimes(3);
+  });
+
+  it('leaves a card payment alone', async () => {
+    await fiscalizePaymentOnce(
+      payment({ meta: { kind: 'PAYMENT', method: 'CARD', totalAfter: 300 } }),
+      cloudSettings,
+      { idempotencyKey: KEY },
+    );
+
+    expect(initiateBodies()).toHaveLength(0);
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not touch the balance routes on the local middleware', async () => {
+    await fiscalizePaymentOnce(
+      payment({ meta: { kind: 'PAYMENT', method: 'CASH', totalAfter: 300 } }),
+      settings,
+      { idempotencyKey: KEY },
+    );
+
+    expect(initiateBodies()).toHaveLength(0);
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('declares zero when no float is configured', async () => {
+    const noFloat = {
+      ...cloudSettings,
+      fiscal: { ...(cloudSettings as any).fiscal, openingFloat: undefined },
+    } as unknown as SettingsDTO;
+
+    await fiscalizePaymentOnce(
+      payment({ meta: { kind: 'PAYMENT', method: 'CASH', totalAfter: 300 } }),
+      noFloat,
+      { idempotencyKey: KEY },
+    );
+
+    expect(initiateBodies()[0].amount).toBe(0);
+  });
+
+  /**
+   * A local record is not proof of what the tax service holds, so a failed
+   * declaration must not veto the invoice — the register call is the
+   * authority on whether the balance is really missing.
+   */
+  it('still files the invoice when the declaration is refused', async () => {
+    fetchMock.mockResolvedValue(json(400, { message: 'operator not found' }));
+
+    const out = await fiscalizePaymentOnce(
+      payment({ meta: { kind: 'PAYMENT', method: 'CASH', totalAfter: 300 } }),
+      cloudSettings,
+      { idempotencyKey: KEY },
+    );
+
+    expect(out.kind).toBe('ok');
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('alerts admins once a day, not once a sale', async () => {
+    fetchMock.mockResolvedValue(json(400, { message: 'operator not found' }));
+
+    for (const key of ['pay-1', 'pay-2', 'pay-3']) {
+      await fiscalizePaymentOnce(
+        payment({ meta: { kind: 'PAYMENT', method: 'CASH', totalAfter: 300 } }),
+        cloudSettings,
+        { idempotencyKey: key },
+      );
+    }
+
+    const alerts = notifications.filter((n) =>
+      /opening cash balance/i.test(n.message),
+    );
+    expect(alerts).toHaveLength(1);
+  });
+
+  /**
+   * A declaration that keeps being refused must not put a doomed POST in
+   * front of every cash sale for the rest of the day.
+   */
+  it('backs off instead of retrying a refusal on every sale', async () => {
+    fetchMock.mockResolvedValue(json(400, { message: 'operator not found' }));
+
+    for (const key of ['pay-1', 'pay-2', 'pay-3']) {
+      await fiscalizePaymentOnce(
+        payment({ meta: { kind: 'PAYMENT', method: 'CASH', totalAfter: 300 } }),
+        cloudSettings,
+        { idempotencyKey: key },
+      );
+    }
+
+    expect(initiateBodies()).toHaveLength(1);
+    expect(createSale).toHaveBeenCalledTimes(3);
   });
 });

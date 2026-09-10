@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { tableKey } from '@shared/utils/tableKey';
+import { dropOptimisticOpenState, mergeOpenTables } from './openTableMerge';
 
 interface TableStatusState {
   openMap: Record<string, boolean>; // key = `${area}:${label}`
@@ -23,34 +24,24 @@ export const useTableStatus = create<TableStatusState>()(
           lastSetAt: { ...s.lastSetAt, [tableKey(area, label)]: Date.now() },
         })),
       setAll: (entries) =>
-        set((s) => {
-          const now = Date.now();
-          const ttlMs = 60_000;
-          const incoming: Record<string, boolean> = {};
-          for (const e of entries || [])
-            incoming[tableKey(e.area, e.label)] = true;
-          const merged: Record<string, boolean> = {};
-          // Start from server truth
-          for (const k in incoming) merged[k] = true;
-          const offline =
-            typeof navigator !== 'undefined' && navigator.onLine === false;
-          // Preserve recent optimistic updates that the server hasn't caught
-          // up with yet. While offline, keep them until we can confirm.
-          for (const k in s.openMap) {
-            const last = s.lastSetAt[k] || 0;
-            const isRecent = now - last <= ttlMs;
-            if (isRecent || (offline && last > 0)) {
-              merged[k] = s.openMap[k];
-            }
-          }
-          // Clean up false entries
-          for (const k in merged) {
-            if (!merged[k]) delete merged[k];
-          }
-          return { openMap: merged } as any;
-        }),
+        set((s) => ({
+          openMap: mergeOpenTables({
+            incoming: entries || [],
+            openMap: s.openMap,
+            lastSetAt: s.lastSetAt,
+            keyOf: tableKey,
+            offline:
+              typeof navigator !== 'undefined' && navigator.onLine === false,
+          }),
+        })),
       reset: () => set({ openMap: {}, lastSetAt: {} }),
     }),
-    { name: 'pos-table-status', version: 1 },
+    {
+      name: 'pos-table-status',
+      version: 1,
+      onRehydrateStorage: () => (state) => {
+        if (state) useTableStatus.setState(dropOptimisticOpenState(state));
+      },
+    },
   ),
 );

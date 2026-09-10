@@ -125,7 +125,9 @@ export function viewKitchenItemsForCooker(
   const list = Array.isArray(stationItems) ? stationItems : [];
   if (opts.cooker) {
     if (opts.tab === 'NEW') {
-      // Still to cook; keep voided lines visible (struck through) until bumped.
+      const live = list.some((it) => !it?.voided && !it?.cookerBumped);
+      if (!live) return [];
+      // Still to cook; voided lines stay visible (struck through) next to live work.
       return list.filter((it) => !it?.cookerBumped);
     }
     // Cooked, but waiting on the waiter's final pickup bump (recall lives here).
@@ -133,6 +135,8 @@ export function viewKitchenItemsForCooker(
   }
   // Main view.
   if (opts.tab === 'NEW') {
+    const live = list.some((it) => !it?.voided && !it?.bumped);
+    if (!live) return [];
     // Show everything not yet finally bumped, including voided lines.
     return list
       .filter((it) => !it?.bumped)
@@ -145,4 +149,35 @@ export function viewKitchenItemsForCooker(
   }
   // Main DONE: handled by the existing station-DONE query + struck rendering.
   return list;
+}
+
+/** Whether a station card belongs on this KDS tab after voids/bumps. */
+export function kdsStationRowVisible(
+  stationItems: any[],
+  status: string,
+): boolean {
+  const list = Array.isArray(stationItems) ? stationItems : [];
+  if (status === 'NEW') {
+    return list.some((it) => !it?.voided && !it?.bumped);
+  }
+  if (status === 'DONE') {
+    return list.length > 0 && !list.every((it) => it?.voided);
+  }
+  return list.length > 0;
+}
+
+/** Last ticket-log snapshot for a closed KDS order: fully voided ticket. */
+export function ticketLogLooksFullyVoided(
+  log:
+    | {
+        itemsJson?: unknown;
+        note?: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!log) return false;
+  const items = Array.isArray(log.itemsJson) ? log.itemsJson : [];
+  if (items.length > 0 && items.every((it: any) => it?.voided)) return true;
+  return /\bVOIDED\b/i.test(String(log.note || ''));
 }

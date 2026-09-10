@@ -17,6 +17,31 @@ export type SessionPersistSlice = {
 /** Skip the post-login "is the shift still open?" bounce for this long. */
 export const SHIFT_GUARD_GRACE_MS = 30_000;
 
+export type SessionShell = 'admin' | 'reservations' | 'pos';
+
+export function sessionShellFromHash(hash: string): SessionShell {
+  const h = String(hash || '');
+  if (h.startsWith('#/admin')) return 'admin';
+  if (h.startsWith('#/reservations')) return 'reservations';
+  return 'pos';
+}
+
+export function isPersistedSessionExpired(input: {
+  user: unknown;
+  expiresAtMs: number | null | undefined;
+  now?: number;
+  /** When set, treat the session as live until this timestamp. */
+  graceUntilMs?: number;
+}): boolean {
+  if (!input.user) return false;
+  const now = input.now ?? Date.now();
+  if (typeof input.graceUntilMs === 'number' && now < input.graceUntilMs) {
+    return false;
+  }
+  const exp = input.expiresAtMs;
+  return typeof exp === 'number' && exp > 0 && exp <= now;
+}
+
 export function isSessionFresh(
   expiresAtMs: number | null | undefined,
   now = Date.now(),

@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { staffRolesForEdition } from '@shared/editionCapabilities';
+import {
+  parseSalaryAmountInput,
+  salaryAmountInputValue,
+  salaryWriteData,
+  type SalaryPeriod,
+} from '@shared/staffSalary';
 import { IconClose } from '../../components/icons';
 import { KebabMenu } from '../components/SettingsChrome';
 import { Button } from '../../components/ui/Button';
@@ -56,21 +64,6 @@ type StaffRole =
   | 'BARBACK'
   | 'CLEANER';
 
-const STAFF_ROLES: StaffRole[] = [
-  'WAITER',
-  'CASHIER',
-  'ADMIN',
-  'KP',
-  'CHEF',
-  'HEAD_CHEF',
-  'FOOD_RUNNER',
-  'HOST',
-  'BUSSER',
-  'BARTENDER',
-  'BARBACK',
-  'CLEANER',
-];
-
 function roleLabel(
   t: (key: string, opts?: { defaultValue?: string }) => string,
   role: string,
@@ -105,13 +98,18 @@ function RoleSelect({
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
+  const edition = useLicenseCapabilities((s) => s.edition);
+  const roles = useMemo(() => {
+    const allowed = staffRolesForEdition(edition) as StaffRole[];
+    return allowed.includes(value) ? allowed : [...allowed, value];
+  }, [edition, value]);
   return (
     <Select
       value={value}
       onChange={(e) => onChange(e.target.value as StaffRole)}
       disabled={disabled}
     >
-      {STAFF_ROLES.map((r) => (
+      {roles.map((r) => (
         <option key={r} value={r}>
           {roleLabel(t, r)}
         </option>
@@ -122,6 +120,7 @@ function RoleSelect({
 
 export default function AdminPage() {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [ov, setOv] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
   const [shifts, setShifts] = useState<AdminShift[]>([]);
@@ -146,6 +145,8 @@ export default function AdminPage() {
       role: string;
       active: boolean;
       createdAt: string;
+      salaryAmount?: number | null;
+      salaryPeriod?: SalaryPeriod | null;
     }[]
   >([]);
   const [userQuery, setUserQuery] = useState('');
@@ -157,6 +158,8 @@ export default function AdminPage() {
     displayName: string;
     role: string;
     active: boolean;
+    salaryAmount?: number | null;
+    salaryPeriod?: SalaryPeriod | null;
   } | null>(null);
   const [staffStatus, setStaffStatus] = useState<{
     kind: 'success' | 'error';
@@ -413,8 +416,9 @@ export default function AdminPage() {
     );
   }, [shifts]);
 
-  const quietDay =
-    !ov?.revenueTodayNet && !ov?.coversToday && !ov?.openOrders && !topSelling;
+  const quietDay = hasTables
+    ? !ov?.revenueTodayNet && !ov?.coversToday && !ov?.openOrders && !topSelling
+    : !ov?.revenueTodayNet && !ov?.openOrders && !topSelling;
 
   async function setStaffActive(id: number, name: string, active: boolean) {
     setStaffStatus(null);
@@ -459,18 +463,18 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="admin-page">
       {adminNotice ? (
-        <div className="rounded-lg border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[13px] text-amber-200">
+        <div className="border border-amber-700/40 bg-amber-950/40 px-3 py-2 text-[13px] text-amber-200">
           {adminNotice}
         </div>
       ) : null}
 
-      <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)] p-4">
-        <h2 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-400">
+      <section>
+        <h2 className="admin-kicker mb-3">
           {t('adminOverview.todaySnapshot')}
         </h2>
-        <div className="grid grid-cols-1 gap-x-6 gap-y-4 min-[520px]:grid-cols-2 xl:grid-cols-5">
+        <div className="admin-metrics">
           <Stat
             title={t('adminOverview.revenueTodayNet')}
             value={ov ? (ov.revenueTodayNet ?? 0) : null}
@@ -483,11 +487,20 @@ export default function AdminPage() {
             kind="money"
             currency={currency}
           />
+          {hasTables ? (
+            <Stat
+              title={t('adminOverview.coversToday')}
+              value={ov?.coversToday ?? 0}
+            />
+          ) : null}
           <Stat
-            title={t('adminOverview.coversToday')}
-            value={ov?.coversToday ?? 0}
+            title={t(
+              hasTables
+                ? 'adminOverview.openOrders'
+                : 'adminOverview.openSales',
+            )}
+            value={ov?.openOrders}
           />
-          <Stat title={t('adminOverview.openOrders')} value={ov?.openOrders} />
           <Stat
             title={t('adminOverview.topSellingToday')}
             value={topSelling ? topSelling.name : '—'}
@@ -500,24 +513,27 @@ export default function AdminPage() {
           />
         </div>
         {quietDay ? (
-          <p className="mt-4 text-[12px] text-gray-500">
+          <p className="mt-3 text-[12px] text-gray-500">
             {t('adminOverview.emptyTodayHint')}
           </p>
         ) : null}
       </section>
 
-      <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)]">
-        <div className="flex items-start justify-between gap-3 border-b border-white/7 px-4 py-3">
+      <section>
+        <div className="mb-3 flex items-end justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-[14px] font-semibold tracking-tight text-gray-50">
-              {t('adminOverview.operations')}
-            </h2>
-            <p className="mt-0.5 text-[12px] text-gray-500">
-              {t('adminOverview.operationsHelp')}
+            <h2 className="admin-kicker">{t('adminOverview.operations')}</h2>
+            <p className="mt-1.5 text-[12px] leading-snug text-gray-500">
+              {t(
+                hasTables
+                  ? 'adminOverview.operationsHelp'
+                  : 'adminOverview.operationsHelpStore',
+              )}
             </p>
           </div>
           <Button
             size="sm"
+            variant="ghost"
             onClick={() => {
               setShiftFilter('ALL');
               setShiftView('SHIFTS');
@@ -533,14 +549,18 @@ export default function AdminPage() {
           <EmptyState
             compact
             title={t('adminOverview.noOpenShifts')}
-            description={t('adminOverview.noOpenShiftsHint')}
+            description={t(
+              hasTables
+                ? 'adminOverview.noOpenShiftsHint'
+                : 'adminOverview.noOpenShiftsHintStore',
+            )}
           />
         ) : (
-          <div className="divide-y divide-white/6">
+          <div className="admin-list divide-y divide-white/[0.06]">
             {openShifts.slice(0, 4).map((s) => (
               <div
                 key={s.id}
-                className="flex items-center justify-between gap-3 px-4 py-2.5"
+                className="flex items-center justify-between gap-3 py-2.5"
               >
                 <div className="min-w-0">
                   <div className="truncate text-[13px] font-medium text-gray-100">
@@ -553,7 +573,7 @@ export default function AdminPage() {
                   </div>
                 </div>
                 <div className="shrink-0 text-right">
-                  <div className="text-[13px] font-semibold tabular-nums text-gray-50">
+                  <div className="text-[13px] font-medium tabular-nums text-gray-200">
                     {formatShiftDuration(s.durationHours, t)}
                   </div>
                 </div>
@@ -820,30 +840,32 @@ export default function AdminPage() {
         </div>
       )}
 
-      <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)]">
-        <div className="flex items-start justify-between gap-3 border-b border-white/7 px-4 py-3">
+      <section>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-[14px] font-semibold tracking-tight text-gray-50">
-              {t('adminOverview.staffMembers')}
-            </h2>
-            <p className="mt-0.5 text-[12px] text-gray-500">
+            <h2 className="admin-kicker">{t('adminOverview.staffMembers')}</h2>
+            <p className="mt-1.5 text-[12px] leading-snug text-gray-500">
               {t('adminOverview.staffHelp', {
                 active: staffTotals.active,
                 onShift: staffTotals.onShift,
               })}
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              size="sm"
-              disabled={billingPaused}
-              onClick={() => setShowAddStaffModal(true)}
-            >
-              {t('adminOverview.addStaff')}
-            </Button>
+          <div className="flex min-w-0 items-center gap-2">
+            <SearchInput
+              value={userQuery}
+              onValueChange={setUserQuery}
+              placeholder={t('adminOverview.searchStaff')}
+              className="w-[220px] sm:w-64"
+            />
             <KebabMenu
               label={t('adminOverview.staffMenu')}
               items={[
+                {
+                  label: t('adminOverview.addStaff'),
+                  disabled: billingPaused,
+                  onSelect: () => setShowAddStaffModal(true),
+                },
                 {
                   label: showAdmins
                     ? t('adminOverview.hideAdmins')
@@ -890,7 +912,7 @@ export default function AdminPage() {
           <div
             role="status"
             className={cn(
-              'mx-4 mt-3 rounded-lg border px-3 py-2 text-[13px]',
+              'mb-3 rounded-md border px-3 py-2 text-[13px]',
               staffStatus.kind === 'success'
                 ? 'border-emerald-800/70 bg-emerald-900/20 text-emerald-100'
                 : 'border-rose-800/70 bg-rose-900/20 text-rose-100',
@@ -900,14 +922,6 @@ export default function AdminPage() {
           </div>
         ) : null}
 
-        <div className="px-4 py-3">
-          <SearchInput
-            value={userQuery}
-            onValueChange={setUserQuery}
-            placeholder={t('adminOverview.searchStaff')}
-          />
-        </div>
-
         {staffList.length === 0 ? (
           <EmptyState
             compact
@@ -915,17 +929,17 @@ export default function AdminPage() {
             className="pb-6"
           />
         ) : (
-          <div className="grid grid-cols-1 gap-px bg-white/6 sm:grid-cols-2 2xl:grid-cols-3">
+          <div className="admin-list grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {staffList.map((u) => {
               const onShift = openUserIds.has(u.id);
               return (
                 <div
                   key={u.id}
-                  className="flex items-start gap-3 bg-[var(--pos-surface)] px-4 py-3"
+                  className="flex items-start gap-3 border-b border-white/[0.06] py-3 sm:pr-6"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-2">
-                      <div className="truncate text-[13px] font-semibold text-gray-50">
+                      <div className="truncate text-[13px] font-medium text-gray-100">
                         {u.displayName}
                       </div>
                       {!u.active ? (
@@ -955,6 +969,8 @@ export default function AdminPage() {
                             displayName: u.displayName,
                             role: u.role,
                             active: Boolean(u.active),
+                            salaryAmount: u.salaryAmount ?? null,
+                            salaryPeriod: u.salaryPeriod ?? null,
                           }),
                       },
                       {
@@ -1026,20 +1042,76 @@ function Stat({
     display === '0' ||
     /([^\d]|^)0([.,]00)?$/.test(String(display));
   return (
-    <div className="min-w-0">
-      <div className="text-[12px] font-medium leading-snug text-gray-400">
-        {title}
-      </div>
+    <div className="admin-metric">
+      <div className="admin-metric-label">{title}</div>
       <div
         className={cn(
-          'mt-1.5 min-w-0 break-words text-[22px] font-semibold tracking-tight tabular-nums',
-          quiet ? 'text-gray-500' : 'text-gray-50',
+          'admin-metric-value min-w-0 break-words',
+          quiet && 'is-quiet',
+          kind === 'text' && 'is-text',
         )}
       >
         {display}
       </div>
-      {hint ? (
-        <div className="mt-1 text-[11px] text-gray-500">{hint}</div>
+      {hint ? <div className="admin-metric-hint">{hint}</div> : null}
+    </div>
+  );
+}
+
+function StaffSalaryAdvanced({
+  open,
+  onToggle,
+  salary,
+  onSalaryChange,
+  period,
+  onPeriodChange,
+  disabled,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  salary: string;
+  onSalaryChange: (value: string) => void;
+  period: SalaryPeriod;
+  onPeriodChange: (value: SalaryPeriod) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-3">
+      <button
+        type="button"
+        className="border-0 bg-transparent p-0 text-[13px] text-sky-400 underline decoration-sky-400 underline-offset-2 hover:text-sky-300 disabled:opacity-50"
+        onClick={onToggle}
+        disabled={disabled}
+        aria-expanded={open}
+      >
+        {t('adminOverview.advanced')}
+      </button>
+      {open ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label={t('adminOverview.salary')}>
+            <Input
+              inputMode="decimal"
+              placeholder={t('adminOverview.salary')}
+              value={salary}
+              onChange={(e) => onSalaryChange(e.target.value)}
+              disabled={disabled}
+            />
+          </Field>
+          <Field label={t('adminOverview.salaryPeriod')}>
+            <Select
+              value={period}
+              onChange={(e) => onPeriodChange(e.target.value as SalaryPeriod)}
+              disabled={disabled}
+            >
+              <option value="HOURLY">{t('adminOverview.salaryHourly')}</option>
+              <option value="MONTHLY">
+                {t('adminOverview.salaryMonthly')}
+              </option>
+              <option value="YEARLY">{t('adminOverview.salaryYearly')}</option>
+            </Select>
+          </Field>
+        </div>
       ) : null}
     </div>
   );
@@ -1056,9 +1128,14 @@ function AddStaffModal({
 }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
-  const [role, setRole] = useState<StaffRole>('WAITER');
+  const [role, setRole] = useState<StaffRole>(() =>
+    useLicenseCapabilities.getState().hasTables ? 'WAITER' : 'CASHIER',
+  );
   const [pin, setPin] = useState('');
   const [active, setActive] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [salary, setSalary] = useState('');
+  const [salaryPeriod, setSalaryPeriod] = useState<SalaryPeriod>('MONTHLY');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -1081,6 +1158,13 @@ function AddStaffModal({
       setError(t('adminOverview.pinRequired'));
       return;
     }
+    const parsedSalary = parseSalaryAmountInput(salary);
+    if (!parsedSalary.ok) {
+      setError(t('adminOverview.salaryInvalid'));
+      setAdvancedOpen(true);
+      return;
+    }
+    const pay = salaryWriteData(parsedSalary.value, salaryPeriod);
     setSaving(true);
     try {
       await window.api.auth.createUser({
@@ -1088,6 +1172,8 @@ function AddStaffModal({
         role,
         pin,
         active,
+        salaryAmount: pay.salaryAmount,
+        salaryPeriod: pay.salaryPeriod,
       } as any);
       await onSuccess();
     } catch (e: any) {
@@ -1160,6 +1246,15 @@ function AddStaffModal({
               label={t('adminOverview.active')}
             />
           </div>
+          <StaffSalaryAdvanced
+            open={advancedOpen}
+            onToggle={() => setAdvancedOpen((v) => !v)}
+            salary={salary}
+            onSalaryChange={setSalary}
+            period={salaryPeriod}
+            onPeriodChange={setSalaryPeriod}
+            disabled={billingPaused}
+          />
           {error ? (
             <div className="text-[13px] text-rose-300">{error}</div>
           ) : null}
@@ -1188,7 +1283,14 @@ function EditStaffModal({
   onSaved,
   onError,
 }: {
-  staff: { id: number; displayName: string; role: string; active: boolean };
+  staff: {
+    id: number;
+    displayName: string;
+    role: string;
+    active: boolean;
+    salaryAmount?: number | null;
+    salaryPeriod?: SalaryPeriod | null;
+  };
   isSelf: boolean;
   onClose: () => void;
   onSaved: (message: string) => Promise<void> | void;
@@ -1199,6 +1301,15 @@ function EditStaffModal({
   const [role, setRole] = useState<StaffRole>(staff.role as StaffRole);
   const [pin, setPin] = useState('');
   const [active, setActive] = useState(staff.active);
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => staff.salaryAmount != null,
+  );
+  const [salary, setSalary] = useState(() =>
+    salaryAmountInputValue(staff.salaryAmount ?? null),
+  );
+  const [salaryPeriod, setSalaryPeriod] = useState<SalaryPeriod>(
+    staff.salaryPeriod ?? 'MONTHLY',
+  );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -1210,12 +1321,26 @@ function EditStaffModal({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
+  const parsedSalary = parseSalaryAmountInput(salary);
+  const nextPay = parsedSalary.ok
+    ? salaryWriteData(parsedSalary.value, salaryPeriod)
+    : null;
+  const originalPay = salaryWriteData(
+    staff.salaryAmount ?? null,
+    staff.salaryPeriod ?? null,
+  );
+  const salaryDirty =
+    nextPay != null &&
+    (nextPay.salaryAmount !== originalPay.salaryAmount ||
+      nextPay.salaryPeriod !== originalPay.salaryPeriod);
+
   // Only send fields that actually changed (or PIN if user typed one).
   const dirty =
     name.trim() !== staff.displayName ||
     role !== staff.role ||
     active !== staff.active ||
-    pin.length > 0;
+    pin.length > 0 ||
+    salaryDirty;
 
   async function handleSubmit() {
     setError(null);
@@ -1226,6 +1351,11 @@ function EditStaffModal({
     }
     if (pin && pin.length < 4) {
       setError(t('adminOverview.pinKeepOrBlank'));
+      return;
+    }
+    if (!parsedSalary.ok) {
+      setError(t('adminOverview.salaryInvalid'));
+      setAdvancedOpen(true);
       return;
     }
     if (!dirty) {
@@ -1239,6 +1369,10 @@ function EditStaffModal({
       if (role !== staff.role) payload.role = role;
       if (active !== staff.active) payload.active = active;
       if (pin) payload.pin = pin;
+      if (salaryDirty && nextPay) {
+        payload.salaryAmount = nextPay.salaryAmount;
+        payload.salaryPeriod = nextPay.salaryPeriod;
+      }
       await window.api.auth.updateUser(payload as any);
       await onSaved(t('adminOverview.updatedUser', { name: trimmed }));
     } catch (e: any) {
@@ -1324,6 +1458,14 @@ function EditStaffModal({
               label={t('adminOverview.active')}
             />
           </div>
+          <StaffSalaryAdvanced
+            open={advancedOpen}
+            onToggle={() => setAdvancedOpen((v) => !v)}
+            salary={salary}
+            onSalaryChange={setSalary}
+            period={salaryPeriod}
+            onPeriodChange={setSalaryPeriod}
+          />
           {error ? (
             <div className="text-[13px] text-rose-300">{error}</div>
           ) : null}

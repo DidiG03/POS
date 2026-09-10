@@ -17,10 +17,7 @@ import {
   splitGrossVat,
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
-import {
-  isVatEnabledFromSettings,
-  resolveVatEnabledFromMeta,
-} from '@shared/vatFromFiscal';
+import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 
 export async function listMyActiveTickets(userId: number): Promise<any[]> {
   if (!userId) return [];
@@ -129,85 +126,86 @@ export async function listMyPaidTickets(
   const limit = Math.min(200, Math.max(1, Number(limitRaw || 40)));
   if (!userId) return [];
 
-  const jobs = await prisma.printJob
+  const take = q ? Math.max(limit, 500) : limit;
+  const sales = await prisma.order
     .findMany({
-      where: { type: 'RECEIPT' as any, attempts: 0 } as any,
-      orderBy: { createdAt: 'desc' },
-      take: 500,
+      where: { status: 'PAID' as any, userId } as any,
+      orderBy: { closedAt: 'desc' },
+      take,
+      include: {
+        items: { orderBy: { sortOrder: 'asc' } },
+        payments: { orderBy: { createdAt: 'asc' }, take: 1 },
+        user: { select: { displayName: true } },
+      },
     })
     .catch(() => []);
 
-  const paymentSettings = await coreServices.readSettings().catch(() => ({}));
   const out: any[] = [];
-  for (const j of jobs as any[]) {
-    const p = (j.payloadJson as any) || {};
-    const meta = (p?.meta as any) || {};
-    if (String(meta?.kind || '') !== 'PAYMENT') continue;
-    if (Number(meta?.userId || 0) !== Number(userId)) continue;
-    if (Number((j as any)?.attempts || 0) > 0) continue;
-    const area = String(p.area || '');
-    const tableLabel = String(p.tableLabel || '');
-    const items = Array.isArray(p.items) ? p.items : [];
-    const note = p.note ?? null;
-    const covers = (p.covers ?? null) as any;
-    const userName = p.userName ?? null;
-    const paymentMethod = (meta.method ?? null) as any;
-    const paidAt = meta.paidAt ?? j.createdAt.toISOString();
-    const vatEnabled = resolveVatEnabledFromMeta(meta, paymentSettings);
-    const { net: subtotal, vat } = sumTicketLinesNetVat(
-      items,
-      vatEnabled,
-      Number((paymentSettings as any)?.defaultVatRate || 0),
-    );
-    const serviceChargeEnabled = (meta.serviceChargeEnabled ?? null) as any;
-    const serviceChargeApplied = (meta.serviceChargeApplied ?? null) as any;
-    const serviceChargeMode = (meta.serviceChargeMode ?? null) as any;
-    const serviceChargeValue = (meta.serviceChargeValue ?? null) as any;
-    const serviceChargeAmount = Number(meta.serviceChargeAmount || 0);
-    const discountType = (meta.discountType ?? null) as any;
-    const discountValue = (meta.discountValue ?? null) as any;
-    const discountAmount = Number(meta.discountAmount || 0);
-    const discountReason = (meta.discountReason ?? null) as any;
-    const fallbackTotal = Math.max(
-      0,
-      subtotal +
-        vat +
-        (Number.isFinite(serviceChargeAmount) ? serviceChargeAmount : 0) -
-        (Number.isFinite(discountAmount) ? discountAmount : 0),
-    );
-    const totalAfter = Number(meta.totalAfter);
-    const total = Number.isFinite(totalAfter)
-      ? Math.max(0, totalAfter)
-      : fallbackTotal;
+  for (const sale of sales as any[]) {
+    const meta = (sale.payments?.[0]?.metaJson as any) || {};
+    const area = String(sale.area || '');
+    const tableLabel = String(sale.tableLabel || '');
+    // Lines struck off by a corrective invoice are no longer on the bill.
+    const items = Array.isArray(sale.items)
+      ? sale.items
+          .filter((it: any) => it?.voidedAt == null)
+          .map((it: any) => ({
+            sku: it.sku,
+            name: it.name,
+            qty: Number(it.qty || 0),
+            unitPrice: Number(it.unitPrice || 0),
+            vatRate: Number(it.vatRate || 0),
+            note: it.note ?? null,
+            station: it.station ?? null,
+            categoryName: it.categoryName ?? null,
+            courseId: it.courseId ?? null,
+            seatId: it.seatId ?? null,
+          }))
+      : [];
+    const userName =
+      String(sale.userName || sale.user?.displayName || '').trim() || null;
+    const paidAtRaw =
+      sale.closedAt || sale.payments?.[0]?.paidAt || sale.createdAt;
+    const paidAt =
+      paidAtRaw instanceof Date
+        ? paidAtRaw.toISOString()
+        : new Date(paidAtRaw).toISOString();
+    const createdAt = paidAt;
     const hay =
       `${area} ${tableLabel} ${String(userName || '')} ${items.map((it: any) => it.name).join(' ')}`.toLowerCase();
     if (q && !hay.includes(q)) continue;
+    const serviceChargeAmount = Number(
+      sale.serviceChargeAmount ?? meta.serviceChargeAmount ?? 0,
+    );
+    const discountAmount = Number(
+      sale.discountAmount ?? meta.discountAmount ?? 0,
+    );
     out.push({
       kind: 'PAID',
       area,
       tableLabel,
-      createdAt: j.createdAt.toISOString(),
+      createdAt,
       paidAt,
-      covers,
-      note,
+      covers: sale.covers ?? null,
+      note: sale.note ?? null,
       userName,
-      paymentMethod,
-      vatEnabled,
-      serviceChargeEnabled,
-      serviceChargeApplied,
-      serviceChargeMode,
-      serviceChargeValue,
+      paymentMethod: sale.payments?.[0]?.method ?? meta.method ?? null,
+      vatEnabled: Boolean(sale.vatEnabled),
+      serviceChargeEnabled: (meta.serviceChargeEnabled ?? null) as any,
+      serviceChargeApplied: (meta.serviceChargeApplied ?? null) as any,
+      serviceChargeMode: (meta.serviceChargeMode ?? null) as any,
+      serviceChargeValue: (meta.serviceChargeValue ?? null) as any,
       serviceChargeAmount: Number.isFinite(serviceChargeAmount)
         ? serviceChargeAmount
         : null,
-      discountType,
-      discountValue,
+      discountType: sale.discountType ?? meta.discountType ?? null,
+      discountValue: (meta.discountValue ?? null) as any,
       discountAmount: Number.isFinite(discountAmount) ? discountAmount : null,
-      discountReason,
+      discountReason: sale.discountReason ?? meta.discountReason ?? null,
       items,
-      subtotal,
-      vat,
-      total,
+      subtotal: Number(sale.subtotal || 0),
+      vat: Number(sale.vatAmount || 0),
+      total: Number(sale.total || 0),
     });
     if (out.length >= limit) break;
   }

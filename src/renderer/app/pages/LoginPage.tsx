@@ -3,8 +3,15 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { useOrderContext } from '@shared/stores/orderContext';
+import {
+  ensureStoreCounterSelected,
+  staffPosHomePath,
+} from '@shared/editionCapabilities';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { BrandMark } from '../../components/BrandMark';
+import { DevEditionSwitch } from '../components/DevEditionSwitch';
 import {
   Button,
   ConfirmDialog,
@@ -99,6 +106,21 @@ export default function LoginPage() {
     (typeof window !== 'undefined' &&
       (window.location.hash || '').startsWith('#/kds'));
   const hasHydrated = useSessionStore((s) => s.hasHydrated);
+  const hasReservations = useLicenseCapabilities((s) => s.hasReservations);
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  const reservationsReady = useLicenseCapabilities((s) => s.hydrated);
+  const setSelectedTable = useOrderContext((s) => s.setSelectedTable);
+
+  const goStaffHome = (staff: { id?: number; role?: string }, kds: boolean) => {
+    const clockOnly = isClockOnlyRole((staff as any).role);
+    ensureStoreCounterSelected({
+      hasTables,
+      userId: staff?.id,
+      selectedTable: useOrderContext.getState().selectedTable,
+      setSelectedTable,
+    });
+    navigate(staffPosHomePath({ hasTables, clockOnly, kds }));
+  };
 
   const onSubmit = async () => {
     setError(null);
@@ -145,7 +167,6 @@ export default function LoginPage() {
         }
       }
       if (user) {
-        const clockOnly = isClockOnlyRole((user as any).role);
         if (isAdminContext && user.role !== 'ADMIN') {
           setError(t('login.adminOnly'));
           return;
@@ -167,8 +188,8 @@ export default function LoginPage() {
         }
         // Admin goes straight to admin shell (Electron only)
         if (user.role === 'ADMIN' && !isBrowserClient) {
-          if (isAdminContext) setAdminUser(user);
-          else setUser(user);
+          setAdminUser(user);
+          if (!isAdminContext) setUser(user);
           navigate('/admin');
           return;
         }
@@ -182,9 +203,7 @@ export default function LoginPage() {
           }
         }
         setUser(user);
-        navigate(
-          isKdsContext ? '/kds' : clockOnly ? '/app/clock' : '/app/tables',
-        );
+        goStaffHome(user, isKdsContext);
       } else setError(t('login.invalidPin'));
     } catch (e: any) {
       console.error(e);
@@ -226,6 +245,8 @@ export default function LoginPage() {
     (async () => {
       const s = await window.api.settings.get();
       setEnableAdmin(s.enableAdmin ?? false);
+      setDevEditionSwitch(Boolean(s.devEditionSwitch));
+      useLicenseCapabilities.getState().setEdition(s.licenseEdition);
       setNotice(null);
 
       let users: any[] = [];
@@ -284,6 +305,7 @@ export default function LoginPage() {
   }, [reloadNonce, isAdminContext, i18n.language, t]);
 
   const [enableAdmin, setEnableAdmin] = useState(false);
+  const [devEditionSwitch, setDevEditionSwitch] = useState(false);
 
   const onShift = staff.filter((s) => openIds.includes(s.id));
   const offShift = staff.filter((s) => !openIds.includes(s.id));
@@ -295,10 +317,11 @@ export default function LoginPage() {
       // but keep `bg-gray-900` so the WebView still paints those zones
       // (no black bars). `max(...)` keeps the original p-3/sm:p-6 spacing
       // on devices without a safe area.
-      className="min-h-dvh flex flex-col items-center justify-center pos-app pos-app--auth overflow-hidden px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+      className="h-dvh flex flex-col items-center justify-center pos-app pos-app--auth overflow-y-auto px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
     >
-      <div className="mb-6 shrink-0">
+      <div className="mb-6 shrink-0 space-y-3">
         <BrandMark size="lg" subtitle={t('brand.tagline')} />
+        <DevEditionSwitch allowed={devEditionSwitch} />
       </div>
       <div
         className={cn(
@@ -345,26 +368,28 @@ export default function LoginPage() {
           </div>
           {!showPin && !isAdminContext && (
             <div className="flex shrink-0 items-center gap-2">
-              <Button
-                size="sm"
-                onClick={async () => {
-                  // On Electron, openWindow() spawns the dedicated reservation
-                  // window. On the mobile / browser shell it returns false, in
-                  // which case we route to /reservations in the same SPA.
-                  let opened = false;
-                  try {
-                    opened = Boolean(
-                      await window.api.reservations.openWindow(),
-                    );
-                  } catch {
-                    opened = false;
-                  }
-                  if (!opened) navigate('/reservations');
-                }}
-                title={t('login.reservationsTitle')}
-              >
-                {t('login.reservations')}
-              </Button>
+              {reservationsReady && hasReservations ? (
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    // On Electron, openWindow() spawns the dedicated reservation
+                    // window. On the mobile / browser shell it returns false, in
+                    // which case we route to /reservations in the same SPA.
+                    let opened = false;
+                    try {
+                      opened = Boolean(
+                        await window.api.reservations.openWindow(),
+                      );
+                    } catch {
+                      opened = false;
+                    }
+                    if (!opened) navigate('/reservations');
+                  }}
+                  title={t('login.reservationsTitle')}
+                >
+                  {t('login.reservations')}
+                </Button>
+              ) : null}
               {!isBrowserClient && enableAdmin && (
                 <Button size="sm" onClick={() => window.api.admin.openWindow()}>
                   {t('common.admin')}
@@ -616,13 +641,7 @@ export default function LoginPage() {
               setShowShiftConfirm(false);
               setPendingUser(null);
               setUser(pendingUser);
-              navigate(
-                isKdsContext
-                  ? '/kds'
-                  : isClockOnlyRole((pendingUser as any).role)
-                    ? '/app/clock'
-                    : '/app/tables',
-              );
+              goStaffHome(pendingUser, isKdsContext);
             } catch (e: any) {
               setShowShiftConfirm(false);
               const msg = String(e?.message || e || '').trim();

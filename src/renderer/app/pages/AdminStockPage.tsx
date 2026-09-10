@@ -6,8 +6,9 @@ import {
   StockAvailabilityPanel,
   type StockPanelMenuCategory,
 } from '../../components/StockAvailabilityPanel';
-import { Button, Card, PageHeader, Stat } from '../../components/ui';
+import { Button } from '../../components/ui';
 import { IconAlert, IconRefresh } from '../../components/icons';
+import { cn } from '../../components/ui/cn';
 
 export default function AdminStockPage() {
   const { t } = useTranslation();
@@ -79,74 +80,96 @@ export default function AdminStockPage() {
   if (loading) return <PageSpinner message={t('stockPanel.loading')} />;
 
   return (
-    <div className="mx-auto w-full max-w-[1400px] space-y-4 sm:space-y-5">
-      <PageHeader
-        title={t('stockPanel.title')}
-        actions={
+    <div className="admin-page">
+      <section>
+        <div className="mb-3 flex justify-end">
           <Button
+            size="sm"
+            variant="ghost"
             icon={<IconRefresh />}
             onClick={() => void reload()}
             disabled={saving}
           >
             {t('adminOverview.refresh')}
           </Button>
-        }
-      />
-
-      <div className="grid grid-cols-3 gap-3">
-        <Stat label={t('stockPanel.inStock')} value={totals.ok} />
-        <Stat
-          label={t('stockPanel.lowStock')}
-          value={totals.low}
-          tone={totals.low > 0 ? 'warn' : 'default'}
-        />
-        <Stat
-          label={t('stockPanel.outOfStock')}
-          value={totals.out}
-          tone={totals.out > 0 ? 'danger' : 'default'}
-        />
-      </div>
+        </div>
+        <div className="admin-metrics">
+          <div className="admin-metric">
+            <div className="admin-metric-label">{t('stockPanel.inStock')}</div>
+            <div
+              className={cn(
+                'admin-metric-value',
+                totals.ok === 0 && 'is-quiet',
+              )}
+            >
+              {totals.ok}
+            </div>
+          </div>
+          <div className="admin-metric">
+            <div className="admin-metric-label">{t('stockPanel.lowStock')}</div>
+            <div
+              className={cn(
+                'admin-metric-value',
+                totals.low === 0 ? 'is-quiet' : 'text-amber-300',
+              )}
+            >
+              {totals.low}
+            </div>
+          </div>
+          <div className="admin-metric">
+            <div className="admin-metric-label">
+              {t('stockPanel.outOfStock')}
+            </div>
+            <div
+              className={cn(
+                'admin-metric-value',
+                totals.out === 0 ? 'is-quiet' : 'text-rose-300',
+              )}
+            >
+              {totals.out}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {err && (
-        <div className="flex items-start gap-2 rounded-lg border border-rose-500/25 bg-rose-500/8 px-3 py-2.5 text-[13px] text-rose-200">
+        <div className="flex items-start gap-2 text-[13px] text-rose-200">
           <IconAlert className="pos-icon mt-px shrink-0 text-rose-400" />
           <span className="min-w-0">{err}</span>
         </div>
       )}
 
       {billingPaused && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2.5 text-[13px] text-amber-200">
+        <div className="flex items-start gap-2 text-[13px] text-amber-200">
           <IconAlert className="pos-icon mt-px shrink-0 text-amber-400" />
           <span className="min-w-0">{t('stockPanel.billingPaused')}</span>
         </div>
       )}
 
-      <Card className="min-w-0 overflow-hidden">
-        <StockAvailabilityPanel
-          categories={categories}
-          disabled={billingPaused || saving}
-          hideTitle
-          onChangeLevel={async (itemId, stockLevel, opts) => {
-            setSaving(true);
-            setErr(null);
-            try {
-              const payload: Record<string, unknown> = {
-                id: itemId,
-                stockLevel,
-              };
-              if (stockLevel === 'LOW' && opts?.stockRemaining != null) {
-                payload.stockRemaining = opts.stockRemaining;
-              }
-              await window.api.menu.updateItem(payload as any);
-              await reload();
-            } catch (e: any) {
-              setErr(e?.message || t('stockPanel.saveFailed'));
-            } finally {
-              setSaving(false);
+      <StockAvailabilityPanel
+        categories={categories}
+        disabled={billingPaused || saving}
+        hideTitle
+        onChangeLevel={async (itemId, stockLevel, opts) => {
+          setSaving(true);
+          setErr(null);
+          try {
+            const payload: Record<string, unknown> = {
+              id: itemId,
+              stockLevel,
+            };
+            if (stockLevel === 'LOW' && opts?.stockRemaining != null) {
+              payload.stockRemaining = opts.stockRemaining;
             }
-          }}
-        />
-      </Card>
+            await window.api.menu.updateItem(payload as any);
+            await reload();
+          } catch (e: any) {
+            setErr(e?.message || t('stockPanel.saveFailed'));
+          } finally {
+            setSaving(false);
+          }
+        }}
+      />
     </div>
   );
 }

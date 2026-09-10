@@ -90,6 +90,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /kds/recall': { allow: 'public', note: 'kiosk write' },
   'POST /kds/clear-done': { allow: 'public', note: 'kiosk write' },
   'POST /kds/cooker-mode': { allow: 'public', note: 'kiosk write' },
+  'GET /kds/floor-orders': { allow: POS },
 
   // ------------------------------------------------------------------ auth
   'POST /auth/verify-manager-pin': { allow: 'session' },

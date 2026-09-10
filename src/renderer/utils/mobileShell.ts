@@ -37,7 +37,7 @@ export async function initMobileShell(): Promise<void> {
       }
       // Android only: paint the status bar to match the header.
       try {
-        await StatusBar.setBackgroundColor({ color: '#111827' });
+        await StatusBar.setBackgroundColor({ color: '#0b1220' });
       } catch {
         /* ignore */
       }

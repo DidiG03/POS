@@ -7,7 +7,7 @@ import type {
 } from 'react';
 import { useId } from 'react';
 import { cn } from './cn';
-import { IconSearch } from '../icons';
+import { IconSearch, IconClose } from '../icons';
 
 /** Label + optional hint/error wrapper. Clones the id onto the control. */
 export function Field({
@@ -146,19 +146,7 @@ export function SearchInput({
           style={{ minHeight: 0 }}
           aria-label="Clear"
         >
-          <svg
-            viewBox="0 0 20 20"
-            fill="none"
-            className="size-[14px]"
-            aria-hidden
-          >
-            <path
-              d="M5 5l10 10M15 5 5 15"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-            />
-          </svg>
+          <IconClose className="size-[14px]" />
         </button>
       ) : null}
     </div>
@@ -191,7 +179,9 @@ export function Switch({
       className={cn(
         'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors duration-100',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50',
-        checked ? 'border-white/20 bg-gray-50' : 'border-white/12 bg-gray-700',
+        checked
+          ? 'border-transparent bg-[var(--pos-accent)]'
+          : 'border-[var(--pos-border-strong)] bg-[var(--pos-surface-3)]',
         disabled && 'pointer-events-none opacity-45',
         className,
       )}
@@ -199,7 +189,7 @@ export function Switch({
       <span
         className={cn(
           'ml-0.5 size-4 rounded-full transition-transform duration-100',
-          checked ? 'translate-x-4 bg-gray-900' : 'translate-x-0 bg-white',
+          checked ? 'translate-x-4 bg-white' : 'translate-x-0 bg-white',
         )}
       />
     </button>

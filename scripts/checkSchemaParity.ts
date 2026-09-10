@@ -78,7 +78,7 @@ const SHARED_ENUMS = [
 
 // Fields legitimately present only locally (Electron-only behavior).
 const ALLOWED_LOCAL_ONLY: Record<string, string[]> = {
-  User: ['twoFactorEnabled', 'twoFactorSecret'],
+  User: ['twoFactorEnabled', 'twoFactorSecret', 'salaryAmount', 'salaryPeriod'],
   // KDS prep-station routing is a LAN-only concern (the kitchen display
   // talks to the local POS host, not the cloud), so the field never syncs
   // to the multi-tenant Postgres schema.
@@ -89,6 +89,60 @@ const ALLOWED_LOCAL_ONLY: Record<string, string[]> = {
   // Dining-session grouping is derived from the LAN host's `tables:openAt`
   // map, which the cloud schema has no equivalent of.
   TicketLog: ['sessionKey'],
+  // Till-local sales ledger. Cloud Order/Payment stay the unused stub;
+  // revenue is recorded on the POS host at settlement.
+  Order: [
+    'createdAt',
+    'updatedAt',
+    'area',
+    'tableLabel',
+    'covers',
+    'note',
+    'userName',
+    'idempotencyKey',
+    'printJobId',
+    'seatId',
+    'seatLabel',
+    'subtotal',
+    'vatAmount',
+    'discountAmount',
+    'discountType',
+    'discountReason',
+    'serviceChargeAmount',
+    'total',
+    'vatEnabled',
+    'voidedAt',
+  ],
+  OrderItem: [
+    'sku',
+    'name',
+    'station',
+    'categoryName',
+    'courseId',
+    'seatId',
+    'sortOrder',
+    'voidedAt',
+  ],
+  Payment: [
+    'paidAt',
+    'idempotencyKey',
+    'fiscalNslf',
+    'fiscalNivf',
+    // Fiskalizimi is a till-side concern; the cloud never files invoices.
+    'fiscalEic',
+  ],
+};
+
+// Type-only drift for the till ledger. Cloud Order rows stay unused.
+const ALLOWED_TYPE_DIFF: Record<
+  string,
+  Record<string, { local: string; server: string }>
+> = {
+  Order: { userId: { local: 'Int?', server: 'Int' } },
+  OrderItem: {
+    qty: { local: 'Decimal', server: 'Int' },
+    menuItemId: { local: 'Int?', server: 'Int' },
+  },
 };
 
 // Enum values legitimately present only locally (server/cloud queue path differs).
@@ -225,6 +279,14 @@ function diffModel(
       continue;
     }
     const serverInfo = server.get(name)!;
+    const allowedType = ALLOWED_TYPE_DIFF[modelName]?.[name];
+    if (
+      allowedType &&
+      info.type === allowedType.local &&
+      serverInfo.type === allowedType.server
+    ) {
+      continue;
+    }
     if (info.type !== serverInfo.type) {
       issues.push(
         `  ~ ${modelName}.${name}: local "${info.type}" vs server "${serverInfo.type}"`,

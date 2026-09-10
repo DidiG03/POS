@@ -2,6 +2,8 @@ import { isIpv4Address, isLinkLocalOrLoopbackAddress } from './lanHost';
 
 export const POS_LAN_HTTP_PORT = 3333;
 export const POS_APP_ID = 'code-orbit-pos';
+/** Used only when the phone cannot learn its own LAN IP (common on iOS). */
+export const POS_SCAN_FALLBACK_SEEDS = ['192.168.1.1', '192.168.0.1'];
 
 export type DiscoveredPosHost = {
   name: string;
@@ -39,6 +41,56 @@ export function hostsInSlash24(address: string, skipSelf?: string): string[] {
     out.push(ip);
   }
   return out;
+}
+
+/**
+ * IPv4s a waiter phone should probe for a POS on port 3333.
+ * `extraIps` is the address the user typed (or last saved) so we scan that
+ * /24 even when WebRTC does not reveal the phone's own subnet.
+ */
+export function collectLanScanHosts(
+  localIps: string[],
+  extraIps: string[] = [],
+  fallbackSeeds: string[] = POS_SCAN_FALLBACK_SEEDS,
+): string[] {
+  const nets = new Set<string>();
+  const addNet = (ip: string) => {
+    if (!isPrivateIpv4(ip)) return;
+    const parts = ip.split('.');
+    nets.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
+  };
+  for (const ip of localIps) addNet(ip);
+  for (const ip of extraIps) addNet(ip);
+  if (nets.size === 0) {
+    for (const seed of fallbackSeeds) addNet(seed);
+  } else if (nets.size > 2) {
+    const preferred = extraIps.filter(isPrivateIpv4);
+    const keep: string[] = [];
+    for (const ip of [...preferred, ...localIps]) {
+      const parts = ip.split('.');
+      if (parts.length !== 4) continue;
+      const net = `${parts[0]}.${parts[1]}.${parts[2]}`;
+      if (nets.has(net) && !keep.includes(net)) keep.push(net);
+      if (keep.length >= 2) break;
+    }
+    if (keep.length > 0) {
+      nets.clear();
+      for (const n of keep) nets.add(n);
+    }
+  }
+  const skip = new Set(localIps.filter(isPrivateIpv4));
+  const hosts = new Set<string>();
+  for (const ip of extraIps) {
+    if (isPrivateIpv4(ip) && !skip.has(ip)) hosts.add(ip);
+  }
+  for (const net of nets) {
+    const gateway = `${net}.1`;
+    if (!skip.has(gateway) && isPrivateIpv4(gateway)) hosts.add(gateway);
+    for (const h of hostsInSlash24(gateway)) {
+      if (!skip.has(h)) hosts.add(h);
+    }
+  }
+  return [...hosts];
 }
 
 export function isPosDebugBody(body: unknown): boolean {

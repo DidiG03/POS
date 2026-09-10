@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { ReservationDTO } from '@shared/ipc';
 import { DEFAULT_RESERVATION_DURATION_MIN } from '@shared/reservationDuration';
 import { ReservationDurationPicker } from './ReservationDurationPicker';
+import { IconClose } from '../../components/icons';
 
 export type WalkInDialogProps = {
   open: boolean;
@@ -162,7 +163,7 @@ export default function WalkInDialog({
             title={t('common.close')}
             aria-label={t('common.close')}
           >
-            ✕
+            <IconClose />
           </button>
         </div>
 

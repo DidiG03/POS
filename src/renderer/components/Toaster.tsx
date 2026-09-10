@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useToastStore, type ToastLevel } from '../stores/toasts';
 import { IconButton, cn } from './ui';
 import { IconAlert, IconCheck, IconClose, IconInfo } from './icons';
@@ -23,50 +24,58 @@ function iconFor(level: ToastLevel): ReactNode {
   return <IconAlert />;
 }
 
+const TITLE_KEY: Record<ToastLevel, string> = {
+  success: 'common.toastSuccess',
+  info: 'common.toastInfo',
+  warn: 'common.toastWarning',
+  error: 'common.toastError',
+};
+
 export function Toaster() {
+  const { t } = useTranslation();
   const toasts = useToastStore((s) => s.toasts);
   const remove = useToastStore((s) => s.remove);
 
   if (!toasts.length) return null;
 
   return (
-    <div className="fixed top-3 left-3 right-3 sm:left-auto sm:right-4 sm:top-auto sm:bottom-4 sm:w-[360px] z-50 space-y-2">
-      {toasts.map((t) => (
+    <div className="fixed top-[max(0.75rem,env(safe-area-inset-top))] left-3 right-3 z-50 space-y-2 sm:left-auto sm:right-4 sm:top-auto sm:bottom-4 sm:w-[360px]">
+      {toasts.map((item) => (
         <div
-          key={t.id}
+          key={item.id}
           className="relative overflow-hidden rounded-lg border border-white/7 bg-gray-800 shadow-lg"
         >
           <span
-            className={cn('absolute inset-y-0 left-0 w-0.5', EDGE[t.level])}
+            className={cn('absolute inset-y-0 left-0 w-0.5', EDGE[item.level])}
             aria-hidden
           />
           <div className="flex items-start gap-2.5 py-2.5 pl-3.5 pr-1.5">
-            <span className={cn('mt-px shrink-0', ACCENT[t.level])}>
-              {iconFor(t.level)}
+            <span className={cn('mt-px shrink-0', ACCENT[item.level])}>
+              {iconFor(item.level)}
             </span>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-medium text-gray-100">
-                {t.title || 'Notice'}
+                {item.title || t(TITLE_KEY[item.level])}
               </div>
               <div className="mt-0.5 whitespace-pre-wrap break-words text-[12px] text-gray-400">
-                {t.message}
+                {item.message}
               </div>
-              {t.detail && (
+              {item.detail && (
                 <details className="mt-1.5">
                   <summary className="cursor-pointer text-[11px] font-medium text-gray-500 hover:text-gray-300">
-                    Details
+                    {t('common.toastDetails')}
                   </summary>
                   <div className="pos-well mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap break-words p-2 font-mono text-[11px] leading-relaxed text-gray-400">
-                    {t.detail}
+                    {item.detail}
                   </div>
                 </details>
               )}
             </div>
             <IconButton
-              label="Dismiss"
+              label={t('common.close')}
               icon={<IconClose />}
               className="shrink-0"
-              onClick={() => remove(t.id)}
+              onClick={() => remove(item.id)}
             />
           </div>
         </div>

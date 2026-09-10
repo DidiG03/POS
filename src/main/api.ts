@@ -22,6 +22,14 @@ import { reportAuditWriteFailure } from './services/adminAlerts';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
+  assertDiningFloorEnabled,
+  assertStoreCounterAllowed,
+  storePlanBlocksKds,
+  storePlanBlocksReservations,
+  storePlanBlocksTables,
+  withLicenseEdition,
+} from './services/license';
+import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
   ensureSseKeepAlive,
@@ -36,6 +44,7 @@ import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
+  paymentShouldCloseTable,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
   withPaymentLock,
@@ -48,19 +57,30 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { authorizeLanRoute } from './services/lanPolicy';
 import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
 import { logSecurityEvent } from './services/security';
+import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
-  latestRowPerSession,
-  sumTicketLinesNetVat,
-} from '@shared/ticketRevenue';
-import { findVoidableLineIndex } from '@shared/voidLine';
-import { resolveStaticFilePath } from './services/staticPath';
-import { isTransferredOutNote } from './services/tableTransfer';
+  resolveStaticFilePath,
+  staticAssetCacheControl,
+} from './services/staticPath';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
+import {
+  ensureSettledSaleFromPrintJob,
+  persistReceiptAudit,
+} from './services/salesLedger';
+import {
+  buildSalesTrendBuckets,
+  fetchPaidSales,
+  fillTrendPoints,
+  sumPaidRevenue,
+  topSellingFromSales,
+} from './services/paidAnalytics';
 import { app } from 'electron';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
+  listWaiterFloorOrders,
+  notifyKdsTicketChanged,
 } from './services/kdsList';
 import {
   enabledStationsFromSettings,
@@ -270,6 +290,34 @@ function send(
 
   res.writeHead(code);
   res.end(body);
+}
+
+function sendPlanError(
+  res: http.ServerResponse,
+  err: unknown,
+  corsOrigin?: string | null,
+) {
+  const e = err as { statusCode?: number; message?: string };
+  send(
+    res,
+    Number(e?.statusCode) || 403,
+    { error: String(e?.message || err) },
+    corsOrigin,
+  );
+}
+
+function allowStoreCounterArea(
+  area: unknown,
+  res: http.ServerResponse,
+  corsOrigin?: string | null,
+): boolean {
+  try {
+    assertStoreCounterAllowed(area == null ? '' : String(area));
+    return true;
+  } catch (err) {
+    sendPlanError(res, err, corsOrigin);
+    return false;
+  }
 }
 
 // Hard cap on inbound JSON bodies to prevent OOM / DoS. 1 MB is plenty for
@@ -762,6 +810,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 'Content-Type':
                   upstream.headers.get('content-type') ||
                   getContentType(upstreamPath),
+                'Cache-Control': staticAssetCacheControl(upstreamPath),
               };
               if (corsOrigin)
                 headers['Access-Control-Allow-Origin'] = corsOrigin;
@@ -782,6 +831,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             const stream = fs.createReadStream(filePath);
             const headers: Record<string, string> = {
               'Content-Type': getContentType(filePath),
+              'Cache-Control': staticAssetCacheControl(filePath),
             };
             if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
             res.writeHead(200, headers);
@@ -860,7 +910,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
 
       if (req.method === 'GET' && pathname === '/health') {
-        return send(res, 200, { ok: true, t: Date.now() }, corsOrigin);
+        res.setHeader('Cache-Control', 'no-store');
+        return send(
+          res,
+          200,
+          {
+            ok: true,
+            t: Date.now(),
+            appVersion: app.getVersion(),
+          },
+          corsOrigin,
+        );
       }
 
       // Auth
@@ -1115,6 +1175,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           '/tickets/tooltip',
           '/tickets/paid-tables',
         ]);
+        const reservationsOnThisPlan = !storePlanBlocksReservations();
         const isHostReservationsPath =
           (role === 'HOST' || role === 'ADMIN') &&
           (pathname === '/auth/users' ||
@@ -1123,7 +1184,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             pathname === '/tables/open' ||
             pathname === '/tickets/tooltip' ||
             pathname === '/tickets/paid-tables' ||
-            pathname.startsWith('/reservations') ||
+            (reservationsOnThisPlan && pathname.startsWith('/reservations')) ||
             pathname.startsWith('/layout') ||
             pathname.startsWith('/notifications'));
         if (!allowed.has(pathname) && !isHostReservationsPath)
@@ -1278,6 +1339,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
         const sanitizedArea = String(area).trim().slice(0, 50);
         const sanitizedTableLabel = String(tableLabel).trim().slice(0, 50);
+        if (!allowStoreCounterArea(sanitizedArea, res, corsOrigin)) return;
         const sanitizedNote = note ? String(note).trim().slice(0, 500) : null;
         const sanitizedCovers =
           covers != null && Number.isFinite(Number(covers))
@@ -1369,17 +1431,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
         // Best-effort: append to the open KDS ticket (same logic as IPC).
         try {
-          const kdsFireItems = Array.isArray(body?.kdsFireItems)
-            ? body.kdsFireItems
-            : undefined;
-          await createKdsTicketFromLog({
-            userId: Number(userId),
-            area: sanitizedArea,
-            tableLabel: sanitizedTableLabel,
-            items: items ?? [],
-            fireItems: kdsFireItems,
-            note: sanitizedNote,
-          });
+          if (!storePlanBlocksKds()) {
+            const kdsFireItems = Array.isArray(body?.kdsFireItems)
+              ? body.kdsFireItems
+              : undefined;
+            await createKdsTicketFromLog({
+              userId: Number(userId),
+              area: sanitizedArea,
+              tableLabel: sanitizedTableLabel,
+              items: items ?? [],
+              fireItems: kdsFireItems,
+              note: sanitizedNote,
+              courseLabel:
+                typeof body?.kdsCourseLabel === 'string'
+                  ? body.kdsCourseLabel
+                  : null,
+            });
+          }
         } catch {
           // ignore
         }
@@ -1456,6 +1524,34 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // KDS endpoints should be usable by dedicated kitchen devices without login.
       // (Bump attribution is optional and best-effort.)
+      // Store tills have no kitchen; keep /kds/debug as a LAN reachability ping.
+      if (
+        pathname.startsWith('/kds') &&
+        pathname !== '/kds/debug' &&
+        storePlanBlocksKds()
+      ) {
+        return send(
+          res,
+          403,
+          { error: 'Kitchen display is not available on the Store plan.' },
+          corsOrigin,
+        );
+      }
+
+      if (storePlanBlocksTables()) {
+        if (
+          pathname === '/tables/transfer' ||
+          pathname === '/tables/floor-snapshot' ||
+          pathname.startsWith('/layout') ||
+          pathname.startsWith('/requests')
+        ) {
+          try {
+            assertDiningFloorEnabled();
+          } catch (err) {
+            return sendPlanError(res, err, corsOrigin);
+          }
+        }
+      }
 
       // KDS (LAN): list station tickets and bump
       if (req.method === 'GET' && pathname === '/kds/tickets') {
@@ -1498,6 +1594,21 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         });
         return send(res, 200, out, corsOrigin);
       }
+      if (req.method === 'GET' && pathname === '/kds/floor-orders') {
+        const ok = await ensureKdsLocalSchema();
+        if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
+        const settings: any = await coreServices
+          .readSettings()
+          .catch(() => ({}));
+        if (!kdsMasterEnabledFromSettings(settings)) {
+          return send(res, 200, [], corsOrigin);
+        }
+        const stations = Array.from(enabledStationsFromSettings(settings));
+        const out = await listWaiterFloorOrders(stations, {
+          waiterUserId: Number(auth?.userId || 0),
+        });
+        return send(res, 200, out, corsOrigin);
+      }
       if (req.method === 'GET' && pathname === '/kds/ticket-detail') {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
@@ -1520,7 +1631,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const cookerEnabled = await getCookerEnabledFromSettings();
         const twoStage = isTwoStageKitchen(st, cookerEnabled);
         const ticket = await (prisma as any).kdsTicket
-          .findUnique({ where: { id } })
+          .findUnique({
+            where: { id },
+            include: { order: true },
+          })
           .catch(() => null);
 
         // Two-stage KITCHEN: cooker screen only flags `cookerBumped` (stage 1);
@@ -1536,6 +1650,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 itemsJson: cookerBumpAllKitchenItems(itemsAll, bumpedAt),
               },
             });
+            notifyKdsTicketChanged(ticket);
             return send(res, 200, { ok: true }, corsOrigin);
           }
           const nextItems = bumpReadyKitchenItems(itemsAll, bumpedAt);
@@ -1559,6 +1674,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               },
             });
           }
+          notifyKdsTicketChanged(ticket);
           return send(res, 200, { ok: true }, corsOrigin);
         }
 
@@ -1580,6 +1696,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             bumpedById: auth?.userId || null,
           },
         });
+        if (ticket) notifyKdsTicketChanged(ticket);
         return send(res, 200, { ok: Boolean(updated?.count) }, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/kds/recall') {
@@ -1617,7 +1734,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const cookerEnabled = await getCookerEnabledFromSettings();
         const twoStage = isTwoStageKitchen(st, cookerEnabled);
         const ticket = await (prisma as any).kdsTicket
-          .findUnique({ where: { id } })
+          .findUnique({
+            where: { id },
+            include: { order: true },
+          })
           .catch(() => null);
         if (!ticket) return send(res, 404, { error: 'not found' }, corsOrigin);
         const itemsAll: any[] = Array.isArray(ticket.itemsJson)
@@ -1644,6 +1764,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               },
             });
           }
+          notifyKdsTicketChanged(ticket);
           return send(res, 200, { ok: true }, corsOrigin);
         }
         if (twoStage && !cooker && !it?.voided && !it?.cookerBumped) {
@@ -1674,6 +1795,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             });
           }
         }
+        notifyKdsTicketChanged(ticket);
         return send(res, 200, { ok: true }, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/kds/cooker-mode') {
@@ -1778,10 +1900,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             })
             .catch(() => null);
           if (existing) {
+            await ensureSettledSaleFromPrintJob(existing as any).catch(
+              () => null,
+            );
             const closed = await closeTableAfterIdempotentPayment(
               String(body?.area || ''),
               String(body?.tableLabel || ''),
-              String(body?.meta?.kind || ''),
+              String(
+                body?.meta?.kind ||
+                  (existing as any)?.payloadJson?.meta?.kind ||
+                  '',
+              ),
+              paymentShouldCloseTable(
+                (existing as any)?.payloadJson?.meta ?? body?.meta,
+              ),
             );
             return send(res, 200, closed, corsOrigin);
           }
@@ -2021,22 +2153,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // is also what makes `printIdempotencyKey` above effective, so a
           // tablet retry is recognised as already-processed.
           try {
-            await prisma.printJob.create({
-              data: {
-                type: 'RECEIPT' as any,
-                payloadJson: fiscalPayload,
-                status: r.ok ? ('SENT' as any) : ('FAILED' as any),
-                ...(printIdempotencyKey
-                  ? { idempotencyKey: printIdempotencyKey }
-                  : {}),
-              } as any,
+            await persistReceiptAudit({
+              payload: fiscalPayload,
+              idempotencyKey: printIdempotencyKey || undefined,
+              status: r.ok ? 'SENT' : 'FAILED',
+              settings,
             });
           } catch (e: any) {
             // P2002 = a concurrent identical payment won the race; its row
             // is the audit record and this one is a duplicate.
             if (!(e?.code === 'P2002' && printIdempotencyKey)) {
-              // Without this row the payment is absent from receipt history
-              // and the shift summary, and if it was fiscalized the tax
+              // Without this row the payment is absent from the sales ledger
+              // and receipt history, and if it was fiscalized the tax
               // service holds an invoice this POS cannot show.
               await reportAuditWriteFailure({
                 area: String(body?.area || ''),
@@ -2048,18 +2176,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
 
           if (payKind === 'PAYMENT') {
-            await closeTableAfterAcceptedPayment(
-              payload.area,
-              payload.tableLabel,
+            const closeTable = paymentShouldCloseTable(payload?.meta);
+            if (closeTable) {
+              await closeTableAfterAcceptedPayment(
+                payload.area,
+                payload.tableLabel,
+              );
+            }
+            return send(
+              res,
+              200,
+              paymentPrintAccepted(r.ok, closeTable),
+              corsOrigin,
             );
           }
 
           return send(
             res,
-            payKind === 'PAYMENT' || r.ok ? 200 : 500,
-            payKind === 'PAYMENT'
-              ? paymentPrintAccepted(r.ok)
-              : { ok: r.ok, error: r.firstError },
+            r.ok ? 200 : 500,
+            { ok: r.ok, error: r.firstError },
             corsOrigin,
           );
         };
@@ -2143,26 +2278,32 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           );
         }
 
+        // Settled money is beyond a waiter's reach — only an admin
+        // correction can undo a paid (and filed) line. Refuse before the
+        // audit notification, so the log never claims a void that the
+        // ticket did not take.
+        const last = await findLatestTicketLogForCurrentSession(
+          String(area),
+          String(tableLabel),
+        );
+        const plan = planItemVoid((last?.itemsJson as any[]) || [], item);
+        if (plan.outcome === 'paid') {
+          return send(res, 409, { error: 'line_already_paid' }, corsOrigin);
+        }
+
         const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
         await prisma.notification
           .create({
             data: { userId: Number(userId), type: 'OTHER' as any, message },
           })
           .catch(() => {});
-        const last = await findLatestTicketLogForCurrentSession(
-          String(area),
-          String(tableLabel),
-        );
-        if (last) {
+        if (last && plan.outcome === 'ok') {
           const items = (last.itemsJson as any[]) || [];
-          const idx = findVoidableLineIndex(items, item);
-          if (idx !== -1) {
-            items[idx] = { ...items[idx], voided: true };
-            await prisma.ticketLog.update({
-              where: { id: last.id },
-              data: { itemsJson: items },
-            });
-          }
+          items[plan.index] = { ...items[plan.index], voided: true };
+          await prisma.ticketLog.update({
+            where: { id: last.id },
+            data: { itemsJson: items },
+          });
         }
         await applyKdsVoidItem({
           userId: Number(userId),
@@ -2268,25 +2409,29 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           );
         }
 
+        // Paid lines stay on the ticket. When they are all that is left,
+        // this sitting is settled and only an admin correction can reverse
+        // it — mirrors the desktop `tickets:voidTicket` rule.
+        const last = await findLatestTicketLogForCurrentSession(
+          String(area),
+          String(tableLabel),
+        );
+        const plan = planTicketVoid((last?.itemsJson as any[]) || []);
+        if (plan.outcome === 'paid') {
+          return send(res, 409, { error: 'ticket_already_paid' }, corsOrigin);
+        }
+
         const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
         await prisma.notification
           .create({
             data: { userId: Number(userId), type: 'OTHER' as any, message },
           })
           .catch(() => {});
-        const last = await findLatestTicketLogForCurrentSession(
-          String(area),
-          String(tableLabel),
-        );
         if (last) {
-          const items = ((last.itemsJson as any[]) || []).map((it: any) => ({
-            ...it,
-            voided: true,
-          }));
           await prisma.ticketLog.update({
             where: { id: last.id },
             data: {
-              itemsJson: items,
+              itemsJson: plan.items,
               note: last.note
                 ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}`
                 : `VOIDED${reason ? `: ${reason}` : ''}`,
@@ -2302,17 +2447,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           reason: `Ticket voided after the sale was fiscalized${reason ? `: ${String(reason)}` : ''}`,
           actorUserId: Number(userId) || undefined,
         }).catch(() => false);
-        await setTableOpenWithSideEffects(
-          String(area),
-          String(tableLabel),
-          false,
-        ).catch(() => false);
         await applyKdsVoidTicket({
           userId: Number(userId),
           area: String(area),
           tableLabel: String(tableLabel),
           reason: reason ? String(reason) : undefined,
         }).catch(() => false);
+        await setTableOpenWithSideEffects(
+          String(area),
+          String(tableLabel),
+          false,
+        ).catch(() => false);
         try {
           broadcastTicketsChanged({
             area: String(area),
@@ -2462,6 +2607,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/tables/open') {
         const { area, label, open } = await parseJson(req);
         if (!area || !label) return send(res, 400, 'invalid', corsOrigin);
+        if (!allowStoreCounterArea(area, res, corsOrigin)) return;
         const ok = await setTableOpenWithSideEffects(
           String(area),
           String(label),
@@ -2873,14 +3019,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               count: a.defaultCount,
             }))
           : ((base as any).tableAreas ?? []);
-        const result = {
+        const result = withLicenseEdition({
           ...base,
           tableAreas,
           printer: {
             ip: base.printer?.ip || null,
             port: Number(base.printer?.port || 9100),
           },
-        } as any;
+        } as Record<string, unknown>) as any;
         if (result?.security && typeof result.security === 'object') {
           result.security = { ...result.security };
           delete result.security.apiSecret;
@@ -2944,6 +3090,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const num = Number(covers);
         if (!area || !label || !Number.isFinite(num) || num <= 0)
           return send(res, 400, 'invalid', corsOrigin);
+        if (!allowStoreCounterArea(area, res, corsOrigin)) return;
         await prisma.covers.create({
           data: { area: String(area), label: String(label), covers: num },
         });
@@ -2977,7 +3124,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Admin overview and trends
       if (req.method === 'GET' && pathname === '/admin/overview') {
-        const [users, openShifts, openTables, revenueRows] = await Promise.all([
+        const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
+        const todayEnd = new Date(new Date().setHours(23, 59, 59, 999));
+        const [users, openShifts, openTables, sales] = await Promise.all([
           prisma.user.count({ where: { active: true } }),
           prisma.dayShift.count({ where: { closedAt: null } }),
           (async () => {
@@ -2991,58 +3140,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             >;
             return Object.values(map).filter(Boolean).length;
           })(),
-          prisma.ticketLog
-            .findMany({
-              where: {
-                createdAt: {
-                  gte: new Date(new Date().setHours(0, 0, 0, 0)),
-                  lte: new Date(new Date().setHours(23, 59, 59, 999)),
-                },
-              },
-              select: {
-                itemsJson: true,
-                note: true,
-                area: true,
-                tableLabel: true,
-                sessionKey: true,
-                createdAt: true,
-              } as any,
-            })
-            .catch(() => []),
+          fetchPaidSales({ from: todayStart, to: todayEnd }),
         ]);
         const settings = await coreServices.readSettings();
         const fiscalVatEnabled = isVatEnabledFromSettings(settings);
-        const fiscalDefaultVatRate = Number(
-          (settings as any)?.defaultVatRate || 0,
-        );
-        // Match the Electron overview exactly: drop transfer source rows and
-        // collapse each sitting to its newest snapshot, or tablets report
-        // higher takings than the till they're paired to.
-        const livingRevenueRows = latestRowPerSession(
-          (revenueRows as any[]).filter(
-            (r: any) => !isTransferredOutNote(r?.note),
-          ),
-        );
-        const revenueTodayNet = livingRevenueRows.reduce(
-          (s, r: any) =>
-            s +
-            sumTicketLinesNetVat(
-              r.itemsJson,
-              fiscalVatEnabled,
-              fiscalDefaultVatRate,
-            ).net,
-          0,
-        );
-        const revenueTodayVat = livingRevenueRows.reduce(
-          (s, r: any) =>
-            s +
-            sumTicketLinesNetVat(
-              r.itemsJson,
-              fiscalVatEnabled,
-              fiscalDefaultVatRate,
-            ).vat,
-          0,
-        );
+        const { revenueNet: revenueTodayNet, revenueVat: revenueTodayVat } =
+          sumPaidRevenue(sales);
         return send(
           res,
           200,
@@ -3065,134 +3168,34 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'GET' && pathname === '/admin/sales-trends') {
         const range = (parsed.query.range as string) || 'daily';
-        const today = new Date(new Date().setHours(0, 0, 0, 0));
-        let buckets: { label: string; from: Date; to: Date }[] = [];
-        if (range === 'daily') {
-          const start = new Date(today.getTime() - 13 * 86400000);
-          for (let i = 0; i < 14; i++) {
-            const d = new Date(start.getTime() + i * 86400000);
-            const from = new Date(d.setHours(0, 0, 0, 0));
-            const to = new Date(d.setHours(23, 59, 59, 999));
-            const label = `${String(from.getMonth() + 1).padStart(2, '0')}/${String(from.getDate()).padStart(2, '0')}`;
-            buckets.push({ label, from, to });
-          }
-        } else if (range === 'weekly') {
-          const start = new Date(today.getTime() - 7 * 86400000 * 11);
-          for (let i = 0; i < 12; i++) {
-            const from = new Date(start.getTime() + i * 7 * 86400000);
-            const to = new Date(from.getTime() + 6 * 86400000);
-            from.setHours(0, 0, 0, 0);
-            to.setHours(23, 59, 59, 999);
-            const oneJan = new Date(from.getFullYear(), 0, 1);
-            const week = Math.ceil(
-              ((from.getTime() - oneJan.getTime()) / 86400000 +
-                oneJan.getDay() +
-                1) /
-                7,
-            );
-            const label = `${from.getFullYear()}-W${String(week).padStart(2, '0')}`;
-            buckets.push({ label, from, to });
-          }
-        } else {
-          const startYear = today.getFullYear();
-          let m = today.getMonth() - 11;
-          for (let i = 0; i < 12; i++, m++) {
-            const year = startYear + Math.floor(m / 12);
-            const month = ((m % 12) + 12) % 12;
-            const from = new Date(year, month, 1, 0, 0, 0, 0);
-            const to = new Date(year, month + 1, 0, 23, 59, 59, 999);
-            const label = `${year}-${String(month + 1).padStart(2, '0')}`;
-            buckets.push({ label, from, to });
-          }
-        }
-        const rows = await prisma.ticketLog.findMany({
-          where: {
-            createdAt: {
-              gte: buckets[0].from,
-              lte: buckets[buckets.length - 1].to,
-            },
-          },
-          select: {
-            createdAt: true,
-            itemsJson: true,
-            note: true,
-            area: true,
-            tableLabel: true,
-            sessionKey: true,
-          } as any,
-          orderBy: { createdAt: 'asc' },
+        const trendRange =
+          range === 'weekly' || range === 'monthly' ? range : 'daily';
+        const buckets = buildSalesTrendBuckets(trendRange);
+        const sales = await fetchPaidSales({
+          from: buckets[0].from,
+          to: buckets[buckets.length - 1].to,
         });
-        const points = buckets.map((b) => ({
-          label: b.label,
-          total: 0,
-          orders: 0,
-        }));
-        const sessionRows = latestRowPerSession(
-          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+        return send(
+          res,
+          200,
+          { range: trendRange, points: fillTrendPoints(sales, buckets) },
+          corsOrigin,
         );
-        for (const r of sessionRows as any[]) {
-          const when = new Date(r.createdAt);
-          const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
-          if (idx === -1) continue;
-          const net = ((r.itemsJson as any[]) || []).reduce(
-            (s: number, it: any) =>
-              it?.voided ? s : s + Number(it.unitPrice) * Number(it.qty || 1),
-            0,
-          );
-          points[idx].total += net;
-          points[idx].orders += 1;
-        }
-        return send(res, 200, { range, points }, corsOrigin);
       }
 
       // Waiter-facing reports (per-user)
       if (req.method === 'GET' && pathname === '/reports/my/overview') {
         const start = new Date(new Date().setHours(0, 0, 0, 0));
         const end = new Date();
-        const rows = await prisma.ticketLog
-          .findMany({
-            where: {
-              userId: auth!.userId,
-              createdAt: { gte: start, lte: end },
-            },
-            select: {
-              itemsJson: true,
-              note: true,
-              area: true,
-              tableLabel: true,
-              sessionKey: true,
-              createdAt: true,
-            } as any,
-          })
-          .catch(() => []);
         const settings = await coreServices.readSettings();
         const fiscalVatEnabled = isVatEnabledFromSettings(settings);
-        const fiscalDefaultVatRate = Number(
-          (settings as any)?.defaultVatRate || 0,
-        );
-        const liveRows = latestRowPerSession(
-          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-        );
-        const revenueTodayNet = liveRows.reduce(
-          (s, r: any) =>
-            s +
-            sumTicketLinesNetVat(
-              r.itemsJson,
-              fiscalVatEnabled,
-              fiscalDefaultVatRate,
-            ).net,
-          0,
-        );
-        const revenueTodayVat = liveRows.reduce(
-          (s, r: any) =>
-            s +
-            sumTicketLinesNetVat(
-              r.itemsJson,
-              fiscalVatEnabled,
-              fiscalDefaultVatRate,
-            ).vat,
-          0,
-        );
+        const sales = await fetchPaidSales({
+          from: start,
+          to: end,
+          userId: auth!.userId,
+        });
+        const { revenueNet: revenueTodayNet, revenueVat: revenueTodayVat } =
+          sumPaidRevenue(sales);
         const openRow = await prisma.syncState
           .findUnique({ where: { key: 'tables:open' } })
           .catch(() => null);
@@ -3239,130 +3242,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       ) {
         const start = new Date(new Date().setHours(0, 0, 0, 0));
         const end = new Date(new Date().setHours(23, 59, 59, 999));
-        const rows = await prisma.ticketLog
-          .findMany({
-            where: {
-              userId: auth!.userId,
-              createdAt: { gte: start, lte: end },
-            },
-            select: {
-              itemsJson: true,
-              note: true,
-              area: true,
-              tableLabel: true,
-              sessionKey: true,
-              createdAt: true,
-            } as any,
-          })
-          .catch(() => []);
-        const map = new Map<string, { qty: number; revenue: number }>();
-        const sessionRows = latestRowPerSession(
-          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-        );
-        for (const r of sessionRows as any[]) {
-          const items = (r.itemsJson as any[]) || [];
-          for (const it of items) {
-            if (it?.voided) continue;
-            const name = String(it.name || 'Item');
-            const qty = Number(it.qty || 1);
-            const revenue = Number(it.unitPrice || 0) * qty;
-            const entry = map.get(name) || { qty: 0, revenue: 0 };
-            entry.qty += qty;
-            entry.revenue += revenue;
-            map.set(name, entry);
-          }
-        }
-        let best: { name: string; qty: number; revenue: number } | null = null;
-        for (const [name, v] of map.entries()) {
-          if (!best || v.qty > best.qty)
-            best = { name, qty: v.qty, revenue: v.revenue };
-        }
-        return send(res, 200, best, corsOrigin);
+        const sales = await fetchPaidSales({
+          from: start,
+          to: end,
+          userId: auth!.userId,
+        });
+        return send(res, 200, topSellingFromSales(sales), corsOrigin);
       }
 
       if (req.method === 'GET' && pathname === '/reports/my/sales-trends') {
         const range = (parsed.query.range as string) || 'daily';
-        const today = new Date(new Date().setHours(0, 0, 0, 0));
-        let buckets: { label: string; from: Date; to: Date }[] = [];
-        if (range === 'daily') {
-          const start = new Date(today.getTime() - 13 * 86400000);
-          for (let i = 0; i < 14; i++) {
-            const d = new Date(start.getTime() + i * 86400000);
-            const from = new Date(d.setHours(0, 0, 0, 0));
-            const to = new Date(d.setHours(23, 59, 59, 999));
-            const label = `${String(from.getMonth() + 1).padStart(2, '0')}/${String(from.getDate()).padStart(2, '0')}`;
-            buckets.push({ label, from, to });
-          }
-        } else if (range === 'weekly') {
-          const start = new Date(today.getTime() - 7 * 86400000 * 11);
-          for (let i = 0; i < 12; i++) {
-            const from = new Date(start.getTime() + i * 7 * 86400000);
-            const to = new Date(from.getTime() + 6 * 86400000);
-            from.setHours(0, 0, 0, 0);
-            to.setHours(23, 59, 59, 999);
-            const oneJan = new Date(from.getFullYear(), 0, 1);
-            const week = Math.ceil(
-              ((from.getTime() - oneJan.getTime()) / 86400000 +
-                oneJan.getDay() +
-                1) /
-                7,
-            );
-            const label = `${from.getFullYear()}-W${String(week).padStart(2, '0')}`;
-            buckets.push({ label, from, to });
-          }
-        } else {
-          const startYear = today.getFullYear();
-          let m = today.getMonth() - 11;
-          for (let i = 0; i < 12; i++, m++) {
-            const year = startYear + Math.floor(m / 12);
-            const month = ((m % 12) + 12) % 12;
-            const from = new Date(year, month, 1, 0, 0, 0, 0);
-            const to = new Date(year, month + 1, 0, 23, 59, 59, 999);
-            const label = `${year}-${String(month + 1).padStart(2, '0')}`;
-            buckets.push({ label, from, to });
-          }
-        }
-        const rows = await prisma.ticketLog
-          .findMany({
-            where: {
-              userId: auth!.userId,
-              createdAt: {
-                gte: buckets[0].from,
-                lte: buckets[buckets.length - 1].to,
-              },
-            },
-            select: {
-              createdAt: true,
-              itemsJson: true,
-              note: true,
-              area: true,
-              tableLabel: true,
-              sessionKey: true,
-            } as any,
-            orderBy: { createdAt: 'asc' },
-          })
-          .catch(() => []);
-        const points = buckets.map((b) => ({
-          label: b.label,
-          total: 0,
-          orders: 0,
-        }));
-        const trendRows = latestRowPerSession(
-          (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+        const trendRange =
+          range === 'weekly' || range === 'monthly' ? range : 'daily';
+        const buckets = buildSalesTrendBuckets(trendRange);
+        const sales = await fetchPaidSales({
+          from: buckets[0].from,
+          to: buckets[buckets.length - 1].to,
+          userId: auth!.userId,
+        });
+        return send(
+          res,
+          200,
+          { range: trendRange, points: fillTrendPoints(sales, buckets) },
+          corsOrigin,
         );
-        for (const r of trendRows as any[]) {
-          const when = new Date(r.createdAt);
-          const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
-          if (idx === -1) continue;
-          const net = ((r.itemsJson as any[]) || []).reduce(
-            (s: number, it: any) =>
-              it?.voided ? s : s + Number(it.unitPrice) * Number(it.qty || 1),
-            0,
-          );
-          points[idx].total += net;
-          points[idx].orders += 1;
-        }
-        return send(res, 200, { range, points }, corsOrigin);
       }
 
       if (req.method === 'GET' && pathname === '/reports/my/active-tickets') {
@@ -3393,6 +3296,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // which the catch-all handler below already maps to the right HTTP code.
       // Auth is already enforced above (these are not in `publicPaths`), and
       // each service call additionally re-checks role from the local DB.
+      if (
+        pathname.startsWith('/reservations') &&
+        storePlanBlocksReservations()
+      ) {
+        return send(
+          res,
+          403,
+          { error: 'Reservations are not available on the Store plan.' },
+          corsOrigin,
+        );
+      }
       const reservationActorId = Number(auth?.userId || 0);
 
       if (req.method === 'GET' && pathname === '/reservations') {

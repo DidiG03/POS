@@ -75,6 +75,10 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'admin:listShifts': { allow: ADMIN },
   'admin:listTicketCounts': { allow: ADMIN },
   'admin:listTicketsByUser': { allow: ADMIN },
+  // Reversing a settled sale. ADMIN plus a manager PIN re-entered in the
+  // handler — the panel session alone must not be enough to void money.
+  'admin:listFiscalSales': { allow: ADMIN },
+  'admin:correctSale': { allow: ADMIN },
   'admin:markAllNotificationsRead': { allow: ADMIN },
   // The login screen offers an "Admin" button before anyone has authenticated.
   // Opening the window is harmless: the window renders its own login and every
@@ -142,6 +146,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
     allow: 'public',
     rateLimit: { maxAttempts: 8, windowMs: 60 * 60 * 1000 },
   },
+  'license:setDevEdition': { allow: 'public' },
   'license:createPortalSession': { allow: ADMIN },
 
   // --------------------------------------------------------------- covers
@@ -156,6 +161,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'kds:getCookerMode': { allow: KITCHEN, windows: KDS_WINDOWS },
   'kds:getEnabledStations': { allow: KITCHEN, windows: KDS_WINDOWS },
   'kds:getTicketDetail': { allow: KITCHEN, windows: KDS_WINDOWS },
+  'kds:listFloorOrders': { allow: POS },
   'kds:listTickets': { allow: KITCHEN, windows: KDS_WINDOWS },
   'kds:openWindow': { allow: ADMIN },
   'kds:recall': { allow: KITCHEN, windows: KDS_WINDOWS },

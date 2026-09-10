@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type {
   FiscalReviewDTO,
@@ -7,7 +8,6 @@ import type {
 } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
 import { ALL_KDS_STATIONS, type KdsStation } from '@shared/kdsStations';
-import { KDS_BUMP_BAR_PROGRAMMING } from '../../utils/kdsBumpBar';
 import FloorCanvas from '../components/FloorCanvas';
 import {
   KebabMenu,
@@ -16,13 +16,33 @@ import {
   SettingsStatus,
   SettingsToggleRow,
 } from '../components/SettingsChrome';
-import { Button } from '../../components/ui/Button';
+import { Button, IconButton } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Field, Input, Select, Textarea } from '../../components/ui/Field';
 import { Segmented } from '../../components/ui/Segmented';
 import { cn } from '../../components/ui/cn';
+import {
+  IconBuilding,
+  IconCalendar,
+  IconCard,
+  IconChevronRight,
+  IconClose,
+  IconCloudDown,
+  IconCopy,
+  IconGrid,
+  IconMonitor,
+  IconPlus,
+  IconPrinter,
+  IconReceipt,
+  IconRefresh,
+  IconSliders,
+  IconWifi,
+} from '../../components/icons';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { applyPosUiTheme } from '../../theme';
+import { normalizePosUiTheme, type PosUiTheme } from '@shared/uiTheme';
 
 type SectionKey =
   | 'printer'
@@ -52,248 +72,118 @@ const NAV_GROUPS: Array<{ labelKey: string; keys: SectionKey[] }> = [
   },
 ];
 
-function ChevronRight() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      className="pos-icon opacity-70"
-      aria-hidden
-    >
-      <path
-        fillRule="evenodd"
-        d="M9.22 4.22a.75.75 0 011.06 0l6 6a.75.75 0 010 1.06l-6 6a.75.75 0 11-1.06-1.06L14.94 12 9.22 5.28a.75.75 0 010-1.06z"
-        clipRule="evenodd"
-      />
-    </svg>
+const ALL_SECTION_KEYS: SectionKey[] = NAV_GROUPS.flatMap((g) => g.keys);
+const SETTINGS_SECTION_STORAGE = 'pos_admin_settings_section';
+
+function isSectionKey(value: string | null | undefined): value is SectionKey {
+  return Boolean(value && (ALL_SECTION_KEYS as string[]).includes(value));
+}
+
+function readStoredSection(): SectionKey | null {
+  try {
+    const value = sessionStorage.getItem(SETTINGS_SECTION_STORAGE);
+    return isSectionKey(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredSection(key: SectionKey) {
+  try {
+    sessionStorage.setItem(SETTINGS_SECTION_STORAGE, key);
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
+type StatusTone = 'ok' | 'warn' | 'error';
+
+/**
+ * Feedback from a settings action.
+ *
+ * These used to print as a line of text under the card that produced them,
+ * which on a page this long meant the answer to "did that work?" appeared
+ * wherever you were not looking — and then sat there, still green, long
+ * after it stopped being true. They go to the toaster instead.
+ *
+ * The old callers cleared the line by passing null or an empty string
+ * before starting work. There is no line to clear now, so an empty message
+ * is simply ignored and those calls can stay where they read naturally.
+ */
+function useStatusToast(defaultTone: StatusTone = 'ok') {
+  return useCallback(
+    (message?: string | null, tone: StatusTone = defaultTone) => {
+      // The provider's replies chain their parts with " · ", which reads as
+      // one long run-on inside a toast. One part per line.
+      const text = String(message ?? '')
+        .trim()
+        .replace(/ · /g, '\n');
+      if (!text) return;
+      if (tone === 'error') toast.error(text);
+      else if (tone === 'warn') toast.warn(text);
+      else toast.success(text);
+    },
+    [defaultTone],
   );
 }
 
+const SECTION_ICONS: Record<SectionKey, typeof IconPrinter> = {
+  printer: IconPrinter,
+  areas: IconGrid,
+  googleCalendar: IconCalendar,
+  kds: IconMonitor,
+  preferences: IconSliders,
+  fiscal: IconReceipt,
+  backups: IconCloudDown,
+  updates: IconRefresh,
+  billing: IconCard,
+  lan: IconWifi,
+  about: IconBuilding,
+};
+
 function SectionIcon({ k }: { k: SectionKey }) {
-  const common = {
-    className: 'pos-icon shrink-0 opacity-80',
-    'aria-hidden': true,
-  } as any;
-  if (k === 'printer')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M7 8V4h10v4M7 17h10v3H7v-3Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6 17H5a3 3 0 0 1-3-3v-2a4 4 0 0 1 4-4h12a4 4 0 0 1 4 4v2a3 3 0 0 1-3 3h-1"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  if (k === 'areas')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M4 6h16M4 12h16M4 18h16"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-        <path
-          d="M7 6v12M17 6v12"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-          opacity="0.7"
-        />
-      </svg>
-    );
-  if (k === 'googleCalendar')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M7 3v2M17 3v2M4 9h16M6 5h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M8 13h3v3H8v-3ZM13 13h3v3h-3v-3Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  if (k === 'kds')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M4 5h16v10H4V5Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M8 19h8M12 15v4"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
-  if (k === 'preferences')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M4 7h10M18 7h2M4 17h2M10 17h10"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-        <path
-          d="M14 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM10 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-        />
-      </svg>
-    );
-  if (k === 'fiscal')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M7 3h10v18H7V3Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M9 7h6M9 11h6M9 15h4"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
-  if (k === 'backups')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M20 7.5A4.5 4.5 0 0 0 11.6 5 4 4 0 0 0 4 8.5C4 11 6 13 8.5 13H19a3 3 0 0 0 1-5.5Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M12 12v7m0 0-3-3m3 3 3-3"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  if (k === 'updates')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M20 12a8 8 0 1 1-2.34-5.66"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-        <path
-          d="M20 4v6h-6"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  if (k === 'billing')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M3 7h18v10H3V7Z"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M3 10h18"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-        <path
-          d="M7 14h4"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
-  if (k === 'lan')
-    return (
-      <svg {...common} viewBox="0 0 24 24" fill="none">
-        <path
-          d="M12 19h.01"
-          stroke="currentColor"
-          strokeWidth="3"
-          strokeLinecap="round"
-        />
-        <path
-          d="M8.5 15.5a5 5 0 0 1 7 0"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-        />
-        <path
-          d="M5 12a10 10 0 0 1 14 0"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-          opacity="0.8"
-        />
-      </svg>
-    );
-  // about/business info
-  return (
-    <svg {...common} viewBox="0 0 24 24" fill="none">
-      <path
-        d="M12 17v-5"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M12 8h.01"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
-      <path
-        d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-      />
-    </svg>
-  );
+  const Icon = SECTION_ICONS[k];
+  return <Icon className="pos-icon shrink-0 opacity-80" />;
 }
 
 export default function AdminSettingsPage() {
   const { t } = useTranslation();
-  const [selected, setSelected] = useState<SectionKey>('printer');
+  const [params, setParams] = useSearchParams();
+  const hasReservations = useLicenseCapabilities((s) => s.hasReservations);
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  const navGroups = NAV_GROUPS.map((group) => ({
+    ...group,
+    keys: group.keys.filter((key) => {
+      if (key === 'googleCalendar') return hasReservations;
+      if (key === 'areas' || key === 'kds') return hasTables;
+      return true;
+    }),
+  })).filter((group) => group.keys.length > 0);
+  const visibleKeys = navGroups.flatMap((g) => g.keys);
+  const urlSection = params.get('section');
+  const requested = isSectionKey(urlSection) ? urlSection : readStoredSection();
+  const section = visibleKeys.includes(requested as SectionKey)
+    ? (requested as SectionKey)
+    : (visibleKeys[0] ?? 'printer');
+
+  useEffect(() => {
+    writeStoredSection(section);
+    if (urlSection === section) return;
+    const next = new URLSearchParams(params);
+    next.set('section', section);
+    setParams(next, { replace: true });
+  }, [section, urlSection, params, setParams]);
+
+  const openSection = (key: SectionKey) => {
+    writeStoredSection(key);
+    const next = new URLSearchParams(params);
+    next.set('section', key);
+    setParams(next, { replace: true });
+  };
   return (
-    <div
-      className="flex min-h-0 overflow-hidden rounded-lg border border-white/7 bg-[var(--pos-surface)]"
-      style={{ minHeight: 'calc(100dvh - var(--pos-header-h) - 2.75rem)' }}
-    >
-      <nav className="flex w-[232px] shrink-0 flex-col overflow-y-auto border-r border-white/7 bg-[var(--pos-canvas)] p-2.5">
-        {NAV_GROUPS.map((group) => (
+    <div className="flex min-h-0 flex-1 overflow-hidden bg-[var(--pos-canvas)] max-lg:border max-lg:border-white/7">
+      <nav className="admin-settings-nav flex w-[232px] shrink-0 flex-col overflow-y-auto border-r border-white/[0.06] p-3">
+        {navGroups.map((group) => (
           <div key={group.labelKey} className="mb-3 last:mb-0">
             <div className="pos-section-label px-2.5 pb-1.5 pt-1">
               {t(group.labelKey)}
@@ -305,11 +195,11 @@ export default function AdminSettingsPage() {
                   type="button"
                   className={cn(
                     'pos-side-link w-full',
-                    selected === key
+                    section === key
                       ? 'pos-side-link--active'
                       : 'pos-side-link--idle',
                   )}
-                  onClick={() => setSelected(key)}
+                  onClick={() => openSection(key)}
                 >
                   <SectionIcon k={key} />
                   <span className="truncate">{t(`settingsNav.${key}`)}</span>
@@ -319,19 +209,19 @@ export default function AdminSettingsPage() {
           </div>
         ))}
       </nav>
-      <div className="min-w-0 flex-1 overflow-auto p-5">
+      <div className="min-w-0 flex-1 overflow-auto px-8 py-7">
         <div className="mx-auto max-w-3xl">
-          {selected === 'printer' && <PrinterSettings />}
-          {selected === 'areas' && <AreasSettings />}
-          {selected === 'googleCalendar' && <GoogleCalendarSettings />}
-          {selected === 'kds' && <KdsSettings />}
-          {selected === 'preferences' && <PreferencesSettings />}
-          {selected === 'fiscal' && <FiscalSettings />}
-          {selected === 'backups' && <BackupsSettings />}
-          {selected === 'updates' && <SystemUpdatesSettings />}
-          {selected === 'billing' && <BillingSettings />}
-          {selected === 'lan' && <LanSettings />}
-          {selected === 'about' && <AboutSettings />}
+          {section === 'printer' && <PrinterSettings />}
+          {section === 'areas' && <AreasSettings />}
+          {section === 'googleCalendar' && <GoogleCalendarSettings />}
+          {section === 'kds' && <KdsSettings />}
+          {section === 'preferences' && <PreferencesSettings />}
+          {section === 'fiscal' && <FiscalSettings />}
+          {section === 'backups' && <BackupsSettings />}
+          {section === 'updates' && <SystemUpdatesSettings />}
+          {section === 'billing' && <BillingSettings />}
+          {section === 'lan' && <LanSettings />}
+          {section === 'about' && <AboutSettings />}
         </div>
       </div>
     </div>
@@ -340,10 +230,11 @@ export default function AdminSettingsPage() {
 
 function SystemUpdatesSettings() {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [status, setStatus] = useState<UpdateStatusDTO | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [checking, setChecking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const setError = useStatusToast('error');
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
 
   async function loadStatus() {
@@ -427,7 +318,9 @@ function SystemUpdatesSettings() {
     <div>
       <SettingsHeader
         title={t('settingsUpdates.title')}
-        description={t('settingsUpdates.help')}
+        description={t(
+          hasTables ? 'settingsUpdates.help' : 'settingsUpdates.helpStore',
+        )}
         actions={
           <>
             {hasUpdate && !status?.downloaded ? (
@@ -511,12 +404,6 @@ function SystemUpdatesSettings() {
           </div>
         )}
       </SettingsCard>
-
-      {error ? (
-        <div className="mt-3">
-          <SettingsStatus tone="error">{error}</SettingsStatus>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -525,7 +412,7 @@ function BillingSettings() {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<any>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const setErr = useStatusToast('error');
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
@@ -598,30 +485,25 @@ function BillingSettings() {
         title={t('settingsBilling.title')}
         description={t('settingsBilling.help')}
         actions={
-          <>
-            <Button
-              variant="primary"
-              onClick={() => void manageBilling()}
-              disabled={busy || !key}
-              loading={busy}
-            >
-              {t('settingsBilling.manage')}
-            </Button>
-            <KebabMenu
-              label={t('common.moreActions')}
-              items={[
-                {
-                  label: t('settingsBilling.refresh'),
-                  onSelect: () => void refresh(),
-                },
-                {
-                  label: t('settingsBilling.copy'),
-                  onSelect: () => void copyKey(),
-                  hidden: !key,
-                },
-              ]}
-            />
-          </>
+          <KebabMenu
+            label={t('common.moreActions')}
+            items={[
+              {
+                label: t('settingsBilling.manage'),
+                onSelect: () => void manageBilling(),
+                disabled: busy || !key,
+              },
+              {
+                label: t('settingsBilling.refresh'),
+                onSelect: () => void refresh(),
+              },
+              {
+                label: t('settingsBilling.copy'),
+                onSelect: () => void copyKey(),
+                hidden: !key,
+              },
+            ]}
+          />
         }
       />
 
@@ -681,11 +563,6 @@ function BillingSettings() {
         </SettingsCard>
       )}
 
-      {err ? (
-        <div className="mt-3">
-          <SettingsStatus tone="error">{err}</SettingsStatus>
-        </div>
-      ) : null}
       {status?.message ? (
         <div className="mt-2">
           <SettingsStatus>{String(status.message)}</SettingsStatus>
@@ -697,8 +574,11 @@ function BillingSettings() {
 
 function PreferencesSettings() {
   const [loading, setLoading] = useState(true);
+  const hasReservations = useLicenseCapabilities((s) => s.hasReservations);
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [currency, setCurrency] = useState<string>('EUR');
   const [language, setLanguage] = useState<'en' | 'sq'>('en');
+  const [theme, setTheme] = useState<PosUiTheme>('dark');
   const [enabled, setEnabled] = useState(false);
   const [mode, setMode] = useState<'PERCENT' | 'AMOUNT'>('PERCENT');
   const [value, setValue] = useState<string>('10');
@@ -712,12 +592,13 @@ function PreferencesSettings() {
     useState(false);
   const [reservationNoShowMinutes, setReservationNoShowMinutes] =
     useState<number>(20);
-  const [status, setStatus] = useState<string | null>(null);
+  const setStatus = useStatusToast();
   const { t } = useTranslation();
 
   type PrefDraft = {
     currency: string;
     language: 'en' | 'sq';
+    theme: PosUiTheme;
     enabled: boolean;
     mode: 'PERCENT' | 'AMOUNT';
     value: string;
@@ -730,48 +611,66 @@ function PreferencesSettings() {
     reservationNoShowMinutes: number;
   };
 
-  async function persist(patch: Partial<PrefDraft> = {}) {
-    const next: PrefDraft = {
-      currency,
-      language,
-      enabled,
-      mode,
-      value,
-      requireMgrDiscount,
-      requireMgrVoid,
-      requireMgrServiceRemoval,
-      autoCloseShiftEnabled,
-      autoCloseShiftHours,
-      reservationNoShowEnabled,
-      reservationNoShowMinutes,
-      ...patch,
-    };
-    setStatus(null);
-    const cur = String(next.currency || '')
-      .trim()
-      .toUpperCase();
-    if (!/^[A-Z]{3}$/.test(cur)) {
-      setStatus(t('preferences.currencyInvalid'));
-      return;
-    }
-    const n = Number(String(next.value).replace(',', '.'));
-    if (!Number.isFinite(n) || n < 0) {
-      setStatus(t('preferences.invalidAmount'));
-      return;
-    }
-    const noShowMins = Math.max(
-      5,
-      Math.min(240, Math.round(Number(next.reservationNoShowMinutes) || 0)),
-    );
-    if (
-      next.reservationNoShowEnabled &&
-      (!Number.isFinite(noShowMins) || noShowMins < 5)
-    ) {
-      setStatus(t('preferences.noShowGrace'));
-      return;
-    }
-    try {
-      await window.api.settings.update({
+  const draftRef = useRef<PrefDraft>({
+    currency: 'EUR',
+    language: 'en',
+    theme: 'dark',
+    enabled: false,
+    mode: 'PERCENT',
+    value: '10',
+    requireMgrDiscount: true,
+    requireMgrVoid: true,
+    requireMgrServiceRemoval: true,
+    autoCloseShiftEnabled: false,
+    autoCloseShiftHours: 12,
+    reservationNoShowEnabled: false,
+    reservationNoShowMinutes: 20,
+  });
+  const lastSavedRef = useRef('');
+  const debounceRef = useRef<number | null>(null);
+
+  draftRef.current = {
+    currency,
+    language,
+    theme,
+    enabled,
+    mode,
+    value,
+    requireMgrDiscount,
+    requireMgrVoid,
+    requireMgrServiceRemoval,
+    autoCloseShiftEnabled,
+    autoCloseShiftHours,
+    reservationNoShowEnabled,
+    reservationNoShowMinutes,
+  };
+
+  const persistDraft = useCallback(
+    async (next: PrefDraft) => {
+      const cur = String(next.currency || '')
+        .trim()
+        .toUpperCase();
+      if (!/^[A-Z]{3}$/.test(cur)) {
+        setStatus(t('preferences.currencyInvalid'), 'warn');
+        return;
+      }
+      const n = Number(String(next.value).replace(',', '.'));
+      if (!Number.isFinite(n) || n < 0) {
+        setStatus(t('preferences.invalidAmount'), 'warn');
+        return;
+      }
+      const noShowMins = Math.max(
+        5,
+        Math.min(240, Math.round(Number(next.reservationNoShowMinutes) || 0)),
+      );
+      if (
+        next.reservationNoShowEnabled &&
+        (!Number.isFinite(noShowMins) || noShowMins < 5)
+      ) {
+        setStatus(t('preferences.noShowGrace'), 'warn');
+        return;
+      }
+      const payload = {
         currency: cur,
         security: {
           approvals: {
@@ -783,6 +682,7 @@ function PreferencesSettings() {
         },
         preferences: {
           language: next.language,
+          theme: next.theme,
           serviceCharge: { enabled: next.enabled, mode: next.mode, value: n },
           autoCloseShift: {
             enabled: next.autoCloseShiftEnabled,
@@ -793,26 +693,71 @@ function PreferencesSettings() {
             minutes: noShowMins,
           },
         },
-      } as any);
+      };
+      const key = JSON.stringify(payload);
+      if (key === lastSavedRef.current) return;
+      lastSavedRef.current = key;
       try {
-        document.documentElement.lang = next.language === 'sq' ? 'sq' : 'en';
-      } catch {
-        // ignore
+        await window.api.settings.update(payload as any);
+        try {
+          document.documentElement.lang = next.language === 'sq' ? 'sq' : 'en';
+        } catch {
+          // ignore
+        }
+        try {
+          window.dispatchEvent(
+            new CustomEvent('pos:localeChanged', {
+              detail: { lng: next.language },
+            }),
+          );
+          applyPosUiTheme(next.theme);
+          window.dispatchEvent(
+            new CustomEvent('pos:themeChanged', {
+              detail: { theme: next.theme },
+            }),
+          );
+        } catch {
+          // ignore non-browser
+        }
+      } catch (e: any) {
+        lastSavedRef.current = '';
+        setStatus(String(e?.message || t('preferences.saveFailed')), 'error');
       }
-      try {
-        window.dispatchEvent(
-          new CustomEvent('pos:localeChanged', {
-            detail: { lng: next.language },
-          }),
-        );
-      } catch {
-        // ignore non-browser
+    },
+    [setStatus, t],
+  );
+
+  const persistImmediate = useCallback(
+    (patch: Partial<PrefDraft> = {}) => {
+      if (debounceRef.current != null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
       }
-      setStatus(t('preferences.saved'));
-    } catch (e: any) {
-      setStatus(String(e?.message || t('preferences.saveFailed')));
-    }
-  }
+      const next = { ...draftRef.current, ...patch };
+      draftRef.current = next;
+      void persistDraft(next);
+    },
+    [persistDraft],
+  );
+
+  const persistDebounced = useCallback(
+    (patch: Partial<PrefDraft> = {}) => {
+      const next = { ...draftRef.current, ...patch };
+      draftRef.current = next;
+      if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
+      debounceRef.current = window.setTimeout(() => {
+        debounceRef.current = null;
+        void persistDraft(draftRef.current);
+      }, 400);
+    },
+    [persistDraft],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -828,6 +773,7 @@ function PreferencesSettings() {
           (s as any)?.preferences?.language || 'en',
         ).toLowerCase();
         setLanguage(lang === 'sq' ? 'sq' : 'en');
+        setTheme(normalizePosUiTheme((s as any)?.preferences?.theme));
         try {
           document.documentElement.lang = lang === 'sq' ? 'sq' : 'en';
         } catch {
@@ -865,18 +811,7 @@ function PreferencesSettings() {
 
   return (
     <div>
-      <SettingsHeader
-        title={t('preferences.title')}
-        actions={
-          <Button
-            variant="primary"
-            onClick={() => void persist()}
-            disabled={loading}
-          >
-            {t('preferences.savePreferences')}
-          </Button>
-        }
-      />
+      <SettingsHeader title={t('preferences.title')} />
       {loading ? (
         <SettingsStatus>{t('common.loading')}</SettingsStatus>
       ) : (
@@ -891,7 +826,7 @@ function PreferencesSettings() {
               onChange={(e) => {
                 const next = String(e.target.value || '').toUpperCase();
                 setCurrency(next);
-                void persist({ currency: next });
+                persistImmediate({ currency: next });
               }}
             >
               <option value="EUR">EUR</option>
@@ -905,7 +840,11 @@ function PreferencesSettings() {
 
           <SettingsCard
             title={t('preferences.languages')}
-            description={t('preferences.languagesHelp')}
+            description={t(
+              hasTables
+                ? 'preferences.languagesHelp'
+                : 'preferences.languagesHelpStore',
+            )}
           >
             <Select
               className="max-w-xs"
@@ -913,7 +852,7 @@ function PreferencesSettings() {
               onChange={(e) => {
                 const next = e.target.value === 'sq' ? 'sq' : 'en';
                 setLanguage(next);
-                void persist({ language: next });
+                persistImmediate({ language: next });
               }}
               aria-label={t('preferences.languages')}
             >
@@ -923,8 +862,35 @@ function PreferencesSettings() {
           </SettingsCard>
 
           <SettingsCard
+            title={t('preferences.appearance')}
+            description={t(
+              hasTables
+                ? 'preferences.appearanceHelp'
+                : 'preferences.appearanceHelpStore',
+            )}
+          >
+            <Segmented
+              ariaLabel={t('preferences.appearance')}
+              value={theme}
+              onChange={(next) => {
+                setTheme(next);
+                applyPosUiTheme(next);
+                persistImmediate({ theme: next });
+              }}
+              options={[
+                { value: 'dark', label: t('preferences.themeDark') },
+                { value: 'light', label: t('preferences.themeLight') },
+              ]}
+            />
+          </SettingsCard>
+
+          <SettingsCard
             title={t('preferences.approvalsTitle')}
-            description={t('preferences.approvalsHelp')}
+            description={t(
+              hasTables
+                ? 'preferences.approvalsHelp'
+                : 'preferences.approvalsHelpStore',
+            )}
           >
             <div className="space-y-4">
               <SettingsToggleRow
@@ -933,7 +899,7 @@ function PreferencesSettings() {
                 checked={requireMgrDiscount}
                 onChange={(next) => {
                   setRequireMgrDiscount(next);
-                  void persist({ requireMgrDiscount: next });
+                  persistImmediate({ requireMgrDiscount: next });
                 }}
                 label={t('preferences.requirePinDiscount')}
               />
@@ -943,26 +909,36 @@ function PreferencesSettings() {
                 checked={requireMgrVoid}
                 onChange={(next) => {
                   setRequireMgrVoid(next);
-                  void persist({ requireMgrVoid: next });
+                  persistImmediate({ requireMgrVoid: next });
                 }}
                 label={t('preferences.requirePinVoids')}
               />
-              <SettingsToggleRow
-                title={t('preferences.requirePinService')}
-                description={t('preferences.requirePinServiceHelp')}
-                checked={requireMgrServiceRemoval}
-                onChange={(next) => {
-                  setRequireMgrServiceRemoval(next);
-                  void persist({ requireMgrServiceRemoval: next });
-                }}
-                label={t('preferences.requirePinService')}
-              />
+              {hasTables ? (
+                <SettingsToggleRow
+                  title={t('preferences.requirePinService')}
+                  description={t('preferences.requirePinServiceHelp')}
+                  checked={requireMgrServiceRemoval}
+                  onChange={(next) => {
+                    setRequireMgrServiceRemoval(next);
+                    persistImmediate({ requireMgrServiceRemoval: next });
+                  }}
+                  label={t('preferences.requirePinService')}
+                />
+              ) : null}
             </div>
           </SettingsCard>
 
           <SettingsCard
-            title={t('preferences.autoCloseTitle')}
-            description={t('preferences.autoCloseHelp')}
+            title={t(
+              hasTables
+                ? 'preferences.autoCloseTitle'
+                : 'preferences.autoCloseTitleStore',
+            )}
+            description={t(
+              hasTables
+                ? 'preferences.autoCloseHelp'
+                : 'preferences.autoCloseHelpStore',
+            )}
           >
             <div className="space-y-3">
               <SettingsToggleRow
@@ -971,7 +947,7 @@ function PreferencesSettings() {
                 checked={autoCloseShiftEnabled}
                 onChange={(next) => {
                   setAutoCloseShiftEnabled(next);
-                  void persist({ autoCloseShiftEnabled: next });
+                  persistImmediate({ autoCloseShiftEnabled: next });
                 }}
                 label={t('preferences.autoCloseEnable')}
               />
@@ -980,7 +956,7 @@ function PreferencesSettings() {
                 value={autoCloseShiftHours}
                 onChange={(next) => {
                   setAutoCloseShiftHours(next);
-                  void persist({ autoCloseShiftHours: next });
+                  persistImmediate({ autoCloseShiftHours: next });
                 }}
                 ariaLabel={t('preferences.autoCloseTitle')}
                 options={[
@@ -999,116 +975,130 @@ function PreferencesSettings() {
             </div>
           </SettingsCard>
 
-          <SettingsCard
-            title={t('preferences.autoNoShowTitle')}
-            description={t('preferences.autoNoShowHelp')}
-          >
-            <div className="space-y-3">
-              <SettingsToggleRow
-                title={t('preferences.autoNoShowEnable')}
-                description={t('preferences.autoNoShowEnableHelp')}
-                checked={reservationNoShowEnabled}
-                onChange={(next) => {
-                  setReservationNoShowEnabled(next);
-                  void persist({ reservationNoShowEnabled: next });
-                }}
-                label={t('preferences.autoNoShowEnable')}
-              />
-              <Segmented
-                block
-                value={reservationNoShowMinutes}
-                onChange={(next) => {
-                  setReservationNoShowMinutes(next);
-                  void persist({ reservationNoShowMinutes: next });
-                }}
-                ariaLabel={t('preferences.autoNoShowTitle')}
-                options={[10, 15, 20, 30, 45, 60].map((p) => ({
-                  value: p,
-                  label: t('preferences.minutesShort', { count: p }),
-                  disabled: !reservationNoShowEnabled,
-                }))}
-              />
-              <Field
-                label={t('preferences.customGrace')}
-                hint={t('preferences.graceRange')}
-              >
-                <Input
-                  type="number"
-                  min={5}
-                  max={240}
-                  step={5}
-                  className="max-w-[120px]"
-                  disabled={!reservationNoShowEnabled}
-                  value={reservationNoShowMinutes}
-                  onChange={(e) => {
-                    const next = Math.max(
-                      5,
-                      Math.min(240, Number(e.target.value) || 0),
-                    );
-                    setReservationNoShowMinutes(next);
-                  }}
-                  onBlur={() =>
-                    void persist({
-                      reservationNoShowMinutes,
-                    })
-                  }
-                />
-              </Field>
-            </div>
-          </SettingsCard>
-
-          <SettingsCard
-            title={t('preferences.serviceChargeTitle')}
-            description={t('preferences.serviceChargeHelp')}
-          >
-            <div className="space-y-3">
-              <SettingsToggleRow
-                title={t('preferences.serviceChargeEnable')}
-                checked={enabled}
-                onChange={(next) => {
-                  setEnabled(next);
-                  void persist({ enabled: next });
-                }}
-                label={t('preferences.serviceChargeEnable')}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                <Segmented
-                  value={mode}
+          {hasReservations ? (
+            <SettingsCard
+              title={t('preferences.autoNoShowTitle')}
+              description={t('preferences.autoNoShowHelp')}
+            >
+              <div className="space-y-3">
+                <SettingsToggleRow
+                  title={t('preferences.autoNoShowEnable')}
+                  description={t('preferences.autoNoShowEnableHelp')}
+                  checked={reservationNoShowEnabled}
                   onChange={(next) => {
-                    setMode(next);
-                    void persist({ mode: next });
+                    setReservationNoShowEnabled(next);
+                    persistImmediate({ reservationNoShowEnabled: next });
                   }}
-                  ariaLabel={t('preferences.serviceChargeTitle')}
-                  options={[
-                    {
-                      value: 'PERCENT',
-                      label: '%',
-                      disabled: !enabled,
-                    },
-                    {
-                      value: 'AMOUNT',
-                      label: t('preferences.fixedAmount'),
-                      disabled: !enabled,
-                    },
-                  ]}
+                  label={t('preferences.autoNoShowEnable')}
                 />
-                <Input
-                  className="max-w-[140px]"
-                  disabled={!enabled}
-                  placeholder={
-                    mode === 'PERCENT'
-                      ? t('order.discountPlaceholderPercent')
-                      : t('order.discountPlaceholderAmount')
-                  }
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  onBlur={() => void persist({ value })}
+                <Segmented
+                  block
+                  value={reservationNoShowMinutes}
+                  onChange={(next) => {
+                    setReservationNoShowMinutes(next);
+                    persistImmediate({ reservationNoShowMinutes: next });
+                  }}
+                  ariaLabel={t('preferences.autoNoShowTitle')}
+                  options={[10, 15, 20, 30, 45, 60].map((p) => ({
+                    value: p,
+                    label: t('preferences.minutesShort', { count: p }),
+                    disabled: !reservationNoShowEnabled,
+                  }))}
                 />
+                <Field
+                  label={t('preferences.customGrace')}
+                  hint={t('preferences.graceRange')}
+                >
+                  <Input
+                    type="number"
+                    min={5}
+                    max={240}
+                    step={5}
+                    className="max-w-[120px]"
+                    disabled={!reservationNoShowEnabled}
+                    value={reservationNoShowMinutes}
+                    onChange={(e) => {
+                      const next = Math.max(
+                        5,
+                        Math.min(240, Number(e.target.value) || 0),
+                      );
+                      setReservationNoShowMinutes(next);
+                      persistDebounced({ reservationNoShowMinutes: next });
+                    }}
+                    onBlur={() => persistImmediate()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                </Field>
               </div>
-            </div>
-          </SettingsCard>
+            </SettingsCard>
+          ) : null}
 
-          {status ? <SettingsStatus tone="ok">{status}</SettingsStatus> : null}
+          {hasTables ? (
+            <SettingsCard
+              title={t('preferences.serviceChargeTitle')}
+              description={t('preferences.serviceChargeHelp')}
+            >
+              <div className="space-y-3">
+                <SettingsToggleRow
+                  title={t('preferences.serviceChargeEnable')}
+                  checked={enabled}
+                  onChange={(next) => {
+                    setEnabled(next);
+                    persistImmediate({ enabled: next });
+                  }}
+                  label={t('preferences.serviceChargeEnable')}
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Segmented
+                    value={mode}
+                    onChange={(next) => {
+                      setMode(next);
+                      persistImmediate({ mode: next });
+                    }}
+                    ariaLabel={t('preferences.serviceChargeTitle')}
+                    options={[
+                      {
+                        value: 'PERCENT',
+                        label: '%',
+                        disabled: !enabled,
+                      },
+                      {
+                        value: 'AMOUNT',
+                        label: t('preferences.fixedAmount'),
+                        disabled: !enabled,
+                      },
+                    ]}
+                  />
+                  <Input
+                    className="max-w-[140px]"
+                    disabled={!enabled}
+                    placeholder={
+                      mode === 'PERCENT'
+                        ? t('order.discountPlaceholderPercent')
+                        : t('order.discountPlaceholderAmount')
+                    }
+                    value={value}
+                    onChange={(e) => {
+                      setValue(e.target.value);
+                      persistDebounced({ value: e.target.value });
+                    }}
+                    onBlur={() => persistImmediate()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </SettingsCard>
+          ) : null}
         </div>
       )}
     </div>
@@ -1127,8 +1117,8 @@ function FiscalSettings() {
   const [defaultSoldIn, setDefaultSoldIn] = useState('XPP');
   const [cloudFallbackArticleId, setCloudFallbackArticleId] = useState('');
   const [eurExchangeRate, setEurExchangeRate] = useState('');
-  const [status, setStatus] = useState<string | null>(null);
-  const [statusOk, setStatusOk] = useState<boolean | null>(null);
+  const [openingFloat, setOpeningFloat] = useState('');
+  const setStatus = useStatusToast();
   const [testing, setTesting] = useState(false);
   const [testingMinimal, setTestingMinimal] = useState(false);
   const [tokenHint, setTokenHint] = useState<{
@@ -1157,11 +1147,7 @@ function FiscalSettings() {
         setBaseUrl(String(fiscal.baseUrl || 'http://127.0.0.1:8080').trim());
         setAuthTokenConfigured(Boolean(fiscal.authTokenConfigured));
         setAuthToken('');
-        setDefaultOperatorId(
-          String(fiscal.defaultOperatorId || '').trim() === 'gh537ez200'
-            ? 'gh537ez280'
-            : String(fiscal.defaultOperatorId || '').trim(),
-        );
+        setDefaultOperatorId(String(fiscal.defaultOperatorId || '').trim());
         setIntegrationApp(String(fiscal.integrationApp || '').trim());
         setDefaultSoldIn(String(fiscal.defaultSoldIn || 'XPP').trim() || 'XPP');
         setCloudFallbackArticleId(
@@ -1173,6 +1159,12 @@ function FiscalSettings() {
             ? String(fiscal.eurExchangeRate)
             : '',
         );
+        setOpeningFloat(
+          fiscal.openingFloat != null &&
+            Number.isFinite(Number(fiscal.openingFloat))
+            ? String(fiscal.openingFloat)
+            : '',
+        );
       } finally {
         setLoading(false);
       }
@@ -1180,63 +1172,72 @@ function FiscalSettings() {
     })();
   }, []);
 
+  /**
+   * The fiscal settings block, assembled in one place.
+   *
+   * Saving, the connection test and the minimal-invoice test each write the
+   * whole block, and they had four separate copies of it. A field added to
+   * some but not all of them is silently dropped the next time one of the
+   * others runs, which is a setting that un-sets itself when someone
+   * presses Test.
+   */
+  function fiscalPayload(options: { enabled: boolean; withToken?: boolean }) {
+    const url = String(baseUrl || '')
+      .trim()
+      .replace(/\/+$/g, '');
+    const eur = String(eurExchangeRate || '').trim();
+    const float = String(openingFloat || '').trim();
+    return {
+      enabled: options.enabled,
+      provider,
+      baseUrl: url || 'http://127.0.0.1:8080',
+      ...(options.withToken !== false && authToken.trim()
+        ? { authToken: authToken.trim() }
+        : {}),
+      integrationApp: String(integrationApp || '').trim() || undefined,
+      defaultOperatorId: String(defaultOperatorId || '').trim() || undefined,
+      defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
+      cloudFallbackArticleId:
+        String(cloudFallbackArticleId || '').trim() || undefined,
+      // Blank means no float, not "leave whatever was there" — an empty box
+      // has to be able to set the drawer back to zero.
+      openingFloat: float ? Number(float.replace(',', '.')) : 0,
+      ...(eur ? { eurExchangeRate: Number(eur.replace(',', '.')) } : {}),
+    };
+  }
+
   async function save() {
-    setStatus(null);
-    setStatusOk(null);
     const url = String(baseUrl || '')
       .trim()
       .replace(/\/+$/g, '');
     const cloud = /api\.(dev\.)?easypos\.al/i.test(url);
     if (enabled && !url) {
-      setStatusOk(false);
-      setStatus(t('fiscal.baseUrlRequired'));
+      setStatus(t('fiscal.baseUrlRequired'), 'warn');
       return;
     }
     if (enabled && !authToken && !authTokenConfigured) {
-      setStatusOk(false);
-      setStatus(t('fiscal.authTokenRequired'));
+      setStatus(t('fiscal.authTokenRequired'), 'warn');
       return;
     }
     if (enabled && cloud && !String(integrationApp || '').trim()) {
-      setStatusOk(false);
-      setStatus(t('fiscal.integrationAppRequired'));
+      setStatus(t('fiscal.integrationAppRequired'), 'warn');
       return;
     }
     if (enabled && cloud && !String(defaultOperatorId || '').trim()) {
-      setStatusOk(false);
-      setStatus(t('fiscal.operatorIdRequired'));
+      setStatus(t('fiscal.operatorIdRequired'), 'warn');
       return;
     }
     const op = String(defaultOperatorId || '').trim();
     if (enabled && cloud && op === 'gh537ez200') {
-      setStatusOk(false);
-      setStatus(t('fiscal.operatorIdTypo'));
+      setStatus(t('fiscal.operatorIdTypo'), 'warn');
       return;
     }
     await window.api.settings.update({
-      fiscal: {
-        enabled,
-        provider,
-        baseUrl: url || 'http://127.0.0.1:8080',
-        ...(authToken.trim() ? { authToken: authToken.trim() } : {}),
-        integrationApp: String(integrationApp || '').trim() || undefined,
-        defaultOperatorId: String(defaultOperatorId || '').trim() || undefined,
-        defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
-        cloudFallbackArticleId:
-          String(cloudFallbackArticleId || '').trim() || undefined,
-        ...(String(eurExchangeRate || '').trim()
-          ? {
-              eurExchangeRate: Number(
-                String(eurExchangeRate).replace(',', '.'),
-              ),
-            }
-          : {}),
-      },
+      fiscal: fiscalPayload({ enabled }),
     } as any);
     const latest: any = await window.api.settings.get().catch(() => null);
     setAuthTokenConfigured(Boolean(latest?.fiscal?.authTokenConfigured));
     setAuthToken('');
-    setStatusOk(true);
     setStatus(t('fiscal.saved'));
     try {
       window.dispatchEvent(new CustomEvent('pos:settingsChanged'));
@@ -1248,37 +1249,14 @@ function FiscalSettings() {
 
   async function testMinimalInvoice() {
     setTestingMinimal(true);
-    setStatus(null);
-    setStatusOk(null);
     try {
       if (!window.api.settings.testFiscalMinimalInvoice) {
-        setStatusOk(false);
-        setStatus(t('fiscal.testMinimalUnavailable'));
+        setStatus(t('fiscal.testMinimalUnavailable'), 'warn');
         return;
       }
       if (authToken.trim()) {
         await window.api.settings.update({
-          fiscal: {
-            enabled: true,
-            provider,
-            baseUrl: String(baseUrl || '')
-              .trim()
-              .replace(/\/+$/g, ''),
-            authToken: authToken.trim(),
-            integrationApp: String(integrationApp || '').trim() || undefined,
-            defaultOperatorId:
-              String(defaultOperatorId || '').trim() || undefined,
-            defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
-            cloudFallbackArticleId:
-              String(cloudFallbackArticleId || '').trim() || undefined,
-            ...(String(eurExchangeRate || '').trim()
-              ? {
-                  eurExchangeRate: Number(
-                    String(eurExchangeRate).replace(',', '.'),
-                  ),
-                }
-              : {}),
-          },
+          fiscal: fiscalPayload({ enabled: true }),
         } as any);
         setAuthTokenConfigured(true);
         setAuthToken('');
@@ -1287,15 +1265,12 @@ function FiscalSettings() {
       }
       const r = await window.api.settings.testFiscalMinimalInvoice?.();
       if (r?.ok) {
-        setStatusOk(true);
         setStatus(r.message || t('fiscal.testMinimalOk'));
       } else {
-        setStatusOk(false);
-        setStatus(r?.message || t('fiscal.testMinimalFailed'));
+        setStatus(r?.message || t('fiscal.testMinimalFailed'), 'error');
       }
     } catch (e: any) {
-      setStatusOk(false);
-      setStatus(String(e?.message || t('fiscal.testMinimalFailed')));
+      setStatus(String(e?.message || t('fiscal.testMinimalFailed')), 'error');
     } finally {
       setTestingMinimal(false);
     }
@@ -1303,64 +1278,22 @@ function FiscalSettings() {
 
   async function testConnection() {
     setTesting(true);
-    setStatus(null);
-    setStatusOk(null);
     try {
       if (authToken.trim()) {
         await window.api.settings.update({
-          fiscal: {
-            enabled: true,
-            provider,
-            baseUrl: String(baseUrl || '')
-              .trim()
-              .replace(/\/+$/g, ''),
-            authToken: authToken.trim(),
-            integrationApp: String(integrationApp || '').trim() || undefined,
-            defaultOperatorId:
-              String(defaultOperatorId || '').trim() || undefined,
-            defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
-            cloudFallbackArticleId:
-              String(cloudFallbackArticleId || '').trim() || undefined,
-            ...(String(eurExchangeRate || '').trim()
-              ? {
-                  eurExchangeRate: Number(
-                    String(eurExchangeRate).replace(',', '.'),
-                  ),
-                }
-              : {}),
-          },
+          fiscal: fiscalPayload({ enabled: true }),
         } as any);
         setAuthTokenConfigured(true);
         setAuthToken('');
         setEnabled(true);
       } else if (!enabled) {
         await window.api.settings.update({
-          fiscal: {
-            enabled: true,
-            provider,
-            baseUrl: String(baseUrl || '')
-              .trim()
-              .replace(/\/+$/g, ''),
-            integrationApp: String(integrationApp || '').trim() || undefined,
-            defaultOperatorId:
-              String(defaultOperatorId || '').trim() || undefined,
-            defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
-            cloudFallbackArticleId:
-              String(cloudFallbackArticleId || '').trim() || undefined,
-            ...(String(eurExchangeRate || '').trim()
-              ? {
-                  eurExchangeRate: Number(
-                    String(eurExchangeRate).replace(',', '.'),
-                  ),
-                }
-              : {}),
-          },
+          fiscal: fiscalPayload({ enabled: true, withToken: false }),
         } as any);
         setEnabled(true);
       }
       const r = await window.api.settings.testFiscalConnection?.();
       if (r?.ok) {
-        setStatusOk(true);
         const key = r.messageKey ? `fiscal.${r.messageKey}` : null;
         setStatus(
           key && key.startsWith('fiscal.')
@@ -1368,12 +1301,10 @@ function FiscalSettings() {
             : r.message || t('fiscal.testOk'),
         );
       } else {
-        setStatusOk(false);
-        setStatus(r?.message || t('fiscal.testFailed'));
+        setStatus(r?.message || t('fiscal.testFailed'), 'error');
       }
     } catch (e: any) {
-      setStatusOk(false);
-      setStatus(String(e?.message || t('fiscal.testFailed')));
+      setStatus(String(e?.message || t('fiscal.testFailed')), 'error');
     } finally {
       setTesting(false);
     }
@@ -1412,6 +1343,15 @@ function FiscalSettings() {
       />
       {/* Unresolved sales come first — they are money waiting on a decision. */}
       <FiscalReviewPanel />
+      <SettingsCard
+        title={t('fiscal.salesTitle')}
+        description={t('fiscal.salesMovedToTickets')}
+        actions={
+          <Link to="/admin/tickets" className="pos-btn px-2.5 text-[12px]">
+            {t('adminLayout.tickets')}
+          </Link>
+        }
+      />
       {loading ? (
         <div className="opacity-70">{t('common.loading')}</div>
       ) : (
@@ -1566,22 +1506,22 @@ function FiscalSettings() {
                   {t('fiscal.eurExchangeRateHelp')}
                 </div>
               </label>
+
+              <label className="block">
+                <div className="text-sm mb-1">{t('fiscal.openingFloat')}</div>
+                <input
+                  className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+                  value={openingFloat}
+                  onChange={(e) => setOpeningFloat(e.target.value)}
+                  placeholder="0"
+                  disabled={!enabled}
+                />
+                <div className="text-[11px] opacity-60 mt-1">
+                  {t('fiscal.openingFloatHelp')}
+                </div>
+              </label>
             </div>
           </SettingsCard>
-
-          {status ? (
-            <SettingsStatus
-              tone={
-                statusOk === false
-                  ? 'error'
-                  : statusOk === true
-                    ? 'ok'
-                    : 'muted'
-              }
-            >
-              {status.replace(/ · /g, '\n')}
-            </SettingsStatus>
-          ) : null}
         </div>
       )}
     </div>
@@ -1605,7 +1545,7 @@ function FiscalReviewPanel() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [nslf, setNslf] = useState('');
   const [nivf, setNivf] = useState('');
-  const [status, setStatus] = useState<string>('');
+  const setStatus = useStatusToast();
 
   const supported = Boolean(window.api.settings.listFiscalReviews);
 
@@ -1627,7 +1567,6 @@ function FiscalReviewPanel() {
     resolution: 'retry' | 'registered' | 'corrected',
   ) => {
     setBusyKey(idempotencyKey);
-    setStatus('');
     try {
       const r = await window.api.settings.resolveFiscalReview?.({
         idempotencyKey,
@@ -1636,13 +1575,14 @@ function FiscalReviewPanel() {
           ? { nslf: nslf.trim(), nivf: nivf.trim() }
           : {}),
       });
-      setStatus(r?.ok ? t('fiscal.reviewResolved') : t('fiscal.reviewFailed'));
+      if (r?.ok) setStatus(t('fiscal.reviewResolved'));
+      else setStatus(t('fiscal.reviewFailed'), 'error');
       setExpanded(null);
       setNslf('');
       setNivf('');
       await load();
     } catch (e: any) {
-      setStatus(String(e?.message || t('fiscal.reviewFailed')));
+      setStatus(String(e?.message || t('fiscal.reviewFailed')), 'error');
     } finally {
       setBusyKey(null);
     }
@@ -1800,8 +1740,6 @@ function FiscalReviewPanel() {
           );
         })}
       </div>
-
-      {status ? <div className="mt-2 text-xs opacity-80">{status}</div> : null}
     </div>
   );
 }
@@ -1812,7 +1750,7 @@ function BackupsSettings() {
   const [rows, setRows] = useState<
     Array<{ name: string; bytes: number; createdAt: string }>
   >([]);
-  const [status, setStatus] = useState<string | null>(null);
+  const setStatus = useStatusToast();
   const [busy, setBusy] = useState<string | null>(null);
 
   async function reload() {
@@ -1821,7 +1759,7 @@ function BackupsSettings() {
       const list = await (window.api as any).backups.list();
       setRows(Array.isArray(list) ? list : []);
     } catch (e: any) {
-      setStatus(e?.message || t('settingsBackups.failedLoad'));
+      setStatus(e?.message || t('settingsBackups.failedLoad'), 'error');
       setRows([]);
     } finally {
       setLoading(false);
@@ -1842,14 +1780,13 @@ function BackupsSettings() {
 
   async function createBackup() {
     setBusy('create');
-    setStatus(null);
     try {
       const r = await (window.api as any).backups.create();
-      if (!r?.ok) setStatus(r?.error || t('settingsBackups.failed'));
+      if (!r?.ok) setStatus(r?.error || t('settingsBackups.failed'), 'error');
       else setStatus(t('settingsBackups.created'));
       await reload();
     } catch (e: any) {
-      setStatus(e?.message || t('settingsBackups.failed'));
+      setStatus(e?.message || t('settingsBackups.failed'), 'error');
     } finally {
       setBusy(null);
     }
@@ -1859,15 +1796,17 @@ function BackupsSettings() {
     const ok = confirm(t('settingsBackups.restoreConfirm', { name }));
     if (!ok) return;
     setBusy(`restore:${name}`);
-    setStatus(null);
     try {
       const r = await (window.api as any).backups.restore({ name });
-      if (!r?.ok) setStatus(r?.error || t('settingsBackups.restoreFailed'));
-      else if (r?.devRestartRequired)
+      if (!r?.ok) {
+        setStatus(r?.error || t('settingsBackups.restoreFailed'), 'error');
+      } else if (r?.devRestartRequired) {
         setStatus(t('settingsBackups.restoredDev'));
-      else setStatus(t('settingsBackups.restoring'));
+      } else {
+        setStatus(t('settingsBackups.restoring'));
+      }
     } catch (e: any) {
-      setStatus(e?.message || t('settingsBackups.restoreFailed'));
+      setStatus(e?.message || t('settingsBackups.restoreFailed'), 'error');
     } finally {
       setBusy(null);
     }
@@ -1900,12 +1839,6 @@ function BackupsSettings() {
           />
         }
       />
-
-      {status ? (
-        <div className="mb-3">
-          <SettingsStatus>{status}</SettingsStatus>
-        </div>
-      ) : null}
 
       {loading ? (
         <SettingsStatus>{t('common.loading')}</SettingsStatus>
@@ -1975,7 +1908,6 @@ function GoogleCalendarSettings() {
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
 
   const loadSettings = async () => {
     const s: any = await window.api.settings.get();
@@ -2029,7 +1961,6 @@ function GoogleCalendarSettings() {
 
   const save = async () => {
     setSaving(true);
-    setStatus(null);
     try {
       const selected = calendars.find((c) => c.id === calendarId);
       const payload: any = {
@@ -2043,12 +1974,9 @@ function GoogleCalendarSettings() {
         },
       };
       await window.api.settings.update(payload);
-      setStatus(t('googleCalendar.saved'));
       toast.success(t('googleCalendar.saved'));
     } catch (e: any) {
-      const msg = String(e?.message || t('googleCalendar.saveFailed'));
-      setStatus(msg);
-      toast.error(msg);
+      toast.error(String(e?.message || t('googleCalendar.saveFailed')));
     } finally {
       setSaving(false);
     }
@@ -2056,7 +1984,7 @@ function GoogleCalendarSettings() {
 
   const connect = async () => {
     setConnecting(true);
-    setStatus(t('googleCalendar.connecting'));
+    toast.info(t('googleCalendar.connecting'));
     try {
       const result = await window.api.settings.connectGoogleCalendar?.();
       if (!result?.ok) {
@@ -2072,20 +2000,14 @@ function GoogleCalendarSettings() {
       if (Array.isArray(result.calendars)) setCalendars(result.calendars);
       if (result.warning) {
         setLastSyncError(result.warning);
-        setStatus(result.warning);
         toast.error(result.warning);
         return;
       }
-      setStatus(
-        t('googleCalendar.connected', { email: result.accountEmail || '' }),
-      );
       toast.success(
         t('googleCalendar.connected', { email: result.accountEmail || '' }),
       );
     } catch (e: any) {
-      const msg = String(e?.message || t('googleCalendar.connectFailed'));
-      setStatus(msg);
-      toast.error(msg);
+      toast.error(String(e?.message || t('googleCalendar.connectFailed')));
     } finally {
       setConnecting(false);
     }
@@ -2093,19 +2015,15 @@ function GoogleCalendarSettings() {
 
   const disconnect = async () => {
     setConnecting(true);
-    setStatus(null);
     try {
       await window.api.settings.disconnectGoogleCalendar?.();
       setOauthConnected(false);
       setAccountEmail('');
       setCalendarSummary('');
       setCalendars([]);
-      setStatus(t('googleCalendar.disconnected'));
       toast.success(t('googleCalendar.disconnected'));
     } catch (e: any) {
-      const msg = String(e?.message || t('googleCalendar.disconnectFailed'));
-      setStatus(msg);
-      toast.error(msg);
+      toast.error(String(e?.message || t('googleCalendar.disconnectFailed')));
     } finally {
       setConnecting(false);
     }
@@ -2113,7 +2031,6 @@ function GoogleCalendarSettings() {
 
   const syncNow = async () => {
     setSyncing(true);
-    setStatus(null);
     try {
       const result = await window.api.settings.syncGoogleCalendar?.();
       if (!result) throw new Error(t('googleCalendar.syncUnavailable'));
@@ -2125,25 +2042,21 @@ function GoogleCalendarSettings() {
       );
       setLastSyncError(gc.lastSyncError ? String(gc.lastSyncError) : null);
       if (!result.ok) {
-        const msg = String(result.error || t('googleCalendar.syncFailed'));
-        setStatus(msg);
-        toast.error(msg);
+        toast.error(String(result.error || t('googleCalendar.syncFailed')));
         return;
       }
-      const msg = String(
-        result.message ||
-          t('googleCalendar.syncSuccess', {
-            imported: result.imported,
-            updated: result.updated,
-            cancelled: result.cancelled,
-          }),
+      toast.success(
+        String(
+          result.message ||
+            t('googleCalendar.syncSuccess', {
+              imported: result.imported,
+              updated: result.updated,
+              cancelled: result.cancelled,
+            }),
+        ),
       );
-      setStatus(msg);
-      toast.success(msg);
     } catch (e: any) {
-      const msg = String(e?.message || t('googleCalendar.syncFailed'));
-      setStatus(msg);
-      toast.error(msg);
+      toast.error(String(e?.message || t('googleCalendar.syncFailed')));
     } finally {
       setSyncing(false);
     }
@@ -2319,8 +2232,6 @@ function GoogleCalendarSettings() {
             </div>
           </SettingsCard>
         )}
-
-        {status ? <SettingsStatus>{status}</SettingsStatus> : null}
       </div>
     </div>
   );
@@ -2328,7 +2239,7 @@ function GoogleCalendarSettings() {
 
 function KdsSettings() {
   const { t } = useTranslation();
-  const [status, setStatus] = useState<string | null>(null);
+  const setStatus = useStatusToast();
   const [kdsOn, setKdsOn] = useState(true);
   const [savingMaster, setSavingMaster] = useState(false);
   const [stations, setStations] = useState<Record<KdsStation, boolean>>(() => {
@@ -2369,13 +2280,12 @@ function KdsSettings() {
     const next = !kdsOn;
     setKdsOn(next);
     setSavingMaster(true);
-    setStatus(null);
     try {
       await window.api.settings.update({ kds: { enabled: next } } as any);
       setStatus(next ? t('kdsSettings.masterOn') : t('kdsSettings.masterOff'));
     } catch {
       setKdsOn(!next);
-      setStatus(t('kdsSettings.masterSaveFailed'));
+      setStatus(t('kdsSettings.masterSaveFailed'), 'error');
     } finally {
       setSavingMaster(false);
     }
@@ -2385,7 +2295,6 @@ function KdsSettings() {
     const next = { ...stations, [station]: !stations[station] };
     setStations(next);
     setSavingStation(station);
-    setStatus(null);
     try {
       await window.api.settings.update({ kds: { stations: next } });
       setStatus(
@@ -2404,6 +2313,7 @@ function KdsSettings() {
         t('kdsSettings.stationSaveFailed', {
           station: t(`kdsSettings.station${station}`),
         }),
+        'error',
       );
     } finally {
       setSavingStation(null);
@@ -2420,7 +2330,6 @@ function KdsSettings() {
             variant="primary"
             disabled={!kdsOn}
             onClick={async () => {
-              setStatus(null);
               await window.api.kds.openWindow();
             }}
           >
@@ -2458,37 +2367,9 @@ function KdsSettings() {
           </div>
         </SettingsCard>
 
-        <SettingsCard
-          title={t('kdsSettings.bumpTitle')}
-          description={t('kdsSettings.bumpHelp')}
-          padded={false}
-        >
-          <div className="overflow-x-auto">
-            <table className="pos-table text-[12px]">
-              <thead>
-                <tr>
-                  <th>{t('kdsSettings.bumpButton')}</th>
-                  <th>{t('kdsSettings.bumpKeystroke')}</th>
-                  <th>{t('kdsSettings.bumpAction')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {KDS_BUMP_BAR_PROGRAMMING.map((row) => (
-                  <tr key={row.button}>
-                    <td className="font-medium">{row.button}</td>
-                    <td className="font-mono">{row.keystroke}</td>
-                    <td className="text-gray-400">{row.action}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </SettingsCard>
-
         {!kdsOn ? (
           <SettingsStatus>{t('kdsSettings.openWindowDisabled')}</SettingsStatus>
         ) : null}
-        {status ? <SettingsStatus>{status}</SettingsStatus> : null}
       </div>
     </div>
   );
@@ -2542,19 +2423,7 @@ function AddRouteModal({
             onClick={onClose}
             aria-label={t('common.close')}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="pos-icon"
-            >
-              <path
-                d="M6 6l12 12M18 6 6 18"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-              />
-            </svg>
+            <IconClose />
           </button>
         </div>
         <div className="p-4 space-y-4">
@@ -2630,9 +2499,29 @@ type PrinterProfile = {
   paperWidthMm?: 58 | 80;
 };
 
+function printerSettingsPayload(d: {
+  profiles: PrinterProfile[];
+  routingEnabled: boolean;
+  receiptPrinterId: string;
+  fallbackPrinterId: string;
+  categoryRouting: Record<string, string>;
+}) {
+  return {
+    printers: d.profiles,
+    printerRouting: {
+      enabled: d.routingEnabled,
+      receiptPrinterId: d.receiptPrinterId,
+      station: { ALL: d.fallbackPrinterId || undefined },
+      fallbackPrinterId: d.fallbackPrinterId || undefined,
+      categories: d.categoryRouting,
+    },
+  };
+}
+
 function PrinterSettings() {
   type Profile = PrinterProfile;
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
 
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [routingEnabled, setRoutingEnabled] = useState(false);
@@ -2654,8 +2543,69 @@ function PrinterSettings() {
   const [serialPorts, setSerialPorts] = useState<
     { path: string; manufacturer?: string }[]
   >([]);
-  const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const setStatus = useStatusToast('warn');
+  const draftRef = useRef({
+    profiles: [] as Profile[],
+    routingEnabled: false,
+    receiptPrinterId: 'default',
+    fallbackPrinterId: 'default',
+    categoryRouting: {} as Record<string, string>,
+  });
+  const readyRef = useRef(false);
+  const lastSavedRef = useRef('');
+  const savingRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const debounceRef = useRef<number | null>(null);
+
+  const persistNow = useCallback(async () => {
+    if (!readyRef.current) return;
+    dirtyRef.current = true;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    try {
+      while (dirtyRef.current) {
+        dirtyRef.current = false;
+        const payload = printerSettingsPayload(draftRef.current);
+        const key = JSON.stringify(payload);
+        if (key === lastSavedRef.current) continue;
+        try {
+          await window.api.settings.update(payload as any);
+          lastSavedRef.current = key;
+        } catch (e: any) {
+          lastSavedRef.current = '';
+          setStatus(
+            String(e?.message || t('settingsPrinter.saveFailed')),
+            'error',
+          );
+          break;
+        }
+      }
+    } finally {
+      savingRef.current = false;
+    }
+  }, [setStatus, t]);
+
+  const persistImmediate = useCallback(() => {
+    if (debounceRef.current != null) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    void persistNow();
+  }, [persistNow]);
+
+  const persistDebounced = useCallback(() => {
+    if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
+      void persistNow();
+    }, 400);
+  }, [persistNow]);
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   const ensureProfile = (p: any, idx: number): Profile => {
     // CORRECTNESS: previously used Math.random() which produced a different id
@@ -2703,7 +2653,6 @@ function PrinterSettings() {
                 },
               ]
             : [];
-      setProfiles(arr.map((p, idx) => ensureProfile(p, idx)));
 
       const r: any = (s as any)?.printerRouting || {};
       setRoutingEnabled(Boolean(r?.enabled));
@@ -2751,6 +2700,25 @@ function PrinterSettings() {
       }
       setCategoryRouting(next);
 
+      const loadedProfiles = arr.map((p, idx) => ensureProfile(p, idx));
+      const loadedRouting = Boolean(r?.enabled);
+      const loadedReceipt = String(r?.receiptPrinterId || 'default');
+      const loadedFallback = String(
+        r?.fallbackPrinterId || r?.station?.ALL || 'default',
+      );
+      setProfiles(loadedProfiles);
+      draftRef.current = {
+        profiles: loadedProfiles,
+        routingEnabled: loadedRouting,
+        receiptPrinterId: loadedReceipt,
+        fallbackPrinterId: loadedFallback,
+        categoryRouting: next,
+      };
+      lastSavedRef.current = JSON.stringify(
+        printerSettingsPayload(draftRef.current),
+      );
+      readyRef.current = true;
+
       try {
         const list =
           (await (window.api.settings as any).listPrinters?.()) || [];
@@ -2763,7 +2731,9 @@ function PrinterSettings() {
           (await (window.api.settings as any).listSerialPorts?.()) || [];
         setSerialPorts(list);
       } catch {
-        setStatus(t('settingsPrinter.serialUnavailable'));
+        // Silent: nobody asked for this probe, it just runs when the section
+        // opens, and a machine with no serial support would greet the admin
+        // with a toast every single visit. The refresh button still reports.
       }
     })();
   }, []);
@@ -2824,188 +2794,203 @@ function PrinterSettings() {
 
   return (
     <div>
-      <SettingsHeader
-        title={t('settingsPrinter.title')}
-        actions={
-          <Button
-            variant="primary"
-            disabled={saving}
-            loading={saving}
-            onClick={async () => {
-              setSaving(true);
-              setStatus(null);
-              try {
-                await window.api.settings.update({
-                  printers: profiles,
-                  printerRouting: {
-                    enabled: routingEnabled,
-                    receiptPrinterId,
-                    station: { ALL: fallbackPrinterId || undefined },
-                    fallbackPrinterId: fallbackPrinterId || undefined,
-                    categories: categoryRouting,
-                  },
-                } as any);
-                setStatus(t('settingsPrinter.saved'));
-              } catch (e: any) {
-                setStatus(
-                  String(e?.message || t('settingsPrinter.saveFailed')),
-                );
-              } finally {
-                setSaving(false);
-              }
-            }}
-          >
-            {saving ? t('common.saving') : t('settingsPrinter.save')}
-          </Button>
-        }
-      />
-
-      {status ? (
-        <div className="mb-3">
-          <SettingsStatus tone="warn">{status}</SettingsStatus>
-        </div>
-      ) : null}
+      <SettingsHeader title={t('settingsPrinter.title')} />
 
       <div className="space-y-3">
-        <SettingsCard
-          title={t('settingsPrinter.routing')}
-          description={t('settingsPrinter.routingHelp')}
-          actions={
-            <Button
-              disabled={!routingEnabled}
-              onClick={() => setShowAddRouteModal(true)}
+        {hasTables ? (
+          <>
+            <SettingsCard
+              title={t('settingsPrinter.routing')}
+              description={t('settingsPrinter.routingHelp')}
+              actions={
+                <IconButton
+                  label={t('settingsPrinter.addRoute')}
+                  icon={<IconPlus />}
+                  disabled={!routingEnabled}
+                  onClick={() => setShowAddRouteModal(true)}
+                />
+              }
             >
-              {t('settingsPrinter.addRoute')}
-            </Button>
-          }
-        >
-          <div className="space-y-3">
-            <SettingsToggleRow
-              title={t('settingsPrinter.enableRouting')}
-              checked={routingEnabled}
-              onChange={setRoutingEnabled}
-              label={t('settingsPrinter.enableRouting')}
-            />
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <Field label={t('settingsPrinter.receiptPrinter')}>
-                <Select
-                  value={receiptPrinterId}
-                  onChange={(e) => setReceiptPrinterId(e.target.value)}
-                  disabled={!routingEnabled}
-                >
-                  {pickOptions(false)}
-                </Select>
-              </Field>
-              <Field label={t('settingsPrinter.fallbackPrinter')}>
-                <Select
-                  value={fallbackPrinterId}
-                  onChange={(e) => setFallbackPrinterId(e.target.value)}
-                  disabled={!routingEnabled}
-                >
-                  {pickOptions(false)}
-                </Select>
-              </Field>
-            </div>
-            {routedEntries.length === 0 ? (
-              <div className="text-[12px] text-gray-500">
-                {t('settingsPrinter.noRoutes')}
-              </div>
-            ) : (
-              <div className="divide-y divide-white/7 overflow-hidden rounded-md border border-white/7">
-                {routedEntries.map((r) => (
-                  <div
-                    key={r.key}
-                    className="flex items-center gap-2 px-3 py-2"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13px] font-medium">
-                        {r.label}
-                      </div>
-                      {r.categoryId == null && (
-                        <div className="text-[11px] text-gray-500">
-                          {t('settingsPrinter.unknownKey')}
-                        </div>
-                      )}
-                    </div>
+              <div className="space-y-3">
+                <SettingsToggleRow
+                  title={t('settingsPrinter.enableRouting')}
+                  checked={routingEnabled}
+                  onChange={(next) => {
+                    setRoutingEnabled(next);
+                    draftRef.current = {
+                      ...draftRef.current,
+                      routingEnabled: next,
+                    };
+                    persistImmediate();
+                  }}
+                  label={t('settingsPrinter.enableRouting')}
+                />
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <Field label={t('settingsPrinter.receiptPrinter')}>
                     <Select
-                      className="w-[160px]"
-                      value={r.printerId}
+                      value={receiptPrinterId}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setReceiptPrinterId(value);
+                        draftRef.current = {
+                          ...draftRef.current,
+                          receiptPrinterId: value,
+                        };
+                        persistImmediate();
+                      }}
                       disabled={!routingEnabled}
-                      onChange={(e) =>
-                        setCategoryRouting((m) => ({
-                          ...(m || {}),
-                          [r.key]: String(e.target.value || ''),
-                        }))
-                      }
                     >
                       {pickOptions(false)}
                     </Select>
-                    <KebabMenu
-                      label={t('settingsPrinter.removeRouteAria', {
-                        label: r.label,
-                      })}
-                      items={[
-                        {
-                          label: t('common.remove'),
-                          danger: true,
-                          disabled: !routingEnabled,
-                          onSelect: () =>
-                            setCategoryRouting((m) => {
-                              const next = { ...(m || {}) } as any;
-                              delete next[r.key];
-                              return next;
-                            }),
-                        },
-                      ]}
-                    />
+                  </Field>
+                  <Field label={t('settingsPrinter.fallbackPrinter')}>
+                    <Select
+                      value={fallbackPrinterId}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setFallbackPrinterId(value);
+                        draftRef.current = {
+                          ...draftRef.current,
+                          fallbackPrinterId: value,
+                        };
+                        persistImmediate();
+                      }}
+                      disabled={!routingEnabled}
+                    >
+                      {pickOptions(false)}
+                    </Select>
+                  </Field>
+                </div>
+                {routedEntries.length === 0 ? (
+                  <div className="text-[12px] text-gray-500">
+                    {t('settingsPrinter.noRoutes')}
                   </div>
-                ))}
+                ) : (
+                  <div className="divide-y divide-white/7 overflow-hidden rounded-md border border-white/7">
+                    {routedEntries.map((r) => (
+                      <div
+                        key={r.key}
+                        className="flex items-center gap-2 px-3 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[13px] font-medium">
+                            {r.label}
+                          </div>
+                          {r.categoryId == null && (
+                            <div className="text-[11px] text-gray-500">
+                              {t('settingsPrinter.unknownKey')}
+                            </div>
+                          )}
+                        </div>
+                        <Select
+                          className="w-[160px]"
+                          value={r.printerId}
+                          disabled={!routingEnabled}
+                          onChange={(e) => {
+                            const value = String(e.target.value || '');
+                            setCategoryRouting((m) => {
+                              const next = {
+                                ...(m || {}),
+                                [r.key]: value,
+                              };
+                              draftRef.current = {
+                                ...draftRef.current,
+                                categoryRouting: next,
+                              };
+                              return next;
+                            });
+                            persistImmediate();
+                          }}
+                        >
+                          {pickOptions(false)}
+                        </Select>
+                        <KebabMenu
+                          label={t('settingsPrinter.removeRouteAria', {
+                            label: r.label,
+                          })}
+                          items={[
+                            {
+                              label: t('common.remove'),
+                              danger: true,
+                              disabled: !routingEnabled,
+                              onSelect: () => {
+                                setCategoryRouting((m) => {
+                                  const next = { ...(m || {}) } as any;
+                                  delete next[r.key];
+                                  draftRef.current = {
+                                    ...draftRef.current,
+                                    categoryRouting: next,
+                                  };
+                                  return next;
+                                });
+                                persistImmediate();
+                              },
+                            },
+                          ]}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </SettingsCard>
+            </SettingsCard>
 
-        {showAddRouteModal && (
-          <AddRouteModal
-            availableCategories={availableCategoriesToAdd}
-            enabledProfiles={enabledProfiles}
-            routingEnabled={routingEnabled}
-            onAdd={(catId, printerId) => {
-              const cid = String(catId || '').trim();
-              if (!cid) return;
-              setCategoryRouting((m) => ({
-                ...(m || {}),
-                [cid]: String(printerId || 'default'),
-              }));
-              setShowAddRouteModal(false);
-            }}
-            onClose={() => setShowAddRouteModal(false)}
-          />
-        )}
+            {showAddRouteModal && (
+              <AddRouteModal
+                availableCategories={availableCategoriesToAdd}
+                enabledProfiles={enabledProfiles}
+                routingEnabled={routingEnabled}
+                onAdd={(catId, printerId) => {
+                  const cid = String(catId || '').trim();
+                  if (!cid) return;
+                  setCategoryRouting((m) => {
+                    const next = {
+                      ...(m || {}),
+                      [cid]: String(printerId || 'default'),
+                    };
+                    draftRef.current = {
+                      ...draftRef.current,
+                      categoryRouting: next,
+                    };
+                    return next;
+                  });
+                  persistImmediate();
+                  setShowAddRouteModal(false);
+                }}
+                onClose={() => setShowAddRouteModal(false)}
+              />
+            )}
+          </>
+        ) : null}
 
         <div className="flex items-center justify-between gap-3">
           <div className="text-[13px] font-semibold text-gray-100">
             {t('settingsPrinter.profiles')}
           </div>
-          <Button
-            onClick={() =>
-              setProfiles((arr) => [
-                ...arr,
-                ensureProfile(
-                  {
-                    name: t('settingsPrinter.printerN', {
-                      n: arr.length + 1,
-                    }),
-                    enabled: true,
-                    mode: 'NETWORK',
-                  },
-                  arr.length,
-                ),
-              ])
-            }
-          >
-            {t('settingsPrinter.addPrinter')}
-          </Button>
+          <IconButton
+            label={t('settingsPrinter.addPrinter')}
+            icon={<IconPlus />}
+            onClick={() => {
+              setProfiles((arr) => {
+                const next = [
+                  ...arr,
+                  ensureProfile(
+                    {
+                      name: t('settingsPrinter.printerN', {
+                        n: arr.length + 1,
+                      }),
+                      enabled: true,
+                      mode: 'NETWORK',
+                    },
+                    arr.length,
+                  ),
+                ];
+                draftRef.current = { ...draftRef.current, profiles: next };
+                return next;
+              });
+              persistImmediate();
+            }}
+          />
         </div>
 
         <div className="space-y-2">
@@ -3015,14 +3000,26 @@ function PrinterSettings() {
               profile={p}
               printers={printers}
               serialPorts={serialPorts}
-              onUpdate={(patch) =>
-                setProfiles((arr) =>
-                  arr.map((x) => (x.id === p.id ? { ...x, ...patch } : x)),
-                )
-              }
-              onDelete={() =>
-                setProfiles((arr) => arr.filter((x) => x.id !== p.id))
-              }
+              onUpdate={(patch, persist = true) => {
+                setProfiles((arr) => {
+                  const next = arr.map((x) =>
+                    x.id === p.id ? { ...x, ...patch } : x,
+                  );
+                  draftRef.current = { ...draftRef.current, profiles: next };
+                  return next;
+                });
+                if (persist) persistImmediate();
+                else persistDebounced();
+              }}
+              onCommit={persistImmediate}
+              onDelete={() => {
+                setProfiles((arr) => {
+                  const next = arr.filter((x) => x.id !== p.id);
+                  draftRef.current = { ...draftRef.current, profiles: next };
+                  return next;
+                });
+                persistImmediate();
+              }}
               onRefreshPrinters={async () => {
                 const list =
                   (await (window.api.settings as any).listPrinters?.()) || [];
@@ -3040,6 +3037,7 @@ function PrinterSettings() {
                     String(
                       e?.message || t('settingsPrinter.serialUnavailable'),
                     ),
+                    'error',
                   );
                 }
               }}
@@ -3056,6 +3054,7 @@ function PrinterProfileCard({
   printers,
   serialPorts,
   onUpdate,
+  onCommit,
   onDelete,
   onRefreshPrinters,
   onRefreshSerial,
@@ -3063,27 +3062,21 @@ function PrinterProfileCard({
   profile: PrinterProfile;
   printers: { name: string; isDefault?: boolean }[];
   serialPorts: { path: string; manufacturer?: string }[];
-  onUpdate: (patch: Partial<PrinterProfile>) => void;
+  onUpdate: (patch: Partial<PrinterProfile>, persist?: boolean) => void;
+  onCommit: () => void;
   onDelete: () => void;
   onRefreshPrinters: () => Promise<void>;
   onRefreshSerial: () => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  // Local test-print feedback. We deliberately keep it in the card (not the
-  // parent) so each profile has its own independent status line.
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
-    ok: boolean;
-    msg: string;
-  } | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [scanHint, setScanHint] = useState<string | null>(null);
+  const notify = useStatusToast();
   const [discovered, setDiscovered] = useState<NetworkPrinterDTO[]>([]);
 
   async function runTestPrint() {
     setTesting(true);
-    setTestResult(null);
     try {
       const fn = (window.api.settings as any).testPrintProfile as
         | ((
@@ -3091,29 +3084,17 @@ function PrinterProfileCard({
           ) => Promise<{ ok: boolean; error?: string }>)
         | undefined;
       if (typeof fn !== 'function') {
-        setTestResult({
-          ok: false,
-          msg: t('settingsPrinter.testUnavailable'),
-        });
+        notify(t('settingsPrinter.testUnavailable'), 'warn');
         return;
       }
       const r = await fn(p);
-      if (r?.ok) {
-        setTestResult({
-          ok: true,
-          msg: t('settingsPrinter.testSent'),
-        });
-      } else {
-        setTestResult({
-          ok: false,
-          msg: r?.error || t('settingsPrinter.testFailed'),
-        });
-      }
+      if (r?.ok) notify(t('settingsPrinter.testSent'));
+      else notify(r?.error || t('settingsPrinter.testFailed'), 'error');
     } catch (e: any) {
-      setTestResult({
-        ok: false,
-        msg: String(e?.message || e || t('settingsPrinter.testFailed')),
-      });
+      notify(
+        String(e?.message || e || t('settingsPrinter.testFailed')),
+        'error',
+      );
     } finally {
       setTesting(false);
     }
@@ -3121,20 +3102,19 @@ function PrinterProfileCard({
 
   async function runNetworkScan() {
     setScanning(true);
-    setScanHint(null);
     try {
       const fn = window.api.settings.scanNetworkPrinters;
       if (typeof fn !== 'function') {
-        setScanHint(t('settingsPrinter.scanUnavailable'));
+        notify(t('settingsPrinter.scanUnavailable'), 'warn');
         return;
       }
       const list = (await fn()) || [];
       setDiscovered(list);
       if (list.length === 0) {
-        setScanHint(t('settingsPrinter.scanNone'));
+        notify(t('settingsPrinter.scanNone'), 'warn');
         return;
       }
-      setScanHint(
+      notify(
         list.length === 1
           ? t('settingsPrinter.foundOne')
           : t('settingsPrinter.foundMany', { count: list.length }),
@@ -3145,7 +3125,10 @@ function PrinterProfileCard({
         applyDiscovered(list[0]);
       }
     } catch (e: any) {
-      setScanHint(String(e?.message || e || t('settingsPrinter.scanFailed')));
+      notify(
+        String(e?.message || e || t('settingsPrinter.scanFailed')),
+        'error',
+      );
     } finally {
       setScanning(false);
     }
@@ -3210,7 +3193,7 @@ function PrinterProfileCard({
             className="transition-transform duration-150"
             style={{ transform: expanded ? 'rotate(90deg)' : undefined }}
           >
-            <ChevronRight />
+            <IconChevronRight className="pos-icon opacity-70" />
           </span>
 
           <span className="flex-1 truncate font-semibold">{p.name}</span>
@@ -3256,7 +3239,14 @@ function PrinterProfileCard({
             <Input
               placeholder={t('settingsPrinter.namePlaceholder')}
               value={p.name}
-              onChange={(e) => onUpdate({ name: e.target.value })}
+              onChange={(e) => onUpdate({ name: e.target.value }, false)}
+              onBlur={onCommit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
             />
             <SettingsToggleRow
               title={t('settingsPrinter.enabled')}
@@ -3345,22 +3335,29 @@ function PrinterProfileCard({
                 Scan finds receipt printers on this LAN (raw port 9100). If
                 yours is missing, type the address below.
               </div>
-              {scanHint ? (
-                <div className="text-xs text-amber-200">{scanHint}</div>
-              ) : null}
               <div className="flex items-center gap-2">
                 <input
                   className="bg-gray-700 rounded px-3 py-2 flex-1"
                   placeholder={t('settingsPrinter.ipPlaceholder')}
                   value={p.ip || ''}
-                  onChange={(e) => onUpdate({ ip: e.target.value })}
+                  onChange={(e) => onUpdate({ ip: e.target.value }, false)}
+                  onBlur={onCommit}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
                 />
                 <input
                   className="w-28 bg-gray-700 rounded px-3 py-2"
                   type="number"
                   min={1}
                   value={Number(p.port || 9100)}
-                  onChange={(e) => onUpdate({ port: Number(e.target.value) })}
+                  onChange={(e) =>
+                    onUpdate({ port: Number(e.target.value) }, false)
+                  }
+                  onBlur={onCommit}
                 />
               </div>
             </div>
@@ -3435,8 +3432,9 @@ function PrinterProfileCard({
                   placeholder={t('settingsPrinter.baudPlaceholder')}
                   value={Number(p.baudRate || 19200)}
                   onChange={(e) =>
-                    onUpdate({ baudRate: Number(e.target.value) })
+                    onUpdate({ baudRate: Number(e.target.value) }, false)
                   }
+                  onBlur={onCommit}
                 />
                 <select
                   className="bg-gray-700 rounded px-3 py-2"
@@ -3496,19 +3494,9 @@ function PrinterProfileCard({
                   : t('settingsPrinter.testPrint')}
               </Button>
               <span className="text-[11px] opacity-60">
-                Sends a Hello-World slip with the values currently shown above
-                (no save needed).
+                Sends a Hello-World slip with the values currently shown above.
               </span>
             </div>
-            {testResult && (
-              <div
-                className={`mt-2 text-xs ${
-                  testResult.ok ? 'text-emerald-300' : 'text-rose-300'
-                }`}
-              >
-                {testResult.msg}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -3516,42 +3504,57 @@ function PrinterProfileCard({
   );
 }
 
+function namedTableAreas(
+  rows: { name: string; count: number }[],
+): { name: string; count: number }[] {
+  return rows
+    .map((x) => ({ ...x, name: String(x.name || '').trim() }))
+    .filter((x) => x.name);
+}
+
 function AreasSettings() {
   const { t } = useTranslation();
   const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
   const [editingArea, setEditingArea] = useState<string | null>(null);
+  const lastSavedRef = useRef('');
+
+  const persistAreas = useCallback(
+    async (rows: { name: string; count: number }[]) => {
+      const named = namedTableAreas(rows);
+      const key = JSON.stringify(named);
+      if (key === lastSavedRef.current) return;
+      lastSavedRef.current = key;
+      try {
+        await window.api.settings.update({ tableAreas: named });
+        toast.success(t('settingsAreas.saved'));
+      } catch (e: any) {
+        lastSavedRef.current = '';
+        toast.error(e?.message || t('settingsAreas.saveFailed'));
+      }
+    },
+    [t],
+  );
+
   useEffect(() => {
     (async () => {
       const s = await window.api.settings.get();
-      setAreas(s.tableAreas || []);
+      const loaded = Array.isArray(s.tableAreas) ? s.tableAreas : [];
+      setAreas(loaded);
+      lastSavedRef.current = JSON.stringify(namedTableAreas(loaded));
     })();
   }, []);
+
   return (
     <div>
       <SettingsHeader
         title={t('settingsAreas.title')}
         description={t('settingsAreas.help')}
         actions={
-          <>
-            <Button
-              onClick={() =>
-                setAreas((arr) => [...arr, { name: '', count: 8 }])
-              }
-            >
-              {t('settingsAreas.addArea')}
-            </Button>
-            <Button
-              variant="primary"
-              onClick={async () => {
-                await window.api.settings.update({
-                  tableAreas: areas.filter((x) => String(x.name || '').trim()),
-                });
-                toast.success(t('settingsAreas.saved'));
-              }}
-            >
-              {t('settingsAreas.save')}
-            </Button>
-          </>
+          <IconButton
+            label={t('settingsAreas.addArea')}
+            icon={<IconPlus />}
+            onClick={() => setAreas((arr) => [...arr, { name: '', count: 8 }])}
+          />
         }
       />
 
@@ -3571,6 +3574,7 @@ function AreasSettings() {
               <Input
                 className="flex-1"
                 value={a.name}
+                autoFocus={!a.name && idx === areas.length - 1}
                 onChange={(e) =>
                   setAreas((arr) =>
                     arr.map((x, i) =>
@@ -3578,6 +3582,21 @@ function AreasSettings() {
                     ),
                   )
                 }
+                onBlur={(e) => {
+                  const name = e.target.value;
+                  const next = areas.map((x, i) =>
+                    i === idx ? { ...x, name } : x,
+                  );
+                  setAreas(next);
+                  if (!String(name).trim()) return;
+                  void persistAreas(next);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
               />
               <KebabMenu
                 label={t('settingsAreas.removeAria', {
@@ -3587,18 +3606,21 @@ function AreasSettings() {
                   {
                     label: t('settingsAreas.editLayout'),
                     onSelect: () => {
-                      if (!a.name) {
+                      if (!String(a.name || '').trim()) {
                         toast.error(t('settingsAreas.nameFirst'));
                         return;
                       }
-                      setEditingArea(a.name);
+                      setEditingArea(a.name.trim());
                     },
                   },
                   {
                     label: t('common.remove'),
                     danger: true,
-                    onSelect: () =>
-                      setAreas((arr) => arr.filter((_, i) => i !== idx)),
+                    onSelect: () => {
+                      const next = areas.filter((_, i) => i !== idx);
+                      setAreas(next);
+                      void persistAreas(next);
+                    },
                   },
                 ]}
               />
@@ -3681,7 +3703,7 @@ function AboutSettings() {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [website, setWebsite] = useState('');
-  const [status, setStatus] = useState<string | null>(null);
+  const setStatus = useStatusToast();
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -3705,17 +3727,16 @@ function AboutSettings() {
   }, []);
 
   async function save() {
-    setStatus(null);
     setSaving(true);
     try {
       const nm = String(businessName || '').trim();
       if (nm.length < 2) {
-        setStatus(t('settingsAbout.nameRequired'));
+        setStatus(t('settingsAbout.nameRequired'), 'warn');
         return;
       }
       const em = String(email || '').trim();
       if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
-        setStatus(t('settingsAbout.emailInvalid'));
+        setStatus(t('settingsAbout.emailInvalid'), 'warn');
         return;
       }
       await window.api.settings.update({
@@ -3730,7 +3751,7 @@ function AboutSettings() {
       } as any);
       setStatus(t('settingsAbout.saved'));
     } catch (e: any) {
-      setStatus(String(e?.message || t('settingsAbout.saveFailed')));
+      setStatus(String(e?.message || t('settingsAbout.saveFailed')), 'error');
     } finally {
       setSaving(false);
     }
@@ -3741,16 +3762,6 @@ function AboutSettings() {
       <SettingsHeader
         title={t('settingsAbout.title')}
         description={t('settingsAbout.receiptHint')}
-        actions={
-          <Button
-            variant="primary"
-            onClick={() => void save()}
-            disabled={saving}
-            loading={saving}
-          >
-            {saving ? t('common.saving') : t('settingsAbout.save')}
-          </Button>
-        }
       />
       {loading ? (
         <SettingsStatus>{t('common.loading')}</SettingsStatus>
@@ -3794,9 +3805,15 @@ function AboutSettings() {
                 inputMode="url"
               />
             </Field>
-            {status ? (
-              <SettingsStatus tone="ok">{status}</SettingsStatus>
-            ) : null}
+            <Button
+              variant="primary"
+              block
+              onClick={() => void save()}
+              disabled={saving}
+              loading={saving}
+            >
+              {saving ? t('common.saving') : t('settingsAbout.save')}
+            </Button>
           </div>
         </SettingsCard>
       )}
@@ -3806,12 +3823,21 @@ function AboutSettings() {
 
 function LanSettings() {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  const lan = (key: string) =>
+    t(hasTables ? `adminLan.${key}` : `adminLan.${key}Store`);
   const [loading, setLoading] = useState(true);
   const [allowLan, setAllowLan] = useState(false);
   const [requirePairingCode, setRequirePairingCode] = useState(true);
   const [pairingCode, setPairingCode] = useState<string>('');
   const [openAtLogin, setOpenAtLogin] = useState(true);
   const [ips, setIps] = useState<string[]>([]);
+  const draftRef = useRef({
+    allowLan: false,
+    requirePairingCode: true,
+    pairingCode: '',
+    openAtLogin: true,
+  });
 
   useEffect(() => {
     (async () => {
@@ -3820,12 +3846,19 @@ function LanSettings() {
           window.api.settings.get(),
           window.api.network.getIps().catch(() => [] as string[]),
         ]);
-        setAllowLan(Boolean((s as any)?.security?.allowLan));
-        setRequirePairingCode(
-          Boolean((s as any)?.security?.requirePairingCode ?? true),
-        );
-        setPairingCode(String((s as any)?.security?.pairingCode || ''));
-        setOpenAtLogin((s as any)?.host?.openAtLogin !== false);
+        const next = {
+          allowLan: Boolean((s as any)?.security?.allowLan),
+          requirePairingCode: Boolean(
+            (s as any)?.security?.requirePairingCode ?? true,
+          ),
+          pairingCode: String((s as any)?.security?.pairingCode || ''),
+          openAtLogin: (s as any)?.host?.openAtLogin !== false,
+        };
+        draftRef.current = next;
+        setAllowLan(next.allowLan);
+        setRequirePairingCode(next.requirePairingCode);
+        setPairingCode(next.pairingCode);
+        setOpenAtLogin(next.openAtLogin);
         setIps(ipList || []);
       } finally {
         setLoading(false);
@@ -3873,80 +3906,89 @@ function LanSettings() {
       })()
     : '';
 
-  async function saveSecurity(next: {
+  async function persist(patch: {
     allowLan?: boolean;
     requirePairingCode?: boolean;
     pairingCode?: string;
+    openAtLogin?: boolean;
   }) {
+    const next = { ...draftRef.current, ...patch };
+    draftRef.current = next;
+    if (patch.allowLan != null) setAllowLan(next.allowLan);
+    if (patch.requirePairingCode != null)
+      setRequirePairingCode(next.requirePairingCode);
+    if (patch.pairingCode != null) setPairingCode(next.pairingCode);
+    if (patch.openAtLogin != null) setOpenAtLogin(next.openAtLogin);
     try {
       const updated = await window.api.settings.update({
-        security: next,
-        host: { openAtLogin },
+        security: {
+          allowLan: next.allowLan,
+          requirePairingCode: next.requirePairingCode,
+          ...(patch.pairingCode != null
+            ? { pairingCode: next.pairingCode }
+            : {}),
+        },
+        host: { openAtLogin: next.openAtLogin },
       } as any);
-      setAllowLan(Boolean((updated as any)?.security?.allowLan));
-      setRequirePairingCode(
-        Boolean((updated as any)?.security?.requirePairingCode ?? true),
-      );
-      setPairingCode(
-        String(
+      const saved = {
+        allowLan: Boolean((updated as any)?.security?.allowLan),
+        requirePairingCode: Boolean(
+          (updated as any)?.security?.requirePairingCode ?? true,
+        ),
+        pairingCode: String(
           (updated as any)?.security?.pairingCode || next.pairingCode || '',
         ),
-      );
-      setOpenAtLogin((updated as any)?.host?.openAtLogin !== false);
-      toast.success(t('adminLan.saved'));
+        openAtLogin: (updated as any)?.host?.openAtLogin !== false,
+      };
+      draftRef.current = saved;
+      setAllowLan(saved.allowLan);
+      setRequirePairingCode(saved.requirePairingCode);
+      setPairingCode(saved.pairingCode);
+      setOpenAtLogin(saved.openAtLogin);
     } catch (e: any) {
       toast.error(String(e?.message || t('adminLan.saveFailed')));
     }
   }
 
+  async function copySetupUrl() {
+    if (!staffSetupUrl) return;
+    try {
+      await navigator.clipboard.writeText(staffSetupUrl);
+      toast.success(t('adminLan.copied'));
+    } catch {
+      toast.error(t('adminLan.copyFailed'));
+    }
+  }
+
   return (
     <div>
-      <SettingsHeader
-        title={t('adminLan.title')}
-        actions={
-          <Button
-            variant="primary"
-            onClick={() => void saveSecurity({ allowLan, requirePairingCode })}
-          >
-            {t('adminLan.save')}
-          </Button>
-        }
-      />
+      <SettingsHeader title={lan('title')} />
 
       {loading ? (
         <SettingsStatus>{t('common.loading')}</SettingsStatus>
       ) : (
         <div className="space-y-3">
-          <div className="rounded-lg border border-emerald-800/50 bg-emerald-950/30 px-4 py-3">
-            <div className="text-[13px] font-semibold text-emerald-100">
-              {t('adminLan.hostRunningTitle')}
-            </div>
-            <div className="mt-1 text-[12px] text-emerald-200/80">
-              {t('adminLan.hostRunningBody')}
-            </div>
-          </div>
-
           <SettingsCard>
             <div className="space-y-4">
               <SettingsToggleRow
                 title={t('adminLan.openAtLogin')}
-                description={t('adminLan.openAtLoginHint')}
+                description={lan('openAtLoginHint')}
                 checked={openAtLogin}
-                onChange={setOpenAtLogin}
+                onChange={(next) => void persist({ openAtLogin: next })}
                 label={t('adminLan.openAtLogin')}
               />
               <SettingsToggleRow
                 title={t('adminLan.allowBrowser')}
-                description={t('adminLan.allowBrowserHelp')}
+                description={lan('allowBrowserHelp')}
                 checked={allowLan}
-                onChange={setAllowLan}
+                onChange={(next) => void persist({ allowLan: next })}
                 label={t('adminLan.allowBrowser')}
               />
               <SettingsToggleRow
                 title={t('adminLan.requirePairing')}
                 description={t('adminLan.requirePairingHelp')}
                 checked={requirePairingCode}
-                onChange={setRequirePairingCode}
+                onChange={(next) => void persist({ requirePairingCode: next })}
                 label={t('adminLan.requirePairing')}
               />
             </div>
@@ -3955,14 +3997,14 @@ function LanSettings() {
           {!allowLan && (
             <SettingsCard>
               <div className="text-[12px] text-gray-400">
-                {t('adminLan.browserDisabled')}
+                {lan('browserDisabled')}
               </div>
             </SettingsCard>
           )}
 
           <SettingsCard
             title={t('adminLan.pairingCode')}
-            description={t('adminLan.pairingHint')}
+            description={lan('pairingHint')}
             actions={
               <KebabMenu
                 label={t('common.moreActions')}
@@ -3973,7 +4015,7 @@ function LanSettings() {
                       const code = String(
                         Math.floor(100000 + Math.random() * 900000),
                       );
-                      void saveSecurity({ pairingCode: code });
+                      void persist({ pairingCode: code });
                     },
                   },
                 ]}
@@ -3986,27 +4028,22 @@ function LanSettings() {
           <SettingsCard
             title={t('adminLan.setupLink')}
             description={
-              staffSetupUrl ? t('adminLan.setupHint') : t('adminLan.noWifi')
-            }
-            actions={
-              staffSetupUrl ? (
-                <Button
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(staffSetupUrl);
-                      toast.success(t('adminLan.copied'));
-                    } catch {
-                      toast.error(t('adminLan.copyFailed'));
-                    }
-                  }}
-                >
-                  {t('adminLan.copy')}
-                </Button>
-              ) : undefined
+              staffSetupUrl ? lan('setupHint') : t('adminLan.noWifi')
             }
           >
             {staffSetupUrl ? (
-              <Input className="text-[12px]" value={staffSetupUrl} readOnly />
+              <div className="flex items-center gap-2">
+                <Input
+                  className="min-w-0 flex-1 text-[12px]"
+                  value={staffSetupUrl}
+                  readOnly
+                />
+                <IconButton
+                  label={t('adminLan.copy')}
+                  icon={<IconCopy />}
+                  onClick={() => void copySetupUrl()}
+                />
+              </div>
             ) : null}
           </SettingsCard>
         </div>

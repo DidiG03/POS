@@ -6,6 +6,7 @@ import type { UserDTO } from '@shared/ipc';
 
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import { BrandMark } from '../../components/BrandMark';
+import { IconChevronLeft } from '../../components/icons';
 
 // Mirrored from LoginPage so a tablet that paired through the staff
 // login is recognised here without re-entering the code.
@@ -196,7 +197,7 @@ export default function ReservationsLoginPage() {
 
   return (
     <div
-      className="min-h-dvh flex flex-col items-center justify-center pos-app pos-app--auth text-gray-100 p-3 sm:p-4"
+      className="h-dvh flex flex-col items-center justify-center pos-app pos-app--auth text-gray-100 overflow-y-auto p-3 sm:p-4"
       style={{
         paddingTop: 'max(env(safe-area-inset-top), 0.75rem)',
         paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)',
@@ -216,19 +217,7 @@ export default function ReservationsLoginPage() {
                 onClick={() => navigate('/', { replace: true })}
                 className="pos-icon-btn shrink-0 -ml-1 cursor-pointer text-gray-200"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="pos-icon"
-                  aria-hidden
-                >
-                  <path d="M15 18l-6-6 6-6" />
-                </svg>
+                <IconChevronLeft />
               </button>
             )}
             <div className="min-w-0">

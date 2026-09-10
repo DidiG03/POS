@@ -1,6 +1,13 @@
 import type { SettingsDTO, TicketPrintMeta } from '@shared/ipc';
 import { resolveVatEnabledFromMeta } from '@shared/vatFromFiscal';
 import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
+import {
+  editionHasTables,
+  formatSaleLocation,
+  isStoreCounterArea,
+} from '@shared/editionCapabilities';
+import { kitchenSlipNeedsCourseBanner } from '@shared/ticketCourseFire';
+import { getActiveLicenseEdition } from './services/license';
 import os from 'node:os';
 import { BrowserWindow } from 'electron';
 import fs from 'node:fs/promises';
@@ -23,6 +30,15 @@ const GS = Buffer.from([0x1d]);
 
 function cmdPrinterInit(): Buffer[] {
   return [ESC, Buffer.from('@'), ESC_POS_FONT_A, ESC_POS_PC850];
+}
+
+function receiptDiningFloor(area?: string | null): boolean {
+  if (isStoreCounterArea(area)) return false;
+  return editionHasTables(getActiveLicenseEdition());
+}
+
+function receiptStaffLabel(diningFloor: boolean): string {
+  return diningFloor ? 'Waiter' : 'Cashier';
 }
 
 function twoCol(left: string, right: string, layout: ReceiptLayout): Buffer[] {
@@ -74,6 +90,7 @@ export type TicketPrintItem = {
   station?: 'KITCHEN' | 'BAR' | 'DESSERT';
   categoryId?: number;
   categoryName?: string;
+  courseId?: string | null;
 };
 
 function aggregateTicketItems(items: TicketPrintItem[]): TicketPrintItem[] {
@@ -150,7 +167,11 @@ export function buildEscposShiftSummary(
   lines.push(cmdBold(false));
   lines.push(escposText(`${layout.sep}\n`));
   lines.push(cmdAlign('left'));
-  lines.push(escposText(`Waiter: ${summary.waiterName}\n`));
+  lines.push(
+    escposText(
+      `${receiptStaffLabel(editionHasTables(getActiveLicenseEdition()))}: ${summary.waiterName}\n`,
+    ),
+  );
   lines.push(escposText(`Opened: ${opened}\n`));
   lines.push(escposText(`Closed: ${closed}\n`));
   lines.push(escposText(`${layout.sep}\n`));
@@ -262,14 +283,35 @@ export function buildEscposTicket(
         : '';
     lines.push(escposText(`${top ? top + ' ' : ''}ORDER\n`));
     lines.push(cmdBold(false));
+    const courseLabel = String(meta?.courseLabel || '').trim();
+    if (courseLabel && kitchenSlipNeedsCourseBanner(itemsToPrint)) {
+      lines.push(cmdBold(true));
+      lines.push(escposText(`${courseLabel.toUpperCase()}\n`));
+      lines.push(cmdBold(false));
+    }
   }
   lines.push(escposText(`${layout.sep}\n`));
   lines.push(cmdAlign('left'));
   // Avoid Unicode bullets / fancy separators (often render as garbage on ESC/POS)
-  const tableInfo = `${payload.area} - ${payload.tableLabel}`;
+  const diningFloor = receiptDiningFloor(payload.area);
+  const tableInfo = formatSaleLocation({
+    diningFloor,
+    area: payload.area,
+    tableLabel: payload.tableLabel,
+  });
   lines.push(escposText(`${tableInfo}\n`));
-  if (payload.covers) lines.push(escposText(`Covers: ${payload.covers}\n`));
-  if (payload.userName) lines.push(escposText(`Waiter: ${payload.userName}\n`));
+  if (diningFloor && payload.covers)
+    lines.push(escposText(`Covers: ${payload.covers}\n`));
+  const seatLabel = String(meta?.seatLabel || '').trim();
+  if (kind !== 'ORDER' && seatLabel) {
+    lines.push(cmdBold(true));
+    lines.push(escposText(`${seatLabel.toUpperCase()}\n`));
+    lines.push(cmdBold(false));
+  }
+  if (payload.userName)
+    lines.push(
+      escposText(`${receiptStaffLabel(diningFloor)}: ${payload.userName}\n`),
+    );
   lines.push(escposText(`${nowStr}\n`));
   lines.push(escposText(`${layout.sep}\n`));
 
@@ -476,6 +518,8 @@ export function buildHtmlReceipt(
   const stationLabel = String(meta?.station || '').toUpperCase();
   const routeLabel = String(meta?.routeLabel || '').trim();
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
+  const courseLabel = String(meta?.courseLabel || '').trim();
+  const seatLabel = String(meta?.seatLabel || '').trim();
 
   const safe = (s: any) =>
     String(s ?? '')
@@ -596,9 +640,11 @@ export function buildHtmlReceipt(
     <div class="${kind === 'ORDER' ? 'titleSlip' : 'title'}">${safe(restaurant)}</div>
     ${subtitleHtml}
     ${kind === 'ORDER' ? `<div class="paid">${safe(`${routeLabel ? routeLabel.toUpperCase() : stationLabel && stationLabel !== 'ALL' ? stationLabel : ''}${routeLabel || (stationLabel && stationLabel !== 'ALL') ? ' ' : ''}ORDER`)}</div>` : ''}
-    <div class="small">${safe(`${payload.area} - ${payload.tableLabel}`)}</div>
-    ${payload.covers ? `<div class="small">Covers: ${safe(payload.covers)}</div>` : ''}
-    ${payload.userName ? `<div class="small">Waiter: ${safe(payload.userName)}</div>` : ''}
+    ${kind === 'ORDER' && courseLabel && kitchenSlipNeedsCourseBanner(items) ? `<div class="paid">${safe(courseLabel.toUpperCase())}</div>` : ''}
+    <div class="small">${safe(formatSaleLocation({ diningFloor: receiptDiningFloor(payload.area), area: payload.area, tableLabel: payload.tableLabel }))}</div>
+    ${receiptDiningFloor(payload.area) && payload.covers ? `<div class="small">Covers: ${safe(payload.covers)}</div>` : ''}
+    ${kind !== 'ORDER' && seatLabel ? `<div class="paid">${safe(seatLabel.toUpperCase())}</div>` : ''}
+    ${payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area)))}: ${safe(payload.userName)}</div>` : ''}
     <div class="small">${safe(nowStr)}</div>
     <div class="sep"></div>
     ${rows}

@@ -15,9 +15,11 @@ const settings = {
   currency: 'ALL',
   defaultVatRate: 0.2,
   fiscal: {
-    baseUrl: 'https://cloud.easypos.al/api',
+    baseUrl: 'https://api.dev.easypos.al/fiscalisation-service/v1',
     defaultSoldIn: 'XPP',
     defaultOperatorId: 'gh537ez280',
+    integrationApp: 'generic',
+    authToken: 'jwt',
   },
 } as unknown as SettingsDTO;
 
@@ -49,7 +51,7 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
         totalAfter: total,
       }),
       settings,
-      { onAdjustment },
+      { docId: 'inv-rounding-half-cent', onAdjustment },
     );
 
     // A divergence here shows up as a spurious 1-cent "Adjustment" line.
@@ -68,7 +70,7 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
         { totalAfter: 30.47, discountAmount: 4.5 },
       ),
       settings,
-      {},
+      { docId: 'inv-payment-matches-lines' },
     );
     expect(draft.payment[0].amount).toBeCloseTo(articleTotal(draft), 2);
     expect(draft.payment[0].amount).toBe(30.47);
@@ -81,10 +83,62 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
         totalAfter: 9,
       }),
       settings,
-      { onAdjustment },
+      { docId: 'inv-balancing-line', onAdjustment },
     );
     expect(draft.articles).toHaveLength(2);
     expect(draft.payment[0].amount).toBe(9);
     expect(onAdjustment).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('article IDs', () => {
+  const withFallback = {
+    ...settings,
+    fiscal: { ...(settings as any).fiscal, cloudFallbackArticleId: 'PROD001' },
+  } as unknown as SettingsDTO;
+
+  it('keeps a real menu SKU even when a fallback is configured', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload(
+        [{ sku: 'ESP', name: 'Espresso', qty: 1, unitPrice: 150 }] as any,
+        {
+          totalAfter: 150,
+        },
+      ),
+      withFallback,
+      { docId: 'inv-sku-wins' },
+    );
+    expect(draft.articles[0].articleId).toBe('ESP');
+  });
+
+  it('uses the fallback only for lines with no catalog SKU', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload([{ name: 'Espresso', qty: 1, unitPrice: 150 }], {
+        totalAfter: 165,
+        serviceChargeAmount: 15,
+      }),
+      withFallback,
+      { docId: 'inv-fallback-uncoded' },
+    );
+    expect(draft.articles.map((a) => a.articleId)).toEqual([
+      'PROD001',
+      'PROD001',
+    ]);
+    expect(draft.articles[1].name).toBe('Service charge');
+  });
+
+  it('does not invent a catalog ID when no fallback is set', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload(
+        [{ sku: 'ESP', name: 'Espresso', qty: 1, unitPrice: 150 }] as any,
+        {
+          totalAfter: 150,
+        },
+      ),
+      settings,
+      { docId: 'inv-sku-plain' },
+    );
+    expect(draft.articles[0].articleId).toBe('ESP');
+    expect(draft.operatorCode).toBe('gh537ez280');
   });
 });

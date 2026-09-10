@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../stores/adminSession';
+import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { BrandMark } from '../components/BrandMark';
 import { EmptyState, StatusChip, cn } from '../components/ui';
 import type { Tone } from '../components/ui';
@@ -26,6 +27,7 @@ type AdminNavItem = {
 
 export default function AdminLayout() {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const me = useAdminSessionStore((s) => s.user);
@@ -134,7 +136,7 @@ export default function AdminLayout() {
       },
       {
         to: '/admin/menu',
-        labelKey: 'adminLayout.menu',
+        labelKey: hasTables ? 'adminLayout.menu' : 'adminLayout.products',
         icon: <IconMenuBook />,
       },
       { to: '/admin/stock', labelKey: 'adminLayout.stock', icon: <IconBox /> },
@@ -144,7 +146,7 @@ export default function AdminLayout() {
         icon: <IconSettings />,
       },
     ],
-    [],
+    [hasTables],
   );
 
   // Longest matching route wins so /admin doesn't claim every child path.
@@ -177,14 +179,14 @@ export default function AdminLayout() {
   };
 
   return (
-    <div className="pos-app flex h-screen min-h-0 text-gray-100">
+    <div className="admin-app pos-app flex h-screen min-h-0 text-gray-100">
       {/* Sidebar — the back office has six sections, which is more than a
           horizontal bar can hold without truncating. */}
-      <aside className="hidden w-[220px] shrink-0 flex-col border-r border-white/7 bg-[var(--pos-canvas)] lg:flex">
-        <div className="flex h-[52px] shrink-0 items-center border-b border-white/7 px-4">
+      <aside className="admin-rail hidden w-[220px] shrink-0 flex-col border-r border-white/[0.06] lg:flex">
+        <div className="flex min-h-[var(--pos-header-h)] shrink-0 items-center px-4">
           <BrandMark size="sm" compact subtitle={t('adminLayout.panelTitle')} />
         </div>
-        <nav className="min-h-0 flex-1 overflow-y-auto p-2.5">
+        <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-3">
           <div className="space-y-0.5">
             {navItems.map((item) => (
               <NavLink
@@ -204,8 +206,8 @@ export default function AdminLayout() {
             ))}
           </div>
         </nav>
-        <div className="shrink-0 border-t border-white/7 p-2.5">
-          <div className="flex items-center gap-2 rounded-lg px-1.5 py-1.5">
+        <div className="shrink-0 border-t border-white/[0.06] px-2.5 py-2.5">
+          <div className="flex items-center gap-2.5 px-1.5 py-1">
             <span className="pos-avatar">
               {initials(me?.displayName || 'A')}
             </span>
@@ -230,15 +232,12 @@ export default function AdminLayout() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header
-          className="pos-header safe-x flex shrink-0 items-center gap-3 pt-[max(0px,env(safe-area-inset-top))]"
-          style={{ minHeight: 'var(--pos-header-h)' }}
-        >
+      <div className="admin-workspace flex min-w-0 flex-1 flex-col">
+        <header className="pos-header safe-x flex shrink-0 items-center gap-3">
           <div className="lg:hidden">
             <BrandMark size="sm" compact wordmark={false} />
           </div>
-          <h1 className="hidden min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight text-gray-50 lg:block">
+          <h1 className="admin-page-title hidden min-w-0 flex-1 truncate lg:block">
             {activeLabel}
           </h1>
 
@@ -295,7 +294,7 @@ export default function AdminLayout() {
               </button>
               {showNotifications && (
                 <div
-                  className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-80 overflow-hidden"
+                  className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-80 max-w-[calc(100vw-1.25rem)] overflow-hidden"
                   tabIndex={-1}
                 >
                   <div className="flex items-center justify-between gap-3 border-b border-white/7 px-3 py-2.5">
@@ -341,7 +340,14 @@ export default function AdminLayout() {
           </div>
         </header>
 
-        <main className="safe-pb safe-x flex min-h-0 flex-1 flex-col overflow-auto py-4 sm:py-5">
+        <main
+          className={cn(
+            'flex min-h-0 flex-1 flex-col overflow-auto',
+            location.pathname.startsWith('/admin/settings')
+              ? 'px-3 pt-2 pb-4 lg:p-0'
+              : 'safe-pb px-6 pt-5 pb-8 sm:px-8 sm:pt-6',
+          )}
+        >
           <Outlet />
         </main>
       </div>

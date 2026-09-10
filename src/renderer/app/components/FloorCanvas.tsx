@@ -30,6 +30,7 @@ import {
   tablesTouching,
   type TableMergeGroup,
 } from '@shared/tableMerge';
+import { IconClose } from '../../components/icons';
 
 // Tables can render as one of three shapes. `circle` is the historical
 // default and is preserved when the saved layout doesn't include `shape`.
@@ -1577,7 +1578,7 @@ function Inspector({
           onClick={onClose}
           title="Close inspector"
         >
-          ✕
+          <IconClose />
         </button>
       </div>
       <div className="p-3 space-y-3">
@@ -2109,7 +2110,7 @@ function AreaRect({
             }}
             title="Delete"
           >
-            ✕
+            <IconClose className="size-3" />
           </button>
           <div
             data-handle="e"
@@ -2605,7 +2606,7 @@ function Circle({
           }}
           title="Delete table"
         >
-          ✕
+          <IconClose className="size-3" />
         </button>
       )}
     </div>

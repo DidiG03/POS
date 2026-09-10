@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BrandMark } from '../../components/BrandMark';
 import {
@@ -16,7 +23,6 @@ import {
   type KdsTheme,
 } from '../../utils/kdsDisplayConfig';
 import {
-  KDS_BUMP_BAR_PROGRAMMING,
   kdsBumpBarActionFromEvent,
   type KdsBumpBarAction,
 } from '../../utils/kdsBumpBar';
@@ -34,7 +40,18 @@ import {
   paginateTicketBlocks,
   withCardChrome,
 } from './kdsPagination';
+import {
+  clampKdsDevMenuPos,
+  KDS_DEV_BUMP_MENU,
+  kdsItemIsBumpable,
+} from './kdsDevBumpMenu';
 import { pollIntervalMs } from '../../utils/netQuality';
+import {
+  IconCheck,
+  IconChevronLeft,
+  IconChevronRight,
+  IconFlame,
+} from '../../components/icons';
 
 type Station = KdsStation;
 type Tab = 'NEW' | 'DONE' | 'SETTINGS';
@@ -171,6 +188,13 @@ function countTicketsOnPages(pages: number[][], fromPage: number): number {
   return n;
 }
 
+type KdsDevBumpMenu = {
+  x: number;
+  y: number;
+  ticketIdx: number;
+  itemIdx: number | null;
+};
+
 export default function KdsPage() {
   const navigate = useNavigate();
   const initialStation = loadKdsDisplayStation();
@@ -216,6 +240,8 @@ export default function KdsPage() {
   const [kdsHostEnabled, setKdsHostEnabled] = useState(true);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [devBumpMenu, setDevBumpMenu] = useState<KdsDevBumpMenu | null>(null);
+  const devBumpMenuRef = useRef<HTMLDivElement | null>(null);
 
   const kdsUpdater = () =>
     (window as any).kdsApp?.updater ?? (window as any).api?.updater;
@@ -645,6 +671,52 @@ export default function KdsPage() {
   }, [bumpItem]);
 
   useEffect(() => {
+    setDevBumpMenu(null);
+  }, [tab, station, cooker, listPage]);
+
+  useEffect(() => {
+    if (!KDS_DEV_BUMP_MENU || !devBumpMenu) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const el = devBumpMenuRef.current;
+      if (el && el.contains(e.target as Node)) return;
+      setDevBumpMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDevBumpMenu(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [devBumpMenu]);
+
+  const openDevBumpMenu = useCallback(
+    (e: MouseEvent, ticketIdx: number) => {
+      if (!KDS_DEV_BUMP_MENU || tab !== 'NEW') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const node = e.target instanceof Element ? e.target : null;
+      const itemEl = node?.closest('[data-kds-item-idx]');
+      const rawIdx = itemEl
+        ? Number(itemEl.getAttribute('data-kds-item-idx'))
+        : NaN;
+      const itemIdx = Number.isFinite(rawIdx) ? rawIdx : null;
+      setSelectedIdx(ticketIdx);
+      selectedIdxRef.current = ticketIdx;
+      setSelectedItemIdx(itemIdx);
+      selectedItemIdxRef.current = itemIdx;
+      setDevBumpMenu({
+        ...clampKdsDevMenuPos(e.clientX, e.clientY),
+        ticketIdx,
+        itemIdx,
+      });
+    },
+    [tab],
+  );
+
+  useEffect(() => {
     const root = pageRef.current;
     if (!root) return;
 
@@ -761,6 +833,7 @@ export default function KdsPage() {
     }
     window.addEventListener('pos:ticketsChanged', onSse);
     window.addEventListener('pos:tablesChanged', onSse);
+    window.addEventListener('pos:syncCatchup', onSse);
 
     return () => {
       alive = false;
@@ -773,6 +846,7 @@ export default function KdsPage() {
       }
       window.removeEventListener('pos:ticketsChanged', onSse);
       window.removeEventListener('pos:tablesChanged', onSse);
+      window.removeEventListener('pos:syncCatchup', onSse);
     };
   }, [station, tab, cooker, claimBoardWrite, commitBoard]);
 
@@ -1108,6 +1182,15 @@ export default function KdsPage() {
   const posHost = (window as any).__POS_HOST__ as
     | { host?: string; httpPort?: number }
     | undefined;
+  const devBumpTicket =
+    KDS_DEV_BUMP_MENU && tab === 'NEW' && devBumpMenu
+      ? tickets[devBumpMenu.ticketIdx]
+      : undefined;
+  const devBumpItem =
+    devBumpTicket && devBumpMenu?.itemIdx != null
+      ? devBumpTicket.items[devBumpMenu.itemIdx]
+      : undefined;
+  const canDevBumpItem = kdsItemIsBumpable(devBumpItem, cooker);
 
   return (
     <div
@@ -1317,7 +1400,6 @@ export default function KdsPage() {
               {posHost?.host ? (
                 <div className="text-sm font-mono opacity-80">
                   {posHost.host}
-                  {posHost.httpPort ? `:${posHost.httpPort}` : ''}
                 </div>
               ) : (
                 <div className="text-sm opacity-70">Not connected yet.</div>
@@ -1327,7 +1409,7 @@ export default function KdsPage() {
                 onClick={() => navigate('/kds-setup')}
                 className="px-4 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-sm font-medium"
               >
-                Connect to POS
+                Scan
               </button>
             </section>
           ) : null}
@@ -1347,38 +1429,6 @@ export default function KdsPage() {
                 <span className="text-rose-400 font-mono">Red</span> —{' '}
                 {KDS_TIMER_LATE_MINUTES} min or more
               </div>
-            </div>
-          </section>
-
-          <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
-            <div className="text-sm font-semibold">Bump bar keys</div>
-            <div className="text-xs opacity-70">
-              Program each physical key to send the keystroke below. Press{' '}
-              <span className="font-mono text-indigo-300">J</span> on the bump
-              bar to open this Settings tab.
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left opacity-70 border-b border-gray-800">
-                    <th className="py-1 pr-3">Button</th>
-                    <th className="py-1 pr-3">Keystroke</th>
-                    <th className="py-1">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {KDS_BUMP_BAR_PROGRAMMING.map((row) => (
-                    <tr
-                      key={row.button}
-                      className="border-b border-gray-900/80"
-                    >
-                      <td className="py-1.5 pr-3 font-medium">{row.button}</td>
-                      <td className="py-1.5 pr-3 font-mono">{row.keystroke}</td>
-                      <td className="py-1.5 opacity-80">{row.action}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           </section>
         </div>
@@ -1421,6 +1471,16 @@ export default function KdsPage() {
                   <div
                     key={`${station}-${tab}-${t.ticketId}`}
                     data-kds-ticket-idx={ticketIdx}
+                    onContextMenu={
+                      KDS_DEV_BUMP_MENU && tab === 'NEW'
+                        ? (e) => openDevBumpMenu(e, ticketIdx)
+                        : undefined
+                    }
+                    title={
+                      KDS_DEV_BUMP_MENU && tab === 'NEW'
+                        ? 'Right-click to bump (dev)'
+                        : undefined
+                    }
                     className={`relative mb-3 bg-gray-900 border rounded p-3 transition-shadow [content-visibility:auto] [contain-intrinsic-size:auto_240px] ${
                       timerUrgency
                         ? kdsTimerUrgencyCardAccent(timerUrgency)
@@ -1539,28 +1599,24 @@ export default function KdsPage() {
                             >
                               <span>
                                 {locked ? (
-                                  <svg
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
+                                  <span
                                     role="img"
                                     aria-label="Cooking"
-                                    className="mr-1.5 inline-block h-[0.9em] w-[0.9em] align-[-0.12em] text-amber-500"
+                                    title="Cooking"
+                                    className="mr-1.5 inline-flex align-[-0.12em] text-amber-500"
                                   >
-                                    <title>Cooking</title>
-                                    <path d="M6 2a1 1 0 0 0 0 2h1v2.6a5 5 0 0 0 2.4 4.28L11 12l-1.6.92A5 5 0 0 0 7 17.2V20H6a1 1 0 1 0 0 2h12a1 1 0 1 0 0-2h-1v-2.8a5 5 0 0 0-2.4-4.28L13 12l1.6-.92A5 5 0 0 0 17 6.8V4h1a1 1 0 1 0 0-2H6zm3 2h6v2.6a3 3 0 0 1-1.49 2.6L12 10.27l-1.51-1.07A3 3 0 0 1 9 6.6V4z" />
-                                  </svg>
+                                    <IconFlame className="h-[0.9em] w-[0.9em]" />
+                                  </span>
                                 ) : null}
                                 {ready || cookedWaiting ? (
-                                  <svg
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
+                                  <span
                                     role="img"
                                     aria-label="Ready"
-                                    className="mr-1.5 inline-block h-[0.95em] w-[0.95em] align-[-0.15em] text-emerald-500"
+                                    title="Ready"
+                                    className="mr-1.5 inline-flex align-[-0.15em] text-emerald-500"
                                   >
-                                    <title>Ready</title>
-                                    <path d="M9.55 17.6 4.4 12.45a1 1 0 0 1 1.42-1.42l3.73 3.74 8.23-8.23a1 1 0 0 1 1.42 1.42l-8.94 8.94a1 1 0 0 1-1.42 0z" />
-                                  </svg>
+                                    <IconCheck className="h-[0.95em] w-[0.95em]" />
+                                  </span>
                                 ) : null}
                                 {it.name}
                               </span>
@@ -1600,21 +1656,7 @@ export default function KdsPage() {
                   className="pointer-events-auto flex h-16 w-16 flex-col items-center justify-center rounded-full border-2 border-gray-600 bg-gray-900/95 text-white shadow-lg hover:bg-gray-800 active:scale-95"
                   onClick={() => setListPage((p) => Math.max(0, p - 1))}
                 >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    className="h-7 w-7"
-                    aria-hidden
-                  >
-                    <path
-                      d="M14 6l-6 6 6 6"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                  <IconChevronLeft className="h-7 w-7" />
                   {previousTicketCount > 0 ? (
                     <span className="mt-0.5 text-xs font-bold tabular-nums leading-none">
                       {previousTicketCount}
@@ -1641,21 +1683,7 @@ export default function KdsPage() {
                   <span className="text-lg font-bold tabular-nums leading-none">
                     {remainingTicketCount}
                   </span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    className="mt-0.5 h-6 w-6"
-                    aria-hidden
-                  >
-                    <path
-                      d="M10 6l6 6-6 6"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                  <IconChevronRight className="mt-0.5 h-6 w-6" />
                 </button>
               ) : (
                 <span />
@@ -1823,6 +1851,50 @@ export default function KdsPage() {
           </div>
         </div>
       )}
+
+      {KDS_DEV_BUMP_MENU && tab === 'NEW' && devBumpMenu && devBumpTicket ? (
+        <div
+          ref={devBumpMenuRef}
+          role="menu"
+          aria-label="Bump (development)"
+          className="fixed z-[60] min-w-[13.5rem] overflow-hidden rounded-lg border border-amber-700/60 bg-gray-900 py-1 shadow-2xl"
+          style={{ left: devBumpMenu.x, top: devBumpMenu.y }}
+        >
+          <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300/80">
+            Development
+          </div>
+          {canDevBumpItem && devBumpItem && devBumpMenu.itemIdx != null ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full flex-col items-start px-3 py-2 text-left text-sm text-gray-100 hover:bg-emerald-800"
+              onClick={() => {
+                const idx = devBumpMenu.itemIdx;
+                const ticket = devBumpTicket;
+                setDevBumpMenu(null);
+                if (idx != null) void bumpItem(ticket, idx);
+              }}
+            >
+              <span className="font-semibold">Bump item</span>
+              <span className="max-w-[14rem] truncate text-xs opacity-70">
+                {devBumpItem.name}
+              </span>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-start px-3 py-2 text-left text-sm font-semibold text-gray-100 hover:bg-emerald-800"
+            onClick={() => {
+              const ticket = devBumpTicket;
+              setDevBumpMenu(null);
+              void bumpTicket(ticket);
+            }}
+          >
+            Bump ticket
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

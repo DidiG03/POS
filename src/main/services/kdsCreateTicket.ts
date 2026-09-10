@@ -1,5 +1,9 @@
 import { prisma } from '@db/client';
 import { ALL_KDS_STATIONS } from '@shared/kdsStations';
+import {
+  courseKeyFromItems,
+  isImmediateFireStation,
+} from '@shared/ticketCourseFire';
 import { coreServices } from './core';
 import { dayKeyLocal } from './kdsRetention';
 import { ensureKdsLocalSchema } from './kdsSchema';
@@ -18,13 +22,111 @@ export type CreateKdsTicketInput = {
   /** Newly fired lines only — merged into the open KDS ticket when present. */
   fireItems?: any[];
   note?: string | null;
+  /** Printed on the KDS card when this fire is a later course. */
+  courseLabel?: string | null;
 };
 
+function kdsFireBatches(decorated: any[]): any[][] {
+  const drinks = decorated.filter((it) => isImmediateFireStation(it?.station));
+  const food = decorated.filter((it) => !isImmediateFireStation(it?.station));
+  const batches: any[][] = [];
+  if (drinks.length) batches.push(drinks);
+  if (food.length) batches.push(food);
+  return batches;
+}
+
+async function upsertKdsTicket(opts: {
+  tx: any;
+  order: { id: number; orderNo: number };
+  decorated: any[];
+  usedStations: string[];
+  safeUserId: number | null;
+  now: Date;
+  note?: string | null;
+  courseLabel?: string | null;
+}): Promise<{ orderNo: number; ticketId: number }> {
+  const incomingCourseKey = courseKeyFromItems(opts.decorated);
+  const openTickets = await opts.tx.kdsTicket.findMany({
+    where: {
+      orderId: opts.order.id,
+      stations: { some: { status: 'NEW' } },
+    },
+    orderBy: { id: 'desc' },
+  });
+  const existingTicket = openTickets.find(
+    (t: { itemsJson?: unknown }) =>
+      courseKeyFromItems(t.itemsJson) === incomingCourseKey,
+  );
+
+  if (existingTicket) {
+    const prev = Array.isArray(existingTicket.itemsJson)
+      ? (existingTicket.itemsJson as any[])
+      : [];
+    const merged = [...prev, ...opts.decorated];
+    await opts.tx.kdsTicket.update({
+      where: { id: existingTicket.id },
+      data: { itemsJson: merged },
+    });
+    for (const st of opts.usedStations) {
+      const row = await opts.tx.kdsTicketStation.findFirst({
+        where: { ticketId: existingTicket.id, station: st },
+      });
+      if (!row) {
+        await opts.tx.kdsTicketStation.create({
+          data: {
+            ticketId: existingTicket.id,
+            station: st,
+            status: 'NEW',
+          },
+        });
+      } else if (String(row.status || '').toUpperCase() !== 'NEW') {
+        await opts.tx.kdsTicketStation.update({
+          where: { id: row.id },
+          data: {
+            status: 'NEW',
+            bumpedAt: null,
+            bumpedById: null,
+          },
+        });
+      }
+    }
+    return { orderNo: opts.order.orderNo, ticketId: existingTicket.id };
+  }
+
+  const isDrinksOnly = opts.decorated.every((it) =>
+    isImmediateFireStation(it?.station),
+  );
+  const courseNote = isDrinksOnly ? '' : String(opts.courseLabel || '').trim();
+  const ticketNote = courseNote
+    ? [courseNote, opts.note].filter(Boolean).join(' · ')
+    : (opts.note ?? null);
+  const ticket = await opts.tx.kdsTicket.create({
+    data: {
+      orderId: opts.order.id,
+      userId: opts.safeUserId,
+      firedAt: opts.now,
+      itemsJson: opts.decorated,
+      note: ticketNote,
+    },
+  });
+
+  for (const st of opts.usedStations) {
+    await opts.tx.kdsTicketStation.create({
+      data: {
+        ticketId: ticket.id,
+        station: st,
+        status: 'NEW',
+      },
+    });
+  }
+
+  return { orderNo: opts.order.orderNo, ticketId: ticket.id };
+}
+
 /**
- * Create or extend the kitchen ticket for a table send. When the table
- * already has a KDS order with a NEW ticket, newly fired items are
- * appended to that ticket instead of spawning a second card — this is
- * what waiters expect when they "fire" additional items on an open table.
+ * Create or extend kitchen tickets for a table send. Drinks are written
+ * first as their own card (not a course). Food merges onto an existing
+ * NEW ticket only when they share the same course.
  */
 export async function createKdsTicketFromLog(
   input: CreateKdsTicketInput,
@@ -53,8 +155,10 @@ export async function createKdsTicketFromLog(
     skuToKdsStation: {},
   }));
   const decorated = decorateKdsTicketItemsFromCategory(rawLines, routing);
-  const usedStations = kdsStationsWithActiveItems(decorated, enabled);
-  if (usedStations.length === 0) return null;
+  const batches = kdsFireBatches(decorated).filter(
+    (batch) => kdsStationsWithActiveItems(batch, enabled).length > 0,
+  );
+  if (batches.length === 0) return null;
 
   const now = new Date();
   const dayKey = dayKeyLocal(now);
@@ -100,66 +204,21 @@ export async function createKdsTicketFromLog(
       });
     }
 
-    const existingTicket = await tx.kdsTicket.findFirst({
-      where: {
-        orderId: order.id,
-        stations: { some: { status: 'NEW' } },
-      },
-      orderBy: { id: 'desc' },
-    });
-
-    if (existingTicket) {
-      const prev = Array.isArray(existingTicket.itemsJson)
-        ? (existingTicket.itemsJson as any[])
-        : [];
-      const merged = [...prev, ...decorated];
-      await tx.kdsTicket.update({
-        where: { id: existingTicket.id },
-        data: { itemsJson: merged },
-      });
-      for (const st of usedStations) {
-        const row = await tx.kdsTicketStation.findFirst({
-          where: { ticketId: existingTicket.id, station: st },
-        });
-        if (!row) {
-          await tx.kdsTicketStation.create({
-            data: { ticketId: existingTicket.id, station: st, status: 'NEW' },
-          });
-        } else if (String(row.status || '').toUpperCase() !== 'NEW') {
-          await tx.kdsTicketStation.update({
-            where: { id: row.id },
-            data: {
-              status: 'NEW',
-              bumpedAt: null,
-              bumpedById: null,
-            },
-          });
-        }
-      }
-      return { orderNo: order.orderNo, ticketId: existingTicket.id };
-    }
-
-    const ticket = await tx.kdsTicket.create({
-      data: {
-        orderId: order.id,
-        userId: safeUserId,
-        firedAt: now,
-        itemsJson: decorated,
-        note: input.note ?? null,
-      },
-    });
-
-    for (const st of usedStations) {
-      await tx.kdsTicketStation.create({
-        data: {
-          ticketId: ticket.id,
-          station: st,
-          status: 'NEW',
-        },
+    let last: { orderNo: number; ticketId: number } | null = null;
+    for (const batch of batches) {
+      const usedStations = kdsStationsWithActiveItems(batch, enabled);
+      last = await upsertKdsTicket({
+        tx,
+        order,
+        decorated: batch,
+        usedStations,
+        safeUserId,
+        now,
+        note: input.note,
+        courseLabel: input.courseLabel,
       });
     }
-
-    return { orderNo: order.orderNo, ticketId: ticket.id };
+    return last;
   });
 
   return created;

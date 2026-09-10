@@ -4,16 +4,23 @@ import { type ParsedMenuRow, parseMenuWorkbook } from '../../utils/menuImport';
 import { type KdsStation } from '@shared/kdsStations';
 import { PageSpinner } from '../../components/PageSpinner';
 import {
-  IconWarningTriangle,
   normalizeStock,
   type StockLevel,
 } from '../../components/StockAvailabilityPanel';
+import {
+  IconAlert,
+  IconClose,
+  IconPlus,
+  IconRefresh,
+  IconUpload,
+} from '../../components/icons';
 import { KebabMenu } from '../components/SettingsChrome';
 import { Button, IconButton } from '../../components/ui/Button';
 import { Field, Input, Select, Switch } from '../../components/ui/Field';
 import { Badge } from '../../components/ui/Badge';
 import { EmptyState } from '../../components/ui/Surface';
 import { cn } from '../../components/ui/cn';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 
 type MenuItem = {
   id: number;
@@ -110,25 +117,6 @@ function vatPercent(rate: number): number {
   return n > 1 ? Math.round(n) : Math.round(n * 100);
 }
 
-function IconPlus() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M12 5v14M5 12h14"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 function KdsStationSelect({
   value,
   onChange,
@@ -152,78 +140,6 @@ function KdsStationSelect({
         </option>
       ))}
     </Select>
-  );
-}
-
-function IconRefresh() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M20 12a8 8 0 1 1-2.34-5.66"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M20 4v6h-6"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function IconX() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M6 6l12 12M18 6 6 18"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconUpload() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      aria-hidden
-    >
-      <path
-        d="M12 16V4m0 0L8 8m4-4 4 4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 
@@ -277,14 +193,12 @@ function Modal({
           </div>
           <IconButton
             label={t('common.close')}
-            icon={<IconX />}
+            icon={<IconClose />}
             onClick={onClose}
           />
         </div>
         <div className="p-4 sm:p-5">
-          <div className="rounded-lg border border-white/7 bg-[var(--pos-canvas)] p-4 sm:p-5">
-            {children}
-          </div>
+          <div className="admin-panel p-4 sm:p-5">{children}</div>
         </div>
       </div>
     </div>
@@ -293,6 +207,7 @@ function Modal({
 
 export default function AdminMenuPage() {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [cats, setCats] = useState<MenuCategory[]>([]);
@@ -417,7 +332,7 @@ export default function AdminMenuPage() {
   return (
     <>
       <div className="flex h-full min-h-0 flex-col gap-3 md:flex-row">
-        <aside className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-lg border border-white/7 bg-[var(--pos-surface)] md:w-[340px]">
+        <aside className="admin-panel flex min-h-0 w-full shrink-0 flex-col overflow-hidden md:w-[340px]">
           <div className="flex items-center gap-2 border-b border-white/7 px-3 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-semibold text-gray-100">
@@ -524,7 +439,7 @@ export default function AdminMenuPage() {
                   />
                 </Field>
               ) : null}
-              {newCatName ? (
+              {newCatName && hasTables ? (
                 <Field label={t('adminMenu.kdsDisplay')}>
                   <KdsStationSelect
                     value={newCatKdsStation}
@@ -541,7 +456,11 @@ export default function AdminMenuPage() {
               <EmptyState
                 compact
                 title={t('adminMenu.noCategories')}
-                description={t('adminMenu.noCategoriesHint')}
+                description={t(
+                  hasTables
+                    ? 'adminMenu.noCategoriesHint'
+                    : 'adminMenu.noCategoriesHintStore',
+                )}
                 action={
                   showAddCategory ? undefined : (
                     <Button
@@ -576,7 +495,7 @@ export default function AdminMenuPage() {
                         style={{ backgroundColor: c.color || '#374151' }}
                       />
                       <span className="min-w-0 truncate">{c.name}</span>
-                      {c.kdsStation ? (
+                      {hasTables && c.kdsStation ? (
                         <Badge className="shrink-0 text-[10px]">
                           {kdsLinkLabel(t, c.kdsStation)}
                         </Badge>
@@ -622,11 +541,17 @@ export default function AdminMenuPage() {
           </div>
         </aside>
 
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-white/7 bg-[var(--pos-surface)]">
+        <section className="admin-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-white/7 px-4 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-semibold text-gray-100">
-                {selected ? selected.name : t('adminMenu.menuEditor')}
+                {selected
+                  ? selected.name
+                  : t(
+                      hasTables
+                        ? 'adminMenu.menuEditor'
+                        : 'adminMenu.catalogEditor',
+                    )}
               </div>
               {selected ? (
                 <div className="text-[11px] text-gray-500">
@@ -667,13 +592,21 @@ export default function AdminMenuPage() {
 
             {!selected ? (
               <EmptyState
-                title={t('adminMenu.menuEditor')}
+                title={t(
+                  hasTables
+                    ? 'adminMenu.menuEditor'
+                    : 'adminMenu.catalogEditor',
+                )}
                 description={t('adminMenu.selectCategoryHint')}
               />
             ) : selected.items.length === 0 ? (
               <EmptyState
                 title={t('adminMenu.noItems')}
-                description={t('adminMenu.noItemsHint')}
+                description={t(
+                  hasTables
+                    ? 'adminMenu.noItemsHint'
+                    : 'adminMenu.noItemsHintStore',
+                )}
                 action={
                   <Button
                     size="sm"
@@ -748,7 +681,9 @@ export default function AdminMenuPage() {
       {showAddItem && selected && (
         <Modal
           title={t('adminMenu.addItemTo', { name: selected.name })}
-          subtitle={t('adminMenu.addItemHint')}
+          subtitle={t(
+            hasTables ? 'adminMenu.addItemHint' : 'adminMenu.addItemHintStore',
+          )}
           onClose={() => setShowAddItem(false)}
         >
           <AddItemForm
@@ -961,6 +896,7 @@ function MenuImportModal({
               ...(r.vatRate != null ? { vatRate: r.vatRate } : {}),
               ...(r.isKg != null ? { isKg: r.isKg } : {}),
               ...(r.station ? { station: r.station } : {}),
+              ...(r.sku ? { sku: r.sku } : {}),
             } as any);
             updated++;
           } else {
@@ -975,6 +911,7 @@ function MenuImportModal({
             ...(r.vatRate != null ? { vatRate: r.vatRate } : {}),
             ...(r.isKg != null ? { isKg: r.isKg } : {}),
             ...(r.station ? { station: r.station } : {}),
+            ...(r.sku ? { sku: r.sku } : {}),
           } as any);
           // Track the new item so a duplicate row later in the same file
           // updates it rather than colliding.
@@ -1021,7 +958,7 @@ function MenuImportModal({
           </div>
           <IconButton
             label={t('common.close')}
-            icon={<IconX />}
+            icon={<IconClose />}
             disabled={importing}
             onClick={onClose}
           />
@@ -1246,13 +1183,16 @@ function AddItemForm({
     price: number;
     vatRate?: number;
     isKg: boolean;
+    sku?: string;
   }) => Promise<any>;
 }) {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [vat, setVat] = useState('0.2');
   const [isKg, setIsKg] = useState(false);
+  const [sku, setSku] = useState('');
 
   const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
 
@@ -1262,6 +1202,7 @@ function AddItemForm({
       price: Number(price),
       vatRate: vat ? Number(vat) : undefined,
       isKg,
+      ...(hasTables ? {} : { sku: sku.trim() || undefined }),
     });
   }
 
@@ -1270,7 +1211,11 @@ function AddItemForm({
       <Field label={t('adminMenu.itemName')}>
         <Input
           autoFocus
-          placeholder={t('adminMenu.itemNamePlaceholder')}
+          placeholder={t(
+            hasTables
+              ? 'adminMenu.itemNamePlaceholder'
+              : 'adminMenu.itemNamePlaceholderStore',
+          )}
           value={name}
           onChange={(e) => setName(e.target.value)}
           disabled={disabled}
@@ -1279,6 +1224,20 @@ function AddItemForm({
           }}
         />
       </Field>
+
+      {!hasTables ? (
+        <Field label={t('adminMenu.barcode')} hint={t('adminMenu.barcodeHint')}>
+          <Input
+            placeholder={t('adminMenu.barcodePlaceholder')}
+            value={sku}
+            onChange={(e) => setSku(e.target.value)}
+            disabled={disabled}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.preventDefault();
+            }}
+          />
+        </Field>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-4">
         <Field label={t('adminMenu.price')}>
@@ -1340,6 +1299,7 @@ function CategoryEditor({
   showDelete?: boolean;
 }) {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [name, setName] = useState(category.name);
   const [color, setColor] = useState<string>(
     String(category.color || '#374151'),
@@ -1446,17 +1406,19 @@ function CategoryEditor({
             />
           </div>
         </Field>
-        <Field
-          className="md:col-span-12"
-          label={t('adminMenu.kdsDisplay')}
-          hint={t('adminMenu.kdsHint')}
-        >
-          <KdsStationSelect
-            value={kdsStation}
-            onChange={setKdsStation}
-            disabled={disabled}
-          />
-        </Field>
+        {hasTables ? (
+          <Field
+            className="md:col-span-12"
+            label={t('adminMenu.kdsDisplay')}
+            hint={t('adminMenu.kdsHint')}
+          >
+            <KdsStationSelect
+              value={kdsStation}
+              onChange={setKdsStation}
+              disabled={disabled}
+            />
+          </Field>
+        ) : null}
       </div>
 
       <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:justify-end">
@@ -1508,6 +1470,7 @@ function ItemRow({
   disabled: boolean;
   onSave: (patch: {
     name?: string;
+    sku?: string;
     price?: number;
     vatRate?: number;
     isKg?: boolean;
@@ -1518,6 +1481,7 @@ function ItemRow({
   onDelete: () => Promise<any>;
 }) {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [editing, setEditing] = useState(false);
   const active = Boolean(item.active);
   const stock = normalizeStock(item.stockLevel);
@@ -1532,7 +1496,15 @@ function ItemRow({
           'flex items-center gap-3 px-4 py-2.5',
           !active && 'opacity-55',
         )}
-        title={active ? undefined : t('adminMenu.itemHidden')}
+        title={
+          active
+            ? undefined
+            : t(
+                hasTables
+                  ? 'adminMenu.itemHidden'
+                  : 'adminMenu.itemHiddenStore',
+              )
+        }
       >
         <div className="min-w-0 flex-1">
           <div
@@ -1557,7 +1529,10 @@ function ItemRow({
             ) : null}
             {skuShown ? (
               <Badge className="text-[10px]">
-                {t('adminMenu.sku', { sku: item.sku })}
+                {t(hasTables ? 'adminMenu.sku' : 'adminMenu.barcodeValue', {
+                  sku: item.sku,
+                  code: item.sku,
+                })}
               </Badge>
             ) : null}
             {stock === 'LOW' ? (
@@ -1565,7 +1540,7 @@ function ItemRow({
                 tone="warn"
                 className="inline-flex items-center gap-0.5 text-[10px]"
               >
-                <IconWarningTriangle className="size-3" />
+                <IconAlert className="size-3" />
                 {t('stockPanel.lowStock')}
                 {item.stockRemaining != null &&
                 Number.isFinite(Number(item.stockRemaining)) ? (
@@ -1588,7 +1563,19 @@ function ItemRow({
         <Switch
           checked={active}
           disabled={disabled}
-          label={active ? t('adminMenu.itemActive') : t('adminMenu.itemHidden')}
+          label={
+            active
+              ? t(
+                  hasTables
+                    ? 'adminMenu.itemActive'
+                    : 'adminMenu.itemActiveStore',
+                )
+              : t(
+                  hasTables
+                    ? 'adminMenu.itemHidden'
+                    : 'adminMenu.itemHiddenStore',
+                )
+          }
           onChange={(next) => void onSave({ active: next })}
         />
         <KebabMenu
@@ -1635,6 +1622,7 @@ function EditItemModal({
   disabled: boolean;
   onSave: (patch: {
     name?: string;
+    sku?: string;
     price?: number;
     vatRate?: number;
     isKg?: boolean;
@@ -1645,7 +1633,9 @@ function EditItemModal({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [name, setName] = useState(item.name);
+  const [sku, setSku] = useState(item.sku || '');
   const [price, setPrice] = useState(String(item.price));
   const [vat, setVat] = useState(String(item.vatRate ?? 0.2));
   const [isKg, setIsKg] = useState(Boolean(item.isKg));
@@ -1661,6 +1651,7 @@ function EditItemModal({
 
   useEffect(() => {
     setName(item.name);
+    setSku(item.sku || '');
     setPrice(String(item.price));
     setVat(String(item.vatRate ?? 0.2));
     setIsKg(Boolean(item.isKg));
@@ -1675,6 +1666,7 @@ function EditItemModal({
   }, [
     item.id,
     item.name,
+    item.sku,
     item.price,
     item.vatRate,
     item.isKg,
@@ -1698,7 +1690,7 @@ function EditItemModal({
       <div className="space-y-4">
         <Field
           label={t('adminMenu.itemName')}
-          hint={t('adminMenu.sku', { sku: item.sku })}
+          hint={hasTables ? t('adminMenu.sku', { sku: item.sku }) : undefined}
         >
           <Input
             autoFocus
@@ -1707,6 +1699,23 @@ function EditItemModal({
             disabled={disabled}
           />
         </Field>
+
+        {!hasTables ? (
+          <Field
+            label={t('adminMenu.barcode')}
+            hint={t('adminMenu.barcodeHint')}
+          >
+            <Input
+              placeholder={t('adminMenu.barcodePlaceholder')}
+              value={sku}
+              onChange={(e) => setSku(e.target.value)}
+              disabled={disabled}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.preventDefault();
+              }}
+            />
+          </Field>
+        ) : null}
 
         <div className="grid grid-cols-2 gap-4">
           <Field label={t('adminMenu.price')}>
@@ -1729,7 +1738,13 @@ function EditItemModal({
           </Field>
         </div>
 
-        <Field label={t('adminMenu.waiterAvailability')}>
+        <Field
+          label={t(
+            hasTables
+              ? 'adminMenu.waiterAvailability'
+              : 'adminMenu.tillAvailability',
+          )}
+        >
           <Select
             value={stockLevel}
             onChange={(e) => setStockLevel(e.target.value as StockLevel)}
@@ -1744,7 +1759,9 @@ function EditItemModal({
         {stockLevel === 'LOW' ? (
           <Field
             label={t('adminMenu.howManyLeft')}
-            hint={t('adminMenu.stockHint')}
+            hint={t(
+              hasTables ? 'adminMenu.stockHint' : 'adminMenu.stockHintStore',
+            )}
           >
             <Input
               type="number"
@@ -1776,7 +1793,17 @@ function EditItemModal({
               checked={active}
               disabled={disabled}
               label={
-                active ? t('adminMenu.itemActive') : t('adminMenu.itemHidden')
+                active
+                  ? t(
+                      hasTables
+                        ? 'adminMenu.itemActive'
+                        : 'adminMenu.itemActiveStore',
+                    )
+                  : t(
+                      hasTables
+                        ? 'adminMenu.itemHidden'
+                        : 'adminMenu.itemHiddenStore',
+                    )
               }
               onChange={setActive}
             />
@@ -1789,6 +1816,7 @@ function EditItemModal({
           onClick={() => {
             const patch: {
               name: string;
+              sku?: string;
               price: number;
               vatRate: number;
               isKg: boolean;
@@ -1803,6 +1831,7 @@ function EditItemModal({
               active,
               stockLevel,
             };
+            if (!hasTables && sku.trim()) patch.sku = sku.trim();
             if (stockLevel === 'LOW') {
               patch.stockRemaining = Math.max(1, Math.floor(stockQtyNum || 1));
             }

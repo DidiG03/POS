@@ -22,6 +22,10 @@ type SessionStore = {
     sessionToken: string | null;
     setUser: (u: null) => void;
   };
+  persist?: {
+    hasHydrated?: () => boolean;
+    onFinishHydration?: (fn: () => void) => () => void;
+  };
 };
 
 function storeForCurrentShell(): SessionStore {
@@ -30,6 +34,23 @@ function storeForCurrentShell(): SessionStore {
   if (hash.startsWith('#/reservations'))
     return useReservationSessionStore as SessionStore;
   return useSessionStore as SessionStore;
+}
+
+function waitForPersistHydration(store: SessionStore, ms = 800): Promise<void> {
+  if (store.persist?.hasHydrated?.()) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const unsub = store.persist?.onFinishHydration?.(finish);
+    window.setTimeout(() => {
+      if (typeof unsub === 'function') unsub();
+      finish();
+    }, ms);
+  });
 }
 
 export async function resumeMainProcessSession(): Promise<void> {
@@ -43,6 +64,7 @@ export async function resumeMainProcessSession(): Promise<void> {
   if (typeof api?.auth?.resumeSession !== 'function') return;
 
   const store = storeForCurrentShell();
+  await waitForPersistHydration(store);
   const { user, sessionToken, setUser } = store.getState();
   if (!sessionToken) {
     // A persisted user with no token predates this mechanism (or was revoked).

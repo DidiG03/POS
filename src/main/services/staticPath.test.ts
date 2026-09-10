@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { join, resolve } from 'node:path';
-import { resolveStaticFilePath } from './staticPath';
+import { resolveStaticFilePath, staticAssetCacheControl } from './staticPath';
 
 const ROOT = resolve('/srv/pos/dist/renderer');
 
@@ -59,5 +59,21 @@ describe('resolveStaticFilePath', () => {
     expect(resolveStaticFilePath(ROOT, '')).toBeNull();
     expect(resolveStaticFilePath(ROOT, '/')).toBeNull();
     expect(resolveStaticFilePath('', 'index.html')).toBeNull();
+  });
+});
+
+describe('staticAssetCacheControl', () => {
+  it('never caches HTML so tablets pick up a host update', () => {
+    expect(staticAssetCacheControl('/srv/pos/dist/renderer/index.html')).toBe(
+      'no-store, must-revalidate',
+    );
+  });
+
+  it('lets hashed Vite assets cache forever', () => {
+    expect(
+      staticAssetCacheControl(
+        '/srv/pos/dist/renderer/assets/index-AbCdEfGh.js',
+      ),
+    ).toBe('public, max-age=31536000, immutable');
   });
 });

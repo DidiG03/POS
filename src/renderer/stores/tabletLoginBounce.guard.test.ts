@@ -17,6 +17,7 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain('lanAuthGeneration');
     expect(src).toContain("clearInflight('lan:')");
     expect(src).toContain('SHIFT_GUARD_GRACE_MS');
+    expect(src).toContain('sessionShellFromHash');
   });
 
   it('session persist prefers a live PIN login over empty storage', () => {
@@ -58,6 +59,15 @@ describe('tablet login bounce guards', () => {
     const src = read('src/main/services/realtime.ts');
     expect(src).toContain('writeSseToClients');
     expect(src).toContain('clients.delete(c)');
+  });
+
+  it('tablets catch up after a host update and a dropped SSE socket', () => {
+    const main = read('src/renderer/main.tsx');
+    expect(main).toContain('emitPosSyncCatchup');
+    expect(main).toContain('syncTabletToHostVersion');
+    const api = read('src/main/api.ts');
+    expect(api).toContain('staticAssetCacheControl');
+    expect(api).toContain('appVersion: app.getVersion()');
   });
 
   it('LAN CORS allows Capacitor WebView origins including Android http://localhost', () => {

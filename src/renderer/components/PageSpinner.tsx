@@ -5,13 +5,14 @@
  * Variants:
  *  - `fullPage` (default): centered in viewport, used as route-level / page-level loader
  *  - `overlay`: absolute overlay with backdrop, used inside a panel (e.g. ticket area)
+ *  - `lock`: fixed viewport overlay that blocks scrolling underneath
  */
 export function PageSpinner({
   message = 'Loading…',
   variant = 'fullPage',
 }: {
   message?: string;
-  variant?: 'fullPage' | 'overlay';
+  variant?: 'fullPage' | 'overlay' | 'lock';
 }) {
   const spinner = (
     <div className="flex flex-col items-center gap-3">
@@ -38,6 +39,20 @@ export function PageSpinner({
       <span className="text-sm text-gray-300">{message}</span>
     </div>
   );
+
+  if (variant === 'lock') {
+    return (
+      <div
+        className="fixed inset-0 z-40 flex items-center justify-center overflow-hidden overscroll-none bg-gray-900/80 touch-none"
+        role="alertdialog"
+        aria-busy="true"
+        aria-live="assertive"
+        aria-modal="true"
+      >
+        {spinner}
+      </div>
+    );
+  }
 
   if (variant === 'overlay') {
     return (

@@ -5,6 +5,8 @@ import {
   mergeSessionPersist,
   shouldDeferShiftGuard,
   SHIFT_GUARD_GRACE_MS,
+  sessionShellFromHash,
+  isPersistedSessionExpired,
 } from './sessionPersist';
 
 const future = () => Date.now() + 60 * 60 * 1000;
@@ -75,6 +77,43 @@ describe('mergeSessionPersist', () => {
       expiresAtMs: null,
       sessionToken: null,
     });
+  });
+});
+
+describe('sessionShellFromHash', () => {
+  it('keeps admin, reservations, and POS logouts on their own shells', () => {
+    expect(sessionShellFromHash('#/admin')).toBe('admin');
+    expect(sessionShellFromHash('#/admin/tickets')).toBe('admin');
+    expect(sessionShellFromHash('#/reservations/app')).toBe('reservations');
+    expect(sessionShellFromHash('#/tables')).toBe('pos');
+    expect(sessionShellFromHash('')).toBe('pos');
+  });
+});
+
+describe('isPersistedSessionExpired', () => {
+  it('does not expire an empty session', () => {
+    expect(
+      isPersistedSessionExpired({
+        user: null,
+        expiresAtMs: Date.now() - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('expires only when the timestamp is in the past', () => {
+    const user = { id: 1 };
+    expect(
+      isPersistedSessionExpired({
+        user,
+        expiresAtMs: Date.now() + 60_000,
+      }),
+    ).toBe(false);
+    expect(
+      isPersistedSessionExpired({
+        user,
+        expiresAtMs: Date.now() - 1,
+      }),
+    ).toBe(true);
   });
 });
 

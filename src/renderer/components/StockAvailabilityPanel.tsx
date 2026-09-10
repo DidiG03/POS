@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { SearchInput, Select, Input } from './ui/Field';
+import { cn } from './ui/cn';
 
 export type StockLevel = 'OK' | 'LOW' | 'OUT';
 
@@ -26,24 +28,6 @@ export function normalizeStock(raw: unknown): StockLevel {
   if (s === 'LOW') return 'LOW';
   if (s === 'OUT') return 'OUT';
   return 'OK';
-}
-
-export function IconWarningTriangle({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      className={className ?? 'pos-icon w-4 h-4 shrink-0'}
-      aria-hidden
-    >
-      <path
-        fillRule="evenodd"
-        d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.577 4.5-2.598 4.5H4.645c-2.021 0-3.752-2.5-2.598-4.5L9.4 3.003ZM12 8.25a.75.75 0 0 1 .75.75v3.75a.75.75 0 0 1-1.5 0V9a.75.75 0 0 1 .75-.75Zm0 8.25a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-        clipRule="evenodd"
-      />
-    </svg>
-  );
 }
 
 function parsePositiveInt(raw: string, fallback: number): number {
@@ -117,38 +101,38 @@ export function StockAvailabilityPanel({
   return (
     <section>
       <div
-        className={`flex flex-col sm:flex-row sm:items-center gap-3 mb-2 ${hideTitle ? 'sm:justify-end' : 'sm:justify-between'}`}
+        className={cn(
+          'mb-3 flex items-end gap-3',
+          hideTitle ? 'justify-end' : 'justify-between',
+        )}
       >
         {hideTitle ? null : (
-          <div className="text-sm opacity-70">{t('stockPanel.title')}</div>
+          <div className="text-sm text-gray-500">{t('stockPanel.title')}</div>
         )}
-        <input
-          type="search"
-          placeholder={t('stockPanel.searchPlaceholder')}
+        <SearchInput
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onValueChange={setQ}
+          placeholder={t('stockPanel.searchPlaceholder')}
           disabled={disabled}
-          className="w-full sm:w-56 bg-gray-700 rounded px-3 py-2 text-sm shrink-0"
+          className="w-full sm:w-56"
         />
       </div>
-      <div className="overflow-auto max-h-[min(70vh,40rem)] border border-gray-700 rounded">
-        <table className="w-full text-sm">
-          <thead className="text-left bg-gray-900 sticky top-0 z-10">
-            <tr className="opacity-70">
-              <th className="py-2 px-3">{t('stockPanel.colItem')}</th>
-              <th className="py-2 px-3 hidden sm:table-cell">
+      <div className="max-h-[min(70vh,40rem)] overflow-auto">
+        <table className="pos-table">
+          <thead>
+            <tr>
+              <th>{t('stockPanel.colItem')}</th>
+              <th className="hidden sm:table-cell">
                 {t('stockPanel.colCategory')}
               </th>
-              <th className="py-2 px-3 w-[88px]">{t('stockPanel.colLeft')}</th>
-              <th className="py-2 px-3 w-[148px]">
-                {t('stockPanel.colAvailability')}
-              </th>
+              <th className="w-[88px]">{t('stockPanel.colLeft')}</th>
+              <th className="w-[148px]">{t('stockPanel.colAvailability')}</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr className="border-t border-gray-800">
-                <td colSpan={4} className="py-3 px-3 opacity-70">
+              <tr>
+                <td colSpan={4} className="text-gray-500">
                   {t('stockPanel.noItemsMatch')}
                 </td>
               </tr>
@@ -164,25 +148,25 @@ export function StockAvailabilityPanel({
                     : '1');
 
                 return (
-                  <tr key={row.id} className="border-t border-gray-800">
-                    <td className="py-2 px-3">
-                      <div className="font-medium truncate max-w-[200px] sm:max-w-xs">
+                  <tr key={row.id}>
+                    <td>
+                      <div className="max-w-[200px] truncate font-medium sm:max-w-xs">
                         {row.name}
                       </div>
-                      <div className="text-xs opacity-70 font-mono truncate">
+                      <div className="truncate font-mono text-[11px] text-gray-500">
                         {row.sku}
                       </div>
                     </td>
-                    <td className="py-2 px-3 hidden sm:table-cell opacity-90">
+                    <td className="hidden sm:table-cell text-gray-400">
                       {row.categoryName}
                     </td>
-                    <td className="py-2 px-3 align-middle">
-                      <input
+                    <td className="align-middle">
+                      <Input
                         type="number"
                         min={1}
                         step={1}
                         disabled={disabled || level !== 'LOW'}
-                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs disabled:opacity-40"
+                        className="w-full text-[12px]"
                         value={level === 'LOW' ? qtyStr : ''}
                         placeholder={level === 'LOW' ? undefined : '—'}
                         title={
@@ -212,9 +196,9 @@ export function StockAvailabilityPanel({
                         }}
                       />
                     </td>
-                    <td className="py-2 px-3">
-                      <select
-                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs"
+                    <td>
+                      <Select
+                        className="w-full text-[12px]"
                         value={level}
                         disabled={disabled}
                         onChange={(e) => {
@@ -244,7 +228,7 @@ export function StockAvailabilityPanel({
                         <option value="OUT">
                           {t('stockPanel.outOfStock')}
                         </option>
-                      </select>
+                      </Select>
                     </td>
                   </tr>
                 );

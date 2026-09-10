@@ -1,14 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { describeTicketNote } from '@shared/utils/transferNote';
+import { formatSaleLocation } from '@shared/editionCapabilities';
+import type { FiscalSaleDTO } from '@shared/ipc';
 import {
   Badge,
+  Button,
   Card,
   Divider,
   EmptyState,
   IconButton,
   Input,
-  PageHeader,
+  Modal,
   SectionLabel,
   Segmented,
   Stat,
@@ -25,10 +29,10 @@ import {
   IconChevronRight,
   IconGrid,
   IconList,
-  IconMinus,
-  IconPlus,
   IconTicket,
 } from '../../components/icons';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { TicketSalePanel } from '../components/TicketSalePanel';
 
 type TicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
 
@@ -63,6 +67,7 @@ type Ticket = {
   vat: number;
   status?: TicketStatus;
   transfer?: TransferInfo | null;
+  sale?: FiscalSaleDTO | null;
 };
 
 function ticketHasTransfer(t: Pick<Ticket, 'transfer' | 'note'>): boolean {
@@ -288,15 +293,18 @@ function TicketCard({
   ticket,
   prefs,
   computeServiceCharge,
-  zoom,
   mode,
+  onSaleCorrected,
 }: {
   ticket: Ticket;
   prefs: Preferences | null;
   computeServiceCharge: (base: number, p: Preferences | null) => number;
-  zoom: number;
   mode: 'list' | 'grid';
+  onSaleCorrected?: () => void;
 }) {
+  const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  const [moreOpen, setMoreOpen] = useState(false);
   const liveItems = ticket.items.filter((it) => !it.voided);
   const voidedItems = ticket.items.filter((it) => it.voided);
   const isVoided = ((ticket.status as TicketStatus) || 'PAID') === 'VOIDED';
@@ -304,7 +312,11 @@ function TicketCard({
     ((ticket.status as TicketStatus) || 'PAID') === 'TRANSFERRED';
   const visibleLive = mode === 'grid' ? liveItems.slice(0, 8) : liveItems;
   const hiddenLive = Math.max(0, liveItems.length - visibleLive.length);
-  const table = `${ticket.area} ${ticket.tableLabel}`.trim();
+  const table = formatSaleLocation({
+    diningFloor: hasTables,
+    area: ticket.area,
+    tableLabel: ticket.tableLabel,
+  });
   const cardTone = isVoided
     ? 'border-rose-500/25'
     : isTransferred || ticketHasTransfer(ticket)
@@ -312,29 +324,28 @@ function TicketCard({
       : 'border-white/7';
 
   return (
-    <article
-      className={cn('rounded-xl border bg-gray-800 p-4', cardTone)}
-      style={
-        mode === 'grid'
-          ? { transform: `scale(${zoom})`, transformOrigin: 'top left' }
-          : undefined
-      }
-    >
+    <article className={cn('rounded-xl border bg-gray-800 p-4', cardTone)}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <div className="text-[14px] font-semibold tracking-tight text-gray-50">
-              {table || 'Table —'}
+              {table || (hasTables ? 'Table —' : 'Sale')}
             </div>
             <StatusBadge status={ticket.status} />
-            <TransferredChip transfer={ticket.transfer} note={ticket.note} />
+            {hasTables ? (
+              <TransferredChip transfer={ticket.transfer} note={ticket.note} />
+            ) : null}
           </div>
           <div className="mt-1 text-[12px] text-gray-400">
             <span className="tabular">
               {new Date(ticket.createdAt).toLocaleString()}
             </span>
-            {' · Covers: '}
-            <span className="tabular">{ticket.covers ?? '—'}</span>
+            {hasTables ? (
+              <>
+                {' · Covers: '}
+                <span className="tabular">{ticket.covers ?? '—'}</span>
+              </>
+            ) : null}
           </div>
         </div>
         <div className="shrink-0 text-left sm:text-right">
@@ -355,12 +366,13 @@ function TicketCard({
 
       {(() => {
         const { history, userNote } = describeTicketNote(ticket.note);
-        if (!history.length && !userNote) return null;
+        const showHistory = hasTables;
+        if ((showHistory ? !history.length : true) && !userNote) return null;
         return (
           <div className="pos-well mt-3 space-y-1 px-3 py-2 text-[12px] text-gray-400">
-            {history.map((line, i) => (
-              <div key={`${line}-${i}`}>{line}</div>
-            ))}
+            {showHistory
+              ? history.map((line, i) => <div key={`${line}-${i}`}>{line}</div>)
+              : null}
             {userNote ? (
               <div className="text-gray-300">Note: {userNote}</div>
             ) : null}
@@ -373,7 +385,11 @@ function TicketCard({
           <EmptyState
             compact
             icon={<IconTicket />}
-            title="No active items on this ticket."
+            title={
+              hasTables
+                ? 'No active items on this ticket.'
+                : 'No items on this sale.'
+            }
             className="rounded-lg border border-white/7"
           />
         ) : (
@@ -449,6 +465,36 @@ function TicketCard({
         computeServiceCharge={computeServiceCharge}
         layout={mode === 'list' ? 'inline' : 'stack'}
       />
+
+      <div className="mt-3">
+        <Button size="sm" onClick={() => setMoreOpen(true)}>
+          {t('common.viewMore')}
+        </Button>
+      </div>
+
+      <Modal
+        open={moreOpen}
+        onClose={() => setMoreOpen(false)}
+        title={table || (hasTables ? 'Table —' : 'Sale')}
+        description={t('fiscal.salesTitle')}
+        size="lg"
+      >
+        {ticket.sale ? (
+          <TicketSalePanel
+            sale={ticket.sale}
+            onCorrected={() => {
+              setMoreOpen(false);
+              onSaleCorrected?.();
+            }}
+          />
+        ) : (
+          <p className="text-[13px] leading-relaxed text-gray-400">
+            {((ticket.status as TicketStatus) || 'PAID') === 'ACTIVE'
+              ? t('fiscal.salesOpenHelp')
+              : t('fiscal.salesNoOrder')}
+          </p>
+        )}
+      </Modal>
     </article>
   );
 }
@@ -470,6 +516,7 @@ const STATUS_FILTER_LABEL: Record<(typeof STATUS_FILTERS)[number], string> = {
 };
 
 export default function AdminUserTicketsPage() {
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const { userId } = useParams();
   const [params, setParams] = useSearchParams();
   const start = params.get('start') || undefined;
@@ -479,8 +526,28 @@ export default function AdminUserTicketsPage() {
   const [loading, setLoading] = useState(true);
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [view, setView] = useState<'list' | 'grid4'>('list');
-  const [zoom, setZoom] = useState<number>(1);
   const [statusFilter, setStatusFilter] = useState<TicketStatus | 'ALL'>('ALL');
+
+  const refreshTickets = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!userId) {
+        setTickets([]);
+        setLoading(false);
+        return;
+      }
+      if (!opts?.silent) setLoading(true);
+      try {
+        const data = await window.api.admin.listTicketsByUser(Number(userId), {
+          startIso: start,
+          endIso: end,
+        });
+        setTickets(data as Ticket[]);
+      } finally {
+        if (!opts?.silent) setLoading(false);
+      }
+    },
+    [userId, start, end],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -522,22 +589,8 @@ export default function AdminUserTicketsPage() {
   }
 
   useEffect(() => {
-    let mounted = true;
-    async function load() {
-      setLoading(true);
-      const data = await window.api.admin.listTicketsByUser(Number(userId), {
-        startIso: start,
-        endIso: end,
-      });
-      if (!mounted) return;
-      setTickets(data as any);
-      setLoading(false);
-    }
-    if (userId) load();
-    return () => {
-      mounted = false;
-    };
-  }, [userId, start, end]);
+    void refreshTickets();
+  }, [refreshTickets]);
 
   const totals = useMemo(() => {
     const vatEnabled = prefs?.vatEnabled !== false;
@@ -579,15 +632,23 @@ export default function AdminUserTicketsPage() {
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-4 sm:space-y-5">
-      <PageHeader
-        title={name ? `${name}'s Tickets` : 'User Tickets'}
-        actions={
-          <Link to="/admin/tickets" className="pos-btn">
-            <IconArrowLeft />
-            Back
-          </Link>
-        }
-      />
+      <div className="flex items-center justify-between gap-3">
+        <Link
+          to="/admin/tickets"
+          className="pos-icon-btn -ml-2 shrink-0"
+          aria-label="Back"
+          title="Back"
+        >
+          <IconArrowLeft />
+        </Link>
+        <h1 className="min-w-0 truncate text-right text-[19px] font-semibold leading-tight tracking-tight text-gray-50">
+          {name
+            ? `${name}'s ${hasTables ? 'Tickets' : 'Sales'}`
+            : hasTables
+              ? 'User Tickets'
+              : 'User Sales'}
+        </h1>
+      </div>
 
       <Card padded={false}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
@@ -622,36 +683,15 @@ export default function AdminUserTicketsPage() {
             />
           </div>
 
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <Segmented
-              ariaLabel="View mode"
-              value={view}
-              onChange={setView}
-              options={[
-                { value: 'list', label: 'List', icon: <IconList /> },
-                { value: 'grid4', label: 'Grid', icon: <IconGrid /> },
-              ]}
-            />
-            <div className="flex items-center rounded-lg border border-white/7 bg-gray-800">
-              <IconButton
-                label="Decrease size"
-                icon={<IconMinus />}
-                onClick={() =>
-                  setZoom((z) => Math.max(0.8, Math.round((z - 0.1) * 10) / 10))
-                }
-              />
-              <div className="tabular w-11 text-center text-[12px] text-gray-400">
-                {Math.round(zoom * 100)}%
-              </div>
-              <IconButton
-                label="Increase size"
-                icon={<IconPlus />}
-                onClick={() =>
-                  setZoom((z) => Math.min(1.6, Math.round((z + 0.1) * 10) / 10))
-                }
-              />
-            </div>
-          </div>
+          <Button
+            size="sm"
+            className="ml-auto"
+            icon={view === 'list' ? <IconGrid /> : <IconList />}
+            aria-label={view === 'list' ? 'Show grid' : 'Show list'}
+            onClick={() => setView((v) => (v === 'list' ? 'grid4' : 'list'))}
+          >
+            {view === 'list' ? 'Grid' : 'List'}
+          </Button>
         </div>
 
         <Divider />
@@ -661,7 +701,10 @@ export default function AdminUserTicketsPage() {
             ariaLabel="Status filter"
             value={statusFilter}
             onChange={setStatusFilter}
-            options={STATUS_FILTERS.map((s) => ({
+            options={(hasTables
+              ? STATUS_FILTERS
+              : STATUS_FILTERS.filter((s) => s !== 'TRANSFERRED')
+            ).map((s) => ({
               value: s,
               label: STATUS_FILTER_LABEL[s],
               count: s === 'ALL' ? tickets.length : totals.counts[s],
@@ -684,15 +727,17 @@ export default function AdminUserTicketsPage() {
                 <span className="text-gray-500">Disabled</span>
               )}
             </span>
-            {prefs?.serviceCharge?.enabled && totals.serviceCharge > 0 && (
-              <span>
-                Service{' '}
-                <span className="tabular text-gray-200">
-                  {fmtInt(totals.serviceCharge)}
+            {hasTables &&
+              prefs?.serviceCharge?.enabled &&
+              totals.serviceCharge > 0 && (
+                <span>
+                  Service{' '}
+                  <span className="tabular text-gray-200">
+                    {fmtInt(totals.serviceCharge)}
+                  </span>
                 </span>
-              </span>
-            )}
-            {totals.transfers > 0 && (
+              )}
+            {hasTables && totals.transfers > 0 && (
               <span title="Tickets this waiter received via a table transfer in this period">
                 Transferred in{' '}
                 <span className="tabular text-gray-200">
@@ -705,11 +750,13 @@ export default function AdminUserTicketsPage() {
       </Card>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="Tickets" value={tickets.length} />
+        <Stat label={hasTables ? 'Tickets' : 'Sales'} value={tickets.length} />
         <Stat label="Paid" value={totals.counts.PAID} tone="accent" />
         <Stat label="Active" value={totals.counts.ACTIVE} tone="warn" />
         <Stat label="Voided" value={totals.counts.VOIDED} tone="danger" />
-        <Stat label="Transferred" value={totals.counts.TRANSFERRED} />
+        {hasTables ? (
+          <Stat label="Transferred" value={totals.counts.TRANSFERRED} />
+        ) : null}
         <Stat label="Total" value={fmtInt(totals.grand)} />
       </div>
 
@@ -723,7 +770,11 @@ export default function AdminUserTicketsPage() {
         <Card padded={false}>
           <EmptyState
             icon={<IconTicket />}
-            title="No tickets match this filter."
+            title={
+              hasTables
+                ? 'No tickets match this filter.'
+                : 'No sales match this filter.'
+            }
             description="Try a different status or another day."
           />
         </Card>
@@ -735,8 +786,8 @@ export default function AdminUserTicketsPage() {
               ticket={t}
               prefs={prefs}
               computeServiceCharge={computeServiceCharge}
-              zoom={zoom}
               mode="grid"
+              onSaleCorrected={() => void refreshTickets({ silent: true })}
             />
           ))}
         </div>
@@ -748,8 +799,8 @@ export default function AdminUserTicketsPage() {
               ticket={t}
               prefs={prefs}
               computeServiceCharge={computeServiceCharge}
-              zoom={zoom}
               mode="list"
+              onSaleCorrected={() => void refreshTickets({ silent: true })}
             />
           ))}
         </div>

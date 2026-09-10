@@ -23,6 +23,7 @@ import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
+  paymentShouldCloseTable,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
   withPaymentLock,
@@ -39,6 +40,10 @@ describe('paymentSettle', () => {
     isTableOpen.mockResolvedValue(false);
     expect(await tableIsOpenForPayment('Sallon', 'T1')).toBe(false);
     expect(tableAlreadyPaidResult().code).toBe(TABLE_ALREADY_PAID);
+    expect(paymentShouldCloseTable({ kind: 'PAYMENT' })).toBe(true);
+    expect(
+      paymentShouldCloseTable({ kind: 'PAYMENT', closeTable: false }),
+    ).toBe(false);
   });
 
   it('closes the table after a fiscalized payment without taking a second lock', async () => {
@@ -65,6 +70,18 @@ describe('paymentSettle', () => {
       'T1',
       expect.any(Function),
     );
+  });
+
+  it('leaves the table open when a seat payment is not the last one', async () => {
+    isTableOpen.mockResolvedValue(true);
+    const r = await closeTableAfterIdempotentPayment(
+      'Sallon',
+      'T1',
+      'PAYMENT',
+      false,
+    );
+    expect(r.tableClosed).toBe(false);
+    expect(applyTableOpenState).not.toHaveBeenCalled();
   });
 
   it('closes a still-open table when a payment retry hits the PrintJob', async () => {

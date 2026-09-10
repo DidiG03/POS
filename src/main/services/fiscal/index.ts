@@ -8,6 +8,14 @@ import {
   isFiscalRetryable,
   testEasyPosConnection,
 } from './easypos';
+import { docIdFromKey } from './docId';
+import {
+  ensureDailyBalanceForCash,
+  isBalanceSettled,
+  markDailyBalanceAlerted,
+} from './balance';
+import { fiscalConfig } from './config';
+import { mapPaymentMethod } from './paymentMethod';
 import { notifyAdminsAndActor } from '../adminAlerts';
 import { getTableSessionStartedAt } from '../tableSession';
 import {
@@ -98,11 +106,79 @@ function withFiscalMeta(
       fiscalEnabled: true,
       fiscalNslf: result.nslf || undefined,
       fiscalNivf: result.nivf || undefined,
+      fiscalEic: result.eic || undefined,
       fiscalLink: result.link || undefined,
       fiscalWarning: result.warning || undefined,
       fiscalStatus: result.status,
     },
   };
+}
+
+/**
+ * Declare today's opening cash float, if this is a cash sale and it has
+ * not been declared yet.
+ *
+ * The tax service wants `POST /balance/initiate` once per business day per
+ * fiscal device, before that day's first cash invoice. Skip it and cash
+ * invoices come back with the "daily balance not reported" fault — filed
+ * with an NSLF and no NIVF, which is to say not registered at all. Until
+ * now the machinery for this existed and nothing called it, so the rule
+ * was enforced by staff remembering to declare the float by hand in
+ * easyPos; the code merely recognised the fault afterwards and printed a
+ * note asking them to go and do it.
+ *
+ * Three deliberate limits.
+ *
+ * It never blocks the sale. A local record is not proof of what the tax
+ * service holds — the float may have been declared in easyPos directly, or
+ * by another till on the same device, or our record may simply have been
+ * lost — so refusing to file the invoice on the strength of it would
+ * reject sales that would have gone through. The register call is the
+ * authority; if the balance really is missing, it says so, and
+ * `resultFromResponse` already turns that fault into the right message.
+ *
+ * It only applies to the cloud API. The local middleware has no balance
+ * routes at all.
+ *
+ * It alerts admins at most once per day. The check runs on every cash
+ * sale, and an alert per sale is an alert nobody reads.
+ */
+async function ensureCashBalanceDeclared(
+  payload: TicketPrintPayload,
+  settings: SettingsDTO,
+  meta: any,
+): Promise<void> {
+  try {
+    if (!fiscalConfig(settings).cloud) return;
+    const method = mapPaymentMethod(
+      String(meta.method || meta.paymentMethod || 'CASH'),
+    );
+    if (method !== 'CASH') return;
+
+    const configured = Number((settings as any)?.fiscal?.openingFloat);
+    const openingFloat =
+      Number.isFinite(configured) && configured >= 0 ? configured : 0;
+
+    const outcome = await ensureDailyBalanceForCash(settings, { openingFloat });
+    if (isBalanceSettled(outcome)) return;
+
+    console.warn(
+      `[fiscal] Opening cash balance not declared for today: ${outcome.message}`,
+    );
+    if (!(await markDailyBalanceAlerted(settings))) return;
+    await notifyAdminsAndActor({
+      message:
+        `Today's opening cash balance could not be declared to fiskalizimi, so cash invoices may be refused: ${outcome.message}` +
+        ' · Check the opening float in Settings › Fiskalizimi, then take a cash payment to retry.',
+      actorUserId: Number(meta.userId || 0) || undefined,
+      type: 'SECURITY',
+    }).catch(() => undefined);
+  } catch (e: any) {
+    // A balance problem must never be the reason a payment fails.
+    console.warn(
+      `[fiscal] Could not check today's opening cash balance: ${String(e?.message || e)}`,
+    );
+  }
 }
 
 /**
@@ -138,6 +214,34 @@ export async function fiscalizePaymentOnce(
   const tableLabel = String((payload as any).tableLabel || '') || undefined;
 
   /**
+   * The docId for this sale, decided before anything is built or sent.
+   *
+   * A client that sends an idempotency key gets that key as its docId, so
+   * the docId matches what the rest of the POS stores and searches by.
+   *
+   * A client that sends none is refused. Minting one here looks harmless
+   * and is the exact duplicate-invoice bug this module is built to prevent:
+   * a docId invented per attempt is a docId nothing has stored, so the
+   * second attempt takes a *different* claim, `/invoice/status` for it is
+   * guaranteed to answer "not found", and the sale is filed twice. There is
+   * no recovery from that except a corrective invoice, and nothing surfaces
+   * it until an audit. Both first-party transports already send a key
+   * generated once per waiter tap, so this only rejects a client that
+   * cannot be replayed safely in the first place.
+   */
+  let docId: string;
+  try {
+    if (!idempotencyKey) {
+      throw new Error(
+        'This payment arrived without an idempotency key, so a repeat of it could not be told apart from a new sale. Fiskalizimi was not attempted rather than risk filing the invoice twice — the client must send an idempotencyKey generated once per payment.',
+      );
+    }
+    docId = docIdFromKey(idempotencyKey, 'invoice');
+  } catch (e: any) {
+    return { kind: 'rejected', message: String(e?.message || e) };
+  }
+
+  /**
    * Every indeterminate outcome must reach an admin, not just a log — but
    * only once, however many times the payment is replayed.
    */
@@ -147,7 +251,7 @@ export async function fiscalizePaymentOnce(
   ): Promise<FiscalizeOutcome> => {
     if (!alreadyReported) {
       await notifyFiscalReviewNeeded({
-        idempotencyKey: idempotencyKey || undefined,
+        idempotencyKey: docId,
         area,
         tableLabel,
         actorUserId: Number(meta.userId || 0) || undefined,
@@ -171,7 +275,7 @@ export async function fiscalizePaymentOnce(
       throw new Error(`Unsupported fiscal provider: ${provider}`);
     }
     draft = buildEasyPosInvoiceDraft(payload, settings, {
-      docId: idempotencyKey || undefined,
+      docId,
       onAdjustment: (info) => {
         adjustment = info;
       },
@@ -182,26 +286,23 @@ export async function fiscalizePaymentOnce(
 
   if (adjustment) await reportDraftAdjustment(adjustment, payload);
 
-  if (!idempotencyKey) {
-    // An older client that predates idempotency keys. Take the payment
-    // rather than refuse it, but this is the one path where a lost
-    // response can still produce a second invoice.
-    try {
-      const result = await createEasyPosSale(settings, draft);
-      return { kind: 'ok', payload: withFiscalMeta(payload, result) };
-    } catch (e: any) {
-      const message = String(e?.message || e);
-      if (fiscalOutcomeOf(e) !== 'not-registered') return review(message);
-      return {
-        kind: isFiscalRetryable(e) ? 'retryable' : 'rejected',
-        message,
-      };
-    }
-  }
+  // The tax service refuses a cash invoice until the day's opening float
+  // has been declared, so this has to happen before the register call and
+  // not after it fails.
+  await ensureCashBalanceDeclared(payload, settings, meta);
+
+  /**
+   * The draft is frozen here and reused for every attempt, including a
+   * replay after a "not found" status. A replay must resend the identical
+   * body — rebuilding it could pick up a changed exchange rate or a
+   * re-read setting, and the provider would then be looking at a different
+   * document under a docId it has already seen.
+   */
+  Object.freeze(draft);
 
   let decision: Awaited<ReturnType<typeof claimFiscalRegistration>>;
   try {
-    decision = await claimFiscalRegistration(idempotencyKey, {
+    decision = await claimFiscalRegistration(docId, {
       area,
       tableLabel,
       total: Number.isFinite(Number(meta.totalAfter))
@@ -239,9 +340,10 @@ export async function fiscalizePaymentOnce(
 
   try {
     const result = await createEasyPosSale(settings, draft);
-    await settleFiscalClaimRegistered(idempotencyKey, decision.attemptId, {
+    await settleFiscalClaimRegistered(docId, decision.attemptId, {
       nslf: result.nslf || undefined,
       nivf: result.nivf || undefined,
+      eic: result.eic || undefined,
       link: result.link || undefined,
       status: result.status,
       warning: result.warning || undefined,
@@ -252,11 +354,9 @@ export async function fiscalizePaymentOnce(
     if (fiscalOutcomeOf(e) === 'not-registered') {
       // FAILED either way: nothing was filed, so the key stays usable once
       // the underlying problem is fixed and an admin releases the payment.
-      await settleFiscalClaimFailed(
-        idempotencyKey,
-        decision.attemptId,
-        message,
-      ).catch(() => undefined);
+      await settleFiscalClaimFailed(docId, decision.attemptId, message).catch(
+        () => undefined,
+      );
       if (isFiscalRetryable(e)) return { kind: 'retryable', message };
       await notifyAdminsAndActor({
         message:
@@ -267,11 +367,9 @@ export async function fiscalizePaymentOnce(
       }).catch(() => undefined);
       return { kind: 'rejected', message };
     }
-    await settleFiscalClaimUnknown(
-      idempotencyKey,
-      decision.attemptId,
-      message,
-    ).catch(() => undefined);
+    await settleFiscalClaimUnknown(docId, decision.attemptId, message).catch(
+      () => undefined,
+    );
     return review(message);
   }
 }

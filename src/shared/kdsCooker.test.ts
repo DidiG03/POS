@@ -7,6 +7,8 @@ import {
   cookerUnbumpSingleKitchenItem,
   isItemLockedForMain,
   isTwoStageKitchen,
+  kdsStationRowVisible,
+  ticketLogLooksFullyVoided,
   viewKitchenItemsForCooker,
 } from './kdsCooker';
 
@@ -131,5 +133,59 @@ describe('viewKitchenItemsForCooker', () => {
     expect(out[0]).toMatchObject({ locked: true, ready: false });
     expect(out[1]).toMatchObject({ locked: false, ready: true });
     expect(out[2]).toMatchObject({ locked: false, ready: false, voided: true });
+  });
+
+  it('hides NEW when every remaining line is voided', () => {
+    const voidedOnly = [kitchen('Fries', { voided: true })];
+    expect(
+      viewKitchenItemsForCooker(voidedOnly, { cooker: true, tab: 'NEW' }),
+    ).toEqual([]);
+    expect(
+      viewKitchenItemsForCooker(voidedOnly, { cooker: false, tab: 'NEW' }),
+    ).toEqual([]);
+  });
+});
+
+describe('kdsStationRowVisible', () => {
+  it('hides a fully voided ticket from NEW and DONE', () => {
+    const items = [
+      kitchen('Steak', { voided: true }),
+      kitchen('Fries', { voided: true }),
+    ];
+    expect(kdsStationRowVisible(items, 'NEW')).toBe(false);
+    expect(kdsStationRowVisible(items, 'DONE')).toBe(false);
+  });
+
+  it('keeps mixed tickets on NEW so voided lines can show struck through', () => {
+    const items = [kitchen('Steak'), kitchen('Fries', { voided: true })];
+    expect(kdsStationRowVisible(items, 'NEW')).toBe(true);
+  });
+
+  it('hides NEW when every remaining line is bumped', () => {
+    expect(
+      kdsStationRowVisible([kitchen('Steak', { bumped: true })], 'NEW'),
+    ).toBe(false);
+  });
+});
+
+describe('ticketLogLooksFullyVoided', () => {
+  it('treats a log as voided when every line is voided', () => {
+    expect(
+      ticketLogLooksFullyVoided({
+        itemsJson: [
+          kitchen('Steak', { voided: true }),
+          kitchen('Fries', { voided: true }),
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it('does not hide a paid ticket that still has live lines', () => {
+    expect(
+      ticketLogLooksFullyVoided({
+        itemsJson: [kitchen('Steak')],
+        note: 'Paid',
+      }),
+    ).toBe(false);
   });
 });

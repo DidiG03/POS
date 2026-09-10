@@ -24,8 +24,14 @@ model User {
   ticketRequestsOwned TicketRequest[] @relation("TicketRequestOwner")
   twoFactorEnabled Boolean  @default(false)
   twoFactorSecret  String?
+  /// Optional pay; null means not set.
+  salaryAmount     Decimal?
+  /// HOURLY | MONTHLY | YEARLY when salaryAmount is set.
+  salaryPeriod     String?
   kdsBumpedStations KdsTicketStation[] @relation("KdsBumpedBy")
   reservationsCreated Reservation[] @relation("ReservationCreatedBy")
+  saleCorrections SaleCorrection[] @relation("SaleCorrectionActor")
+  saleCorrectionsApproved SaleCorrection[] @relation("SaleCorrectionApprover")
 }
 
 enum Role {
@@ -128,12 +134,48 @@ model Order {
   table     Table?     @relation(fields: [tableId], references: [id])
   tableId   Int?
   status    OrderStatus @default(OPEN)
-  user      User       @relation(fields: [userId], references: [id])
-  userId    Int
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId    Int?
   openedAt  DateTime   @default(now())
   closedAt  DateTime?
-  items     OrderItem[]
-  payments  Payment[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  /// Floor / till location copied off the ticket so reports do not need Table.
+  area       String   @default("")
+  tableLabel String   @default("")
+  covers     Int?
+  note       String?
+  userName   String?
+
+  /// Same key as the receipt PrintJob so retries cannot double-book a sale.
+  idempotencyKey String? @unique
+  printJob       PrintJob? @relation(fields: [printJobId], references: [id], onDelete: SetNull)
+  printJobId     Int?      @unique
+
+  seatId    String?
+  seatLabel String?
+
+  subtotal            Decimal @default(0)
+  vatAmount           Decimal @default(0)
+  discountAmount      Decimal @default(0)
+  discountType        String?
+  discountReason      String?
+  serviceChargeAmount Decimal @default(0)
+  total               Decimal @default(0)
+  vatEnabled          Boolean @default(false)
+
+  /// Set when an admin cancels the sale. `status` becomes VOID at the same
+  /// time, which is what keeps it out of every report.
+  voidedAt DateTime?
+
+  items    OrderItem[]
+  payments Payment[]
+  corrections SaleCorrection[]
+
+  @@index([userId, closedAt])
+  @@index([area, tableLabel, closedAt])
+  @@index([closedAt])
 }
 
 enum OrderType {
@@ -152,13 +194,74 @@ model OrderItem {
   id         Int       @id @default(autoincrement())
   order      Order     @relation(fields: [orderId], references: [id])
   orderId    Int
-  menuItem   MenuItem  @relation(fields: [menuItemId], references: [id])
-  menuItemId Int
-  qty        Int
+  menuItem   MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
+  menuItemId Int?
+  sku        String    @default("")
+  name       String
+  qty        Decimal
   unitPrice  Decimal
   vatRate    Decimal
   note       String?
+  station    String?
+  categoryName String?
+  courseId   String?
+  seatId     String?
+  sortOrder  Int       @default(0)
+  /// Struck off by a corrective invoice. The row stays for audit; reports
+  /// and re-issued documents must skip it.
+  voidedAt   DateTime?
   mods       OrderItemModifier[]
+
+  @@index([orderId])
+  @@index([sku])
+}
+
+/**
+ * An admin reversal of a settled sale.
+ *
+ * A fiscalized invoice cannot be withdrawn — the tax service already holds
+ * it. It is undone by filing a second document that references the first
+ * (CANCEL for the whole invoice, CORRECTIVE for some of its lines), so the
+ * two must be kept together: what was reversed, by whom, on whose approval,
+ * and which fiscal document settled it. `filedAt` stays null until that
+ * document exists, which is what the Fiskalizimi review queue works from.
+ */
+model SaleCorrection {
+  id      Int    @id @default(autoincrement())
+  order   Order  @relation(fields: [orderId], references: [id])
+  orderId Int
+  kind    SaleCorrectionKind
+  reason  String
+
+  /// Negative: how much this takes off the original invoice.
+  amountDelta Decimal @default(0)
+  /// The lines it strikes off. Empty for a whole-invoice cancellation.
+  itemsJson   Json?
+
+  actor       User? @relation("SaleCorrectionActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorUserId Int?
+  approver    User? @relation("SaleCorrectionApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedById Int?
+
+  /// Identifiers of the invoice being corrected.
+  originalNslf String?
+  originalNivf String?
+  /// Identifiers of the corrective document, once it has been filed.
+  correctionNslf String?
+  correctionNivf String?
+  /// Null while the correction still has to be filed with the tax service.
+  filedAt   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([orderId])
+  @@index([createdAt])
+  @@index([filedAt])
+}
+
+enum SaleCorrectionKind {
+  CANCEL
+  CORRECTIVE
 }
 
 model OrderItemModifier {
@@ -179,7 +282,17 @@ model Payment {
   tip       Decimal    @default(0)
   change    Decimal    @default(0)
   createdAt DateTime   @default(now())
+  paidAt    DateTime?
+  idempotencyKey String? @unique
+  fiscalNslf String?
+  fiscalNivf String?
+  /// EIC — set only for electronic invoices. Needed because a P9/P10
+  /// corrective can only reference an invoice that has one.
+  fiscalEic  String?
   metaJson  Json
+
+  @@index([orderId])
+  @@index([paidAt])
 }
 
 enum PaymentMethod {
@@ -239,6 +352,8 @@ model PrintJob {
   lastError        String?
   nextAttemptAt    DateTime?
   printerProfileId String?
+
+  order Order?
 
   @@index([status, nextAttemptAt])
 }

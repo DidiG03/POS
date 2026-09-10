@@ -43,21 +43,16 @@ import {
 } from './services/realtime';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import {
-  effectiveVatRate,
   latestRowPerSession,
-  splitGrossVat,
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
-import { findVoidableLineIndex } from '@shared/voidLine';
+import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
   isApprovalValidFor,
   issueApprovalToken,
 } from './services/approvalTokens';
 import { actorIdentityAllows, resolveActorUserId } from './services/ipcActor';
-import {
-  isVatEnabledFromSettings,
-  resolveVatEnabledFromMeta,
-} from '@shared/vatFromFiscal';
+import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import {
   LoginWithPinInputSchema,
   CreateUserInputSchema,
@@ -70,9 +65,15 @@ import {
   UpdateMenuItemInputSchema,
   TransferTableInputSchema,
 } from '@shared/ipc';
+import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import {
   activateKey,
   activateSession,
+  assertDiningFloorEnabled,
+  assertKdsEnabled,
+  assertReservationsEnabled,
+  assertStaffRoleAllowed,
+  assertStoreCounterAllowed,
   createCheckout,
   createPortalSession,
   getBillingPlans,
@@ -81,7 +82,13 @@ import {
   registerLicenseProtocol,
   restoreByEmail,
   sessionIdFromProtocolUrl,
+  setUnpackagedDevEdition,
+  storePlanBlocksKds,
+  storePlanBlocksReservations,
+  withLicenseEdition,
 } from './services/license';
+import { licenseStatusForRenderer } from './services/licenseStatus';
+import { publicStripeHostedUrl } from './services/stripeOpenUrl';
 import {
   setupAutoUpdater,
   updaterHandlers,
@@ -149,6 +156,7 @@ import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
+  paymentShouldCloseTable,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
   withPaymentLock,
@@ -171,6 +179,8 @@ import {
 import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
+  listWaiterFloorOrders,
+  notifyKdsTicketChanged,
 } from './services/kdsList';
 import {
   ALL_KDS_STATIONS,
@@ -183,6 +193,24 @@ import {
 import { finalizeShiftAfterClockOut } from './services/shiftSummary';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
 import { runPendingMigrations } from './services/migrator';
+import {
+  backfillSalesLedgerFromPrintJobs,
+  ensureSettledSaleFromPrintJob,
+  persistReceiptAudit,
+} from './services/salesLedger';
+import {
+  applySaleCorrection,
+  listFiscalizedSales,
+  mapOrderToFiscalSaleRow,
+} from './services/saleCorrection';
+import {
+  buildSalesTrendBuckets,
+  fetchPaidSales,
+  fillTrendPoints,
+  getAdminReview,
+  sumPaidRevenue,
+  topSellingFromSales,
+} from './services/paidAnalytics';
 import {
   kdsStationListWhere,
   purgeKdsDoneTicketsForStation,
@@ -209,6 +237,7 @@ import {
   getTableSessionStartedAt,
 } from './services/tableSession';
 import { splitTableKey } from '@shared/utils/tableKey';
+import { normalizeProductCode } from '@shared/barcodeScan';
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -273,6 +302,19 @@ function pickProtocolUrlFromArgv(argv: string[]): string | null {
 
 let pendingLicenseUrl: string | null = pickProtocolUrlFromArgv(process.argv);
 
+async function openStripeHostedUrl(
+  raw?: string | null,
+): Promise<string | undefined> {
+  const url = publicStripeHostedUrl(raw);
+  if (!url) return undefined;
+  try {
+    await shell.openExternal(url);
+  } catch {
+    // renderer can still open the returned URL
+  }
+  return url;
+}
+
 async function afterLicenseUnlocked(): Promise<void> {
   await ensureLanApiStarted();
   broadcastLicenseUpdated();
@@ -282,8 +324,12 @@ async function handleLicenseProtocolUrl(raw: string): Promise<void> {
   const sessionId = sessionIdFromProtocolUrl(raw);
   if (!sessionId) return;
   const r = await activateSession(sessionId);
-  if (r.ok) await afterLicenseUnlocked();
-  else broadcastLicenseUpdated();
+  if (r.ok) {
+    await afterLicenseUnlocked();
+    return;
+  }
+  if (r.portalUrl) await openStripeHostedUrl(r.portalUrl);
+  broadcastLicenseUpdated();
 }
 
 function queueLicenseProtocolUrl(raw: string): void {
@@ -579,6 +625,8 @@ async function ensureLocalDbColumns(): Promise<void> {
     // 20260613190000_reservation_external_sync
     `ALTER TABLE "Reservation" ADD COLUMN "externalSource" TEXT;`,
     `ALTER TABLE "Reservation" ADD COLUMN "externalId" TEXT;`,
+    // 20260902120000_ticket_log_session_key
+    `ALTER TABLE "TicketLog" ADD COLUMN "sessionKey" TEXT;`,
   ];
   for (const sql of statements) {
     try {
@@ -591,6 +639,13 @@ async function ensureLocalDbColumns(): Promise<void> {
   try {
     await (prisma as any).$executeRawUnsafe(
       `CREATE UNIQUE INDEX IF NOT EXISTS "Reservation_externalSource_externalId_key" ON "Reservation"("externalSource", "externalId");`,
+    );
+  } catch {
+    // ignore
+  }
+  try {
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "TicketLog_sessionKey_idx" ON "TicketLog"("sessionKey");`,
     );
   } catch {
     // ignore
@@ -702,6 +757,7 @@ function createAdminWindow() {
 }
 
 function createKdsWindow() {
+  if (storePlanBlocksKds()) return;
   if (kdsWindow) {
     kdsWindow.focus();
     return;
@@ -735,6 +791,7 @@ function createKdsWindow() {
 }
 
 function createReservationWindow() {
+  if (storePlanBlocksReservations()) return;
   if (reservationWindow) {
     reservationWindow.focus();
     return;
@@ -1203,6 +1260,7 @@ function startAutoNoShowReservationsLoop() {
   const intervalMs = 60 * 1000;
 
   const runOnce = async () => {
+    if (storePlanBlocksReservations()) return;
     if (autoNoShowReservationsRunning) return;
     autoNoShowReservationsRunning = true;
     try {
@@ -1325,6 +1383,16 @@ function stopAutoNoShowReservationsLoop() {
 }
 
 async function runGoogleCalendarSyncOnce() {
+  if (storePlanBlocksReservations()) {
+    return {
+      ok: false,
+      imported: 0,
+      updated: 0,
+      cancelled: 0,
+      skipped: 0,
+      error: 'Reservations are not available on the Store plan.',
+    };
+  }
   if (googleCalendarSyncRunning) {
     return {
       ok: false,
@@ -1418,6 +1486,7 @@ function startGoogleCalendarSyncLoop() {
 
   const runOnce = async () => {
     try {
+      if (storePlanBlocksReservations()) return;
       const settings = await coreServices
         .readSettings()
         .catch(() => null as any);
@@ -1566,6 +1635,16 @@ app.whenReady().then(async () => {
   await ensureLocalDbColumns().catch((e) =>
     console.warn('[startup] ensureLocalDbColumns failed:', e),
   );
+  try {
+    const backfill = await backfillSalesLedgerFromPrintJobs();
+    if (backfill.written > 0) {
+      console.log(
+        `[startup] Sales ledger backfill: ${backfill.written} payment(s) from ${backfill.scanned} print job(s)`,
+      );
+    }
+  } catch (e) {
+    console.warn('[startup] sales ledger backfill failed:', e);
+  }
   // Drop IPC sessions that aged out while the app was closed, so a machine
   // that sat idle over a long weekend doesn't come back with resumable ones.
   await pruneExpiredSessions().catch((e) =>
@@ -1888,6 +1967,30 @@ ipcHandle('auth:endSession', async (_e) => {
   return true;
 });
 
+function userDtoFromRow(u: {
+  id: number;
+  displayName: string;
+  role: string;
+  active: boolean;
+  createdAt: Date | string;
+  salaryAmount?: unknown;
+  salaryPeriod?: unknown;
+}) {
+  const salary = salaryFromUser(u);
+  return {
+    id: u.id,
+    displayName: u.displayName,
+    role: u.role,
+    active: u.active,
+    createdAt:
+      u.createdAt instanceof Date
+        ? u.createdAt.toISOString()
+        : String(u.createdAt),
+    salaryAmount: salary.salaryAmount,
+    salaryPeriod: salary.salaryPeriod,
+  };
+}
+
 ipcHandle('auth:createUser', async (_e, payload) => {
   // Rate limiting for this channel is declared in IPC_POLICIES and applied by
   // ipcHandle before we get here; a second check with the same key would just
@@ -1933,22 +2036,24 @@ ipcHandle('auth:createUser', async (_e, payload) => {
     throw new Error('forbidden');
   }
 
+  assertStaffRoleAllowed(input.role);
+
   const pinHash = await bcrypt.hash(input.pin, 10);
+  const salary = salaryWriteData(
+    input.salaryAmount ?? null,
+    input.salaryPeriod ?? null,
+  );
   const created = await prisma.user.create({
     data: {
       displayName: input.displayName,
       role: input.role,
       pinHash,
       active: input.active ?? true,
+      salaryAmount: salary.salaryAmount,
+      salaryPeriod: salary.salaryPeriod,
     },
   });
-  return {
-    id: created.id,
-    displayName: created.displayName,
-    role: created.role,
-    active: created.active,
-    createdAt: created.createdAt.toISOString(),
-  };
+  return userDtoFromRow(created);
 });
 
 ipcHandle('auth:listUsers', async (_e, payload) => {
@@ -1958,13 +2063,7 @@ ipcHandle('auth:listUsers', async (_e, payload) => {
   const filtered = includeAdmins
     ? users
     : users.filter((u: any) => u.role !== 'ADMIN');
-  return filtered.map((u: any) => ({
-    id: u.id,
-    displayName: u.displayName,
-    role: u.role,
-    active: u.active,
-    createdAt: u.createdAt.toISOString(),
-  }));
+  return filtered.map((u: any) => userDtoFromRow(u));
 });
 
 ipcHandle('auth:updateUser', async (_e, payload) => {
@@ -1994,6 +2093,10 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
     sanitizedInput.displayName = sanitized;
   }
 
+  if (sanitizedInput.role) {
+    assertStaffRoleAllowed(sanitizedInput.role);
+  }
+
   // Log user update (security audit)
   logSecurityEvent('user_updated', {
     senderId: _e.sender.id,
@@ -2004,6 +2107,10 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
   // Local-first: always use local DB for user updates
   let pinHash: string | undefined;
   if (sanitizedInput.pin) pinHash = await bcrypt.hash(sanitizedInput.pin, 10);
+  const salaryPatch =
+    input.salaryAmount !== undefined || input.salaryPeriod !== undefined
+      ? salaryWriteData(input.salaryAmount ?? null, input.salaryPeriod ?? null)
+      : null;
   const updated = await prisma.user.update({
     where: { id: input.id },
     data: {
@@ -2015,6 +2122,12 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
         ? { active: sanitizedInput.active }
         : {}),
       ...(pinHash ? { pinHash } : {}),
+      ...(salaryPatch
+        ? {
+            salaryAmount: salaryPatch.salaryAmount,
+            salaryPeriod: salaryPatch.salaryPeriod,
+          }
+        : {}),
     },
   });
   // Deactivating an account, changing its role, or resetting its PIN must all
@@ -2027,13 +2140,7 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
   ) {
     await revokeSessionsForUser(input.id);
   }
-  return {
-    id: updated.id,
-    displayName: updated.displayName,
-    role: updated.role,
-    active: updated.active,
-    createdAt: updated.createdAt.toISOString(),
-  };
+  return userDtoFromRow(updated);
 });
 
 ipcHandle('auth:deleteUser', async (_e, payload) => {
@@ -2347,7 +2454,9 @@ async function readSettings() {
 }
 
 ipcHandle('settings:get', async (_e) => {
-  const settings = (await readSettings()) as any;
+  const settings = withLicenseEdition({
+    ...((await readSettings()) as Record<string, unknown>),
+  }) as any;
   // This channel is public because every shell reads locale, currency and
   // feature flags before anyone logs in. The pairing code is the one field in
   // here that is a credential rather than configuration, so it goes only to an
@@ -2413,6 +2522,7 @@ ipcHandle('network:getIps', async () => {
 });
 
 ipcHandle('settings:syncGoogleCalendar', async () => {
+  assertReservationsEnabled();
   return await runGoogleCalendarSyncOnce();
 });
 
@@ -2433,6 +2543,7 @@ ipcHandle('settings:getGoogleCalendarStatus', async () => {
 
 ipcHandle('settings:connectGoogleCalendar', async () => {
   try {
+    assertReservationsEnabled();
     const connected = await connectGoogleCalendarAccount();
     await coreServices.updateSettings({
       googleCalendar: {
@@ -2788,11 +2899,24 @@ ipcHandle('billing:createCheckoutSession', async () => {
 });
 
 ipcHandle('billing:createPortalSession', async () => {
-  return await createPortalSession();
+  const r = await createPortalSession();
+  if (r.error) return r;
+  const url = await openStripeHostedUrl(r.url);
+  if (!url) return { error: 'Could not open billing portal' };
+  return { url };
 });
 
-ipcHandle('license:getStatus', async () => {
-  return await getLicenseStatus();
+ipcHandle('license:getStatus', async (_e, _input, ctx) => {
+  return licenseStatusForRenderer(
+    await getLicenseStatus(),
+    ctx.session?.role === 'ADMIN',
+  );
+});
+
+ipcHandle('license:setDevEdition', async (_e, input) => {
+  const r = setUnpackagedDevEdition((input as any)?.edition);
+  if (r.ok) broadcastLicenseUpdated();
+  return r;
 });
 
 ipcHandle('license:getPlans', async () => {
@@ -2808,21 +2932,20 @@ ipcHandle('license:createCheckout', async (_e, input) => {
     businessName: String((input as any)?.businessName || '').trim(),
     edition: String((input as any)?.edition || '').trim(),
   });
-  if (r.url) {
-    try {
-      await shell.openExternal(r.url);
-    } catch {
-      // renderer can still show the URL if we returned it
-    }
+  if (r.error) return r;
+  const url = await openStripeHostedUrl(r.url);
+  if (r.url && !url) {
+    return { error: 'Billing returned an unexpected URL' };
   }
-  return r;
+  return { ...r, url };
 });
 
 ipcHandle('license:activateSession', async (_e, input) => {
   const sessionId = String((input as any)?.sessionId || '').trim();
   const r = await activateSession(sessionId);
   if (r.ok) await afterLicenseUnlocked();
-  return r;
+  else if (r.portalUrl) await openStripeHostedUrl(r.portalUrl);
+  return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
 });
 
 ipcHandle('license:activateKey', async (_e, input) => {
@@ -2838,7 +2961,11 @@ ipcHandle('license:restore', async (_e, input) => {
 });
 
 ipcHandle('license:createPortalSession', async () => {
-  return await createPortalSession();
+  const r = await createPortalSession();
+  if (r.error) return r;
+  const url = await openStripeHostedUrl(r.url);
+  if (!url) return { error: 'Could not open billing portal' };
+  return { url };
 });
 
 // Print ticket over ESC/POS
@@ -2854,10 +2981,18 @@ ipcHandle('tickets:print', async (_e, input) => {
       // Same logical payment/print already recorded — retries must not
       // duplicate notifications, audit PrintJobs, or dispatch again.
       // Still free the table if the first attempt died after the PrintJob.
+      await ensureSettledSaleFromPrintJob(existing as any).catch(() => null);
       return closeTableAfterIdempotentPayment(
         String(input?.area || ''),
         String(input?.tableLabel || ''),
-        String((input as any)?.meta?.kind || ''),
+        String(
+          (input as any)?.meta?.kind ||
+            (existing as any)?.payloadJson?.meta?.kind ||
+            '',
+        ),
+        paymentShouldCloseTable(
+          (existing as any)?.payloadJson?.meta ?? (input as any)?.meta,
+        ),
       );
     }
   }
@@ -3043,20 +3178,21 @@ ipcHandle('tickets:print', async (_e, input) => {
     // recordOnly = store receipt snapshot for history without printing.
     if (recordOnly) {
       try {
-        await prisma.printJob.create({
-          data: {
-            type: 'RECEIPT' as any,
-            payloadJson: payload,
-            status: 'SENT' as any,
-            ...(idempotencyKey ? { idempotencyKey } : {}),
-          } as any,
+        await persistReceiptAudit({
+          payload,
+          idempotencyKey: idempotencyKey || undefined,
+          status: 'SENT',
+          settings,
         });
       } catch (e: any) {
         if (!(e?.code === 'P2002' && idempotencyKey)) return false;
       }
       if (kind === 'PAYMENT') {
-        await closeTableAfterAcceptedPayment(area, tableLabel);
-        return paymentPrintAccepted(true);
+        const closeTable = paymentShouldCloseTable(payload?.meta);
+        if (closeTable) {
+          await closeTableAfterAcceptedPayment(area, tableLabel);
+        }
+        return paymentPrintAccepted(true, closeTable);
       }
       return true;
     }
@@ -3113,23 +3249,19 @@ ipcHandle('tickets:print', async (_e, input) => {
     // here just tracks the synchronous outcome; the QUEUED status is
     // reserved for jobs the cloud poller hasn't picked up yet.
     try {
-      await prisma.printJob.create({
-        data: {
-          type: 'RECEIPT' as any,
-          payloadJson: payload,
-          status: ok ? ('SENT' as any) : ('FAILED' as any),
-          ...(idempotencyKey ? { idempotencyKey } : {}),
-        } as any,
+      await persistReceiptAudit({
+        payload,
+        idempotencyKey: idempotencyKey || undefined,
+        status: ok ? 'SENT' : 'FAILED',
+        settings,
       });
     } catch (e: any) {
       if (e?.code === 'P2002' && idempotencyKey) {
         // Concurrent identical payment — treat as success (other call won).
       } else {
-        // This row is the receipt, the revenue line in the shift summary,
-        // and the retry guard. Losing it silently used to mean a payment
-        // that existed only on paper (and, once fiscalized, only at the tax
-        // service). The fiscal identifiers survive in the claim record, but
-        // someone still has to know this happened.
+        // This row is the receipt PrintJob and the Order/Payment ledger.
+        // Losing it silently used to mean a payment that existed only on
+        // paper (and, once fiscalized, only at the tax service).
         const detail = String(e?.message || e);
         broadcastPrinterEvent({
           level: 'error',
@@ -3148,8 +3280,11 @@ ipcHandle('tickets:print', async (_e, input) => {
       }
     }
     if (kind === 'PAYMENT') {
-      await closeTableAfterAcceptedPayment(area, tableLabel);
-      return paymentPrintAccepted(ok);
+      const closeTable = paymentShouldCloseTable(payload?.meta);
+      if (closeTable) {
+        await closeTableAfterAcceptedPayment(area, tableLabel);
+      }
+      return paymentPrintAccepted(ok, closeTable);
     }
     return ok;
   };
@@ -3186,6 +3321,7 @@ ipcHandle('tables:setOpen', async (_e, input) => {
   const area = String(input?.area || '');
   const label = String(input?.label || '');
   const open = Boolean(input?.open);
+  assertStoreCounterAllowed(area);
   return setTableOpenWithSideEffects(area, label, open);
 });
 
@@ -3201,6 +3337,7 @@ ipcHandle('tables:listOpen', async (_e) => {
 });
 
 ipcHandle('tables:getFloorSnapshot', async (_e, input) => {
+  assertDiningFloorEnabled();
   const area = String(input?.area || '').trim();
   return getFloorSnapshot(area || undefined);
 });
@@ -3208,6 +3345,7 @@ ipcHandle('tables:getFloorSnapshot', async (_e, input) => {
 // Local-first: always use local transfer
 ipcHandle('tables:transfer', async (_e, payload) => {
   try {
+    assertDiningFloorEnabled();
     const input = TransferTableInputSchema.parse(payload);
     return await transferTableLocal(input as any);
   } catch (e: any) {
@@ -3367,9 +3505,24 @@ ipcHandle('menu:createItem', async (_e, payload) => {
   };
   // Retry a couple of times in case a concurrent create grabbed the SKU
   // between the availability check and the insert.
+  const explicitSku = normalizeProductCode(String(input.sku || ''));
+  if (explicitSku) {
+    const clash = await prisma.menuItem.findUnique({
+      where: { sku: explicitSku },
+      select: { id: true },
+    });
+    if (clash) {
+      throw new Error('This barcode is already used by another product.');
+    }
+    const created = await prisma.menuItem.create({
+      data: { ...data, sku: explicitSku } as any,
+    });
+    return { id: created.id, sku: created.sku };
+  }
+
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const sku = await nextAvailableSku(String(input.sku || input.name).trim());
+    const sku = await nextAvailableSku(String(input.name).trim());
     try {
       const created = await prisma.menuItem.create({
         data: { ...data, sku } as any,
@@ -3416,6 +3569,20 @@ ipcHandle('menu:updateItem', async (_e, payload) => {
       ? { station: String((input as any).station).toUpperCase() }
       : {}),
   };
+
+  if (typeof input.sku === 'string') {
+    const nextSku = normalizeProductCode(input.sku);
+    if (nextSku && nextSku !== String(existing.sku || '')) {
+      const clash = await prisma.menuItem.findUnique({
+        where: { sku: nextSku },
+        select: { id: true },
+      });
+      if (clash && clash.id !== existing.id) {
+        throw new Error('This barcode is already used by another product.');
+      }
+      data.sku = nextSku;
+    }
+  }
 
   const stockRemainingIn = (input as any).stockRemaining as
     | number
@@ -3519,21 +3686,13 @@ ipcHandle('admin:getOverview', async (_e) => {
     prisma.syncState
       .findUnique({ where: { key: 'staff:lastSync' } })
       .catch(() => null),
-    prisma.ticketLog
+    prisma.order
       .findMany({
-        where: { createdAt: { gte: todayStart, lte: todayEnd } },
-        // `note` is needed so we can exclude rows that were marked
-        // "moved-out" by a table transfer (the destination row carries
-        // the items now — see `isTransferredOutNote`). The session columns
-        // let `latestRowPerSession` drop superseded snapshots.
-        select: {
-          itemsJson: true,
-          note: true,
-          area: true,
-          tableLabel: true,
-          sessionKey: true,
-          createdAt: true,
+        where: {
+          status: 'PAID' as any,
+          closedAt: { gte: todayStart, lte: todayEnd },
         } as any,
+        select: { subtotal: true, vatAmount: true } as any,
       })
       .catch(() => []),
     // Pull all cover writes that happened today. A waiter may save covers
@@ -3584,30 +3743,14 @@ ipcHandle('admin:getOverview', async (_e) => {
           }[],
       ),
   ]);
-  // Skip rows tagged as "moved-out" — their revenue is already counted
-  // on the destination table row created by the transfer flow. Then collapse
-  // each sitting to its newest snapshot, otherwise a table fired three times
-  // is billed three times over.
-  const livingRevenueRows = latestRowPerSession(
-    (revenueRows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  const revenueTodayNet = (revenueRows as any[]).reduce(
+    (s, r) => s + Number(r?.subtotal || 0),
+    0,
   );
-  const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
-  const revenueTodayNet = livingRevenueRows.reduce((s, r) => {
-    const { net } = sumTicketLinesNetVat(
-      r?.itemsJson,
-      fiscalVatEnabled,
-      fiscalDefaultVatRate,
-    );
-    return s + net;
-  }, 0);
-  const revenueTodayVat = livingRevenueRows.reduce((s, r) => {
-    const { vat } = sumTicketLinesNetVat(
-      r?.itemsJson,
-      fiscalVatEnabled,
-      fiscalDefaultVatRate,
-    );
-    return s + vat;
-  }, 0);
+  const revenueTodayVat = (revenueRows as any[]).reduce(
+    (s, r) => s + Number(r?.vatAmount || 0),
+    0,
+  );
 
   // Sum the latest cover count per (area, label) for today so we report
   // "guests served today" rather than the total number of cover writes.
@@ -3735,11 +3878,13 @@ ipcHandle('admin:openWindow', async () => {
 });
 
 ipcHandle('kds:openWindow', async () => {
+  if (storePlanBlocksKds()) return false;
   createKdsWindow();
   return true;
 });
 
 ipcHandle('reservations:openWindow', async () => {
+  if (storePlanBlocksReservations()) return false;
   createReservationWindow();
   return true;
 });
@@ -3750,26 +3895,32 @@ ipcHandle('reservations:openWindow', async () => {
 // `services/reservations.ts` so the LAN HTTP API (used by mobile clients) and
 // the desktop IPC layer share the exact same behaviour.
 ipcHandle('reservations:list', async (_e, input) => {
+  assertReservationsEnabled();
   return reservationsService.listReservationsForDay(input || {});
 });
 
 ipcHandle('reservations:listCounts', async (_e, input) => {
+  assertReservationsEnabled();
   return reservationsService.listReservationCounts(input || {});
 });
 
 ipcHandle('reservations:create', async (_e, input) => {
+  assertReservationsEnabled();
   return reservationsService.createReservation(input || {});
 });
 
 ipcHandle('reservations:update', async (_e, input) => {
+  assertReservationsEnabled();
   return reservationsService.updateReservation(input || {});
 });
 
 ipcHandle('reservations:setStatus', async (_e, input) => {
+  assertReservationsEnabled();
   return reservationsService.setReservationStatus(input || {});
 });
 
 ipcHandle('reservations:delete', async (_e, input) => {
+  assertReservationsEnabled();
   return reservationsService.deleteReservation(input || {});
 });
 
@@ -3811,6 +3962,7 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     // Rate limit declared in IPC_POLICIES.
     const { userId, area, tableLabel, covers, items, note } = payload || {};
     if (!userId || !area || !tableLabel) return false;
+    assertStoreCounterAllowed(area);
     // The row this writes decides who owns the table and who gets credited
     // for the sale, and naming an admin here would skip the ownership check
     // below outright. Refuse rather than silently re-attribute, so the
@@ -3960,16 +4112,22 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
       }
 
       // KDS: create station-specific ticket rows (best-effort; does not
-      // block sending).
+      // block sending). Store tills have no kitchen display.
       try {
-        await createKdsTicketFromLog({
-          userId: Number(userId),
-          area: sanitizedArea,
-          tableLabel: sanitizedTableLabel,
-          items: items ?? [],
-          fireItems: kdsFireItems,
-          note: sanitizedNote,
-        });
+        if (!storePlanBlocksKds()) {
+          await createKdsTicketFromLog({
+            userId: Number(userId),
+            area: sanitizedArea,
+            tableLabel: sanitizedTableLabel,
+            items: items ?? [],
+            fireItems: kdsFireItems,
+            note: sanitizedNote,
+            courseLabel:
+              typeof (payload as any)?.kdsCourseLabel === 'string'
+                ? (payload as any).kdsCourseLabel
+                : null,
+          });
+        }
       } catch (e: any) {
         __kdsLastError = String(
           e?.message || e || 'Failed to create KDS ticket',
@@ -4057,6 +4215,7 @@ async function getCookerEnabled(): Promise<boolean> {
 
 // KDS: list tickets by station + status (NEW/DONE)
 ipcHandle('kds:listTickets', async (_e, input) => {
+  assertKdsEnabled();
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const status = String((input as any)?.status || 'NEW').toUpperCase();
   const cooker = Boolean((input as any)?.cooker);
@@ -4093,7 +4252,22 @@ ipcHandle('kds:listTickets', async (_e, input) => {
   }
 });
 
+ipcHandle('kds:listFloorOrders', async (_e, _input, ctx) => {
+  assertKdsEnabled();
+  await ensureKdsLocalSchema();
+  try {
+    if (!(await isKdsMasterEnabled())) return [];
+    const stations = await getEnabledStations();
+    return await listWaiterFloorOrders(stations, {
+      waiterUserId: Number(ctx.session?.userId || 0),
+    });
+  } catch {
+    return [];
+  }
+});
+
 ipcHandle('kds:getTicketDetail', async (_e, input) => {
+  assertKdsEnabled();
   await ensureKdsLocalSchema();
   const ticketId = Number((input as any)?.ticketId || 0);
   if (!ticketId) return null;
@@ -4105,6 +4279,7 @@ ipcHandle('kds:getTicketDetail', async (_e, input) => {
 });
 
 ipcHandle('kds:debug', async () => {
+  assertKdsEnabled();
   const schemaReady = await ensureKdsLocalSchema();
   const enabledStations = await getEnabledStations();
   const out: any = {
@@ -4137,6 +4312,7 @@ ipcHandle('kds:debug', async () => {
 });
 
 ipcHandle('kds:bump', async (_e, input) => {
+  assertKdsEnabled();
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
   const cooker = Boolean((input as any)?.cooker);
@@ -4151,7 +4327,10 @@ ipcHandle('kds:bump', async (_e, input) => {
     const cookerEnabled = await getCookerEnabled();
     const twoStage = isTwoStageKitchen(station, cookerEnabled);
     const ticket = await (prisma as any).kdsTicket
-      .findUnique({ where: { id: ticketId } })
+      .findUnique({
+        where: { id: ticketId },
+        include: { order: true },
+      })
       .catch(() => null);
 
     // Two-stage KITCHEN: the cooker screen only flags items `cookerBumped`
@@ -4167,6 +4346,7 @@ ipcHandle('kds:bump', async (_e, input) => {
           where: { id: ticketId },
           data: { itemsJson: nextItems },
         });
+        notifyKdsTicketChanged(ticket);
         return true;
       }
       const nextItems = bumpReadyKitchenItems(itemsAll, bumpedAt);
@@ -4190,6 +4370,7 @@ ipcHandle('kds:bump', async (_e, input) => {
           },
         });
       }
+      notifyKdsTicketChanged(ticket);
       return true;
     }
 
@@ -4211,6 +4392,7 @@ ipcHandle('kds:bump', async (_e, input) => {
         ...(bumpedById ? { bumpedById } : {}),
       },
     });
+    if (ticket) notifyKdsTicketChanged(ticket);
     return Boolean(updated?.count);
   } catch {
     return false;
@@ -4218,6 +4400,7 @@ ipcHandle('kds:bump', async (_e, input) => {
 });
 
 ipcHandle('kds:recall', async (_e, input) => {
+  assertKdsEnabled();
   await ensureKdsLocalSchema();
   return recallKdsTicket(prisma, {
     station: String((input as any)?.station || 'KITCHEN'),
@@ -4228,6 +4411,7 @@ ipcHandle('kds:recall', async (_e, input) => {
 });
 
 ipcHandle('kds:clearDone', async (_e, input) => {
+  assertKdsEnabled();
   await ensureKdsLocalSchema();
   return purgeKdsDoneTicketsForStation(
     prisma,
@@ -4237,10 +4421,12 @@ ipcHandle('kds:clearDone', async (_e, input) => {
 
 // KDS: read/set the POS-host "cooker" (two-stage kitchen) master switch.
 ipcHandle('kds:getCookerMode', async () => {
+  assertKdsEnabled();
   return { enabled: await getCookerEnabled() };
 });
 
 ipcHandle('kds:getEnabledStations', async () => {
+  assertKdsEnabled();
   try {
     const enabled = await isKdsMasterEnabled();
     return { enabled, stations: await getEnabledStations() };
@@ -4250,6 +4436,7 @@ ipcHandle('kds:getEnabledStations', async () => {
 });
 
 ipcHandle('kds:setCookerMode', async (_e, input) => {
+  assertKdsEnabled();
   const enabled = Boolean((input as any)?.enabled);
   try {
     await coreServices.updateSettings({
@@ -4262,6 +4449,7 @@ ipcHandle('kds:setCookerMode', async (_e, input) => {
 });
 
 ipcHandle('kds:bumpItem', async (_e, input) => {
+  assertKdsEnabled();
   const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
   const ticketId = Number((input as any)?.ticketId || 0);
   const itemIdx = Number((input as any)?.itemIdx ?? -1);
@@ -4274,7 +4462,10 @@ ipcHandle('kds:bumpItem', async (_e, input) => {
     const cookerEnabled = await getCookerEnabled();
     const twoStage = isTwoStageKitchen(station, cookerEnabled);
     const ticket = await (prisma as any).kdsTicket
-      .findUnique({ where: { id: ticketId } })
+      .findUnique({
+        where: { id: ticketId },
+        include: { order: true },
+      })
       .catch(() => null);
     if (!ticket) return false;
     const itemsAll: any[] = Array.isArray(ticket.itemsJson)
@@ -4299,6 +4490,7 @@ ipcHandle('kds:bumpItem', async (_e, input) => {
         where: { id: ticketId },
         data: { itemsJson: nextItems },
       });
+      notifyKdsTicketChanged(ticket);
       return true;
     }
     if (twoStage && !cooker && !it?.cookerBumped) {
@@ -4331,6 +4523,7 @@ ipcHandle('kds:bumpItem', async (_e, input) => {
         },
       });
     }
+    notifyKdsTicketChanged(ticket);
     return true;
   } catch {
     return false;
@@ -4409,6 +4602,14 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
       return false;
     }
   }
+  // A paid line is settled money and, with fiskalizimi on, a filed invoice.
+  // Only an admin correction can undo that, so refuse here before anything
+  // is written — including the audit notification, which would otherwise
+  // record a void that never happened.
+  const sitting = await findLatestTicketLogForCurrentSession(area, tableLabel);
+  const plan = planItemVoid((sitting?.itemsJson as any[]) || [], item);
+  if (plan.outcome === 'paid') return false;
+
   const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
@@ -4433,17 +4634,13 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   }
   // Also append a void marker in the latest ticket log for this sitting.
   // Unscoped findFirst would rewrite the previous paid-out ticket after pay → reopen.
-  const last = await findLatestTicketLogForCurrentSession(area, tableLabel);
-  if (last) {
-    const items = (last.itemsJson as any[]) || [];
-    const idx = findVoidableLineIndex(items, item);
-    if (idx !== -1) {
-      items[idx] = { ...items[idx], voided: true };
-      await prisma.ticketLog.update({
-        where: { id: last.id },
-        data: { itemsJson: items },
-      });
-    }
+  if (sitting && plan.outcome === 'ok') {
+    const items = (sitting.itemsJson as any[]) || [];
+    items[plan.index] = { ...items[plan.index], voided: true };
+    await prisma.ticketLog.update({
+      where: { id: sitting.id },
+      data: { itemsJson: items },
+    });
   }
   try {
     broadcastTicketsChanged({
@@ -4531,6 +4728,13 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
       return false;
     }
   }
+  // Paid lines survive a ticket void: the money is taken and an invoice is
+  // filed against them. If that is all this sitting has left, there is
+  // nothing here a waiter may void — it needs an admin correction.
+  const sitting = await findLatestTicketLogForCurrentSession(area, tableLabel);
+  const plan = planTicketVoid((sitting?.itemsJson as any[]) || []);
+  if (plan.outcome === 'paid') return false;
+
   // Local-first: close table locally. Wrap in `withTableLock` so the
   // close serializes against any in-flight `tickets:log` for the same
   // table — without that, a stale send could slip in between our
@@ -4558,19 +4762,15 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   } catch {
     // ignore
   }
-  // Mark all items in the current sitting as voided. Never touch a prior ticket.
-  const last = await findLatestTicketLogForCurrentSession(area, tableLabel);
-  if (last) {
-    const items = ((last.itemsJson as any[]) || []).map((it: any) => ({
-      ...it,
-      voided: true,
-    }));
+  // Mark the unpaid items in the current sitting as voided. Never touch a
+  // prior ticket, and never a line that has been paid for.
+  if (sitting) {
     await prisma.ticketLog.update({
-      where: { id: last.id },
+      where: { id: sitting.id },
       data: {
-        itemsJson: items,
-        note: last.note
-          ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}`
+        itemsJson: plan.items,
+        note: sitting.note
+          ? `${sitting.note} | VOIDED${reason ? `: ${reason}` : ''}`
           : `VOIDED${reason ? `: ${reason}` : ''}`,
       },
     });
@@ -4585,7 +4785,12 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
     actorUserId: Number(userId) || undefined,
   }).catch(() => false);
 
-  // Close table + openAt + KDS and broadcast to every client.
+  // Close table + openAt. Void the KDS cards first: closing the table
+  // sets kdsOrder.closedAt, and applyKdsVoidTicket would otherwise miss
+  // the order and leave the kitchen ticket on NEW.
+  await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(
+    () => false,
+  );
   await setTableOpenWithSideEffects(area, tableLabel, false).catch(() => false);
   try {
     broadcastTicketsChanged({
@@ -4596,10 +4801,64 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   } catch {
     // best-effort
   }
-  await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(
-    () => false,
-  );
   return true;
+});
+
+ipcHandle('admin:listFiscalSales', async (_e, input) => {
+  const startIso = String((input as any)?.startIso || '').trim();
+  const endIso = String((input as any)?.endIso || '').trim();
+  return listFiscalizedSales({
+    from: startIso ? new Date(startIso) : undefined,
+    to: endIso ? new Date(endIso) : undefined,
+    limit: Number((input as any)?.limit) || undefined,
+  });
+});
+
+/**
+ * Reverse a settled sale.
+ *
+ * The ADMIN session gets you the screen; the manager PIN gets you the
+ * write. An admin window left unlocked on the counter must not be enough
+ * to void a fiscalized invoice, so the approval token `auth:verifyManagerPin`
+ * issues is required here the same way the till requires it for a void.
+ */
+ipcHandle('admin:correctSale', async (_e, input, ctx) => {
+  const orderId = Number((input as any)?.orderId);
+  const kind = String((input as any)?.kind || '').toUpperCase();
+  const reason = String((input as any)?.reason || '');
+  if (kind !== 'CANCEL' && kind !== 'CORRECTIVE') {
+    return { ok: false, error: 'invalid-kind' };
+  }
+
+  const approvedByAdminId = Number((input as any)?.approvedByAdminId) || 0;
+  const approvedByAdminToken = String(
+    (input as any)?.approvedByAdminToken || '',
+  );
+  if (!isApprovalValidFor(approvedByAdminToken, approvedByAdminId)) {
+    return { ok: false, error: 'approval-required' };
+  }
+  const approver = await prisma.user
+    .findUnique({ where: { id: approvedByAdminId } })
+    .catch(() => null);
+  const approverIsAdmin =
+    approver &&
+    (approver as any).active !== false &&
+    String((approver as any).role || '').toUpperCase() === 'ADMIN';
+  if (!approverIsAdmin) return { ok: false, error: 'approval-required' };
+
+  const rawItemIds = (input as any)?.itemIds;
+  const itemIds = Array.isArray(rawItemIds)
+    ? rawItemIds.map((id: unknown) => Number(id)).filter(Number.isFinite)
+    : undefined;
+
+  return applySaleCorrection({
+    orderId,
+    kind: kind as 'CANCEL' | 'CORRECTIVE',
+    itemIds,
+    reason,
+    actorUserId: resolveActorUserId(ctx, approvedByAdminId),
+    approvedById: approvedByAdminId,
+  });
 });
 
 ipcHandle('admin:listTicketsByUser', async (_e, input) => {
@@ -4635,7 +4894,7 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   //              AND no payment receipt has been printed for it at/after this row's time
   //   PAID    -> otherwise (closed table without a void marker = it was paid out)
   //
-  // We resolve PAID by looking up RECEIPT print jobs whose payload meta.kind === 'PAYMENT'.
+  // We resolve PAID from Order rows written at settlement.
   // To avoid N+1, fetch once for the unique tables on screen and bucket the
   // earliest payment timestamp per table, then compare per row.
   const uniqueTables = Array.from(
@@ -4651,44 +4910,82 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
     boolean
   >;
 
-  // Pull recent receipt print jobs and index PAYMENT timestamps per table.
-  // 1000 is a generous cap — a single day rarely produces more than a few hundred receipts.
   const paymentsByTable = new Map<
     string,
-    { atMs: number; vatEnabled: boolean }[]
+    {
+      atMs: number;
+      vatEnabled: boolean;
+      sale: ReturnType<typeof mapOrderToFiscalSaleRow>;
+    }[]
   >();
   if (uniqueTables.length) {
-    // Same retry-row caveat as `listMyPaidTickets`: only consider
-    // original payment-audit rows (`attempts = 0`), never the per-tick
-    // re-print rows persisted by `enqueuePrintRetry` when the printer
-    // is offline.
-    const receiptJobs = await prisma.printJob
-      .findMany({
-        where: { type: 'RECEIPT' as any, attempts: 0 } as any,
-        orderBy: { createdAt: 'desc' },
-        take: 1000,
-        select: { createdAt: true, payloadJson: true, attempts: true } as any,
+    const tableFilters = uniqueTables
+      .map((k) => {
+        const [area, tableLabel] = String(k).split('|');
+        if (!area || !tableLabel) return null;
+        return { area, tableLabel };
       })
-      .catch(() => [] as { createdAt: Date; payloadJson: any }[]);
-    for (const j of receiptJobs as {
-      createdAt: Date;
-      payloadJson: any;
-      attempts?: number;
-    }[]) {
-      if (Number(j?.attempts || 0) > 0) continue;
-      const p = (j.payloadJson as any) || {};
-      const meta = (p?.meta as any) || {};
-      if (String(meta?.kind || '') !== 'PAYMENT') continue;
-      const k = `${String(p.area || '')}|${String(p.tableLabel || '')}`;
+      .filter(Boolean) as { area: string; tableLabel: string }[];
+    const earliestClosedFrom = (visibleRows as any[]).reduce(
+      (min: number, r: any) => {
+        const ms = new Date(r.createdAt).getTime();
+        return Number.isFinite(ms) && ms < min ? ms : min;
+      },
+      Number.POSITIVE_INFINITY,
+    );
+    const sales = tableFilters.length
+      ? await prisma.order
+          .findMany({
+            where: {
+              status: { in: ['PAID', 'VOID'] } as any,
+              OR: tableFilters,
+              ...(Number.isFinite(earliestClosedFrom)
+                ? { closedAt: { gte: new Date(earliestClosedFrom) } }
+                : {}),
+            } as any,
+            include: {
+              items: { orderBy: { sortOrder: 'asc' } },
+              payments: { orderBy: { createdAt: 'desc' }, take: 1 },
+              corrections: { orderBy: { createdAt: 'desc' } },
+            } as any,
+          })
+          .catch(() => [])
+      : [];
+    for (const sale of sales as any[]) {
+      const k = `${String(sale.area || '')}|${String(sale.tableLabel || '')}`;
       if (!uniqueTables.includes(k)) continue;
+      const at = sale.closedAt ? new Date(sale.closedAt as any).getTime() : NaN;
+      if (!Number.isFinite(at)) continue;
       const arr = paymentsByTable.get(k) || [];
       arr.push({
-        atMs: new Date(j.createdAt).getTime(),
-        vatEnabled: resolveVatEnabledFromMeta(meta, settings),
+        atMs: at,
+        vatEnabled: Boolean(sale.vatEnabled),
+        sale: mapOrderToFiscalSaleRow(sale),
       });
       paymentsByTable.set(k, arr);
     }
     for (const [, arr] of paymentsByTable) arr.sort((a, b) => a.atMs - b.atMs);
+  }
+
+  // Oldest ticket first takes the earliest unused covering sale, so two
+  // sittings on the same table do not both bind to the first payment.
+  const usedOrderIds = new Set<number>();
+  const saleByLogId = new Map<
+    number,
+    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
+  >();
+  const chronological = [...(visibleRows as any[])].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+  for (const r of chronological) {
+    const tKey = `${r.area}|${r.tableLabel}`;
+    const rowMs = new Date(r.createdAt).getTime();
+    const covering = (paymentsByTable.get(tKey) || []).find(
+      (p) => p.atMs >= rowMs && !usedOrderIds.has(p.sale.orderId),
+    );
+    if (!covering) continue;
+    usedOrderIds.add(covering.sale.orderId);
+    saleByLogId.set(Number(r.id), covering);
   }
 
   return visibleRows.map((r: any) => {
@@ -4697,7 +4994,10 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
     const noteStr = String(r.note || '').toUpperCase();
     const allVoided =
       items.length > 0 && items.every((it: any) => it?.voided === true);
-    const isVoided = allVoided || /\bVOIDED\b/.test(noteStr);
+    const covering = saleByLogId.get(Number(r.id));
+    const saleVoided =
+      String(covering?.sale.status || '').toUpperCase() === 'VOID';
+    const isVoided = allVoided || /\bVOIDED\b/.test(noteStr) || saleVoided;
     // A row whose note carries the moved-out marker is a snapshot of a
     // session that ended by being transferred elsewhere; the
     // destination row in the same period already represents the
@@ -4705,15 +5005,8 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
     // without double-counting it as PAID.
     const isTransferredOut = isTransferredOutNote(r.note);
 
-    const tKey = `${r.area}|${r.tableLabel}`;
-    const rowMs = new Date(r.createdAt).getTime();
-    const payments = paymentsByTable.get(tKey) || [];
-    // A payment "covers" this row only if it happened at or after the row was sent.
-    const coveringPayment = payments.find((p) => p.atMs >= rowMs);
-    const isPaid = Boolean(coveringPayment);
-    const rowVatEnabled = coveringPayment
-      ? coveringPayment.vatEnabled
-      : defaultVatEnabled;
+    const isPaid = Boolean(covering);
+    const rowVatEnabled = covering ? covering.vatEnabled : defaultVatEnabled;
     const isOpen = Boolean(openMap[`${r.area}:${r.tableLabel}`]);
 
     const status: 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED' = isVoided
@@ -4753,6 +5046,7 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
       note: r.note,
       status,
       transfer,
+      sale: covering?.sale ?? null,
       ...(() => {
         const { net, vat } = sumTicketLinesNetVat(
           liveItems,
@@ -4968,132 +5262,25 @@ ipcHandle('admin:markAllNotificationsRead', async (_e, input) => {
   return true;
 });
 
-// Top selling item today from TicketLog
+// Top selling item today from paid Order lines
 ipcHandle('admin:getTopSellingToday', async (_e) => {
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
-  const rows = await prisma.ticketLog.findMany({
-    where: { createdAt: { gte: start, lte: end } },
-    // Pull `note` so transfer-out source rows can be skipped — their
-    // items already count on the destination ticket.
-    select: {
-      itemsJson: true,
-      note: true,
-      area: true,
-      tableLabel: true,
-      sessionKey: true,
-      createdAt: true,
-    } as any,
-  });
-  const map = new Map<string, { qty: number; revenue: number }>();
-  const sessionRows = latestRowPerSession(
-    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
-  for (const r of sessionRows) {
-    const items = (r.itemsJson as any[]) || [];
-    for (const it of items) {
-      // A voided dish was never sold — it must not top the chart.
-      if (it?.voided) continue;
-      const name = String(it.name || 'Item');
-      const qty = Number(it.qty || 1);
-      const revenue = Number(it.unitPrice || 0) * qty;
-      const entry = map.get(name) || { qty: 0, revenue: 0 };
-      entry.qty += qty;
-      entry.revenue += revenue;
-      map.set(name, entry);
-    }
-  }
-  let best: { name: string; qty: number; revenue: number } | null = null;
-  for (const [name, v] of map.entries()) {
-    if (!best || v.qty > best.qty)
-      best = { name, qty: v.qty, revenue: v.revenue };
-  }
-  return best;
+  const sales = await fetchPaidSales({ from: start, to: end });
+  return topSellingFromSales(sales);
 });
 
-// Sales trends (daily/weekly/monthly)
+// Sales trends (daily/weekly/monthly) from paid Orders
 ipcHandle('admin:getSalesTrends', async (_e, input) => {
   const range = (input?.range as any) || 'daily';
-  const today = new Date(new Date().setHours(0, 0, 0, 0));
-  let start: Date;
-  let buckets: { key: string; label: string; from: Date; to: Date }[] = [];
-  if (range === 'daily') {
-    // last 14 days
-    start = new Date(today.getTime() - 13 * 86400000);
-    for (let i = 0; i < 14; i++) {
-      const d = new Date(start.getTime() + i * 86400000);
-      const from = new Date(d.setHours(0, 0, 0, 0));
-      const to = new Date(d.setHours(23, 59, 59, 999));
-      const label = `${String(from.getMonth() + 1).padStart(2, '0')}/${String(from.getDate()).padStart(2, '0')}`;
-      const key = `${from.getFullYear()}-${from.getMonth() + 1}-${from.getDate()}`;
-      buckets.push({ key, label, from, to });
-    }
-  } else if (range === 'weekly') {
-    // last 12 weeks
-    start = new Date(today.getTime() - 7 * 86400000 * 11);
-    for (let i = 0; i < 12; i++) {
-      const from = new Date(start.getTime() + i * 7 * 86400000);
-      const to = new Date(from.getTime() + 6 * 86400000);
-      from.setHours(0, 0, 0, 0);
-      to.setHours(23, 59, 59, 999);
-      const oneJan = new Date(from.getFullYear(), 0, 1);
-      const week = Math.ceil(
-        ((from.getTime() - oneJan.getTime()) / 86400000 + oneJan.getDay() + 1) /
-          7,
-      );
-      const label = `${from.getFullYear()}-W${String(week).padStart(2, '0')}`;
-      const key = label;
-      buckets.push({ key, label, from, to });
-    }
-  } else {
-    // monthly, last 12 months
-    const startYear = today.getFullYear();
-    let m = today.getMonth() - 11;
-    for (let i = 0; i < 12; i++, m++) {
-      const year = startYear + Math.floor(m / 12);
-      const month = ((m % 12) + 12) % 12;
-      const from = new Date(year, month, 1, 0, 0, 0, 0);
-      const to = new Date(year, month + 1, 0, 23, 59, 59, 999);
-      const label = `${year}-${String(month + 1).padStart(2, '0')}`;
-      const key = label;
-      buckets.push({ key, label, from, to });
-    }
-  }
-
-  const rows = await prisma.ticketLog.findMany({
-    where: {
-      createdAt: { gte: buckets[0].from, lte: buckets[buckets.length - 1].to },
-    },
-    select: {
-      createdAt: true,
-      itemsJson: true,
-      note: true,
-      area: true,
-      tableLabel: true,
-      sessionKey: true,
-    } as any,
-    orderBy: { createdAt: 'asc' },
+  const trendRange =
+    range === 'weekly' || range === 'monthly' ? range : 'daily';
+  const buckets = buildSalesTrendBuckets(trendRange);
+  const sales = await fetchPaidSales({
+    from: buckets[0].from,
+    to: buckets[buckets.length - 1].to,
   });
-  const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
-  // Source rows of a table transfer don't represent independent revenue — the
-  // destination row in this same bucket already does. One sitting is also one
-  // order however many times it was fired.
-  const sessionRows = latestRowPerSession(
-    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
-  for (const r of sessionRows) {
-    const when = new Date(r.createdAt as any);
-    const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
-    if (idx === -1) continue;
-    const net = ((r.itemsJson as any[]) || []).reduce(
-      (s: number, it: any) =>
-        it?.voided ? s : s + Number(it.unitPrice) * Number(it.qty || 1),
-      0,
-    );
-    result[idx].total += net;
-    result[idx].orders += 1;
-  }
-  return { range, points: result } as any;
+  return { range: trendRange, points: fillTrendPoints(sales, buckets) };
 });
 
 // Waiter-facing reports (per-user)
@@ -5104,430 +5291,10 @@ ipcHandle('admin:getSecurityLog', async (_e, input) => {
 });
 
 // =====================================================================
-// Admin Business Review — analytics over arbitrary periods.
-// All compute is local-first (no cloud round trip); the local SQLite DB
-// already mirrors paid/voided ticket history via TicketLog.
+// Admin Business Review — settled Order ledger (paid receipts).
 // =====================================================================
 ipcHandle('admin:getReview', async (_e, input) => {
-  const settings = await readSettings().catch(() => ({}));
-  const fiscalVatEnabled = isVatEnabledFromSettings(settings);
-
-  type Granularity = 'day' | 'month' | 'year';
-  const granularity: Granularity =
-    input?.granularity === 'month' || input?.granularity === 'year'
-      ? input.granularity
-      : 'day';
-
-  const parseRange = (s?: string | null, e?: string | null) => {
-    if (!s || !e) return null;
-    const start = new Date(s);
-    const end = new Date(e);
-    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-      return null;
-    }
-    if (start.getTime() > end.getTime()) return null;
-    return { start, end };
-  };
-
-  // Fall back to "today" when the caller didn't pass a valid range so the
-  // page can still render something useful instead of erroring out.
-  const todayRange = (): { start: Date; end: Date } => {
-    const s = new Date();
-    s.setHours(0, 0, 0, 0);
-    const e = new Date();
-    e.setHours(23, 59, 59, 999);
-    return { start: s, end: e };
-  };
-  const current =
-    parseRange(input?.currentStartIso, input?.currentEndIso) ?? todayRange();
-  const curStart = current.start;
-  const curEnd = current.end;
-
-  const compare = parseRange(input?.compareStartIso, input?.compareEndIso);
-
-  // Hard cap: don't ever load more than ~2 years of rows in one go.
-  const TWO_YEARS_MS = 2 * 365 * 24 * 60 * 60 * 1000;
-  const safeFetchRange = (s: Date, e: Date) => {
-    const span = e.getTime() - s.getTime();
-    if (span <= TWO_YEARS_MS) return { from: s, to: e, capped: false };
-    return { from: new Date(e.getTime() - TWO_YEARS_MS), to: e, capped: true };
-  };
-
-  const bucketLabel = (d: Date, g: Granularity): string => {
-    if (g === 'year') return String(d.getFullYear());
-    if (g === 'month') {
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    }
-    // day
-    return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(
-      d.getDate(),
-    ).padStart(2, '0')}`;
-  };
-  const bucketStart = (d: Date, g: Granularity): Date => {
-    const out = new Date(d);
-    if (g === 'year') {
-      out.setMonth(0, 1);
-      out.setHours(0, 0, 0, 0);
-    } else if (g === 'month') {
-      out.setDate(1);
-      out.setHours(0, 0, 0, 0);
-    } else {
-      out.setHours(0, 0, 0, 0);
-    }
-    return out;
-  };
-  const nextBucket = (d: Date, g: Granularity): Date => {
-    const out = new Date(d);
-    if (g === 'year') out.setFullYear(out.getFullYear() + 1);
-    else if (g === 'month') out.setMonth(out.getMonth() + 1);
-    else out.setDate(out.getDate() + 1);
-    return out;
-  };
-
-  type AggRow = {
-    createdAt: Date;
-    userId: number;
-    area: string;
-    tableLabel: string;
-    covers: number | null;
-    itemsJson: any;
-    note: string | null;
-    sessionKey: string | null;
-  };
-
-  const fetchRows = async (s: Date, e: Date): Promise<AggRow[]> => {
-    const safe = safeFetchRange(s, e);
-    // We pull `note` so the aggregation can drop rows tagged as
-    // "moved-out" by a table transfer; the destination row inside the
-    // same fetch already contributes their revenue, items and covers.
-    const rows = (await prisma.ticketLog
-      .findMany({
-        where: { createdAt: { gte: safe.from, lte: safe.to } },
-        select: {
-          createdAt: true,
-          userId: true,
-          area: true,
-          tableLabel: true,
-          covers: true,
-          itemsJson: true,
-          note: true,
-          sessionKey: true,
-        } as any,
-        orderBy: { createdAt: 'asc' },
-      })
-      .catch(() => [])) as unknown as AggRow[];
-    // One sitting contributes one ticket, however many times it was fired —
-    // the rows are cumulative snapshots of the same check.
-    return latestRowPerSession(
-      rows.filter((r) => !isTransferredOutNote(r?.note)),
-    );
-  };
-
-  const summarize = (
-    rows: AggRow[],
-    s: Date,
-    e: Date,
-  ): {
-    summary: {
-      startIso: string;
-      endIso: string;
-      revenueGross: number;
-      revenueNet: number;
-      revenueVat: number;
-      orders: number;
-      items: number;
-      covers: number;
-      avgTicket: number;
-      avgItemsPerTicket: number;
-      uniqueTables: number;
-      uniqueWaiters: number;
-      voidedTickets: number;
-    };
-    series: {
-      label: string;
-      bucketIso: string;
-      revenue: number;
-      orders: number;
-    }[];
-    waiterAgg: Map<
-      number,
-      {
-        userId: number;
-        revenue: number;
-        items: number;
-        orders: number;
-        covers: number;
-      }
-    >;
-    itemAgg: Map<string, { name: string; qty: number; revenue: number }>;
-    hourly: { hour: number; orders: number; revenue: number }[];
-    weekday: { dayOfWeek: number; orders: number; revenue: number }[];
-  } => {
-    let revenueNet = 0;
-    let revenueVat = 0;
-    let items = 0;
-    let covers = 0;
-    let voidedTickets = 0;
-    const tables = new Set<string>();
-    const waiters = new Set<number>();
-    const waiterAgg = new Map<
-      number,
-      {
-        userId: number;
-        revenue: number;
-        items: number;
-        orders: number;
-        covers: number;
-      }
-    >();
-    const itemAgg = new Map<
-      string,
-      { name: string; qty: number; revenue: number }
-    >();
-
-    // Pre-allocate buckets so the chart has a continuous x axis even when
-    // some periods are empty.
-    const seriesIndex = new Map<string, number>();
-    const series: {
-      label: string;
-      bucketIso: string;
-      revenue: number;
-      orders: number;
-    }[] = [];
-    let cursor = bucketStart(s, granularity);
-    const cap = nextBucket(bucketStart(e, granularity), granularity);
-    let guard = 0;
-    while (cursor.getTime() < cap.getTime() && guard < 5000) {
-      seriesIndex.set(cursor.toISOString(), series.length);
-      series.push({
-        label: bucketLabel(cursor, granularity),
-        bucketIso: cursor.toISOString(),
-        revenue: 0,
-        orders: 0,
-      });
-      cursor = nextBucket(cursor, granularity);
-      guard += 1;
-    }
-
-    const hourly = Array.from({ length: 24 }, (_, h) => ({
-      hour: h,
-      orders: 0,
-      revenue: 0,
-    }));
-    const weekday = Array.from({ length: 7 }, (_, d) => ({
-      dayOfWeek: d,
-      orders: 0,
-      revenue: 0,
-    }));
-
-    let orders = 0;
-    for (const r of rows) {
-      const when = new Date(r.createdAt);
-      if (when.getTime() < s.getTime() || when.getTime() > e.getTime()) {
-        continue;
-      }
-      const itemsArr = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
-      const live = itemsArr.filter((it) => !it?.voided);
-      const allVoided = itemsArr.length > 0 && live.length === 0;
-      if (allVoided) voidedTickets += 1;
-      if (live.length === 0) continue;
-
-      let rowRevenue = 0;
-      let rowVat = 0;
-      let rowItems = 0;
-      const reviewDefaultVatRate = Number(
-        (settings as any)?.defaultVatRate || 0,
-      );
-      for (const it of live) {
-        const qty = Number(it?.qty || 1);
-        const unit = Number(it?.unitPrice || 0);
-        const lineGross = unit * qty;
-        // VAT-inclusive: extract the contained tax so revenueNet is the
-        // ex-VAT base and revenueNet + revenueVat == gross sales.
-        const rate = effectiveVatRate(it?.vatRate, reviewDefaultVatRate);
-        const split = fiscalVatEnabled
-          ? splitGrossVat(lineGross, rate)
-          : { net: lineGross, vat: 0 };
-        rowRevenue += split.net;
-        rowVat += split.vat;
-        rowItems += qty;
-        const name = String(it?.name || 'Item');
-        const e2 = itemAgg.get(name) || { name, qty: 0, revenue: 0 };
-        e2.qty += qty;
-        // Item leaderboard tracks gross sales per item.
-        e2.revenue += lineGross;
-        itemAgg.set(name, e2);
-      }
-
-      revenueNet += rowRevenue;
-      revenueVat += rowVat;
-      const rowGross = rowRevenue + rowVat;
-      items += rowItems;
-      orders += 1;
-      const cov = Number(r.covers || 0);
-      if (Number.isFinite(cov) && cov > 0) covers += cov;
-
-      tables.add(`${r.area}|${r.tableLabel}`);
-      waiters.add(Number(r.userId));
-      const wid = Number(r.userId);
-      const w = waiterAgg.get(wid) || {
-        userId: wid,
-        revenue: 0,
-        items: 0,
-        orders: 0,
-        covers: 0,
-      };
-      w.revenue += rowGross;
-      w.items += rowItems;
-      w.orders += 1;
-      w.covers += Number.isFinite(cov) && cov > 0 ? cov : 0;
-      waiterAgg.set(wid, w);
-
-      hourly[when.getHours()].orders += 1;
-      hourly[when.getHours()].revenue += rowGross;
-      weekday[when.getDay()].orders += 1;
-      weekday[when.getDay()].revenue += rowGross;
-
-      const bIso = bucketStart(when, granularity).toISOString();
-      const idx = seriesIndex.get(bIso);
-      if (idx != null) {
-        series[idx].revenue += rowGross;
-        series[idx].orders += 1;
-      }
-    }
-
-    return {
-      summary: {
-        startIso: s.toISOString(),
-        endIso: e.toISOString(),
-        revenueGross: revenueNet + revenueVat,
-        revenueNet,
-        revenueVat,
-        orders,
-        items,
-        covers,
-        avgTicket: orders > 0 ? (revenueNet + revenueVat) / orders : 0,
-        avgItemsPerTicket: orders > 0 ? items / orders : 0,
-        uniqueTables: tables.size,
-        uniqueWaiters: waiters.size,
-        voidedTickets,
-      },
-      series,
-      waiterAgg,
-      itemAgg,
-      hourly,
-      weekday,
-    };
-  };
-
-  const [curRows, cmpRows, allUsers, shifts] = await Promise.all([
-    fetchRows(curStart, curEnd),
-    compare ? fetchRows(compare.start, compare.end) : Promise.resolve([]),
-    prisma.user
-      .findMany({
-        select: { id: true, displayName: true, role: true, active: true },
-      })
-      .catch(() => []),
-    // Pull shifts that overlap the *current* period to compute hours worked.
-    prisma.dayShift
-      .findMany({
-        where: {
-          OR: [
-            { closedAt: null, openedAt: { lte: curEnd } },
-            {
-              openedAt: { lte: curEnd },
-              closedAt: { gte: curStart },
-            },
-          ],
-        },
-        select: { openedById: true, openedAt: true, closedAt: true },
-      })
-      .catch(
-        () =>
-          [] as { openedById: number; openedAt: Date; closedAt: Date | null }[],
-      ),
-  ]);
-
-  const cur = summarize(curRows, curStart, curEnd);
-  const cmp = compare ? summarize(cmpRows, compare.start, compare.end) : null;
-
-  // Hours worked per user, clipped to the current period.
-  const hoursByUser = new Map<number, number>();
-  for (const sh of shifts as any[]) {
-    const opened = new Date(sh.openedAt).getTime();
-    const closed = sh.closedAt ? new Date(sh.closedAt).getTime() : Date.now();
-    const overlapStart = Math.max(opened, curStart.getTime());
-    const overlapEnd = Math.min(closed, curEnd.getTime());
-    if (overlapEnd <= overlapStart) continue;
-    const hrs = (overlapEnd - overlapStart) / 36e5;
-    hoursByUser.set(
-      Number(sh.openedById),
-      (hoursByUser.get(Number(sh.openedById)) || 0) + hrs,
-    );
-  }
-
-  const userById = new Map<
-    number,
-    { displayName: string; role: string; active: boolean }
-  >();
-  for (const u of allUsers as any[]) {
-    userById.set(Number(u.id), {
-      displayName: String(u.displayName || `#${u.id}`),
-      role: String(u.role || ''),
-      active: Boolean(u.active),
-    });
-  }
-  // Include any waiter ids that produced revenue but aren't in the users
-  // table (deleted/synced from upstream): show them too instead of dropping.
-  const allWaiterIds = new Set<number>([...cur.waiterAgg.keys()]);
-  for (const id of allWaiterIds) {
-    if (!userById.has(id)) {
-      userById.set(id, {
-        displayName: `User #${id}`,
-        role: 'UNKNOWN',
-        active: false,
-      });
-    }
-  }
-
-  const waiters = Array.from(cur.waiterAgg.values())
-    .map((w) => {
-      const meta = userById.get(w.userId)!;
-      const hours = hoursByUser.get(w.userId) || 0;
-      return {
-        userId: w.userId,
-        name: meta.displayName,
-        role: meta.role,
-        active: meta.active,
-        orders: w.orders,
-        items: w.items,
-        revenue: w.revenue,
-        covers: w.covers,
-        avgTicket: w.orders > 0 ? w.revenue / w.orders : 0,
-        hoursWorked: Math.round(hours * 100) / 100,
-        revenuePerHour: hours > 0 ? w.revenue / hours : 0,
-      };
-    })
-    .sort((a, b) => b.revenue - a.revenue);
-
-  const topItems = Array.from(cur.itemAgg.values())
-    .sort((a, b) => b.revenue - a.revenue)
-    .slice(0, 15);
-
-  return {
-    granularity,
-    fiscalEnabled: fiscalVatEnabled,
-    current: cur.summary,
-    compare: cmp?.summary ?? null,
-    series: {
-      current: cur.series,
-      compare: cmp?.series ?? null,
-    },
-    topItems,
-    waiters,
-    hourly: cur.hourly,
-    weekday: cur.weekday,
-  };
+  return getAdminReview(input);
 });
 
 ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
@@ -5537,41 +5304,8 @@ ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
   const fiscalVatEnabled = isVatEnabledFromSettings(settings);
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date();
-  const rows = await prisma.ticketLog
-    .findMany({
-      where: { userId, createdAt: { gte: start, lte: end } },
-      // `note` is required to drop transferred-out source rows so the
-      // waiter's "today's revenue" matches what was actually paid.
-      select: {
-        itemsJson: true,
-        note: true,
-        area: true,
-        tableLabel: true,
-        sessionKey: true,
-        createdAt: true,
-      } as any,
-    })
-    .catch(() => []);
-  const liveRows = latestRowPerSession(
-    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
-  const fiscalDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
-  const revenueTodayNet = liveRows.reduce((s: number, r: any) => {
-    const { net } = sumTicketLinesNetVat(
-      r?.itemsJson,
-      fiscalVatEnabled,
-      fiscalDefaultVatRate,
-    );
-    return s + net;
-  }, 0);
-  const revenueTodayVat = liveRows.reduce((s: number, r: any) => {
-    const { vat } = sumTicketLinesNetVat(
-      r?.itemsJson,
-      fiscalVatEnabled,
-      fiscalDefaultVatRate,
-    );
-    return s + vat;
-  }, 0);
+  const sales = await fetchPaidSales({ from: start, to: end, userId });
+  const { revenueNet, revenueVat } = sumPaidRevenue(sales);
   // Open orders: open tables where latest ticket owner is this user.
   const openList = await prisma.syncState
     .findUnique({ where: { key: 'tables:open' } })
@@ -5596,8 +5330,8 @@ ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
   );
   const openOrders = latests.filter(Boolean).length;
   return {
-    revenueTodayNet,
-    revenueTodayVat,
+    revenueTodayNet: revenueNet,
+    revenueTodayVat: revenueVat,
     openOrders,
     fiscalEnabled: fiscalVatEnabled,
   };
@@ -5608,124 +5342,29 @@ ipcHandle('reports:getMyTopSellingToday', async (_e, input, ctx) => {
   if (!userId) return null;
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
-  const rows = await prisma.ticketLog.findMany({
-    where: { userId, createdAt: { gte: start, lte: end } },
-    select: {
-      itemsJson: true,
-      note: true,
-      area: true,
-      tableLabel: true,
-      sessionKey: true,
-      createdAt: true,
-    } as any,
-  });
-  const map = new Map<string, { qty: number; revenue: number }>();
-  const sessionRows = latestRowPerSession(
-    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
-  for (const r of sessionRows) {
-    const items = (r.itemsJson as any[]) || [];
-    for (const it of items) {
-      if (it?.voided) continue;
-      const name = String(it.name || 'Item');
-      const qty = Number(it.qty || 1);
-      const revenue = Number(it.unitPrice || 0) * qty;
-      const entry = map.get(name) || { qty: 0, revenue: 0 };
-      entry.qty += qty;
-      entry.revenue += revenue;
-      map.set(name, entry);
-    }
-  }
-  let best: { name: string; qty: number; revenue: number } | null = null;
-  for (const [name, v] of map.entries()) {
-    if (!best || v.qty > best.qty)
-      best = { name, qty: v.qty, revenue: v.revenue };
-  }
-  return best;
+  const sales = await fetchPaidSales({ from: start, to: end, userId });
+  return topSellingFromSales(sales);
 });
 
 ipcHandle('reports:getMySalesTrends', async (_e, input, ctx) => {
   const userId = resolveActorUserId(ctx, input?.userId);
   const range = (input?.range as any) || 'daily';
-  if (!userId) return { range, points: [] } as any;
-  const today = new Date(new Date().setHours(0, 0, 0, 0));
-  let buckets: { label: string; from: Date; to: Date }[] = [];
-  if (range === 'daily') {
-    const start = new Date(today.getTime() - 13 * 86400000);
-    for (let i = 0; i < 14; i++) {
-      const d = new Date(start.getTime() + i * 86400000);
-      const from = new Date(d.setHours(0, 0, 0, 0));
-      const to = new Date(d.setHours(23, 59, 59, 999));
-      const label = `${String(from.getMonth() + 1).padStart(2, '0')}/${String(from.getDate()).padStart(2, '0')}`;
-      buckets.push({ label, from, to });
-    }
-  } else if (range === 'weekly') {
-    const start = new Date(today.getTime() - 7 * 86400000 * 11);
-    for (let i = 0; i < 12; i++) {
-      const from = new Date(start.getTime() + i * 7 * 86400000);
-      const to = new Date(from.getTime() + 6 * 86400000);
-      from.setHours(0, 0, 0, 0);
-      to.setHours(23, 59, 59, 999);
-      const oneJan = new Date(from.getFullYear(), 0, 1);
-      const week = Math.ceil(
-        ((from.getTime() - oneJan.getTime()) / 86400000 + oneJan.getDay() + 1) /
-          7,
-      );
-      const label = `${from.getFullYear()}-W${String(week).padStart(2, '0')}`;
-      buckets.push({ label, from, to });
-    }
-  } else {
-    const startYear = today.getFullYear();
-    let m = today.getMonth() - 11;
-    for (let i = 0; i < 12; i++, m++) {
-      const year = startYear + Math.floor(m / 12);
-      const month = ((m % 12) + 12) % 12;
-      const from = new Date(year, month, 1, 0, 0, 0, 0);
-      const to = new Date(year, month + 1, 0, 23, 59, 59, 999);
-      const label = `${year}-${String(month + 1).padStart(2, '0')}`;
-      buckets.push({ label, from, to });
-    }
-  }
-  const rows = await prisma.ticketLog
-    .findMany({
-      where: {
-        userId,
-        createdAt: {
-          gte: buckets[0].from,
-          lte: buckets[buckets.length - 1].to,
-        },
-      },
-      select: {
-        createdAt: true,
-        itemsJson: true,
-        note: true,
-        area: true,
-        tableLabel: true,
-        sessionKey: true,
-      } as any,
-      orderBy: { createdAt: 'asc' },
-    })
-    .catch(() => []);
-  const result = buckets.map((b) => ({ label: b.label, total: 0, orders: 0 }));
-  const sessionRows = latestRowPerSession(
-    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
-  for (const r of sessionRows as any[]) {
-    const when = new Date(r.createdAt);
-    const idx = buckets.findIndex((b) => when >= b.from && when <= b.to);
-    if (idx === -1) continue;
-    // Sales trend reports gross sales (total money taken), independent of
-    // the VAT split — pass vatEnabled=false so net == gross.
-    const net = sumTicketLinesNetVat(r.itemsJson, false).net;
-    result[idx].total += net;
-    result[idx].orders += 1;
-  }
-  return { range, points: result } as any;
+  const trendRange =
+    range === 'weekly' || range === 'monthly' ? range : 'daily';
+  if (!userId) return { range: trendRange, points: [] } as any;
+  const buckets = buildSalesTrendBuckets(trendRange);
+  const sales = await fetchPaidSales({
+    from: buckets[0].from,
+    to: buckets[buckets.length - 1].to,
+    userId,
+  });
+  return { range: trendRange, points: fillTrendPoints(sales, buckets) };
 });
 // Covers API
 ipcHandle('covers:save', async (_e, { area, label, covers }) => {
   const num = Number(covers);
   if (!area || !label || !Number.isFinite(num) || num <= 0) return false;
+  assertStoreCounterAllowed(area);
   await prisma.covers.create({ data: { area, label, covers: num } });
   return true;
 });
@@ -5794,18 +5433,22 @@ async function readSharedLayoutNodes(area: string): Promise<any[] | null> {
 }
 
 ipcHandle('layout:get', async (_e, { area }) => {
+  assertDiningFloorEnabled();
   return await readSharedLayoutNodes(String(area || ''));
 });
 
 ipcHandle('layout:getMerges', async (_e, { area }) => {
+  assertDiningFloorEnabled();
   return await readTableMerges(String(area || ''));
 });
 
 ipcHandle('layout:setMerges', async (_e, { area, groups }) => {
+  assertDiningFloorEnabled();
   return await writeTableMerges(String(area || ''), groups);
 });
 
 ipcHandle('layout:save', async (_e, { area, nodes }) => {
+  assertDiningFloorEnabled();
   const a = String(area || '');
   if (!a || !Array.isArray(nodes)) return false;
   // The shared floor layout is centrally managed: waiters and hosts must not
@@ -5830,6 +5473,7 @@ ipcHandle('layout:save', async (_e, { area, nodes }) => {
 
 // Create a request from non-owner
 ipcHandle('requests:create', async (_e, input) => {
+  assertDiningFloorEnabled();
   const { requesterId, ownerId, area, tableLabel, items, note } = input || {};
   if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items))
     return false;

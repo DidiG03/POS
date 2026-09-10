@@ -261,11 +261,16 @@ export default function ReservationsListPage() {
     const onVisible = () => {
       if (document.visibilityState === 'visible') void reload({ silent: true });
     };
+    const onCatchup = () => {
+      void reload({ silent: true });
+    };
     window.addEventListener('pos:reservationsChanged', onChanged);
+    window.addEventListener('pos:syncCatchup', onCatchup);
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
     return () => {
       window.removeEventListener('pos:reservationsChanged', onChanged);
+      window.removeEventListener('pos:syncCatchup', onCatchup);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
     };
@@ -507,7 +512,7 @@ export default function ReservationsListPage() {
                 title={t('common.close')}
                 aria-label={t('common.close')}
               >
-                ✕
+                <IconClose />
               </button>
             </div>
             <div className="p-4 space-y-3">
@@ -526,7 +531,7 @@ export default function ReservationsListPage() {
                     className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1.5 rounded hover:bg-gray-700 text-xs opacity-70"
                     title={t('reservations.clearSearch')}
                   >
-                    ✕
+                    <IconClose className="size-3" />
                   </button>
                 )}
               </div>
@@ -982,7 +987,7 @@ export default function ReservationsListPage() {
                 title={t('common.close')}
                 aria-label={t('common.close')}
               >
-                ✕
+                <IconClose />
               </button>
             </div>
             <div className="p-4 space-y-2">

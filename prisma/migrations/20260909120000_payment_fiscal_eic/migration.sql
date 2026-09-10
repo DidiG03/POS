@@ -1,0 +1,11 @@
+-- EIC (electronic invoice identifier) for a fiscalized payment.
+--
+-- Stored separately from fiscalNivf because the two answer different
+-- questions: NIVF says the invoice is registered for tax, EIC says it was
+-- also delivered as an electronic invoice. A P9/P10 corrective can only
+-- reference an invoice that has an EIC, so without this column there is no
+-- way to tell later whether a filed invoice can be cancelled electronically.
+--
+-- Nullable with no default: the overwhelming majority of till sales are not
+-- electronic invoices, and NULL is the honest value for them.
+ALTER TABLE "Payment" ADD COLUMN "fiscalEic" TEXT;

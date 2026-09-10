@@ -47,7 +47,7 @@ import {
   reservationCoversOpenTicket,
   reservationHasPaidTicket,
 } from '@shared/tableOccupancy';
-import { IconClose } from '../../components/icons';
+import { IconClose, IconKebab } from '../../components/icons';
 
 // Quick-action statuses surfaced in the per-table sheet.
 const QUICK_STATUSES: ReservationStatus[] = [
@@ -143,22 +143,6 @@ function clampMenuPos(x: number, y: number, width = 224, height = 360) {
   const left = Math.max(pad, Math.min(x, window.innerWidth - width - pad));
   const top = Math.max(pad, Math.min(y, window.innerHeight - height - pad));
   return { left, top };
-}
-
-function IconKebab() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      className="pos-icon"
-      aria-hidden
-    >
-      <circle cx="12" cy="5" r="1.75" />
-      <circle cx="12" cy="12" r="1.75" />
-      <circle cx="12" cy="19" r="1.75" />
-    </svg>
-  );
 }
 
 function formatTime(iso: string): string {
@@ -342,11 +326,16 @@ export default function ReservationsFloorPage() {
     const onVisible = () => {
       if (document.visibilityState === 'visible') void reload({ silent: true });
     };
+    const onCatchup = () => {
+      void reload({ silent: true });
+    };
     window.addEventListener('pos:reservationsChanged', onChanged);
+    window.addEventListener('pos:syncCatchup', onCatchup);
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
     return () => {
       window.removeEventListener('pos:reservationsChanged', onChanged);
+      window.removeEventListener('pos:syncCatchup', onCatchup);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
     };
@@ -660,7 +649,7 @@ export default function ReservationsFloorPage() {
                 title={t('common.close')}
                 aria-label={t('common.close')}
               >
-                ✕
+                <IconClose />
               </button>
             </div>
             <div className="p-4 space-y-3">
@@ -849,7 +838,7 @@ export default function ReservationsFloorPage() {
                 title={t('common.close')}
                 aria-label={t('common.close')}
               >
-                ✕
+                <IconClose />
               </button>
             </div>
             {!sheetOpenMember ? (

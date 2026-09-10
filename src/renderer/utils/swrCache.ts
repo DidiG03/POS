@@ -7,7 +7,7 @@
  * queue; this cache is only for reads.
  */
 
-const STORAGE_KEY = 'pos-swr-v1';
+const STORAGE_KEY = 'pos-swr-v2';
 const MAX_PERSIST_BYTES = 1_400_000;
 
 type Entry = { at: number; value: unknown };

@@ -2,67 +2,65 @@ import type { DiscoveredPosHost } from '@shared/posHostDiscovery';
 
 export function PosHostPicker({
   hosts,
-  selectedHost,
-  selectedPort,
   scanning,
+  scanned,
+  busyHost,
   onSelect,
-  onRescan,
+  onScan,
   labels,
 }: {
   hosts: DiscoveredPosHost[];
-  selectedHost: string;
-  selectedPort: string | number;
   scanning: boolean;
+  scanned: boolean;
+  busyHost?: string | null;
   onSelect: (host: DiscoveredPosHost) => void;
-  onRescan: () => void;
+  onScan: () => void;
   labels: {
-    title: string;
+    scan: string;
     scanning: string;
     empty: string;
-    rescan: string;
   };
 }) {
   return (
-    <section className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-medium opacity-90">{labels.title}</div>
-        <button
-          type="button"
-          disabled={scanning}
-          onClick={onRescan}
-          className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-60"
-        >
-          {scanning ? labels.scanning : labels.rescan}
-        </button>
-      </div>
-      <div className="rounded border border-gray-700 divide-y divide-gray-700 max-h-56 overflow-y-auto">
-        {scanning && hosts.length === 0 ? (
-          <div className="p-3 text-sm opacity-70">{labels.scanning}</div>
-        ) : hosts.length === 0 ? (
-          <div className="p-3 text-sm opacity-70">{labels.empty}</div>
-        ) : (
-          hosts.map((h) => {
-            const selected =
-              selectedHost === h.host &&
-              String(selectedPort) === String(h.httpPort);
+    <div className="w-full space-y-3">
+      <button
+        type="button"
+        disabled={scanning || Boolean(busyHost)}
+        onClick={onScan}
+        className="pos-btn-primary w-full disabled:opacity-60"
+      >
+        {scanning ? labels.scanning : labels.scan}
+      </button>
+      {hosts.length > 0 ? (
+        <div className="overflow-hidden rounded-xl border border-white/10 divide-y divide-white/8">
+          {hosts.map((h) => {
+            const busy = busyHost === h.host;
             return (
               <button
-                key={`${h.host}:${h.httpPort}`}
+                key={`${h.host}:${h.httpPort || 3333}`}
                 type="button"
+                disabled={scanning || Boolean(busyHost)}
                 onClick={() => onSelect(h)}
-                className={`w-full text-left p-3 hover:bg-gray-700/60 ${
-                  selected ? 'bg-emerald-900/30' : ''
-                }`}
+                className="w-full px-4 py-3 text-left hover:bg-white/6 disabled:opacity-60"
               >
-                <div className="text-sm font-medium truncate">{h.name}</div>
-                <div className="text-xs opacity-70 font-mono">
-                  {h.host}:{h.httpPort}
+                <div className="truncate text-[15px] font-medium text-gray-100">
+                  {h.name}
                 </div>
+                <div className="font-mono text-[13px] text-gray-400">
+                  {h.host}
+                </div>
+                {busy ? (
+                  <div className="mt-1 text-[12px] text-gray-500">
+                    {labels.scanning}
+                  </div>
+                ) : null}
               </button>
             );
-          })
-        )}
-      </div>
-    </section>
+          })}
+        </div>
+      ) : scanned && !scanning ? (
+        <div className="text-center text-sm text-gray-500">{labels.empty}</div>
+      ) : null}
+    </div>
   );
 }

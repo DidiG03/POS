@@ -22,38 +22,32 @@ export async function listPaidTablesForDay(
 ): Promise<PaidPosTable[]> {
   if (!dateIso) return [];
   const { start, end } = dayBounds(dateIso);
-  const jobs = await prisma.printJob
+  const sales = await prisma.order
     .findMany({
       where: {
-        type: 'RECEIPT' as any,
-        attempts: 0,
-        createdAt: { gte: start, lte: end },
+        status: 'PAID' as any,
+        closedAt: { gte: start, lte: end },
       } as any,
-      orderBy: { createdAt: 'desc' },
-      take: 1000,
-      select: { createdAt: true, payloadJson: true, attempts: true } as any,
+      orderBy: { closedAt: 'desc' },
+      select: { area: true, tableLabel: true, closedAt: true } as any,
     })
     .catch(() => []);
   const latest = new Map<string, PaidPosTable>();
-  for (const j of jobs as {
-    createdAt: Date;
-    payloadJson: any;
-    attempts?: number;
+  for (const sale of sales as {
+    area?: string;
+    tableLabel?: string;
+    closedAt?: Date | string | null;
   }[]) {
-    if (Number(j?.attempts || 0) > 0) continue;
-    const p = (j.payloadJson as any) || {};
-    const meta = (p?.meta as any) || {};
-    if (String(meta?.kind || '') !== 'PAYMENT') continue;
-    const area = String(p.area || '').trim();
-    const label = String(p.tableLabel || '').trim();
+    const area = String(sale.area || '').trim();
+    const label = String(sale.tableLabel || '').trim();
     if (!area || !label) continue;
     const key = `${area}:${label}`;
     if (latest.has(key)) continue;
-    const paidAtRaw = meta.paidAt ?? j.createdAt;
+    const paidAtRaw = sale.closedAt;
     const paidAt =
       paidAtRaw instanceof Date
         ? paidAtRaw.toISOString()
-        : new Date(paidAtRaw).toISOString();
+        : new Date(paidAtRaw as any).toISOString();
     if (!Number.isFinite(Date.parse(paidAt))) continue;
     latest.set(key, { area, label, paidAt });
   }

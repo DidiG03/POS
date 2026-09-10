@@ -6,6 +6,12 @@ import { app, net } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { LicenseEdition } from '@shared/ipc';
+import {
+  editionAllowsStaffRole,
+  isStoreCounterArea,
+  resolveActiveLicenseEdition,
+} from '@shared/editionCapabilities';
+import { parseStoredLicenseStatus } from './licenseStatus';
 
 export type LicenseStatus = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
 
@@ -41,10 +47,20 @@ export interface LicensePublicStatus {
   message?: string | null;
   billingConfigured: boolean;
   edition?: LicenseEdition;
+  /** Unpackaged only. Never set in production builds. */
+  devEditionSwitch?: boolean;
 }
 
 const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const PROTOCOL = 'codeorbit-pos';
+
+function isUnpackagedDev(): boolean {
+  try {
+    return !app.isPackaged;
+  } catch {
+    return true;
+  }
+}
 
 function billingBase(): string {
   return String(process.env.POS_BILLING_URL || '')
@@ -150,6 +166,10 @@ async function billingJson<T>(pathName: string, body: unknown): Promise<T> {
   return billingRequest<T>(pathName, { method: 'POST', body });
 }
 
+function unpackagedSwitch(): { devEditionSwitch?: true } {
+  return isUnpackagedDev() ? { devEditionSwitch: true } : {};
+}
+
 function parseEdition(raw: unknown): LicenseEdition | undefined {
   const v = String(raw || '')
     .trim()
@@ -168,14 +188,16 @@ function persistFromRemote(r: {
   const stored: StoredLicense = {
     key: String(r.licenseKey || ''),
     email: String(r.email || ''),
-    status:
-      (String(r.status || 'ACTIVE').toUpperCase() as LicenseStatus) || 'ACTIVE',
+    status: parseStoredLicenseStatus(r.status),
     currentPeriodEnd: r.currentPeriodEnd ? String(r.currentPeriodEnd) : null,
     lastValidatedAt: Date.now(),
     edition: parseEdition(r.edition) || prev?.edition,
   };
   if (!stored.key)
     throw new Error('Billing server did not return a license key');
+  if (stored.status !== 'ACTIVE') {
+    throw new Error('Subscription is not active');
+  }
   writeStoredLicense(stored);
   return stored;
 }
@@ -184,7 +206,13 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
   const required = isLicenseRequired();
   const configured = Boolean(billingBase());
   if (!required) {
-    return { required: false, licensed: true, billingConfigured: configured };
+    return {
+      required: false,
+      licensed: true,
+      billingConfigured: configured,
+      edition: getActiveLicenseEdition(),
+      ...unpackagedSwitch(),
+    };
   }
   if (!configured) {
     return {
@@ -193,6 +221,7 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       billingConfigured: false,
       message:
         'POS_BILLING_URL is not set. Deploy the billing server and set that URL on this till.',
+      ...unpackagedSwitch(),
     };
   }
   const stored = readStoredLicense();
@@ -202,6 +231,8 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       licensed: false,
       billingConfigured: true,
       message: 'Subscribe to unlock this POS.',
+      edition: getActiveLicenseEdition(),
+      ...unpackagedSwitch(),
     };
   }
   try {
@@ -213,9 +244,7 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       licenseKey?: string;
       edition?: string;
     }>('/license/validate', { key: stored.key });
-    const status = String(
-      remote.status || 'PAUSED',
-    ).toUpperCase() as LicenseStatus;
+    const status = parseStoredLicenseStatus(remote.status || 'PAUSED');
     const next: StoredLicense = {
       key: String(remote.licenseKey || stored.key),
       email: String(remote.email || stored.email),
@@ -236,7 +265,8 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       status: next.status,
       currentPeriodEnd: next.currentPeriodEnd,
       billingConfigured: true,
-      edition: next.edition,
+      edition: getActiveLicenseEdition(),
+      ...unpackagedSwitch(),
       message: licensed
         ? null
         : 'Subscription is not active. Update payment or restore your license.',
@@ -256,7 +286,8 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       status: stored.status,
       currentPeriodEnd: stored.currentPeriodEnd,
       billingConfigured: true,
-      edition: stored.edition,
+      edition: getActiveLicenseEdition(),
+      ...unpackagedSwitch(),
       message: offlineOk
         ? 'Could not reach billing server; using the last successful check.'
         : String(e?.message || 'Could not validate license'),
@@ -289,6 +320,7 @@ export async function createCheckout(input: {
   url?: string;
   alreadyLicensed?: boolean;
   emailed?: boolean;
+  needsPaymentUpdate?: boolean;
   error?: string;
 }> {
   const edition = parseEdition(input.edition);
@@ -300,10 +332,7 @@ export async function createCheckout(input: {
       url?: string;
       alreadyLicensed?: boolean;
       emailed?: boolean;
-      licenseKey?: string;
-      email?: string;
-      status?: string;
-      currentPeriodEnd?: string | null;
+      needsPaymentUpdate?: boolean;
       error?: string;
     }>('/checkout/create', {
       email: String(input.email || '').trim(),
@@ -333,15 +362,28 @@ export async function createCheckout(input: {
 export async function activateSession(sessionId: string): Promise<{
   ok: boolean;
   error?: string;
+  portalUrl?: string;
 }> {
   try {
     const r = await billingJson<{
+      valid?: boolean;
       licenseKey?: string;
       email?: string;
       status?: string;
       currentPeriodEnd?: string | null;
       edition?: string;
+      portalUrl?: string;
+      error?: string;
     }>('/license/activate-session', { sessionId });
+    if (!r.valid || parseStoredLicenseStatus(r.status) !== 'ACTIVE') {
+      return {
+        ok: false,
+        error: String(
+          r.error || 'Subscription is not active. Update your payment method.',
+        ),
+        portalUrl: r.portalUrl,
+      };
+    }
     persistFromRemote(r);
     return { ok: true };
   } catch (e: any) {
@@ -424,6 +466,82 @@ export async function createPortalSession(): Promise<{
   } catch (e: any) {
     return { error: String(e?.message || 'Could not open billing portal') };
   }
+}
+
+export function getActiveLicenseEdition(): LicenseEdition | undefined {
+  return resolveActiveLicenseEdition({
+    unpackaged: isUnpackagedDev(),
+    envEdition: process.env.POS_EDITION,
+    storedEdition: readStoredLicense()?.edition,
+  });
+}
+
+export function setUnpackagedDevEdition(raw: unknown): {
+  ok: boolean;
+  edition?: LicenseEdition;
+} {
+  if (!isUnpackagedDev()) return { ok: false };
+  const edition = parseEdition(raw);
+  if (!edition) return { ok: false };
+  process.env.POS_EDITION = edition;
+  return { ok: true, edition };
+}
+
+export function storePlanBlocksReservations(): boolean {
+  return getActiveLicenseEdition() === 'STORE';
+}
+
+export function assertReservationsEnabled(): void {
+  if (!storePlanBlocksReservations()) return;
+  const err = new Error('Reservations are not available on the Store plan.');
+  (err as any).statusCode = 403;
+  throw err;
+}
+
+export function storePlanBlocksKds(): boolean {
+  return getActiveLicenseEdition() === 'STORE';
+}
+
+export function assertKdsEnabled(): void {
+  if (!storePlanBlocksKds()) return;
+  const err = new Error('Kitchen display is not available on the Store plan.');
+  (err as any).statusCode = 403;
+  throw err;
+}
+
+export function storePlanBlocksTables(): boolean {
+  return getActiveLicenseEdition() === 'STORE';
+}
+
+export function assertDiningFloorEnabled(): void {
+  if (!storePlanBlocksTables()) return;
+  const err = new Error('Dining floor is not available on the Store plan.');
+  (err as any).statusCode = 403;
+  throw err;
+}
+
+/** Store pay still opens a synthetic till (`Store` / `Till N`). Other areas are restaurant floor. */
+export function assertStoreCounterAllowed(area?: string | null): void {
+  if (!storePlanBlocksTables()) return;
+  if (isStoreCounterArea(area)) return;
+  assertDiningFloorEnabled();
+}
+
+export function assertStaffRoleAllowed(role: string): void {
+  if (editionAllowsStaffRole(getActiveLicenseEdition(), role)) return;
+  const err = new Error('That role is not available on the Store plan.');
+  (err as any).statusCode = 403;
+  throw err;
+}
+
+export function withLicenseEdition<T extends Record<string, unknown>>(
+  settings: T,
+): T & { licenseEdition: LicenseEdition | null } {
+  return {
+    ...settings,
+    licenseEdition: getActiveLicenseEdition() ?? null,
+    ...(isUnpackagedDev() ? { devEditionSwitch: true } : {}),
+  };
 }
 
 export function registerLicenseProtocol(): void {

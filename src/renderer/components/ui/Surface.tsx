@@ -82,11 +82,11 @@ export function PageHeader({
       )}
     >
       <div className="min-w-0">
-        <h1 className="text-[19px] font-semibold leading-tight tracking-tight text-gray-50">
+        <h1 className="text-[15px] font-medium leading-tight tracking-tight text-gray-100">
           {title}
         </h1>
         {description ? (
-          <p className="mt-1 text-[13px] text-gray-400">{description}</p>
+          <p className="mt-1 text-[12px] text-gray-500">{description}</p>
         ) : null}
       </div>
       {actions ? (

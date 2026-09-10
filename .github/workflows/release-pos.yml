@@ -226,9 +226,12 @@ jobs:
             echo
             echo "Windows POS and KDS installers are published onto this same tag."
             echo
-            echo "### Changes since v0.2.26"
-            echo "- New subscription plan pricing in the license flow"
-            echo "- License purchase confirmation email"
+            echo "### Changes since v0.2.27"
+            echo "- Sales ledger with durable receipts, paid-at timestamps, and sale corrections"
+            echo "- Fiscal EasyPOS recovery, corrective invoices, and payment EIC"
+            echo "- Store vs restaurant editions, staff salary, and paid analytics"
+            echo "- Ticket courses and seats, waiter orders, KDS floor orders, and barcode scan"
+            echo "- UI theme refresh and POS LAN server discovery"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

@@ -27,10 +27,14 @@ const KEY_PREFIX = 'fiscal:claim:';
 
 /**
  * How long a PENDING claim can sit before we stop believing another
- * attempt is still working on it. Must comfortably exceed the provider
- * budget in `easyPosRequest` (3 attempts x 20s plus backoff, so ~63s).
- * Past this point the process almost certainly died mid-request and the
- * true outcome is unknowable without checking easyPos.
+ * attempt is still working on it.
+ *
+ * Must comfortably exceed the longest a single registration can legitimately
+ * take, which is now the recovery sequence's wall-clock budget in
+ * `recover.ts` (`DEFAULT_DEADLINE_MS`, 90s) rather than the old
+ * `easyPosRequest` retry loop. Past this point the process almost certainly
+ * died mid-request and the true outcome is unknowable without checking
+ * easyPos.
  */
 export const STALE_PENDING_MS = 5 * 60_000;
 
@@ -76,6 +80,12 @@ const REVIEW_STATES = new Set<FiscalClaimState>([
 export interface StoredFiscalResult {
   nslf?: string;
   nivf?: string;
+  /**
+   * Electronic invoice identifier. Stored because a P9/P10 corrective can
+   * only reference an invoice that has one — without it there is no way to
+   * tell later whether a filed invoice can be cancelled electronically.
+   */
+  eic?: string;
   link?: string;
   status?: 'accepted' | 'pending';
   warning?: string;

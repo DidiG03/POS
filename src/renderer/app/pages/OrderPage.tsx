@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTicketStore } from '../../stores/ticket';
+import {
+  useTicketStore,
+  toTicketLogLine,
+  type TicketLogItem,
+} from '../../stores/ticket';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
 import {
   computeDiscountAmount,
@@ -13,7 +17,15 @@ import {
   splitEvenly,
   toEurAtRate,
 } from '@shared/paymentDisplay';
+import { tableKey } from '@shared/utils/tableKey';
+import {
+  restoreMissingServerLines,
+  shouldKeepLocalDraftOnEmptyLog,
+} from '@shared/ticketDraft';
 import { useOrderContext } from '@shared/stores/orderContext';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { ensureStoreCounterSelected } from '@shared/editionCapabilities';
+import { ORDER_ADD_MODES } from '@shared/orderAddMode';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -25,9 +37,38 @@ import { useFavourites } from '../../stores/favourites';
 import { formatEur, makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
+import { TicketCourseBoard } from '../components/TicketCourseBoard';
+import {
+  courseNumber,
+  kitchenSlipNeedsCourseBanner,
+  selectFireLines,
+} from '@shared/ticketCourseFire';
+import {
+  seatLabel,
+  seatNumber,
+  shouldCloseTableAfterSeatPay,
+  unpaidLinesForSeat,
+  unpaidSeatIds,
+} from '@shared/ticketSeats';
 import { saneTableAreas } from '@shared/tableAreas';
-import { IconClose } from '../../components/icons';
+import {
+  IconAlert,
+  IconCard,
+  IconCash,
+  IconChevronLeft,
+  IconClose,
+  IconCovers,
+  IconGrid,
+  IconList,
+  IconOrderCourse,
+  IconOrderDefault,
+  IconOrderSeat,
+  IconPrinter,
+  IconReceipt,
+} from '../../components/icons';
 import { pollIntervalMs } from '../../utils/netQuality';
+import { usePosUiTheme } from '../../theme';
+import { FALLBACK_MENU_TILE_BG, menuTileStyle } from '@shared/menuTileColor';
 import {
   invalidateFloorCache,
   invalidateTicketCache,
@@ -35,11 +76,16 @@ import {
   peekLatestTicket,
   peekMenu,
 } from '../../utils/posReadCache';
+import { readTicketForTable } from '../../utils/ticketRead';
 import {
   cacheLooksLikeCurrentSession,
   hasLocalCovers,
   shouldKeepCoversOnlyTableOpen,
 } from '../../utils/tableSessionKeepOpen';
+import {
+  createHidBarcodeBuffer,
+  findItemByProductCode,
+} from '@shared/barcodeScan';
 
 type MenuItemDTO = {
   id: number;
@@ -65,24 +111,7 @@ type MenuCategoryDTO = {
   items: MenuItemDTO[];
 };
 
-/**
- * Pick a readable foreground (white vs near-black) for an arbitrary
- * background hex via perceptual luminance. Keeps the price + name
- * legible whether the admin assigned a bright yellow or a dark navy.
- */
-function readableTextColor(hex?: string | null): string {
-  const m = String(hex || '').match(/^#?([0-9a-f]{6})$/i);
-  if (!m) return '#ffffff';
-  const n = parseInt(m[1], 16);
-  const r = (n >> 16) & 0xff;
-  const g = (n >> 8) & 0xff;
-  const b = n & 0xff;
-  // Rec. 601 luma — fast and good enough for UI contrast picks.
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return lum > 0.6 ? '#0f172a' : '#ffffff';
-}
-
-const FALLBACK_TILE_BG = '#243044';
+const FALLBACK_TILE_BG = FALLBACK_MENU_TILE_BG;
 const FAVOURITES_CAT_ID = -1;
 const COMMENTS_CAT_ID = -2;
 const COMMENT_TILE_BG = '#3d4d63';
@@ -162,8 +191,30 @@ function sortNaturalTableLabels(labels: string[]): string[] {
   });
 }
 
-function activeTicketItems<T extends { voided?: boolean }>(items: T[]): T[] {
-  return items.filter((it) => !it?.voided);
+function activeTicketItems<T extends { voided?: boolean; paid?: boolean }>(
+  items: T[],
+): T[] {
+  return items.filter((it) => !it?.voided && !it?.paid);
+}
+
+/**
+ * The host's copy of this sitting's ticket, read past the SWR cache so a
+ * stale entry cannot resurrect a line that was just voided. Failing to read
+ * must not block a send, so an unreachable host answers "nothing".
+ */
+async function liveServerTicketLines(
+  area: string,
+  label: string,
+): Promise<TicketLogItem[]> {
+  try {
+    invalidateTicketCache(area, label);
+    const latest = await window.api.tickets.getLatestForTable(area, label);
+    return Array.isArray(latest?.items)
+      ? (latest!.items as TicketLogItem[])
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Covers-only sits have no TicketLog yet — do not treat that as "table is free". */
@@ -205,6 +256,27 @@ function loadCustomCommentButtons(): Record<string, string[]> {
   }
 }
 
+const MENU_LAYOUT_KEY = 'pos.order.menuLayout';
+type MenuLayout = 'grid' | 'column';
+
+function readMenuLayout(): MenuLayout {
+  try {
+    return localStorage.getItem(MENU_LAYOUT_KEY) === 'column'
+      ? 'column'
+      : 'grid';
+  } catch {
+    return 'grid';
+  }
+}
+
+function writeMenuLayout(layout: MenuLayout) {
+  try {
+    localStorage.setItem(MENU_LAYOUT_KEY, layout);
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
 export default function OrderPage() {
   const { t } = useTranslation();
   const cachedMenu = peekMenu<MenuCategoryDTO[]>();
@@ -215,6 +287,7 @@ export default function OrderPage() {
     Array.isArray(cachedMenu) && cachedMenu[0] ? cachedMenu[0].id : null,
   );
   const [query, setQuery] = useState('');
+  const [menuLayout, setMenuLayout] = useState<MenuLayout>(readMenuLayout);
   const {
     lines,
     addItem,
@@ -226,6 +299,14 @@ export default function OrderPage() {
     clear,
     removeLine,
     markLineVoided,
+    activeCourseId,
+    addMode,
+    setAddMode,
+    bindTable,
+    hasHydrated: ticketPersistReady,
+    seats,
+    activeSeatId,
+    markLinesAsPaid,
   } = useTicketStore();
   const [weightModal, setWeightModal] = useState<{
     sku: string;
@@ -244,12 +325,29 @@ export default function OrderPage() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
   const { selectedTable, setPendingAction, setSelectedTable } =
     useOrderContext();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  const uiTheme = usePosUiTheme();
   const { setOpen, setAll, isOpen } = useTableStatus();
+
+  useEffect(() => {
+    if (!ticketPersistReady) return;
+    bindTable(
+      selectedTable ? tableKey(selectedTable.area, selectedTable.label) : null,
+    );
+  }, [
+    ticketPersistReady,
+    bindTable,
+    selectedTable?.area,
+    selectedTable?.label,
+  ]);
   const [openLoaded, setOpenLoaded] = useState(
     () => Object.keys(useTableStatus.getState().openMap).length > 0,
   );
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
   const [ticketLoaded, setTicketLoaded] = useState(false);
+  /** The host's bill could not be read — distinct from "the bill is empty". */
+  const [ticketLoadFailed, setTicketLoadFailed] = useState(false);
+  const [ticketReloadNonce, setTicketReloadNonce] = useState(0);
   const [showCovers, setShowCovers] = useState(false);
   const [coversValue, setCoversValue] = useState('');
   const [coversKnown, setCoversKnown] = useState<number | null | undefined>(
@@ -268,6 +366,7 @@ export default function OrderPage() {
   const [cashTendered, setCashTendered] = useState('');
   const [amountPaid, setAmountPaid] = useState<string>('');
   const [printReceipt, setPrintReceipt] = useState<boolean>(true);
+  const [paySeatId, setPaySeatId] = useState<string | null>(null);
   const [printStationTickets, setPrintStationTickets] = useState<boolean>(true);
   const [discountType, setDiscountType] = useState<
     'NONE' | 'PERCENT' | 'AMOUNT'
@@ -296,11 +395,34 @@ export default function OrderPage() {
   } | null>(null);
   const navigate = useNavigate();
   const { user } = useSessionStore();
+
+  useEffect(() => {
+    ensureStoreCounterSelected({
+      hasTables,
+      userId: user?.id,
+      selectedTable,
+      setSelectedTable,
+    });
+    if (!hasTables) setOrderNote('');
+    if (!hasTables && selectedCatId === COMMENTS_CAT_ID) {
+      setSelectedCatId(categories[0]?.id ?? FAVOURITES_CAT_ID);
+    }
+  }, [
+    hasTables,
+    user?.id,
+    selectedTable,
+    setSelectedTable,
+    setOrderNote,
+    selectedCatId,
+    categories,
+  ]);
   const [ownerId, setOwnerId] = useState<number | null>(null);
   const [openedAtMs, setOpenedAtMs] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const suppressFreeOnEmptyRef = useRef(false);
   const initialRenderRef = useRef(true);
+  /** Table whose "still open" answer from the host we already took over. */
+  const adoptedHostOpenRef = useRef<string | null>(null);
   /**
    * Incremented on every void AND on every table switch; background effects
    * use it to cancel stale fetches so a slow response from a previous table
@@ -394,7 +516,54 @@ export default function OrderPage() {
   const isTableOpen = selectedTable
     ? isOpen(selectedTable.area, selectedTable.label)
     : false;
+  /**
+   * An occupied table whose bill we could not read. Sending or paying now
+   * would act on a check we cannot see, so both are held until a retry
+   * succeeds.
+   */
+  const billUnknown = isTableOpen && ticketLoadFailed;
   const activeLines = useMemo(() => lines.filter((l) => !l.voided), [lines]);
+  /**
+   * A sitting with nothing left but paid lines is settled money against a
+   * filed invoice. The host refuses to void it; the button says so rather
+   * than failing after the manager has typed their PIN.
+   */
+  const ticketFullySettled =
+    activeLines.length > 0 && activeLines.every((l) => l.paid === true);
+  const billableLines = useMemo(
+    () => lines.filter((l) => !l.voided && !l.paid),
+    [lines],
+  );
+  const payLines = useMemo(() => {
+    if (showPayment && addMode === 'seat' && paySeatId) {
+      return unpaidLinesForSeat(lines, paySeatId);
+    }
+    return billableLines;
+  }, [showPayment, addMode, paySeatId, lines, billableLines]);
+  const payingSeatName = useMemo(() => {
+    if (addMode !== 'seat' || !paySeatId) return null;
+    return seatLabel(
+      seats,
+      paySeatId,
+      t('order.seatN', { n: seatNumber(seats, paySeatId) || 1 }),
+    );
+  }, [addMode, paySeatId, seats, t]);
+  const seatPayRows = useMemo(() => {
+    if (addMode !== 'seat') return [];
+    return seats.map((seat, i) => {
+      const unpaid = unpaidLinesForSeat(lines, seat.id);
+      const gross = unpaid.reduce(
+        (sum, l) => sum + Number(l.qty || 0) * Number(l.unitPrice || 0),
+        0,
+      );
+      return {
+        id: seat.id,
+        label: seatLabel(seats, seat.id, t('order.seatN', { n: i + 1 })),
+        paid: unpaid.length === 0,
+        gross: roundMoney(gross),
+      };
+    });
+  }, [addMode, seats, lines, t]);
   const hasUnsentItems = lines.some((l) => l.staged && !l.voided);
   const canTransfer = Boolean(
     selectedTable &&
@@ -415,6 +584,39 @@ export default function OrderPage() {
         ownerId == null ||
         Number(ownerId) === Number(user.id)),
   );
+
+  const ensureStoreTillOpen = useCallback(async () => {
+    if (hasTables || !selectedTable) return;
+    if (isOpen(selectedTable.area, selectedTable.label)) return;
+    suppressFreeOnEmptyRef.current = true;
+    setCoversKnown(1);
+    await tryOrQueue(
+      'tables.setOpen',
+      {
+        area: selectedTable.area,
+        label: selectedTable.label,
+        open: true,
+      },
+      {
+        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+      },
+    ).catch(() => {});
+    await tryOrQueue(
+      'covers.save',
+      {
+        area: selectedTable.area,
+        label: selectedTable.label,
+        covers: 1,
+      },
+      {
+        dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+      },
+    ).catch(() => {});
+    setOpen(selectedTable.area, selectedTable.label, true);
+    await window.api.tables
+      .setOpen(selectedTable.area, selectedTable.label, true)
+      .catch(() => {});
+  }, [hasTables, selectedTable, isOpen, setOpen]);
 
   function formatElapsed(ms: number) {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -529,6 +731,7 @@ export default function OrderPage() {
 
   useEffect(() => {
     setSelectedLineId(null);
+    setTicketLoadFailed(false);
   }, [selectedTable?.area, selectedTable?.label]);
 
   // Load ticket snapshot for open tables before rendering the page (prevents empty->pop-in on refresh).
@@ -536,14 +739,45 @@ export default function OrderPage() {
     let cancelled = false;
     const gen = hydrateGenRef.current;
     (async () => {
-      if (!openLoaded) return;
+      if (!ticketPersistReady || !openLoaded) return;
       if (!selectedTable) {
         setTicketLoaded(true);
         return;
       }
-      // When table is not open, ticket is a new draft (no need to wait).
+      // Closed tables keep the persisted local draft (unsent items + add mode).
+      // But "closed" here is a local flag, and a wrong one hides a live bill:
+      // every ticket read below is skipped, so the panel shows an empty cart
+      // for an occupied table. Confirm with the host before believing it.
       if (!isOpen(selectedTable.area, selectedTable.label)) {
-        setTicketLoaded(true);
+        const table = selectedTable;
+        const key = tableKey(table.area, table.label);
+        // Once per table only. A sitting with neither lines nor covers gets
+        // freed further down, and if that close cannot reach the host we
+        // would otherwise keep re-adopting its "still open" answer.
+        if (adoptedHostOpenRef.current === key) {
+          setTicketLoaded(true);
+          return;
+        }
+        const hostSaysOpen = await window.api.tables
+          .listOpen()
+          .then(
+            (open) =>
+              Array.isArray(open) &&
+              open.some(
+                (row: { area?: string; label?: string }) =>
+                  row?.area === table.area && row?.label === table.label,
+              ),
+          )
+          .catch(() => false);
+        if (cancelled || gen !== hydrateGenRef.current) return;
+        if (!hostSaysOpen) {
+          setTicketLoaded(true);
+          return;
+        }
+        // Adopting the host's answer re-runs this effect, which then loads
+        // the sitting's ticket.
+        adoptedHostOpenRef.current = key;
+        setOpen(table.area, table.label, true);
         return;
       }
       const cached = peekLatestTicket(selectedTable.area, selectedTable.label);
@@ -563,19 +797,28 @@ export default function OrderPage() {
         setTicketLoaded(false);
       }
       try {
-        const latest = await window.api.tickets.getLatestForTable(
+        const read = await readTicketForTable(
           selectedTable.area,
           selectedTable.label,
         );
         if (cancelled || gen !== hydrateGenRef.current) return;
-        const items = Array.isArray(latest?.items) ? latest!.items : [];
+        if (!read.ok) {
+          // The bill is unknown, not empty. An empty cart on an occupied
+          // table reads as "nothing ordered" and invites a Send that
+          // rewrites the sitting.
+          setTicketLoadFailed(true);
+          return;
+        }
+        setTicketLoadFailed(false);
+        const items = read.items;
         if (items.length) {
           useTicketStore
             .getState()
-            .hydrate({ items: items as any, note: latest?.note || '' });
+            .hydrate({ items: items as any, note: read.note });
           if (
-            activeTicketItems(items as Array<{ voided?: boolean }>).length ===
-              0 &&
+            activeTicketItems(
+              useTicketStore.getState().lines as Array<{ voided?: boolean }>,
+            ).length === 0 &&
             selectedTable
           ) {
             invalidateTicketCache(selectedTable.area, selectedTable.label);
@@ -600,9 +843,8 @@ export default function OrderPage() {
             // Don't overwrite with empty — we may have just sent; server may not have synced yet
             return;
           }
-          useTicketStore
-            .getState()
-            .hydrate({ items: [], note: latest?.note || '' });
+          if (shouldKeepLocalDraftOnEmptyLog(currentLines)) return;
+          useTicketStore.getState().hydrate({ items: [], note: read.note });
           if (selectedTable) {
             const keepOpen = shouldKeepCoversOnlyTableOpen({
               latestHadLines: false,
@@ -637,15 +879,21 @@ export default function OrderPage() {
     };
   }, [
     openLoaded,
+    ticketPersistReady,
     selectedTable?.area,
     selectedTable?.label,
     isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+    ticketReloadNonce,
   ]);
 
   // Track covers for the selected table (used to gate "Pay")
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (!hasTables) {
+        setCoversKnown(1);
+        return;
+      }
       if (!selectedTable) {
         setCoversKnown(undefined);
         return;
@@ -678,19 +926,20 @@ export default function OrderPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedTable?.area, selectedTable?.label, isTableOpen]);
+  }, [hasTables, selectedTable?.area, selectedTable?.label, isTableOpen]);
 
-  const canPay =
-    Boolean(selectedTable) &&
-    activeLines.length > 0 &&
-    isTableOpen &&
-    !hasUnsentItems &&
-    typeof coversKnown === 'number' &&
-    coversKnown > 0;
+  const canPay = hasTables
+    ? Boolean(selectedTable) &&
+      billableLines.length > 0 &&
+      isTableOpen &&
+      !hasUnsentItems &&
+      typeof coversKnown === 'number' &&
+      coversKnown > 0
+    : Boolean(selectedTable) && billableLines.length > 0;
 
   const totals = useMemo(
-    () => computeTotals(activeLines, vatEnabled, defaultVatRate),
-    [activeLines, vatEnabled, defaultVatRate],
+    () => computeTotals(payLines, vatEnabled, defaultVatRate),
+    [payLines, vatEnabled, defaultVatRate],
   );
   const [approvalsCfg, setApprovalsCfg] = useState<{
     requireManagerPinForDiscount: boolean;
@@ -881,6 +1130,14 @@ export default function OrderPage() {
         : 1;
     setSplitGuestCount(n);
     setCashTendered('');
+    if (addMode === 'seat') {
+      const ids = unpaidSeatIds(seats, lines);
+      setPaySeatId((cur) =>
+        cur && ids.includes(cur) ? cur : (ids[0] ?? null),
+      );
+    } else {
+      setPaySeatId(null);
+    }
   }, [showPayment]);
 
   const fav = useFavourites();
@@ -935,6 +1192,7 @@ export default function OrderPage() {
           return;
         }
       }
+      if (!hasTables) return;
       setOrderNote(mergeNoteFragment(orderNote, text));
     },
     [
@@ -947,6 +1205,7 @@ export default function OrderPage() {
       setOrderNote,
       user?.id,
       isOpen,
+      hasTables,
     ],
   );
 
@@ -1015,6 +1274,55 @@ export default function OrderPage() {
     return m;
   }, [categories]);
 
+  const addMenuItemToSale = useCallback(
+    (item: MenuItemDTO) => {
+      if (menuItemUnavailable(item) || ticketSyncing || busyAction != null) {
+        return;
+      }
+      const isKg =
+        Boolean((item as any)?.isKg) || Boolean((item as any)?.tags?.isKg);
+      if (isKg) {
+        setWeightModal({
+          sku: item.sku,
+          name: item.name,
+          unitPrice: item.price,
+          vatRate: item.vatRate,
+          station: item.station,
+          categoryId: item.categoryId,
+          categoryName:
+            categoryNameById.get(Number(item.categoryId)) || undefined,
+        } as any);
+        setWeightInput('');
+        setWeightUnit('kg');
+        return;
+      }
+      addItem({
+        sku: item.sku,
+        name: item.name,
+        unitPrice: item.price,
+        vatRate: item.vatRate,
+        station: item.station,
+        categoryId: item.categoryId,
+        categoryName:
+          categoryNameById.get(Number(item.categoryId)) || undefined,
+        courseId:
+          addMode === 'course' && item.station !== 'BAR'
+            ? activeCourseId
+            : null,
+        seatId: addMode === 'seat' ? activeSeatId : null,
+      } as any);
+    },
+    [
+      addItem,
+      addMode,
+      activeCourseId,
+      activeSeatId,
+      busyAction,
+      categoryNameById,
+      ticketSyncing,
+    ],
+  );
+
   const categoryColorById = useMemo(() => {
     const m = new Map<number, string | null>();
     for (const c of categories as any[]) {
@@ -1026,6 +1334,61 @@ export default function OrderPage() {
   useEffect(() => {
     loadMenu();
   }, []);
+
+  // Store tills only: a USB scanner types the barcode then Enter.
+  useEffect(() => {
+    if (hasTables) return;
+    const buffer = createHidBarcodeBuffer();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (
+        showPayment ||
+        showCovers ||
+        showTransfer ||
+        weightModal ||
+        customCommentOpen
+      ) {
+        return;
+      }
+      if (ticketSyncing || busyAction != null) return;
+      const target = e.target as HTMLElement | null;
+      const tag = String(target?.tagName || '').toUpperCase();
+      if (tag === 'TEXTAREA' || target?.isContentEditable) return;
+
+      const result = buffer.push(e.key, performance.now());
+      if (result.swallow) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      if (!result.commit) return;
+      setQuery('');
+      const items = categories.flatMap((c) => c.items || []);
+      const item = findItemByProductCode(items, result.commit);
+      if (!item) {
+        toast.error(t('order.barcodeUnknown'));
+        return;
+      }
+      if (menuItemUnavailable(item)) {
+        toast.error(t('order.barcodeUnavailable', { name: item.name }));
+        return;
+      }
+      addMenuItemToSale(item);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [
+    addMenuItemToSale,
+    busyAction,
+    categories,
+    customCommentOpen,
+    hasTables,
+    showCovers,
+    showPayment,
+    showTransfer,
+    t,
+    ticketSyncing,
+    weightModal,
+  ]);
 
   // Prefill transfer UI when opened. We pull the user list AND the set of
   // currently-on-shift userIds in parallel so the "To waiter" dropdown only
@@ -1193,6 +1556,44 @@ export default function OrderPage() {
   ]);
 
   useEffect(() => {
+    const applyLatest = async () => {
+      if (!selectedTable) return;
+      const gen = hydrateGenRef.current;
+      const table = selectedTable;
+      try {
+        const read = await readTicketForTable(table.area, table.label);
+        if (gen !== hydrateGenRef.current) return;
+        if (!read.ok) {
+          setTicketLoadFailed(true);
+          return;
+        }
+        setTicketLoadFailed(false);
+        const items = read.items;
+        if (
+          items.length > 0 &&
+          items.every((it: { voided?: boolean }) => it?.voided === true)
+        ) {
+          useTicketStore.getState().clear();
+          return;
+        }
+        if (items.length) {
+          useTicketStore.getState().hydrate({
+            items: items as any,
+            note: read.note,
+          });
+          return;
+        }
+        if (suppressFreeOnEmptyRef.current || hasLocalCovers(coversKnown)) {
+          return;
+        }
+        const currentLines = useTicketStore.getState().lines;
+        if (shouldKeepLocalDraftOnEmptyLog(currentLines)) return;
+        useTicketStore.getState().hydrate({ items: [], note: read.note });
+      } catch {
+        // next poll / hydrate effect will retry
+      }
+    };
+
     const onTicketsChanged = (ev: Event) => {
       const detail = (ev as CustomEvent).detail || {};
       const area = String(detail.area || '');
@@ -1208,44 +1609,31 @@ export default function OrderPage() {
         selectedTable.label,
         Number.isFinite(uid) && uid > 0 ? uid : null,
       );
-      const gen = hydrateGenRef.current;
-      const table = selectedTable;
-      void (async () => {
-        try {
-          const latest = await window.api.tickets.getLatestForTable(
-            table.area,
-            table.label,
-          );
-          if (gen !== hydrateGenRef.current) return;
-          const items = Array.isArray(latest?.items) ? latest!.items : [];
-          if (items.length) {
-            useTicketStore.getState().hydrate({
-              items: items as any,
-              note: latest?.note || '',
-            });
-            return;
-          }
-          if (suppressFreeOnEmptyRef.current || hasLocalCovers(coversKnown)) {
-            return;
-          }
-          const currentLines = useTicketStore.getState().lines;
-          if (currentLines.some((l) => l.staged)) return;
-          useTicketStore
-            .getState()
-            .hydrate({ items: [], note: latest?.note || '' });
-        } catch {
-          // next poll / hydrate effect will retry
-        }
-      })();
+      void applyLatest();
     };
+
+    const onCatchup = () => {
+      void window.api.tables
+        .listOpen()
+        .then((open) => {
+          if (Array.isArray(open)) setAll(open);
+        })
+        .catch(() => undefined);
+      void applyLatest();
+    };
+
     window.addEventListener('pos:ticketsChanged', onTicketsChanged);
-    return () =>
+    window.addEventListener('pos:syncCatchup', onCatchup);
+    return () => {
       window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
+      window.removeEventListener('pos:syncCatchup', onCatchup);
+    };
   }, [
     selectedTable?.area,
     selectedTable?.label,
     refreshTableOwner,
     coversKnown,
+    setAll,
   ]);
 
   // Tablets (and cloud) often miss the SSE ticket event. Re-read owner
@@ -1295,21 +1683,27 @@ export default function OrderPage() {
     // writing the previous table's lines into the check they are looking at.
     let cancelled = false;
     (async () => {
+      if (!ticketPersistReady) return;
       if (!selectedTable) return;
       // Only hydrate for tables currently marked as open
       if (!isOpen(selectedTable.area, selectedTable.label)) return;
       try {
-        const latest = await window.api.tickets.getLatestForTable(
+        const read = await readTicketForTable(
           selectedTable.area,
           selectedTable.label,
         );
         // Stale fetch — a void or new action happened while this was in flight
         if (cancelled || gen !== hydrateGenRef.current) return;
-        const items = Array.isArray(latest?.items) ? latest!.items : [];
+        if (!read.ok) {
+          setTicketLoadFailed(true);
+          return;
+        }
+        setTicketLoadFailed(false);
+        const items = read.items;
         if (items.length) {
           useTicketStore
             .getState()
-            .hydrate({ items: items as any, note: latest?.note || '' });
+            .hydrate({ items: items as any, note: read.note });
         } else {
           const currentLines = useTicketStore.getState().lines;
           const sentTable = lastSendTableRef.current;
@@ -1329,9 +1723,8 @@ export default function OrderPage() {
           if (suppressFreeOnEmptyRef.current || hasLocalCovers(coversKnown)) {
             return;
           }
-          useTicketStore
-            .getState()
-            .hydrate({ items: [], note: latest?.note || '' });
+          if (shouldKeepLocalDraftOnEmptyLog(currentLines)) return;
+          useTicketStore.getState().hydrate({ items: [], note: read.note });
         }
       } catch (e) {
         void e;
@@ -1344,6 +1737,7 @@ export default function OrderPage() {
     selectedTable?.area,
     selectedTable?.label,
     isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+    ticketPersistReady,
     ticketSyncing,
     coversKnown,
   ]);
@@ -1356,6 +1750,7 @@ export default function OrderPage() {
       return;
     }
     if (ticketSyncing) return;
+    if (!ticketPersistReady) return;
     if (!selectedTable) return;
     if (!isOpen(selectedTable.area, selectedTable.label)) return;
     if (activeLines.length === 0) {
@@ -1364,12 +1759,19 @@ export default function OrderPage() {
       (async () => {
         let latestHadLines = false;
         try {
-          const latest = await window.api.tickets.getLatestForTable(
+          const read = await readTicketForTable(
             selectedTable.area,
             selectedTable.label,
           );
           if (gen !== hydrateGenRef.current) return;
-          const items = Array.isArray(latest?.items) ? latest!.items : [];
+          if (!read.ok) {
+            // Freeing a sitting whose bill we could not read would drop a
+            // live check off the floor. Keep it open and surface the error.
+            setTicketLoadFailed(true);
+            return;
+          }
+          setTicketLoadFailed(false);
+          const items = read.items;
           latestHadLines = items.length > 0;
           if (
             items.length &&
@@ -1378,7 +1780,7 @@ export default function OrderPage() {
             // Rehydrate and keep table open
             useTicketStore
               .getState()
-              .hydrate({ items: items as any, note: latest?.note || '' });
+              .hydrate({ items: items as any, note: read.note });
             setOpen(selectedTable.area, selectedTable.label, true);
             return;
           }
@@ -1406,7 +1808,13 @@ export default function OrderPage() {
           .catch(() => {});
       })();
     }
-  }, [activeLines.length, lines.length, selectedTable, ticketSyncing]);
+  }, [
+    activeLines.length,
+    lines.length,
+    selectedTable,
+    ticketSyncing,
+    ticketPersistReady,
+  ]);
 
   // Menu is managed by the business admin (no remote syncing).
 
@@ -1415,6 +1823,7 @@ export default function OrderPage() {
   // does not mutate the ticket store, and reschedules only while alive.
   const appliedRequestIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
+    if (!hasTables) return;
     if (!user || !selectedTable) return;
     if (!isOpen(selectedTable.area, selectedTable.label)) return;
     if (ownerId == null || Number(ownerId) !== Number(user.id)) return;
@@ -1446,6 +1855,13 @@ export default function OrderPage() {
                 name: String(it.name),
                 unitPrice: Number(it.unitPrice || 0),
                 vatRate: Number(it.vatRate || 0),
+                station: it.station,
+                courseId:
+                  addMode === 'course' &&
+                  String(it.station || '').toUpperCase() !== 'BAR'
+                    ? activeCourseId
+                    : null,
+                seatId: addMode === 'seat' ? activeSeatId : null,
               });
               const times = Math.max(1, Number(it.qty || 1)) - 1;
               for (let i = 0; i < times; i++) {
@@ -1472,7 +1888,251 @@ export default function OrderPage() {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [user?.id, selectedTable?.area, selectedTable?.label, ownerId]);
+  }, [
+    hasTables,
+    user?.id,
+    selectedTable?.area,
+    selectedTable?.label,
+    ownerId,
+    addItem,
+    addMode,
+    activeCourseId,
+    activeSeatId,
+  ]);
+
+  const runKitchenFire = useCallback(
+    async (opts: {
+      covers: number | null;
+      courseId?: string | null;
+      firstSend: boolean;
+      printKitchen: boolean;
+    }): Promise<{ ok: boolean; isFireOrder: boolean }> => {
+      if (!selectedTable || !user?.id) {
+        return { ok: false, isFireOrder: false };
+      }
+      const state = useTicketStore.getState();
+      const fireLines = selectFireLines({
+        lines: state.lines,
+        courses: state.courses,
+        courseMode: addMode === 'course',
+        courseId: opts.courseId,
+        firstSend: opts.firstSend,
+      });
+      const hasStaged = state.lines.some((l) => l.staged && !l.voided);
+      const isFireOrder = fireLines.length > 0;
+      const firingIds = new Set(fireLines.map((l) => l.id));
+      // A ticket log replaces the whole bill, so send what the host already
+      // holds for this sitting plus our lines. Without this, a till whose
+      // cart went stale (or empty) silently drops items off the bill.
+      const onServer = await liveServerTicketLines(
+        selectedTable.area,
+        selectedTable.label,
+      );
+      const logItems = restoreMissingServerLines(
+        state.lines.map((l) =>
+          toTicketLogLine(l, {
+            fired:
+              l.voided === true || l.staged !== true || firingIds.has(l.id),
+          }),
+        ),
+        onServer,
+      );
+      const printLines = isFireOrder
+        ? fireLines.map((l) => toTicketLogLine(l))
+        : logItems;
+      const courseIdForLabel =
+        String(opts.courseId || '').trim() ||
+        (addMode === 'course'
+          ? opts.firstSend
+            ? state.courses[0]?.id
+            : fireLines.find((l) => l.courseId)?.courseId ||
+              state.courses[0]?.id
+          : null);
+      const n = courseNumber(state.courses, courseIdForLabel);
+      const courseLabel =
+        addMode === 'course' && n && kitchenSlipNeedsCourseBanner(printLines)
+          ? t('order.courseN', { n })
+          : undefined;
+      const serviceChargeAmount = serviceChargeCfg.enabled
+        ? serviceChargeCfg.mode === 'PERCENT'
+          ? Math.max(
+              0,
+              (Number(totals.total || 0) *
+                Number(serviceChargeCfg.value || 0)) /
+                100,
+            )
+          : Math.max(0, Number(serviceChargeCfg.value || 0))
+        : 0;
+      const printMeta = {
+        userId: user.id,
+        kind: isFireOrder ? ('ORDER' as const) : ('TICKET' as const),
+        vatEnabled,
+        courseLabel: isFireOrder ? courseLabel : undefined,
+        serviceChargeEnabled: serviceChargeCfg.enabled,
+        serviceChargeApplied: serviceChargeCfg.enabled,
+        serviceChargeMode: serviceChargeCfg.mode,
+        serviceChargeValue: serviceChargeCfg.value,
+        serviceChargeAmount,
+      };
+
+      if (hasStaged) {
+        const logResult = await logTicket({
+          userId: user.id,
+          area: selectedTable.area,
+          tableLabel: selectedTable.label,
+          covers: opts.covers,
+          items: logItems,
+          note: state.orderNote,
+          stockConsumeLines: fireLines.map((l) => ({
+            sku: l.sku,
+            qty: l.qty,
+          })),
+          kdsFireItems:
+            opts.printKitchen && isFireOrder ? printLines : undefined,
+          kdsCourseLabel: opts.printKitchen ? courseLabel : undefined,
+        });
+        if (!logResult.ok) {
+          toast.error(logResult.error, {
+            title: t('order.toastSendBlocked'),
+          });
+          try {
+            const open = await window.api.tables.listOpen();
+            if (Array.isArray(open)) {
+              const stillOpen = open.some(
+                (tbl: { area?: string; label?: string }) =>
+                  tbl.area === selectedTable.area &&
+                  tbl.label === selectedTable.label,
+              );
+              setOpen(selectedTable.area, selectedTable.label, stillOpen);
+            }
+          } catch {
+            // toast is the source of truth
+          }
+          return { ok: false, isFireOrder };
+        }
+        useTicketStore.getState().markLinesAsSent(fireLines.map((l) => l.id));
+      }
+
+      if (opts.printKitchen && (isFireOrder || !hasStaged)) {
+        await printTicket({
+          area: selectedTable.area,
+          tableLabel: selectedTable.label,
+          covers: opts.covers,
+          items: printLines,
+          note: state.orderNote,
+          userName: user.displayName,
+          meta: printMeta,
+        }).then((printed) => {
+          if (printed?.queued) {
+            toast.warn(
+              isFireOrder
+                ? t('order.kitchenPrintQueued')
+                : t('order.ticketPrintQueued'),
+            );
+          }
+        });
+      }
+      return { ok: true, isFireOrder };
+    },
+    [
+      addMode,
+      selectedTable,
+      user?.id,
+      user?.displayName,
+      t,
+      vatEnabled,
+      serviceChargeCfg,
+      totals.total,
+      setOpen,
+    ],
+  );
+
+  const printSeatBill = useCallback(
+    async (seatId: string) => {
+      if (!selectedTable || !user?.id || busyAction != null || ticketSyncing) {
+        return;
+      }
+      const items = unpaidLinesForSeat(lines, seatId)
+        .filter((l) => l.staged !== true)
+        .map((l) => toTicketLogLine(l));
+      if (items.length === 0) return;
+      const n = seatNumber(seats, seatId);
+      const label = seatLabel(seats, seatId, t('order.seatN', { n: n || 1 }));
+      const lastCovers = await window.api.covers
+        .getLast(selectedTable.area, selectedTable.label)
+        .catch(() => null);
+      setBusyAction('send');
+      try {
+        await printTicket({
+          area: selectedTable.area,
+          tableLabel: selectedTable.label,
+          covers: lastCovers ?? null,
+          items,
+          note: orderNote || null,
+          userName: user.displayName,
+          meta: {
+            userId: user.id,
+            vatEnabled,
+            seatLabel: label,
+          },
+        });
+        toast.success(t('order.seatBillPrinted', { label }));
+      } catch (e: unknown) {
+        const raw = String(
+          (e as { message?: string })?.message || e || '',
+        ).trim();
+        toast.error(raw || t('order.toastTryAgain'));
+      } finally {
+        setBusyAction(null);
+      }
+    },
+    [
+      busyAction,
+      lines,
+      orderNote,
+      seats,
+      selectedTable,
+      t,
+      ticketSyncing,
+      user?.displayName,
+      user?.id,
+      vatEnabled,
+    ],
+  );
+
+  const lockOrderScroll =
+    !showPayment &&
+    (ticketSyncing ||
+      busyAction === 'send' ||
+      busyAction === 'void' ||
+      busyAction === 'request');
+
+  useEffect(() => {
+    if (!lockOrderScroll) return;
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtmlOverflow = html.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    const prevHtmlOverscroll = html.style.overscrollBehavior;
+    const prevBodyOverscroll = body.style.overscrollBehavior;
+    html.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
+    html.style.overscrollBehavior = 'none';
+    body.style.overscrollBehavior = 'none';
+    const preventScroll = (e: Event) => {
+      e.preventDefault();
+    };
+    document.addEventListener('touchmove', preventScroll, { passive: false });
+    document.addEventListener('wheel', preventScroll, { passive: false });
+    return () => {
+      html.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+      html.style.overscrollBehavior = prevHtmlOverscroll;
+      body.style.overscrollBehavior = prevBodyOverscroll;
+      document.removeEventListener('touchmove', preventScroll);
+      document.removeEventListener('wheel', preventScroll);
+    };
+  }, [lockOrderScroll]);
 
   const cachedTicket =
     selectedTable && isTableOpen
@@ -1491,47 +2151,56 @@ export default function OrderPage() {
           openLoadError
             ? t(`order.loadErrors.${openLoadError}`)
             : !openLoaded
-              ? t('order.loadingTables')
+              ? t(hasTables ? 'order.loadingTables' : 'order.loadingSale')
               : t('order.loadingTicket')
         }
       />
     );
   }
 
+  const columnMenu = menuLayout === 'column';
+  const catShape = columnMenu
+    ? 'w-full rounded-lg py-2.5 px-2 text-left text-[13px] leading-snug'
+    : 'py-4 sm:py-7 px-2 rounded-xl';
+
   return (
-    <div className="h-full min-h-0 flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3">
+    <div className="h-full min-h-0 min-w-0 w-full flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3 relative">
+      {lockOrderScroll ? (
+        <PageSpinner
+          variant="lock"
+          message={
+            ticketSyncing
+              ? t('order.syncingTicket')
+              : busyAction === 'send'
+                ? t('order.sendingOrder')
+                : busyAction === 'void'
+                  ? t('order.voiding')
+                  : busyAction === 'request'
+                    ? t('order.sending')
+                    : t('order.pleaseWait')
+          }
+        />
+      ) : null}
       {/* Mobile: switch between Menu and Ticket to avoid cramped 3-column layout */}
       <div className="md:hidden pos-surface-panel p-1.5 flex items-center gap-1.5">
-        <button
-          className="pos-icon-btn shrink-0 cursor-pointer text-gray-100"
-          onClick={() => navigate('/app/tables')}
-          type="button"
-          aria-label={t('order.backToTables')}
-          title={t('order.backToTables')}
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="none"
-            className="pos-icon"
-            aria-hidden="true"
+        {hasTables ? (
+          <button
+            className="pos-icon-btn shrink-0 cursor-pointer text-gray-100"
+            onClick={() => navigate('/app/tables')}
+            type="button"
+            aria-label={t('order.backToTables')}
+            title={t('order.backToTables')}
           >
-            <path
-              d="M15 6l-6 6 6 6"
-              stroke="currentColor"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+            <IconChevronLeft />
+          </button>
+        ) : null}
         <div className="pos-segmented flex-1">
           <button
             className={`pos-segment flex-1 ${mobilePane === 'menu' ? 'pos-segment--active' : ''}`}
             onClick={() => setMobilePane('menu')}
             type="button"
           >
-            {t('order.menu')}
+            {t(hasTables ? 'order.menu' : 'order.catalog')}
           </button>
           <button
             className={`pos-segment flex-1 ${mobilePane === 'ticket' ? 'pos-segment--active' : ''}`}
@@ -1539,313 +2208,381 @@ export default function OrderPage() {
             type="button"
           >
             {lines.length
-              ? t('order.ticketCount', { count: lines.length })
-              : t('order.ticket')}
+              ? t(hasTables ? 'order.ticketCount' : 'order.cartCount', {
+                  count: lines.length,
+                })
+              : t(hasTables ? 'order.ticket' : 'order.cart')}
           </button>
         </div>
       </div>
 
       <div
-        className={`md:col-span-2 min-h-0 overflow-auto ${mobilePane === 'menu' ? 'flex-1' : 'hidden'} md:block`}
+        className={`md:col-span-2 min-h-0 min-w-0 h-full flex-col ${
+          mobilePane === 'menu' ? 'flex flex-1' : 'hidden'
+        } md:flex ${
+          lockOrderScroll || columnMenu ? 'overflow-hidden' : 'overflow-auto'
+        }`}
       >
-        <div className="flex gap-2 mb-3">
+        <div className="mb-3 flex shrink-0 gap-2">
           <input
-            placeholder={t('order.searchMenu')}
-            className="pos-input"
+            placeholder={t(
+              hasTables ? 'order.searchMenu' : 'order.searchProductsScan',
+            )}
+            className="pos-input min-w-0 flex-1"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
-          {/* Favourites tab */}
           <button
-            key={FAVOURITES_CAT_ID}
-            onClick={() => setSelectedCatId(FAVOURITES_CAT_ID)}
-            className={`py-4 sm:py-7 px-2 border border-white/8 hover:bg-gray-800 cursor-pointer rounded-xl ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900/70'}`}
-          >
-            {t('order.favourites')}
-          </button>
-          {/* Quick comments tab */}
-          <button
-            key={COMMENTS_CAT_ID}
-            onClick={() => setSelectedCatId(COMMENTS_CAT_ID)}
-            className={`relative py-4 sm:py-7 px-2 border border-white/8 hover:bg-gray-800 cursor-pointer rounded-xl overflow-hidden ${
-              selected?.id === COMMENTS_CAT_ID
-                ? 'bg-gray-800'
-                : 'bg-gray-900/70'
-            }`}
-            style={{
-              boxShadow:
-                selected?.id === COMMENTS_CAT_ID
-                  ? `inset 0 -3px 0 0 ${COMMENT_TILE_BG}`
-                  : `inset 0 -2px 0 0 ${COMMENT_TILE_BG}80`,
+            type="button"
+            className="pos-icon-btn shrink-0"
+            onClick={() => {
+              const next = menuLayout === 'grid' ? 'column' : 'grid';
+              writeMenuLayout(next);
+              setMenuLayout(next);
             }}
+            title={
+              columnMenu ? t('order.menuViewGrid') : t('order.menuViewColumn')
+            }
+            aria-label={
+              columnMenu ? t('order.menuViewGrid') : t('order.menuViewColumn')
+            }
+            aria-pressed={columnMenu}
           >
-            <span className="inline-flex items-center gap-2">
-              <span
-                className="inline-block w-2.5 h-2.5 rounded-full"
-                style={{ backgroundColor: COMMENT_TILE_BG }}
-                aria-hidden
-              />
-              {t('order.comments')}
-            </span>
+            {columnMenu ? <IconGrid /> : <IconList />}
           </button>
-          {categories.map((c) => {
-            const tabColor = c.color || null;
-            const isActive = selected?.id === c.id;
-            // Tabs stay dark even when active so the category color
-            // doesn't dominate the chrome — instead we render a small
-            // dot + a thin coloured stripe along the bottom edge as a
-            // legend. The actual tiles below get the full colour
-            // treatment so the connection between "this category" and
-            // "those items" is obvious.
-            return (
+        </div>
+        <div
+          className={
+            columnMenu ? 'flex min-h-0 min-w-0 flex-1 gap-2' : 'contents'
+          }
+        >
+          <div
+            className={
+              columnMenu
+                ? 'w-[6.75rem] shrink-0 space-y-1.5 overflow-y-auto overscroll-contain sm:w-[8.75rem] md:w-[10.5rem]'
+                : 'mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3'
+            }
+          >
+            {/* Favourites tab */}
+            <button
+              key={FAVOURITES_CAT_ID}
+              onClick={() => setSelectedCatId(FAVOURITES_CAT_ID)}
+              className={`${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900/70'}`}
+            >
+              <span className={columnMenu ? 'block truncate' : undefined}>
+                {t('order.favourites')}
+              </span>
+            </button>
+            {hasTables ? (
               <button
-                key={c.id}
-                onClick={() => setSelectedCatId(c.id)}
-                className={`relative py-4 sm:py-7 px-2 border border-white/8 hover:bg-gray-800 cursor-pointer rounded-xl overflow-hidden ${
-                  isActive ? 'bg-gray-800' : 'bg-gray-900/70'
+                key={COMMENTS_CAT_ID}
+                onClick={() => setSelectedCatId(COMMENTS_CAT_ID)}
+                className={`relative ${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer overflow-hidden ${
+                  selected?.id === COMMENTS_CAT_ID
+                    ? 'bg-gray-800'
+                    : 'bg-gray-900/70'
                 }`}
-                style={
-                  tabColor
-                    ? {
-                        boxShadow: isActive
-                          ? `inset 0 -3px 0 0 ${tabColor}`
-                          : `inset 0 -2px 0 0 ${tabColor}80`,
-                      }
-                    : undefined
-                }
+                style={{
+                  boxShadow:
+                    selected?.id === COMMENTS_CAT_ID
+                      ? `inset 0 -3px 0 0 ${COMMENT_TILE_BG}`
+                      : `inset 0 -2px 0 0 ${COMMENT_TILE_BG}80`,
+                }}
               >
-                <span className="inline-flex items-center gap-2">
-                  {tabColor ? (
-                    <span
-                      className="inline-block w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: tabColor }}
-                      aria-hidden
-                    />
-                  ) : null}
-                  {c.name}
+                <span className="inline-flex min-w-0 items-center gap-2">
+                  <span
+                    className="inline-block w-2.5 h-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: COMMENT_TILE_BG }}
+                    aria-hidden
+                  />
+                  <span className={columnMenu ? 'truncate' : undefined}>
+                    {t('order.comments')}
+                  </span>
                 </span>
               </button>
-            );
-          })}
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {!query.trim() && selectedCatId === COMMENTS_CAT_ID ? (
-            <>
-              {[...commentPresets, ...customCommentButtons].map((phrase) => (
+            ) : null}
+            {categories.map((c) => {
+              const tabColor = c.color || null;
+              const isActive = selected?.id === c.id;
+              // Tabs stay dark even when active so the category color
+              // doesn't dominate the chrome — instead we render a small
+              // dot + a thin coloured stripe along the bottom edge as a
+              // legend. The actual tiles below get the full colour
+              // treatment so the connection between "this category" and
+              // "those items" is obvious.
+              return (
                 <button
-                  key={phrase}
-                  type="button"
-                  className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center"
-                  style={{
-                    backgroundColor: COMMENT_TILE_BG,
-                    color: readableTextColor(COMMENT_TILE_BG),
-                  }}
-                  disabled={ticketSyncing || busyAction != null}
-                  onClick={() => appendOrderComment(phrase)}
-                >
-                  <div className="font-medium leading-snug">{phrase}</div>
-                </button>
-              ))}
-              <button
-                type="button"
-                className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center font-medium leading-snug"
-                style={{
-                  backgroundColor: COMMENT_CUSTOM_BTN_BG,
-                  color: readableTextColor(COMMENT_CUSTOM_BTN_BG),
-                }}
-                disabled={ticketSyncing || busyAction != null}
-                onClick={() => {
-                  setCustomCommentInput('');
-                  setCustomCommentOpen(true);
-                }}
-              >
-                {t('order.writeComment')}
-              </button>
-            </>
-          ) : null}
-          {(!query.trim() && selectedCatId === COMMENTS_CAT_ID
-            ? []
-            : filteredItems
-          ).map((i: MenuItemDTO) => {
-            const isFav = fav.isFav(user?.id || null, i.sku);
-            const isDisabled = menuItemUnavailable(i);
-            const isLow = menuItemLowStock(i);
-            const stockRem =
-              i.stockRemaining != null &&
-              Number.isFinite(Number(i.stockRemaining))
-                ? Math.max(0, Math.floor(Number(i.stockRemaining)))
-                : null;
-            // Inherit the parent category's colour so the floor sees
-            // food and drinks as instantly distinguishable blocks.
-            // Disabled items override the colour with a neutral grey
-            // — a "this is unavailable" signal beats any branding.
-            const tileBg =
-              categoryColorById.get(Number(i.categoryId)) || FALLBACK_TILE_BG;
-            const textColor = readableTextColor(tileBg);
-            const unavailableTitle = !i.active
-              ? t('order.itemUnavailableInactive')
-              : i.stockLevel === 'OUT'
-                ? t('order.outOfStockTitle')
-                : undefined;
-            return (
-              <div key={i.id} className="relative">
-                {isLow ? (
-                  <span
-                    className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
-                    title={t('order.lowStockTitle')}
-                    aria-hidden
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      className="h-4 w-4 shrink-0"
-                    >
-                      <path
-                        fillRule="evenodd"
-                        d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.752-2.5-2.598-4.5L9.4 3.003ZM12 8.25a.75.75 0 0 1 .75.75v3.75a.75.75 0 0 1-1.5 0V9a.75.75 0 0 1 .75-.75Zm0 8.25a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-                        clipRule="evenodd"
-                      />
-                    </svg>
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  className={`py-4 rounded text-left px-3 w-full transition-opacity ${
-                    isDisabled
-                      ? 'bg-gray-800/60 border border-gray-700 text-gray-400 cursor-not-allowed'
-                      : 'cursor-pointer hover:opacity-90'
+                  key={c.id}
+                  onClick={() => setSelectedCatId(c.id)}
+                  className={`relative ${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer overflow-hidden ${
+                    isActive ? 'bg-gray-800' : 'bg-gray-900/70'
                   }`}
                   style={
-                    isDisabled
-                      ? undefined
-                      : { backgroundColor: tileBg, color: textColor }
+                    tabColor
+                      ? {
+                          boxShadow: isActive
+                            ? `inset 0 -3px 0 0 ${tabColor}`
+                            : `inset 0 -2px 0 0 ${tabColor}80`,
+                        }
+                      : undefined
                   }
-                  disabled={isDisabled || ticketSyncing || busyAction != null}
-                  title={
-                    isDisabled
-                      ? unavailableTitle
-                      : isLow
-                        ? stockRem != null
-                          ? `${t('order.lowStockTitle')} (${t('order.stockRemainingBadge', { count: stockRem })})`
-                          : t('order.lowStockTitle')
-                        : undefined
-                  }
-                  aria-label={
-                    isDisabled
-                      ? `${i.name}, ${unavailableTitle ?? t('order.unavailableAria')}`
-                      : isLow
-                        ? stockRem != null
-                          ? `${i.name}, ${t('order.lowStockAria')}, ${t('order.stockRemainingBadge', { count: stockRem })}`
-                          : `${i.name}, ${t('order.lowStockAria')}`
-                        : i.name
-                  }
-                  onClick={() => {
-                    if (isDisabled || ticketSyncing || busyAction != null)
-                      return;
-                    // If isKg, open weight keypad; otherwise add normally
-                    const isKg =
-                      Boolean((i as any)?.isKg) ||
-                      Boolean((i as any)?.tags?.isKg);
-                    if (isKg) {
-                      setWeightModal({
-                        sku: i.sku,
-                        name: i.name,
-                        unitPrice: i.price,
-                        vatRate: i.vatRate,
-                        station: i.station,
-                        categoryId: i.categoryId,
-                        categoryName:
-                          categoryNameById.get(Number(i.categoryId)) ||
-                          undefined,
-                      } as any);
-                      setWeightInput('');
-                      setWeightUnit('kg');
-                    } else {
-                      addItem({
-                        sku: i.sku,
-                        name: i.name,
-                        unitPrice: i.price,
-                        vatRate: i.vatRate,
-                        station: i.station,
-                        categoryId: i.categoryId,
-                        categoryName:
-                          categoryNameById.get(Number(i.categoryId)) ||
-                          undefined,
-                      } as any);
-                    }
-                  }}
                 >
-                  <div
-                    className={`font-medium pr-6 ${isDisabled ? 'line-through' : ''}`}
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    {tabColor ? (
+                      <span
+                        className="inline-block w-2.5 h-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: tabColor }}
+                        aria-hidden
+                      />
+                    ) : null}
+                    <span className={columnMenu ? 'truncate' : undefined}>
+                      {c.name}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div
+            className={
+              columnMenu
+                ? 'grid min-h-0 min-w-0 flex-1 grid-cols-1 items-stretch gap-2 overflow-auto overscroll-contain min-[380px]:grid-cols-2 sm:grid-cols-3'
+                : 'grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3'
+            }
+          >
+            {!query.trim() && hasTables && selectedCatId === COMMENTS_CAT_ID ? (
+              <>
+                {[...commentPresets, ...customCommentButtons].map((phrase) => (
+                  <button
+                    key={phrase}
+                    type="button"
+                    className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center"
+                    style={menuTileStyle(COMMENT_TILE_BG, uiTheme)}
+                    disabled={ticketSyncing || busyAction != null}
+                    onClick={() => appendOrderComment(phrase)}
                   >
-                    {i.name}
-                  </div>
-                  <div className="text-sm">{i.price}</div>
-                  {isLow && stockRem != null ? (
-                    <div className="text-[11px] font-semibold text-amber-100/95 mt-0.5 tabular-nums">
-                      {t('order.stockRemainingBadge', { count: stockRem })}
-                    </div>
-                  ) : null}
-                </button>
+                    <div className="font-medium leading-snug">{phrase}</div>
+                  </button>
+                ))}
                 <button
-                  // Translucent black backdrop so the heart stays
-                  // legible on top of any category colour (used to be
-                  // hard-coded pink/emerald and looked awful on a red
-                  // drinks tile).
-                  className={`absolute top-1 right-1 text-xs px-2 py-1 rounded cursor-pointer backdrop-blur-sm bg-black/30 hover:bg-black/50 ${
-                    isFav ? 'text-pink-300' : 'text-white/90'
-                  }`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (user?.id) fav.toggle(user.id, i.sku);
+                  type="button"
+                  className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center font-medium leading-snug"
+                  style={{
+                    backgroundColor: COMMENT_CUSTOM_BTN_BG,
+                    color: '#ffffff',
                   }}
-                  title={
-                    isFav
-                      ? t('order.favouriteRemoveTitle')
-                      : t('order.favouriteAddTitle')
-                  }
+                  disabled={ticketSyncing || busyAction != null}
+                  onClick={() => {
+                    setCustomCommentInput('');
+                    setCustomCommentOpen(true);
+                  }}
                 >
-                  {isFav ? '♥' : '♡'}
+                  {t('order.writeComment')}
                 </button>
-              </div>
-            );
-          })}
+              </>
+            ) : null}
+            {(!query.trim() && selectedCatId === COMMENTS_CAT_ID
+              ? []
+              : filteredItems
+            ).map((i: MenuItemDTO) => {
+              const isFav = fav.isFav(user?.id || null, i.sku);
+              const isDisabled = menuItemUnavailable(i);
+              const isLow = menuItemLowStock(i);
+              const stockRem =
+                i.stockRemaining != null &&
+                Number.isFinite(Number(i.stockRemaining))
+                  ? Math.max(0, Math.floor(Number(i.stockRemaining)))
+                  : null;
+              // Inherit the parent category's colour so the floor sees
+              // food and drinks as instantly distinguishable blocks.
+              // Light mode lifts that colour to a pastel so tiles match
+              // the rest of the till. Disabled items stay a neutral grey.
+              const tileStyle = menuTileStyle(
+                categoryColorById.get(Number(i.categoryId)) || FALLBACK_TILE_BG,
+                uiTheme,
+              );
+              const unavailableTitle = !i.active
+                ? t('order.itemUnavailableInactive')
+                : i.stockLevel === 'OUT'
+                  ? t('order.outOfStockTitle')
+                  : undefined;
+              return (
+                <div key={i.id} className="relative h-full min-h-[7.25rem]">
+                  {isLow ? (
+                    <span
+                      className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
+                      title={t('order.lowStockTitle')}
+                      aria-hidden
+                    >
+                      <IconAlert className="h-4 w-4 shrink-0" />
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`h-full min-h-[7.25rem] py-3 rounded text-left px-3 w-full flex flex-col transition-opacity ${
+                      isDisabled
+                        ? 'bg-gray-800/60 border border-gray-700 text-gray-400 cursor-not-allowed'
+                        : 'cursor-pointer hover:opacity-90'
+                    }`}
+                    style={isDisabled ? undefined : tileStyle}
+                    disabled={isDisabled || ticketSyncing || busyAction != null}
+                    title={
+                      isDisabled
+                        ? unavailableTitle
+                        : isLow
+                          ? stockRem != null
+                            ? `${t('order.lowStockTitle')} (${t('order.stockRemainingBadge', { count: stockRem })})`
+                            : t('order.lowStockTitle')
+                          : i.name
+                    }
+                    aria-label={
+                      isDisabled
+                        ? `${i.name}, ${unavailableTitle ?? t('order.unavailableAria')}`
+                        : isLow
+                          ? stockRem != null
+                            ? `${i.name}, ${t('order.lowStockAria')}, ${t('order.stockRemainingBadge', { count: stockRem })}`
+                            : `${i.name}, ${t('order.lowStockAria')}`
+                          : i.name
+                    }
+                    onClick={() => {
+                      if (isDisabled || ticketSyncing || busyAction != null)
+                        return;
+                      addMenuItemToSale(i);
+                    }}
+                  >
+                    <div
+                      className={`font-medium pr-6 leading-snug line-clamp-3 ${isDisabled ? 'line-through' : ''}`}
+                    >
+                      {i.name}
+                    </div>
+                    <div className="mt-auto pt-1">
+                      <div className="text-sm tabular-nums">{i.price}</div>
+                      {isLow && stockRem != null ? (
+                        <div
+                          className={`text-[11px] font-semibold mt-0.5 tabular-nums ${
+                            uiTheme === 'light'
+                              ? 'text-amber-800'
+                              : 'text-amber-100/95'
+                          }`}
+                        >
+                          {t('order.stockRemainingBadge', { count: stockRem })}
+                        </div>
+                      ) : null}
+                    </div>
+                  </button>
+                  <button
+                    // Translucent black backdrop so the heart stays
+                    // legible on top of any category colour (used to be
+                    // hard-coded pink/emerald and looked awful on a red
+                    // drinks tile).
+                    className={`absolute top-1 right-1 text-xs px-2 py-1 rounded cursor-pointer backdrop-blur-sm ${
+                      uiTheme === 'light'
+                        ? `bg-black/8 hover:bg-black/14 ${isFav ? 'text-pink-600' : 'text-slate-600'}`
+                        : `bg-black/30 hover:bg-black/50 ${isFav ? 'text-pink-300' : 'text-white/90'}`
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (user?.id) fav.toggle(user.id, i.sku);
+                    }}
+                    title={
+                      isFav
+                        ? t('order.favouriteRemoveTitle')
+                        : t('order.favouriteAddTitle')
+                    }
+                  >
+                    {isFav ? '♥' : '♡'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
       <div
-        className={`bg-gray-800/80 p-3 rounded-xl border border-white/8 flex flex-col min-h-0 h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
+        className={`bg-gray-800/80 p-3 rounded-xl border border-white/8 flex flex-col min-h-0 min-w-0 overflow-hidden h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
       >
-        <div className="flex items-center justify-between mb-2">
-          <div className="font-semibold flex items-center gap-2">
-            <span>
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <div className="font-semibold flex items-center gap-2 min-w-0">
+            <span className="truncate">
               {selectedTable
-                ? t('order.ticketHeader', { label: selectedTable.label })
-                : t('order.ticket')}
+                ? t(hasTables ? 'order.ticketHeader' : 'order.saleHeader', {
+                    label: selectedTable.label,
+                  })
+                : t(hasTables ? 'order.ticket' : 'order.cart')}
             </span>
-            {selectedTable &&
+            {hasTables &&
+              selectedTable &&
               isOpen(selectedTable.area, selectedTable.label) &&
               openedAtMs && (
-                <span className="text-xs font-mono px-2 py-1 rounded bg-gray-700/60 border border-gray-600">
+                <span className="text-xs font-mono px-2 py-1 rounded bg-gray-700/60 border border-gray-600 shrink-0">
                   {formatElapsed(nowMs - openedAtMs)}
                 </span>
               )}
           </div>
-          <div className="flex items-center gap-2">
-            {canTransfer && (
+          {hasTables ? (
+            <div
+              role="tablist"
+              aria-label={t('order.addModeLabel')}
+              aria-disabled={isTableOpen}
+              className={`inline-flex items-stretch rounded-md border border-white/8 overflow-hidden shrink-0 ${
+                isTableOpen ? 'opacity-50' : ''
+              }`}
+            >
+              {ORDER_ADD_MODES.map((mode, i) => {
+                const active = addMode === mode;
+                const label = t(`order.addMode.${mode}`);
+                const title = isTableOpen
+                  ? t('order.addModeLockedSent')
+                  : label;
+                return (
+                  <span key={mode} className="flex items-stretch">
+                    {i > 0 ? (
+                      <span
+                        className="w-px shrink-0 self-stretch bg-[var(--pos-hairline)]"
+                        aria-hidden
+                      />
+                    ) : null}
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      title={title}
+                      aria-label={label}
+                      disabled={isTableOpen}
+                      onClick={() => setAddMode(mode)}
+                      className={`pos-icon-btn rounded-none disabled:pointer-events-none disabled:cursor-not-allowed ${
+                        active
+                          ? 'text-[var(--pos-accent)] bg-[var(--pos-accent-soft)]'
+                          : ''
+                      }`}
+                    >
+                      {mode === 'default' ? (
+                        <IconOrderDefault className="pos-icon size-5" />
+                      ) : mode === 'course' ? (
+                        <IconOrderCourse className="pos-icon size-5" />
+                      ) : (
+                        <IconOrderSeat className="pos-icon size-5" />
+                      )}
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            {hasTables && canTransfer && (
               <button
                 type="button"
-                className="bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded border border-indigo-500 text-sm"
+                className="bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1.5 rounded border border-indigo-500 text-sm whitespace-nowrap"
                 onClick={() => setShowTransfer(true)}
                 title={t('order.transferTitle')}
               >
                 {t('order.transfer')}
               </button>
             )}
-            {selectedTable &&
+            {hasTables &&
+              selectedTable &&
               isOpen(selectedTable.area, selectedTable.label) && (
                 <button
                   type="button"
@@ -1872,7 +2609,7 @@ export default function OrderPage() {
                       : t('order.editCoversAriaBlocked')
                   }
                 >
-                  <ForkKnifeIcon />
+                  <IconCovers className="size-4" />
                   <span className="text-sm font-semibold">
                     {typeof coversKnown === 'number' ? coversKnown : '—'}
                   </span>
@@ -1880,30 +2617,32 @@ export default function OrderPage() {
               )}
           </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-auto relative">
-          {(ticketSyncing || busyAction != null) && (
-            <PageSpinner
-              variant="overlay"
-              message={
-                ticketSyncing
-                  ? t('order.syncingTicket')
-                  : busyAction === 'send'
-                    ? t('order.sendingOrder')
-                    : busyAction === 'void'
-                      ? t('order.voiding')
-                      : busyAction === 'pay'
-                        ? vatEnabled
-                          ? t('order.registeringFiscal')
-                          : t('order.processingPayment')
-                        : t('order.pleaseWait')
-              }
-            />
-          )}
+        <div
+          className={`flex-1 min-h-0 relative ${lockOrderScroll ? 'overflow-hidden' : 'overflow-auto'}`}
+        >
           <div className="space-y-2">
-            {lines.length === 0 ? (
-              <div className="text-sm opacity-60">{t('order.selectItems')}</div>
-            ) : (
-              lines.map((l) => {
+            {billUnknown ? (
+              <div
+                role="alert"
+                className="rounded-xl border border-red-500/60 bg-red-500/10 p-3"
+              >
+                <div className="text-sm font-semibold text-red-200">
+                  {t('order.billUnreadable')}
+                </div>
+                <div className="mt-1 text-[13px] leading-snug text-red-100/80">
+                  {t('order.billUnreadableHint')}
+                </div>
+                <button
+                  type="button"
+                  className="pos-btn mt-2"
+                  onClick={() => setTicketReloadNonce((n) => n + 1)}
+                >
+                  {t('order.billUnreadableRetry')}
+                </button>
+              </div>
+            ) : null}
+            {(() => {
+              const renderLine = (l: (typeof lines)[number]) => {
                 const showRequestOnly = Boolean(
                   selectedTable &&
                     isOpen(selectedTable.area, selectedTable.label) &&
@@ -1915,14 +2654,13 @@ export default function OrderPage() {
                   selectedTable &&
                     isOpen(selectedTable.area, selectedTable.label),
                 );
-                const dimmed = isTableOpen && !l.staged; // darker when already sent
+                const dimmed = (isTableOpen && !l.staged) || l.paid === true;
                 const isVoided = l.voided === true;
+                const isPaid = l.paid === true;
                 const isSelected = selectedLineId === l.id;
-                const canSelect = lineAcceptsComment(
-                  l,
-                  isTableOpen,
-                  showRequestOnly,
-                );
+                const canSelect =
+                  hasTables &&
+                  lineAcceptsComment(l, isTableOpen, showRequestOnly);
                 return (
                   <div
                     key={l.id}
@@ -1953,15 +2691,20 @@ export default function OrderPage() {
                       }
                     }}
                   >
-                    <div className="flex items-center justify-between">
-                      <div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                      <div className="min-w-0 flex-1 basis-[7rem]">
                         <div
-                          className={`${dimmed ? 'text-gray-400' : 'text-white'} font-medium ${isVoided ? 'line-through decoration-2' : ''}`}
+                          className={`${dimmed ? 'text-gray-400' : 'text-white'} font-medium truncate ${isVoided ? 'line-through decoration-2' : ''}`}
                         >
                           {l.name}
+                          {isPaid ? (
+                            <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
+                              {t('order.seatPaid')}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 ml-auto shrink-0">
                         {selectedTable &&
                         isOpen(selectedTable.area, selectedTable.label) &&
                         !showRequestOnly &&
@@ -2012,7 +2755,7 @@ export default function OrderPage() {
                           </div>
                         )}
                         <div
-                          className={`w-20 text-right ${dimmed ? 'text-gray-400' : 'text-white'} ${isVoided ? 'line-through decoration-2' : ''}`}
+                          className={`min-w-[2.75rem] text-right tabular-nums ${dimmed ? 'text-gray-400' : 'text-white'} ${isVoided ? 'line-through decoration-2' : ''}`}
                         >
                           {l.unitPrice * l.qty}
                         </div>
@@ -2047,8 +2790,10 @@ export default function OrderPage() {
                                 minHeight: '28px',
                                 padding: 0,
                               }}
+                              disabled={l.paid === true}
                               onClick={(e) => {
                                 e.stopPropagation();
+                                if (l.paid === true) return;
                                 setVoidTarget({
                                   id: l.id,
                                   name: l.name,
@@ -2058,7 +2803,11 @@ export default function OrderPage() {
                                   note: l.note,
                                 });
                               }}
-                              title={t('order.voidTitle')}
+                              title={
+                                l.paid === true
+                                  ? t('order.voidBlockedPaid')
+                                  : t('order.voidTitle')
+                              }
                             >
                               A
                             </button>
@@ -2087,26 +2836,106 @@ export default function OrderPage() {
                         )}
                       </div>
                     </div>
-                    <input
-                      className={`mt-2 w-full rounded px-2 py-1 text-sm placeholder:text-gray-300 ${
-                        isVoided
-                          ? 'bg-gray-700 opacity-60 cursor-not-allowed line-through decoration-2'
-                          : dimmed && !(showRequestOnly && l.staged)
-                            ? 'bg-gray-700 opacity-60 cursor-not-allowed'
-                            : 'bg-gray-600'
-                      }`}
-                      placeholder={t('order.lineNotePlaceholder')}
-                      value={l.note ?? ''}
-                      disabled={Boolean(
-                        isVoided || (dimmed && !(showRequestOnly && l.staged)),
-                      )}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setLineNote(l.id, e.target.value)}
-                    />
+                    {hasTables ? (
+                      <input
+                        className={`mt-2 w-full pos-input px-2 py-1 placeholder:text-gray-300 ${
+                          isVoided
+                            ? 'bg-gray-700 opacity-60 cursor-not-allowed line-through decoration-2'
+                            : dimmed && !(showRequestOnly && l.staged)
+                              ? 'bg-gray-700 opacity-60 cursor-not-allowed'
+                              : 'bg-gray-600'
+                        }`}
+                        placeholder={t('order.lineNotePlaceholder')}
+                        value={l.note ?? ''}
+                        disabled={Boolean(
+                          isVoided ||
+                            (dimmed && !(showRequestOnly && l.staged)),
+                        )}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setLineNote(l.id, e.target.value)}
+                      />
+                    ) : null}
                   </div>
                 );
-              })
-            )}
+              };
+              if ((addMode === 'course' || addMode === 'seat') && hasTables) {
+                return (
+                  <TicketCourseBoard
+                    mode={addMode === 'seat' ? 'seat' : 'course'}
+                    canEdit={!isTableOpen}
+                    canAddCourse={isTableOpen}
+                    fireDisabled={
+                      busyAction != null || !connectionOk || ticketSyncing
+                    }
+                    printDisabled={
+                      busyAction != null || !connectionOk || ticketSyncing
+                    }
+                    onPrintSeat={
+                      addMode === 'seat' && isTableOpen
+                        ? (seatId) => {
+                            void printSeatBill(seatId);
+                          }
+                        : undefined
+                    }
+                    onFireCourse={
+                      isTableOpen
+                        ? (courseId) => {
+                            if (
+                              busyAction != null ||
+                              ticketSyncing ||
+                              !connectionOk ||
+                              !selectedTable
+                            ) {
+                              return;
+                            }
+                            void (async () => {
+                              lastSendAtRef.current = Date.now();
+                              lastSendTableRef.current = {
+                                area: selectedTable.area,
+                                label: selectedTable.label,
+                              };
+                              setBusyAction('send');
+                              try {
+                                const lastCovers =
+                                  await window.api.covers.getLast(
+                                    selectedTable.area,
+                                    selectedTable.label,
+                                  );
+                                await runKitchenFire({
+                                  covers: lastCovers ?? null,
+                                  courseId,
+                                  firstSend: false,
+                                  printKitchen: true,
+                                });
+                              } catch (e: unknown) {
+                                const raw = String(
+                                  (e as { message?: string })?.message ||
+                                    e ||
+                                    '',
+                                ).trim();
+                                toast.error(raw || t('order.toastTryAgain'), {
+                                  title: t('order.toastSendFailed'),
+                                });
+                              } finally {
+                                setBusyAction(null);
+                              }
+                            })();
+                          }
+                        : undefined
+                    }
+                    renderLine={renderLine}
+                  />
+                );
+              }
+              if (lines.length === 0) {
+                return (
+                  <div className="text-sm opacity-60">
+                    {t('order.selectItems')}
+                  </div>
+                );
+              }
+              return lines.map(renderLine);
+            })()}
           </div>
         </div>
 
@@ -2115,36 +2944,38 @@ export default function OrderPage() {
             which overlapped the last item on narrow viewports. */}
         <div className="shrink-0 mt-3 bg-gray-800 border-t border-gray-700 -mx-3 -mb-3 p-3 rounded-b">
           <div className="space-y-3 text-sm">
-            <div>
-              <label className="block text-xs mb-1 opacity-70">
-                {t('order.orderNotes')}
-              </label>
-              {(() => {
-                const requestOnly = Boolean(
-                  selectedTable &&
-                    isOpen(selectedTable.area, selectedTable.label) &&
-                    ownerId &&
-                    user?.id != null &&
-                    Number(ownerId) !== Number(user.id),
-                );
-                const ticketOpen = Boolean(
-                  selectedTable &&
-                    isOpen(selectedTable.area, selectedTable.label),
-                );
-                // Disable order note both when ticket is open and in request-only mode; notes should only be on staged items
-                const disabled = ticketOpen || requestOnly;
-                return (
-                  <textarea
-                    className={`w-full rounded px-2 py-2 text-sm ${disabled ? 'bg-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-700'}`}
-                    rows={2}
-                    placeholder={t('order.orderNotesPlaceholder')}
-                    value={orderNote}
-                    disabled={disabled}
-                    onChange={(e) => setOrderNote(e.target.value)}
-                  />
-                );
-              })()}
-            </div>
+            {hasTables ? (
+              <div>
+                <label className="block text-xs mb-1 opacity-70">
+                  {t('order.orderNotes')}
+                </label>
+                {(() => {
+                  const requestOnly = Boolean(
+                    selectedTable &&
+                      isOpen(selectedTable.area, selectedTable.label) &&
+                      ownerId &&
+                      user?.id != null &&
+                      Number(ownerId) !== Number(user.id),
+                  );
+                  const ticketOpen = Boolean(
+                    selectedTable &&
+                      isOpen(selectedTable.area, selectedTable.label),
+                  );
+                  // Disable order note both when ticket is open and in request-only mode; notes should only be on staged items
+                  const disabled = ticketOpen || requestOnly;
+                  return (
+                    <textarea
+                      className={`w-full pos-input px-2 py-2 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+                      rows={2}
+                      placeholder={t('order.orderNotesPlaceholder')}
+                      value={orderNote}
+                      disabled={disabled}
+                      onChange={(e) => setOrderNote(e.target.value)}
+                    />
+                  );
+                })()}
+              </div>
+            ) : null}
 
             <TicketTotals
               totals={totals}
@@ -2154,7 +2985,7 @@ export default function OrderPage() {
               serviceChargeAmount={serviceChargeAmount}
             />
 
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {(() => {
                 const showRequestOnly = Boolean(
                   selectedTable &&
@@ -2167,7 +2998,7 @@ export default function OrderPage() {
                   const stagedCount = lines.filter((l) => l.staged).length;
                   return (
                     <button
-                      className="flex-1 bg-amber-700 hover:bg-amber-600 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center bg-amber-700 hover:bg-amber-600 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
                       disabled={
                         stagedCount === 0 ||
                         requestLocked ||
@@ -2224,15 +3055,22 @@ export default function OrderPage() {
                 return (
                   <>
                     <button
-                      className="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center bg-red-600 hover:bg-red-700 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
                       disabled={
                         activeLines.length === 0 ||
                         busyAction != null ||
                         !connectionOk ||
-                        ticketSyncing
+                        ticketSyncing ||
+                        (isTableOpen && ticketFullySettled)
+                      }
+                      title={
+                        isTableOpen && ticketFullySettled
+                          ? t('order.voidBlockedPaid')
+                          : undefined
                       }
                       onClick={async () => {
                         if (busyAction != null || ticketSyncing) return;
+                        if (isTableOpen && ticketFullySettled) return;
                         if (!connectionOk) {
                           toast.warn(t('order.networkSlow'));
                           return;
@@ -2326,237 +3164,151 @@ export default function OrderPage() {
                           ? t('order.voidTicket')
                           : t('order.clear')}
                     </button>
-                    <button
-                      className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
-                      disabled={
-                        activeLines.length === 0 ||
-                        busyAction != null ||
-                        !connectionOk ||
-                        ticketSyncing
-                      }
-                      onClick={async () => {
-                        if (busyAction != null || ticketSyncing) return;
-                        if (!selectedTable) {
-                          setPendingAction('send');
-                          navigate('/app/tables');
-                          return;
+                    {hasTables ? (
+                      <button
+                        className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                        disabled={
+                          activeLines.length === 0 ||
+                          busyAction != null ||
+                          !connectionOk ||
+                          ticketSyncing ||
+                          billUnknown
                         }
-                        // Ask for covers only if table is not marked as open (green)
-                        if (!isOpen(selectedTable.area, selectedTable.label)) {
-                          setCoversMode('openAndSend');
-                          setCoversValue('');
-                          setPrintStationTickets(true);
-                          setShowCovers(true);
-                          return;
-                        }
-                        if (!connectionOk) {
-                          toast.warn(t('order.networkSlow'));
-                          return;
-                        }
-                        // Enrich log with details (table, order lines, notes, covers)
-                        lastSendAtRef.current = Date.now();
-                        lastSendTableRef.current = {
-                          area: selectedTable.area,
-                          label: selectedTable.label,
-                        };
-                        setBusyAction('send');
-                        try {
-                          const lastCovers = await window.api.covers.getLast(
-                            selectedTable.area,
-                            selectedTable.label,
-                          );
-                          const stagedOnly = lines.filter((l) => l.staged);
-                          const isFireOrder = stagedOnly.length > 0;
-                          const details = {
-                            table: selectedTable.label,
-                            area: selectedTable.area,
-                            covers: lastCovers ?? null,
-                            orderNote,
-                            lines: lines.map((l) => ({
-                              sku: l.sku,
-                              name: l.name,
-                              qty: l.qty,
-                              unitPrice: l.unitPrice,
-                              vatRate: l.vatRate,
-                              note: l.note,
-                              station: (l as any).station,
-                              categoryId: (l as any).categoryId,
-                              categoryName: (l as any).categoryName,
-                            })),
-                          };
-                          const printLines = isFireOrder
-                            ? stagedOnly.map((l) => ({
-                                sku: l.sku,
-                                name: l.name,
-                                qty: l.qty,
-                                unitPrice: l.unitPrice,
-                                vatRate: l.vatRate,
-                                note: l.note,
-                                station: (l as any).station,
-                                categoryId: (l as any).categoryId,
-                                categoryName: (l as any).categoryName,
-                              }))
-                            : details.lines;
-                          if (!user?.id) return;
-                          if (isFireOrder) {
-                            const logResult = await logTicket({
-                              userId: user.id,
-                              area: selectedTable.area,
-                              tableLabel: selectedTable.label,
-                              covers: lastCovers ?? null,
-                              items: details.lines,
-                              note: orderNote,
-                              stockConsumeLines: stagedOnly.map((l) => ({
-                                sku: l.sku,
-                                qty: l.qty,
-                              })),
-                              kdsFireItems: printLines,
-                            });
-                            if (!logResult.ok) {
-                              // Server rejected — most often the table
-                              // was closed/paid by another waiter or is
-                              // owned by someone else. Don't fire the
-                              // print, refresh the open-tables map, and
-                              // surface a clean toast.
-                              toast.error(logResult.error, {
-                                title: t('order.toastSendBlocked'),
-                              });
-                              try {
-                                const open = await window.api.tables.listOpen();
-                                if (Array.isArray(open)) {
-                                  const stillOpen = open.some(
-                                    (tbl: any) =>
-                                      tbl.area === selectedTable.area &&
-                                      tbl.label === selectedTable.label,
-                                  );
-                                  setOpen(
-                                    selectedTable.area,
-                                    selectedTable.label,
-                                    stillOpen,
-                                  );
-                                }
-                              } catch {
-                                // ignore — toast is the source of truth
-                              }
-                              return;
-                            }
-                            useTicketStore.getState().markAllAsSent();
+                        onClick={async () => {
+                          if (busyAction != null || ticketSyncing) return;
+                          if (billUnknown) return;
+                          if (!selectedTable) {
+                            setPendingAction('send');
+                            navigate('/app/tables');
+                            return;
                           }
-                          await printTicket({
+                          // Ask for covers only if table is not marked as open (green)
+                          if (
+                            !isOpen(selectedTable.area, selectedTable.label)
+                          ) {
+                            setCoversMode('openAndSend');
+                            setCoversValue('');
+                            setPrintStationTickets(true);
+                            setShowCovers(true);
+                            return;
+                          }
+                          if (!connectionOk) {
+                            toast.warn(t('order.networkSlow'));
+                            return;
+                          }
+                          // Enrich log with details (table, order lines, notes, covers)
+                          lastSendAtRef.current = Date.now();
+                          lastSendTableRef.current = {
                             area: selectedTable.area,
-                            tableLabel: selectedTable.label,
-                            covers: lastCovers ?? null,
-                            items: printLines,
-                            note: orderNote,
-                            userName: user.displayName,
-                            meta: {
-                              userId: user.id,
-                              // Only routed/split prints should be kind=ORDER. The blue "Print Ticket" (no staged items)
-                              // should print the full order as one ticket.
-                              kind: isFireOrder ? 'ORDER' : 'TICKET',
-                              vatEnabled,
-                              serviceChargeEnabled: serviceChargeCfg.enabled,
-                              serviceChargeApplied: serviceChargeCfg.enabled,
-                              serviceChargeMode: serviceChargeCfg.mode,
-                              serviceChargeValue: serviceChargeCfg.value,
-                              serviceChargeAmount: serviceChargeCfg.enabled
-                                ? serviceChargeCfg.mode === 'PERCENT'
-                                  ? Math.max(
-                                      0,
-                                      (Number(totals.total || 0) *
-                                        Number(serviceChargeCfg.value || 0)) /
-                                        100,
-                                    )
-                                  : Math.max(
-                                      0,
-                                      Number(serviceChargeCfg.value || 0),
-                                    )
-                                : 0,
-                            },
-                          }).then((printed) => {
-                            if (printed?.queued) {
-                              toast.warn(
-                                isFireOrder
-                                  ? t('order.kitchenPrintQueued')
-                                  : t('order.ticketPrintQueued'),
-                              );
-                            }
-                          });
-                          // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
-                          setOpen(
-                            selectedTable.area,
-                            selectedTable.label,
-                            true,
-                          );
-                          await window.api.tables
-                            .setOpen(
+                            label: selectedTable.label,
+                          };
+                          setBusyAction('send');
+                          try {
+                            const lastCovers = await window.api.covers.getLast(
+                              selectedTable.area,
+                              selectedTable.label,
+                            );
+                            if (!user?.id) return;
+                            const fired = await runKitchenFire({
+                              covers: lastCovers ?? null,
+                              firstSend: false,
+                              printKitchen: true,
+                            });
+                            if (!fired.ok) return;
+                            // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
+                            setOpen(
                               selectedTable.area,
                               selectedTable.label,
                               true,
-                            )
-                            .catch(() => {});
-                        } catch (e: any) {
-                          const raw = String(e?.message || e || '').trim();
-                          const m = raw.match(
-                            /Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s,
-                          );
-                          const detail = (m ? m[1] : raw).trim();
-                          const status = Number(e?.status || 0);
-                          const isAuth = status === 401;
-                          const isAbort =
-                            String(e?.name || '') === 'AbortError';
-                          const isType = e instanceof TypeError;
-                          const title = isAuth
-                            ? t('order.toastSendBlockedSignedOut')
-                            : isAbort
-                              ? t('order.toastSendTimedOut')
-                              : isType
-                                ? t('order.toastCantReachHost')
-                                : t('order.toastSendFailed');
-                          toast.error(detail || t('order.toastTryAgain'), {
-                            title,
-                          });
-                          if (typeof console !== 'undefined')
-                            console.warn('[print/ticket] failed:', e);
-                        } finally {
-                          setBusyAction(null);
-                        }
-                      }}
-                      type="button"
-                    >
-                      {busyAction === 'send'
-                        ? t('order.sendingOrder')
-                        : lines.some((l) => l.staged)
-                          ? t('order.sendOrder')
-                          : t('order.printTicket')}
-                    </button>
+                            );
+                            await window.api.tables
+                              .setOpen(
+                                selectedTable.area,
+                                selectedTable.label,
+                                true,
+                              )
+                              .catch(() => {});
+                          } catch (e: any) {
+                            const raw = String(e?.message || e || '').trim();
+                            const m = raw.match(
+                              /Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s,
+                            );
+                            const detail = (m ? m[1] : raw).trim();
+                            const status = Number(e?.status || 0);
+                            const isAuth = status === 401;
+                            const isAbort =
+                              String(e?.name || '') === 'AbortError';
+                            const isType = e instanceof TypeError;
+                            const title = isAuth
+                              ? t('order.toastSendBlockedSignedOut')
+                              : isAbort
+                                ? t('order.toastSendTimedOut')
+                                : isType
+                                  ? t('order.toastCantReachHost')
+                                  : t('order.toastSendFailed');
+                            toast.error(detail || t('order.toastTryAgain'), {
+                              title,
+                            });
+                            if (typeof console !== 'undefined')
+                              console.warn('[print/ticket] failed:', e);
+                          } finally {
+                            setBusyAction(null);
+                          }
+                        }}
+                        type="button"
+                      >
+                        {busyAction === 'send'
+                          ? t('order.sendingOrder')
+                          : lines.some((l) => l.staged)
+                            ? t('order.sendOrder')
+                            : t('order.printTicket')}
+                      </button>
+                    ) : null}
                     <button
-                      className="flex-1 pos-btn-primary py-2 cursor-pointer disabled:cursor-not-allowed"
+                      className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center pos-btn-primary cursor-pointer disabled:cursor-not-allowed"
                       disabled={
                         !canPay ||
                         busyAction != null ||
                         !connectionOk ||
-                        ticketSyncing
+                        ticketSyncing ||
+                        billUnknown
                       }
                       title={
-                        !selectedTable
-                          ? t('order.selectTable')
-                          : activeLines.length === 0
-                            ? t('order.addItems')
-                            : !isTableOpen
-                              ? t('order.sendAndGuests')
-                              : hasUnsentItems
-                                ? t('order.sendBeforePay')
-                                : typeof coversKnown !== 'number' ||
-                                    coversKnown <= 0
-                                  ? t('order.setGuestsBeforePay')
-                                  : !connectionOk
-                                    ? t('order.networkWaitPay')
-                                    : t('order.pay')
+                        billUnknown
+                          ? t('order.billUnreadableHint')
+                          : !hasTables
+                            ? activeLines.length === 0
+                              ? t('order.addItems')
+                              : !connectionOk
+                                ? t('order.networkWaitPay')
+                                : t('order.pay')
+                            : !selectedTable
+                              ? t('order.selectTable')
+                              : activeLines.length === 0
+                                ? t('order.addItems')
+                                : !isTableOpen
+                                  ? t('order.sendAndGuests')
+                                  : hasUnsentItems
+                                    ? t('order.sendBeforePay')
+                                    : typeof coversKnown !== 'number' ||
+                                        coversKnown <= 0
+                                      ? t('order.setGuestsBeforePay')
+                                      : !connectionOk
+                                        ? t('order.networkWaitPay')
+                                        : t('order.pay')
                       }
                       onClick={async () => {
                         if (busyAction != null) return;
                         if (!selectedTable) {
+                          if (!hasTables) {
+                            ensureStoreCounterSelected({
+                              hasTables,
+                              userId: user?.id,
+                              selectedTable,
+                              setSelectedTable,
+                            });
+                            return;
+                          }
                           setPendingAction('pay');
                           navigate('/app/tables');
                           return;
@@ -2565,6 +3317,7 @@ export default function OrderPage() {
                           toast.warn(t('order.networkSlow'));
                           return;
                         }
+                        await ensureStoreTillOpen();
                         // Open payment modal (choose method + amount + print)
                         setPaymentMethod('CASH');
                         setDiscountType('NONE');
@@ -2588,6 +3341,12 @@ export default function OrderPage() {
                           ),
                         );
                         setPrintReceipt(true);
+                        if (addMode === 'seat') {
+                          const ids = unpaidSeatIds(seats, lines);
+                          setPaySeatId(ids[0] ?? null);
+                        } else {
+                          setPaySeatId(null);
+                        }
                         setShowPayment(true);
                       }}
                       type="button"
@@ -2608,7 +3367,18 @@ export default function OrderPage() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 overflow-hidden p-3 sm:p-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-full sm:w-[92vw] max-w-6xl p-4 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] relative">
             <div className="flex items-center justify-between mb-3 shrink-0">
-              <div className="text-lg font-semibold">{t('order.payment')}</div>
+              <div>
+                <div className="text-lg font-semibold">
+                  {t('order.payment')}
+                </div>
+                {addMode === 'seat' ? (
+                  <div className="text-sm text-[var(--pos-accent)]">
+                    {payingSeatName
+                      ? t('order.payingSeat', { label: payingSeatName })
+                      : t('order.paymentBySeat')}
+                  </div>
+                ) : null}
+              </div>
               <button
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={busyAction === 'pay'}
@@ -2641,32 +3411,97 @@ export default function OrderPage() {
               </div>
             )}
 
+            {addMode === 'seat' ? (
+              <div className="shrink-0 mb-3">
+                <div className="text-sm font-medium mb-1.5">
+                  {t('order.selectGuestsPayment')}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {seatPayRows.map((row) => {
+                    const active = paySeatId === row.id;
+                    return (
+                      <button
+                        key={row.id}
+                        type="button"
+                        disabled={row.paid || busyAction === 'pay'}
+                        onClick={() => {
+                          setPaySeatId(row.id);
+                          setCashTendered('');
+                          setDiscountType('NONE');
+                          setDiscountValue('');
+                        }}
+                        className={`min-h-11 min-w-[7.5rem] flex-1 sm:flex-none px-3 py-2 rounded-lg border text-left ${
+                          row.paid
+                            ? 'opacity-40 cursor-not-allowed border-gray-700 bg-gray-800'
+                            : active
+                              ? 'border-[var(--pos-accent)] bg-[var(--pos-accent-soft)]'
+                              : 'border-gray-600 bg-gray-700 hover:bg-gray-600'
+                        }`}
+                      >
+                        <div className="text-sm font-semibold truncate">
+                          {row.label}
+                        </div>
+                        <div className="text-xs tabular-nums opacity-80">
+                          {row.paid
+                            ? t('order.seatPaid')
+                            : formatAmount(row.gross)}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                {unpaidSeatIds(seats, lines).length > 1 ? (
+                  <div className="text-xs opacity-70 mt-1.5">
+                    {t('order.remainingSeats', {
+                      count: unpaidSeatIds(seats, lines).length,
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
               {/* Order summary */}
               <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div>
                     <div className="text-sm opacity-80">
-                      {t('order.orderSummary')}
+                      {addMode === 'seat' && payingSeatName
+                        ? t('order.orderSummarySeat', {
+                            label: payingSeatName,
+                          })
+                        : t('order.orderSummary')}
                     </div>
-                    <div className="text-sm font-medium">
-                      {t('common.table')} {selectedTable.label}
-                    </div>
-                    <div className="text-xs opacity-70">
-                      {t('common.coversWithVal', {
-                        val:
-                          typeof coversKnown === 'number' ? coversKnown : '—',
-                      })}
-                    </div>
+                    {hasTables ? (
+                      <>
+                        <div className="text-sm font-medium">
+                          {t('common.table')} {selectedTable.label}
+                        </div>
+                        <div className="text-xs opacity-70">
+                          {t('common.coversWithVal', {
+                            val:
+                              typeof coversKnown === 'number'
+                                ? coversKnown
+                                : '—',
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm font-medium">
+                        {t('order.saleHeader', {
+                          label: selectedTable.label,
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex-1 overflow-auto space-y-1.5 min-h-0">
-                  {activeLines.length === 0 ? (
+                  {payLines.length === 0 ? (
                     <div className="text-xs opacity-60">
                       {t('common.noItems')}
                     </div>
                   ) : (
-                    activeLines.map((l) => (
+                    payLines.map((l) => (
                       <div
                         key={l.id}
                         className="flex items-start justify-between gap-2 text-sm"
@@ -2723,59 +3558,61 @@ export default function OrderPage() {
                     showRate
                   />
                 </div>
-                <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm font-medium">
-                      {t('order.splitBill')}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
-                        disabled={splitGuestCount <= 1}
-                        onClick={() =>
-                          setSplitGuestCount((n) => Math.max(1, n - 1))
-                        }
-                        aria-label="−"
-                      >
-                        −
-                      </button>
-                      <div className="min-w-[2rem] text-center font-semibold tabular-nums">
-                        {splitGuestCount}
+                {addMode !== 'seat' ? (
+                  <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-medium">
+                        {t('order.splitBill')}
                       </div>
-                      <button
-                        type="button"
-                        className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
-                        disabled={splitGuestCount >= 30}
-                        onClick={() =>
-                          setSplitGuestCount((n) => Math.min(30, n + 1))
-                        }
-                        aria-label="+"
-                      >
-                        +
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
+                          disabled={splitGuestCount <= 1}
+                          onClick={() =>
+                            setSplitGuestCount((n) => Math.max(1, n - 1))
+                          }
+                          aria-label="−"
+                        >
+                          −
+                        </button>
+                        <div className="min-w-[2rem] text-center font-semibold tabular-nums">
+                          {splitGuestCount}
+                        </div>
+                        <button
+                          type="button"
+                          className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
+                          disabled={splitGuestCount >= 30}
+                          onClick={() =>
+                            setSplitGuestCount((n) => Math.min(30, n + 1))
+                          }
+                          aria-label="+"
+                        >
+                          +
+                        </button>
+                      </div>
                     </div>
+                    {split ? (
+                      <div>
+                        <div className="text-sm font-semibold tabular-nums">
+                          {split.guests > 1 &&
+                          Math.abs(split.lastPerson - split.perPerson) > 0.001
+                            ? t('order.perPersonLast', {
+                                amount: formatAmount(split.perPerson),
+                                last: formatAmount(split.lastPerson),
+                              })
+                            : t('order.perPerson', {
+                                amount: formatAmount(split.perPerson),
+                              })}
+                        </div>
+                        <PaymentFxHint
+                          eurAmount={eurPerPerson}
+                          eurExchangeRate={eurExchangeRate}
+                        />
+                      </div>
+                    ) : null}
                   </div>
-                  {split ? (
-                    <div>
-                      <div className="text-sm font-semibold tabular-nums">
-                        {split.guests > 1 &&
-                        Math.abs(split.lastPerson - split.perPerson) > 0.001
-                          ? t('order.perPersonLast', {
-                              amount: formatAmount(split.perPerson),
-                              last: formatAmount(split.lastPerson),
-                            })
-                          : t('order.perPerson', {
-                              amount: formatAmount(split.perPerson),
-                            })}
-                      </div>
-                      <PaymentFxHint
-                        eurAmount={eurPerPerson}
-                        eurExchangeRate={eurExchangeRate}
-                      />
-                    </div>
-                  ) : null}
-                </div>
+                ) : null}
               </div>
 
               {/* Payment methods */}
@@ -3005,17 +3842,25 @@ export default function OrderPage() {
                   </div>
                   <button
                     className="pos-btn-primary w-full py-4 text-[15px] disabled:cursor-not-allowed"
-                    disabled={busyAction != null || !connectionOk}
+                    disabled={
+                      busyAction != null ||
+                      !connectionOk ||
+                      payLines.length === 0
+                    }
                     onClick={async () => {
                       if (busyAction != null) return;
                       if (!connectionOk) return;
                       setBusyAction('pay');
+                      await ensureStoreTillOpen();
                       // Close the table only after the host accepted the
                       // payment. Fiscal refusals and "could not reach till"
                       // keep the sitting open. The host also closes the
                       // table as part of a successful PAYMENT so two
                       // waiters cannot fiscalize the same sitting.
                       let paymentAccepted = false;
+                      let closeTableAfterPay = true;
+                      let paidLineIds: string[] = [];
+                      let paidSeatLabel: string | undefined;
                       try {
                         const needsDiscountApproval =
                           approvalsCfg.requireManagerPinForDiscount &&
@@ -3046,7 +3891,7 @@ export default function OrderPage() {
                         const lastCovers = await window.api.covers
                           .getLast(selectedTable.area, selectedTable.label)
                           .catch(() => null);
-                        const items = activeLines.map((l) => ({
+                        const items = payLines.map((l) => ({
                           sku: l.sku,
                           name: l.name,
                           qty: l.qty,
@@ -3056,7 +3901,26 @@ export default function OrderPage() {
                           station: (l as any).station,
                           categoryId: (l as any).categoryId,
                           categoryName: (l as any).categoryName,
+                          courseId: (l as any).courseId || null,
+                          seatId: (l as any).seatId || null,
                         }));
+                        const payingIds = payLines.map((l) => l.id);
+                        const closeTable =
+                          addMode !== 'seat' ||
+                          shouldCloseTableAfterSeatPay(lines, payingIds);
+                        closeTableAfterPay = closeTable;
+                        paidLineIds = payingIds;
+                        const payingSeatLabel =
+                          addMode === 'seat' && paySeatId
+                            ? seatLabel(
+                                seats,
+                                paySeatId,
+                                t('order.seatN', {
+                                  n: seatNumber(seats, paySeatId) || 1,
+                                }),
+                              )
+                            : undefined;
+                        paidSeatLabel = payingSeatLabel;
                         const paymentIdempotencyKey = newIdempotencyKey();
                         // Process the payment + receipt synchronously so
                         // the user sees a real "Processing…" state. The
@@ -3081,7 +3945,7 @@ export default function OrderPage() {
                               tableLabel: selectedTable.label,
                               covers: lastCovers ?? null,
                               items,
-                              note: orderNote || null,
+                              note: hasTables ? orderNote || null : null,
                               userName: user?.displayName || undefined,
                               recordOnly: !printReceipt,
                               idempotencyKey: paymentIdempotencyKey,
@@ -3119,6 +3983,9 @@ export default function OrderPage() {
                                   managerApprovedBy?.userId ?? null,
                                 managerApprovedByName:
                                   managerApprovedBy?.userName ?? null,
+                                closeTable,
+                                seatLabel: payingSeatLabel,
+                                seatId: paySeatId || undefined,
                               },
                             },
                           );
@@ -3154,30 +4021,67 @@ export default function OrderPage() {
                         // Close only when the host accepted the sale (or
                         // another waiter already settled this sitting).
                         if (paymentAccepted) {
-                          setOpen(
-                            selectedTable.area,
-                            selectedTable.label,
-                            false,
-                          );
-                          invalidateFloorCache();
-                          try {
-                            await tryOrQueue(
-                              'tables.setOpen',
-                              {
-                                area: selectedTable.area,
-                                label: selectedTable.label,
-                                open: false,
-                              },
-                              {
-                                dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                              },
-                            );
-                          } catch {
-                            // queued or transient — loop will replay
+                          if (paidLineIds.length) {
+                            markLinesAsPaid(paidLineIds);
                           }
-                          clear();
-                          setOrderNote('');
-                          setShowPayment(false);
+                          if (user?.id && addMode === 'seat') {
+                            const snapshot = useTicketStore
+                              .getState()
+                              .lines.map((l) => toTicketLogLine(l));
+                            await logTicket({
+                              userId: user.id,
+                              area: selectedTable.area,
+                              tableLabel: selectedTable.label,
+                              covers:
+                                typeof coversKnown === 'number'
+                                  ? coversKnown
+                                  : null,
+                              items: snapshot,
+                              note: orderNote || undefined,
+                              stockConsumeLines: [],
+                              kdsFireItems: [],
+                            }).catch(() => {});
+                          }
+                          if (closeTableAfterPay) {
+                            setOpen(
+                              selectedTable.area,
+                              selectedTable.label,
+                              false,
+                            );
+                            invalidateFloorCache();
+                            try {
+                              await tryOrQueue(
+                                'tables.setOpen',
+                                {
+                                  area: selectedTable.area,
+                                  label: selectedTable.label,
+                                  open: false,
+                                },
+                                {
+                                  dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                                },
+                              );
+                            } catch {
+                              // queued or transient — loop will replay
+                            }
+                            clear();
+                            setOrderNote('');
+                            setShowPayment(false);
+                          } else {
+                            const nextIds = unpaidSeatIds(
+                              useTicketStore.getState().seats,
+                              useTicketStore.getState().lines,
+                            );
+                            setPaySeatId(nextIds[0] ?? null);
+                            setCashTendered('');
+                            setDiscountType('NONE');
+                            setDiscountValue('');
+                            toast.success(
+                              t('order.seatPaidToast', {
+                                label: paidSeatLabel || t('order.addMode.seat'),
+                              }),
+                            );
+                          }
                         }
                         setBusyAction(null);
                       }
@@ -3198,9 +4102,14 @@ export default function OrderPage() {
                     ) : (
                       <span className="flex flex-col items-center leading-tight">
                         <span>
-                          {t('order.payWithTotal', {
-                            amount: formatAmount(totalDue),
-                          })}
+                          {addMode === 'seat' && payingSeatName
+                            ? t('order.paySeatWithTotal', {
+                                label: payingSeatName,
+                                amount: formatAmount(totalDue),
+                              })
+                            : t('order.payWithTotal', {
+                                amount: formatAmount(totalDue),
+                              })}
                         </span>
                         {eurDue != null ? (
                           <span className="text-xs font-medium opacity-90">
@@ -3668,117 +4577,13 @@ export default function OrderPage() {
                     setCoversKnown(num);
                     setOpen(selectedTable.area, selectedTable.label, true);
                     setShowCovers(false);
-                    const stagedOnly = lines.filter((l) => l.staged);
-                    const isFireOrder = stagedOnly.length > 0;
-                    const details = {
-                      table: selectedTable.label,
-                      area: selectedTable.area,
-                      covers: num,
-                      orderNote,
-                      lines: lines.map((l) => ({
-                        sku: l.sku,
-                        name: l.name,
-                        qty: l.qty,
-                        unitPrice: l.unitPrice,
-                        vatRate: l.vatRate,
-                        note: l.note,
-                        station: (l as any).station,
-                        categoryId: (l as any).categoryId,
-                        categoryName: (l as any).categoryName,
-                      })),
-                    };
-                    const printLines = isFireOrder
-                      ? stagedOnly.map((l) => ({
-                          sku: l.sku,
-                          name: l.name,
-                          qty: l.qty,
-                          unitPrice: l.unitPrice,
-                          vatRate: l.vatRate,
-                          note: l.note,
-                          station: (l as any).station,
-                          categoryId: (l as any).categoryId,
-                          categoryName: (l as any).categoryName,
-                        }))
-                      : details.lines;
                     if (!user?.id) return;
-                    if (isFireOrder) {
-                      const logResult = await logTicket({
-                        userId: user.id,
-                        area: selectedTable.area,
-                        tableLabel: selectedTable.label,
-                        covers: num,
-                        items: details.lines,
-                        note: orderNote,
-                        stockConsumeLines: stagedOnly.map((l) => ({
-                          sku: l.sku,
-                          qty: l.qty,
-                        })),
-                        // Kitchen stations (KDS + printers) only when the
-                        // toggle is on; the ticket is always logged above.
-                        kdsFireItems: printStationTickets
-                          ? printLines
-                          : undefined,
-                      });
-                      if (!logResult.ok) {
-                        // Same recovery path as the regular Send button:
-                        // somebody else closed / claimed this table while
-                        // this device was on the covers modal. Toast,
-                        // resync the open-tables map, and bail before the
-                        // print fires (which would otherwise create a
-                        // ghost kitchen ticket).
-                        toast.error(logResult.error, {
-                          title: t('order.toastSendBlocked'),
-                        });
-                        try {
-                          const open = await window.api.tables.listOpen();
-                          if (Array.isArray(open)) {
-                            const stillOpen = open.some(
-                              (tbl: any) =>
-                                tbl.area === selectedTable.area &&
-                                tbl.label === selectedTable.label,
-                            );
-                            setOpen(
-                              selectedTable.area,
-                              selectedTable.label,
-                              stillOpen,
-                            );
-                          }
-                        } catch {
-                          // ignore
-                        }
-                        return;
-                      }
-                      useTicketStore.getState().markAllAsSent();
-                    }
-                    if (printStationTickets) {
-                      await printTicket({
-                        area: selectedTable.area,
-                        tableLabel: selectedTable.label,
-                        covers: num,
-                        items: printLines,
-                        note: orderNote,
-                        userName: user.displayName,
-                        meta: {
-                          userId: user.id,
-                          kind: isFireOrder ? 'ORDER' : 'TICKET',
-                          vatEnabled,
-                          serviceChargeEnabled: serviceChargeCfg.enabled,
-                          serviceChargeApplied: serviceChargeCfg.enabled,
-                          serviceChargeMode: serviceChargeCfg.mode,
-                          serviceChargeValue: serviceChargeCfg.value,
-                          serviceChargeAmount: serviceChargeCfg.enabled
-                            ? serviceChargeCfg.mode === 'PERCENT'
-                              ? Math.max(
-                                  0,
-                                  (Number(totals.total || 0) *
-                                    Number(serviceChargeCfg.value || 0)) /
-                                    100,
-                                )
-                              : Math.max(0, Number(serviceChargeCfg.value || 0))
-                            : 0,
-                        },
-                      });
-                    }
+                    const fired = await runKitchenFire({
+                      covers: num,
+                      firstSend: true,
+                      printKitchen: printStationTickets,
+                    });
+                    if (!fired.ok) return;
                     // Keep this as a best-effort "ensure open" after printing.
                     await window.api.tables
                       .setOpen(selectedTable.area, selectedTable.label, true)
@@ -4055,6 +4860,12 @@ export default function OrderPage() {
                     station: (weightModal as any).station,
                     categoryId: (weightModal as any).categoryId,
                     categoryName: (weightModal as any).categoryName,
+                    courseId:
+                      addMode === 'course' &&
+                      (weightModal as any).station !== 'BAR'
+                        ? activeCourseId
+                        : null,
+                    seatId: addMode === 'seat' ? activeSeatId : null,
                   } as any);
                   setWeightModal(null);
                   setWeightInput('');
@@ -4217,31 +5028,6 @@ export default function OrderPage() {
     </div>
   );
 }
-function ForkKnifeIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M6 2v8M9 2v8M6 6h3M7.5 10v12"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M15 2v9c0 1.5 1 2 2 2v11"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M15 6h4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 function PaymentFxHint({
   eurAmount,
   eurExchangeRate,
@@ -4292,72 +5078,6 @@ function PayMethodButton({
       <span className="opacity-90">{children}</span>
       <span className="font-semibold">{label}</span>
     </button>
-  );
-}
-
-function IconCash() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="1.75" />
-      <path
-        d="M7 12h4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-function IconCard() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M3 7h18v10H3V7Z" stroke="currentColor" strokeWidth="1.75" />
-      <path d="M3 10h18" stroke="currentColor" strokeWidth="1.75" />
-      <path
-        d="M7 15h4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-function IconReceipt() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M6 2h12v20l-2-1-2 1-2-1-2 1-2-1-2 1V2Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9 7h6M9 11h6M9 15h6"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-function IconPrinter() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M6 9V3h12v6" stroke="currentColor" strokeWidth="1.75" />
-      <path d="M6 17h12v4H6v-4Z" stroke="currentColor" strokeWidth="1.75" />
-      <path
-        d="M6 10H5a3 3 0 0 0-3 3v4h4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M18 10h1a3 3 0 0 1 3 3v4h-4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }
 

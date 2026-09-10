@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { describeTicketNote } from '@shared/utils/transferNote';
 import { useSessionStore } from '../../stores/session';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { receiptLocationTitle, receiptStaffLine } from './reportsReceipt';
 
 type Overview = {
   revenueTodayNet: number;
@@ -28,6 +30,7 @@ function isSameLocalCalendarDay(
 export default function ReportsPage() {
   const { t } = useTranslation();
   const { user } = useSessionStore();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [loading, setLoading] = useState<boolean>(true);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
@@ -130,8 +133,18 @@ export default function ReportsPage() {
           setTicketsApiMissing(true);
         } else {
           // We don't know which one failed (Promise.all), show the message in both panels for visibility.
-          setActiveTicketsError(msg || t('reports.failedActive'));
-          setPaidTicketsError(msg || t('reports.failedPaid'));
+          setActiveTicketsError(
+            msg ||
+              t(
+                hasTables
+                  ? 'reports.failedActive'
+                  : 'reports.failedActiveStore',
+              ),
+          );
+          setPaidTicketsError(
+            msg ||
+              t(hasTables ? 'reports.failedPaid' : 'reports.failedPaidStore'),
+          );
         }
       } finally {
         if (alive) setTicketLoading(false);
@@ -143,7 +156,7 @@ export default function ReportsPage() {
       alive = false;
       clearInterval(refreshTimer);
     };
-  }, [user?.id, paidQuery, paidLimit, ticketsApiMissing, t]);
+  }, [user?.id, paidQuery, paidLimit, ticketsApiMissing, t, hasTables]);
 
   const fmtCurrency = useMemo(
     () =>
@@ -182,7 +195,7 @@ export default function ReportsPage() {
             value={fmtCurrency.format(overview.revenueTodayVat || 0)}
           />
           <StatCard
-            title={t('reports.openOrders')}
+            title={t(hasTables ? 'reports.openOrders' : 'reports.openSales')}
             value={String(overview.openOrders)}
           />
         </div>
@@ -213,22 +226,34 @@ export default function ReportsPage() {
       {/* Tickets: fills remaining viewport; each column scrolls independently on lg+ */}
       {user && (
         <section className="flex min-h-0 flex-1 flex-col">
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-3 lg:grid-rows-1 lg:items-stretch [&>*]:min-h-0 lg:[&>*]:max-h-full">
-            <div className="flex min-h-[min(28rem,45vh)] flex-col pos-card lg:min-h-0">
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto overscroll-contain lg:grid-cols-3 lg:grid-rows-1 lg:items-stretch lg:overflow-hidden [&>*]:min-h-0 lg:[&>*]:max-h-full">
+            <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">{t('reports.activeTickets')}</div>
+                <div className="font-medium">
+                  {t(
+                    hasTables ? 'reports.activeTickets' : 'reports.activeSales',
+                  )}
+                </div>
                 <div className="text-xs opacity-70">{activeTickets.length}</div>
               </div>
               {activeTicketsError && (
                 <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
-                  {t('reports.activeTicketsError')}{' '}
+                  {t(
+                    hasTables
+                      ? 'reports.activeTicketsError'
+                      : 'reports.activeSalesError',
+                  )}{' '}
                   <span className="font-semibold">{activeTicketsError}</span>
                 </div>
               )}
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
                 {activeTickets.length === 0 ? (
                   <div className="text-sm opacity-70">
-                    {t('reports.noActiveTickets')}
+                    {t(
+                      hasTables
+                        ? 'reports.noActiveTickets'
+                        : 'reports.noActiveSales',
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -237,6 +262,7 @@ export default function ReportsPage() {
                         key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
                         ticket={rec}
                         fmtCurrency={fmtCurrency}
+                        hasTables={hasTables}
                       />
                     ))}
                   </div>
@@ -244,26 +270,38 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            <div className="flex min-h-[min(28rem,45vh)] flex-col pos-card lg:min-h-0">
+            <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">{t('reports.paidToday')}</div>
+                <div className="font-medium">
+                  {t(
+                    hasTables ? 'reports.paidToday' : 'reports.paidSalesToday',
+                  )}
+                </div>
                 <div className="text-xs opacity-70">{paidTickets.length}</div>
               </div>
               {paidTicketsError && (
                 <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
-                  {t('reports.paidTicketsError')}{' '}
+                  {t(
+                    hasTables
+                      ? 'reports.paidTicketsError'
+                      : 'reports.paidSalesError',
+                  )}{' '}
                   <span className="font-semibold">{paidTicketsError}</span>
                 </div>
               )}
               <div className="mb-3 flex shrink-0 items-center gap-2">
                 <input
-                  className="flex-1 rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm"
-                  placeholder={t('reports.searchPlaceholder')}
+                  className="pos-input min-w-0 flex-1"
+                  placeholder={t(
+                    hasTables
+                      ? 'reports.searchPlaceholder'
+                      : 'reports.searchPlaceholderStore',
+                  )}
                   value={paidQuery}
                   onChange={(e) => setPaidQuery(e.target.value)}
                 />
                 <select
-                  className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm"
+                  className="pos-input w-auto shrink-0"
                   value={String(paidLimit)}
                   onChange={(e) => setPaidLimit(Number(e.target.value))}
                 >
@@ -276,7 +314,11 @@ export default function ReportsPage() {
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
                 {paidTickets.length === 0 ? (
                   <div className="text-sm opacity-70">
-                    {t('reports.noPaidToday')}
+                    {t(
+                      hasTables
+                        ? 'reports.noPaidToday'
+                        : 'reports.noPaidSalesToday',
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -285,6 +327,7 @@ export default function ReportsPage() {
                         key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
                         ticket={rec}
                         fmtCurrency={fmtCurrency}
+                        hasTables={hasTables}
                       />
                     ))}
                   </div>
@@ -292,9 +335,15 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            <div className="flex min-h-[min(28rem,45vh)] flex-col pos-card lg:min-h-0">
+            <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">{t('reports.voidedToday')}</div>
+                <div className="font-medium">
+                  {t(
+                    hasTables
+                      ? 'reports.voidedToday'
+                      : 'reports.voidedSalesToday',
+                  )}
+                </div>
                 <div className="text-xs opacity-70">{voidedTickets.length}</div>
               </div>
               {voidedTicketsError && (
@@ -314,6 +363,7 @@ export default function ReportsPage() {
                         key={`void-${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
                         ticket={rec}
                         fmtCurrency={fmtCurrency}
+                        hasTables={hasTables}
                       />
                     ))}
                   </div>
@@ -323,6 +373,31 @@ export default function ReportsPage() {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+function TicketNoteLines({
+  note,
+  hasTables,
+}: {
+  note: string;
+  hasTables: boolean;
+}) {
+  const { t } = useTranslation();
+  const { history, userNote } = describeTicketNote(note);
+  const lines = hasTables ? history : [];
+  if (lines.length === 0 && !userNote) return null;
+  return (
+    <div className="text-xs mb-2 space-y-0.5">
+      {lines.map((line, i) => (
+        <div key={`${line}-${i}`}>{line}</div>
+      ))}
+      {userNote ? (
+        <div>
+          <span className="font-semibold">{t('common.note')}:</span> {userNote}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -341,9 +416,11 @@ function StatCard({ title, value }: { title: string; value: string }) {
 function ReceiptCard({
   ticket,
   fmtCurrency,
+  hasTables,
 }: {
   ticket: any;
   fmtCurrency: Intl.NumberFormat;
+  hasTables: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<boolean>(false);
@@ -356,7 +433,9 @@ function ReceiptCard({
       : `${when ? when.toLocaleString() : ''}`;
   const serviceChargeAmount = Number(ticket?.serviceChargeAmount || 0);
   const hasServiceCharge =
-    Number.isFinite(serviceChargeAmount) && serviceChargeAmount > 0;
+    hasTables &&
+    Number.isFinite(serviceChargeAmount) &&
+    serviceChargeAmount > 0;
   const discountAmount = Number(ticket?.discountAmount || 0);
   const hasDiscount = Number.isFinite(discountAmount) && discountAmount > 0;
   const discountLabel = (() => {
@@ -382,21 +461,14 @@ function ReceiptCard({
       >
         <div>
           <div className="font-semibold text-sm">
-            {ticket?.area ? `${ticket.area} • ` : ''}
-            {t('reports.receiptTable', {
-              label: String(ticket?.tableLabel ?? ''),
-            })}
+            {receiptLocationTitle(t, hasTables, ticket)}
             <span className="ml-2 text-xs font-normal text-gray-600">
               {ticket?.kind === 'PAID' ? t('common.paid') : t('common.active')}
             </span>
           </div>
           <div className="text-xs text-gray-600">
-            {ticket?.userName
-              ? t('common.waiterWithName', {
-                  name: String(ticket.userName),
-                })
-              : `${t('common.waiter')}: —`}
-            {ticket?.covers != null
+            {receiptStaffLine(t, hasTables, ticket?.userName)}
+            {hasTables && ticket?.covers != null
               ? ` • ${t('common.covers')}: ${ticket.covers}`
               : ''}
           </div>
@@ -409,26 +481,7 @@ function ReceiptCard({
       {open && (
         <div className="px-3 py-2 font-mono">
           {ticket?.note ? (
-            <div className="text-xs mb-2 space-y-0.5">
-              {(() => {
-                const { history, userNote } = describeTicketNote(ticket.note);
-                return (
-                  <>
-                    {history.map((line, i) => (
-                      <div key={`${line}-${i}`}>{line}</div>
-                    ))}
-                    {userNote ? (
-                      <div>
-                        <span className="font-semibold">
-                          {t('common.note')}:
-                        </span>{' '}
-                        {userNote}
-                      </div>
-                    ) : null}
-                  </>
-                );
-              })()}
-            </div>
+            <TicketNoteLines note={String(ticket.note)} hasTables={hasTables} />
           ) : null}
 
           <div className="border-t border-gray-200 pt-2">
@@ -527,9 +580,11 @@ function ReceiptCard({
 function VoidedReceiptCard({
   ticket,
   fmtCurrency,
+  hasTables,
 }: {
   ticket: any;
   fmtCurrency: Intl.NumberFormat;
+  hasTables: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<boolean>(false);
@@ -546,10 +601,7 @@ function VoidedReceiptCard({
       >
         <div>
           <div className="font-semibold text-sm flex items-center gap-2">
-            {ticket?.area ? `${ticket.area} • ` : ''}
-            {t('reports.receiptTable', {
-              label: String(ticket?.tableLabel ?? ''),
-            })}
+            {receiptLocationTitle(t, hasTables, ticket)}
             <span
               className={`text-xs font-normal px-2 py-0.5 rounded ${isFullVoid ? 'bg-rose-700/60 text-rose-100' : 'bg-amber-700/60 text-amber-100'}`}
             >
@@ -561,12 +613,8 @@ function VoidedReceiptCard({
             </span>
           </div>
           <div className="text-xs text-gray-400">
-            {ticket?.userName
-              ? t('common.waiterWithName', {
-                  name: String(ticket.userName),
-                })
-              : `${t('common.waiter')}: —`}
-            {ticket?.covers != null
+            {receiptStaffLine(t, hasTables, ticket?.userName)}
+            {hasTables && ticket?.covers != null
               ? ` • ${t('common.covers')}: ${ticket.covers}`
               : ''}
           </div>
@@ -579,26 +627,7 @@ function VoidedReceiptCard({
       {open && (
         <div className="px-3 py-2 font-mono">
           {ticket?.note ? (
-            <div className="text-xs mb-2 space-y-0.5">
-              {(() => {
-                const { history, userNote } = describeTicketNote(ticket.note);
-                return (
-                  <>
-                    {history.map((line, i) => (
-                      <div key={`${line}-${i}`}>{line}</div>
-                    ))}
-                    {userNote ? (
-                      <div>
-                        <span className="font-semibold">
-                          {t('common.note')}:
-                        </span>{' '}
-                        {userNote}
-                      </div>
-                    ) : null}
-                  </>
-                );
-              })()}
-            </div>
+            <TicketNoteLines note={String(ticket.note)} hasTables={hasTables} />
           ) : null}
 
           <div className="border-t border-rose-800/40 pt-2">

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatSaleLocation } from '@shared/editionCapabilities';
+import { useLicenseCapabilities } from '../stores/licenseCapabilities';
+import { IconClose } from './icons';
 import {
   type FailedSyncItem,
   type OfflineOp,
@@ -21,8 +24,8 @@ const OP_LABEL_KEY: Record<OfflineOp, string> = {
   'covers.save': 'failedSync.opCoversSave',
 };
 
-/** Best-effort "Main Hall · T4" style descriptor from the op args. */
-function describeTarget(item: FailedSyncItem): string {
+/** Best-effort "Main Hall · T4" / "Till 3" descriptor from the op args. */
+function describeTarget(item: FailedSyncItem, diningFloor: boolean): string {
   const a = (item.args || {}) as Record<string, unknown>;
   const area = a.area ? String(a.area) : '';
   const label = a.tableLabel
@@ -30,11 +33,17 @@ function describeTarget(item: FailedSyncItem): string {
     : a.label
       ? String(a.label)
       : '';
-  return [area, label].filter(Boolean).join(' · ');
+  if (!area && !label) return '';
+  return formatSaleLocation({
+    diningFloor,
+    area,
+    tableLabel: label,
+  });
 }
 
 export function FailedSyncPanel() {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [items, setItems] = useState<FailedSyncItem[]>([]);
   const [open, setOpen] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -105,7 +114,10 @@ export function FailedSyncPanel() {
     <>
       <button
         type="button"
-        className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[9998] max-w-[92vw] rounded-full border border-rose-700 bg-rose-900/90 px-4 py-2 text-xs sm:text-sm text-rose-50 shadow-lg backdrop-blur hover:bg-rose-800/90"
+        className="fixed left-1/2 z-[9998] max-w-[92vw] -translate-x-1/2 rounded-full border border-rose-700 bg-rose-900/90 px-4 py-2 text-xs text-rose-50 shadow-lg backdrop-blur hover:bg-rose-800/90 sm:text-sm"
+        style={{
+          bottom: 'calc(0.75rem + var(--pos-mobile-tab-h, 0px))',
+        }}
         onClick={() => setOpen(true)}
       >
         <span className="font-semibold">
@@ -135,19 +147,7 @@ export function FailedSyncPanel() {
                 onClick={() => setOpen(false)}
                 aria-label={t('common.close')}
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  className="pos-icon"
-                >
-                  <path
-                    d="M6 6l12 12M18 6 6 18"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                  />
-                </svg>
+                <IconClose />
               </button>
             </div>
 
@@ -159,10 +159,16 @@ export function FailedSyncPanel() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium text-sm">
-                      {t(OP_LABEL_KEY[it.op] || 'failedSync.opUnknown')}
-                      {describeTarget(it) && (
+                      {t(
+                        !hasTables && it.op === 'tables.setOpen'
+                          ? 'failedSync.opTillOpen'
+                          : !hasTables && it.op === 'covers.save'
+                            ? 'failedSync.opSaleOpen'
+                            : OP_LABEL_KEY[it.op] || 'failedSync.opUnknown',
+                      )}
+                      {describeTarget(it, hasTables) && (
                         <span className="ml-2 text-gray-400 font-normal">
-                          {describeTarget(it)}
+                          {describeTarget(it, hasTables)}
                         </span>
                       )}
                     </div>

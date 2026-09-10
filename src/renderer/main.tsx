@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createHashRouter } from 'react-router-dom';
 import { routes } from './routes';
@@ -10,23 +10,24 @@ import { useReservationSessionStore } from './stores/reservationSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from './components/Toaster';
 import { UpdateNotification } from './components/UpdateNotification';
-import { PosHostPicker } from './app/components/PosHostPicker';
-import { discoverPosHostsInBrowser } from './utils/discoverPosHosts';
-import type { DiscoveredPosHost } from '@shared/posHostDiscovery';
+import {
+  PosServerScanHost,
+  PosServerScanPanel,
+} from './app/components/PosServerScan';
 import { initMobileShell } from './utils/mobileShell';
 import { resumeMainProcessSession } from './utils/resumeSession';
 import './i18n/config';
 import { I18nextProvider, useTranslation } from 'react-i18next';
 import i18n from './i18n/config';
 import { LocaleSync } from './i18n/LocaleSync';
+import { ThemeSync } from './i18n/ThemeSync';
+import { bootPosUiTheme } from './theme';
 import LicenseGate from './app/components/LicenseGate';
 import { BrandMark } from './components/BrandMark';
 import {
   getHttpBase,
   getHttpsBase,
-  persistKdsBackendHost,
   resolveBackendHost,
-  syncBackendHostToLocalStorage,
 } from './utils/backendHost';
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import {
@@ -45,6 +46,7 @@ import {
   invalidateFloorCache,
   invalidateFloorSnapshots,
   invalidateTicketCache,
+  emitPosSyncCatchup,
 } from './utils/posReadCache';
 import { clearInflight, dedupe } from './utils/swrCache';
 import {
@@ -54,10 +56,54 @@ import {
   shouldForceLogoutOn401,
   writeLanToken,
 } from './utils/lanAuthToken';
-import { SHIFT_GUARD_GRACE_MS } from './stores/sessionPersist';
+import {
+  SHIFT_GUARD_GRACE_MS,
+  isPersistedSessionExpired,
+  sessionShellFromHash,
+} from './stores/sessionPersist';
+import {
+  HOST_VERSION_STORAGE_KEY,
+  isHostRendererHref,
+  planHostVersionSync,
+} from './utils/hostVersionSync';
+
+async function syncTabletToHostVersion(): Promise<void> {
+  const ping = (window as any).api?.health?.ping;
+  if (typeof ping !== 'function') return;
+  try {
+    const h = await ping();
+    const next = String(h?.appVersion || '').trim();
+    if (!next) return;
+    let previous: string | null = null;
+    try {
+      previous = localStorage.getItem(HOST_VERSION_STORAGE_KEY);
+    } catch {
+      previous = null;
+    }
+    const plan = planHostVersionSync({
+      previous,
+      next,
+      servedFromHostRenderer: isHostRendererHref(
+        String(window.location.href || ''),
+      ),
+    });
+    if (plan.persist) {
+      try {
+        localStorage.setItem(HOST_VERSION_STORAGE_KEY, next);
+      } catch {
+        // ignore
+      }
+    }
+    if (plan.invalidate) emitPosSyncCatchup();
+    if (plan.reload) window.location.reload();
+  } catch {
+    // host unreachable — next visibility / SSE open retries
+  }
+}
 // PWA registration disabled for desktop build
 
 void initMobileShell();
+if (!(window as any).__KDS_APP__) bootPosUiTheme();
 
 // Initialize Sentry in renderer (if available via Electron preload)
 // @sentry/electron automatically sets up renderer instrumentation when initialized in main process,
@@ -340,6 +386,10 @@ if (!(window as any).api) {
         lastSseEventAt = Date.now();
         sseBackoffMs = 1000;
         markSseOpen(true);
+        // Android/iOS drop EventSource while backgrounded; missed voids and
+        // table closes never replay. Refetch as soon as the socket is back.
+        emitPosSyncCatchup();
+        void syncTabletToHostVersion();
       });
 
       es.addEventListener('error', () => {
@@ -482,7 +532,11 @@ if (!(window as any).api) {
     // fresh SSE handshake so backgrounded tablets catch up the moment the
     // user looks at the panel again.
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') ensureSse();
+      if (document.visibilityState === 'visible') {
+        ensureSse();
+        emitPosSyncCatchup();
+        void syncTabletToHostVersion();
+      }
     });
     window.addEventListener('focus', () => ensureSse());
     window.addEventListener('online', () => ensureSse());
@@ -1063,6 +1117,10 @@ if (!(window as any).api) {
         if (input?.cooker) q.set('cooker', '1');
         return await goLan(`/kds/tickets?${q.toString()}`);
       },
+      async listFloorOrders() {
+        const rows = await goLan('/kds/floor-orders');
+        return Array.isArray(rows) ? rows : [];
+      },
       async bump(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();
         const ticketId = Number(input?.ticketId || 0);
@@ -1345,358 +1403,43 @@ function sleep(ms: number) {
 function BootScreen({
   message,
   detail,
-  canRetry,
-  onRetry,
+  showScan,
 }: {
   message: string;
   detail?: string;
-  canRetry?: boolean;
-  onRetry?: () => void;
+  showScan?: boolean;
 }) {
-  const { t } = useTranslation();
-  const isBrowser =
-    typeof window !== 'undefined' &&
-    Boolean((window as any).__BROWSER_CLIENT__);
-  const isKdsApp =
-    typeof window !== 'undefined' && Boolean((window as any).__KDS_APP__);
-  const showLanSetup = isBrowser || isKdsApp;
-  const [showSetup, setShowSetup] = useState(false);
-  const [setupNonce, setSetupNonce] = useState(0);
-  const backend = useMemo(() => resolveBackendHost(), [setupNonce]);
-
-  useEffect(() => {
-    if (canRetry && showLanSetup) setShowSetup(true);
-  }, [canRetry, showLanSetup]);
   return (
     <div className="min-h-screen flex items-center justify-center pos-app pos-app--auth text-gray-100 px-6">
       <div className="flex flex-col items-center gap-5 w-full max-w-md">
         <BrandMark size="lg" />
-        <svg
-          className="pos-spinner"
-          xmlns="http://www.w3.org/2000/svg"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          />
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-          />
-        </svg>
-        <div className="text-sm text-gray-300 text-center">{message}</div>
-        {detail && (
-          <div className="text-xs text-gray-500 text-center">{detail}</div>
-        )}
-        {showLanSetup && (
-          <div className="text-xs text-gray-500 text-center">
-            {t('boot.backendLabel')}
-            <span className="font-mono">
-              {backend.host}:{backend.httpPort}
-            </span>
-          </div>
-        )}
-        {(canRetry || showLanSetup) && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 justify-center">
-            {canRetry && onRetry && (
-              <button className="pos-btn text-sm" onClick={onRetry}>
-                {t('common.retry')}
-              </button>
-            )}
-            {showLanSetup && (
-              <button
-                className="pos-btn-primary text-sm"
-                onClick={() => {
-                  if (isKdsApp) {
-                    try {
-                      window.location.hash = '#/kds-setup';
-                    } catch {
-                      setShowSetup(true);
-                    }
-                    return;
-                  }
-                  setShowSetup(true);
-                }}
-                type="button"
-              >
-                {t('boot.configureServer')}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-      {showSetup && (
-        <BackendSetupModal
-          initial={backend}
-          onClose={() => setShowSetup(false)}
-          onSaved={() => {
-            // Reload so api.ts / goLan picks up the new host. This is the
-            // simplest correct path — nothing in the renderer caches the
-            // backend across config changes.
-            try {
-              setSetupNonce((n) => n + 1);
-              window.location.reload();
-            } catch {
-              // ignore
-            }
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-// Lightweight first-run / recovery panel for waiter phones.
-// Lets the user set the LAN host of the POS computer (and optional ports)
-// without having to rebuild the app or know URL params.
-function BackendSetupModal({
-  initial,
-  onClose,
-  onSaved,
-}: {
-  initial: { host: string; httpPort: string; httpsPort: string };
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const { t } = useTranslation();
-  const [host, setHost] = useState(initial.host);
-  const [httpPort, setHttpPort] = useState(initial.httpPort);
-  const [httpsPort, setHttpsPort] = useState(initial.httpsPort);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hosts, setHosts] = useState<DiscoveredPosHost[]>([]);
-  const [scanning, setScanning] = useState(false);
-  const [scanHint, setScanHint] = useState<string | null>(null);
-
-  const scan = useCallback(async () => {
-    setScanning(true);
-    setScanHint(null);
-    try {
-      const list = await discoverPosHostsInBrowser();
-      setHosts(list);
-      if (list.length === 1) {
-        setHost(list[0].host);
-        setHttpPort(String(list[0].httpPort || 3333));
-        setScanHint(t('server.foundOne', { name: list[0].name }));
-      } else if (list.length > 1) {
-        setScanHint(t('server.pickOne'));
-      } else {
-        setScanHint(t('server.noneFound'));
-      }
-    } catch (e: any) {
-      setScanHint(e?.message || t('server.noneFound'));
-    } finally {
-      setScanning(false);
-    }
-  }, [t]);
-
-  useEffect(() => {
-    void scan();
-  }, [scan]);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  function isValidHost(v: string): boolean {
-    const trimmed = v.trim();
-    if (!trimmed) return false;
-    // IPv4
-    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed)) {
-      return trimmed
-        .split('.')
-        .every((n) => Number(n) >= 0 && Number(n) <= 255);
-    }
-    // Hostname (Tailscale MagicDNS, mDNS, public domain). Conservative.
-    return /^[a-zA-Z0-9]([a-zA-Z0-9-.]*[a-zA-Z0-9])?$/.test(trimmed);
-  }
-
-  function isValidPort(v: string): boolean {
-    if (!v.trim()) return true; // empty is fine, defaults will apply
-    const n = Number(v);
-    return Number.isInteger(n) && n > 0 && n < 65536;
-  }
-
-  async function handleSave() {
-    setError(null);
-    const trimmedHost = host.trim();
-    if (!isValidHost(trimmedHost)) {
-      setError(t('server.invalidHost'));
-      return;
-    }
-    if (!isValidPort(httpPort) || !isValidPort(httpsPort)) {
-      setError(t('server.invalidPorts'));
-      return;
-    }
-    setSaving(true);
-    try {
-      const port = Number(httpPort.trim() || '3333') || 3333;
-      const isKdsApp =
-        typeof window !== 'undefined' && Boolean((window as any).__KDS_APP__);
-      if (isKdsApp) {
-        await persistKdsBackendHost({ host: trimmedHost, httpPort: port });
-        return;
-      }
-      syncBackendHostToLocalStorage({
-        host: trimmedHost,
-        httpPort: httpPort.trim() || '3333',
-        httpsPort: httpsPort.trim() || '3443',
-      });
-      onSaved();
-    } catch (e: any) {
-      setError(e?.message || t('server.saveFailed'));
-      setSaving(false);
-    }
-  }
-
-  function handleClear() {
-    try {
-      localStorage.removeItem('pos_backend_host');
-      localStorage.removeItem('pos_backend_http');
-      localStorage.removeItem('pos_backend_https');
-      onSaved();
-    } catch (e: any) {
-      setError(e?.message || t('server.clearFailed'));
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
-        onClick={onClose}
-        aria-label="Close"
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="relative w-full max-w-md pos-surface-panel overflow-hidden"
-      >
-        <div className="px-4 py-3 border-b border-white/8 flex items-center justify-between gap-3">
-          <div className="font-semibold">{t('server.title')}</div>
-          <button
-            type="button"
-            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
-            onClick={onClose}
-            aria-label="Close"
+        {!showScan ? (
+          <svg
+            className="pos-spinner"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="pos-icon"
-            >
-              <path
-                d="M6 6l12 12M18 6 6 18"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-        </div>
-        <div className="p-4 space-y-4">
-          <div className="text-xs text-gray-400">
-            {t('server.wifiHint', {
-              macCmd: 'ipconfig getifaddr en0',
-              winCmd: 'ipconfig',
-            })}
-          </div>
-          <PosHostPicker
-            hosts={hosts}
-            selectedHost={host}
-            selectedPort={httpPort}
-            scanning={scanning}
-            onSelect={(h) => {
-              setHost(h.host);
-              setHttpPort(String(h.httpPort || 3333));
-              setScanHint(null);
-            }}
-            onRescan={() => void scan()}
-            labels={{
-              title: t('server.foundTitle'),
-              scanning: t('server.scanning'),
-              empty: t('server.noneFound'),
-              rescan: t('server.rescan'),
-            }}
-          />
-          {scanHint && <div className="text-xs text-gray-300">{scanHint}</div>}
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">{t('server.hostLabel')}</div>
-            <input
-              className="pos-input font-mono"
-              placeholder={t('server.hostPlaceholder')}
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-              autoCapitalize="none"
-              autoCorrect="off"
-              autoComplete="off"
-              spellCheck={false}
-              inputMode="url"
-              autoFocus
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
             />
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block text-sm">
-              <div className="opacity-80 mb-1">{t('server.httpPort')}</div>
-              <input
-                className="pos-input font-mono"
-                placeholder="3333"
-                value={httpPort}
-                onChange={(e) =>
-                  setHttpPort(e.target.value.replace(/[^0-9]/g, ''))
-                }
-                inputMode="numeric"
-              />
-            </label>
-            <label className="block text-sm">
-              <div className="opacity-80 mb-1">{t('server.httpsPort')}</div>
-              <input
-                className="pos-input font-mono"
-                placeholder="3443"
-                value={httpsPort}
-                onChange={(e) =>
-                  setHttpsPort(e.target.value.replace(/[^0-9]/g, ''))
-                }
-                inputMode="numeric"
-              />
-            </label>
-          </div>
-          {error && <div className="text-sm text-rose-300">{error}</div>}
-          <div className="flex flex-wrap gap-2 pt-2">
-            <button
-              className="flex-1 min-w-[120px] pos-btn-primary disabled:opacity-60"
-              type="button"
-              disabled={saving}
-              onClick={() => void handleSave()}
-            >
-              {saving ? t('common.saving') : t('server.saveReload')}
-            </button>
-            <button
-              className="pos-btn"
-              type="button"
-              onClick={handleClear}
-              title={t('server.resetTitle')}
-            >
-              {t('server.reset')}
-            </button>
-            <button className="pos-btn" type="button" onClick={onClose}>
-              {t('common.cancel')}
-            </button>
-          </div>
-        </div>
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+            />
+          </svg>
+        ) : null}
+        <div className="text-sm text-gray-300 text-center">{message}</div>
+        {detail && !showScan ? (
+          <div className="text-xs text-gray-500 text-center">{detail}</div>
+        ) : null}
+        {showScan ? <PosServerScanPanel /> : null}
       </div>
     </div>
   );
@@ -1707,7 +1450,6 @@ function Root() {
   const [ready, setReady] = useState(false);
   const [msg, setMsg] = useState(() => t('boot.starting'));
   const [detail, setDetail] = useState<string | undefined>(undefined);
-  const [nonce, setNonce] = useState(0);
   const [backendUnreachable, setBackendUnreachable] = useState(false);
 
   useEffect(() => {
@@ -1715,32 +1457,29 @@ function Root() {
       const reason = ev?.detail?.reason
         ? String(ev.detail.reason)
         : t('boot.sessionExpired');
-      const h = String(window?.location?.hash || '');
-      const isAdmin = h.startsWith('#/admin');
-      const isReservations = h.startsWith('#/reservations');
-      // Clear only the session store(s) that belong to the panel the user
-      // was actually using. Without this scoping, a 401 on the reservation
-      // panel would also wipe the waiter session and dump everyone back to
-      // the staff login screen.
+      const shell = sessionShellFromHash(window?.location?.hash || '');
+      // Clear only the session store that belongs to this window. POS, Admin,
+      // and Reservations share one origin / localStorage; wiping all three
+      // here is what kicked an admin PIN login back to the login screen
+      // whenever a leftover waiter session expired.
       try {
-        if (isAdmin) {
+        if (shell === 'admin') {
           useAdminSessionStore.getState().setUser(null as any);
-        } else if (isReservations) {
+        } else if (shell === 'reservations') {
           useReservationSessionStore.getState().setUser(null as any);
         } else {
           useSessionStore.getState().setUser(null);
-          useAdminSessionStore.getState().setUser(null as any);
         }
       } catch {
         // ignore
       }
-      // Route back to the matching login screen.
       try {
-        window.location.hash = isAdmin
-          ? '#/admin'
-          : isReservations
-            ? '#/reservations'
-            : '#/';
+        window.location.hash =
+          shell === 'admin'
+            ? '#/admin'
+            : shell === 'reservations'
+              ? '#/reservations'
+              : '#/';
       } catch {
         // ignore
       }
@@ -1757,34 +1496,43 @@ function Root() {
     // Browser clients already rely on API token expiry; they will trigger pos:forceLogout on 401.
     const tick = () => {
       if (!useSessionStore.getState().hasHydrated) return;
+      const shell = sessionShellFromHash(window?.location?.hash || '');
+      const now = Date.now();
       const staff = useSessionStore.getState() as any;
       const admin = useAdminSessionStore.getState() as any;
-      const now = Date.now();
-      const staffGrace =
-        typeof staff?.authenticatedAt === 'number' &&
-        staff.authenticatedAt > 0 &&
-        now - staff.authenticatedAt < SHIFT_GUARD_GRACE_MS;
-      const staffExpired =
-        !staffGrace &&
-        staff?.user &&
-        typeof staff?.expiresAtMs === 'number' &&
-        staff.expiresAtMs > 0 &&
-        staff.expiresAtMs <= now;
-      const adminExpired =
-        admin?.user &&
-        typeof admin?.expiresAtMs === 'number' &&
-        admin.expiresAtMs > 0 &&
-        admin.expiresAtMs <= now;
-      if (staffExpired || adminExpired) {
-        try {
-          window.dispatchEvent(
-            new CustomEvent('pos:forceLogout', {
-              detail: { reason: t('boot.sessionExpired') },
-            }),
-          );
-        } catch {
-          // ignore
-        }
+      const reservations = useReservationSessionStore.getState() as any;
+      const staffGraceUntil =
+        typeof staff?.authenticatedAt === 'number' && staff.authenticatedAt > 0
+          ? staff.authenticatedAt + SHIFT_GUARD_GRACE_MS
+          : undefined;
+      const expired =
+        shell === 'admin'
+          ? isPersistedSessionExpired({
+              user: admin?.user,
+              expiresAtMs: admin?.expiresAtMs,
+              now,
+            })
+          : shell === 'reservations'
+            ? isPersistedSessionExpired({
+                user: reservations?.user,
+                expiresAtMs: reservations?.expiresAtMs,
+                now,
+              })
+            : isPersistedSessionExpired({
+                user: staff?.user,
+                expiresAtMs: staff?.expiresAtMs,
+                now,
+                graceUntilMs: staffGraceUntil,
+              });
+      if (!expired) return;
+      try {
+        window.dispatchEvent(
+          new CustomEvent('pos:forceLogout', {
+            detail: { reason: t('boot.sessionExpired') },
+          }),
+        );
+      } catch {
+        // ignore
       }
     };
     tick();
@@ -1822,10 +1570,11 @@ function Root() {
         ]).then(() => {
           if (!cancelled) offlineQueue.sync().catch(() => {});
         });
+        void syncTabletToHostVersion();
         return;
       }
-      const maxAttempts = isKdsApp ? 3 : 8;
-      // Retry with exponential backoff. This prevents random "failed fetch" errors on slow networks.
+      const maxAttempts = 2;
+      // One extra attempt, then stop so the user can Scan. No retry button.
       for (let attempt = 0; attempt < maxAttempts && !cancelled; attempt++) {
         try {
           // Android tablets (Samsung especially) often report navigator.onLine
@@ -1874,6 +1623,7 @@ function Root() {
               (window as any).api.settings.get(),
               (window as any).api.auth.listUsers(),
             ]);
+            void syncTabletToHostVersion();
           }
           if (cancelled) return;
           // Hand the main process the token from our last login so it can
@@ -1890,15 +1640,9 @@ function Root() {
           return;
         } catch (e: any) {
           void e;
-          const baseDelay = 250;
-          const delay = Math.min(5000, baseDelay * Math.pow(2, attempt));
-          setMsg(t('boot.connecting'));
-          setDetail(
-            t('boot.retryingIn', {
-              seconds: Math.round(delay / 100) / 10,
-            }),
-          );
-          await sleep(delay);
+          if (attempt + 1 < maxAttempts && !cancelled) {
+            await sleep(400);
+          }
         }
       }
       if (!cancelled) {
@@ -1920,15 +1664,18 @@ function Root() {
     return () => {
       cancelled = true;
     };
-  }, [nonce, t]);
+  }, [t]);
 
   if (!ready) {
+    const lanClient =
+      Boolean((window as any).__BROWSER_CLIENT__) ||
+      Boolean((window as any).__KDS_APP__);
+    const showScan = backendUnreachable && lanClient;
     return (
       <BootScreen
         message={msg}
-        detail={detail}
-        canRetry={backendUnreachable}
-        onRetry={() => setNonce((n) => n + 1)}
+        detail={showScan ? undefined : detail}
+        showScan={showScan}
       />
     );
   }
@@ -1944,12 +1691,15 @@ createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <I18nextProvider i18n={i18n}>
       <LocaleSync>
-        <ErrorBoundary>
-          <LicenseGate>
-            <Root />
-          </LicenseGate>
-          <Toaster />
-        </ErrorBoundary>
+        <ThemeSync>
+          <ErrorBoundary>
+            <LicenseGate>
+              <Root />
+            </LicenseGate>
+            <PosServerScanHost />
+            <Toaster />
+          </ErrorBoundary>
+        </ThemeSync>
       </LocaleSync>
     </I18nextProvider>
   </React.StrictMode>,

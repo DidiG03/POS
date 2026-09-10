@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import type { TableMergeGroup } from './tableMerge';
+import type { KdsFloorOrder } from './kdsFloorOrders';
+import { SALARY_PERIODS, type SalaryPeriod } from './staffSalary';
+
+export type { SalaryPeriod } from './staffSalary';
 
 export type { TableMergeGroup } from './tableMerge';
 
@@ -23,6 +27,8 @@ export interface UserDTO {
   role: UserRole;
   active: boolean;
   createdAt: string;
+  salaryAmount?: number | null;
+  salaryPeriod?: SalaryPeriod | null;
   /**
    * Opaque proof that this identity was established by a real PIN check,
    * returned only by `loginWithPin`. The renderer persists it alongside the
@@ -42,6 +48,8 @@ export interface ResumedSessionDTO {
   expiresAt: number;
 }
 
+export type LicenseEdition = 'RESTAURANT' | 'STORE';
+
 export interface SettingsDTO {
   restaurantName: string;
   businessInfo?: {
@@ -55,6 +63,8 @@ export interface SettingsDTO {
   preferences?: {
     /** UI locale for the venue (`sq` = Albanian). Stored for consistency; translations can grow over time. */
     language?: 'en' | 'sq';
+    /** Till appearance. Default dark. */
+    theme?: 'light' | 'dark';
     /** @deprecated VAT follows `fiscal.enabled`; not stored in preferences. */
     vatEnabled?: boolean;
     serviceCharge?: {
@@ -93,6 +103,10 @@ export interface SettingsDTO {
     usbProductId?: number;
   };
   enableAdmin?: boolean;
+  /** Paid plan for this till. Store has no reservations. */
+  licenseEdition?: LicenseEdition | null;
+  /** Present only in unpackaged `npm run dev`. Omitted from production builds. */
+  devEditionSwitch?: boolean;
   tableAreas?: TableAreaDTO[];
   security?: {
     allowLan?: boolean;
@@ -122,10 +136,46 @@ export interface SettingsDTO {
     defaultOperatorId?: string;
     /** Unit of measure sent as soldIn (easyPos catalog must include it). */
     defaultSoldIn?: string;
-    /** Cloud demo: force articleId from Postman (e.g. ART001) for every line. */
+    /** Used only for lines with no menu SKU (service charge, discounts, uncoded items). Never overwrites a real SKU. */
     cloudFallbackArticleId?: string;
     /** Required when POS currency is EUR — sent as currency.exRate to easyPos cloud. */
     eurExchangeRate?: number;
+    /**
+     * Cash in the drawer at the start of a business day, in ALL.
+     *
+     * Declared to the tax service once per day per fiscal device, before
+     * the first cash invoice — `POST /balance/initiate`. Without it, cash
+     * invoices are refused with the "daily balance not reported" fault.
+     *
+     * Defaults to 0, which is the truth for a till that keeps no float. A
+     * venue that does start with cash must set it, because the declared
+     * figure is a statement about the drawer and not a formality.
+     */
+    openingFloat?: number;
+    /**
+     * Rate against ALL per currency code. Any non-ALL currency needs one;
+     * `eurExchangeRate` is the legacy single-currency form of this.
+     */
+    exchangeRates?: Record<string, number>;
+    /**
+     * VAT band configuration.
+     *
+     * The API publishes no rate→code lookup, so the mapping is ours. It
+     * cannot be derived from the rate alone: 0% is band A (seller outside
+     * the VAT scheme), C (exempt supply) or J (export), and only
+     * configuration knows which.
+     */
+    vat?: {
+      /** Seller is not VAT registered: every line is filed as band A. */
+      nonVatBusiness?: boolean;
+      /**
+       * Which zero band a 0% line means here. `C` (exempt) for a
+       * VAT-registered seller, `A` for one outside the scheme.
+       */
+      zeroRateCode?: 'A' | 'C';
+      /** Overrides the statutory bands (B=20%, D=10%, E=6%). */
+      bands?: Array<{ code: 'A' | 'B' | 'C' | 'D' | 'E' | 'J'; rate: number }>;
+    };
   };
   /** Kitchen Display System host-level settings. */
   kds?: {
@@ -235,6 +285,15 @@ export interface TicketPrintMeta {
   station?: string;
   // Human label for routed-order slips ("food", "drinks", etc.).
   routeLabel?: string;
+  /** Kitchen course banner on ORDER slips ("Course 2"). Omitted on bar-only fires. */
+  courseLabel?: string;
+  /** Guest-check / payment banner ("Seat 2") when settling by seat. */
+  seatLabel?: string;
+  /**
+   * Seat payments keep the table open until the last unpaid seat.
+   * Missing means close (legacy full-table payment).
+   */
+  closeTable?: boolean;
   // Suppress money columns on order slips that go to the kitchen.
   hidePrices?: boolean;
   // Default true; set false for VAT-exempt receipts.
@@ -279,6 +338,8 @@ export interface TicketPrintMeta {
   fiscalEnabled?: boolean;
   fiscalNslf?: string;
   fiscalNivf?: string;
+  /** EIC — present only for electronic invoices. */
+  fiscalEic?: string;
   fiscalLink?: string;
   fiscalWarning?: string;
   fiscalStatus?: string;
@@ -309,6 +370,8 @@ export const CreateUserInputSchema = z.object({
   ]),
   pin: z.string().min(4).max(6),
   active: z.boolean().optional().default(true),
+  salaryAmount: z.number().nonnegative().nullable().optional(),
+  salaryPeriod: z.enum(SALARY_PERIODS).nullable().optional(),
 });
 export type CreateUserInput = z.infer<typeof CreateUserInputSchema>;
 
@@ -333,6 +396,8 @@ export const UpdateUserInputSchema = z.object({
     .optional(),
   pin: z.string().min(4).max(6).optional(),
   active: z.boolean().optional(),
+  salaryAmount: z.number().nonnegative().nullable().optional(),
+  salaryPeriod: z.enum(SALARY_PERIODS).nullable().optional(),
 });
 export type UpdateUserInput = z.infer<typeof UpdateUserInputSchema>;
 
@@ -447,6 +512,7 @@ export const UpdateMenuItemInputSchema = z.object({
   id: z.number(),
   categoryId: z.number().optional(),
   name: z.string().min(1).optional(),
+  sku: z.string().optional(),
   price: z.number().nonnegative().optional(),
   vatRate: z.number().min(0).max(1).optional(),
   active: z.boolean().optional(),
@@ -668,9 +734,8 @@ export interface LicenseStatusDTO {
   message?: string | null;
   billingConfigured: boolean;
   edition?: LicenseEdition;
+  devEditionSwitch?: boolean;
 }
-
-export type LicenseEdition = 'RESTAURANT' | 'STORE';
 
 export interface LicensePlanQuote {
   amount: number;
@@ -699,6 +764,7 @@ export interface ApiLicense {
     url?: string;
     alreadyLicensed?: boolean;
     emailed?: boolean;
+    needsPaymentUpdate?: boolean;
     error?: string;
   }>;
   activateSession(input: { sessionId: string }): Promise<{
@@ -711,6 +777,10 @@ export interface ApiLicense {
     emailed?: boolean;
     error?: string;
     message?: string;
+  }>;
+  setDevEdition?(input: { edition: LicenseEdition }): Promise<{
+    ok: boolean;
+    edition?: LicenseEdition;
   }>;
   createPortalSession(): Promise<{ url?: string; error?: string }>;
   onUpdated?(cb: () => void): () => void;
@@ -897,6 +967,8 @@ export interface ApiKds {
     /** This screen is the cooker's display (first kitchen stage). */
     cooker?: boolean;
   }): Promise<KdsTicketDTO[]>;
+  /** Waiter-station kitchen tickets. Empty when KDS is off or nothing is live. */
+  listFloorOrders(): Promise<KdsFloorOrder[]>;
   bump(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
     ticketId: number;
@@ -1023,6 +1095,26 @@ export interface ApiAdmin {
     userId: number,
     range?: { startIso?: string; endIso?: string },
   ): Promise<AdminTicketDTO[]>;
+  /** Settled sales, with the fiscal identifiers a correction must reference. */
+  listFiscalSales?(input?: {
+    startIso?: string;
+    endIso?: string;
+    limit?: number;
+  }): Promise<FiscalSaleDTO[]>;
+  /**
+   * Reverse a settled sale: `CANCEL` withdraws the whole invoice,
+   * `CORRECTIVE` strikes the named lines. Requires a manager PIN approval
+   * token, and never files the fiscal document itself — see
+   * `needsFiling` in the result.
+   */
+  correctSale?(input: {
+    orderId: number;
+    kind: 'CANCEL' | 'CORRECTIVE';
+    itemIds?: number[];
+    reason: string;
+    approvedByAdminId?: number;
+    approvedByAdminToken?: string;
+  }): Promise<CorrectSaleResultDTO>;
   listNotifications(input?: {
     userId?: number;
     onlyUnread?: boolean;
@@ -1133,6 +1225,53 @@ export interface ReportTicketDTO {
   total: number;
 }
 
+/** A settled sale as the admin correction screen sees it. */
+export interface FiscalSaleDTO {
+  orderId: number;
+  closedAt: string | null;
+  area: string;
+  tableLabel: string;
+  userName: string;
+  total: number;
+  method: string;
+  /** PAID, or VOID once a cancellation has been recorded. */
+  status: string;
+  /** IIC — what a corrective document references. */
+  fiscalNslf: string | null;
+  /** FIC. */
+  fiscalNivf: string | null;
+  /** easyPos docId for the original invoice. */
+  docId: string | null;
+  items: {
+    id: number;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    /** Struck off by an earlier corrective. */
+    voided: boolean;
+  }[];
+  corrections: {
+    id: number;
+    kind: 'CANCEL' | 'CORRECTIVE';
+    reason: string;
+    amountDelta: number;
+    /** Null while the corrective document still has to be filed. */
+    filedAt: string | null;
+    createdAt: string;
+  }[];
+}
+
+export type CorrectSaleResultDTO =
+  | {
+      ok: true;
+      correctionId: number;
+      kind: 'CANCEL' | 'CORRECTIVE';
+      amountDelta: number;
+      /** The corrective/cancellation invoice is now queued for an admin to file. */
+      needsFiling: boolean;
+    }
+  | { ok: false; error: string };
+
 export interface AdminTicketDTO {
   id: number;
   area: string;
@@ -1157,6 +1296,11 @@ export interface AdminTicketDTO {
   // `TRANSFERRED_OUT_TAG_PREFIX`); the row is kept for audit purposes
   // but excluded from PAID counts/sums.
   status?: 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
+  /**
+   * Settled order this ticket closed into, when one exists. Carries the
+   * fiscal identifiers and the lines a cancellation / corrective needs.
+   */
+  sale?: FiscalSaleDTO | null;
   /**
    * If the ticket-log row was produced by a table transfer this carries the
    * structured audit info parsed from the `[TRANSFER ...]` note tag. `MOVED`
@@ -1232,16 +1376,22 @@ export interface ReviewSummaryDTO {
   revenueNet: number;
   /** VAT extracted from gross sales for non-voided lines. */
   revenueVat: number;
-  /** Number of TicketLog rows with at least one non-voided line. */
+  /** Number of paid receipts (one per Pay tap, including per-seat pays). */
   orders: number;
-  /** Number of non-voided line items. */
+  /** Number of sold line items on those receipts. */
   items: number;
-  /** Sum of `covers` across rows that recorded covers. */
+  /** Covers on the closing payment of each sitting (seat splits counted once). */
   covers: number;
   /** revenueGross / orders, 0 when no orders. */
   avgTicket: number;
   /** items / orders, 0 when no orders. */
   avgItemsPerTicket: number;
+  /**
+   * Gross revenue / covers. 0 when no covers.
+   * Covers count on the closing payment only; revenue includes every receipt
+   * in the sitting, so seat splits are not under-counted.
+   */
+  avgSpendPerCover?: number;
   /** Distinct (area, tableLabel) pairs touched. */
   uniqueTables: number;
   /** Distinct waiter ids that produced at least one row. */
@@ -1300,6 +1450,44 @@ export interface ReviewWeekdayBucketDTO {
   revenue: number;
 }
 
+export interface ReviewHeatmapCellDTO {
+  /** 0..6 with 0 = Sunday. */
+  dayOfWeek: number;
+  /** 0..23 (local time of the device). */
+  hour: number;
+  orders: number;
+  revenue: number;
+}
+
+export interface ReviewMethodBucketDTO {
+  method: 'CASH' | 'CARD' | 'MIXED';
+  orders: number;
+  /** Gross receipt total attributed to this tender. */
+  revenue: number;
+}
+
+export interface ReviewCategoryBucketDTO {
+  /** Empty string = uncategorised line. */
+  name: string;
+  qty: number;
+  /** Sum of qty × unitPrice (VAT-inclusive line price, before bill discount / service). */
+  revenue: number;
+}
+
+export interface ReviewAreaBucketDTO {
+  name: string;
+  orders: number;
+  revenue: number;
+}
+
+export interface ReviewTicketSizeDTO {
+  min: number;
+  /** Exclusive. Null = last open-ended bucket. */
+  max: number | null;
+  orders: number;
+  revenue: number;
+}
+
 export interface ReviewDTO {
   granularity: ReviewGranularity;
   /** When false, VAT is not applied on tickets and review VAT totals are 0. */
@@ -1315,6 +1503,12 @@ export interface ReviewDTO {
   waiters: ReviewWaiterDTO[];
   hourly: ReviewHourBucketDTO[];
   weekday: ReviewWeekdayBucketDTO[];
+  /** Paid orders by weekday × hour of day (local time). */
+  heatmap: ReviewHeatmapCellDTO[];
+  byMethod: ReviewMethodBucketDTO[];
+  byCategory: ReviewCategoryBucketDTO[];
+  byArea: ReviewAreaBucketDTO[];
+  ticketSizes: ReviewTicketSizeDTO[];
 }
 
 // Table layout
@@ -1521,6 +1715,7 @@ export interface PrintTicketInput {
     station?: 'KITCHEN' | 'BAR' | 'DESSERT';
     categoryId?: number;
     categoryName?: string;
+    courseId?: string | null;
   }[];
   note?: string | null;
   userName?: string;

@@ -7,6 +7,9 @@ import React from 'react';
 import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { useReservationSessionStore } from './stores/reservationSession';
+import { useLicenseCapabilities } from './stores/licenseCapabilities';
+import { staffPosHomePath } from '@shared/editionCapabilities';
+import { useKdsOrdersAccess } from './app/useKdsOrdersAccess';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -23,6 +26,9 @@ const LoginPage = React.lazy(() => import('./app/pages/LoginPage'));
 const TablesPage = React.lazy(() => import('./app/pages/TablesPage'));
 const OrderPage = React.lazy(() => import('./app/pages/OrderPage'));
 const ReportsPage = React.lazy(() => import('./app/pages/ReportsPage'));
+const WaiterOrdersPage = React.lazy(
+  () => import('./app/pages/WaiterOrdersPage'),
+);
 const ClockPage = React.lazy(() => import('./app/pages/ClockPage'));
 const AdminPage = React.lazy(() => import('./app/pages/AdminPage'));
 const AdminTicketsPage = React.lazy(
@@ -246,15 +252,29 @@ function RequireHost({ children }: { children: React.ReactElement }) {
   return children;
 }
 
+function RequireReservations({ children }: { children: React.ReactElement }) {
+  const hydrated = useLicenseCapabilities((s) => s.hydrated);
+  const hasReservations = useLicenseCapabilities((s) => s.hasReservations);
+  if (!hydrated) return <SuspenseFallback />;
+  if (!hasReservations) return <Navigate to="/" replace />;
+  return children;
+}
+
+function useStaffPosHome() {
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  return staffPosHomePath({ hasTables });
+}
+
 function AppIndexRedirect() {
   const user = useSessionStore((s) => s.user);
+  const hydrated = useLicenseCapabilities((s) => s.hydrated);
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   if (!user) return <Navigate to="/" replace />;
-  return (
-    <Navigate
-      to={isClockOnlyRole((user as any).role) ? 'clock' : 'tables'}
-      replace
-    />
-  );
+  if (!hydrated) return <SuspenseFallback />;
+  if (isClockOnlyRole((user as any).role)) {
+    return <Navigate to="clock" replace />;
+  }
+  return <Navigate to={hasTables ? 'tables' : 'order'} replace />;
 }
 
 function RequirePosAccess({ children }: { children: React.ReactElement }) {
@@ -265,12 +285,21 @@ function RequirePosAccess({ children }: { children: React.ReactElement }) {
   return children;
 }
 
+function RequireTables({ children }: { children: React.ReactElement }) {
+  const hydrated = useLicenseCapabilities((s) => s.hydrated);
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  if (!hydrated) return <SuspenseFallback />;
+  if (!hasTables) return <Navigate to="/app/order" replace />;
+  return children;
+}
+
 function RequireClockAccess({ children }: { children: React.ReactElement }) {
   const user = useSessionStore((s) => s.user);
+  const staffHome = useStaffPosHome();
   if (!user) return <Navigate to="/" replace />;
   // Requirement: waiters must NOT see/use the Clock page.
   if (String((user as any)?.role || '').toUpperCase() === 'WAITER') {
-    return <Navigate to="/app/tables" replace />;
+    return <Navigate to={staffHome} replace />;
   }
   return children;
 }
@@ -280,35 +309,57 @@ function RequireClockAccess({ children }: { children: React.ReactElement }) {
 // desktop is unrestricted because admins use it for back-office work.
 function RequireReportsAccess({ children }: { children: React.ReactElement }) {
   const user = useSessionStore((s) => s.user);
+  const staffHome = useStaffPosHome();
   const isBrowser =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
   if (!user) return <Navigate to="/" replace />;
   if (isBrowser && !canSeeReportsOnMobile((user as any).role)) {
-    return <Navigate to="/app/tables" replace />;
+    return <Navigate to={staffHome} replace />;
   }
   return children;
 }
 
-// KDS is intended for kitchen staff. On mobile, restrict to kitchen roles
-// so a waiter who pastes a /kds deep link doesn't end up on a screen
-// they can't act on. Electron stays open (the kitchen PC needs it).
+function RequireKdsOrdersAccess({
+  children,
+}: {
+  children: React.ReactElement;
+}) {
+  const user = useSessionStore((s) => s.user);
+  const staffHome = useStaffPosHome();
+  const access = useKdsOrdersAccess();
+  if (!user) return <Navigate to="/" replace />;
+  if (access === 'loading') return <SuspenseFallback />;
+  if (access === 'no') return <Navigate to={staffHome} replace />;
+  return children;
+}
+
+// KDS is kitchen staff on a restaurant license. Store POS redirects away.
+// On mobile, restrict to kitchen roles so a waiter who pastes a /kds deep
+// link doesn't end up on a screen they can't act on.
 //
 // The standalone "OneTap KDS" Electron app sets `__KDS_APP__ = true`
 // from its preload — that build is a kitchen-only kiosk so we skip the
-// login/role gate entirely.
+// login/role/edition gate. A store till still rejects KDS over LAN.
 function RequireKdsAccess({ children }: { children: React.ReactElement }) {
   const user = useSessionStore((s) => s.user);
+  const hydrated = useLicenseCapabilities((s) => s.hydrated);
+  const hasKds = useLicenseCapabilities((s) => s.hasKds);
+  const staffHome = useStaffPosHome();
   const isKdsApp =
     typeof window !== 'undefined' && Boolean((window as any).__KDS_APP__);
   const isBrowser =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
+  // The standalone kitchen kiosk is a different app; it talks to a restaurant
+  // host over LAN. Store POS itself must not open a kitchen screen.
   if (isKdsApp) return children;
+  if (!hydrated) return <SuspenseFallback />;
+  if (!hasKds) return <Navigate to={user ? staffHome : '/'} replace />;
   if (!isBrowser) return children;
   if (!user) return <Navigate to="/" replace />;
   if (!canSeeKdsOnMobile((user as any).role)) {
-    return <Navigate to="/app/tables" replace />;
+    return <Navigate to={staffHome} replace />;
   }
   return children;
 }
@@ -323,7 +374,7 @@ export const routes: RouteObject[] = [
       </RequireAuth>
     ),
     children: [
-      // No home screen: send staff straight to Tables.
+      // No home screen: restaurant → tables, store → till sale.
       { index: true, element: <AppIndexRedirect /> },
       {
         path: 'clock',
@@ -334,7 +385,9 @@ export const routes: RouteObject[] = [
       {
         path: 'tables',
         element: (
-          <RequirePosAccess>{withSuspense(<TablesPage />)}</RequirePosAccess>
+          <RequirePosAccess>
+            <RequireTables>{withSuspense(<TablesPage />)}</RequireTables>
+          </RequirePosAccess>
         ),
       },
       {
@@ -350,6 +403,16 @@ export const routes: RouteObject[] = [
             <RequireReportsAccess>
               {withSuspense(<ReportsPage />)}
             </RequireReportsAccess>
+          </RequirePosAccess>
+        ),
+      },
+      {
+        path: 'orders',
+        element: (
+          <RequirePosAccess>
+            <RequireKdsOrdersAccess>
+              {withSuspense(<WaiterOrdersPage />)}
+            </RequireKdsOrdersAccess>
           </RequirePosAccess>
         ),
       },
@@ -388,20 +451,28 @@ export const routes: RouteObject[] = [
   // First-run setup screen for the standalone KDS Electron app.
   {
     path: '/kds-setup',
-    element: withSuspense(<KdsSetupPage />),
+    element: (
+      <RequireKdsAccess>{withSuspense(<KdsSetupPage />)}</RequireKdsAccess>
+    ),
   },
   // Reservation panel — separate window. Login lives at /reservations,
   // the actual app shell lives at /reservations/app and is gated by RequireHost.
   {
     path: '/reservations',
-    element: withSuspenseNoFallback(<ReservationsLoginPage />),
+    element: (
+      <RequireReservations>
+        {withSuspenseNoFallback(<ReservationsLoginPage />)}
+      </RequireReservations>
+    ),
   },
   {
     path: '/reservations/app',
     element: (
-      <RequireHost>
-        <ReservationsLayout />
-      </RequireHost>
+      <RequireReservations>
+        <RequireHost>
+          <ReservationsLayout />
+        </RequireHost>
+      </RequireReservations>
     ),
     children: [
       { index: true, element: withSuspense(<ReservationsFloorPage />) },

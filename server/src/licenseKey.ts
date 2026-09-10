@@ -1,13 +1,17 @@
 /**
- * POS license key: HMAC of Stripe customer id + email.
+ * POS license key: HMAC of Stripe customer id + email + edition.
  * Deterministic so restore-by-email returns the same key without a database.
+ * v1 keys (customer + email only) still parse for tills activated before edition.
  */
 import crypto from 'node:crypto';
 
+export type LicenseEdition = 'RESTAURANT' | 'STORE';
+
 export type LicensePayload = {
-  v: 1;
+  v: 1 | 2;
   cid: string;
   em: string;
+  ed?: LicenseEdition;
 };
 
 function b64url(buf: Buffer | string): string {
@@ -31,17 +35,26 @@ export function normalizeLicenseEmail(email: string): string {
     .toLowerCase();
 }
 
+export function parseLicenseEdition(raw: unknown): LicenseEdition | '' {
+  const v = String(raw || '')
+    .trim()
+    .toUpperCase();
+  return v === 'STORE' || v === 'RESTAURANT' ? v : '';
+}
+
 export function issueLicenseKey(
   customerId: string,
   email: string,
   secret: string,
+  edition: LicenseEdition,
 ): string {
   const payload: LicensePayload = {
-    v: 1,
+    v: 2,
     cid: String(customerId).trim(),
     em: normalizeLicenseEmail(email),
+    ed: edition,
   };
-  if (!payload.cid || !payload.em || !secret) {
+  if (!payload.cid || !payload.em || !payload.ed || !secret) {
     throw new Error('Cannot issue license key');
   }
   const body = b64url(JSON.stringify(payload));
@@ -68,8 +81,18 @@ export function parseLicenseKey(
     const json = JSON.parse(
       fromB64url(body).toString('utf8'),
     ) as LicensePayload;
-    if (json?.v !== 1 || !json.cid || !json.em) return null;
-    return { v: 1, cid: String(json.cid), em: normalizeLicenseEmail(json.em) };
+    const cid = String(json?.cid || '').trim();
+    const em = normalizeLicenseEmail(String(json?.em || ''));
+    if (!cid || !em) return null;
+    if (json?.v === 2) {
+      const ed = parseLicenseEdition(json.ed);
+      if (!ed) return null;
+      return { v: 2, cid, em, ed };
+    }
+    if (json?.v === 1) {
+      return { v: 1, cid, em };
+    }
+    return null;
   } catch {
     return null;
   }

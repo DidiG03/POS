@@ -19,6 +19,12 @@ export type PrintTicketErr = {
 
 export type PrintTicketResult = PrintTicketOk | PrintTicketErr;
 
+export function paymentShouldCloseTable(meta: unknown): boolean {
+  const m = (meta || {}) as { kind?: string; closeTable?: boolean };
+  if (String(m.kind || '').toUpperCase() !== 'PAYMENT') return false;
+  return m.closeTable !== false;
+}
+
 export function tableAlreadyPaidResult(): PrintTicketErr {
   return {
     ok: false,
@@ -65,22 +71,27 @@ export async function closeTableAfterIdempotentPayment(
   area: string,
   label: string,
   kind: string,
+  closeTable = true,
 ): Promise<PrintTicketOk> {
-  if (String(kind || '').toUpperCase() === 'PAYMENT' && area && label) {
+  const isPay = String(kind || '').toUpperCase() === 'PAYMENT';
+  if (isPay && closeTable && area && label) {
     await withPaymentLock(area, label, async () => {
       if (await tableIsOpenForPayment(area, label)) {
         await closeTableAfterAcceptedPayment(area, label);
       }
     });
   }
-  return paymentPrintAccepted(true);
+  return paymentPrintAccepted(true, isPay && closeTable);
 }
 
-export function paymentPrintAccepted(printed: boolean): PrintTicketOk {
+export function paymentPrintAccepted(
+  printed: boolean,
+  tableClosed = true,
+): PrintTicketOk {
   return {
     ok: true,
     printed,
     queued: !printed,
-    tableClosed: true,
+    tableClosed,
   };
 }

@@ -5,6 +5,7 @@ import { useOrderContext } from '@shared/stores/orderContext';
 import { useNavigate } from 'react-router-dom';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useTicketStore } from '../../stores/ticket';
+import { tableKey } from '@shared/utils/tableKey';
 import { formatMoneyCompact } from '../../utils/format';
 import { PageSpinner } from '../../components/PageSpinner';
 import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
@@ -19,6 +20,12 @@ import {
   prefetchHotReads,
 } from '../../utils/posReadCache';
 import { cacheLooksLikeCurrentSession } from '../../utils/tableSessionKeepOpen';
+import {
+  IconClock,
+  IconCovers,
+  IconMoney,
+  IconUsers,
+} from '../../components/icons';
 
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
 
@@ -153,7 +160,7 @@ export default function TablesPage() {
     return () => window.removeEventListener('pos:tablesChanged', onChanged);
   }, [setOpen]);
 
-  const { hydrate, clear } = useTicketStore();
+  const { hydrate, bindTable } = useTicketStore();
 
   const [userMap, setUserMap] = useState<Record<number, string>>({});
   const [initialsByTable, setInitialsByTable] = useState<
@@ -395,9 +402,11 @@ export default function TablesPage() {
     };
     window.addEventListener('pos:ticketsChanged', onTicketsChanged);
     window.addEventListener('pos:tablesChanged', refresh);
+    window.addEventListener('pos:syncCatchup', refresh);
     return () => {
       window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
       window.removeEventListener('pos:tablesChanged', refresh);
+      window.removeEventListener('pos:syncCatchup', refresh);
     };
   }, [area, userMap, applySnapshot]);
   useEffect(() => {
@@ -474,6 +483,7 @@ export default function TablesPage() {
       const openLabel =
         labels.find((l) => isOpenFn(area, l)) || labels[0] || label;
       setSelectedTable({ id: 0, label: openLabel, area });
+      bindTable(tableKey(area, openLabel));
       const action = pendingAction;
       if (action) setPendingAction(null);
       if (isOpenFn(area, openLabel)) {
@@ -488,7 +498,6 @@ export default function TablesPage() {
         navigate('/app/order');
         return;
       }
-      clear();
       navigate('/app/order');
     },
     [
@@ -498,7 +507,7 @@ export default function TablesPage() {
       setSelectedTable,
       isOpenFn,
       hydrate,
-      clear,
+      bindTable,
       navigate,
       openedAtByTable,
     ],
@@ -533,7 +542,7 @@ export default function TablesPage() {
         ) : null}
       </div>
 
-      <div className="absolute top-0 left-0 right-0 z-10 flex items-start justify-end gap-3 px-3 sm:px-4 pt-3 pointer-events-none">
+      <div className="absolute top-0 left-0 right-0 z-10 flex items-start justify-end gap-3 px-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-3 pointer-events-none">
         <div className="pointer-events-auto flex gap-2 overflow-x-auto no-scrollbar max-w-full">
           {areas.map((a) => (
             <button
@@ -549,7 +558,7 @@ export default function TablesPage() {
         </div>
       </div>
 
-      <div className="absolute bottom-0 left-0 right-0 z-10 flex justify-center px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 z-10 flex justify-center px-3 pb-3 sm:pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none">
         <div className="pointer-events-auto pos-floor-dock">
           <ModeButton
             active={viewMode === 'occupied'}
@@ -611,99 +620,5 @@ function ModeButton({
       <span className={active ? 'opacity-100' : 'opacity-80'}>{children}</span>
       <span className="text-xs sm:text-sm">{label}</span>
     </button>
-  );
-}
-
-function IconUsers() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden
-    >
-      <path
-        d="M16 11a4 4 0 1 0-8 0 4 4 0 0 0 8 0ZM4 20a7 7 0 0 1 16 0"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconCovers() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden
-    >
-      <path
-        d="M12 12a4 4 0 1 0-8 0 4 4 0 0 0 8 0ZM2 22a7 7 0 0 1 14 0"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M20 8a3 3 0 1 0-6 0 3 3 0 0 0 6 0ZM13.5 22a6 6 0 0 1 8.5-5.5"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconMoney() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden
-    >
-      <path
-        d="M7 7h10a4 4 0 0 1 0 8H9a3 3 0 0 0 0 6h8"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M12 3v18"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconClock() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      className="pos-icon"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden
-    >
-      <path
-        d="M12 22a10 10 0 1 0-10-10 10 10 0 0 0 10 10Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-      />
-      <path
-        d="M12 6v6l4 2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }

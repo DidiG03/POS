@@ -45,3 +45,20 @@ export function resolveStaticFilePath(
   }
   return full;
 }
+
+/**
+ * LAN tablets (Safari / Chrome / Capacitor WebView) cache `/renderer/`
+ * aggressively. HTML must always revalidate so a POS update swaps in the
+ * new hashed JS; the hashed `/assets/*` files themselves can be immutable.
+ */
+export function staticAssetCacheControl(filePath: string): string {
+  const n = String(filePath || '').replace(/\\/g, '/');
+  const base = n.split('/').pop() || '';
+  if (!base || base === 'index.html' || n.endsWith('.html')) {
+    return 'no-store, must-revalidate';
+  }
+  if (/-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/i.test(base)) {
+    return 'public, max-age=31536000, immutable';
+  }
+  return 'no-store';
+}

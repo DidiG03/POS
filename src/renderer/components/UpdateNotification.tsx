@@ -132,7 +132,7 @@ export function UpdateNotification() {
   // downloaded and will install itself unless staff postpone it.
   if (autoInstall) {
     return (
-      <div className="fixed bottom-4 right-4 bg-green-600 text-white rounded-lg shadow-lg p-4 max-w-md z-50">
+      <div className="pos-toast-anchor fixed right-4 bg-green-600 text-white rounded-lg shadow-lg p-4 max-w-[min(28rem,calc(100vw-1.5rem))] z-50">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1">
             <h3 className="font-semibold mb-1">Updating automatically</h3>
@@ -175,7 +175,7 @@ export function UpdateNotification() {
   // Show update available notification
   if (status?.hasUpdate && !status.downloaded) {
     return (
-      <div className="fixed bottom-4 right-4 bg-blue-600 text-white rounded-lg shadow-lg p-4 max-w-md z-50">
+      <div className="pos-toast-anchor fixed right-4 bg-blue-600 text-white rounded-lg shadow-lg p-4 max-w-[min(28rem,calc(100vw-1.5rem))] z-50">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1">
             <h3 className="font-semibold mb-1">Update Available</h3>
@@ -220,7 +220,7 @@ export function UpdateNotification() {
   // Show download progress
   if (downloadProgress !== null) {
     return (
-      <div className="fixed bottom-4 right-4 bg-blue-600 text-white rounded-lg shadow-lg p-4 max-w-md z-50">
+      <div className="pos-toast-anchor fixed right-4 bg-blue-600 text-white rounded-lg shadow-lg p-4 max-w-[min(28rem,calc(100vw-1.5rem))] z-50">
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <h3 className="font-semibold mb-1">Downloading Update</h3>
@@ -242,7 +242,7 @@ export function UpdateNotification() {
   // Show update downloaded notification
   if (status?.downloaded) {
     return (
-      <div className="fixed bottom-4 right-4 bg-green-600 text-white rounded-lg shadow-lg p-4 max-w-md z-50">
+      <div className="pos-toast-anchor fixed right-4 bg-green-600 text-white rounded-lg shadow-lg p-4 max-w-[min(28rem,calc(100vw-1.5rem))] z-50">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1">
             <h3 className="font-semibold mb-1">Update Ready to Install</h3>
@@ -273,7 +273,7 @@ export function UpdateNotification() {
   // Show checking indicator (optional, can be hidden)
   if (isChecking) {
     return (
-      <div className="fixed bottom-4 right-4 bg-gray-700 text-white rounded-lg shadow-lg p-3 max-w-sm z-50">
+      <div className="pos-toast-anchor fixed right-4 bg-gray-700 text-white rounded-lg shadow-lg p-3 max-w-[min(24rem,calc(100vw-1.5rem))] z-50">
         <div className="flex items-center gap-2">
           <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
           <span className="text-sm">Checking for updates...</span>

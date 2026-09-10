@@ -1,7 +1,7 @@
 import { buildLanHttpUrl } from '@shared/lanHost';
 import {
+  collectLanScanHosts,
   hostFromDebugBody,
-  hostsInSlash24,
   isPrivateIpv4,
   mapPool,
   mergeDiscoveredPosHosts,
@@ -11,7 +11,7 @@ import {
 
 const HTTP_TIMEOUT_MS = 500;
 const HTTP_CONCURRENCY = 24;
-const FALLBACK_SEEDS = ['192.168.1.1', '192.168.0.1'];
+const SEED_TIMEOUT_MS = 2500;
 
 function parseIpv4FromCandidate(line: string): string | null {
   const m = String(line || '').match(
@@ -83,39 +83,18 @@ export async function probePosHttp(
   }
 }
 
-function scanTargets(localIps: string[]): string[] {
-  const nets = new Set<string>();
-  const addNet = (ip: string) => {
-    const parts = ip.split('.');
-    if (parts.length === 4) nets.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
-  };
-  for (const ip of localIps) addNet(ip);
-  if (nets.size === 0) {
-    for (const seed of FALLBACK_SEEDS) addNet(seed);
-  } else if (nets.size > 2) {
-    // Don't walk every VPN/interface; keep the scan to a couple of /24s.
-    const keep = [...nets].slice(0, 2);
-    nets.clear();
-    for (const n of keep) nets.add(n);
-  }
-  const skip = new Set(localIps);
-  const hosts = new Set<string>();
-  for (const net of nets) {
-    const seed = `${net}.1`;
-    for (const h of hostsInSlash24(seed)) {
-      if (!skip.has(h)) hosts.add(h);
-    }
-  }
-  return [...hosts];
+function scanTargets(localIps: string[], extraIps: string[] = []): string[] {
+  return collectLanScanHosts(localIps, extraIps);
 }
 
 /**
  * Find POS tills on the Wi-Fi. Used by waiter tablets and as a fallback
  * when the KDS app has no native discover IPC.
  */
-export async function discoverPosHostsInBrowser(): Promise<
-  DiscoveredPosHost[]
-> {
+export async function discoverPosHostsInBrowser(opts?: {
+  seeds?: string[];
+  httpPort?: number;
+}): Promise<DiscoveredPosHost[]> {
   const native = (window as any).kdsApp as
     | { discover?: () => Promise<DiscoveredPosHost[]> }
     | undefined;
@@ -123,12 +102,27 @@ export async function discoverPosHostsInBrowser(): Promise<
     ? native.discover().catch(() => [] as DiscoveredPosHost[])
     : Promise.resolve([] as DiscoveredPosHost[]);
 
-  const localIps = await guessLocalIpv4s();
-  const targets = scanTargets(localIps);
-  const httpHits = await mapPool(targets, HTTP_CONCURRENCY, (host) =>
-    probePosHttp(host, POS_LAN_HTTP_PORT),
+  const port = Number(opts?.httpPort) || POS_LAN_HTTP_PORT;
+  const seeds = [...new Set((opts?.seeds || []).map((s) => s.trim()))].filter(
+    isPrivateIpv4,
   );
-  const http = httpHits.filter((h): h is DiscoveredPosHost => Boolean(h));
+
+  // Hit the typed/saved IP first. iOS uses that request to show the Local
+  // Network permission prompt; flooding the /24 before the user taps Allow
+  // makes every probe fail.
+  const seedHits = await Promise.all(
+    seeds.map((host) => probePosHttp(host, port, SEED_TIMEOUT_MS)),
+  );
+
+  const localIps = await guessLocalIpv4s();
+  const seedSet = new Set(seeds);
+  const rest = scanTargets(localIps, seeds).filter((h) => !seedSet.has(h));
+  const httpHits = await mapPool(rest, HTTP_CONCURRENCY, (host) =>
+    probePosHttp(host, port),
+  );
+  const http = [...seedHits, ...httpHits].filter((h): h is DiscoveredPosHost =>
+    Boolean(h),
+  );
   const mdns = await nativePromise;
   return mergeDiscoveredPosHosts([...mdns, ...http]);
 }

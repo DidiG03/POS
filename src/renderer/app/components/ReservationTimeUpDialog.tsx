@@ -6,6 +6,7 @@ import {
   formatReservationClock,
   formatReservationDuration,
 } from '@shared/reservationDuration';
+import { IconChevronDown, IconChevronUp } from '../../components/icons';
 
 function cleanIpcMessage(e: any, fallback: string): string {
   const raw = String(e?.message || e || '').trim();
@@ -110,19 +111,7 @@ export function ReservationTimeUpDialog({
               {t('reservations.timeFinishedExpand')}
             </span>
           </span>
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-5 w-5 shrink-0 opacity-80"
-            aria-hidden
-          >
-            <path d="M18 15l-6-6-6 6" />
-          </svg>
+          <IconChevronUp className="h-5 w-5 shrink-0 opacity-80" />
         </button>
       </div>
     );
@@ -166,19 +155,7 @@ export function ReservationTimeUpDialog({
               aria-label={t('reservations.timeFinishedMinimize')}
               title={t('reservations.timeFinishedMinimizeTitle')}
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-5 w-5"
-                aria-hidden
-              >
-                <path d="M6 9l6 6 6-6" />
-              </svg>
+              <IconChevronDown className="h-5 w-5" />
             </button>
           </div>
           <div className="text-sm opacity-80 mt-1">

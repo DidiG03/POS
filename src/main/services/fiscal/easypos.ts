@@ -3,12 +3,46 @@ import type {
   EasyPosCloudInvoiceDraft,
   EasyPosInvoiceDraft,
 } from './mapInvoice';
+// Only what this module actually calls. The rest of `./config` is
+// re-exported below for callers that still import it from here.
+import { assertFiscalConfigured, authHeader, fiscalConfig } from './config';
+import {
+  assessCompletion,
+  readFaultText,
+  targetForInvoice,
+} from './completion';
+// One definition of "the request never left this machine", shared with the
+// recovery sequence. The copy that used to live here read only one level of
+// `cause`, and undici puts `ECONNREFUSED` two levels down behind a bare
+// `fetch failed` — so a connection that provably never reached easyPos was
+// classified as an unknown outcome and sent a retryable sale to review.
+import { classifyFiscalAttempt, neverReachedProvider } from './classify';
+import { registerInvoiceWithRecovery, type RecoveryOptions } from './recover';
+import { newDocId } from './docId';
+import type { RegisterInvoiceRequest } from './apiTypes';
+
+export {
+  assertFiscalConfigured,
+  isEasyPosCloudApi,
+  normalizeOperatorCode,
+} from './config';
 
 export type FiscalSaleResult = {
   nslf: string;
   nivf: string;
+  /** Electronic invoice identifier. Present only for e-invoices. */
+  eic?: string;
   link: string;
-  status: 'accepted' | 'pending';
+  /**
+   * Only ever `'accepted'` now. Kept in the shape because receipts, the
+   * claim store and the LAN API all read it.
+   *
+   * There is no longer a `'pending'` success: an invoice without a NIVF is
+   * not registered, and reporting it as a partial success is what printed
+   * receipts claiming fiskalizimi for documents the tax service had never
+   * accepted.
+   */
+  status: 'accepted';
   warning?: string;
   raw?: unknown;
 };
@@ -19,8 +53,15 @@ export type FiscalSaleResult = {
  * `unknown` is not a nicety: retrying one of those can register a second
  * tax document for the same sale, which needs a corrective invoice to
  * undo. Only `not-registered` may be retried automatically.
+ *
+ * Re-exported from `classify.ts` rather than declared again. The two
+ * declarations were identical, so they stayed compatible by luck: adding a
+ * third state to the classifier would have left this copy silently
+ * narrower and the mismatch would surface as a type error somewhere
+ * unrelated.
  */
-export type FiscalOutcome = 'not-registered' | 'unknown';
+export type { FiscalOutcome } from './classify';
+import type { FiscalOutcome } from './classify';
 
 export interface FiscalError extends Error {
   fiscalOutcome: FiscalOutcome;
@@ -55,101 +96,6 @@ export function isFiscalRetryable(error: unknown): boolean {
   return (error as Partial<FiscalError> | null)?.fiscalRetryable !== false;
 }
 
-/** Transport errors that prove the request never reached the provider. */
-function neverReachedProvider(error: unknown): boolean {
-  const combined = [
-    String((error as any)?.message || error || ''),
-    String((error as any)?.code || ''),
-    String((error as any)?.cause?.code || ''),
-    String((error as any)?.cause?.message || ''),
-  ]
-    .join(' ')
-    .toLowerCase();
-  return (
-    combined.includes('econnrefused') ||
-    combined.includes('connection refused') ||
-    combined.includes('enotfound') ||
-    combined.includes('getaddrinfo')
-  );
-}
-
-function normalizeBaseUrl(baseUrl: string): string {
-  return String(baseUrl || '')
-    .trim()
-    .replace(/\/+$/g, '');
-}
-
-export function isEasyPosCloudApi(baseUrl: string): boolean {
-  const u = normalizeBaseUrl(baseUrl).toLowerCase();
-  return u.includes('api.easypos.al') || u.includes('api.dev.easypos.al');
-}
-
-function fiscalConfig(settings: SettingsDTO) {
-  const fiscal = (settings as any)?.fiscal || {};
-  const baseUrl = normalizeBaseUrl(String(fiscal.baseUrl || ''));
-  const authToken = String(fiscal.authToken || '').trim();
-  const provider = String(fiscal.provider || 'easypos').toLowerCase();
-  const integrationApp = String(fiscal.integrationApp || '').trim();
-  const operatorCode = normalizeOperatorCode(
-    fiscal.defaultOperatorId || fiscal.operatorCode || '',
-  );
-  return {
-    baseUrl,
-    authToken,
-    provider,
-    integrationApp,
-    operatorCode,
-    cloud: isEasyPosCloudApi(baseUrl),
-  };
-}
-
-function normalizeOperatorCode(raw: string): string {
-  const code = String(raw || '').trim();
-  // Common Postman/invoice OCR typo — verified demo operator is gh537ez280.
-  if (code === 'gh537ez200') return 'gh537ez280';
-  return code;
-}
-
-function authHeader(token: string, cloud: boolean): string {
-  const raw = String(token || '').trim();
-  if (!raw) return '';
-  if (!cloud) return raw;
-  return /^bearer\s+/i.test(raw) ? raw : `Bearer ${raw}`;
-}
-
-function extractApiErrorMessage(data: unknown): string {
-  if (data == null) return '';
-  if (typeof data === 'string') return data.trim();
-  const obj = data as Record<string, unknown>;
-  const direct = [
-    obj.message,
-    obj.error,
-    (obj.response as any)?.text,
-    obj.text,
-    obj.title,
-    obj.detail,
-    obj.statusText,
-  ];
-  for (const value of direct) {
-    const text = String(value || '').trim();
-    if (text) return text;
-  }
-  const errors = obj.errors;
-  if (Array.isArray(errors) && errors.length) {
-    return errors
-      .map((entry) => String((entry as any)?.message || entry || '').trim())
-      .filter(Boolean)
-      .join('; ');
-  }
-  try {
-    const json = JSON.stringify(data);
-    if (json && json !== '{}' && json.length <= 500) return json;
-  } catch {
-    /* ignore */
-  }
-  return '';
-}
-
 function responseHint(
   responseText: string,
   cloud: boolean,
@@ -157,20 +103,20 @@ function responseHint(
   const lower = responseText.toLowerCase();
   if (lower.includes('njesia') && lower.includes('nuk gjendet')) {
     return cloud
-      ? 'Unit/article mismatch in easyPos catalog. Your Postman body uses articleId PROD001 and soldIn XPP — not ART001/cope. Set those in Admin → Fiskalizimi and save.'
+      ? 'Unit of measure (soldIn) is not in the easyPos catalog. Set it in Admin → Fiskalizimi to a unit that exists there.'
       : 'Unit of measure (soldIn) not found. Check defaultSoldIn matches easyPos.';
   }
   if (lower.includes('artikull') && lower.includes('nuk gjendet')) {
-    return 'Article ID not found in easyPos. Menu SKU must match an easyPos article, or set "Cloud fallback article ID" (e.g. PROD001 from Postman).';
+    return 'Article ID not found in easyPos. Menu SKUs must match articles in the easyPos catalog. The fallback article ID is only used for lines with no SKU.';
   }
-  if (lower.includes('operator') && lower.includes('nuk gjendet')) {
-    return 'Operator code not found for this access token. Use gh537ez280 (from your verified invoice), not gh537ez200. Also copy a fresh accessToken from Postman into POS settings and save.';
-  }
-  if (lower.includes('operatori') && lower.includes('nuk gjendet')) {
-    return 'Operator code not found for this access token. Use gh537ez280 (from your verified invoice), not gh537ez200. Also copy a fresh accessToken from Postman into POS settings and save.';
+  if (
+    (lower.includes('operator') || lower.includes('operatori')) &&
+    lower.includes('nuk gjendet')
+  ) {
+    return 'Operator code not found for this access token. Check the operator code in Admin → Fiskalizimi, and that it is one this token may use.';
   }
   if (lower.includes('exrate') || lower.includes('kurs')) {
-    return 'EUR exchange rate missing. Set "Kursi EUR" in Fiskalizimi settings (e.g. 100.5).';
+    return 'Exchange rate against ALL is missing. Set it in Admin → Fiskalizimi.';
   }
   if (
     lower.includes('metodave') &&
@@ -178,7 +124,7 @@ function responseHint(
     lower.includes('totali') &&
     lower.includes('fatures')
   ) {
-    return 'Payment amount did not match invoice line totals. This is fixed in the latest POS build — restart the app and retry the payment.';
+    return 'Payment amounts do not match the invoice total. The API requires them to be equal.';
   }
   return undefined;
 }
@@ -199,7 +145,7 @@ function statusHint(
     lower.includes('not authorized')
   ) {
     return cloud
-      ? 'Check the access token (JWT from Postman) and integration-app header (e.g. generic). Save settings after pasting the token.'
+      ? 'Check the access token and the integration-app header in Admin → Fiskalizimi, then save and try again.'
       : 'Check the authorization token configured for the local easyPos API.';
   }
   if (status === 403) {
@@ -207,17 +153,17 @@ function statusHint(
   }
   if (status === 404 || lower === 'not found') {
     return cloud
-      ? 'Wrong base URL. Use https://api.dev.easypos.al/fiscalisation-service/v1 (include /fiscalisation-service/v1, no trailing slash).'
+      ? 'Wrong base URL. Use https://api.dev.easypos.al/fiscalisation-service/v1 or the production equivalent (include /fiscalisation-service/v1, no trailing slash).'
       : 'Local easyPos is not reachable at this URL. Start easyPos desktop or verify http://127.0.0.1:8080.';
   }
   if (status === 400) {
     return purpose === 'test'
-      ? 'Request reached easyPos but the payload was rejected. For connection test this usually still means auth worked.'
-      : 'Invoice rejected by easyPos. Compare your menu SKU, soldIn unit, operator code, and currency with the Postman Register Invoice (Minimal) example.';
+      ? 'Request reached easyPos but the payload was rejected. For a connection test this usually still means auth worked.'
+      : 'Invoice rejected by easyPos. Check that the menu SKU, soldIn unit, operator code, and currency match the easyPos catalog.';
   }
   if (status >= 500) {
     return cloud
-      ? `easyPos cloud returned HTTP ${status} — their server was temporarily unavailable. Wait a few seconds and retry (Postman may work on retry too). If it keeps failing, contact easyPos support.`
+      ? `easyPos cloud returned HTTP ${status} — their server was temporarily unavailable. Wait a few seconds and retry. If it keeps failing, contact easyPos support.`
       : 'easyPos server error — try again later or contact easyPos support.';
   }
   if (status === 0) {
@@ -234,7 +180,7 @@ function formatFiscalHttpError(input: {
   cloud: boolean;
   purpose?: 'payment' | 'test';
 }): string {
-  const responseText = extractApiErrorMessage(input.data);
+  const responseText = readFaultText(input.data) || '';
   const parts = [`${input.method} ${input.url} → HTTP ${input.status}`];
   if (responseText) {
     parts.push(`Response: ${responseText}`);
@@ -265,6 +211,13 @@ function formatFiscalNetworkError(
   if (
     combined.includes('econnrefused') ||
     combined.includes('connection refused') ||
+    combined.includes('enetunreach') ||
+    combined.includes('enetdown') ||
+    combined.includes('ehostunreach') ||
+    combined.includes('ehostdown') ||
+    combined.includes('network is unreachable') ||
+    combined.includes('no route to host') ||
+    combined.includes('internet disconnected') ||
     combined.includes('fetch failed')
   ) {
     return cloud
@@ -295,30 +248,6 @@ function isConnectionTestValidationError(
     'validation',
     'invalid',
   ].some((token) => lower.includes(token));
-}
-
-export function assertFiscalConfigured(settings: SettingsDTO): void {
-  const { baseUrl, authToken, provider, integrationApp, operatorCode, cloud } =
-    fiscalConfig(settings);
-  if (provider !== 'easypos') {
-    throw new Error(`Unsupported fiscal provider: ${provider || 'unknown'}`);
-  }
-  if (!baseUrl) {
-    throw new Error('Fiscal middleware base URL is not configured.');
-  }
-  if (!authToken) {
-    throw new Error('Fiscal middleware authorization token is not configured.');
-  }
-  if (cloud && !integrationApp) {
-    throw new Error(
-      'Integration app identifier is required for easyPos cloud API.',
-    );
-  }
-  if (cloud && !operatorCode) {
-    throw new Error(
-      'Operator code is required for easyPos cloud API. Use the value from Postman / your fiscalized invoice (e.g. gh537ez280).',
-    );
-  }
 }
 
 async function easyPosRequest(
@@ -400,18 +329,14 @@ async function easyPosRequest(
           neverReachedProvider(e) ? 'not-registered' : 'unknown',
         );
       }
-      if (attempt < maxAttempts && lastError.message.includes('HTTP 502')) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
-        continue;
-      }
-      if (attempt < maxAttempts && lastError.message.includes('HTTP 503')) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
-        continue;
-      }
-      if (attempt < maxAttempts && lastError.message.includes('HTTP 504')) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
-        continue;
-      }
+      // No gateway retry here. A 502/503/504 has already either been
+      // retried by the `!res.ok` branch above or exhausted the budget and
+      // been thrown — so the three blocks that used to sit here, each
+      // re-deciding that by string-matching "HTTP 502" against the rendered
+      // error message, could never fire. Retry logic that reads its own
+      // error text is a second implementation of a decision the code above
+      // has already made properly, and it drifts the moment the message
+      // wording changes.
       throw lastError;
     } finally {
       clearTimeout(timer);
@@ -422,9 +347,17 @@ async function easyPosRequest(
   );
 }
 
-function isDailyBalanceCashWarning(cisFault: string, data: any): boolean {
+/**
+ * The tax service refusing a cash invoice because the day's opening
+ * balance was never declared.
+ *
+ * Detected so the message can point at the actual remedy — which is now
+ * `POST /balance/initiate` via `initiateDailyBalance`, not a note asking
+ * staff to go and do it by hand in easyPos.
+ */
+function isDailyBalanceCashFault(faultText: string, data: any): boolean {
   const code = String(data?.error?.cisError?.faultCode || '').trim();
-  const lower = cisFault.toLowerCase();
+  const lower = faultText.toLowerCase();
   return (
     code === '123' ||
     (lower.includes('balanc') &&
@@ -433,81 +366,51 @@ function isDailyBalanceCashWarning(cisFault: string, data: any): boolean {
   );
 }
 
-function parseFiscalResponse(data: any): FiscalSaleResult {
-  const statusCode = Number(data?.status);
-  const response = data?.response || data?.data || data || {};
-  const cisFault = String(data?.error?.cisError?.faultString || '').trim();
-  if (statusCode === 1) {
-    const msg = String(
-      response?.text ||
-        data?.message ||
-        'Fiscal middleware rejected the invoice.',
-    );
-    // An explicit rejection: the provider told us it filed nothing, and
-    // it will say the same thing again until the invoice data changes.
-    throw fiscalError(msg, 'not-registered', false);
+/**
+ * Turn a response into a result, or throw a classified error.
+ *
+ * The completion contract decides, not the HTTP status and not the shape
+ * of the body. `assessCompletion` requires `fic` (and `eic` too for an
+ * electronic invoice), so the three ways the old parser could report a
+ * non-registration as a success are all closed:
+ *
+ *   - an `iic`/NSLF with no NIVF used to come back as `status: 'pending'`;
+ *   - the daily-balance CASH fault used to come back as a `pending`
+ *     success carrying a warning;
+ *   - an echoed `docId` with a `status` field used to be enough.
+ */
+function resultFromResponse(input: {
+  data: unknown;
+  httpStatus: number;
+  isEinvoice?: boolean;
+}): FiscalSaleResult {
+  const target = targetForInvoice({ isEinvoice: input.isEinvoice });
+  const verdict = assessCompletion(target, input.data);
+  if (verdict.complete) {
+    return {
+      nslf: verdict.identifiers.iic || '',
+      nivf: verdict.identifiers.fic || '',
+      ...(verdict.identifiers.eic ? { eic: verdict.identifiers.eic } : {}),
+      link: verdict.identifiers.link || '',
+      status: 'accepted',
+      raw: input.data,
+    };
   }
-  const nslf = String(
-    response?.nslf ||
-      response?.iic ||
-      response?.IIC ||
-      data?.iic ||
-      data?.IIC ||
-      '',
-  ).trim();
-  const nivf = String(
-    response?.nivf ||
-      response?.fic ||
-      response?.FIC ||
-      data?.fic ||
-      data?.FIC ||
-      '',
-  ).trim();
-  const link = String(
-    response?.link ||
-      response?.verificationUrl ||
-      response?.verificationLink ||
-      data?.link ||
-      '',
-  ).trim();
-  if (!nslf && !nivf) {
-    // No NSLF and no NIVF is not a registration, whatever else the body
-    // echoed back. Reporting it as success would print a receipt claiming
-    // fiskalizimi with blank numbers and file an audit row saying the sale
-    // was declared — so treat it as an outcome we cannot confirm and let a
-    // human check easyPos.
-    throw fiscalError(
-      cisFault || 'Fiscal middleware returned neither an NSLF nor an NIVF.',
-      'unknown',
-    );
+
+  const classification = classifyFiscalAttempt({
+    httpStatus: input.httpStatus,
+    data: input.data,
+    incomplete: true,
+    incompleteReason: verdict.reason,
+  });
+
+  const fault = readFaultText(input.data) || '';
+  let message = classification.message;
+  if (fault && isDailyBalanceCashFault(fault, input.data)) {
+    message = `${fault} · The opening cash balance for today has not been declared for this device. Declare it (Admin → Fiskalizimi → opening balance) before taking cash payments.`;
   }
-  if (cisFault && !nivf) {
-    if (nslf && isDailyBalanceCashWarning(cisFault, data)) {
-      return {
-        nslf,
-        nivf,
-        link,
-        status: 'pending',
-        warning: `${cisFault} · Report daily opening balance in easyPos for full CASH fiscalization (NIVF).`,
-        raw: data,
-      };
-    }
-    // NSLF may already have been allocated upstream, so this is not a
-    // clean "nothing happened" — do not let it be retried blindly.
-    throw fiscalError(
-      `${cisFault} · For CASH invoices, report the daily opening balance in easyPos first, or test with CARD payment.`,
-      'unknown',
-    );
-  }
-  return {
-    nslf,
-    nivf,
-    link,
-    // 'accepted' means the tax service issued the invoice number. An NSLF
-    // on its own, or an explicit pending status, is not that yet.
-    status: nivf && statusCode !== 2 ? 'accepted' : 'pending',
-    raw: data,
-  };
+
+  throw fiscalError(message, classification.outcome, classification.retryable);
 }
 
 export async function testEasyPosConnection(
@@ -523,14 +426,14 @@ export async function testEasyPosConnection(
       return {
         ok: false,
         message:
-          'Access token is not configured. Paste the JWT from Postman, save settings, then test again.',
+          'Access token is not configured. Paste the JWT in Admin → Fiskalizimi, save, then test again.',
       };
     }
     if (cloud && !integrationApp) {
       return {
         ok: false,
         message:
-          'Integration app ID is missing. Set integration-app from Postman (e.g. generic) and save.',
+          'Integration app ID is missing. Set the integration-app header in Admin → Fiskalizimi and save.',
       };
     }
     if (cloud) {
@@ -557,7 +460,7 @@ export async function testEasyPosConnection(
           return { ok: true, messageKey: 'testOkCloud' };
         }
         if (res.status === 400) {
-          const responseText = extractApiErrorMessage(data);
+          const responseText = readFaultText(data) || '';
           if (isConnectionTestValidationError(res.status, responseText)) {
             // Empty test body — API rejects missing invoice fields but auth succeeded.
             return { ok: true, messageKey: 'testOkCloudAuth' };
@@ -593,7 +496,16 @@ export async function testEasyPosConnection(
         clearTimeout(timer);
       }
     }
-    const data = await easyPosRequest(settings, '/v1', { method: 'GET' });
+    // One shot. With the gateway retry left on, an unresponsive local
+    // middleware held the settings screen's Test button for three 20s
+    // timeouts before answering — a minute of a spinner to report that
+    // something is not reachable, which one attempt establishes just as well.
+    const data = await easyPosRequest(
+      settings,
+      '/v1',
+      { method: 'GET' },
+      { retryOnGatewayError: false },
+    );
     const text = String(
       (data as any)?.response?.text || (data as any)?.text || '',
     ).trim();
@@ -640,18 +552,19 @@ export async function testMinimalCloudInvoice(
         message: 'Minimal invoice test is for easyPos cloud only.',
       };
     }
-    const soldIn =
-      String((settings as any)?.fiscal?.defaultSoldIn || 'XPP').trim() || 'XPP';
-    const articleId =
-      String(
-        (settings as any)?.fiscal?.cloudFallbackArticleId || 'PROD001',
-      ).trim() || 'PROD001';
+    const { defaultSoldIn, cloudFallbackArticleId } =
+      (settings as any)?.fiscal || {};
+    const soldIn = String(defaultSoldIn || 'XPP').trim() || 'XPP';
+    const articleId = String(cloudFallbackArticleId || '').trim();
+    if (!articleId) {
+      return {
+        ok: false,
+        message:
+          'Set a fallback article ID in Admin → Fiskalizimi first. The test invoice needs an article that exists in the easyPos catalog.',
+      };
+    }
     const draft = {
-      docId:
-        typeof globalThis.crypto !== 'undefined' &&
-        typeof globalThis.crypto.randomUUID === 'function'
-          ? globalThis.crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+      docId: newDocId('invoice'),
       articles: [
         {
           articleId,
@@ -664,27 +577,18 @@ export async function testMinimalCloudInvoice(
       ],
       payment: [{ type: 'CASH', amount: 200 }],
     };
-    const data = await easyPosRequest(settings, '/invoice/register', {
-      method: 'POST',
-      body: JSON.stringify(draft),
+    // Judged by the same completion contract as a real sale: a test that
+    // passes on an NSLF alone reports the integration as working when cash
+    // invoices are in fact not being registered at all.
+    const result = await createEasyPosSale(settings, draft as any, {
+      // A settings screen should answer quickly rather than sit through a
+      // full recovery; a real sale gets the full budget.
+      maxSendAttempts: 1,
+      maxStatusPolls: 1,
     });
-    const nslf = String(data?.iic || data?.IIC || '').trim();
-    const nivf = String(data?.fic || data?.FIC || '').trim();
-    const cisFault = String(data?.error?.cisError?.faultString || '').trim();
-    if (!nslf && !nivf) {
-      throw new Error(
-        cisFault || 'Fiscal middleware returned an invalid response.',
-      );
-    }
-    if (cisFault && !nivf) {
-      return {
-        ok: true,
-        message: `Minimal invoice OK · NSLF ${nslf} · CASH note: report daily opening balance in easyPos for full NIVF on cash sales.`,
-      };
-    }
     return {
       ok: true,
-      message: `Minimal invoice OK · NIVF ${nivf || '—'} · NSLF ${nslf || '—'}`,
+      message: `Minimal invoice OK · NIVF ${result.nivf} · NSLF ${result.nslf || '—'}`,
     };
   } catch (e: any) {
     return {
@@ -694,19 +598,66 @@ export async function testMinimalCloudInvoice(
   }
 }
 
+/**
+ * Register a sale.
+ *
+ * On the cloud API this now runs the full recovery sequence — register,
+ * back off, `POST /invoice/status` with the same docId, and replay only if
+ * the provider says it has never seen that docId. Previously a gateway
+ * error or a timeout here simply threw as an unknown outcome and the sale
+ * went to a human, because nothing ever asked easyPos what had actually
+ * happened. That was safe against duplicates and produced a steady trickle
+ * of sales stuck in review that had in fact been filed perfectly.
+ *
+ * The local middleware path is unchanged apart from the completion
+ * contract: single shot, no recovery, because it has no status route.
+ */
 export async function createEasyPosSale(
   settings: SettingsDTO,
   draft: EasyPosInvoiceDraft | EasyPosCloudInvoiceDraft,
+  options?: RecoveryOptions,
 ): Promise<FiscalSaleResult> {
   const { cloud } = fiscalConfig(settings);
-  const path = cloud ? '/invoice/register' : '/v1/invoices/new';
-  const data = await easyPosRequest(
+  const isEinvoice = (draft as any)?.isEinvoice === true;
+
+  if (!cloud) {
+    const data = await easyPosRequest(
+      settings,
+      '/v1/invoices/new',
+      { method: 'POST', body: JSON.stringify(draft) },
+      // One shot. The legacy middleware offers no way to ask what happened,
+      // so a re-POST is the very thing that files a second document.
+      { retryOnGatewayError: false },
+    );
+    return resultFromResponse({ data, httpStatus: 200, isEinvoice });
+  }
+
+  const outcome = await registerInvoiceWithRecovery(
     settings,
-    path,
-    { method: 'POST', body: JSON.stringify(draft) },
-    // One shot only. A gateway error here is an unknown outcome, and the
-    // caller routes those to manual review rather than sending again.
-    { retryOnGatewayError: false },
+    draft as unknown as RegisterInvoiceRequest,
+    options,
   );
-  return parseFiscalResponse(data);
+
+  if (outcome.kind === 'complete') {
+    return {
+      nslf: outcome.identifiers.iic || '',
+      nivf: outcome.identifiers.fic || '',
+      ...(outcome.identifiers.eic ? { eic: outcome.identifiers.eic } : {}),
+      link: outcome.identifiers.link || '',
+      status: 'accepted',
+      raw: outcome.raw,
+    };
+  }
+
+  if (outcome.kind === 'rejected') {
+    // Provably nothing filed, and it will be refused identically until the
+    // data or the configuration changes.
+    throw fiscalError(outcome.message, 'not-registered', false);
+  }
+  if (outcome.kind === 'not-registered') {
+    throw fiscalError(outcome.message, 'not-registered', true);
+  }
+  // 'unresolved': the recovery sequence could not establish whether the
+  // document exists. Never retried automatically.
+  throw fiscalError(outcome.message, 'unknown', false);
 }

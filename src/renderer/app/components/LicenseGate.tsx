@@ -7,9 +7,11 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BrandMark } from '../../components/BrandMark';
+import { DevEditionSwitch } from './DevEditionSwitch';
 import { Button, Field, Input, cn } from '../../components/ui';
 import { IconArrowLeft } from '../../components/icons';
 import { toast } from '../../stores/toasts';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import type {
   LicenseEdition,
   LicensePlanQuote,
@@ -25,6 +27,8 @@ type LicenseStatus = {
   currentPeriodEnd?: string | null;
   message?: string | null;
   billingConfigured?: boolean;
+  edition?: LicenseEdition;
+  devEditionSwitch?: boolean;
 };
 
 type GateView =
@@ -213,6 +217,26 @@ export default function LicenseGate({
     return () => window.clearTimeout(id);
   }, [resendIn]);
 
+  useEffect(() => {
+    if (isHost) {
+      if (status) useLicenseCapabilities.getState().setEdition(status.edition);
+      return;
+    }
+    let cancelled = false;
+    void window.api.settings
+      .get()
+      .then((s) => {
+        if (!cancelled)
+          useLicenseCapabilities.getState().setEdition(s?.licenseEdition);
+      })
+      .catch(() => {
+        if (!cancelled) useLicenseCapabilities.getState().setEdition(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isHost, status]);
+
   if (!isHost) return <>{children}</>;
   if (!status) {
     return (
@@ -293,6 +317,10 @@ export default function LicenseGate({
         setKeyEmailed(true);
         setResendIn(RESEND_COOLDOWN_SEC);
         goTo('login');
+        return;
+      }
+      if (r?.needsPaymentUpdate && r?.url) {
+        toast.success(t('license.payUpdateOpened'));
         return;
       }
       if (r?.url) {
@@ -389,6 +417,7 @@ export default function LicenseGate({
           ) : null}
 
           <BrandMark size="md" />
+          <DevEditionSwitch allowed={Boolean(status.devEditionSwitch)} />
 
           {billingMissing ? (
             <div className="rounded-md border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[13px] text-amber-200">

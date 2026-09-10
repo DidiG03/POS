@@ -118,14 +118,17 @@ describe('reading the provider response', () => {
     );
   });
 
-  it('will not say accepted on an NSLF alone', async () => {
-    // The tax service has not issued the invoice number yet.
+  it('refuses an NSLF alone rather than calling it a partial success', async () => {
+    // The NSLF is allocated by the fiscal device before the tax service is
+    // contacted at all, so this is a document that was prepared and not
+    // filed. It used to return `status: 'pending'`, which the callers
+    // recorded as a completed sale and printed a receipt for.
     fetchMock.mockResolvedValue(
       jsonResponse(200, { response: { nslf: 'A1' } }),
     );
-    const out = await createEasyPosSale(settings, draft as any);
-    expect(out.status).toBe('pending');
-    expect(out.nslf).toBe('A1');
+    await expect(createEasyPosSale(settings, draft as any)).rejects.toThrow(
+      /no NIVF|not registered/i,
+    );
   });
 
   it('says accepted once the invoice number is there', async () => {
@@ -136,12 +139,26 @@ describe('reading the provider response', () => {
     expect(out.status).toBe('accepted');
   });
 
-  it('honours an explicit pending status even with both identifiers', async () => {
+  it('completes on the identifiers, not on a status field', async () => {
+    // `status: 2` used to downgrade a fully identified invoice to
+    // 'pending'. The completion contract is the presence of the FIC, and
+    // an invoice the tax service has numbered is registered whatever else
+    // the envelope says.
     fetchMock.mockResolvedValue(
       jsonResponse(200, { status: 2, response: { nslf: 'A1', nivf: 'B2' } }),
     );
     const out = await createEasyPosSale(settings, draft as any);
-    expect(out.status).toBe('pending');
+    expect(out.status).toBe('accepted');
+    expect(out.nivf).toBe('B2');
+  });
+
+  it('requires an EIC as well before an electronic invoice is complete', async () => {
+    // Filed for tax but not delivered as an e-invoice. Reporting this as
+    // done leaves the buyer without the document they are owed.
+    fetchMock.mockResolvedValue(jsonResponse(200, { iic: 'A1', fic: 'B2' }));
+    await expect(
+      createEasyPosSale(settings, { ...draft, isEinvoice: true } as any),
+    ).rejects.toThrow(/EIC/i);
   });
 });
 
@@ -169,6 +186,17 @@ describe('createEasyPosSale error classification', () => {
     fetchMock.mockRejectedValue(err);
     await expect(createEasyPosSale(settings, draft as any)).rejects.toSatisfy(
       (e: any) => fiscalOutcomeOf(e) === 'not-registered',
+    );
+  });
+
+  it('treats a downed network as nothing filed, so the sale can retry', async () => {
+    const err: any = new Error('fetch failed');
+    err.cause = { code: 'ENETUNREACH' };
+    fetchMock.mockRejectedValue(err);
+    await expect(createEasyPosSale(settings, draft as any)).rejects.toSatisfy(
+      (e: any) =>
+        fiscalOutcomeOf(e) === 'not-registered' &&
+        isFiscalRetryable(e) === true,
     );
   });
 

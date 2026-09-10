@@ -17,10 +17,15 @@ export async function applyKdsVoidTicket(input: {
 
   try {
     await (prisma as any).$transaction(async (tx: any) => {
-      const order = await tx.kdsOrder.findFirst({
-        where: { area, tableLabel, closedAt: null },
-        orderBy: { openedAt: 'desc' },
-      });
+      const order =
+        (await tx.kdsOrder.findFirst({
+          where: { area, tableLabel, closedAt: null },
+          orderBy: { openedAt: 'desc' },
+        })) ||
+        (await tx.kdsOrder.findFirst({
+          where: { area, tableLabel },
+          orderBy: { openedAt: 'desc' },
+        }));
       if (!order) return;
 
       let safeBumpedById: number | null = null;
@@ -58,10 +63,12 @@ export async function applyKdsVoidTicket(input: {
           },
         });
       }
-      await tx.kdsOrder.update({
-        where: { id: order.id },
-        data: { closedAt: now },
-      });
+      if (!order.closedAt) {
+        await tx.kdsOrder.update({
+          where: { id: order.id },
+          data: { closedAt: now },
+        });
+      }
     });
     return true;
   } catch {
@@ -122,6 +129,13 @@ export async function applyKdsVoidItem(input: {
         where: { id: best.ticket.id },
         data: { itemsJson: nextItems },
       });
+      const stillLive = nextItems.some((it: any) => !it?.voided && !it?.bumped);
+      if (!stillLive) {
+        await tx.kdsTicketStation.updateMany({
+          where: { ticketId: best.ticket.id, status: 'NEW' },
+          data: { status: 'DONE', bumpedAt: new Date() },
+        });
+      }
     });
     return true;
   } catch {

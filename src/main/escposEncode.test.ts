@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('electron', () => ({ BrowserWindow: class {} }));
+vi.mock('electron', () => ({
+  BrowserWindow: class {},
+  app: {
+    isPackaged: false,
+    isReady: () => false,
+    getPath: () => '/tmp',
+  },
+  net: { fetch: vi.fn() },
+}));
 
 import {
   encodeEscposText,
@@ -74,6 +82,9 @@ describe('buildEscposTicket width', () => {
     const text = buf.toString('latin1');
     expect(text).toMatch(/\n-{48}\n/);
     expect(text).not.toMatch(/\n-{32}\n/);
+    expect(text).toContain('Salla Brenda - T1');
+    expect(text).toContain('Waiter: Sefrid');
+    expect(text).toContain('Covers: 2');
   });
 
   it('puts ë on the slip instead of ?', () => {
@@ -84,5 +95,52 @@ describe('buildEscposTicket width', () => {
     expect(buf.includes(0x89)).toBe(true);
     const ascii = buf.toString('ascii');
     expect(ascii).not.toMatch(/Antipast\?/);
+  });
+
+  it('prints a store till as Cashier without covers', () => {
+    const buf = buildEscposTicket(
+      {
+        area: 'Store',
+        tableLabel: 'Till 3',
+        covers: 1,
+        userName: 'Ana',
+        items: [{ name: 'Coffee', qty: 1, unitPrice: 200 }],
+        meta: { kind: 'PAYMENT' as const, method: 'CASH', totalAfter: 200 },
+      },
+      {
+        restaurantName: 'Shop',
+        currency: 'EUR',
+      } as any,
+    );
+    const text = buf.toString('latin1');
+    expect(text).toContain('Till 3');
+    expect(text).not.toContain('Store - Till 3');
+    expect(text).toContain('Cashier: Ana');
+    expect(text).not.toContain('Waiter:');
+    expect(text).not.toContain('Covers:');
+  });
+
+  it('prints COURSE 2 on a kitchen ORDER slip, not on drinks-only', () => {
+    const kitchen = buildEscposTicket(
+      {
+        area: 'Salla Brenda',
+        tableLabel: 'T1',
+        items: [{ name: 'Steak', qty: 1, unitPrice: 0, station: 'KITCHEN' }],
+        meta: { kind: 'ORDER' as const, courseLabel: 'Course 2' },
+      },
+      { restaurantName: 'Test', currency: 'EUR' } as any,
+    );
+    expect(kitchen.toString('latin1')).toContain('COURSE 2');
+
+    const drinks = buildEscposTicket(
+      {
+        area: 'Salla Brenda',
+        tableLabel: 'T1',
+        items: [{ name: 'Cola', qty: 1, unitPrice: 0, station: 'BAR' }],
+        meta: { kind: 'ORDER' as const, courseLabel: 'Course 2' },
+      },
+      { restaurantName: 'Test', currency: 'EUR' } as any,
+    );
+    expect(drinks.toString('latin1')).not.toContain('COURSE 2');
   });
 });

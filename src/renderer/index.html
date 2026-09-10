@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, interactive-widget=resizes-content"
     />
     <meta name="theme-color" content="#0b1220" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -13,6 +13,15 @@
       content="black-translucent"
     />
     <title>OneTap POS</title>
+    <script>
+      try {
+        var t = localStorage.getItem('pos-ui-theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+          document.documentElement.style.colorScheme = t;
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body class="pos-app font-sans text-gray-100 antialiased">
     <div id="root"></div>

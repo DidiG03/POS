@@ -8,6 +8,14 @@ export interface TicketLinePayload {
   unitPrice: number;
   vatRate?: number;
   note?: string;
+  voided?: boolean;
+  station?: 'KITCHEN' | 'BAR' | 'DESSERT';
+  categoryId?: number;
+  categoryName?: string;
+  courseId?: string | null;
+  seatId?: string | null;
+  fired?: boolean;
+  paid?: boolean;
 }
 
 export interface TicketPayload {
@@ -21,6 +29,8 @@ export interface TicketPayload {
   stockConsumeLines?: { sku?: string; qty?: number }[];
   /** Newly fired lines only — appended to the open KDS ticket instead of creating a duplicate card. */
   kdsFireItems?: TicketLinePayload[];
+  /** Shown on the KDS card when this fire is a later course. */
+  kdsCourseLabel?: string;
   /**
    * Set automatically by {@link logTicket} when the caller omits it. Present so
    * a caller that owns a longer-lived intent can supply its own.

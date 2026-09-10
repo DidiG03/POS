@@ -527,7 +527,7 @@ export default function ReservationsLayout() {
 
   return (
     <div
-      className="min-h-dvh flex flex-col pos-app text-gray-100"
+      className="h-dvh flex flex-col pos-app text-gray-100 overflow-y-auto"
       style={{
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
@@ -535,10 +535,7 @@ export default function ReservationsLayout() {
       {/* Top bar: brand, view switcher, identity. Owns the safe-area-top inset
           like the staff AppLayout so it clears the notch without exposing the
           black native view background. */}
-      <header
-        className="pos-header safe-x flex shrink-0 items-center gap-3 pt-[max(0px,env(safe-area-inset-top))]"
-        style={{ minHeight: 'var(--pos-header-h)' }}
-      >
+      <header className="pos-header safe-x flex shrink-0 items-center gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <BrandMark
             size="sm"

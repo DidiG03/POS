@@ -11,11 +11,14 @@ import {
   formatMoneyCompact,
   formatNumberMaxDecimals,
 } from '../../utils/format';
-import { EmptyState, PageHeader } from '../../components/ui/Surface';
+import { EmptyState } from '../../components/ui/Surface';
 import { Field, Input, Select, Switch } from '../../components/ui/Field';
 import { Badge } from '../../components/ui/Badge';
 import { Table, TableFrame, Td, Th } from '../../components/ui/Table';
 import { cn } from '../../components/ui/cn';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { heatmapHasOrders } from '@shared/reviewHeatmap';
+import { OrdersByTimeChart, OrdersByTimeLegend } from './OrdersByTimeChart';
 
 // ---------------------------------------------------------------------
 // Date helpers — all comparisons are computed in the operator's local
@@ -613,6 +616,95 @@ function BarChart({
   );
 }
 
+function ShareBar({
+  slices,
+  format,
+}: {
+  slices: { id: string; label: string; value: number; color: string }[];
+  format: (n: number) => string;
+}) {
+  const total = slices.reduce((n, s) => n + s.value, 0);
+  const visible = slices.filter((s) => s.value > 0);
+  return (
+    <div>
+      <div className="flex h-2.5 overflow-hidden rounded-sm bg-white/[0.06]">
+        {total > 0
+          ? visible.map((s) => (
+              <div
+                key={s.id}
+                className="h-full min-w-0"
+                style={{
+                  width: `${(s.value / total) * 100}%`,
+                  background: s.color,
+                }}
+                title={`${s.label}: ${format(s.value)}`}
+              />
+            ))
+          : null}
+      </div>
+      <ul className="mt-3 space-y-1.5">
+        {slices.map((s) => {
+          const pct = total > 0 ? (s.value / total) * 100 : 0;
+          return (
+            <li
+              key={s.id}
+              className="flex items-baseline justify-between gap-3 text-[12px]"
+            >
+              <span className="flex min-w-0 items-center gap-2 text-gray-400">
+                <span
+                  className="size-2 shrink-0 rounded-sm"
+                  style={{ background: s.color }}
+                  aria-hidden
+                />
+                <span className="truncate">{s.label}</span>
+              </span>
+              <span className="shrink-0 tabular-nums text-gray-200">
+                {format(s.value)}
+                <span className="ml-2 text-gray-500">{pct.toFixed(1)}%</span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function RankChart({
+  rows,
+  format,
+  color = '#60a5fa',
+}: {
+  rows: { label: string; value: number; hint?: string }[];
+  format: (n: number) => string;
+  color?: string;
+}) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="space-y-2">
+      {rows.map((r) => (
+        <div key={r.label} title={r.hint || `${r.label}: ${format(r.value)}`}>
+          <div className="mb-1 flex items-baseline justify-between gap-3 text-[12px]">
+            <span className="min-w-0 truncate text-gray-300">{r.label}</span>
+            <span className="shrink-0 tabular-nums text-gray-200">
+              {format(r.value)}
+            </span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-sm bg-white/[0.06]">
+            <div
+              className="h-full rounded-sm"
+              style={{
+                width: `${(r.value / max) * 100}%`,
+                background: color,
+              }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------
 // KPI cards
 // ---------------------------------------------------------------------
@@ -659,42 +751,38 @@ function KpiCard({
   const dir = delta == null ? 0 : delta > 0 ? 1 : delta < 0 ? -1 : 0;
   const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '–';
   const bothZero = delta === 0 && (prev == null || prev === value);
+  const quiet =
+    value === '—' ||
+    value === '0' ||
+    /([^\d]|^)0([.,]00)?$/.test(String(value));
   return (
-    <div className="min-w-0">
-      <div className="text-[12px] font-medium leading-snug text-gray-400">
-        {label}
-      </div>
-      <div className="mt-1.5 text-[22px] font-semibold tracking-tight tabular-nums text-gray-50">
+    <div className="admin-metric">
+      <div className="admin-metric-label">{label}</div>
+      <div className={cn('admin-metric-value', quiet && 'is-quiet')}>
         {value}
       </div>
       {showComparison && !bothZero ? (
-        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+        <div className="admin-metric-hint">
           {delta != null ? (
             <span
               className={cn(
-                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium tabular-nums',
-                dir > 0 && 'bg-emerald-500/12 text-emerald-300',
-                dir < 0 && 'bg-rose-500/12 text-rose-300',
-                dir === 0 && 'bg-white/6 text-gray-400',
+                'tabular-nums',
+                dir > 0 && 'text-emerald-400',
+                dir < 0 && 'text-rose-400',
+                dir === 0 && 'text-gray-500',
               )}
             >
               {arrow} {fmtPct(delta)}
             </span>
           ) : (
-            <span className="text-gray-500">
-              {t('adminReview.noComparison')}
-            </span>
+            <span>{t('adminReview.noComparison')}</span>
           )}
           {prev != null ? (
-            <span className="text-gray-500">
-              {t('adminReview.vsPrevious', { value: prev })}
-            </span>
+            <span> {t('adminReview.vsPrevious', { value: prev })}</span>
           ) : null}
         </div>
       ) : null}
-      {hint ? (
-        <div className="mt-1 text-[11px] text-gray-500">{hint}</div>
-      ) : null}
+      {hint ? <div className="admin-metric-hint">{hint}</div> : null}
     </div>
   );
 }
@@ -707,13 +795,9 @@ function MetricGroup({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-white/7 bg-[var(--pos-surface)] p-4">
-      <h2 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-400">
-        {title}
-      </h2>
-      <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
-        {children}
-      </div>
+    <section>
+      <h2 className="admin-kicker mb-3">{title}</h2>
+      <div className="admin-metrics">{children}</div>
     </section>
   );
 }
@@ -722,24 +806,15 @@ function Panel({
   title,
   actions,
   children,
-  className,
 }: {
   title: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
-  className?: string;
 }) {
   return (
-    <section
-      className={cn(
-        'rounded-lg border border-white/7 bg-[var(--pos-surface)] p-4',
-        className,
-      )}
-    >
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-[14px] font-semibold tracking-tight text-gray-50">
-          {title}
-        </h2>
+    <section>
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+        <h2 className="admin-kicker">{title}</h2>
         {actions}
       </div>
       {children}
@@ -753,6 +828,7 @@ function Panel({
 
 export default function AdminReviewPage() {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [presetId, setPresetId] = useState<PresetId>('thisMonth');
   const initialPreset = PRESETS.find((p) => p.id === 'thisMonth')!;
   const [granularity, setGranularity] = useState<ReviewGranularity>(
@@ -953,142 +1029,206 @@ export default function AdminReviewPage() {
     }));
   }, [data?.weekday, fmtMoney, fmtNum, t, weekdayNames]);
 
+  const methodLabel = (method: string) => {
+    if (method === 'CASH') return t('adminReview.methodCash');
+    if (method === 'CARD') return t('adminReview.methodCard');
+    return t('adminReview.methodMixed');
+  };
+
+  const methodSlices = useMemo(() => {
+    const colors: Record<string, string> = {
+      CASH: '#34d399',
+      CARD: '#60a5fa',
+      MIXED: '#f59e0b',
+    };
+    return (data?.byMethod || [])
+      .filter((m) => m.method !== 'MIXED' || m.revenue > 0 || m.orders > 0)
+      .map((m) => ({
+        id: m.method,
+        label: methodLabel(m.method),
+        value: m.revenue,
+        color: colors[m.method] || '#94a3b8',
+      }));
+  }, [data?.byMethod, t]);
+
+  const categoryRows = useMemo(
+    () =>
+      (data?.byCategory || []).slice(0, 8).map((c) => ({
+        label: c.name || t('adminReview.uncategorized'),
+        value: c.revenue,
+        hint: t('adminReview.categoryTooltip', {
+          name: c.name || t('adminReview.uncategorized'),
+          revenue: fmtMoney(c.revenue),
+          qty: fmtNum(c.qty),
+        }),
+      })),
+    [data?.byCategory, fmtMoney, fmtNum, t],
+  );
+
+  const areaRows = useMemo(
+    () =>
+      (data?.byArea || []).map((a) => ({
+        label: a.name || t('adminReview.uncategorized'),
+        value: a.revenue,
+        hint: t('adminReview.areaTooltip', {
+          name: a.name || t('adminReview.uncategorized'),
+          revenue: fmtMoney(a.revenue),
+          orders: fmtNum(a.orders),
+        }),
+      })),
+    [data?.byArea, fmtMoney, fmtNum, t],
+  );
+
+  const ticketSizeBars = useMemo(
+    () =>
+      (data?.ticketSizes || []).map((b) => ({
+        label:
+          b.max == null
+            ? t('adminReview.ticketSizePlus', {
+                min: fmtNum(b.min),
+              })
+            : t('adminReview.ticketSizeFromTo', {
+                min: fmtNum(b.min),
+                max: fmtNum(b.max),
+              }),
+        value: b.orders,
+        tooltip: t('adminReview.ticketSizeTooltip', {
+          orders: fmtNum(b.orders),
+          revenue: fmtMoney(b.revenue),
+        }),
+      })),
+    [data?.ticketSizes, fmtMoney, fmtNum, t],
+  );
+
   const chartHasData = chartSeries.some((s) => s.points.some((p) => p.y > 0));
   const hourlyHasData = hourlyBars.some((b) => b.value > 0);
   const weekdayHasData = weekdayBars.some((b) => b.value > 0);
+  const heatmapReady = heatmapHasOrders(data?.heatmap);
+  const methodHasData = methodSlices.some((s) => s.value > 0);
+  const categoryHasData = categoryRows.some((r) => r.value > 0);
+  const ticketSizeHasData = ticketSizeBars.some((b) => b.value > 0);
+  const areaHasData = areaRows.length > 1;
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-4">
-        <PageHeader
-          title={t('adminReview.title')}
-          description={t('adminReview.subtitle')}
-          actions={
-            <div
-              className="flex flex-wrap items-end gap-3"
-              role="toolbar"
-              aria-label={t('adminReview.filtersAria')}
+    <div className="admin-page">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <p className="max-w-lg text-[13px] leading-relaxed text-gray-500">
+          {t('adminReview.subtitle')}
+        </p>
+        <div
+          className="flex flex-wrap items-end gap-3"
+          role="toolbar"
+          aria-label={t('adminReview.filtersAria')}
+        >
+          <Field label={t('adminReview.period')}>
+            <Select
+              className="min-w-[220px] sm:min-w-[280px]"
+              value={presetId}
+              onChange={(e) => {
+                const id = e.target.value as PresetId;
+                if (id === 'custom') setPresetId('custom');
+                else applyPreset(id);
+              }}
             >
-              <Field label={t('adminReview.period')}>
-                <Select
-                  className="min-w-[220px] sm:min-w-[280px]"
-                  value={presetId}
-                  onChange={(e) => {
-                    const id = e.target.value as PresetId;
-                    if (id === 'custom') setPresetId('custom');
-                    else applyPreset(id);
-                  }}
-                >
-                  {PRESETS.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {presetLabel(p.id, t)}
-                    </option>
-                  ))}
-                  <option value="custom">{t('adminReview.customRange')}</option>
-                </Select>
-              </Field>
-              <Field label={t('adminReview.bucket')}>
-                <Select
-                  value={granularity}
-                  onChange={(e) =>
-                    setGranularity(e.target.value as ReviewGranularity)
-                  }
-                >
-                  <option value="day">{t('adminReview.granularityDay')}</option>
-                  <option value="month">
-                    {t('adminReview.granularityMonth')}
-                  </option>
-                  <option value="year">
-                    {t('adminReview.granularityYear')}
-                  </option>
-                </Select>
-              </Field>
-              <div className="flex h-[var(--pos-control-h)] items-center gap-2 pb-px">
-                <Switch
-                  checked={compareEnabled}
-                  onChange={setCompareEnabled}
-                  label={t('adminReview.compare')}
-                />
-                <span className="text-[13px] text-gray-200">
-                  {t('adminReview.compare')}
-                </span>
-              </div>
-            </div>
-          }
-        />
-
-        {presetId === 'custom' ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <fieldset className="rounded-lg border border-white/7 bg-[var(--pos-surface)] p-3">
-              <legend className="px-1 text-[12px] text-gray-400">
-                {t('adminReview.currentPeriod')}
-              </legend>
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  type="date"
-                  value={curStart}
-                  max={curEnd}
-                  onChange={(e) => {
-                    setPresetId('custom');
-                    setCurStart(e.target.value);
-                  }}
-                  className="w-auto"
-                />
-                <span className="text-[12px] text-gray-500">
-                  {t('adminReview.dateTo')}
-                </span>
-                <Input
-                  type="date"
-                  value={curEnd}
-                  min={curStart}
-                  onChange={(e) => {
-                    setPresetId('custom');
-                    setCurEnd(e.target.value);
-                  }}
-                  className="w-auto"
-                />
-              </div>
-            </fieldset>
-            <fieldset
-              className={cn(
-                'rounded-lg border bg-[var(--pos-surface)] p-3',
-                compareEnabled ? 'border-white/7' : 'border-white/5 opacity-50',
-              )}
+              {PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {presetLabel(p.id, t)}
+                </option>
+              ))}
+              <option value="custom">{t('adminReview.customRange')}</option>
+            </Select>
+          </Field>
+          <Field label={t('adminReview.bucket')}>
+            <Select
+              value={granularity}
+              onChange={(e) =>
+                setGranularity(e.target.value as ReviewGranularity)
+              }
             >
-              <legend className="px-1 text-[12px] text-gray-400">
-                {t('adminReview.comparePeriod')}
-              </legend>
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  type="date"
-                  value={cmpStart}
-                  max={cmpEnd}
-                  disabled={!compareEnabled}
-                  onChange={(e) => {
-                    setPresetId('custom');
-                    setCmpStart(e.target.value);
-                  }}
-                  className="w-auto"
-                />
-                <span className="text-[12px] text-gray-500">
-                  {t('adminReview.dateTo')}
-                </span>
-                <Input
-                  type="date"
-                  value={cmpEnd}
-                  min={cmpStart}
-                  disabled={!compareEnabled}
-                  onChange={(e) => {
-                    setPresetId('custom');
-                    setCmpEnd(e.target.value);
-                  }}
-                  className="w-auto"
-                />
-              </div>
-            </fieldset>
+              <option value="day">{t('adminReview.granularityDay')}</option>
+              <option value="month">{t('adminReview.granularityMonth')}</option>
+              <option value="year">{t('adminReview.granularityYear')}</option>
+            </Select>
+          </Field>
+          <div className="flex h-[var(--pos-control-h)] items-center gap-2 pb-px">
+            <Switch
+              checked={compareEnabled}
+              onChange={setCompareEnabled}
+              label={t('adminReview.compare')}
+            />
+            <span className="text-[13px] text-gray-200">
+              {t('adminReview.compare')}
+            </span>
           </div>
-        ) : null}
+        </div>
       </div>
+
+      {presetId === 'custom' ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <fieldset className="min-w-0">
+            <legend className="admin-kicker mb-2 px-0">
+              {t('adminReview.currentPeriod')}
+            </legend>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                type="date"
+                value={curStart}
+                max={curEnd}
+                onChange={(e) => {
+                  setPresetId('custom');
+                  setCurStart(e.target.value);
+                }}
+                className="w-auto"
+              />
+              <span className="text-[12px] text-gray-500">
+                {t('adminReview.dateTo')}
+              </span>
+              <Input
+                type="date"
+                value={curEnd}
+                min={curStart}
+                onChange={(e) => {
+                  setPresetId('custom');
+                  setCurEnd(e.target.value);
+                }}
+                className="w-auto"
+              />
+            </div>
+          </fieldset>
+          <fieldset className={cn('min-w-0', !compareEnabled && 'opacity-50')}>
+            <legend className="admin-kicker mb-2 px-0">
+              {t('adminReview.comparePeriod')}
+            </legend>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                type="date"
+                value={cmpStart}
+                max={cmpEnd}
+                disabled={!compareEnabled}
+                onChange={(e) => {
+                  setPresetId('custom');
+                  setCmpStart(e.target.value);
+                }}
+                className="w-auto"
+              />
+              <span className="text-[12px] text-gray-500">
+                {t('adminReview.dateTo')}
+              </span>
+              <Input
+                type="date"
+                value={cmpEnd}
+                min={cmpStart}
+                disabled={!compareEnabled}
+                onChange={(e) => {
+                  setPresetId('custom');
+                  setCmpEnd(e.target.value);
+                }}
+                className="w-auto"
+              />
+            </div>
+          </fieldset>
+        </div>
+      ) : null}
 
       {error && (
         <div className="rounded-lg border border-rose-800 bg-rose-900/30 p-3 text-sm text-rose-100">
@@ -1096,56 +1236,84 @@ export default function AdminReviewPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3">
-        <MetricGroup title={t('adminReview.groupSales')}>
-          <KpiCard
-            label={t('adminReview.revenueGross')}
-            value={fmtMoney(currentGross)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtMoney(compareGross) : null}
-            delta={deltaFor(currentGross, compare ? compareGross : null)}
-          />
-          <KpiCard
-            label={t('adminReview.revenueNet')}
-            value={fmtMoney(summary?.revenueNet ?? 0)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtMoney(compare.revenueNet) : null}
-            delta={deltaFor(summary?.revenueNet ?? 0, compare?.revenueNet)}
-          />
-          <KpiCard
-            label={t('adminReview.vat')}
-            value={fmtMoney(summary?.revenueVat ?? 0)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtMoney(compare.revenueVat) : null}
-            delta={deltaFor(summary?.revenueVat ?? 0, compare?.revenueVat)}
-          />
-        </MetricGroup>
+      <MetricGroup title={t('adminReview.groupSales')}>
+        <KpiCard
+          label={t('adminReview.revenueGross')}
+          value={fmtMoney(currentGross)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtMoney(compareGross) : null}
+          delta={deltaFor(currentGross, compare ? compareGross : null)}
+        />
+        <KpiCard
+          label={t('adminReview.revenueNet')}
+          value={fmtMoney(summary?.revenueNet ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtMoney(compare.revenueNet) : null}
+          delta={deltaFor(summary?.revenueNet ?? 0, compare?.revenueNet)}
+        />
+        <KpiCard
+          label={t('adminReview.vat')}
+          value={fmtMoney(summary?.revenueVat ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtMoney(compare.revenueVat) : null}
+          delta={deltaFor(summary?.revenueVat ?? 0, compare?.revenueVat)}
+        />
+      </MetricGroup>
 
-        <MetricGroup title={t('adminReview.groupActivity')}>
+      <MetricGroup title={t('adminReview.groupActivity')}>
+        <KpiCard
+          label={t('adminReview.orders')}
+          value={fmtNum(summary?.orders ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.orders) : null}
+          delta={deltaFor(summary?.orders ?? 0, compare?.orders)}
+          hint={t('adminReview.ordersHint')}
+        />
+        <KpiCard
+          label={t('adminReview.itemsSold')}
+          value={fmtNum(summary?.items ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.items) : null}
+          delta={deltaFor(summary?.items ?? 0, compare?.items)}
+        />
+        <KpiCard
+          label={t('adminReview.avgTicket')}
+          value={fmtMoney(summary?.avgTicket ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtMoney(compare.avgTicket) : null}
+          delta={deltaFor(summary?.avgTicket ?? 0, compare?.avgTicket)}
+        />
+        {hasTables ? (
           <KpiCard
-            label={t('adminReview.orders')}
-            value={fmtNum(summary?.orders ?? 0)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtNum(compare.orders) : null}
-            delta={deltaFor(summary?.orders ?? 0, compare?.orders)}
+            label={t('adminReview.avgSpendPerCover')}
+            value={
+              (summary?.covers ?? 0) > 0
+                ? fmtMoney(summary?.avgSpendPerCover ?? 0)
+                : '—'
+            }
+            showComparison={compareEnabled && (compare?.covers ?? 0) > 0}
+            prev={
+              (compare?.covers ?? 0) > 0
+                ? fmtMoney(compare?.avgSpendPerCover ?? 0)
+                : null
+            }
+            delta={deltaFor(
+              summary?.avgSpendPerCover ?? 0,
+              (compare?.covers ?? 0) > 0 ? compare?.avgSpendPerCover : null,
+            )}
+            hint={t('adminReview.avgSpendPerCoverHint')}
           />
-          <KpiCard
-            label={t('adminReview.itemsSold')}
-            value={fmtNum(summary?.items ?? 0)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtNum(compare.items) : null}
-            delta={deltaFor(summary?.items ?? 0, compare?.items)}
-          />
-          <KpiCard
-            label={t('adminReview.avgTicket')}
-            value={fmtMoney(summary?.avgTicket ?? 0)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtMoney(compare.avgTicket) : null}
-            delta={deltaFor(summary?.avgTicket ?? 0, compare?.avgTicket)}
-          />
-        </MetricGroup>
+        ) : null}
+      </MetricGroup>
 
-        <MetricGroup title={t('adminReview.groupGuestsControl')}>
+      <MetricGroup
+        title={t(
+          hasTables
+            ? 'adminReview.groupGuestsControl'
+            : 'adminReview.groupControl',
+        )}
+      >
+        {hasTables ? (
           <KpiCard
             label={t('adminReview.covers')}
             value={fmtNum(summary?.covers ?? 0)}
@@ -1154,28 +1322,25 @@ export default function AdminReviewPage() {
             delta={deltaFor(summary?.covers ?? 0, compare?.covers)}
             hint={t('adminReview.coversHint')}
           />
-          <KpiCard
-            label={t('adminReview.avgItemsPerTicket')}
-            value={fmtNum(summary?.avgItemsPerTicket ?? 0)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtNum(compare.avgItemsPerTicket) : null}
-            delta={deltaFor(
-              summary?.avgItemsPerTicket ?? 0,
-              compare?.avgItemsPerTicket,
-            )}
-          />
-          <KpiCard
-            label={t('adminReview.voidedTickets')}
-            value={fmtNum(summary?.voidedTickets ?? 0)}
-            showComparison={compareEnabled}
-            prev={compare ? fmtNum(compare.voidedTickets) : null}
-            delta={deltaFor(
-              summary?.voidedTickets ?? 0,
-              compare?.voidedTickets,
-            )}
-          />
-        </MetricGroup>
-      </div>
+        ) : null}
+        <KpiCard
+          label={t('adminReview.avgItemsPerTicket')}
+          value={fmtNum(summary?.avgItemsPerTicket ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.avgItemsPerTicket) : null}
+          delta={deltaFor(
+            summary?.avgItemsPerTicket ?? 0,
+            compare?.avgItemsPerTicket,
+          )}
+        />
+        <KpiCard
+          label={t('adminReview.voidedTickets')}
+          value={fmtNum(summary?.voidedTickets ?? 0)}
+          showComparison={compareEnabled}
+          prev={compare ? fmtNum(compare.voidedTickets) : null}
+          delta={deltaFor(summary?.voidedTickets ?? 0, compare?.voidedTickets)}
+        />
+      </MetricGroup>
 
       <Panel
         title={t('adminReview.revenueOverTime')}
@@ -1217,7 +1382,7 @@ export default function AdminReviewPage() {
         )}
       </Panel>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-3">
         <Panel title={t('adminReview.topItemsTitleGross')}>
           {data?.topItems?.length ? (
             <TableFrame>
@@ -1249,26 +1414,94 @@ export default function AdminReviewPage() {
           )}
         </Panel>
 
-        <Panel title={t('adminReview.salesByHour')}>
-          {hourlyHasData ? (
-            <BarChart data={hourlyBars} height={180} format={fmtMoney} />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-2">
+          <Panel title={t('adminReview.salesByHour')}>
+            {hourlyHasData ? (
+              <BarChart data={hourlyBars} height={180} format={fmtMoney} />
+            ) : (
+              <EmptyState compact title={t('adminReview.emptyChart')} />
+            )}
+          </Panel>
+
+          <Panel title={t('adminReview.salesByWeekday')}>
+            {weekdayHasData ? (
+              <BarChart
+                data={weekdayBars}
+                height={180}
+                format={fmtMoney}
+                color="#a78bfa"
+              />
+            ) : (
+              <EmptyState compact title={t('adminReview.emptyChart')} />
+            )}
+          </Panel>
+
+          <div className="sm:col-span-2">
+            <Panel
+              title={t('adminReview.ordersByTime')}
+              actions={<OrdersByTimeLegend cells={data?.heatmap} />}
+            >
+              {loading && !data ? (
+                <div className="flex h-[120px] items-center justify-center text-sm text-gray-500">
+                  {t('adminReview.loading')}
+                </div>
+              ) : heatmapReady ? (
+                <OrdersByTimeChart
+                  cells={data?.heatmap}
+                  weekdayNames={weekdayNames}
+                  fmtMoney={fmtMoney}
+                />
+              ) : (
+                <EmptyState
+                  compact
+                  title={t('adminReview.emptyChart')}
+                  description={t('adminReview.emptyChartHint')}
+                />
+              )}
+            </Panel>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <Panel title={t('adminReview.paymentMix')}>
+          {methodHasData ? (
+            <ShareBar slices={methodSlices} format={fmtMoney} />
           ) : (
             <EmptyState compact title={t('adminReview.emptyChart')} />
           )}
         </Panel>
-
-        <Panel title={t('adminReview.salesByWeekday')}>
-          {weekdayHasData ? (
+        <Panel title={t('adminReview.ticketSize')}>
+          {ticketSizeHasData ? (
             <BarChart
-              data={weekdayBars}
-              height={180}
-              format={fmtMoney}
-              color="#a78bfa"
+              data={ticketSizeBars}
+              height={160}
+              format={fmtNum}
+              color="#fbbf24"
             />
           ) : (
             <EmptyState compact title={t('adminReview.emptyChart')} />
           )}
         </Panel>
+        <Panel
+          title={t('adminReview.salesByCategory')}
+          actions={
+            <span className="text-[12px] text-gray-500">
+              {t('adminReview.categoryHint')}
+            </span>
+          }
+        >
+          {categoryHasData ? (
+            <RankChart rows={categoryRows} format={fmtMoney} />
+          ) : (
+            <EmptyState compact title={t('adminReview.emptyChart')} />
+          )}
+        </Panel>
+        {areaHasData ? (
+          <Panel title={t('adminReview.salesByArea')}>
+            <RankChart rows={areaRows} format={fmtMoney} color="#a78bfa" />
+          </Panel>
+        ) : null}
       </div>
 
       <Panel
@@ -1337,6 +1570,7 @@ function PeriodSummaryCard({
   fmtNum: (n: number) => string;
 }) {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   if (!summary) {
     return (
       <Panel title={title}>
@@ -1365,18 +1599,39 @@ function PeriodSummaryCard({
     { k: t('adminReview.summaryVat'), v: fmtMoney(summary.revenueVat) },
     { k: t('adminReview.summaryOrders'), v: fmtNum(summary.orders) },
     { k: t('adminReview.summaryItemsSold'), v: fmtNum(summary.items) },
-    { k: t('adminReview.summaryCovers'), v: fmtNum(summary.covers) },
+    ...(hasTables
+      ? [{ k: t('adminReview.summaryCovers'), v: fmtNum(summary.covers) }]
+      : []),
     { k: t('adminReview.summaryAvgTicket'), v: fmtMoney(summary.avgTicket) },
+    ...(hasTables
+      ? [
+          {
+            k: t('adminReview.summaryAvgSpendPerCover'),
+            v:
+              summary.covers > 0
+                ? fmtMoney(summary.avgSpendPerCover ?? 0)
+                : '—',
+          },
+        ]
+      : []),
     {
       k: t('adminReview.summaryAvgItemsPerTicket'),
       v: fmtNum(summary.avgItemsPerTicket),
     },
+    ...(hasTables
+      ? [
+          {
+            k: t('adminReview.summaryUniqueTables'),
+            v: fmtNum(summary.uniqueTables),
+          },
+        ]
+      : []),
     {
-      k: t('adminReview.summaryUniqueTables'),
-      v: fmtNum(summary.uniqueTables),
-    },
-    {
-      k: t('adminReview.summaryWaitersWithSales'),
+      k: t(
+        hasTables
+          ? 'adminReview.summaryWaitersWithSales'
+          : 'adminReview.summaryCashiersWithSales',
+      ),
       v: fmtNum(summary.uniqueWaiters),
     },
     {
@@ -1422,6 +1677,7 @@ function WaiterTable({
   totalRevenue: number;
 }) {
   const { t } = useTranslation();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({
     key: 'revenue',
     desc: true,
@@ -1469,7 +1725,9 @@ function WaiterTable({
             <Th numeric>{headerBtn('revenue', t('adminReview.revenue'))}</Th>
             <Th numeric>{headerBtn('orders', t('adminReview.orders'))}</Th>
             <Th numeric>{headerBtn('items', t('adminReview.items'))}</Th>
-            <Th numeric>{headerBtn('covers', t('adminReview.covers'))}</Th>
+            {hasTables ? (
+              <Th numeric>{headerBtn('covers', t('adminReview.covers'))}</Th>
+            ) : null}
             <Th numeric>
               {headerBtn('avgTicket', t('adminReview.avgTicket'))}
             </Th>
@@ -1514,7 +1772,7 @@ function WaiterTable({
                 </Td>
                 <Td numeric>{fmtNum(w.orders)}</Td>
                 <Td numeric>{fmtNum(w.items)}</Td>
-                <Td numeric>{fmtNum(w.covers)}</Td>
+                {hasTables ? <Td numeric>{fmtNum(w.covers)}</Td> : null}
                 <Td numeric>{fmtMoney(w.avgTicket)}</Td>
                 <Td numeric>
                   {w.hoursWorked > 0 ? fmtNum(w.hoursWorked) : '—'}

@@ -66,6 +66,7 @@ describe('IPC policy shape', () => {
       'license:getPlans',
       'license:getStatus',
       'license:restore',
+      'license:setDevEdition',
       'network:getIps',
       'offline:getStatus',
       'reservations:openWindow',
@@ -150,6 +151,17 @@ describe('IPC policy shape', () => {
       'CASHIER',
       'WAITER',
     ]);
+  });
+
+  it('lets floor staff read kitchen tickets without bump rights', () => {
+    expect(IPC_POLICIES['kds:listFloorOrders']?.allow).toEqual([
+      'ADMIN',
+      'CASHIER',
+      'WAITER',
+    ]);
+    expect(IPC_POLICIES['kds:listFloorOrders']?.windows).toBeUndefined();
+    expect(IPC_POLICIES['kds:waiterBumpItem']).toBeUndefined();
+    expect(IPC_POLICIES['kds:waiterBump']).toBeUndefined();
   });
 
   it('uses only known roles', () => {

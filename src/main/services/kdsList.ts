@@ -5,11 +5,20 @@ import {
   type KdsStation,
 } from '@shared/kdsStations';
 import {
+  COOKER_STATION,
   isTwoStageKitchen,
+  kdsStationRowVisible,
+  ticketLogLooksFullyVoided,
   viewKitchenItemsForCooker,
   type CookerTab,
 } from '@shared/kdsCooker';
 import { splitTableKey } from '@shared/utils/tableKey';
+import { kdsStationListWhere } from './kdsRetention';
+import {
+  floorItemsFromTicket,
+  type KdsFloorOrder,
+} from '@shared/kdsFloorOrders';
+import { broadcastTicketsChanged } from './realtime';
 
 export type KdsListOptions = {
   /** This screen is the cooker's display (first of the two kitchen stages). */
@@ -54,6 +63,45 @@ async function getSessionOwnerId(
     })
     .catch(() => null);
   return last ? Number(last.userId) : null;
+}
+
+/** Closed KDS orders whose POS ticket was voided (including pre-fix leftovers). */
+async function voidedClosedOrderIds(rows: any[]): Promise<Set<number>> {
+  const byId = new Map<number, any>();
+  for (const r of rows as any[]) {
+    const o = r?.ticket?.order;
+    const id = Number(o?.id);
+    if (!id || !o?.closedAt || byId.has(id)) continue;
+    byId.set(id, o);
+  }
+  const out = new Set<number>();
+  await Promise.all(
+    [...byId.values()].map(async (o) => {
+      const openedAt =
+        o.openedAt instanceof Date ? o.openedAt : new Date(o.openedAt);
+      const closedAt =
+        o.closedAt instanceof Date ? o.closedAt : new Date(o.closedAt);
+      if (
+        Number.isNaN(openedAt.getTime()) ||
+        Number.isNaN(closedAt.getTime())
+      ) {
+        return;
+      }
+      const last = await prisma.ticketLog
+        .findFirst({
+          where: {
+            area: String(o.area || ''),
+            tableLabel: String(o.tableLabel || ''),
+            createdAt: { gte: openedAt, lte: closedAt },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { itemsJson: true, note: true },
+        })
+        .catch(() => null);
+      if (ticketLogLooksFullyVoided(last)) out.add(Number(o.id));
+    }),
+  );
+  return out;
 }
 
 export async function formatKdsTicketListRows(
@@ -110,10 +158,13 @@ export async function formatKdsTicketListRows(
     ),
   );
 
+  const voidedOrderIds = await voidedClosedOrderIds(rows);
+
   return (rows as any[])
     .map((r: any) => {
       const t = r.ticket;
       const o = t?.order;
+      if (voidedOrderIds.has(Number(o?.id))) return null;
       const area = String(o?.area || '');
       const tableLabel = String(o?.tableLabel || '');
       const tableKey = `${area}:${tableLabel}`;
@@ -139,10 +190,8 @@ export async function formatKdsTicketListRows(
           tab: (status as CookerTab) === 'DONE' ? 'DONE' : 'NEW',
         });
         if (items.length === 0) return null;
-      } else if (status === 'NEW') {
-        // Keep the card on NEW while any line is still open (including voided).
-        const hasOpen = stationItems.some((it: any) => !it?.bumped);
-        if (!hasOpen) return null;
+      } else if (!kdsStationRowVisible(stationItems, status)) {
+        return null;
       }
 
       return {
@@ -270,4 +319,103 @@ export async function getKdsTicketDetail(
     note: row.note ?? null,
     stations,
   };
+}
+
+export function notifyKdsTicketChanged(ticket: any) {
+  const o = ticket?.order;
+  if (!o) return;
+  try {
+    broadcastTicketsChanged({
+      area: String(o.area || ''),
+      tableLabel: String(o.tableLabel || ''),
+      userId: Number(ticket.userId || 0) || null,
+    });
+  } catch {
+    // broadcasting is best-effort
+  }
+}
+
+async function waiterUserIdForTicket(ticket: any): Promise<number | null> {
+  const o = ticket?.order;
+  const area = String(o?.area || '');
+  const tableLabel = String(o?.tableLabel || '');
+  const ownerId =
+    area && tableLabel ? await getSessionOwnerId(area, tableLabel) : null;
+  const fromTicket = Number(ticket?.userId || 0);
+  if (ownerId && ownerId > 0) return ownerId;
+  if (Number.isFinite(fromTicket) && fromTicket > 0) return fromTicket;
+  return null;
+}
+
+/**
+ * View-only board for the signed-in waiter: live lines on enabled KDS
+ * stations that this waiter owns. Items leave when the kitchen display bumps
+ * them — the POS Orders tab cannot bump.
+ */
+export async function listWaiterFloorOrders(
+  stations: string[],
+  options: { waiterUserId?: number } = {},
+): Promise<KdsFloorOrder[]> {
+  const enabled = [
+    ...new Set(stations.map((s) => String(s || '').toUpperCase())),
+  ].filter(Boolean);
+  const waiterUserId = Number(options.waiterUserId || 0);
+  if (enabled.length === 0 || !waiterUserId) return [];
+
+  const enabledSet = new Set(enabled);
+
+  const byTicket = new Map<number, any>();
+  for (const station of enabled) {
+    const rows = await (prisma as any).kdsTicketStation.findMany({
+      where: kdsStationListWhere(station, 'NEW'),
+      include: { ticket: { include: { order: true } } },
+      take: 100,
+    });
+    for (const row of rows as any[]) {
+      const ticket = row?.ticket;
+      const id = Number(ticket?.id);
+      if (!id || byTicket.has(id)) continue;
+      byTicket.set(id, ticket);
+    }
+  }
+
+  const tickets = [...byTicket.values()];
+  const voidedOrderIds = await voidedClosedOrderIds(
+    tickets.map((ticket) => ({ ticket })),
+  );
+  const waiter = await prisma.user
+    .findUnique({
+      where: { id: waiterUserId },
+      select: { displayName: true },
+    })
+    .catch(() => null);
+  const waiterName = waiter?.displayName ?? null;
+
+  const out: KdsFloorOrder[] = [];
+  for (const ticket of tickets) {
+    const o = ticket?.order;
+    if (voidedOrderIds.has(Number(o?.id))) continue;
+    const ownerId = await waiterUserIdForTicket(ticket);
+    if (ownerId !== waiterUserId) continue;
+    const items = floorItemsFromTicket(
+      Array.isArray(ticket?.itemsJson) ? ticket.itemsJson : [],
+      enabledSet,
+    );
+    if (items.length === 0) continue;
+    out.push({
+      ticketId: Number(ticket.id),
+      orderNo: Number(o?.orderNo || 0),
+      area: String(o?.area || ''),
+      tableLabel: String(o?.tableLabel || ''),
+      waiterName,
+      waiterUserId,
+      firedAt: ticket?.firedAt?.toISOString?.() ?? null,
+      note: ticket?.note ?? null,
+      items,
+    });
+  }
+
+  return out.sort((a, b) =>
+    String(a.firedAt || '').localeCompare(String(b.firedAt || '')),
+  );
 }

@@ -1,9 +1,5 @@
 import type { SettingsDTO } from '@shared/ipc';
-import {
-  isVatEnabledFromSettings,
-  resolveVatEnabledFromMeta,
-} from '@shared/vatFromFiscal';
-import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
+import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import type { ShiftClosePrintSummary } from '../print';
@@ -11,49 +7,9 @@ import { dispatchTicket, pickActiveReceiptProfile } from './printDispatcher';
 
 export type { ShiftClosePrintSummary };
 
-function paymentTotalFromPayload(
-  p: any,
-  settings: unknown,
-): {
-  subtotal: number;
-  vat: number;
-  total: number;
-  method: string;
-} {
-  const meta = (p?.meta as any) || {};
-  const items = Array.isArray(p?.items) ? p.items : [];
-  // VAT-inclusive: extract the contained tax from the gross line totals.
-  const grossSubtotal = items.reduce(
-    (s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1),
-    0,
-  );
-  const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
-  const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
-  const vat = vatEnabled
-    ? items.reduce((s: number, it: any) => {
-        const lineGross = Number(it.unitPrice || 0) * Number(it.qty || 1);
-        const rate = effectiveVatRate(it.vatRate, defaultVatRate);
-        return s + splitGrossVat(lineGross, rate).vat;
-      }, 0)
-    : 0;
-  const subtotal = grossSubtotal - vat;
-  const serviceChargeAmount = Number(meta.serviceChargeAmount || 0);
-  const discountAmount = Number(meta.discountAmount || 0);
-  const fallbackTotal = Math.max(
-    0,
-    subtotal +
-      vat +
-      (Number.isFinite(serviceChargeAmount) ? serviceChargeAmount : 0) -
-      (Number.isFinite(discountAmount) ? discountAmount : 0),
-  );
-  const totalAfter = Number(meta.totalAfter);
-  const total = Number.isFinite(totalAfter)
-    ? Math.max(0, totalAfter)
-    : fallbackTotal;
-  const method = String(meta.method || meta.paymentMethod || '')
-    .trim()
-    .toUpperCase();
-  return { subtotal, vat, total, method };
+function num(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
 export async function computeShiftPaidTotals(args: {
@@ -70,20 +26,17 @@ export async function computeShiftPaidTotals(args: {
   const settings = await coreServices.readSettings().catch(() => ({}));
   const fiscalVatEnabled = isVatEnabledFromSettings(settings);
 
-  const jobs = await prisma.printJob
+  const sales = await prisma.order
     .findMany({
       where: {
-        type: 'RECEIPT' as any,
-        attempts: 0,
-        createdAt: { gte: args.openedAt, lte: args.closedAt },
+        status: 'PAID' as any,
+        userId: args.userId,
+        closedAt: { gte: args.openedAt, lte: args.closedAt },
       } as any,
-      orderBy: { createdAt: 'asc' },
-      take: 2000,
-      select: { createdAt: true, payloadJson: true, attempts: true } as any,
+      orderBy: { closedAt: 'asc' },
+      include: { payments: { select: { method: true, amount: true } } },
     })
-    .catch(
-      () => [] as { createdAt: Date; payloadJson: any; attempts?: number }[],
-    );
+    .catch(() => []);
 
   let revenueNet = 0;
   let revenueVat = 0;
@@ -91,17 +44,11 @@ export async function computeShiftPaidTotals(args: {
   let orders = 0;
   const byMethod = new Map<string, number>();
 
-  for (const j of jobs) {
-    if (Number((j as any)?.attempts || 0) > 0) continue;
-    const p = (j.payloadJson as any) || {};
-    const meta = (p?.meta as any) || {};
-    if (String(meta?.kind || '') !== 'PAYMENT') continue;
-    if (Number(meta?.userId || 0) !== Number(args.userId)) continue;
-
-    const { subtotal, vat, total, method } = paymentTotalFromPayload(
-      p,
-      settings,
-    );
+  for (const sale of sales as any[]) {
+    const subtotal = num(sale.subtotal);
+    const vat = num(sale.vatAmount);
+    const total = num(sale.total);
+    const method = String(sale.payments?.[0]?.method || '').toUpperCase();
     revenueNet += subtotal;
     revenueVat += vat;
     revenueGross += total;

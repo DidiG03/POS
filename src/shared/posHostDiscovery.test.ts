@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  collectLanScanHosts,
   hostFromDebugBody,
   hostsInSlash24,
   isPosDebugBody,
@@ -76,5 +77,14 @@ describe('isPrivateIpv4', () => {
   it('accepts restaurant LAN ranges', () => {
     expect(isPrivateIpv4('192.168.1.10')).toBe(true);
     expect(isPrivateIpv4('8.8.8.8')).toBe(false);
+  });
+});
+
+describe('collectLanScanHosts', () => {
+  it('scans the typed POS subnet when the phone has no local IP', () => {
+    const hosts = collectLanScanHosts([], ['192.168.33.7']);
+    expect(hosts).toContain('192.168.33.7');
+    expect(hosts).toContain('192.168.33.1');
+    expect(hosts).not.toContain('192.168.1.1');
   });
 });

@@ -1,6 +1,6 @@
 /**
  * Billing-only API: Stripe Checkout + license keys.
- * No Postgres. Stripe is the source of truth; keys are HMAC of customer id.
+ * No Postgres. Stripe is the source of truth; keys are HMAC of customer id + edition.
  */
 import express from 'express';
 import cors from 'cors';
@@ -9,17 +9,25 @@ import { env, requireEnv } from './env.js';
 import {
   issueLicenseKey,
   normalizeLicenseEmail,
+  parseLicenseEdition,
   parseLicenseKey,
+  type LicenseEdition,
 } from './licenseKey.js';
 import { sendLicenseKeyEmail } from './sendLicenseEmail.js';
+import {
+  allowRateLimit,
+  canIssueLicense,
+  clientIpFromHeaders,
+  mapSubStatus,
+  shouldUpdatePaymentInsteadOfCheckout,
+  type LicenseSubStatus,
+} from './billingGuards.js';
 
 requireEnv();
 
 const stripe = new Stripe(env.stripeSecretKey);
 
 const ACTIVE_SUB_STATUSES = new Set(['active', 'trialing']);
-
-type LicenseEdition = 'RESTAURANT' | 'STORE';
 
 type PlanQuote = {
   amount: number;
@@ -56,13 +64,6 @@ const ZERO_DECIMAL = new Set([
   'xpf',
 ]);
 
-function parseEdition(raw: unknown): LicenseEdition | '' {
-  const v = String(raw || '')
-    .trim()
-    .toUpperCase();
-  return v === 'STORE' || v === 'RESTAURANT' ? v : '';
-}
-
 function priceIdForEdition(edition: LicenseEdition): string {
   return edition === 'STORE'
     ? env.stripePriceIdStore
@@ -86,7 +87,7 @@ function priceIdsFromSubscription(sub: Stripe.Subscription): string[] {
 }
 
 function editionFromSubscription(sub: Stripe.Subscription): LicenseEdition {
-  const fromMeta = parseEdition(sub.metadata?.edition);
+  const fromMeta = parseLicenseEdition(sub.metadata?.edition);
   if (fromMeta) return fromMeta;
   const ids = priceIdsFromSubscription(sub);
   for (const id of ids) {
@@ -144,12 +145,33 @@ async function loadPlans(): Promise<{
   return { restaurant, store };
 }
 
-function mapSubStatus(raw: string): SubInfo['status'] {
-  const s = raw.toLowerCase();
-  if (s === 'active' || s === 'trialing') return 'ACTIVE';
-  if (s === 'past_due' || s === 'unpaid' || s === 'incomplete')
-    return 'PAST_DUE';
-  return 'PAUSED';
+function requestIp(req: { headers: Record<string, unknown>; socket?: { remoteAddress?: string } }): string {
+  return clientIpFromHeaders(
+    req.headers as Record<string, string | string[] | undefined>,
+    req.socket?.remoteAddress,
+  );
+}
+
+function rateLimited(
+  req: { headers: Record<string, unknown>; socket?: { remoteAddress?: string } },
+  bucket: string,
+  max: number,
+  windowMs: number,
+): boolean {
+  return !allowRateLimit(`${bucket}:${requestIp(req)}`, max, windowMs);
+}
+
+async function portalUrlForCustomer(customerId: string): Promise<string | undefined> {
+  try {
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: `${env.appBaseUrl}/return`,
+    });
+    return portal.url || undefined;
+  } catch (e) {
+    console.error('billing portal', e);
+    return undefined;
+  }
 }
 
 async function subscriptionForCustomer(customerId: string): Promise<{
@@ -203,7 +225,12 @@ async function licenseInfoForCustomer(
       : null,
     subscriptionId: sub.id,
     edition: sub.edition,
-    licenseKey: issueLicenseKey(customer.id, email, env.licenseSigningSecret),
+    licenseKey: issueLicenseKey(
+      customer.id,
+      email,
+      env.licenseSigningSecret,
+      sub.edition,
+    ),
   };
 }
 
@@ -221,19 +248,6 @@ async function emailKeyIfActive(
     console.error('license email', e);
     return { sent: false, reason: 'email' };
   }
-}
-
-const restoreHits = new Map<string, { count: number; resetAt: number }>();
-function allowRestore(ip: string): boolean {
-  const now = Date.now();
-  const cur = restoreHits.get(ip);
-  if (!cur || cur.resetAt <= now) {
-    restoreHits.set(ip, { count: 1, resetAt: now + 60 * 60 * 1000 });
-    return true;
-  }
-  if (cur.count >= 8) return false;
-  cur.count += 1;
-  return true;
 }
 
 const app = express();
@@ -283,6 +297,9 @@ app.get('/plans', async (_req, res) => {
 });
 
 app.post('/checkout/create', async (req, res) => {
+  if (rateLimited(req, 'checkout', 10, 60 * 1000)) {
+    return res.status(429).json({ error: 'Too many checkout attempts' });
+  }
   try {
     const email = normalizeLicenseEmail(String(req.body?.email || ''));
     if (!email || !email.includes('@')) {
@@ -290,16 +307,30 @@ app.post('/checkout/create', async (req, res) => {
     }
     const existing = await findCustomerByEmail(email);
     if (existing) {
-      const mailed = await emailKeyIfActive(email);
-      if (mailed.sent) {
-        return res.status(200).json({
-          alreadyLicensed: true,
-          emailed: true,
-        });
-      }
-      if (mailed.reason === 'email') {
+      const info = await licenseInfoForCustomer(existing, email);
+      if (info && canIssueLicense(info.status)) {
+        const mailed = await emailKeyIfActive(email);
+        if (mailed.sent) {
+          return res.status(200).json({
+            alreadyLicensed: true,
+            emailed: true,
+          });
+        }
         return res.status(500).json({
           error: 'Could not email the license key. Try Already a customer.',
+        });
+      }
+      if (info && shouldUpdatePaymentInsteadOfCheckout(info.status)) {
+        const url = await portalUrlForCustomer(existing.id);
+        if (!url) {
+          return res.status(500).json({
+            error: 'Could not open billing. Try Already a customer.',
+          });
+        }
+        return res.status(200).json({
+          needsPaymentUpdate: true,
+          alreadyLicensed: false,
+          url,
         });
       }
     }
@@ -308,7 +339,7 @@ app.post('/checkout/create', async (req, res) => {
       String(v || '')
         .trim()
         .slice(0, n);
-    const edition = parseEdition(req.body?.edition);
+    const edition = parseLicenseEdition(req.body?.edition);
     if (!edition) {
       return res
         .status(400)
@@ -339,15 +370,16 @@ app.post('/checkout/create', async (req, res) => {
       },
     });
     return res.status(200).json({ url: session.url, alreadyLicensed: false });
-  } catch (e: any) {
+  } catch (e) {
     console.error('checkout/create', e);
-    return res
-      .status(500)
-      .json({ error: String(e?.message || 'Could not start checkout') });
+    return res.status(500).json({ error: 'Could not start checkout' });
   }
 });
 
 app.post('/license/activate-session', async (req, res) => {
+  if (rateLimited(req, 'activate', 20, 60 * 1000)) {
+    return res.status(429).json({ error: 'Too many activation attempts' });
+  }
   try {
     const sessionId = String(req.body?.sessionId || '').trim();
     if (!sessionId.startsWith('cs_')) {
@@ -382,25 +414,36 @@ app.post('/license/activate-session', async (req, res) => {
       customer as Stripe.Customer,
       email,
     );
-    if (!info) {
-      return res.status(402).json({ error: 'No active subscription yet' });
+    if (!info || !canIssueLicense(info.status)) {
+      const portalUrl = await portalUrlForCustomer(
+        (customer as Stripe.Customer).id,
+      );
+      return res.status(200).json({
+        valid: false,
+        status: (info?.status || 'PAUSED') as LicenseSubStatus,
+        email: info?.email || email,
+        portalUrl,
+        error: 'Subscription is not active. Update your payment method.',
+      });
     }
     return res.status(200).json({
+      valid: true,
       licenseKey: info.licenseKey,
       email: info.email,
       status: info.status,
       currentPeriodEnd: info.periodEnd,
       edition: info.edition,
     });
-  } catch (e: any) {
+  } catch (e) {
     console.error('license/activate-session', e);
-    return res
-      .status(500)
-      .json({ error: String(e?.message || 'Could not activate license') });
+    return res.status(500).json({ error: 'Could not activate license' });
   }
 });
 
 app.post('/license/validate', async (req, res) => {
+  if (rateLimited(req, 'validate', 60, 60 * 1000)) {
+    return res.status(429).json({ error: 'Too many validation attempts' });
+  }
   try {
     const parsed = parseLicenseKey(
       String(req.body?.key || ''),
@@ -422,29 +465,31 @@ app.post('/license/validate', async (req, res) => {
         email: parsed.em,
       });
     }
+    if (parsed.ed && parsed.ed !== info.edition) {
+      return res.status(200).json({
+        valid: false,
+        status: info.status,
+        email: info.email,
+        edition: parsed.ed,
+      });
+    }
+    const valid = canIssueLicense(info.status);
     return res.status(200).json({
-      valid: info.status === 'ACTIVE',
+      valid,
       status: info.status,
       email: info.email,
       currentPeriodEnd: info.periodEnd,
-      licenseKey: info.licenseKey,
       edition: info.edition,
+      ...(valid ? { licenseKey: info.licenseKey } : {}),
     });
-  } catch (e: any) {
+  } catch (e) {
     console.error('license/validate', e);
-    return res
-      .status(500)
-      .json({ error: String(e?.message || 'Could not validate license') });
+    return res.status(500).json({ error: 'Could not validate license' });
   }
 });
 
 app.post('/license/restore', async (req, res) => {
-  const ip = String(
-    req.headers['x-forwarded-for'] || req.socket.remoteAddress || '',
-  )
-    .split(',')[0]
-    .trim();
-  if (!allowRestore(ip || 'unknown')) {
+  if (rateLimited(req, 'restore', 8, 60 * 60 * 1000)) {
     return res.status(429).json({ error: 'Too many restore attempts' });
   }
   try {
@@ -465,31 +510,30 @@ app.post('/license/restore', async (req, res) => {
       sent: false,
       error: 'No active license for that email.',
     });
-  } catch (e: any) {
+  } catch (e) {
     console.error('license/restore', e);
-    return res
-      .status(500)
-      .json({ error: String(e?.message || 'Could not restore license') });
+    return res.status(500).json({ error: 'Could not restore license' });
   }
 });
 
 app.post('/license/portal', async (req, res) => {
+  if (rateLimited(req, 'portal', 10, 60 * 1000)) {
+    return res.status(429).json({ error: 'Too many billing portal attempts' });
+  }
   try {
     const parsed = parseLicenseKey(
       String(req.body?.key || ''),
       env.licenseSigningSecret,
     );
     if (!parsed) return res.status(400).json({ error: 'Invalid license key' });
-    const portal = await stripe.billingPortal.sessions.create({
-      customer: parsed.cid,
-      return_url: `${env.appBaseUrl}/return`,
-    });
-    return res.status(200).json({ url: portal.url });
-  } catch (e: any) {
+    const url = await portalUrlForCustomer(parsed.cid);
+    if (!url) {
+      return res.status(500).json({ error: 'Could not open billing portal' });
+    }
+    return res.status(200).json({ url });
+  } catch (e) {
     console.error('license/portal', e);
-    return res
-      .status(500)
-      .json({ error: String(e?.message || 'Could not open billing portal') });
+    return res.status(500).json({ error: 'Could not open billing portal' });
   }
 });
 

@@ -267,3 +267,13 @@ export function invalidateFloorSnapshots(): void {
   invalidateCachePrefix('pos:floor:');
   invalidateCache(POS_CACHE.openTables);
 }
+
+/** Tablets missed SSE while backgrounded — drop caches and tell every screen to refetch. */
+export function emitPosSyncCatchup(): void {
+  invalidateFloorCache();
+  try {
+    window.dispatchEvent(new CustomEvent('pos:syncCatchup'));
+  } catch {
+    // ignore
+  }
+}

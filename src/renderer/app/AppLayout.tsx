@@ -1,13 +1,21 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { useCallback, useEffect, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../stores/session';
+import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { useTableStatus } from '@renderer/stores/tableStatus';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { PrinterNotification } from '../components/PrinterNotification';
 import { FailedSyncPanel } from '../components/FailedSyncPanel';
 import { BrandMark } from '../components/BrandMark';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
+import { useKdsOrdersAccess } from './useKdsOrdersAccess';
 import { toast } from '../stores/toasts';
 import { getOfflineQueueCount } from '../utils/offlineQueue';
 import { isHostUnreachable } from '../utils/netQuality';
@@ -24,6 +32,8 @@ import {
   IconBell,
   IconClock,
   IconLogout,
+  IconCart,
+  IconOrders,
   IconReports,
   IconTables,
   IconWifiOff,
@@ -32,6 +42,7 @@ import {
 export default function AppLayout() {
   const { t } = useTranslation();
   const { user, setUser } = useSessionStore();
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const navigate = useNavigate();
@@ -248,9 +259,11 @@ export default function AppLayout() {
   const clockOnly = Boolean(user && isClockOnlyRole((user as any).role));
   const isWaiter = String((user as any)?.role || '').toUpperCase() === 'WAITER';
   // Hide back-office tabs on mobile/tablet for roles that can't use them.
+  const kdsOrdersAccess = useKdsOrdersAccess();
   const showReportsTab =
     !clockOnly &&
     (!isBrowserClient || canSeeReportsOnMobile((user as any)?.role));
+  const showOrdersTab = !clockOnly && kdsOrdersAccess === 'yes';
   const billingEnabled = Boolean(billing?.billingEnabled);
   const billingStatus = String(billing?.status || 'ACTIVE').toUpperCase();
   const billingPaused =
@@ -263,6 +276,63 @@ export default function AppLayout() {
       isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle',
     );
 
+  const saleTo = hasTables ? '/app/tables' : '/app/order';
+  const saleActive =
+    location.pathname.startsWith(saleTo) ||
+    (hasTables && location.pathname.startsWith('/app/order'));
+  const navItems = useMemo(() => {
+    const items: Array<{
+      to: string;
+      label: string;
+      Icon: (props: { className?: string }) => ReactNode;
+      isActive: boolean;
+    }> = [];
+    if (!isWaiter) {
+      items.push({
+        to: '/app/clock',
+        label: t('layout.clock'),
+        Icon: IconClock,
+        isActive: location.pathname.startsWith('/app/clock'),
+      });
+    }
+    if (!clockOnly) {
+      items.push({
+        to: saleTo,
+        label: t(hasTables ? 'layout.tables' : 'layout.sale'),
+        Icon: hasTables ? IconTables : IconCart,
+        isActive: saleActive,
+      });
+    }
+    if (showReportsTab) {
+      items.push({
+        to: '/app/reports',
+        label: t('layout.reports'),
+        Icon: IconReports,
+        isActive: location.pathname.startsWith('/app/reports'),
+      });
+    }
+    if (showOrdersTab) {
+      items.push({
+        to: '/app/orders',
+        label: t('layout.orders'),
+        Icon: IconOrders,
+        isActive: location.pathname.startsWith('/app/orders'),
+      });
+    }
+    return items;
+  }, [
+    clockOnly,
+    hasTables,
+    isWaiter,
+    location.pathname,
+    saleActive,
+    saleTo,
+    showOrdersTab,
+    showReportsTab,
+    t,
+  ]);
+  const showMobileTabBar = navItems.length > 0;
+
   const syncTone = !syncOk ? 'danger' : queued > 0 ? 'warn' : 'accent';
   const syncTitle = !syncOk
     ? t('common.offlineCannotReach')
@@ -271,7 +341,12 @@ export default function AppLayout() {
       : t('common.allSynced');
 
   return (
-    <div className="pos-app flex h-full min-h-0 flex-col">
+    <div
+      className={cn(
+        'pos-app flex h-full min-h-0 flex-col',
+        showMobileTabBar && 'pos-app--mobile-tabs',
+      )}
+    >
       <Modal
         open={Boolean(user && billingPaused && !clockOnly)}
         onClose={() => {}}
@@ -317,12 +392,8 @@ export default function AppLayout() {
       )}
 
       <header
-        // The header is the topmost on-screen element, so it owns the
-        // safe-area-top inset (notch / status-bar). `max(...)` keeps normal
-        // breathing room on devices without a notch but clears the status bar
-        // on iPhones. Horizontal inset comes from `.safe-x`.
-        className="pos-header safe-x flex shrink-0 items-center gap-3 pt-[max(0px,env(safe-area-inset-top))]"
-        style={{ minHeight: 'var(--pos-header-h)' }}
+        // Safe-area-top (notch / status-bar) is applied in `.pos-header`.
+        className="pos-header safe-x flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1"
       >
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <BrandMark size="sm" compact subtitle="" className="hidden sm:flex" />
@@ -351,9 +422,16 @@ export default function AppLayout() {
                       const { openMap } = useTableStatus.getState();
                       const anyOpen = Object.values(openMap).some(Boolean);
                       if (anyOpen) {
-                        toast.warn(t('layout.clockOutBlockedBody'), {
-                          title: t('layout.clockOutBlockedTitle'),
-                        });
+                        toast.warn(
+                          t(
+                            hasTables
+                              ? 'layout.clockOutBlockedBody'
+                              : 'layout.clockOutBlockedBodyStore',
+                          ),
+                          {
+                            title: t('layout.clockOutBlockedTitle'),
+                          },
+                        );
                         return;
                       }
                     }
@@ -371,41 +449,21 @@ export default function AppLayout() {
           ) : null}
         </div>
 
-        {/* Center nav — hidden on mobile to keep the header compact. Mobile
-            users only ever have one or two destinations and role-restricted
-            routes are gated in routes.tsx. */}
-        <nav className="hidden shrink-0 items-center sm:flex">
+        {/* Center nav — phones use the bottom tab bar instead so the header
+            stays compact and Reports / Orders stay reachable. */}
+        <nav className="hidden min-w-0 max-w-full items-center overflow-x-auto sm:flex">
           <div className="pos-segmented">
-            {!isWaiter && (
+            {navItems.map((item) => (
               <NavLink
-                to="/app/clock"
-                className={navClass}
-                title={t('layout.clock')}
+                key={item.to}
+                to={item.to}
+                className={() => navClass({ isActive: item.isActive })}
+                title={item.label}
               >
-                <IconClock />
-                <span>{t('layout.clock')}</span>
+                <item.Icon />
+                <span>{item.label}</span>
               </NavLink>
-            )}
-            {!clockOnly && (
-              <NavLink
-                to="/app/tables"
-                className={navClass}
-                title={t('layout.tables')}
-              >
-                <IconTables />
-                <span>{t('layout.tables')}</span>
-              </NavLink>
-            )}
-            {showReportsTab && (
-              <NavLink
-                to="/app/reports"
-                className={navClass}
-                title={t('layout.reports')}
-              >
-                <IconReports />
-                <span>{t('layout.reports')}</span>
-              </NavLink>
-            )}
+            ))}
           </div>
         </nav>
 
@@ -469,7 +527,7 @@ export default function AppLayout() {
             </button>
             {showNotifications && (
               <div
-                className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-80 overflow-hidden"
+                className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-80 max-w-[calc(100vw-1.25rem)] overflow-hidden"
                 tabIndex={-1}
               >
                 <div className="flex items-center justify-between gap-3 border-b border-white/7 px-3 py-2.5">
@@ -505,7 +563,7 @@ export default function AppLayout() {
                       icon={<IconBell />}
                     />
                   )}
-                  {user && <OwnerRequests userId={user.id} />}
+                  {user && hasTables && <OwnerRequests userId={user.id} />}
                 </div>
               </div>
             )}
@@ -530,13 +588,42 @@ export default function AppLayout() {
       <main
         className={cn(
           'flex min-h-0 flex-1 flex-col overflow-hidden',
-          !flushTablesFloor && 'safe-pb safe-x py-3 sm:py-5',
+          !flushTablesFloor && 'safe-x py-3 sm:py-5',
+          !flushTablesFloor &&
+            (showMobileTabBar
+              ? 'pb-3 sm:pb-[max(1rem,var(--safe-bottom))]'
+              : 'safe-pb'),
         )}
       >
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <Outlet />
         </div>
       </main>
+
+      {showMobileTabBar ? (
+        <nav
+          className="pos-mobile-tabbar sm:hidden"
+          aria-label={t('layout.primaryNav')}
+        >
+          {navItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={() =>
+                cn(
+                  'pos-mobile-tab',
+                  item.isActive
+                    ? 'pos-mobile-tab--active'
+                    : 'pos-mobile-tab--idle',
+                )
+              }
+            >
+              <item.Icon className="pos-icon size-5" />
+              <span className="max-w-full truncate">{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+      ) : null}
 
       {user && (
         <ConfirmDialog
@@ -552,9 +639,19 @@ export default function AppLayout() {
             // open tables. Surface the reason and keep them signed in so they
             // can finish or transfer the table.
             if (r && typeof r === 'object' && r.ok === false) {
-              toast.error(String(r.error || t('layout.clockOutOpenTables')), {
-                title: t('layout.clockOutBlockedTitle'),
-              });
+              toast.error(
+                String(
+                  r.error ||
+                    t(
+                      hasTables
+                        ? 'layout.clockOutOpenTables'
+                        : 'layout.clockOutOpenSale',
+                    ),
+                ),
+                {
+                  title: t('layout.clockOutBlockedTitle'),
+                },
+              );
               setConfirmModal(false);
               return;
             }

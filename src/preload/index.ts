@@ -84,6 +84,19 @@ const api: Api = {
         userId,
         ...(range || {}),
       }),
+    listFiscalSales: (input?: {
+      startIso?: string;
+      endIso?: string;
+      limit?: number;
+    }) => ipcRenderer.invoke('admin:listFiscalSales', input || {}),
+    correctSale: (input: {
+      orderId: number;
+      kind: 'CANCEL' | 'CORRECTIVE';
+      itemIds?: number[];
+      reason: string;
+      approvedByAdminId?: number;
+      approvedByAdminToken?: string;
+    }) => ipcRenderer.invoke('admin:correctSale', input),
     listNotifications: (input?: {
       userId?: number;
       onlyUnread?: boolean;
@@ -106,6 +119,8 @@ const api: Api = {
       limit?: number;
       cooker?: boolean;
     }) => ipcRenderer.invoke('kds:listTickets', input),
+    /** Waiter station: live kitchen tickets for the signed-in waiter. */
+    listFloorOrders: () => ipcRenderer.invoke('kds:listFloorOrders'),
     bump: (input: {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';
       ticketId: number;
@@ -179,6 +194,8 @@ const api: Api = {
       ipcRenderer.invoke('license:activateKey', input),
     restore: (input: { email: string }) =>
       ipcRenderer.invoke('license:restore', input),
+    setDevEdition: (input: { edition: 'RESTAURANT' | 'STORE' }) =>
+      ipcRenderer.invoke('license:setDevEdition', input),
     createPortalSession: () =>
       ipcRenderer.invoke('license:createPortalSession'),
     onUpdated: (cb: () => void) => {
