@@ -91,7 +91,8 @@
     },
     "mac": {
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "artifactName": "OneTap-POS-${version}-${arch}.${ext}",
       "category": "public.app-category.business",

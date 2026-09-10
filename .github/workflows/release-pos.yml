@@ -171,6 +171,8 @@ jobs:
 
           ARM_DMG=$(ls dist/*-arm64.dmg 2>/dev/null | head -1 || true)
           INTEL_DMG=$(ls dist/*-x64.dmg 2>/dev/null | head -1 || true)
+          ARM_ZIP=$(ls dist/*-arm64.zip 2>/dev/null | head -1 || true)
+          INTEL_ZIP=$(ls dist/*-x64.zip 2>/dev/null | head -1 || true)
           if [[ ! -f "${ARM_DMG:-}" ]]; then
             echo "::error::Missing macOS Apple Silicon installer (*-arm64.dmg)"
             ls -la dist artifacts/* 2>/dev/null || true
@@ -181,38 +183,22 @@ jobs:
             ls -la dist artifacts/* 2>/dev/null || true
             exit 1
           fi
+          # electron-updater on macOS will not install from a .dmg ("ZIP file
+          # not provided"). Both arch zips must be in latest-mac.yml.
+          if [[ ! -f "${ARM_ZIP:-}" ]]; then
+            echo "::error::Missing macOS Apple Silicon update zip (*-arm64.zip)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
+          fi
+          if [[ ! -f "${INTEL_ZIP:-}" ]]; then
+            echo "::error::Missing macOS Intel update zip (*-x64.zip)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
+          fi
 
-          node -e "
-            const fs = require('fs');
-            const crypto = require('crypto');
-            const path = require('path');
-            const version = process.argv[1];
-            const outPath = process.argv[2];
-            const dmgs = process.argv.slice(3);
-            const files = dmgs.map((p) => {
-              const data = fs.readFileSync(p);
-              return {
-                url: path.basename(p),
-                sha512: crypto.createHash('sha512').update(data).digest('base64'),
-                size: data.length,
-              };
-            });
-            const primary = files.find((f) => f.url.includes('arm64')) || files[0];
-            const yml = [
-              'version: ' + version,
-              'files:',
-              ...files.flatMap((f) => [
-                '  - url: ' + f.url,
-                '    sha512: ' + f.sha512,
-                '    size: ' + f.size,
-              ]),
-              'path: ' + primary.url,
-              'sha512: ' + primary.sha512,
-              \"releaseDate: '\" + new Date().toISOString() + \"'\",
-              '',
-            ].join('\\n');
-            fs.writeFileSync(outPath, yml);
-          " "$VERSION" dist/latest-mac.yml "$ARM_DMG" "$INTEL_DMG"
+          node scripts/writeMacUpdateYml.mjs \
+            "$VERSION" dist/latest-mac.yml \
+            "$ARM_ZIP" "$INTEL_ZIP" "$ARM_DMG" "$INTEL_DMG"
 
           NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
           {
