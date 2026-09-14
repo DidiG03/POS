@@ -583,7 +583,7 @@ export function TicketCourseBoard({
       {board}
       <DragOverlay>
         {dragging ? (
-          <div className="rounded-md bg-gray-700 border border-white/15 px-3 py-2 text-sm shadow-lg">
+          <div className="ticket-line px-3 py-2 text-sm shadow-lg">
             {dragging.label}
           </div>
         ) : null}

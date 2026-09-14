@@ -82,8 +82,10 @@ import {
   readFiscalClaim,
   resolveFiscalClaim,
   settleFiscalClaimFailed,
+  settleFiscalClaimDeferred,
   settleFiscalClaimRegistered,
   settleFiscalClaimUnknown,
+  abandonUnsentFiscalClaim,
   STALE_PENDING_MS,
 } from './claims';
 
@@ -151,6 +153,48 @@ describe('claimFiscalRegistration', () => {
     // A fresh owner id, so the abandoned attempt cannot settle this one.
     expect(retry.attemptId).not.toBe(first.attemptId);
     expect((await readFiscalClaim(KEY))?.attempts).toBe(2);
+  });
+
+  it('retries a deferred invoice under a new attempt and keeps the draft', async () => {
+    const first = await claimFiscalRegistration(KEY);
+    if (first.outcome !== 'proceed') throw new Error('expected proceed');
+    await settleFiscalClaimDeferred(
+      KEY,
+      first.attemptId,
+      'ECONNREFUSED',
+      { docId: 'x', articles: [] },
+      new Date(Date.now() + 1000).toISOString(),
+    );
+    expect((await readFiscalClaim(KEY))?.state).toBe('DEFERRED');
+    expect((await readFiscalClaim(KEY))?.draft).toEqual({
+      docId: 'x',
+      articles: [],
+    });
+
+    const retry = await claimFiscalRegistration(KEY);
+    expect(retry.outcome).toBe('proceed');
+    expect((await readFiscalClaim(KEY))?.draft).toEqual({
+      docId: 'x',
+      articles: [],
+    });
+  });
+
+  it('does not transmit a draft after the sale is voided', async () => {
+    const first = await claimFiscalRegistration(KEY);
+    if (first.outcome !== 'proceed') throw new Error('expected proceed');
+    await settleFiscalClaimDeferred(
+      KEY,
+      first.attemptId,
+      'offline',
+      { docId: 'x' },
+      new Date().toISOString(),
+    );
+    expect(await abandonUnsentFiscalClaim(KEY, 'Ticket voided')).toBe(true);
+    expect((await readFiscalClaim(KEY))?.state).toBe('ABANDONED');
+    expect((await readFiscalClaim(KEY))?.draft).toBeUndefined();
+
+    const again = await claimFiscalRegistration(KEY);
+    expect(again.outcome).toBe('replay');
   });
 
   it('sends an interrupted attempt to review rather than retrying it', async () => {
@@ -324,8 +368,12 @@ describe('a void after the invoice was filed', () => {
 
     expect(flagged).toBe(true);
     expect((await readFiscalClaim(KEY))?.state).toBe('CORRECTION_REQUIRED');
-    // Without the identifiers the admin cannot find the invoice to correct.
-    expect(notifications[0].message).toContain('NIVF-1');
+    expect((await readFiscalClaim(KEY))?.result).toMatchObject({
+      nslf: 'NSLF-1',
+      nivf: 'NIVF-1',
+    });
+    expect(notifications[0].message).toMatch(/corrective invoice/i);
+    expect(notifications[0].message).toContain('Bar');
     expect(notifications.map((n) => n.userId).sort()).toEqual([7, 99]);
   });
 

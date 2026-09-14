@@ -11,8 +11,12 @@
  * source worth trusting.
  */
 
-/** How long an optimistic open/close outranks the host's answer. */
-export const OPTIMISTIC_OPEN_TTL_MS = 60_000;
+/**
+ * How long an optimistic open/close outranks the host's answer.
+ * Keep this to one `listOpen` SWR window so a missed close on another
+ * till cannot paint a ghost occupied table for a minute.
+ */
+export const OPTIMISTIC_OPEN_TTL_MS = 4_000;
 
 /**
  * Offline reads come from the stale read cache, so an optimistic flag has to

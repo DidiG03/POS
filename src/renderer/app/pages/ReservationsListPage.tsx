@@ -937,14 +937,12 @@ export default function ReservationsListPage() {
           </table>
         </div>
 
-        {!viewReady && (
-          <div className="absolute inset-0 z-20 bg-gray-900">
-            <PageSpinner
-              variant="overlay"
-              message={t('reservations.loadingReservations')}
-            />
-          </div>
-        )}
+        {!viewReady ? (
+          <PageSpinner
+            variant="overlay"
+            message={t('reservations.loadingReservations')}
+          />
+        ) : null}
       </div>
 
       {actionRow && actionShown && (

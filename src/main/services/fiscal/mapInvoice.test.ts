@@ -34,10 +34,6 @@ const payload = (
     meta: { method: 'CASH', ...meta },
   }) as any;
 
-const articleTotal = (draft: {
-  articles: Array<{ price: number; units: number }>;
-}) => draft.articles.reduce((sum, a) => sum + a.price * a.units, 0);
-
 describe('buildEasyPosCloudInvoiceDraft rounding', () => {
   it('agrees with the charged total on a half-cent line, with no balancing article', () => {
     // 1.005 is stored as 1.00499…, so rounding it without the epsilon nudge
@@ -60,7 +56,7 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
     expect(draft.payment[0].amount).toBe(total);
   });
 
-  it('always sends a payment amount equal to the sum of the article lines', () => {
+  it('files a ticket discount as invoiceRebate, not a negative-price line', () => {
     const draft = buildEasyPosCloudInvoiceDraft(
       payload(
         [
@@ -72,11 +68,13 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
       settings,
       { docId: 'inv-payment-matches-lines' },
     );
-    expect(draft.payment[0].amount).toBeCloseTo(articleTotal(draft), 2);
+    expect(draft.articles.every((a) => a.price >= 0)).toBe(true);
+    expect(draft.articles.map((a) => a.name)).toEqual(['Pizza', 'Coke']);
+    expect(draft.invoiceRebate).toEqual({ inValue: 4.5 });
     expect(draft.payment[0].amount).toBe(30.47);
   });
 
-  it('still balances a genuine gap, and says so', () => {
+  it('still balances a genuine gap with rebate, and says so', () => {
     const onAdjustment = vi.fn();
     const draft = buildEasyPosCloudInvoiceDraft(
       payload([{ name: 'Pizza', qty: 1, unitPrice: 10 }], {
@@ -85,7 +83,9 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
       settings,
       { docId: 'inv-balancing-line', onAdjustment },
     );
-    expect(draft.articles).toHaveLength(2);
+    expect(draft.articles).toHaveLength(1);
+    expect(draft.articles[0].price).toBe(10);
+    expect(draft.invoiceRebate).toEqual({ inValue: 1 });
     expect(draft.payment[0].amount).toBe(9);
     expect(onAdjustment).toHaveBeenCalledTimes(1);
   });

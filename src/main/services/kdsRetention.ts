@@ -1,4 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
+import { SQLITE_BUSY_TIMEOUT_MS, SQLITE_TX_TIMEOUT_MS } from '@db/sqliteBusy';
+
+const TX_OPTS = {
+  maxWait: SQLITE_BUSY_TIMEOUT_MS,
+  timeout: SQLITE_TX_TIMEOUT_MS,
+};
 
 let timer: NodeJS.Timeout | null = null;
 let activeDayKey: string | null = null;
@@ -27,10 +33,10 @@ export function kdsStationListWhere(station: string, status: string) {
 
 async function cleanupOrphanKdsRows(tx: any) {
   await tx.$executeRawUnsafe(
-    `DELETE FROM "KdsTicket" WHERE "id" NOT IN (SELECT DISTINCT "ticketId" FROM "KdsTicketStation");`,
+    `DELETE FROM "KdsTicket" WHERE NOT EXISTS (SELECT 1 FROM "KdsTicketStation" WHERE "ticketId" = "KdsTicket"."id");`,
   );
   await tx.$executeRawUnsafe(
-    `DELETE FROM "KdsOrder" WHERE "id" NOT IN (SELECT DISTINCT "orderId" FROM "KdsTicket");`,
+    `DELETE FROM "KdsOrder" WHERE NOT EXISTS (SELECT 1 FROM "KdsTicket" WHERE "orderId" = "KdsOrder"."id");`,
   );
 }
 
@@ -43,7 +49,7 @@ export async function purgeAllKdsDoneTickets(prisma: PrismaClient) {
     });
     purgedDoneRows = res.count;
     await cleanupOrphanKdsRows(tx);
-  });
+  }, TX_OPTS);
   if (purgedDoneRows > 0) {
     console.log(
       `[KDS] Midnight purge: removed ${purgedDoneRows} Done ticket row(s)`,
@@ -67,7 +73,7 @@ export async function purgeStaleKdsDoneTickets(prisma: PrismaClient) {
     if (purgedDoneRows > 0) {
       await cleanupOrphanKdsRows(tx);
     }
-  });
+  }, TX_OPTS);
   if (purgedDoneRows > 0) {
     console.log(
       `[KDS] Removed ${purgedDoneRows} stale Done ticket row(s) from before ${dayKeyLocal()}`,
@@ -94,7 +100,7 @@ export async function purgeKdsDoneTicketsForStation(
     if (purgedDoneRows > 0) {
       await cleanupOrphanKdsRows(tx);
     }
-  });
+  }, TX_OPTS);
   return { ok: true as const, purgedDoneRows };
 }
 

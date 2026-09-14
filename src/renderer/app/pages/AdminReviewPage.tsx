@@ -17,8 +17,13 @@ import { Badge } from '../../components/ui/Badge';
 import { Table, TableFrame, Td, Th } from '../../components/ui/Table';
 import { cn } from '../../components/ui/cn';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
-import { heatmapHasOrders } from '@shared/reviewHeatmap';
+import {
+  HEATMAP_DAYS_MON_FIRST,
+  heatmapHasOrders,
+} from '@shared/reviewHeatmap';
 import { OrdersByTimeChart, OrdersByTimeLegend } from './OrdersByTimeChart';
+import { PageSpinner } from '../../components/PageSpinner';
+import { reportAppError } from '../../utils/reportAppError';
 
 // ---------------------------------------------------------------------
 // Date helpers — all comparisons are computed in the operator's local
@@ -926,6 +931,10 @@ export default function AdminReviewPage() {
       } catch (e: any) {
         if (myReq !== reqRef.current) return;
         setError(e?.message || t('adminReview.loadFailed'));
+        reportAppError(e, {
+          fallback: t('adminReview.loadFailed'),
+          key: 'adminReview.load',
+        });
       } finally {
         if (myReq === reqRef.current) setLoading(false);
       }
@@ -1018,15 +1027,22 @@ export default function AdminReviewPage() {
   );
 
   const weekdayBars = useMemo(() => {
-    return (data?.weekday || []).map((w) => ({
-      label: weekdayNames[w.dayOfWeek] || String(w.dayOfWeek),
-      value: w.revenue,
-      tooltip: t('adminReview.weekdayTooltip', {
-        day: weekdayNames[w.dayOfWeek] || String(w.dayOfWeek),
-        revenue: fmtMoney(w.revenue),
-        orders: fmtNum(w.orders),
-      }),
-    }));
+    const byDay = new Map(
+      (data?.weekday || []).map((w) => [Number(w.dayOfWeek), w]),
+    );
+    return HEATMAP_DAYS_MON_FIRST.map((dayOfWeek) => {
+      const w = byDay.get(dayOfWeek);
+      const day = weekdayNames[dayOfWeek] || String(dayOfWeek);
+      return {
+        label: day,
+        value: Number(w?.revenue || 0),
+        tooltip: t('adminReview.weekdayTooltip', {
+          day,
+          revenue: fmtMoney(Number(w?.revenue || 0)),
+          orders: fmtNum(Number(w?.orders || 0)),
+        }),
+      };
+    });
   }, [data?.weekday, fmtMoney, fmtNum, t, weekdayNames]);
 
   const methodLabel = (method: string) => {
@@ -1342,47 +1358,101 @@ export default function AdminReviewPage() {
         />
       </MetricGroup>
 
-      <Panel
-        title={t('adminReview.revenueOverTime')}
-        actions={
-          chartHasData ? (
-            <Legend
-              items={[
-                { label: t('adminReview.current'), color: '#60a5fa' },
-                ...(series?.compare
-                  ? [
-                      {
-                        label: t('adminReview.compareSeries'),
-                        color: '#f59e0b',
-                      },
-                    ]
-                  : []),
-              ]}
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <Panel
+          title={t('adminReview.revenueOverTime')}
+          actions={
+            chartHasData ? (
+              <Legend
+                items={[
+                  { label: t('adminReview.current'), color: '#60a5fa' },
+                  ...(series?.compare
+                    ? [
+                        {
+                          label: t('adminReview.compareSeries'),
+                          color: '#f59e0b',
+                        },
+                      ]
+                    : []),
+                ]}
+              />
+            ) : null
+          }
+        >
+          {loading && !data ? (
+            <div className="relative h-[240px] overflow-hidden">
+              <PageSpinner
+                variant="overlay"
+                message={t('adminReview.loading')}
+              />
+            </div>
+          ) : chartHasData ? (
+            <LineChart
+              series={chartSeries}
+              xLabels={chartLabels}
+              height={260}
+              yLabel={t('adminReview.revenueAxisGross', { currency })}
             />
-          ) : null
-        }
-      >
-        {loading && !data ? (
-          <div className="flex h-[240px] items-center justify-center text-sm text-gray-500">
-            {t('adminReview.loading')}
-          </div>
-        ) : chartHasData ? (
-          <LineChart
-            series={chartSeries}
-            xLabels={chartLabels}
-            height={260}
-            yLabel={t('adminReview.revenueAxisGross', { currency })}
-          />
-        ) : (
-          <EmptyState
-            compact
-            title={t('adminReview.emptyChart')}
-            description={t('adminReview.emptyChartHint')}
-          />
-        )}
-      </Panel>
+          ) : (
+            <EmptyState
+              compact
+              title={t('adminReview.emptyChart')}
+              description={t('adminReview.emptyChartHint')}
+            />
+          )}
+        </Panel>
 
-      <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-3">
+        <Panel
+          title={t('adminReview.ordersByTime')}
+          actions={<OrdersByTimeLegend cells={data?.heatmap} />}
+        >
+          {loading && !data ? (
+            <div className="relative h-[240px] overflow-hidden">
+              <PageSpinner
+                variant="overlay"
+                message={t('adminReview.loading')}
+              />
+            </div>
+          ) : heatmapReady ? (
+            <OrdersByTimeChart
+              cells={data?.heatmap}
+              weekdayNames={weekdayNames}
+              fmtMoney={fmtMoney}
+            />
+          ) : (
+            <EmptyState
+              compact
+              title={t('adminReview.emptyChart')}
+              description={t('adminReview.emptyChartHint')}
+            />
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Panel title={t('adminReview.salesByHour')}>
+          {hourlyHasData ? (
+            <BarChart data={hourlyBars} height={180} format={fmtMoney} />
+          ) : (
+            <EmptyState compact title={t('adminReview.emptyChart')} />
+          )}
+        </Panel>
+
+        <Panel title={t('adminReview.salesByWeekday')}>
+          {weekdayHasData ? (
+            <BarChart
+              data={weekdayBars}
+              height={180}
+              format={fmtMoney}
+              color="#a78bfa"
+            />
+          ) : (
+            <EmptyState compact title={t('adminReview.emptyChart')} />
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
         <Panel title={t('adminReview.topItemsTitleGross')}>
           {data?.topItems?.length ? (
             <TableFrame>
@@ -1414,56 +1484,23 @@ export default function AdminReviewPage() {
           )}
         </Panel>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-2">
-          <Panel title={t('adminReview.salesByHour')}>
-            {hourlyHasData ? (
-              <BarChart data={hourlyBars} height={180} format={fmtMoney} />
-            ) : (
-              <EmptyState compact title={t('adminReview.emptyChart')} />
-            )}
-          </Panel>
-
-          <Panel title={t('adminReview.salesByWeekday')}>
-            {weekdayHasData ? (
-              <BarChart
-                data={weekdayBars}
-                height={180}
-                format={fmtMoney}
-                color="#a78bfa"
-              />
-            ) : (
-              <EmptyState compact title={t('adminReview.emptyChart')} />
-            )}
-          </Panel>
-
-          <div className="sm:col-span-2">
-            <Panel
-              title={t('adminReview.ordersByTime')}
-              actions={<OrdersByTimeLegend cells={data?.heatmap} />}
-            >
-              {loading && !data ? (
-                <div className="flex h-[120px] items-center justify-center text-sm text-gray-500">
-                  {t('adminReview.loading')}
-                </div>
-              ) : heatmapReady ? (
-                <OrdersByTimeChart
-                  cells={data?.heatmap}
-                  weekdayNames={weekdayNames}
-                  fmtMoney={fmtMoney}
-                />
-              ) : (
-                <EmptyState
-                  compact
-                  title={t('adminReview.emptyChart')}
-                  description={t('adminReview.emptyChartHint')}
-                />
-              )}
-            </Panel>
-          </div>
-        </div>
+        <Panel
+          title={t('adminReview.salesByCategory')}
+          actions={
+            <span className="text-[12px] text-gray-500">
+              {t('adminReview.categoryHint')}
+            </span>
+          }
+        >
+          {categoryHasData ? (
+            <RankChart rows={categoryRows} format={fmtMoney} />
+          ) : (
+            <EmptyState compact title={t('adminReview.emptyChart')} />
+          )}
+        </Panel>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Panel title={t('adminReview.paymentMix')}>
           {methodHasData ? (
             <ShareBar slices={methodSlices} format={fmtMoney} />
@@ -1479,20 +1516,6 @@ export default function AdminReviewPage() {
               format={fmtNum}
               color="#fbbf24"
             />
-          ) : (
-            <EmptyState compact title={t('adminReview.emptyChart')} />
-          )}
-        </Panel>
-        <Panel
-          title={t('adminReview.salesByCategory')}
-          actions={
-            <span className="text-[12px] text-gray-500">
-              {t('adminReview.categoryHint')}
-            </span>
-          }
-        >
-          {categoryHasData ? (
-            <RankChart rows={categoryRows} format={fmtMoney} />
           ) : (
             <EmptyState compact title={t('adminReview.emptyChart')} />
           )}

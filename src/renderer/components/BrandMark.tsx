@@ -129,13 +129,13 @@ export function BrandMark({
       {wordmark ? (
         <div className="min-w-0 leading-none">
           <div
-            className={`truncate font-semibold tracking-tight text-gray-50 ${TITLE[size]}`}
+            className={`truncate font-semibold tracking-tight text-[color:var(--pos-fg)] ${TITLE[size]}`}
           >
             {name}
           </div>
           {line ? (
             <div
-              className={`mt-0.5 truncate font-medium text-gray-500 ${SUB[size]}`}
+              className={`mt-0.5 truncate font-medium text-[color:var(--pos-fg-muted)] ${SUB[size]}`}
             >
               {line}
             </div>

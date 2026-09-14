@@ -1,7 +1,6 @@
 /**
  * Pure-logic tests for the per-table serialization mutex used by
- * `coreServices.setTableOpen` and the IPC handlers that touch the
- * `tables:open` / `tables:openAt` / `tables:owner` maps.
+ * `coreServices.setTableOpen` and the IPC handlers that touch occupancy.
  *
  * Run with:  pnpm test
  */
@@ -70,5 +69,22 @@ describe('withTableLock', () => {
     expect(a).toBe('caught: boom');
     expect(b).toBe('ok');
     expect(calls).toEqual(['first', 'second']);
+  });
+
+  it('fails a second waiter on the same table instead of hanging', async () => {
+    let releaseHold!: () => void;
+    const hold = withTableLock(
+      'Sallon',
+      'T7',
+      () =>
+        new Promise<string>((resolve) => {
+          releaseHold = () => resolve('held');
+        }),
+      40,
+    );
+    const waiting = withTableLock('Sallon', 'T7', async () => 'late', 40);
+    await expect(waiting).rejects.toMatchObject({ code: 'TABLE_BUSY' });
+    releaseHold();
+    await expect(hold).resolves.toBe('held');
   });
 });

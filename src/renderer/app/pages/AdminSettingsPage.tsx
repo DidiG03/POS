@@ -22,6 +22,11 @@ import { Field, Input, Select, Textarea } from '../../components/ui/Field';
 import { Segmented } from '../../components/ui/Segmented';
 import { cn } from '../../components/ui/cn';
 import {
+  SETTINGS_NAV_COLLAPSED_KEY,
+  SidebarCollapseToggle,
+  useStoredFlag,
+} from '../../components/SidebarCollapseToggle';
+import {
   IconBuilding,
   IconCalendar,
   IconCard,
@@ -149,6 +154,9 @@ function SectionIcon({ k }: { k: SectionKey }) {
 export default function AdminSettingsPage() {
   const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
+  const [navCollapsed, setNavCollapsed] = useStoredFlag(
+    SETTINGS_NAV_COLLAPSED_KEY,
+  );
   const hasReservations = useLicenseCapabilities((s) => s.hasReservations);
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const navGroups = NAV_GROUPS.map((group) => ({
@@ -181,33 +189,49 @@ export default function AdminSettingsPage() {
     setParams(next, { replace: true });
   };
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden bg-[var(--pos-canvas)] max-lg:border max-lg:border-white/7">
-      <nav className="admin-settings-nav flex w-[232px] shrink-0 flex-col overflow-y-auto border-r border-white/[0.06] p-3">
-        {navGroups.map((group) => (
-          <div key={group.labelKey} className="mb-3 last:mb-0">
-            <div className="pos-section-label px-2.5 pb-1.5 pt-1">
-              {t(group.labelKey)}
+    <div className="flex min-h-0 flex-1 bg-[var(--pos-canvas)] max-lg:border max-lg:border-white/7">
+      <nav
+        className={cn(
+          'admin-settings-nav relative z-20 flex shrink-0 flex-col border-r border-white/[0.06] transition-[width] duration-200',
+          navCollapsed ? 'is-collapsed w-16 p-1.5' : 'w-[232px] p-3',
+        )}
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {navGroups.map((group) => (
+            <div key={group.labelKey} className="mb-3 last:mb-0">
+              {navCollapsed ? null : (
+                <div className="pos-section-label px-2.5 pb-1.5 pt-1">
+                  {t(group.labelKey)}
+                </div>
+              )}
+              <div className="space-y-0.5">
+                {group.keys.map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    title={t(`settingsNav.${key}`)}
+                    className={cn(
+                      'pos-side-link w-full',
+                      section === key
+                        ? 'pos-side-link--active'
+                        : 'pos-side-link--idle',
+                    )}
+                    onClick={() => openSection(key)}
+                  >
+                    <SectionIcon k={key} />
+                    <span className={cn('truncate', navCollapsed && 'sr-only')}>
+                      {t(`settingsNav.${key}`)}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="space-y-0.5">
-              {group.keys.map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={cn(
-                    'pos-side-link w-full',
-                    section === key
-                      ? 'pos-side-link--active'
-                      : 'pos-side-link--idle',
-                  )}
-                  onClick={() => openSection(key)}
-                >
-                  <SectionIcon k={key} />
-                  <span className="truncate">{t(`settingsNav.${key}`)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
+        <SidebarCollapseToggle
+          collapsed={navCollapsed}
+          onToggle={() => setNavCollapsed(!navCollapsed)}
+        />
       </nav>
       <div className="min-w-0 flex-1 overflow-auto px-8 py-7">
         <div className="mx-auto max-w-3xl">
@@ -588,6 +612,7 @@ function PreferencesSettings() {
     useState(true);
   const [autoCloseShiftEnabled, setAutoCloseShiftEnabled] = useState(false);
   const [autoCloseShiftHours, setAutoCloseShiftHours] = useState<12 | 24>(12);
+  const [captureClockInOut, setCaptureClockInOut] = useState(true);
   const [reservationNoShowEnabled, setReservationNoShowEnabled] =
     useState(false);
   const [reservationNoShowMinutes, setReservationNoShowMinutes] =
@@ -605,6 +630,7 @@ function PreferencesSettings() {
     requireMgrDiscount: boolean;
     requireMgrVoid: boolean;
     requireMgrServiceRemoval: boolean;
+    captureClockInOut: boolean;
     autoCloseShiftEnabled: boolean;
     autoCloseShiftHours: 12 | 24;
     reservationNoShowEnabled: boolean;
@@ -621,6 +647,7 @@ function PreferencesSettings() {
     requireMgrDiscount: true,
     requireMgrVoid: true,
     requireMgrServiceRemoval: true,
+    captureClockInOut: true,
     autoCloseShiftEnabled: false,
     autoCloseShiftHours: 12,
     reservationNoShowEnabled: false,
@@ -639,6 +666,7 @@ function PreferencesSettings() {
     requireMgrDiscount,
     requireMgrVoid,
     requireMgrServiceRemoval,
+    captureClockInOut,
     autoCloseShiftEnabled,
     autoCloseShiftHours,
     reservationNoShowEnabled,
@@ -684,6 +712,7 @@ function PreferencesSettings() {
           language: next.language,
           theme: next.theme,
           serviceCharge: { enabled: next.enabled, mode: next.mode, value: n },
+          captureClockInOut: next.captureClockInOut,
           autoCloseShift: {
             enabled: next.autoCloseShiftEnabled,
             hours: next.autoCloseShiftHours,
@@ -791,6 +820,9 @@ function PreferencesSettings() {
           approvals.requireManagerPinForServiceChargeRemoval !== false,
         );
         const acs = (s as any)?.preferences?.autoCloseShift || {};
+        setCaptureClockInOut(
+          (s as any)?.preferences?.captureClockInOut !== false,
+        );
         setAutoCloseShiftEnabled(Boolean(acs.enabled));
         const h = Number(acs.hours);
         setAutoCloseShiftHours(h === 24 ? 24 : 12);
@@ -926,6 +958,30 @@ function PreferencesSettings() {
                 />
               ) : null}
             </div>
+          </SettingsCard>
+
+          <SettingsCard
+            title={t(
+              hasTables
+                ? 'preferences.captureClockTitle'
+                : 'preferences.captureClockTitleStore',
+            )}
+            description={t(
+              hasTables
+                ? 'preferences.captureClockHelp'
+                : 'preferences.captureClockHelpStore',
+            )}
+          >
+            <SettingsToggleRow
+              title={t('preferences.captureClockEnable')}
+              description={t('preferences.captureClockEnableHelp')}
+              checked={captureClockInOut}
+              onChange={(next) => {
+                setCaptureClockInOut(next);
+                persistImmediate({ captureClockInOut: next });
+              }}
+              label={t('preferences.captureClockEnable')}
+            />
           </SettingsCard>
 
           <SettingsCard
@@ -1114,6 +1170,7 @@ function FiscalSettings() {
   const [authTokenConfigured, setAuthTokenConfigured] = useState(false);
   const [integrationApp, setIntegrationApp] = useState('');
   const [defaultOperatorId, setDefaultOperatorId] = useState('');
+  const [nipt, setNipt] = useState('');
   const [defaultSoldIn, setDefaultSoldIn] = useState('XPP');
   const [cloudFallbackArticleId, setCloudFallbackArticleId] = useState('');
   const [eurExchangeRate, setEurExchangeRate] = useState('');
@@ -1148,6 +1205,7 @@ function FiscalSettings() {
         setAuthTokenConfigured(Boolean(fiscal.authTokenConfigured));
         setAuthToken('');
         setDefaultOperatorId(String(fiscal.defaultOperatorId || '').trim());
+        setNipt(String(fiscal.nipt || '').trim());
         setIntegrationApp(String(fiscal.integrationApp || '').trim());
         setDefaultSoldIn(String(fiscal.defaultSoldIn || 'XPP').trim() || 'XPP');
         setCloudFallbackArticleId(
@@ -1196,6 +1254,7 @@ function FiscalSettings() {
         : {}),
       integrationApp: String(integrationApp || '').trim() || undefined,
       defaultOperatorId: String(defaultOperatorId || '').trim() || undefined,
+      nipt: String(nipt || '').trim() || undefined,
       defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
       cloudFallbackArticleId:
         String(cloudFallbackArticleId || '').trim() || undefined,
@@ -1342,7 +1401,9 @@ function FiscalSettings() {
         }
       />
       {/* Unresolved sales come first — they are money waiting on a decision. */}
-      <FiscalReviewPanel />
+      <div id="fiscal-review">
+        <FiscalReviewPanel />
+      </div>
       <SettingsCard
         title={t('fiscal.salesTitle')}
         description={t('fiscal.salesMovedToTickets')}
@@ -1462,6 +1523,20 @@ function FiscalSettings() {
               </label>
 
               <label className="block">
+                <div className="text-sm mb-1">{t('fiscal.nipt')}</div>
+                <input
+                  className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
+                  value={nipt}
+                  onChange={(e) => setNipt(e.target.value)}
+                  placeholder={t('fiscal.niptPlaceholder')}
+                  disabled={!enabled}
+                />
+                <div className="text-[11px] opacity-60 mt-1">
+                  {t('fiscal.niptHelp')}
+                </div>
+              </label>
+
+              <label className="block">
                 <div className="text-sm mb-1">{t('fiscal.defaultSoldIn')}</div>
                 <input
                   className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
@@ -1540,6 +1615,7 @@ function FiscalSettings() {
  */
 function FiscalReviewPanel() {
   const { t } = useTranslation();
+  const [params] = useSearchParams();
   const [rows, setRows] = useState<FiscalReviewDTO[] | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -1561,6 +1637,45 @@ function FiscalReviewPanel() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!rows?.length) return;
+    const doc = String(params.get('doc') || '')
+      .trim()
+      .toLowerCase();
+    const table = String(params.get('table') || '').trim();
+    const area = String(params.get('area') || '').trim();
+    const nslf = String(params.get('nslf') || '')
+      .trim()
+      .toLowerCase();
+    const match =
+      rows.find((row) => {
+        const key = String(row.idempotencyKey || '').toLowerCase();
+        return Boolean(doc && key && (key === doc || key.startsWith(doc)));
+      }) ||
+      rows.find((row) => {
+        const have = String(row.nslf || '').toLowerCase();
+        return Boolean(
+          nslf && have && (have === nslf || have.startsWith(nslf)),
+        );
+      }) ||
+      rows.find(
+        (row) =>
+          Boolean(table) &&
+          String(row.tableLabel || '') === table &&
+          (!area || String(row.area || '') === area),
+      );
+    if (match) setExpanded(match.idempotencyKey);
+    const id = match
+      ? `fiscal-review-${match.idempotencyKey}`
+      : 'fiscal-review';
+    window.setTimeout(() => {
+      document.getElementById(id)?.scrollIntoView({
+        block: 'center',
+        behavior: 'smooth',
+      });
+    }, 50);
+  }, [rows, params]);
 
   const resolve = async (
     idempotencyKey: string,
@@ -1607,7 +1722,11 @@ function FiscalReviewPanel() {
           return (
             <div
               key={row.idempotencyKey}
-              className="rounded bg-gray-900/60 p-2 text-xs"
+              id={`fiscal-review-${row.idempotencyKey}`}
+              className={cn(
+                'rounded bg-gray-900/60 p-2 text-xs',
+                expanded === row.idempotencyKey && 'ring-1 ring-amber-400/70',
+              )}
             >
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                 <span className="font-medium">
@@ -1618,7 +1737,9 @@ function FiscalReviewPanel() {
                 <span className="rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
                   {row.kind === 'correction-required'
                     ? t('fiscal.reviewKindCorrection')
-                    : t('fiscal.reviewKindUnknown')}
+                    : row.kind === 'deferred'
+                      ? t('fiscal.reviewKindDeferred')
+                      : t('fiscal.reviewKindUnknown')}
                 </span>
                 {row.total != null ? <span>{row.total.toFixed(2)}</span> : null}
                 <span className="opacity-60">
@@ -1649,7 +1770,23 @@ function FiscalReviewPanel() {
 
               {/* A correction has one honest answer: file it in easyPos,
                   then say so. Retrying or re-recording makes no sense. */}
-              {row.kind === 'correction-required' ? (
+              {row.kind === 'deferred' ? (
+                <div className="mt-2 flex flex-col gap-1 border-t border-gray-700 pt-2 opacity-80">
+                  <div>{t('fiscal.reviewDeferredHelp')}</div>
+                  {(() => {
+                    const end = Date.parse(String(row.deadlineAt || ''));
+                    if (!Number.isFinite(end)) return null;
+                    const hours = Math.round((end - Date.now()) / 36e5);
+                    return (
+                      <div>
+                        {hours > 0
+                          ? t('fiscal.reviewDeferredDeadline', { hours })
+                          : t('fiscal.reviewDeferredOverdue')}
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : row.kind === 'correction-required' ? (
                 <div className="mt-2 flex flex-col gap-2 border-t border-gray-700 pt-2">
                   <div className="opacity-80">
                     {t('fiscal.reviewCorrectionHelp')}

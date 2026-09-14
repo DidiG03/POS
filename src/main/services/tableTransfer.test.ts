@@ -29,6 +29,10 @@ const coversCreate = vi.fn();
 const broadcastTableStatusChanged = vi.fn();
 const broadcastTicketsChanged = vi.fn();
 const moveCoveringReservationForTableTransfer = vi.fn();
+const occupancyIsOpen = vi.fn();
+const occupancyOpenedAt = vi.fn();
+const occupancyMove = vi.fn();
+const occupancySet = vi.fn();
 
 vi.mock('./realtime', () => ({
   broadcastTableStatusChanged: (...a: any[]) =>
@@ -39,6 +43,20 @@ vi.mock('./realtime', () => ({
 vi.mock('./reservations', () => ({
   moveCoveringReservationForTableTransfer: (...a: any[]) =>
     moveCoveringReservationForTableTransfer(...a),
+}));
+
+vi.mock('./tableOccupancy', () => ({
+  isTableOccupied: (...a: any[]) => occupancyIsOpen(...a),
+  getOpenedAt: (...a: any[]) => occupancyOpenedAt(...a),
+  moveTableOccupancy: (...a: any[]) => occupancyMove(...a),
+  setTableOccupied: (...a: any[]) => occupancySet(...a),
+  DestinationTableOccupiedError: class DestinationTableOccupiedError extends Error {
+    code = 'DEST_OPEN';
+    constructor(area: string, label: string) {
+      super(`Destination table ${area} ${label} is already open`);
+      this.name = 'DestinationTableOccupiedError';
+    }
+  },
 }));
 
 vi.mock('@db/client', () => ({
@@ -287,6 +305,12 @@ describe('transferTableLocal — on-shift requirement', () => {
     kdsTicketUpdateMany.mockResolvedValue({ count: 0 });
     coversCreate.mockResolvedValue({});
     moveCoveringReservationForTableTransfer.mockResolvedValue(undefined);
+    occupancyIsOpen.mockImplementation((area: string, label: string) =>
+      Promise.resolve(area === 'Sallon' && label === 'T1'),
+    );
+    occupancyOpenedAt.mockResolvedValue(new Date('2026-05-12T13:00:00.000Z'));
+    occupancyMove.mockResolvedValue(undefined);
+    occupancySet.mockResolvedValue(undefined);
   });
 
   it('rejects ownership transfer when the target waiter is not on shift', async () => {
@@ -372,6 +396,7 @@ describe('transferTableLocal — on-shift requirement', () => {
       'Sallon',
       'T2',
     );
+    expect(occupancyMove).toHaveBeenCalledWith('Sallon', 'T1', 'Sallon', 'T2');
   });
 
   it('tags every source-session row with the moved-out marker when only moving the table', async () => {
@@ -383,17 +408,6 @@ describe('transferTableLocal — on-shift requirement', () => {
       { id: 52, note: 'waiter note' },
     ];
     ticketLogFindMany.mockResolvedValue(sessionRows);
-    syncStateFindUnique.mockImplementation(({ where }: any) => {
-      if (where.key === 'tables:open') {
-        return Promise.resolve({ valueJson: { 'Sallon:T1': true } });
-      }
-      if (where.key === 'tables:openAt') {
-        return Promise.resolve({
-          valueJson: { 'Sallon:T1': '2026-05-12T13:00:00.000Z' },
-        });
-      }
-      return Promise.resolve(null);
-    });
 
     const result = await transferTableLocal({
       fromArea: 'Sallon',

@@ -5,8 +5,15 @@ import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../stores/adminSession';
 import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { BrandMark } from '../components/BrandMark';
-import { EmptyState, StatusChip, cn } from '../components/ui';
+import { StatusChip, cn } from '../components/ui';
+import { NotificationsPanel } from '../components/NotificationsPanel';
+import { reportAppError } from '../utils/reportAppError';
 import type { Tone } from '../components/ui';
+import {
+  ADMIN_RAIL_COLLAPSED_KEY,
+  SidebarCollapseToggle,
+  useStoredFlag,
+} from '../components/SidebarCollapseToggle';
 import {
   IconBell,
   IconBox,
@@ -30,6 +37,9 @@ export default function AdminLayout() {
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [railCollapsed, setRailCollapsed] = useStoredFlag(
+    ADMIN_RAIL_COLLAPSED_KEY,
+  );
   const me = useAdminSessionStore((s) => s.user);
   const setMe = useAdminSessionStore((s) => s.setUser);
   const navigate = useNavigate();
@@ -182,9 +192,24 @@ export default function AdminLayout() {
     <div className="admin-app pos-app flex h-screen min-h-0 text-gray-100">
       {/* Sidebar — the back office has six sections, which is more than a
           horizontal bar can hold without truncating. */}
-      <aside className="admin-rail hidden w-[220px] shrink-0 flex-col border-r border-white/[0.06] lg:flex">
-        <div className="flex min-h-[var(--pos-header-h)] shrink-0 items-center px-4">
-          <BrandMark size="sm" compact subtitle={t('adminLayout.panelTitle')} />
+      <aside
+        className={cn(
+          'admin-rail relative z-20 hidden shrink-0 flex-col border-r border-white/[0.06] transition-[width] duration-200 lg:flex',
+          railCollapsed ? 'is-collapsed w-16' : 'w-[220px]',
+        )}
+      >
+        <div
+          className={cn(
+            'flex min-h-[var(--pos-header-h)] shrink-0 items-center',
+            railCollapsed ? 'justify-center px-1' : 'px-4',
+          )}
+        >
+          <BrandMark
+            size="sm"
+            compact
+            wordmark={!railCollapsed}
+            subtitle={railCollapsed ? undefined : t('adminLayout.panelTitle')}
+          />
         </div>
         <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-3">
           <div className="space-y-0.5">
@@ -193,6 +218,7 @@ export default function AdminLayout() {
                 key={item.to}
                 to={item.to}
                 end={item.end}
+                title={t(item.labelKey)}
                 className={({ isActive }) =>
                   cn(
                     'pos-side-link',
@@ -201,35 +227,58 @@ export default function AdminLayout() {
                 }
               >
                 {item.icon}
-                <span className="truncate">{t(item.labelKey)}</span>
+                <span className={cn('truncate', railCollapsed && 'sr-only')}>
+                  {t(item.labelKey)}
+                </span>
               </NavLink>
             ))}
           </div>
         </nav>
         <div className="shrink-0 border-t border-white/[0.06] px-2.5 py-2.5">
-          <div className="flex items-center gap-2.5 px-1.5 py-1">
-            <span className="pos-avatar">
-              {initials(me?.displayName || 'A')}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] font-medium text-gray-100">
-                {me?.displayName || t('adminLayout.panelTitle')}
-              </div>
-              <div className="truncate text-[11px] text-gray-500">
-                {String(me?.role || 'ADMIN')}
-              </div>
+          {railCollapsed ? (
+            <div className="flex flex-col items-center gap-1.5">
+              <span className="pos-avatar">
+                {initials(me?.displayName || 'A')}
+              </span>
+              <button
+                type="button"
+                className="pos-icon-btn shrink-0 hover:!bg-rose-500/12 hover:!text-rose-300"
+                onClick={signOut}
+                title={t('common.logout')}
+                aria-label={t('common.logout')}
+              >
+                <IconLogout />
+              </button>
             </div>
-            <button
-              type="button"
-              className="pos-icon-btn shrink-0 hover:!bg-rose-500/12 hover:!text-rose-300"
-              onClick={signOut}
-              title={t('common.logout')}
-              aria-label={t('common.logout')}
-            >
-              <IconLogout />
-            </button>
-          </div>
+          ) : (
+            <div className="flex items-center gap-2.5 px-1.5 py-1">
+              <span className="pos-avatar">
+                {initials(me?.displayName || 'A')}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-medium text-gray-100">
+                  {me?.displayName || t('adminLayout.panelTitle')}
+                </div>
+                <div className="truncate text-[11px] text-gray-500">
+                  {String(me?.role || 'ADMIN')}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="pos-icon-btn shrink-0 hover:!bg-rose-500/12 hover:!text-rose-300"
+                onClick={signOut}
+                title={t('common.logout')}
+                aria-label={t('common.logout')}
+              >
+                <IconLogout />
+              </button>
+            </div>
+          )}
         </div>
+        <SidebarCollapseToggle
+          collapsed={railCollapsed}
+          onToggle={() => setRailCollapsed(!railCollapsed)}
+        />
       </aside>
 
       <div className="admin-workspace flex min-w-0 flex-1 flex-col">
@@ -294,7 +343,7 @@ export default function AdminLayout() {
               </button>
               {showNotifications && (
                 <div
-                  className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-80 max-w-[calc(100vw-1.25rem)] overflow-hidden"
+                  className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-[22.5rem] max-w-[calc(100vw-1.25rem)] overflow-hidden"
                   tabIndex={-1}
                 >
                   <div className="flex items-center justify-between gap-3 border-b border-white/7 px-3 py-2.5">
@@ -308,10 +357,17 @@ export default function AdminLayout() {
                         type="button"
                         onClick={async () => {
                           if (!me?.id) return;
-                          await window.api.admin
-                            .markAllNotificationsRead({ userId: me.id })
-                            .catch(() => {});
-                          setUnreadCount(0);
+                          try {
+                            await window.api.admin.markAllNotificationsRead({
+                              userId: me.id,
+                            });
+                            setUnreadCount(0);
+                          } catch (e) {
+                            reportAppError(e, {
+                              fallback: t('common.actionFailed'),
+                              key: `notifications.markAll:${me.id}`,
+                            });
+                          }
                         }}
                       >
                         {t('common.markAllRead')}
@@ -322,6 +378,7 @@ export default function AdminLayout() {
                     <AdminNotificationsList
                       userId={me?.id ?? 0}
                       onCount={(n) => setUnreadCount(n)}
+                      onNavigate={() => setShowNotifications(false)}
                     />
                   </div>
                 </div>
@@ -367,11 +424,12 @@ function initials(name: string): string {
 function AdminNotificationsList({
   userId,
   onCount,
+  onNavigate,
 }: {
   userId: number;
   onCount: (n: number) => void;
+  onNavigate?: () => void;
 }) {
-  const { t: tr } = useTranslation();
   const [items, setItems] = useState<
     {
       id: number;
@@ -411,71 +469,5 @@ function AdminNotificationsList({
     };
   }, [userId]);
 
-  if (!items.length)
-    return (
-      <EmptyState
-        compact
-        icon={<IconBell />}
-        title={tr('common.noNotifications')}
-      />
-    );
-  return (
-    <ul className="space-y-1">
-      {items.map((n) => (
-        <li
-          key={n.id}
-          className={cn(
-            'rounded-lg border px-2.5 py-2',
-            n.readAt
-              ? 'border-transparent bg-white/3'
-              : 'border-white/12 bg-white/[0.05]',
-          )}
-        >
-          <div className="flex items-center justify-between gap-2 text-[11px] text-gray-500">
-            <span className="truncate font-medium text-gray-400">
-              {n.userName}
-            </span>
-            <span className="shrink-0 tabular">
-              {formatAdminNotificationTimestamp(n.createdAt, tr)}
-            </span>
-          </div>
-          <div className="mt-1 text-[13px] leading-snug text-gray-200">
-            {n.message}
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function formatAdminNotificationTimestamp(
-  iso: string,
-  tr: (key: string, opt?: Record<string, unknown>) => string,
-): string {
-  const createdAt = new Date(iso).getTime();
-  const now = Date.now();
-  const diffMs = Math.max(0, now - createdAt);
-  const minuteMs = 60 * 1000;
-  const hourMs = 60 * minuteMs;
-  const dayMs = 24 * hourMs;
-  const weekMs = 7 * dayMs;
-  if (diffMs < hourMs) {
-    const minutes = Math.max(1, Math.floor(diffMs / minuteMs));
-    return tr('time.minutesAgo', { count: minutes });
-  }
-  if (diffMs < dayMs) {
-    const hours = Math.max(1, Math.floor(diffMs / hourMs));
-    return tr('time.hoursAgo', { count: hours });
-  }
-  if (diffMs < weekMs) {
-    const days = Math.max(1, Math.floor(diffMs / dayMs));
-    return tr('time.daysAgo', { count: days });
-  }
-  const d = new Date(iso);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mm}/${yy} ${hh}:${min}`;
+  return <NotificationsPanel items={items} admin onNavigate={onNavigate} />;
 }

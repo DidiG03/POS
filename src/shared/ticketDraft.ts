@@ -40,13 +40,57 @@ export function isTicketDraftFresh(
   return age >= 0 && age < TICKET_DRAFT_TTL_MS;
 }
 
+/** Sent lines are the live bill — they must not expire with the unsent-draft timer. */
+export function draftHasLiveBill(
+  draft: { lines?: TicketDraftLine[] } | null | undefined,
+): boolean {
+  return (draft?.lines || []).some(
+    (l) => l.voided !== true && l.staged !== true,
+  );
+}
+
+export function shouldKeepTicketDraft(
+  draft:
+    | { lines?: TicketDraftLine[]; savedAt?: number | null }
+    | null
+    | undefined,
+  now = Date.now(),
+  opts?: { keepLiveBill?: boolean },
+): boolean {
+  if (!draft) return false;
+  if (draftHasLiveBill(draft)) return opts?.keepLiveBill !== false;
+  return isTicketDraftFresh(draft.savedAt, now);
+}
+
 export function pruneStaleTicketDrafts(
   drafts: Record<string, TicketDraft>,
   now = Date.now(),
 ): Record<string, TicketDraft> {
   const next: Record<string, TicketDraft> = {};
   for (const [key, draft] of Object.entries(drafts || {})) {
-    if (draft && isTicketDraftFresh(draft.savedAt, now)) next[key] = draft;
+    if (draft && shouldKeepTicketDraft(draft, now)) next[key] = draft;
+  }
+  return next;
+}
+
+/**
+ * Sent bills belong to an occupied sitting. Once the host says the table
+ * is free, restoring that draft paints items on a green table.
+ * Unsent carts still survive the short leave/refresh window.
+ */
+export function pruneLiveBillsForClosedTables(
+  drafts: Record<string, TicketDraft>,
+  openKeys: Iterable<string>,
+  now = Date.now(),
+): Record<string, TicketDraft> {
+  const open = new Set(
+    [...openKeys].map((k) => String(k || '').trim()).filter(Boolean),
+  );
+  const next: Record<string, TicketDraft> = {};
+  for (const [key, draft] of Object.entries(drafts || {})) {
+    if (!draft) continue;
+    const keepLiveBill = open.has(key);
+    if (shouldKeepTicketDraft(draft, now, { keepLiveBill })) next[key] = draft;
   }
   return next;
 }
@@ -101,14 +145,43 @@ export function bindTicketTable<
     boundKey: string | null;
     drafts: Record<string, TicketDraft>;
   },
->(state: T, nextKey: string | null, now = Date.now()): T {
-  if (state.boundKey === nextKey) return state;
+>(
+  state: T,
+  nextKey: string | null,
+  now = Date.now(),
+  opts?: { keepLiveBill?: boolean },
+): T {
+  if (state.boundKey === nextKey) {
+    if (nextKey && opts?.keepLiveBill === false && draftHasLiveBill(state)) {
+      const drafts = { ...state.drafts };
+      delete drafts[nextKey];
+      const empty = emptyTicketDraft();
+      return {
+        ...state,
+        addMode: empty.addMode,
+        lines: empty.lines as T['lines'],
+        courses: empty.courses as T['courses'],
+        seats: empty.seats as T['seats'],
+        activeCourseId: empty.activeCourseId,
+        activeSeatId: empty.activeSeatId,
+        orderNote: empty.orderNote,
+        drafts,
+        boundKey: nextKey,
+        savedAt: now,
+      };
+    }
+    return state;
+  }
   const drafts = pruneStaleTicketDrafts({ ...state.drafts }, now);
   if (state.boundKey) {
     drafts[state.boundKey] = { ...snapshotTicketDraft(state), savedAt: now };
   }
   const loaded = nextKey ? drafts[nextKey] : null;
-  if (loaded && isTicketDraftFresh(loaded.savedAt, now)) {
+  const keepLiveBill = nextKey ? opts?.keepLiveBill !== false : false;
+  if (nextKey && !keepLiveBill && loaded && draftHasLiveBill(loaded)) {
+    delete drafts[nextKey];
+  }
+  if (loaded && shouldKeepTicketDraft(loaded, now, { keepLiveBill })) {
     const snap = snapshotTicketDraft(loaded);
     return {
       ...state,
@@ -140,7 +213,7 @@ export function bindTicketTable<
   };
 }
 
-/** Drop a persisted cart that is older than the leave/refresh grace window. */
+/** Drop a persisted unsent cart that is older than the leave/refresh grace window. */
 export function revivePersistedTicketDraft<
   T extends TicketDraft & {
     drafts?: Record<string, TicketDraft>;
@@ -148,7 +221,7 @@ export function revivePersistedTicketDraft<
   },
 >(state: T, now = Date.now()): T {
   const drafts = pruneStaleTicketDrafts(state.drafts || {}, now);
-  if (isTicketDraftFresh(state.savedAt, now)) {
+  if (shouldKeepTicketDraft(state, now)) {
     return { ...state, drafts };
   }
   const empty = emptyTicketDraft(state.addMode);

@@ -16,24 +16,28 @@
  * the venue had not taken.
  *
  * So a CANCEL of a fiscalized sale now files the cancellation itself, under
- * its own new docId, referencing the original invoice's IIC. The review
- * queue is still the fallback for everything that cannot be filed
- * automatically: a partial corrective (which needs a restated invoice
- * rather than a cancellation), a sale whose IIC was never recorded, and any
- * cancellation the API does not confirm.
+ * its own new docId, referencing the original invoice's IIC. A CORRECTIVE
+ * files a restated invoice for the surviving lines the same way. The review
+ * queue is the fallback when the API does not confirm, when the IIC was
+ * never recorded, or when a P9 e-invoice is missing buyer details.
  */
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import { notifyAdminsAndActor } from './adminAlerts';
 import { flagFiscalCorrectionRequired } from './fiscal/claims';
 import { cancelInvoice } from './fiscal/cancel';
+import { registerCorrectiveInvoice } from './fiscal/corrective';
 import { isFiscalEnabled } from './fiscal';
 import { newDocId } from './fiscal/docId';
+import { assertVatCode } from './fiscal/vatConfig';
+import { mapPaymentMethod } from './fiscal/paymentMethod';
+import { roundMoney } from '@shared/pricing';
 import {
   planSaleCorrection,
   type SaleCorrectionError,
   type SaleCorrectionKind,
 } from '@shared/saleCorrection';
+import { tinFromVerifyUrl } from '@shared/fiscalReceipt';
 
 export type FiscalSaleRow = {
   orderId: number;
@@ -50,6 +54,12 @@ export type FiscalSaleRow = {
   fiscalEic: string | null;
   /** easyPos docId for the invoice — the payment's idempotency key. */
   docId: string | null;
+  /** Official CIS / easyPos verification URL when the provider returned one. */
+  fiscalLink: string | null;
+  /** Provider QR payload when it is a URL, not an image dump. */
+  fiscalQrCode: string | null;
+  /** Seller NIPT — CIS InvoiceCheck requires this next to the IIC. */
+  fiscalTin: string | null;
   items: Array<{
     id: number;
     name: string;
@@ -64,6 +74,10 @@ export type FiscalSaleRow = {
     amountDelta: number;
     filedAt: string | null;
     createdAt: string;
+    /** IIC of the cancellation / corrective invoice, once CIS accepted it. */
+    correctionNslf: string | null;
+    /** FIC of the cancellation / corrective invoice. */
+    correctionNivf: string | null;
   }>;
 };
 
@@ -84,8 +98,37 @@ const FISCAL_SALE_INCLUDE = {
   corrections: { orderBy: { createdAt: 'desc' as const } },
 };
 
+function paymentMeta(payment: any): Record<string, unknown> {
+  const raw = payment?.metaJson;
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
+}
+
+function pickFiscalField(
+  payment: any,
+  key: 'fiscalLink' | 'fiscalQrCode' | 'fiscalTin',
+): string | null {
+  const meta = paymentMeta(payment);
+  const value = String(meta[key] || '').trim();
+  return value || null;
+}
+
+function pickFiscalTin(payment: any, fallbackTin?: string): string | null {
+  return (
+    pickFiscalField(payment, 'fiscalTin') ||
+    tinFromVerifyUrl(pickFiscalField(payment, 'fiscalLink')) ||
+    tinFromVerifyUrl(pickFiscalField(payment, 'fiscalQrCode')) ||
+    String(fallbackTin || '').trim() ||
+    null
+  );
+}
+
 /** Shape `listFiscalizedSales` / ticket matching both read off an Order. */
-export function mapOrderToFiscalSaleRow(row: any): FiscalSaleRow {
+export function mapOrderToFiscalSaleRow(
+  row: any,
+  options?: { tin?: string | null },
+): FiscalSaleRow {
   const payment = Array.isArray(row?.payments) ? row.payments[0] : null;
   return {
     orderId: Number(row.id),
@@ -100,6 +143,9 @@ export function mapOrderToFiscalSaleRow(row: any): FiscalSaleRow {
     fiscalNivf: String(payment?.fiscalNivf || '').trim() || null,
     fiscalEic: String(payment?.fiscalEic || '').trim() || null,
     docId: String(payment?.idempotencyKey || '').trim() || null,
+    fiscalLink: pickFiscalField(payment, 'fiscalLink'),
+    fiscalQrCode: pickFiscalField(payment, 'fiscalQrCode'),
+    fiscalTin: pickFiscalTin(payment, options?.tin || undefined),
     items: (Array.isArray(row.items) ? row.items : []).map((it: any) => ({
       id: Number(it.id),
       name: String(it.name || 'Item'),
@@ -115,6 +161,8 @@ export function mapOrderToFiscalSaleRow(row: any): FiscalSaleRow {
         amountDelta: num(c.amountDelta),
         filedAt: iso(c.filedAt),
         createdAt: iso(c.createdAt) || '',
+        correctionNslf: String(c.correctionNslf || '').trim() || null,
+        correctionNivf: String(c.correctionNivf || '').trim() || null,
       }),
     ),
   };
@@ -149,7 +197,11 @@ export async function listFiscalizedSales(args?: {
     })
     .catch(() => [] as any[]);
 
-  return (rows as any[]).map(mapOrderToFiscalSaleRow);
+  const tin = String(
+    ((await coreServices.readSettings().catch(() => ({}))) as any)?.fiscal
+      ?.nipt || '',
+  ).trim();
+  return (rows as any[]).map((row) => mapOrderToFiscalSaleRow(row, { tin }));
 }
 
 export type ApplyCorrectionResult =
@@ -162,6 +214,8 @@ export type ApplyCorrectionResult =
       needsFiling: boolean;
       /** Present when a cancellation was filed (or attempted) automatically. */
       cancellation?: FiledCancellation;
+      /** Present when a partial corrective was filed (or attempted) automatically. */
+      corrective?: FiledCancellation;
     }
   | { ok: false; error: SaleCorrectionError | 'not-found' };
 
@@ -175,6 +229,8 @@ export interface FiledCancellation {
   state: 'FILED' | 'NOT_FILED' | 'UNCONFIRMED';
   /** The cancellation's own docId, so it can be looked up or resumed. */
   docId: string;
+  /** NSLF of the cancellation / corrective document. */
+  nslf?: string;
   /** NIVF of the cancellation document. */
   nivf?: string;
   detail: string;
@@ -225,6 +281,7 @@ async function fileCancellation(input: {
       return {
         state: 'FILED',
         docId,
+        nslf: outcome.identifiers.iic,
         nivf: outcome.identifiers.fic,
         detail: `Cancellation filed · NIVF ${outcome.identifiers.fic} · docId ${docId}`,
       };
@@ -250,27 +307,150 @@ async function fileCancellation(input: {
   }
 }
 
-const CANCELLATION_DOC_KEY = (orderId: number) =>
-  `fiscal:cancel-docid:${orderId}`;
-
-async function readCancellationDocId(orderId: number): Promise<string> {
-  const row = await prisma.syncState
-    .findUnique({ where: { key: CANCELLATION_DOC_KEY(orderId) } })
-    .catch(() => null);
-  return String((row as any)?.valueJson?.docId || '').trim();
+async function stampFiledCorrection(
+  correctionId: number,
+  filed: FiledCancellation,
+): Promise<void> {
+  await prisma.saleCorrection
+    .update({
+      where: { id: correctionId },
+      data: {
+        filedAt: new Date(),
+        correctionNslf: String(filed.nslf || '').trim() || null,
+        correctionNivf: String(filed.nivf || '').trim() || null,
+      },
+    })
+    .catch(() => undefined);
 }
 
-async function writeCancellationDocId(
-  orderId: number,
-  docId: string,
-): Promise<void> {
-  const key = CANCELLATION_DOC_KEY(orderId);
+const CANCELLATION_DOC_KEY = (orderId: number) =>
+  `fiscal:cancel-docid:${orderId}`;
+const CORRECTIVE_DOC_KEY = (orderId: number, correctionId: number) =>
+  `fiscal:corrective-docid:${orderId}:${correctionId}`;
+
+async function writeDocId(key: string, docId: string): Promise<void> {
   const valueJson = { docId, createdAt: new Date().toISOString() } as any;
   await prisma.syncState.upsert({
     where: { key },
     create: { key, valueJson },
     update: { valueJson },
   });
+}
+
+async function readDocId(key: string): Promise<string> {
+  const row = await prisma.syncState
+    .findUnique({ where: { key } })
+    .catch(() => null);
+  return String((row as any)?.valueJson?.docId || '').trim();
+}
+
+async function readCancellationDocId(orderId: number): Promise<string> {
+  return readDocId(CANCELLATION_DOC_KEY(orderId));
+}
+
+async function writeCancellationDocId(
+  orderId: number,
+  docId: string,
+): Promise<void> {
+  await writeDocId(CANCELLATION_DOC_KEY(orderId), docId);
+}
+
+async function fileCorrective(input: {
+  settings: any;
+  orderId: number;
+  correctionId: number;
+  originalDocId: string;
+  iic: string;
+  eic?: string;
+  issueDateTime?: string;
+  remaining: Array<{
+    sku?: string;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate: number;
+  }>;
+  nextTotal: number;
+  method: string;
+}): Promise<FiledCancellation> {
+  const key = CORRECTIVE_DOC_KEY(input.orderId, input.correctionId);
+  const existing = await readDocId(key);
+  const docId = existing || newDocId('invoice');
+  if (!existing) {
+    await writeDocId(key, docId).catch(() => undefined);
+  }
+
+  try {
+    const soldIn =
+      String(input.settings?.fiscal?.defaultSoldIn || 'XPP').trim() || 'XPP';
+    const articles = input.remaining
+      .filter((it) => Number.isFinite(it.qty) && it.qty > 0)
+      .map((it) => ({
+        articleId:
+          String(it.sku || '').trim() || `ITEM-${it.name.slice(0, 24)}`,
+        vatCode: assertVatCode(input.settings, {
+          vatRate: it.vatRate,
+          articleName: it.name,
+        }),
+        name: String(it.name || 'Item').slice(0, 100),
+        soldIn,
+        price: Number(it.unitPrice),
+        units: Number(it.qty),
+      }));
+    if (articles.length === 0) {
+      return {
+        state: 'NOT_FILED',
+        docId,
+        detail: 'Corrective invoice has no remaining lines to file.',
+      };
+    }
+    const lineSum = roundMoney(
+      articles.reduce((sum, a) => sum + a.price * a.units, 0),
+    );
+    const nextTotal = roundMoney(input.nextTotal);
+    const rebateGap = roundMoney(lineSum - nextTotal);
+    const invoiceRebate =
+      rebateGap >= 0.01 ? { inValue: rebateGap } : undefined;
+    const method = mapPaymentMethod(input.method || 'CASH');
+    const outcome = await registerCorrectiveInvoice(input.settings, {
+      docId,
+      articles,
+      payment: [{ type: method as any, amount: nextTotal }],
+      invoiceRebate,
+      original: {
+        iic: input.iic,
+        eic: input.eic,
+        issueDateTime: input.issueDateTime,
+      },
+    });
+    if (outcome.kind === 'complete') {
+      return {
+        state: 'FILED',
+        docId,
+        nslf: outcome.identifiers.iic,
+        nivf: outcome.identifiers.fic,
+        detail: `Corrective filed · NIVF ${outcome.identifiers.fic} · docId ${docId}`,
+      };
+    }
+    if (outcome.kind === 'unresolved') {
+      return {
+        state: 'UNCONFIRMED',
+        docId,
+        detail: `Corrective outcome unconfirmed — check docId ${docId} in easyPos before filing another: ${outcome.message}`,
+      };
+    }
+    return {
+      state: 'NOT_FILED',
+      docId,
+      detail: `Corrective was not filed: ${outcome.message}`,
+    };
+  } catch (e: any) {
+    return {
+      state: 'NOT_FILED',
+      docId,
+      detail: `Corrective could not be sent: ${String(e?.message || e)}`,
+    };
+  }
 }
 
 export async function applySaleCorrection(input: {
@@ -387,14 +567,9 @@ export async function applySaleCorrection(input: {
 
   let needsFiling = false;
   let cancellation: FiledCancellation | null = null;
+  let corrective: FiledCancellation | null = null;
   if (wasFiscalized && docId) {
     const iic = String(payment?.fiscalNslf || '').trim();
-    /**
-     * A full cancellation is the only correction the API can file for us.
-     * A partial corrective restates an invoice rather than withdrawing it,
-     * which needs the restated lines as a new document — so those still go
-     * to a person.
-     */
     if (plan.cancelsSale && iic && isFiscalEnabled(settings)) {
       cancellation = await fileCancellation({
         settings,
@@ -404,16 +579,48 @@ export async function applySaleCorrection(input: {
         eic: String(payment?.fiscalEic || '').trim() || undefined,
         issueDateTime: iso(payment?.paidAt) || undefined,
       });
+    } else if (!plan.cancelsSale && iic && isFiscalEnabled(settings)) {
+      const struck = new Set(plan.struckItemIds);
+      const remaining = ((order as any).items || [])
+        .filter((it: any) => !struck.has(Number(it.id)) && it.voidedAt == null)
+        .map((it: any) => ({
+          sku: String(it.sku || ''),
+          name: String(it.name || 'Item'),
+          qty: num(it.qty),
+          unitPrice: num(it.unitPrice),
+          vatRate: num(it.vatRate),
+        }));
+      corrective = await fileCorrective({
+        settings,
+        orderId,
+        correctionId,
+        originalDocId: docId,
+        iic,
+        eic: String(payment?.fiscalEic || '').trim() || undefined,
+        issueDateTime: iso(payment?.paidAt) || undefined,
+        remaining,
+        nextTotal: plan.nextTotal,
+        method: String(payment?.method || 'CASH'),
+      });
     }
 
-    if (!cancellation || cancellation.state !== 'FILED') {
-      // Reuses the queue and the "mark corrective filed" button that already
-      // exist in Settings › Fiskalizimi.
+    const filed =
+      cancellation?.state === 'FILED' || corrective?.state === 'FILED';
+    if (filed) {
+      await stampFiledCorrection(
+        correctionId,
+        (cancellation?.state === 'FILED' ? cancellation : corrective)!,
+      );
+    } else {
       needsFiling = await flagFiscalCorrectionRequired({
         idempotencyKey: docId,
         reason:
           `${what}: ${plan.reason} (${plan.amountDelta})` +
-          (cancellation ? ` · ${cancellation.detail}` : ''),
+          (cancellation
+            ? ` · ${cancellation.detail}`
+            : corrective
+              ? ` · ${corrective.detail}`
+              : ''),
         actorUserId: Number(input.actorUserId) || undefined,
         context: {
           area: String((order as any).area || ''),
@@ -446,5 +653,6 @@ export async function applySaleCorrection(input: {
     amountDelta: plan.amountDelta,
     needsFiling,
     ...(cancellation ? { cancellation } : {}),
+    ...(corrective ? { corrective } : {}),
   };
 }

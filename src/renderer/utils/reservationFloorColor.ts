@@ -6,7 +6,7 @@ import { reservationOccupiesTable } from '@shared/reservationDuration';
 
 export { isLiveReservationStatus as isLiveReservation } from '@shared/reservationDuration';
 
-export const RESERVATION_TABLE_FREE_CLASS = 'bg-zinc-600';
+export const RESERVATION_TABLE_FREE_CLASS = 'pos-floor-table--neutral';
 export const RESERVATION_TABLE_DAY_USED_CLASS = 'bg-rose-700';
 /** Live seated reservation or an open POS ticket. */
 export const RESERVATION_TABLE_OCCUPIED_CLASS = 'bg-rose-700';

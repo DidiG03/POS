@@ -6,6 +6,7 @@ import type { UserDTO } from '@shared/ipc';
 
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import { BrandMark } from '../../components/BrandMark';
+import { PageSpinner } from '../../components/PageSpinner';
 import { IconChevronLeft } from '../../components/icons';
 
 // Mirrored from LoginPage so a tablet that paired through the staff
@@ -195,6 +196,10 @@ export default function ReservationsLoginPage() {
     }
   }
 
+  if (loading) {
+    return <PageSpinner message={t('common.loading')} />;
+  }
+
   return (
     <div
       className="h-dvh flex flex-col items-center justify-center pos-app pos-app--auth text-gray-100 overflow-y-auto p-3 sm:p-4"
@@ -231,9 +236,7 @@ export default function ReservationsLoginPage() {
           </div>
         </div>
 
-        {loading ? (
-          <div className="opacity-70 text-sm">{t('common.loading')}</div>
-        ) : sortedStaff.length === 0 ? (
+        {sortedStaff.length === 0 ? (
           <div className="bg-amber-900/25 border border-amber-700/50 rounded-xl p-3 text-sm">
             {t('reservations.noHostAdminUsers')}
           </div>

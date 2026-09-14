@@ -19,6 +19,7 @@ import {
   type KdsFloorOrder,
 } from '@shared/kdsFloorOrders';
 import { broadcastTicketsChanged } from './realtime';
+import { getTableSessionStartedAt } from './tableSession';
 
 export type KdsListOptions = {
   /** This screen is the cooker's display (first of the two kitchen stages). */
@@ -26,24 +27,6 @@ export type KdsListOptions = {
   /** POS-host setting: two-stage cook → pass flow is active. */
   cookerEnabled?: boolean;
 };
-
-async function getTableSessionStartedAt(
-  area: string,
-  label: string,
-): Promise<Date | null> {
-  const openAtRow = await prisma.syncState
-    .findUnique({ where: { key: 'tables:openAt' } })
-    .catch(() => null);
-  const openAtMap = ((openAtRow?.valueJson as any) || {}) as Record<
-    string,
-    string
-  >;
-  const openAtIso = openAtMap[`${area}:${label}`];
-  if (!openAtIso) return null;
-  const sessionStart = new Date(openAtIso);
-  if (Number.isNaN(sessionStart.getTime())) return null;
-  return sessionStart;
-}
 
 async function getSessionOwnerId(
   area: string,

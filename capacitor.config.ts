@@ -27,7 +27,9 @@ const config: CapacitorConfig = {
     limitsNavigationsToAppBoundDomains: false,
   },
   android: {
-    // Allow plain http to LAN backends in development.
+    // LAN POS hosts have no public TLS certificate. The Waiter app is a
+    // companion that talks to that machine on Wi-Fi; this is required in
+    // production, not only in development.
     allowMixedContent: true,
   },
   server: {

@@ -18,10 +18,7 @@ import {
   toEurAtRate,
 } from '@shared/paymentDisplay';
 import { tableKey } from '@shared/utils/tableKey';
-import {
-  restoreMissingServerLines,
-  shouldKeepLocalDraftOnEmptyLog,
-} from '@shared/ticketDraft';
+import { restoreMissingServerLines } from '@shared/ticketDraft';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { ensureStoreCounterSelected } from '@shared/editionCapabilities';
@@ -36,7 +33,9 @@ import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
 import { formatEur, makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
+import { reportAppError } from '../../utils/reportAppError';
 import { PageSpinner } from '../../components/PageSpinner';
+import { SpinnerGlyph } from '../../components/SpinnerGlyph';
 import { TicketCourseBoard } from '../components/TicketCourseBoard';
 import {
   courseNumber,
@@ -58,13 +57,16 @@ import {
   IconChevronLeft,
   IconClose,
   IconCovers,
+  IconEdit,
   IconGrid,
+  IconHeart,
   IconList,
   IconOrderCourse,
   IconOrderDefault,
   IconOrderSeat,
   IconPrinter,
   IconReceipt,
+  IconSearch,
 } from '../../components/icons';
 import { pollIntervalMs } from '../../utils/netQuality';
 import { usePosUiTheme } from '../../theme';
@@ -72,16 +74,12 @@ import { FALLBACK_MENU_TILE_BG, menuTileStyle } from '@shared/menuTileColor';
 import {
   invalidateFloorCache,
   invalidateTicketCache,
-  peekFloorSnapshot,
-  peekLatestTicket,
   peekMenu,
 } from '../../utils/posReadCache';
 import { readTicketForTable } from '../../utils/ticketRead';
-import {
-  cacheLooksLikeCurrentSession,
-  hasLocalCovers,
-  shouldKeepCoversOnlyTableOpen,
-} from '../../utils/tableSessionKeepOpen';
+import { decideHostBill, peekTableBill } from '../../utils/tableBill';
+import { applyHostOpenTables } from '../../utils/openTablesSync';
+import { hasLocalCovers } from '../../utils/tableSessionKeepOpen';
 import {
   createHidBarcodeBuffer,
   findItemByProductCode,
@@ -208,10 +206,9 @@ async function liveServerTicketLines(
 ): Promise<TicketLogItem[]> {
   try {
     invalidateTicketCache(area, label);
-    const latest = await window.api.tickets.getLatestForTable(area, label);
-    return Array.isArray(latest?.items)
-      ? (latest!.items as TicketLogItem[])
-      : [];
+    const read = await readTicketForTable(area, label);
+    if (!read.ok) return [];
+    return read.items as TicketLogItem[];
   } catch {
     return [];
   }
@@ -323,26 +320,36 @@ export default function OrderPage() {
   const [customCommentButtonsByTable, setCustomCommentButtonsByTable] =
     useState<Record<string, string[]>>(loadCustomCommentButtons);
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
+  const [showOrderNote, setShowOrderNote] = useState(false);
   const { selectedTable, setPendingAction, setSelectedTable } =
     useOrderContext();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const uiTheme = usePosUiTheme();
-  const { setOpen, setAll, isOpen } = useTableStatus();
-
-  useEffect(() => {
-    if (!ticketPersistReady) return;
-    bindTable(
-      selectedTable ? tableKey(selectedTable.area, selectedTable.label) : null,
-    );
-  }, [
-    ticketPersistReady,
-    bindTable,
-    selectedTable?.area,
-    selectedTable?.label,
-  ]);
+  const { setOpen, isOpen } = useTableStatus();
   const [openLoaded, setOpenLoaded] = useState(
     () => Object.keys(useTableStatus.getState().openMap).length > 0,
   );
+
+  useEffect(() => {
+    if (!ticketPersistReady) return;
+    const key = selectedTable
+      ? tableKey(selectedTable.area, selectedTable.label)
+      : null;
+    bindTable(key, {
+      keepLiveBill: Boolean(
+        openLoaded &&
+          selectedTable &&
+          isOpen(selectedTable.area, selectedTable.label),
+      ),
+    });
+  }, [
+    ticketPersistReady,
+    bindTable,
+    openLoaded,
+    selectedTable?.area,
+    selectedTable?.label,
+    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
+  ]);
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
   const [ticketLoaded, setTicketLoaded] = useState(false);
   /** The host's bill could not be read — distinct from "the bill is empty". */
@@ -600,7 +607,12 @@ export default function OrderPage() {
       {
         dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
       },
-    ).catch(() => {});
+    ).catch((e: unknown) => {
+      reportAppError(e, {
+        fallback: t('order.toastTryAgain'),
+        key: 'tables.setOpen',
+      });
+    });
     await tryOrQueue(
       'covers.save',
       {
@@ -611,12 +623,22 @@ export default function OrderPage() {
       {
         dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
       },
-    ).catch(() => {});
+    ).catch((e: unknown) => {
+      reportAppError(e, {
+        fallback: t('order.toastTryAgain'),
+        key: 'covers.save',
+      });
+    });
     setOpen(selectedTable.area, selectedTable.label, true);
     await window.api.tables
       .setOpen(selectedTable.area, selectedTable.label, true)
-      .catch(() => {});
-  }, [hasTables, selectedTable, isOpen, setOpen]);
+      .catch((e: unknown) => {
+        reportAppError(e, {
+          fallback: t('order.toastTryAgain'),
+          key: 'tables.setOpen',
+        });
+      });
+  }, [hasTables, selectedTable, isOpen, setOpen, t]);
 
   function formatElapsed(ms: number) {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -647,7 +669,7 @@ export default function OrderPage() {
         }
         const open = await window.api.tables.listOpen();
         if (cancelled || gen !== orderPollGenRef.current) return;
-        if (Array.isArray(open)) setAll(open);
+        if (Array.isArray(open)) applyHostOpenTables(open);
         setOpenLoaded(true);
         setOpenLoadError(null);
       } catch (e: any) {
@@ -666,7 +688,7 @@ export default function OrderPage() {
         if (hidden) return;
         const open = await window.api.tables.listOpen();
         if (cancelled || gen !== orderPollGenRef.current) return;
-        if (Array.isArray(open)) setAll(open);
+        if (Array.isArray(open)) applyHostOpenTables(open);
       } catch {
         // ignore poll errors
       } finally {
@@ -684,7 +706,7 @@ export default function OrderPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [setAll]);
+  }, []);
 
   // Live "table open" timer (uses session start from tickets tooltip, which is based on tables:openAt)
   useEffect(() => {
@@ -721,6 +743,107 @@ export default function OrderPage() {
     return () => window.clearInterval(t);
   }, [openedAtMs]);
 
+  const coversKnownRef = useRef(coversKnown);
+  coversKnownRef.current = coversKnown;
+
+  const closeOccupiedTable = useCallback(
+    (area: string, label: string) => {
+      invalidateTicketCache(area, label);
+      setOpen(area, label, false);
+      window.api.tables.setOpen(area, label, false).catch((e: unknown) => {
+        reportAppError(e, {
+          fallback: t('order.toastTryAgain'),
+          key: `tables.setOpen:${area}:${label}`,
+        });
+        setOpen(area, label, true);
+      });
+    },
+    [setOpen, t],
+  );
+
+  const applyHostBill = useCallback(
+    (
+      read: Awaited<ReturnType<typeof readTicketForTable>>,
+      opts: {
+        mayCloseTable: boolean;
+        hasCovers: boolean;
+        area: string;
+        label: string;
+      },
+    ) => {
+      const currentLines = useTicketStore.getState().lines;
+      const sentTable = lastSendTableRef.current;
+      const withinPostSendGrace =
+        currentLines.length > 0 &&
+        Date.now() - lastSendAtRef.current < 5000 &&
+        Boolean(
+          sentTable &&
+            sentTable.area === opts.area &&
+            sentTable.label === opts.label,
+        );
+      const decision = decideHostBill({
+        read,
+        currentLines,
+        hasCovers: opts.hasCovers,
+        suppressClose: suppressFreeOnEmptyRef.current,
+        withinPostSendGrace,
+      });
+      if (decision.kind === 'unreadable') {
+        setTicketLoadFailed(true);
+        return;
+      }
+      setTicketLoadFailed(false);
+      if (decision.kind === 'hydrate' || decision.kind === 'voided') {
+        useTicketStore
+          .getState()
+          .hydrate({ items: decision.items as any, note: decision.note });
+        if (
+          decision.kind === 'voided' &&
+          opts.mayCloseTable &&
+          !suppressFreeOnEmptyRef.current
+        ) {
+          closeOccupiedTable(opts.area, opts.label);
+        }
+        return;
+      }
+      if (decision.kind === 'keep') return;
+      if (opts.mayCloseTable) {
+        useTicketStore.getState().hydrate({ items: [], note: decision.note });
+        closeOccupiedTable(opts.area, opts.label);
+      }
+    },
+    [closeOccupiedTable],
+  );
+
+  const syncOpenTableBill = useCallback(
+    async (
+      area: string,
+      label: string,
+      gen: number,
+      opts: { mayCloseTable: boolean; cancelled?: () => boolean },
+    ) => {
+      const read = await readTicketForTable(area, label);
+      if (opts.cancelled?.() || gen !== hydrateGenRef.current) return;
+      let hasCovers = hasLocalCovers(coversKnownRef.current);
+      if (
+        read.ok &&
+        !read.items.some((it) => it && it.voided !== true) &&
+        !hasCovers &&
+        opts.mayCloseTable
+      ) {
+        hasCovers = await sessionHasCovers(area, label, coversKnownRef.current);
+        if (opts.cancelled?.() || gen !== hydrateGenRef.current) return;
+      }
+      applyHostBill(read, {
+        mayCloseTable: opts.mayCloseTable,
+        hasCovers,
+        area,
+        label,
+      });
+    },
+    [applyHostBill],
+  );
+
   // CORRECTNESS: bump the hydrate generation whenever the selected table
   // changes. Previously hydrateGenRef was only bumped on void; a slow IPC
   // response from a previous table could land after the user had switched and
@@ -734,8 +857,10 @@ export default function OrderPage() {
     setTicketLoadFailed(false);
   }, [selectedTable?.area, selectedTable?.label]);
 
-  // Load ticket snapshot for open tables before rendering the page (prevents empty->pop-in on refresh).
+  // One host read for the selected open table. Optimistic paint from the
+  // floor cache, then confirm — never treat "no cache" as an empty bill.
   useEffect(() => {
+    if (ticketSyncing) return;
     let cancelled = false;
     const gen = hydrateGenRef.current;
     (async () => {
@@ -771,105 +896,32 @@ export default function OrderPage() {
           .catch(() => false);
         if (cancelled || gen !== hydrateGenRef.current) return;
         if (!hostSaysOpen) {
+          invalidateTicketCache(table.area, table.label);
+          useTicketStore.getState().bindTable(key, { keepLiveBill: false });
           setTicketLoaded(true);
           return;
         }
-        // Adopting the host's answer re-runs this effect, which then loads
-        // the sitting's ticket.
         adoptedHostOpenRef.current = key;
         setOpen(table.area, table.label, true);
         return;
       }
-      const cached = peekLatestTicket(selectedTable.area, selectedTable.label);
-      const snap = peekFloorSnapshot(selectedTable.area);
-      const openedAt = snap?.tables?.find(
-        (row) =>
-          row.area === selectedTable.area && row.label === selectedTable.label,
-      )?.openedAt;
-      const cacheFresh = cacheLooksLikeCurrentSession(cached, openedAt);
-      if (cached?.items && cacheFresh) {
+      const peeked = peekTableBill(selectedTable.area, selectedTable.label);
+      if (peeked) {
         useTicketStore.getState().hydrate({
-          items: cached.items as any,
-          note: cached.note || '',
+          items: peeked.items as any,
+          note: peeked.note,
         });
         setTicketLoaded(true);
       } else {
         setTicketLoaded(false);
       }
       try {
-        const read = await readTicketForTable(
-          selectedTable.area,
-          selectedTable.label,
-        );
-        if (cancelled || gen !== hydrateGenRef.current) return;
-        if (!read.ok) {
-          // The bill is unknown, not empty. An empty cart on an occupied
-          // table reads as "nothing ordered" and invites a Send that
-          // rewrites the sitting.
-          setTicketLoadFailed(true);
-          return;
-        }
-        setTicketLoadFailed(false);
-        const items = read.items;
-        if (items.length) {
-          useTicketStore
-            .getState()
-            .hydrate({ items: items as any, note: read.note });
-          if (
-            activeTicketItems(
-              useTicketStore.getState().lines as Array<{ voided?: boolean }>,
-            ).length === 0 &&
-            selectedTable
-          ) {
-            invalidateTicketCache(selectedTable.area, selectedTable.label);
-            setOpen(selectedTable.area, selectedTable.label, false);
-            window.api.tables
-              .setOpen(selectedTable.area, selectedTable.label, false)
-              .catch(() => {});
-          }
-        } else {
-          const currentLines = useTicketStore.getState().lines;
-          const sentTable = lastSendTableRef.current;
-          const isSameTable =
-            sentTable &&
-            selectedTable &&
-            sentTable.area === selectedTable.area &&
-            sentTable.label === selectedTable.label;
-          const withinPostSendGrace =
-            currentLines.length > 0 &&
-            Date.now() - lastSendAtRef.current < 5000 &&
-            isSameTable;
-          if (withinPostSendGrace) {
-            // Don't overwrite with empty — we may have just sent; server may not have synced yet
-            return;
-          }
-          if (shouldKeepLocalDraftOnEmptyLog(currentLines)) return;
-          useTicketStore.getState().hydrate({ items: [], note: read.note });
-          if (selectedTable) {
-            const keepOpen = shouldKeepCoversOnlyTableOpen({
-              latestHadLines: false,
-              suppressClose: suppressFreeOnEmptyRef.current,
-              localCovers: coversKnown,
-              serverCovers: hasLocalCovers(coversKnown)
-                ? coversKnown
-                : (await sessionHasCovers(
-                      selectedTable.area,
-                      selectedTable.label,
-                      coversKnown,
-                    ))
-                  ? 1
-                  : null,
-            });
-            if (keepOpen) return;
-            invalidateTicketCache(selectedTable.area, selectedTable.label);
-            setOpen(selectedTable.area, selectedTable.label, false);
-            window.api.tables
-              .setOpen(selectedTable.area, selectedTable.label, false)
-              .catch(() => {});
-          }
-        }
-      } catch (e) {
-        void e;
+        await syncOpenTableBill(selectedTable.area, selectedTable.label, gen, {
+          mayCloseTable: true,
+          cancelled: () => cancelled,
+        });
+      } catch {
+        // next visibility / ticketsChanged pass retries
       } finally {
         if (!cancelled && gen === hydrateGenRef.current) setTicketLoaded(true);
       }
@@ -884,6 +936,9 @@ export default function OrderPage() {
     selectedTable?.label,
     isOpen(selectedTable?.area || '', selectedTable?.label || ''),
     ticketReloadNonce,
+    syncOpenTableBill,
+    setOpen,
+    ticketSyncing,
   ]);
 
   // Track covers for the selected table (used to gate "Pay")
@@ -1556,44 +1611,6 @@ export default function OrderPage() {
   ]);
 
   useEffect(() => {
-    const applyLatest = async () => {
-      if (!selectedTable) return;
-      const gen = hydrateGenRef.current;
-      const table = selectedTable;
-      try {
-        const read = await readTicketForTable(table.area, table.label);
-        if (gen !== hydrateGenRef.current) return;
-        if (!read.ok) {
-          setTicketLoadFailed(true);
-          return;
-        }
-        setTicketLoadFailed(false);
-        const items = read.items;
-        if (
-          items.length > 0 &&
-          items.every((it: { voided?: boolean }) => it?.voided === true)
-        ) {
-          useTicketStore.getState().clear();
-          return;
-        }
-        if (items.length) {
-          useTicketStore.getState().hydrate({
-            items: items as any,
-            note: read.note,
-          });
-          return;
-        }
-        if (suppressFreeOnEmptyRef.current || hasLocalCovers(coversKnown)) {
-          return;
-        }
-        const currentLines = useTicketStore.getState().lines;
-        if (shouldKeepLocalDraftOnEmptyLog(currentLines)) return;
-        useTicketStore.getState().hydrate({ items: [], note: read.note });
-      } catch {
-        // next poll / hydrate effect will retry
-      }
-    };
-
     const onTicketsChanged = (ev: Event) => {
       const detail = (ev as CustomEvent).detail || {};
       const area = String(detail.area || '');
@@ -1609,31 +1626,68 @@ export default function OrderPage() {
         selectedTable.label,
         Number.isFinite(uid) && uid > 0 ? uid : null,
       );
-      void applyLatest();
+      void syncOpenTableBill(
+        selectedTable.area,
+        selectedTable.label,
+        hydrateGenRef.current,
+        { mayCloseTable: false },
+      );
+    };
+
+    const onTablesChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail || {};
+      const area = String(detail.area || '');
+      const label = String(detail.label || detail.tableLabel || '');
+      if (!selectedTable) return;
+      if (area !== selectedTable.area || label !== selectedTable.label) {
+        return;
+      }
+      invalidateTicketCache(selectedTable.area, selectedTable.label);
+      if (detail.open === false) {
+        adoptedHostOpenRef.current = null;
+        useTicketStore
+          .getState()
+          .bindTable(tableKey(selectedTable.area, selectedTable.label), {
+            keepLiveBill: false,
+          });
+      }
+      void syncOpenTableBill(
+        selectedTable.area,
+        selectedTable.label,
+        hydrateGenRef.current,
+        { mayCloseTable: detail.open === false },
+      );
     };
 
     const onCatchup = () => {
       void window.api.tables
         .listOpen()
         .then((open) => {
-          if (Array.isArray(open)) setAll(open);
+          if (Array.isArray(open)) applyHostOpenTables(open);
         })
         .catch(() => undefined);
-      void applyLatest();
+      if (!selectedTable) return;
+      void syncOpenTableBill(
+        selectedTable.area,
+        selectedTable.label,
+        hydrateGenRef.current,
+        { mayCloseTable: false },
+      );
     };
 
     window.addEventListener('pos:ticketsChanged', onTicketsChanged);
+    window.addEventListener('pos:tablesChanged', onTablesChanged);
     window.addEventListener('pos:syncCatchup', onCatchup);
     return () => {
       window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
+      window.removeEventListener('pos:tablesChanged', onTablesChanged);
       window.removeEventListener('pos:syncCatchup', onCatchup);
     };
   }, [
     selectedTable?.area,
     selectedTable?.label,
     refreshTableOwner,
-    coversKnown,
-    setAll,
+    syncOpenTableBill,
   ]);
 
   // Tablets (and cloud) often miss the SSE ticket event. Re-read owner
@@ -1673,77 +1727,8 @@ export default function OrderPage() {
     refreshTableOwner,
   ]);
 
-  // Hydrate lines from server when selecting a table or on refresh.
-  // Skip while ticketSyncing — the void flow handles its own re-sync.
-  useEffect(() => {
-    if (ticketSyncing) return;
-    const gen = hydrateGenRef.current;
-    // The ticket store is global. Without this the reply to a slow fetch can
-    // land after the waiter has already backed out and opened another table,
-    // writing the previous table's lines into the check they are looking at.
-    let cancelled = false;
-    (async () => {
-      if (!ticketPersistReady) return;
-      if (!selectedTable) return;
-      // Only hydrate for tables currently marked as open
-      if (!isOpen(selectedTable.area, selectedTable.label)) return;
-      try {
-        const read = await readTicketForTable(
-          selectedTable.area,
-          selectedTable.label,
-        );
-        // Stale fetch — a void or new action happened while this was in flight
-        if (cancelled || gen !== hydrateGenRef.current) return;
-        if (!read.ok) {
-          setTicketLoadFailed(true);
-          return;
-        }
-        setTicketLoadFailed(false);
-        const items = read.items;
-        if (items.length) {
-          useTicketStore
-            .getState()
-            .hydrate({ items: items as any, note: read.note });
-        } else {
-          const currentLines = useTicketStore.getState().lines;
-          const sentTable = lastSendTableRef.current;
-          const isSameTable =
-            sentTable &&
-            selectedTable &&
-            sentTable.area === selectedTable.area &&
-            sentTable.label === selectedTable.label;
-          const withinPostSendGrace =
-            currentLines.length > 0 &&
-            Date.now() - lastSendAtRef.current < 5000 &&
-            isSameTable;
-          if (withinPostSendGrace) {
-            // Don't overwrite with empty — we may have just sent; server may not have synced yet
-            return;
-          }
-          if (suppressFreeOnEmptyRef.current || hasLocalCovers(coversKnown)) {
-            return;
-          }
-          if (shouldKeepLocalDraftOnEmptyLog(currentLines)) return;
-          useTicketStore.getState().hydrate({ items: [], note: read.note });
-        }
-      } catch (e) {
-        void e;
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    selectedTable?.area,
-    selectedTable?.label,
-    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
-    ticketPersistReady,
-    ticketSyncing,
-    coversKnown,
-  ]);
-
-  // If an open table's ticket becomes empty due to voids, free the table (turn green) after server check.
-  // Skip while ticketSyncing is active — the void flow handles the re-sync itself.
+  // If an open table's ticket becomes empty due to voids, free the table after
+  // the same host read every other screen uses — never close on a missed bill.
   useEffect(() => {
     if (initialRenderRef.current) {
       initialRenderRef.current = false;
@@ -1756,57 +1741,9 @@ export default function OrderPage() {
     if (activeLines.length === 0) {
       if (suppressFreeOnEmptyRef.current) return;
       const gen = hydrateGenRef.current;
-      (async () => {
-        let latestHadLines = false;
-        try {
-          const read = await readTicketForTable(
-            selectedTable.area,
-            selectedTable.label,
-          );
-          if (gen !== hydrateGenRef.current) return;
-          if (!read.ok) {
-            // Freeing a sitting whose bill we could not read would drop a
-            // live check off the floor. Keep it open and surface the error.
-            setTicketLoadFailed(true);
-            return;
-          }
-          setTicketLoadFailed(false);
-          const items = read.items;
-          latestHadLines = items.length > 0;
-          if (
-            items.length &&
-            activeTicketItems(items as Array<{ voided?: boolean }>).length > 0
-          ) {
-            // Rehydrate and keep table open
-            useTicketStore
-              .getState()
-              .hydrate({ items: items as any, note: read.note });
-            setOpen(selectedTable.area, selectedTable.label, true);
-            return;
-          }
-        } catch (e) {
-          void e;
-        }
-        if (gen !== hydrateGenRef.current) return;
-        const keepOpen = shouldKeepCoversOnlyTableOpen({
-          latestHadLines,
-          suppressClose: suppressFreeOnEmptyRef.current,
-          localCovers: coversKnown,
-          serverCovers: (await sessionHasCovers(
-            selectedTable.area,
-            selectedTable.label,
-            coversKnown,
-          ))
-            ? 1
-            : null,
-        });
-        if (keepOpen) return;
-        invalidateTicketCache(selectedTable.area, selectedTable.label);
-        setOpen(selectedTable.area, selectedTable.label, false);
-        window.api.tables
-          .setOpen(selectedTable.area, selectedTable.label, false)
-          .catch(() => {});
-      })();
+      const area = selectedTable.area;
+      const label = selectedTable.label;
+      void syncOpenTableBill(area, label, gen, { mayCloseTable: true });
     }
   }, [
     activeLines.length,
@@ -1814,6 +1751,8 @@ export default function OrderPage() {
     selectedTable,
     ticketSyncing,
     ticketPersistReady,
+    syncOpenTableBill,
+    isOpen(selectedTable?.area || '', selectedTable?.label || ''),
   ]);
 
   // Menu is managed by the business admin (no remote syncing).
@@ -1877,7 +1816,14 @@ export default function OrderPage() {
           .map((r: any) => Number(r?.id))
           .filter((id: number) => Number.isFinite(id));
         if (outstanding.length) {
-          await window.api.requests.markApplied(outstanding).catch(() => {});
+          await window.api.requests
+            .markApplied(outstanding)
+            .catch((e: unknown) => {
+              reportAppError(e, {
+                fallback: t('order.requestFailed'),
+                key: 'requests.markApplied',
+              });
+            });
         }
       } finally {
         if (alive) timer = setTimeout(tick, pollIntervalMs(4000, false));
@@ -2136,7 +2082,7 @@ export default function OrderPage() {
 
   const cachedTicket =
     selectedTable && isTableOpen
-      ? peekLatestTicket(selectedTable.area, selectedTable.label)
+      ? peekTableBill(selectedTable.area, selectedTable.label)
       : null;
   const shouldBlockForLoading =
     !cachedTicket &&
@@ -2160,8 +2106,8 @@ export default function OrderPage() {
 
   const columnMenu = menuLayout === 'column';
   const catShape = columnMenu
-    ? 'w-full rounded-lg py-2.5 px-2 text-left text-[13px] leading-snug'
-    : 'py-4 sm:py-7 px-2 rounded-xl';
+    ? 'w-full rounded-lg py-4 px-2 text-left text-[13px] leading-snug'
+    : 'py-5 sm:py-8 px-2 rounded-xl';
 
   return (
     <div className="h-full min-h-0 min-w-0 w-full flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3 relative">
@@ -2224,14 +2170,19 @@ export default function OrderPage() {
         }`}
       >
         <div className="mb-3 flex shrink-0 gap-2">
-          <input
-            placeholder={t(
-              hasTables ? 'order.searchMenu' : 'order.searchProductsScan',
-            )}
-            className="pos-input min-w-0 flex-1"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
+          <div className="relative min-w-0 flex-1">
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500">
+              <IconSearch />
+            </span>
+            <input
+              placeholder={t(
+                hasTables ? 'order.searchMenu' : 'order.searchProductsScan',
+              )}
+              className="pos-input w-full pl-9"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
           <button
             type="button"
             className="pos-icon-btn shrink-0"
@@ -2259,8 +2210,8 @@ export default function OrderPage() {
           <div
             className={
               columnMenu
-                ? 'w-[6.75rem] shrink-0 space-y-1.5 overflow-y-auto overscroll-contain sm:w-[8.75rem] md:w-[10.5rem]'
-                : 'mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3'
+                ? 'w-[6.75rem] min-h-0 shrink-0 space-y-1.5 overflow-y-auto overscroll-contain rounded-xl border border-white/12 p-1.5 sm:w-[8.75rem] md:w-[10.5rem]'
+                : 'mb-3 grid grid-cols-2 gap-2 rounded-xl border border-white/12 p-1.5 sm:grid-cols-3'
             }
           >
             {/* Favourites tab */}
@@ -2269,8 +2220,11 @@ export default function OrderPage() {
               onClick={() => setSelectedCatId(FAVOURITES_CAT_ID)}
               className={`${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900/70'}`}
             >
-              <span className={columnMenu ? 'block truncate' : undefined}>
-                {t('order.favourites')}
+              <span className="inline-flex min-w-0 items-center gap-2">
+                <IconHeart className="size-3.5 shrink-0 text-pink-400" />
+                <span className={columnMenu ? 'truncate' : undefined}>
+                  {t('order.favourites')}
+                </span>
               </span>
             </button>
             {hasTables ? (
@@ -2307,9 +2261,7 @@ export default function OrderPage() {
               // Tabs stay dark even when active so the category color
               // doesn't dominate the chrome — instead we render a small
               // dot + a thin coloured stripe along the bottom edge as a
-              // legend. The actual tiles below get the full colour
-              // treatment so the connection between "this category" and
-              // "those items" is obvious.
+              // legend. Item tiles use the same strip, not a full fill.
               return (
                 <button
                   key={c.id}
@@ -2346,8 +2298,8 @@ export default function OrderPage() {
           <div
             className={
               columnMenu
-                ? 'grid min-h-0 min-w-0 flex-1 grid-cols-1 items-stretch gap-2 overflow-auto overscroll-contain min-[380px]:grid-cols-2 sm:grid-cols-3'
-                : 'grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3'
+                ? 'grid min-h-0 min-w-0 flex-1 grid-cols-1 content-start gap-2 overflow-auto overscroll-contain auto-rows-[5.75rem] min-[380px]:grid-cols-2 sm:grid-cols-3'
+                : 'grid grid-cols-2 content-start gap-2 auto-rows-[5.75rem] sm:grid-cols-3'
             }
           >
             {!query.trim() && hasTables && selectedCatId === COMMENTS_CAT_ID ? (
@@ -2356,7 +2308,7 @@ export default function OrderPage() {
                   <button
                     key={phrase}
                     type="button"
-                    className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center"
+                    className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center overflow-hidden"
                     style={menuTileStyle(COMMENT_TILE_BG, uiTheme)}
                     disabled={ticketSyncing || busyAction != null}
                     onClick={() => appendOrderComment(phrase)}
@@ -2393,10 +2345,9 @@ export default function OrderPage() {
                 Number.isFinite(Number(i.stockRemaining))
                   ? Math.max(0, Math.floor(Number(i.stockRemaining)))
                   : null;
-              // Inherit the parent category's colour so the floor sees
-              // food and drinks as instantly distinguishable blocks.
-              // Light mode lifts that colour to a pastel so tiles match
-              // the rest of the till. Disabled items stay a neutral grey.
+              // Inherit the parent category's colour as a bottom strip
+              // so food and drinks stay distinguishable without flooding
+              // the tile. Disabled items stay a neutral grey.
               const tileStyle = menuTileStyle(
                 categoryColorById.get(Number(i.categoryId)) || FALLBACK_TILE_BG,
                 uiTheme,
@@ -2407,7 +2358,7 @@ export default function OrderPage() {
                   ? t('order.outOfStockTitle')
                   : undefined;
               return (
-                <div key={i.id} className="relative h-full min-h-[7.25rem]">
+                <div key={i.id} className="relative min-h-0 h-full">
                   {isLow ? (
                     <span
                       className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
@@ -2419,7 +2370,7 @@ export default function OrderPage() {
                   ) : null}
                   <button
                     type="button"
-                    className={`h-full min-h-[7.25rem] py-3 rounded text-left px-3 w-full flex flex-col transition-opacity ${
+                    className={`h-full py-2.5 rounded text-left px-3 w-full flex flex-col overflow-hidden transition-opacity ${
                       isDisabled
                         ? 'bg-gray-800/60 border border-gray-700 text-gray-400 cursor-not-allowed'
                         : 'cursor-pointer hover:opacity-90'
@@ -2500,7 +2451,7 @@ export default function OrderPage() {
       </div>
 
       <div
-        className={`bg-gray-800/80 p-3 rounded-xl border border-white/8 flex flex-col min-h-0 min-w-0 overflow-hidden h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
+        className={`bg-[var(--pos-surface)] p-3 rounded-xl border border-[var(--pos-border)] flex flex-col min-h-0 min-w-0 overflow-hidden h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
       >
         <div className="flex flex-wrap items-center gap-2 mb-2">
           <div className="font-semibold flex items-center gap-2 min-w-0">
@@ -2574,7 +2525,7 @@ export default function OrderPage() {
             {hasTables && canTransfer && (
               <button
                 type="button"
-                className="bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1.5 rounded border border-indigo-500 text-sm whitespace-nowrap"
+                className="bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1.5 rounded border border-indigo-500 text-sm font-medium text-white whitespace-nowrap"
                 onClick={() => setShowTransfer(true)}
                 title={t('order.transferTitle')}
               >
@@ -2620,7 +2571,7 @@ export default function OrderPage() {
         <div
           className={`flex-1 min-h-0 relative ${lockOrderScroll ? 'overflow-hidden' : 'overflow-auto'}`}
         >
-          <div className="space-y-2">
+          <div className="flex min-h-full flex-col space-y-2">
             {billUnknown ? (
               <div
                 role="alert"
@@ -2661,18 +2612,25 @@ export default function OrderPage() {
                 const canSelect =
                   hasTables &&
                   lineAcceptsComment(l, isTableOpen, showRequestOnly);
+                const canEditNote = hasTables && !isVoided && Boolean(l.staged);
+                const hasNote = Boolean(String(l.note || '').trim());
+                const showNoteField =
+                  hasTables && (hasNote || (canEditNote && isSelected));
+                const noteLocked = Boolean(
+                  isVoided || (dimmed && !(showRequestOnly && l.staged)),
+                );
                 return (
                   <div
                     key={l.id}
                     role="button"
                     tabIndex={canSelect ? 0 : -1}
-                    className={`bg-gray-700 rounded px-2 py-2 transition-shadow ${
+                    className={`ticket-line px-2 py-2 transition-shadow ${
                       isVoided ? 'opacity-60' : ''
                     } ${
                       isSelected
-                        ? 'ring-2 ring-white/40 ring-offset-2 ring-offset-gray-800'
+                        ? 'ticket-line--selected'
                         : canSelect
-                          ? 'cursor-pointer hover:bg-gray-600/80'
+                          ? 'ticket-line--selectable cursor-pointer'
                           : ''
                     }`}
                     onClick={() => {
@@ -2694,7 +2652,7 @@ export default function OrderPage() {
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                       <div className="min-w-0 flex-1 basis-[7rem]">
                         <div
-                          className={`${dimmed ? 'text-gray-400' : 'text-white'} font-medium truncate ${isVoided ? 'line-through decoration-2' : ''}`}
+                          className={`${dimmed ? 'ticket-line-muted' : ''} font-medium truncate ${isVoided ? 'line-through decoration-2' : ''}`}
                         >
                           {l.name}
                           {isPaid ? (
@@ -2704,7 +2662,12 @@ export default function OrderPage() {
                           ) : null}
                         </div>
                       </div>
-                      <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                      <div
+                        className={`min-w-[2.75rem] shrink-0 text-right tabular-nums ${dimmed ? 'ticket-line-muted' : ''} ${isVoided ? 'line-through decoration-2' : ''}`}
+                      >
+                        {l.unitPrice * l.qty}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
                         {selectedTable &&
                         isOpen(selectedTable.area, selectedTable.label) &&
                         !showRequestOnly &&
@@ -2712,14 +2675,8 @@ export default function OrderPage() {
                         !isVoided ? (
                           <>
                             <button
-                              className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                              style={{
-                                width: '28px',
-                                height: '28px',
-                                minWidth: '28px',
-                                minHeight: '28px',
-                                padding: 0,
-                              }}
+                              type="button"
+                              className="ticket-line-btn"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 decrement(l.id);
@@ -2730,14 +2687,8 @@ export default function OrderPage() {
                             </button>
                             <div className="w-6 text-center">{l.qty}</div>
                             <button
-                              className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                              style={{
-                                width: '28px',
-                                height: '28px',
-                                minWidth: '28px',
-                                minHeight: '28px',
-                                padding: 0,
-                              }}
+                              type="button"
+                              className="ticket-line-btn"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 increment(l.id);
@@ -2749,30 +2700,36 @@ export default function OrderPage() {
                           </>
                         ) : (
                           <div
-                            className={`w-6 text-center text-gray-400 ${isVoided ? 'line-through decoration-2' : ''}`}
+                            className={`whitespace-nowrap tabular-nums ticket-line-muted ${isVoided ? 'line-through decoration-2' : ''}`}
                           >
                             {t('common.qty')}:{l.qty}
                           </div>
                         )}
-                        <div
-                          className={`min-w-[2.75rem] text-right tabular-nums ${dimmed ? 'text-gray-400' : 'text-white'} ${isVoided ? 'line-through decoration-2' : ''}`}
-                        >
-                          {l.unitPrice * l.qty}
-                        </div>
+                        {canEditNote ? (
+                          <button
+                            type="button"
+                            className="ticket-line-btn"
+                            title={t('order.addLineNote')}
+                            aria-label={t('order.addLineNote')}
+                            aria-pressed={isSelected}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedLineId((prev) =>
+                                prev === l.id ? null : l.id,
+                              );
+                            }}
+                          >
+                            <IconEdit className="size-3.5" />
+                          </button>
+                        ) : null}
                         {/* When table is open (sent), owner can void already-sent lines; staged (unsent) lines can be removed */}
                         {selectedTable && isTableOpen && !showRequestOnly ? (
                           isVoided ? (
                             <div className="w-7" aria-hidden />
                           ) : l.staged ? (
                             <button
-                              className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                              style={{
-                                width: '28px',
-                                height: '28px',
-                                minWidth: '28px',
-                                minHeight: '28px',
-                                padding: 0,
-                              }}
+                              type="button"
+                              className="ticket-line-btn"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 removeLine(l.id);
@@ -2782,14 +2739,8 @@ export default function OrderPage() {
                             </button>
                           ) : (
                             <button
-                              className="bg-red-700 hover:bg-red-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                              style={{
-                                width: '28px',
-                                height: '28px',
-                                minWidth: '28px',
-                                minHeight: '28px',
-                                padding: 0,
-                              }}
+                              type="button"
+                              className="ticket-line-btn ticket-line-btn--danger"
                               disabled={l.paid === true}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2815,14 +2766,8 @@ export default function OrderPage() {
                         ) : (
                           // For non-owners or not-open tables: allow removing; if in request-only mode, only staged lines are allowed
                           <button
-                            className="bg-gray-600 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded-full text-xs flex items-center justify-center"
-                            style={{
-                              width: '28px',
-                              height: '28px',
-                              minWidth: '28px',
-                              minHeight: '28px',
-                              padding: 0,
-                            }}
+                            type="button"
+                            className="ticket-line-btn"
                             disabled={
                               (showRequestOnly && !l.staged) || isVoided
                             }
@@ -2836,21 +2781,15 @@ export default function OrderPage() {
                         )}
                       </div>
                     </div>
-                    {hasTables ? (
+                    {showNoteField ? (
                       <input
-                        className={`mt-2 w-full pos-input px-2 py-1 placeholder:text-gray-300 ${
-                          isVoided
-                            ? 'bg-gray-700 opacity-60 cursor-not-allowed line-through decoration-2'
-                            : dimmed && !(showRequestOnly && l.staged)
-                              ? 'bg-gray-700 opacity-60 cursor-not-allowed'
-                              : 'bg-gray-600'
-                        }`}
+                        className={`mt-2 w-full pos-input px-2 py-1 ${
+                          noteLocked ? 'opacity-60 cursor-not-allowed' : ''
+                        } ${isVoided ? 'line-through decoration-2' : ''}`}
                         placeholder={t('order.lineNotePlaceholder')}
                         value={l.note ?? ''}
-                        disabled={Boolean(
-                          isVoided ||
-                            (dimmed && !(showRequestOnly && l.staged)),
-                        )}
+                        autoFocus={canEditNote && isSelected && !hasNote}
+                        disabled={noteLocked}
                         onClick={(e) => e.stopPropagation()}
                         onChange={(e) => setLineNote(l.id, e.target.value)}
                       />
@@ -2929,7 +2868,7 @@ export default function OrderPage() {
               }
               if (lines.length === 0) {
                 return (
-                  <div className="text-sm opacity-60">
+                  <div className="flex flex-1 items-center justify-center px-3 text-center text-sm opacity-60">
                     {t('order.selectItems')}
                   </div>
                 );
@@ -2942,9 +2881,10 @@ export default function OrderPage() {
         {/* Footer pinned at the bottom of the ticket panel as a flex child.
             Was previously `absolute bottom-0` with `pb-80` on the items list,
             which overlapped the last item on narrow viewports. */}
-        <div className="shrink-0 mt-3 bg-gray-800 border-t border-gray-700 -mx-3 -mb-3 p-3 rounded-b">
+        <div className="shrink-0 mt-3 bg-[var(--pos-surface)] border-t border-[var(--pos-hairline)] -mx-3 -mb-3 p-3 rounded-b">
           <div className="space-y-3 text-sm">
-            {hasTables ? (
+            {hasTables &&
+            (showOrderNote || Boolean(String(orderNote || '').trim())) ? (
               <div>
                 <label className="block text-xs mb-1 opacity-70">
                   {t('order.orderNotes')}
@@ -2961,8 +2901,8 @@ export default function OrderPage() {
                     selectedTable &&
                       isOpen(selectedTable.area, selectedTable.label),
                   );
-                  // Disable order note both when ticket is open and in request-only mode; notes should only be on staged items
                   const disabled = ticketOpen || requestOnly;
+                  const hasNote = Boolean(String(orderNote || '').trim());
                   return (
                     <textarea
                       className={`w-full pos-input px-2 py-2 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
@@ -2970,6 +2910,7 @@ export default function OrderPage() {
                       placeholder={t('order.orderNotesPlaceholder')}
                       value={orderNote}
                       disabled={disabled}
+                      autoFocus={showOrderNote && !hasNote && !disabled}
                       onChange={(e) => setOrderNote(e.target.value)}
                     />
                   );
@@ -2998,7 +2939,7 @@ export default function OrderPage() {
                   const stagedCount = lines.filter((l) => l.staged).length;
                   return (
                     <button
-                      className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center bg-amber-700 hover:bg-amber-600 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      className="pos-btn flex-1 min-h-10 min-w-[8rem] px-2 py-2 text-sm leading-snug cursor-pointer disabled:cursor-not-allowed"
                       disabled={
                         stagedCount === 0 ||
                         requestLocked ||
@@ -3052,10 +2993,17 @@ export default function OrderPage() {
                     </button>
                   );
                 }
+                const clearBtnLabel =
+                  busyAction === 'void'
+                    ? t('order.voidingBtn')
+                    : selectedTable &&
+                        isOpen(selectedTable.area, selectedTable.label)
+                      ? t('order.voidTicket')
+                      : t('order.clear');
                 return (
                   <>
                     <button
-                      className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center bg-red-600 hover:bg-red-700 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                      className="grid size-10 shrink-0 place-items-center rounded-md border-0 bg-transparent p-0 text-sm font-semibold leading-none text-red-600 hover:bg-[var(--pos-hover)] hover:text-red-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
                       disabled={
                         activeLines.length === 0 ||
                         busyAction != null ||
@@ -3066,7 +3014,7 @@ export default function OrderPage() {
                       title={
                         isTableOpen && ticketFullySettled
                           ? t('order.voidBlockedPaid')
-                          : undefined
+                          : clearBtnLabel
                       }
                       onClick={async () => {
                         if (busyAction != null || ticketSyncing) return;
@@ -3139,7 +3087,12 @@ export default function OrderPage() {
                               {
                                 dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
                               },
-                            ).catch(() => {});
+                            ).catch((e: unknown) => {
+                              reportAppError(e, {
+                                fallback: t('order.toastTryAgain'),
+                                key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                              });
+                            });
                           }
                           // When table isn't open, void button acts as "clear"
                           if (
@@ -3156,17 +3109,29 @@ export default function OrderPage() {
                         }
                       }}
                       type="button"
+                      aria-label={clearBtnLabel}
                     >
-                      {busyAction === 'void'
-                        ? t('order.voidingBtn')
-                        : selectedTable &&
-                            isOpen(selectedTable.area, selectedTable.label)
-                          ? t('order.voidTicket')
-                          : t('order.clear')}
+                      {clearBtnLabel.trim().charAt(0)}
                     </button>
                     {hasTables ? (
                       <button
-                        className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
+                        type="button"
+                        className="grid size-10 shrink-0 place-items-center rounded-md border-0 bg-transparent p-0 text-[var(--pos-accent)] hover:bg-[var(--pos-hover)] hover:text-[var(--pos-accent-strong)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50"
+                        title={t('order.addOrderNote')}
+                        aria-label={t('order.addOrderNote')}
+                        aria-pressed={showOrderNote}
+                        disabled={
+                          (Boolean(isTableOpen) || showRequestOnly) &&
+                          !String(orderNote || '').trim()
+                        }
+                        onClick={() => setShowOrderNote((v) => !v)}
+                      >
+                        <IconEdit className="size-4" />
+                      </button>
+                    ) : null}
+                    {hasTables ? (
+                      <button
+                        className="pos-btn flex-1 min-h-10 min-w-[8rem] px-2 py-2 text-sm leading-snug cursor-pointer disabled:cursor-not-allowed"
                         disabled={
                           activeLines.length === 0 ||
                           busyAction != null ||
@@ -3227,7 +3192,12 @@ export default function OrderPage() {
                                 selectedTable.label,
                                 true,
                               )
-                              .catch(() => {});
+                              .catch((e: unknown) => {
+                                reportAppError(e, {
+                                  fallback: t('order.toastTryAgain'),
+                                  key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                                });
+                              });
                           } catch (e: any) {
                             const raw = String(e?.message || e || '').trim();
                             const m = raw.match(
@@ -3265,7 +3235,7 @@ export default function OrderPage() {
                       </button>
                     ) : null}
                     <button
-                      className="flex-1 min-w-[8rem] px-2 py-2 text-sm leading-snug text-center pos-btn-primary cursor-pointer disabled:cursor-not-allowed"
+                      className="pos-btn flex-1 min-h-10 min-w-[8rem] px-2 py-2 text-sm leading-snug cursor-pointer disabled:cursor-not-allowed"
                       disabled={
                         !canPay ||
                         busyAction != null ||
@@ -3388,28 +3358,21 @@ export default function OrderPage() {
                 {t('common.close')}
               </button>
             </div>
-            {busyAction === 'pay' && (
-              <div
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm rounded-xl flex flex-col items-center justify-center gap-3 z-10"
-                role="status"
-                aria-live="polite"
-              >
-                <span
-                  className="inline-block w-10 h-10 border-4 border-white/20 border-t-emerald-400 rounded-full animate-spin"
-                  aria-hidden
-                />
-                <div className="text-base font-medium">
-                  {vatEnabled
+            {busyAction === 'pay' ? (
+              <PageSpinner
+                variant="overlay"
+                message={
+                  vatEnabled
                     ? t('order.registeringFiscal')
-                    : t('order.processingPaymentOverlay')}
-                </div>
-                <div className="text-xs opacity-70">
-                  {vatEnabled
+                    : t('order.processingPaymentOverlay')
+                }
+                detail={
+                  vatEnabled
                     ? t('order.recordingPaymentFiscal')
-                    : t('order.recordingPayment')}
-                </div>
-              </div>
-            )}
+                    : t('order.recordingPayment')
+                }
+              />
+            ) : null}
 
             {addMode === 'seat' ? (
               <div className="shrink-0 mb-3">
@@ -3999,7 +3962,11 @@ export default function OrderPage() {
                           } else {
                             paymentAccepted = true;
                             const printed = (payResult.result as any)?.printed;
-                            if (printed === false) {
+                            if ((payResult.result as any)?.fiscalPending) {
+                              toast.warn(
+                                t('order.paymentRecordedFiscalQueued'),
+                              );
+                            } else if (printed === false) {
                               toast.warn(t('order.paymentRecordedPrintQueued'));
                             }
                           }
@@ -4040,7 +4007,12 @@ export default function OrderPage() {
                               note: orderNote || undefined,
                               stockConsumeLines: [],
                               kdsFireItems: [],
-                            }).catch(() => {});
+                            }).catch((e: unknown) => {
+                              reportAppError(e, {
+                                fallback: t('order.toastTryAgain'),
+                                key: `tickets.log:${selectedTable.area}:${selectedTable.label}`,
+                              });
+                            });
                           }
                           if (closeTableAfterPay) {
                             setOpen(
@@ -4089,10 +4061,7 @@ export default function OrderPage() {
                   >
                     {busyAction === 'pay' ? (
                       <>
-                        <span
-                          className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"
-                          aria-hidden
-                        />
+                        <SpinnerGlyph className="size-4" />
                         <span>
                           {vatEnabled
                             ? t('order.registeringFiscal')
@@ -4151,7 +4120,7 @@ export default function OrderPage() {
 
             <div className="flex gap-2 mb-4">
               <button
-                className={`flex-1 py-2 rounded ${transferMode === 'WAITER' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
+                className={`flex-1 py-2 rounded ${transferMode === 'WAITER' ? 'bg-indigo-700 text-white' : 'bg-gray-800 hover:bg-gray-700'}`}
                 onClick={() => {
                   setTransferMode('WAITER');
                   setTransferError(null);
@@ -4161,7 +4130,7 @@ export default function OrderPage() {
                 {t('order.toWaiter')}
               </button>
               <button
-                className={`flex-1 py-2 rounded ${transferMode === 'TABLE' ? 'bg-indigo-700' : 'bg-gray-800 hover:bg-gray-700'}`}
+                className={`flex-1 py-2 rounded ${transferMode === 'TABLE' ? 'bg-indigo-700 text-white' : 'bg-gray-800 hover:bg-gray-700'}`}
                 onClick={() => {
                   setTransferMode('TABLE');
                   setTransferError(null);
@@ -4521,7 +4490,12 @@ export default function OrderPage() {
                       {
                         dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
                       },
-                    ).catch(() => {});
+                    ).catch((e: unknown) => {
+                      reportAppError(e, {
+                        fallback: t('order.toastTryAgain'),
+                        key: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                      });
+                    });
                     setCoversKnown(num);
                     setShowCovers(false);
                     return;
@@ -4562,7 +4536,12 @@ export default function OrderPage() {
                       {
                         dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
                       },
-                    ).catch(() => {});
+                    ).catch((e: unknown) => {
+                      reportAppError(e, {
+                        fallback: t('order.toastTryAgain'),
+                        key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                      });
+                    });
                     await tryOrQueue(
                       'covers.save',
                       {
@@ -4573,7 +4552,12 @@ export default function OrderPage() {
                       {
                         dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
                       },
-                    ).catch(() => {});
+                    ).catch((e: unknown) => {
+                      reportAppError(e, {
+                        fallback: t('order.toastTryAgain'),
+                        key: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                      });
+                    });
                     setCoversKnown(num);
                     setOpen(selectedTable.area, selectedTable.label, true);
                     setShowCovers(false);
@@ -4587,7 +4571,12 @@ export default function OrderPage() {
                     // Keep this as a best-effort "ensure open" after printing.
                     await window.api.tables
                       .setOpen(selectedTable.area, selectedTable.label, true)
-                      .catch(() => {});
+                      .catch((e: unknown) => {
+                        reportAppError(e, {
+                          fallback: t('order.toastTryAgain'),
+                          key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                        });
+                      });
                   } finally {
                     setBusyAction(null);
                     suppressFreeOnEmptyRef.current = false;
@@ -4686,7 +4675,12 @@ export default function OrderPage() {
                       setOpen(selectedTable.area, selectedTable.label, false);
                       window.api.tables
                         .setOpen(selectedTable.area, selectedTable.label, false)
-                        .catch(() => {});
+                        .catch((e: unknown) => {
+                          reportAppError(e, {
+                            fallback: t('order.toastTryAgain'),
+                            key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                          });
+                        });
                     }
                   } catch {
                     toast.error(t('order.voidItemFailed'));
@@ -5106,19 +5100,19 @@ function TicketTotals({
   );
   return (
     <>
-      <div className="flex justify-between">
-        <span>{t('common.subtotal')}</span>
-        <span> {formatAmount(totals.subtotal)}</span>
+      <div className="flex justify-between font-semibold">
+        <span>{t('common.total')}</span>
+        <span> {formatAmount(totalWithService)}</span>
       </div>
       {vatEnabled ? (
-        <div className="flex justify-between">
+        <div className="flex justify-between text-[11px] leading-snug opacity-70">
           <span>{t('common.vat')}</span>
           <span> {formatAmount(totals.vat)}</span>
         </div>
       ) : (
-        <div className="flex justify-between">
+        <div className="flex justify-between text-[11px] leading-snug opacity-70">
           <span>{t('common.vat')}</span>
-          <span className="opacity-70">{t('common.vatDisabled')}</span>
+          <span>{t('common.vatDisabled')}</span>
         </div>
       )}
       {serviceChargeCfg.enabled && (
@@ -5131,10 +5125,6 @@ function TicketTotals({
           )}
         </div>
       )}
-      <div className="flex justify-between font-semibold">
-        <span>{t('common.total')}</span>
-        <span> {formatAmount(totalWithService)}</span>
-      </div>
     </>
   );
 }

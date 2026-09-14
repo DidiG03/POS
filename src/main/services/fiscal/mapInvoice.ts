@@ -5,7 +5,8 @@ import { mapPaymentMethod } from './paymentMethod';
 import { assertVatCode } from './vatConfig';
 import { buildCurrency } from './buildInvoice';
 import { assertValidDocId } from './docId';
-import { DEFAULT_CURRENCY, type VatCode } from './apiTypes';
+import { DEFAULT_CURRENCY, type Rebate, type VatCode } from './apiTypes';
+import { computeInvoiceTotal } from './validate';
 // Deliberately the same rounding the payment total was computed with. A local
 // copy without the epsilon nudge disagreed with it on values that land just
 // under a half cent (1.005 is stored as 1.00499…), and easyPos rejects an
@@ -23,11 +24,12 @@ export type EasyPosInvoiceDraft = {
     soldIn: string;
     price: number;
     units: number;
-    rebate?: { inPercentage?: number };
+    rebate?: Rebate;
   }>;
   payment:
     | { type: string; amount?: number }
     | Array<{ type: string; amount: number }>;
+  invoiceRebate?: Rebate;
 };
 
 export type EasyPosCloudInvoiceDraft = {
@@ -36,6 +38,7 @@ export type EasyPosCloudInvoiceDraft = {
   payment: Array<{ type: string; amount: number }>;
   operatorCode?: string;
   currency?: { code: string; exRate?: number };
+  invoiceRebate?: Rebate;
 };
 
 function fiscalArticleSettings(settings: SettingsDTO) {
@@ -49,14 +52,11 @@ function fiscalArticleSettings(settings: SettingsDTO) {
   };
 }
 
-function sumArticleTotal(articles: EasyPosInvoiceDraft['articles']): number {
-  return roundMoney(
-    articles.reduce(
-      (sum, article) =>
-        sum + Number(article.price || 0) * Number(article.units || 0),
-      0,
-    ),
-  );
+function invoiceTotalOf(
+  articles: EasyPosInvoiceDraft['articles'],
+  invoiceRebate?: Rebate,
+): number {
+  return computeInvoiceTotal({ articles, invoiceRebate });
 }
 
 /**
@@ -77,22 +77,38 @@ export interface BuildDraftOptions {
   onAdjustment?: (info: DraftAdjustment) => void;
 }
 
-function reconcileArticlesToTotal(
+function ticketDiscountRebate(payload: TicketPrintPayload): Rebate | undefined {
+  const discountAmt = Number((payload.meta as any)?.discountAmount || 0);
+  if (!Number.isFinite(discountAmt) || discountAmt <= 0) return undefined;
+  return { inValue: roundMoney(discountAmt) };
+}
+
+/**
+ * Make the invoice total equal the amount charged without negative prices.
+ *
+ * A ticket discount is `invoiceRebate`. Any leftover overage (charged less
+ * than the lines) is added to that rebate. A shortfall (charged more) is
+ * a positive adjustment line — still the default VAT band, which is why
+ * mixed-VAT tickets still alert.
+ */
+function reconcileToChargedTotal(
   articles: EasyPosInvoiceDraft['articles'],
+  invoiceRebate: Rebate | undefined,
   targetTotal: number,
   settings: SettingsDTO,
   onAdjustment?: (info: DraftAdjustment) => void,
-): EasyPosInvoiceDraft['articles'] {
-  if (!Number.isFinite(targetTotal) || targetTotal < 0) return articles;
-  const soldIn = fiscalArticleSettings(settings).soldIn;
-  const current = sumArticleTotal(articles);
+): {
+  articles: EasyPosInvoiceDraft['articles'];
+  invoiceRebate?: Rebate;
+} {
+  if (!Number.isFinite(targetTotal) || targetTotal < 0) {
+    return { articles, invoiceRebate };
+  }
+  const current = invoiceTotalOf(articles, invoiceRebate);
   const diff = roundMoney(current - targetTotal);
-  if (Math.abs(diff) < 0.01) return articles;
+  if (Math.abs(diff) < 0.01) return { articles, invoiceRebate };
 
   const vatCode = defaultVatCode(settings);
-  // The adjustment carries the DEFAULT rate, so on a mixed-VAT ticket it
-  // lands in the wrong band. The totals will balance and easyPos will
-  // accept it; the breakdown is what silently goes wrong. Tell someone.
   onAdjustment?.({
     articleTotal: current,
     targetTotal,
@@ -100,21 +116,30 @@ function reconcileArticlesToTotal(
     vatCode,
   });
 
-  return [
-    ...articles,
-    {
-      articleId: resolveArticleId(
-        diff > 0 ? 'POS-DISCOUNT' : 'POS-ADJUSTMENT',
-        diff > 0 ? 'Discount' : 'Adjustment',
-        settings,
-      ),
-      vatCode,
-      name: diff > 0 ? 'Discount' : 'Adjustment',
-      soldIn,
-      price: diff > 0 ? -diff : Math.abs(diff),
-      units: 1,
-    },
-  ];
+  if (diff > 0) {
+    return {
+      articles,
+      invoiceRebate: {
+        inValue: roundMoney(Number(invoiceRebate?.inValue || 0) + diff),
+      },
+    };
+  }
+
+  const soldIn = fiscalArticleSettings(settings).soldIn;
+  return {
+    articles: [
+      ...articles,
+      {
+        articleId: resolveArticleId('POS-ADJUSTMENT', 'Adjustment', settings),
+        vatCode,
+        name: 'Adjustment',
+        soldIn,
+        price: Math.abs(diff),
+        units: 1,
+      },
+    ],
+    invoiceRebate,
+  };
 }
 
 /**
@@ -135,8 +160,8 @@ function defaultVatCode(settings: SettingsDTO): VatCode {
  * A real menu SKU always wins. The "cloud fallback" used to stamp every
  * line with one demo article (PROD001), which on a live venue files the
  * entire menu as a single product. It now applies only when there is no
- * catalog SKU to send: POS-generated lines (service charge, discount,
- * balancing adjustment) and items that were never given a SKU.
+ * catalog SKU to send: POS-generated lines (service charge, balancing
+ * adjustment) and items that were never given a SKU.
  */
 function resolveArticleId(
   sku: string,
@@ -146,10 +171,11 @@ function resolveArticleId(
   const { cloud, cloudFallbackArticleId } = fiscalArticleSettings(settings);
   const fromSku = String(sku || '').trim();
   const isCatalogSku = fromSku.length > 0 && !fromSku.startsWith('POS-');
-  if (isCatalogSku) return fromSku;
-  if (cloud && cloudFallbackArticleId) return cloudFallbackArticleId;
-  if (fromSku) return fromSku;
-  return `ITEM-${String(name || 'item').slice(0, 24)}`;
+  if (isCatalogSku) return fromSku.slice(0, 100);
+  if (cloud && cloudFallbackArticleId)
+    return cloudFallbackArticleId.slice(0, 100);
+  if (fromSku) return fromSku.slice(0, 100);
+  return `ITEM-${String(name || 'item').slice(0, 24)}`.slice(0, 100);
 }
 
 function buildArticles(
@@ -179,7 +205,7 @@ function buildArticles(
         exempt: (it as any).vatExempt === true,
         articleName: String(it.name || 'Item'),
       }),
-      name: String(it.name || 'Item').slice(0, 120),
+      name: String(it.name || 'Item').slice(0, 100),
       soldIn,
       price: Number(it.unitPrice || 0),
       units: qty,
@@ -202,40 +228,29 @@ function buildArticles(
     });
   }
 
-  const discountAmt = Number(meta.discountAmount || 0);
-  if (Number.isFinite(discountAmt) && discountAmt > 0) {
-    articles.push({
-      articleId: resolveArticleId('POS-DISCOUNT', 'Discount', settings),
-      vatCode: defaultVatCode(settings),
-      name: 'Discount',
-      soldIn,
-      price: -Math.abs(discountAmt),
-      units: 1,
-    });
-  }
-
   return articles;
 }
 
 function buildPaymentArray(
+  articles: EasyPosInvoiceDraft['articles'],
+  invoiceRebate: Rebate | undefined,
   payload: TicketPrintPayload,
-  articles?: EasyPosInvoiceDraft['articles'],
 ): Array<{ type: string; amount: number }> {
   const meta: any = payload.meta || {};
   const method = mapPaymentMethod(
     String(meta.method || meta.paymentMethod || 'CASH'),
   );
-  const articleTotal =
-    articles && articles.length ? sumArticleTotal(articles) : undefined;
+  const fromLines =
+    articles.length > 0 ? invoiceTotalOf(articles, invoiceRebate) : undefined;
   const totalAfter = Number(meta.totalAfter);
   const total = Number(meta.total);
   const amountPaid = Number(meta.amountPaid);
 
-  // easyPos requires payment total === sum(article price × units).
+  // easyPos requires payment total === invoice total after rebates.
   // `amountPaid` is cash tendered (with change), not the invoice total.
   let amount = 0;
-  if (articleTotal != null && Number.isFinite(articleTotal)) {
-    amount = articleTotal;
+  if (fromLines != null && Number.isFinite(fromLines)) {
+    amount = fromLines;
   } else if (Number.isFinite(totalAfter) && totalAfter >= 0) {
     amount = totalAfter;
   } else if (Number.isFinite(total) && total > 0) {
@@ -277,20 +292,25 @@ export function buildEasyPosCloudInvoiceDraft(
   if (articles.length === 0) {
     throw new Error('Cannot fiscalize an empty ticket.');
   }
+  let invoiceRebate = ticketDiscountRebate(payload);
   const totalAfter = Number((payload.meta as any)?.totalAfter);
   if (Number.isFinite(totalAfter) && totalAfter >= 0) {
-    articles = reconcileArticlesToTotal(
+    const reconciled = reconcileToChargedTotal(
       articles,
+      invoiceRebate,
       totalAfter,
       settings,
       options?.onAdjustment,
     );
+    articles = reconciled.articles;
+    invoiceRebate = reconciled.invoiceRebate;
   }
   const draft: EasyPosCloudInvoiceDraft = {
     docId: ensureDocId(options),
     articles,
-    payment: buildPaymentArray(payload, articles),
+    payment: buildPaymentArray(articles, invoiceRebate, payload),
   };
+  if (invoiceRebate) draft.invoiceRebate = invoiceRebate;
   const { operatorCode } = fiscalArticleSettings(settings);
   if (operatorCode) draft.operatorCode = operatorCode;
   // ALL is the default for Albanian fiscalisation and is omitted entirely.
@@ -346,6 +366,7 @@ export function buildEasyPosInvoiceDraft(
   if (articles.length === 0) {
     throw new Error('Cannot fiscalize an empty ticket.');
   }
+  const invoiceRebate = ticketDiscountRebate(payload);
 
   const meta: any = payload.meta || {};
   const method = mapPaymentMethod(
@@ -353,7 +374,7 @@ export function buildEasyPosInvoiceDraft(
   );
   const totalAfter = Number(meta.totalAfter);
   const total = Number(meta.total);
-  const articleTotal = sumArticleTotal(articles);
+  const articleTotal = invoiceTotalOf(articles, invoiceRebate);
   const amountDue =
     Number.isFinite(totalAfter) && totalAfter >= 0
       ? totalAfter
@@ -384,6 +405,7 @@ export function buildEasyPosInvoiceDraft(
     articles,
     payment,
   };
+  if (invoiceRebate) draft.invoiceRebate = invoiceRebate;
 
   const docId = String(options?.docId || '').trim();
   if (docId) draft.docId = docId;

@@ -16,6 +16,9 @@
  *     status check can no longer tell you which one it is answering about.
  *   - it references the invoice being cancelled by IIC, through
  *     `correctiveInvoice.iicRef` — not by docId, and not by FIC.
+ *     easyPos rejects `correctiveInvoice.type` and `issueDateTimeRef`
+ *     ("Unknown fields found, please remove them"). Local middleware
+ *     uses `invoiceType: CANCEL` + top-level `iicRef` instead.
  *
  * Cancelling an electronic invoice is process P10 and the invoice being
  * cancelled must itself have an EIC.
@@ -31,6 +34,11 @@ import {
   type RecoveryResult,
 } from './recover';
 import { fiscalConfig } from './config';
+import {
+  createEasyPosCancellation,
+  fiscalOutcomeOf,
+  isFiscalRetryable,
+} from './easypos';
 
 export interface CancellationTarget {
   /** IIC (NSLF) of the invoice being cancelled. Required. */
@@ -75,13 +83,7 @@ export function buildCancellation(
     );
   }
 
-  const correctiveInvoice: CorrectiveInvoiceRef = {
-    iicRef,
-    type: 'CANCELLATION',
-    ...(input.target.issueDateTime
-      ? { issueDateTimeRef: input.target.issueDateTime }
-      : {}),
-  };
+  const correctiveInvoice: CorrectiveInvoiceRef = { iicRef };
 
   const request: CancelInvoiceRequest = {
     docId,
@@ -122,6 +124,44 @@ export async function cancelInvoice(
     docId,
     operatorCode: input.operatorCode ?? fiscalConfig(settings).operatorCode,
   });
+  if (!fiscalConfig(settings).cloud) {
+    try {
+      const result = await createEasyPosCancellation(settings, request);
+      return {
+        kind: 'complete',
+        docId,
+        identifiers: {
+          iic: result.nslf || undefined,
+          fic: result.nivf || undefined,
+          ...(result.eic ? { eic: result.eic } : {}),
+          ...(result.link ? { link: result.link } : {}),
+        },
+        via: 'register',
+        sendAttempts: 1,
+        statusPolls: 0,
+        raw: result.raw,
+      };
+    } catch (e: any) {
+      const message = String(e?.message || e);
+      const outcome = fiscalOutcomeOf(e);
+      if (outcome === 'not-registered') {
+        return {
+          kind: isFiscalRetryable(e) ? 'not-registered' : 'rejected',
+          docId,
+          message,
+          sendAttempts: 1,
+          statusPolls: 0,
+        };
+      }
+      return {
+        kind: 'unresolved',
+        docId,
+        message,
+        sendAttempts: 1,
+        statusPolls: 0,
+      };
+    }
+  }
   const result = await cancelInvoiceWithRecovery(settings, request, options);
   return { ...result, docId };
 }

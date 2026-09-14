@@ -1,4 +1,4 @@
-import type { LucideIcon } from 'lucide-react';
+import type { ComponentType } from 'react';
 import {
   Armchair,
   ArrowLeft,
@@ -24,6 +24,7 @@ import {
   Download,
   Flame,
   GripVertical,
+  Heart,
   Info,
   Layers,
   LayoutGrid,
@@ -60,6 +61,12 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
+
+type LucideIcon = ComponentType<{
+  className?: string;
+  strokeWidth?: number;
+  'aria-hidden'?: boolean | 'true';
+}>;
 
 /**
  * Lucide icons, same names the app already imports. One stroke weight so
@@ -140,3 +147,4 @@ export const IconSliders = glyph(SlidersHorizontal);
 export const IconCloudDown = glyph(CloudDownload);
 export const IconBuilding = glyph(Building2);
 export const IconFlame = glyph(Flame);
+export const IconHeart = glyph(Heart);

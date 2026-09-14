@@ -7,14 +7,20 @@ import {
   syncBackendHostToLocalStorage,
 } from '../../utils/backendHost';
 import { discoverPosHostsInBrowser } from '../../utils/discoverPosHosts';
-import { POS_OPEN_SERVER_SCAN } from '../../utils/posServerScanEvent';
+import {
+  POS_OPEN_SERVER_SCAN,
+  notifyBackendHostChanged,
+} from '../../utils/posServerScanEvent';
+import { invalidateHostScopedCaches } from '../../utils/posReadCache';
 import { BrandMark } from '../../components/BrandMark';
 import { PosHostPicker } from './PosHostPicker';
 
 export function PosServerScanPanel({
   autoScan = false,
+  onConnected,
 }: {
   autoScan?: boolean;
+  onConnected?: () => void;
 }) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<DiscoveredPosHost[]>([]);
@@ -52,24 +58,30 @@ export function PosServerScanPanel({
     if (autoScan) void scan();
   }, [autoScan, scan]);
 
-  const connectTo = useCallback(async (h: DiscoveredPosHost) => {
-    setBusyHost(h.host);
-    const port = Number(h.httpPort) || 3333;
-    try {
-      if ((window as any).__KDS_APP__) {
-        await persistKdsBackendHost({ host: h.host, httpPort: port });
-        return;
+  const connectTo = useCallback(
+    async (h: DiscoveredPosHost) => {
+      setBusyHost(h.host);
+      const port = Number(h.httpPort) || 3333;
+      try {
+        if ((window as any).__KDS_APP__) {
+          await persistKdsBackendHost({ host: h.host, httpPort: port });
+          return;
+        }
+        syncBackendHostToLocalStorage({
+          host: h.host,
+          httpPort: String(port),
+          httpsPort: h.httpsPort ? String(h.httpsPort) : '3443',
+        });
+        invalidateHostScopedCaches();
+        notifyBackendHostChanged();
+        onConnected?.();
+        setBusyHost(null);
+      } catch {
+        setBusyHost(null);
       }
-      syncBackendHostToLocalStorage({
-        host: h.host,
-        httpPort: String(port),
-        httpsPort: h.httpsPort ? String(h.httpsPort) : '3443',
-      });
-      window.location.reload();
-    } catch {
-      setBusyHost(null);
-    }
-  }, []);
+    },
+    [onConnected],
+  );
 
   return (
     <PosHostPicker
@@ -101,7 +113,7 @@ export function PosServerScanOverlay({ onClose }: { onClose: () => void }) {
       />
       <div className="relative z-10 flex w-full max-w-md flex-col items-center gap-5">
         <BrandMark size="lg" holdToScan={false} />
-        <PosServerScanPanel autoScan />
+        <PosServerScanPanel autoScan onConnected={onClose} />
       </div>
     </div>
   );

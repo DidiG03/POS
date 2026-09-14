@@ -5,6 +5,7 @@ import {
   emptyTicketDraft,
   isTicketDraftFresh,
   mergeLocalStagedOntoHydrated,
+  pruneLiveBillsForClosedTables,
   pruneStaleTicketDrafts,
   restoreMissingServerLines,
   revivePersistedTicketDraft,
@@ -37,7 +38,7 @@ describe('ticketDraft', () => {
     expect(back.orderNote).toBe('no onion');
   });
 
-  it('restores a parked draft only within 10 seconds', () => {
+  it('restores a parked unsent draft only within 10 seconds', () => {
     const t0 = 1_000_000;
     const parked = bindTicketTable(
       {
@@ -54,6 +55,96 @@ describe('ticketDraft', () => {
     expect(soon.lines[0]?.name).toBe('Soup');
     const later = bindTicketTable(parked, 'A:1', t0 + TICKET_DRAFT_TTL_MS);
     expect(later.lines).toEqual([]);
+  });
+
+  it('keeps a parked sent bill after the 10 second unsent-draft timer', () => {
+    const t0 = 1_000_000;
+    const parked = bindTicketTable(
+      {
+        ...emptyTicketDraft(),
+        boundKey: 'A:1',
+        drafts: {},
+        lines: [{ name: 'Cezar', qty: 1, unitPrice: 600, staged: false }],
+        orderNote: '',
+      },
+      'A:2',
+      t0,
+    );
+    const later = bindTicketTable(
+      parked,
+      'A:1',
+      t0 + TICKET_DRAFT_TTL_MS + 60_000,
+    );
+    expect(later.lines[0]?.name).toBe('Cezar');
+  });
+
+  it('does not restore a sent bill for a table the host says is free', () => {
+    const t0 = 1_000_000;
+    const parked = bindTicketTable(
+      {
+        ...emptyTicketDraft(),
+        boundKey: 'Salla:T7',
+        drafts: {},
+        lines: [{ name: 'Cezar', qty: 1, unitPrice: 600, staged: false }],
+        orderNote: '',
+      },
+      'Salla:T8',
+      t0,
+    );
+    const later = bindTicketTable(
+      parked,
+      'Salla:T7',
+      t0 + TICKET_DRAFT_TTL_MS + 60_000,
+      { keepLiveBill: false },
+    );
+    expect(later.lines).toEqual([]);
+    expect(later.drafts['Salla:T7']).toBeUndefined();
+  });
+
+  it('empties the current live bill when rebound to a free table', () => {
+    const now = 1_000_000;
+    const next = bindTicketTable(
+      {
+        ...emptyTicketDraft(),
+        boundKey: 'Salla:T8',
+        drafts: {},
+        lines: [{ name: 'Ravioli', qty: 1, unitPrice: 700, staged: false }],
+        orderNote: '',
+      },
+      'Salla:T8',
+      now,
+      { keepLiveBill: false },
+    );
+    expect(next.lines).toEqual([]);
+    expect(next.drafts['Salla:T8']).toBeUndefined();
+  });
+
+  it('drops parked live bills for closed tables and keeps a fresh unsent cart', () => {
+    const now = 50_000;
+    const next = pruneLiveBillsForClosedTables(
+      {
+        'Salla:T7': {
+          ...emptyTicketDraft(),
+          lines: [{ name: 'Cezar', qty: 1, unitPrice: 600, staged: false }],
+          savedAt: 1,
+        },
+        'Salla:T1': {
+          ...emptyTicketDraft(),
+          lines: [{ name: 'Soup', qty: 1, unitPrice: 5, staged: true }],
+          savedAt: 45_000,
+        },
+        'Salla:T2': {
+          ...emptyTicketDraft(),
+          lines: [{ name: 'Steak', qty: 1, unitPrice: 20, staged: false }],
+          savedAt: 1,
+        },
+      },
+      ['Salla:T2'],
+      now,
+    );
+    expect(next['Salla:T7']).toBeUndefined();
+    expect(next['Salla:T1']?.lines[0]?.name).toBe('Soup');
+    expect(next['Salla:T2']?.lines[0]?.name).toBe('Steak');
   });
 
   it('treats drafts without savedAt as stale', () => {
@@ -73,7 +164,7 @@ describe('ticketDraft', () => {
     });
   });
 
-  it('clears a persisted cart after the grace window', () => {
+  it('clears a persisted unsent cart after the grace window', () => {
     const stale = revivePersistedTicketDraft(
       {
         ...emptyTicketDraft(),
@@ -82,7 +173,7 @@ describe('ticketDraft', () => {
         drafts: {
           'A:1': {
             ...emptyTicketDraft(),
-            lines: [{ name: 'Cola', qty: 1, unitPrice: 2 }],
+            lines: [{ name: 'Cola', qty: 1, unitPrice: 2, staged: true }],
             savedAt: 1,
           },
         },
@@ -102,6 +193,26 @@ describe('ticketDraft', () => {
       50_000,
     );
     expect(fresh.lines[0]?.name).toBe('Soup');
+  });
+
+  it('keeps a persisted sent bill after the grace window', () => {
+    const kept = revivePersistedTicketDraft(
+      {
+        ...emptyTicketDraft(),
+        lines: [{ name: 'Cezar', qty: 1, unitPrice: 600, staged: false }],
+        savedAt: 1,
+        drafts: {
+          'Salla:T7': {
+            ...emptyTicketDraft(),
+            lines: [{ name: 'Cezar', qty: 1, unitPrice: 600, staged: false }],
+            savedAt: 1,
+          },
+        },
+      },
+      50_000,
+    );
+    expect(kept.lines[0]?.name).toBe('Cezar');
+    expect(kept.drafts['Salla:T7']?.lines[0]?.name).toBe('Cezar');
   });
 
   it('keeps a local draft when the server log is empty', () => {

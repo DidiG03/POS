@@ -1,70 +1,66 @@
+import type { ReactNode } from 'react';
+import { BrandMark } from './BrandMark';
+import { SpinnerGlyph } from './SpinnerGlyph';
+
 /**
- * Unified full-page loading spinner used across all pages.
- * Use this as the single loading indicator per page.
- *
- * Variants:
- *  - `fullPage` (default): centered in viewport, used as route-level / page-level loader
- *  - `overlay`: absolute overlay with backdrop, used inside a panel (e.g. ticket area)
- *  - `lock`: fixed viewport overlay that blocks scrolling underneath
+ * Loading indicator. Logo + ring sit in the content well (below the header,
+ * above the tab bar) so chrome stays put and every screen shares one position.
  */
 export function PageSpinner({
   message = 'Loading…',
+  detail,
   variant = 'fullPage',
+  spinner = true,
+  children,
 }: {
   message?: string;
+  detail?: string;
   variant?: 'fullPage' | 'overlay' | 'lock';
+  spinner?: boolean;
+  children?: ReactNode;
 }) {
-  const spinner = (
-    <div className="flex flex-col items-center gap-3">
-      <svg
-        className="pos-spinner"
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 24 24"
-      >
-        <circle
-          className="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
-          stroke="currentColor"
-          strokeWidth="4"
-        />
-        <path
-          className="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-        />
-      </svg>
-      <span className="text-sm text-gray-300">{message}</span>
+  const stack = (
+    <div className="flex w-full max-w-md flex-col items-center gap-5">
+      <BrandMark size="lg" />
+      {spinner ? (
+        <SpinnerGlyph className="size-6 text-[color:var(--pos-fg-muted)]" />
+      ) : null}
+      {message ? (
+        <div className="text-center text-sm text-[color:var(--pos-fg)]">
+          {message}
+        </div>
+      ) : null}
+      {detail ? (
+        <div className="text-center text-xs text-[color:var(--pos-fg-muted)]">
+          {detail}
+        </div>
+      ) : null}
+      {children}
     </div>
   );
 
   if (variant === 'lock') {
     return (
       <div
-        className="fixed inset-0 z-40 flex items-center justify-center overflow-hidden overscroll-none bg-gray-900/80 touch-none"
+        className="pos-loader pos-loader--lock"
         role="alertdialog"
         aria-busy="true"
         aria-live="assertive"
         aria-modal="true"
       >
-        {spinner}
-      </div>
-    );
-  }
-
-  if (variant === 'overlay') {
-    return (
-      <div className="absolute inset-0 bg-gray-800/80 z-10 flex items-center justify-center rounded">
-        {spinner}
+        {stack}
       </div>
     );
   }
 
   return (
-    <div className="min-h-[60vh] w-full flex items-center justify-center">
-      {spinner}
+    <div
+      className="pos-loader"
+      role="status"
+      aria-busy={spinner}
+      aria-live="polite"
+    >
+      {stack}
     </div>
   );
 }

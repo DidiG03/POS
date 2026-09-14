@@ -346,7 +346,7 @@ export function nextOfflineWakeDelayMs(
  * when online — kept thin so the queue never "knows" anything special
  * about each op.
  */
-const dispatchers: Record<OfflineOp, (args: any) => Promise<void>> = {
+const dispatchers: Record<OfflineOp, (args: any) => Promise<unknown>> = {
   // The legacy composite: open the table FIRST so `openAt` exists
   // before the ticket / covers writes. Nested catches make the
   // sidecars best-effort — if covers.save fails we still consider the
@@ -435,7 +435,9 @@ const dispatchers: Record<OfflineOp, (args: any) => Promise<void>> = {
     // `idempotencyKey` is forwarded to `tickets.print`; both the Electron
     // IPC handler and the LAN `/print/ticket` route dedupe identical keys
     // so a retry cannot double-record a payment audit row (PrintJob).
-    assertPrintAccepted(await window.api.tickets.print(a));
+    const r = await window.api.tickets.print(a);
+    assertPrintAccepted(r);
+    return r;
   },
 
   'tickets.print': async (a) => {

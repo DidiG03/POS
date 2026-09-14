@@ -4,6 +4,8 @@ import { describeTicketNote } from '@shared/utils/transferNote';
 import { useSessionStore } from '../../stores/session';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { receiptLocationTitle, receiptStaffLine } from './reportsReceipt';
+import { PageSpinner } from '../../components/PageSpinner';
+import { reportAppError } from '../../utils/reportAppError';
 
 type Overview = {
   revenueTodayNet: number;
@@ -62,11 +64,17 @@ export default function ReportsPage() {
         }
         const ov = await window.api.reports.getMyOverview(user.id);
         setOverview(ov as any);
+      } catch (e: unknown) {
+        setOverview(null);
+        reportAppError(e, {
+          fallback: t('reports.loadFailed'),
+          key: `reports.overview:${user?.id || 0}`,
+        });
       } finally {
         setLoading(false);
       }
     })();
-  }, [user?.id]);
+  }, [user?.id, t]);
 
   useEffect(() => {
     if (!user?.id) {
@@ -88,7 +96,9 @@ export default function ReportsPage() {
         setVoidedTicketsError(null);
 
         const [a, p, v] = await Promise.all([
-          window.api.reports.listMyActiveTickets(user.id),
+          hasTables
+            ? window.api.reports.listMyActiveTickets(user.id)
+            : Promise.resolve([]),
           window.api.reports.listMyPaidTickets({
             userId: user.id,
             q: paidQuery,
@@ -145,6 +155,12 @@ export default function ReportsPage() {
             msg ||
               t(hasTables ? 'reports.failedPaid' : 'reports.failedPaidStore'),
           );
+          reportAppError(e, {
+            fallback: t(
+              hasTables ? 'reports.failedActive' : 'reports.failedActiveStore',
+            ),
+            key: `reports.tickets:${user.id}`,
+          });
         }
       } finally {
         if (alive) setTicketLoading(false);
@@ -176,16 +192,20 @@ export default function ReportsPage() {
         </h2>
       </div>
 
-      {loading && (
-        <div className="shrink-0 opacity-70">{t('reports.loadingStats')}</div>
-      )}
+      {loading ? (
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <PageSpinner variant="overlay" message={t('reports.loadingStats')} />
+        </div>
+      ) : null}
 
       {!loading && !user && (
         <div className="shrink-0 opacity-70">{t('reports.loginToView')}</div>
       )}
 
       {!loading && user && overview && (
-        <div className="mb-6 grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div
+          className={`mb-6 grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-2 ${hasTables ? 'lg:grid-cols-3' : ''}`}
+        >
           <StatCard
             title={t('reports.revenueTodayNet')}
             value={fmtCurrency.format(overview.revenueTodayNet || 0)}
@@ -194,10 +214,12 @@ export default function ReportsPage() {
             title={t('reports.vatToday')}
             value={fmtCurrency.format(overview.revenueTodayVat || 0)}
           />
-          <StatCard
-            title={t(hasTables ? 'reports.openOrders' : 'reports.openSales')}
-            value={String(overview.openOrders)}
-          />
+          {hasTables ? (
+            <StatCard
+              title={t('reports.openOrders')}
+              value={String(overview.openOrders)}
+            />
+          ) : null}
         </div>
       )}
 
@@ -226,49 +248,47 @@ export default function ReportsPage() {
       {/* Tickets: fills remaining viewport; each column scrolls independently on lg+ */}
       {user && (
         <section className="flex min-h-0 flex-1 flex-col">
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto overscroll-contain lg:grid-cols-3 lg:grid-rows-1 lg:items-stretch lg:overflow-hidden [&>*]:min-h-0 lg:[&>*]:max-h-full">
-            <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
-              <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">
-                  {t(
-                    hasTables ? 'reports.activeTickets' : 'reports.activeSales',
-                  )}
-                </div>
-                <div className="text-xs opacity-70">{activeTickets.length}</div>
-              </div>
-              {activeTicketsError && (
-                <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
-                  {t(
-                    hasTables
-                      ? 'reports.activeTicketsError'
-                      : 'reports.activeSalesError',
-                  )}{' '}
-                  <span className="font-semibold">{activeTicketsError}</span>
-                </div>
-              )}
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-                {activeTickets.length === 0 ? (
-                  <div className="text-sm opacity-70">
-                    {t(
-                      hasTables
-                        ? 'reports.noActiveTickets'
-                        : 'reports.noActiveSales',
-                    )}
+          <div
+            className={`grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto overscroll-contain lg:grid-rows-1 lg:items-stretch lg:overflow-hidden [&>*]:min-h-0 lg:[&>*]:max-h-full ${
+              hasTables ? 'lg:grid-cols-3' : 'lg:grid-cols-2'
+            }`}
+          >
+            {hasTables ? (
+              <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
+                <div className="mb-2 flex shrink-0 items-center justify-between">
+                  <div className="font-medium">
+                    {t('reports.activeTickets')}
                   </div>
-                ) : (
-                  <div className="space-y-3">
-                    {activeTickets.map((rec: any, idx: number) => (
-                      <ReceiptCard
-                        key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
-                        ticket={rec}
-                        fmtCurrency={fmtCurrency}
-                        hasTables={hasTables}
-                      />
-                    ))}
+                  <div className="text-xs opacity-70">
+                    {activeTickets.length}
+                  </div>
+                </div>
+                {activeTicketsError && (
+                  <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
+                    {t('reports.activeTicketsError')}{' '}
+                    <span className="font-semibold">{activeTicketsError}</span>
                   </div>
                 )}
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+                  {activeTickets.length === 0 ? (
+                    <div className="text-sm opacity-70">
+                      {t('reports.noActiveTickets')}
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {activeTickets.map((rec: any, idx: number) => (
+                        <ReceiptCard
+                          key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+                          ticket={rec}
+                          fmtCurrency={fmtCurrency}
+                          hasTables={hasTables}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            ) : null}
 
             <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
               <div className="mb-2 flex shrink-0 items-center justify-between">

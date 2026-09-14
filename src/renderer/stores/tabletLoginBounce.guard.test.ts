@@ -29,10 +29,14 @@ describe('tablet login bounce guards', () => {
 
   it('RequireAuth waits for hydration and never swaps Tables for PIN on a missing shift', () => {
     const src = read('src/renderer/routes.tsx');
+    expect(src).toContain('retryLazyImport');
+    expect(src).toContain('errorElement');
     expect(src).toContain('shouldDeferShiftGuard');
     expect(src).toContain('hasHydrated');
     expect(src).toContain('needsShift');
     expect(src).toContain('resumeShiftBody');
+    expect(src).toContain('resumeMainProcessSession');
+    expect(src).toContain('useIpcSessionReady');
     expect(src).not.toContain('setOk(false)');
   });
 
@@ -40,6 +44,7 @@ describe('tablet login bounce guards', () => {
     const src = read('src/renderer/app/pages/LoginPage.tsx');
     expect(src).toContain('hasHydrated');
     expect(src).toContain('disabled={!hasHydrated}');
+    expect(src).toContain('isClockCaptureEnabled');
   });
 
   it('Android Capacitor serves the app over http and never bakes in a live-reload URL', () => {
@@ -65,9 +70,18 @@ describe('tablet login bounce guards', () => {
     const main = read('src/renderer/main.tsx');
     expect(main).toContain('emitPosSyncCatchup');
     expect(main).toContain('syncTabletToHostVersion');
+    expect(main).toContain('installPosRealtimeSync');
+    expect(main).toContain('installWakeUiRecovery');
+    expect(main).toContain('installUnhandledErrorToasts');
+    expect(main).toContain('initRendererSentry');
+    expect(main).toContain('hideMobileSplash');
+    expect(main).toContain('POS_BACKEND_HOST_CHANGED');
+    expect(main).toContain("addEventListener('catchup'");
     const api = read('src/main/api.ts');
     expect(api).toContain('staticAssetCacheControl');
     expect(api).toContain('appVersion: app.getVersion()');
+    expect(api).toContain('sseCatchupIfMissed');
+    expect(api).toContain("req.headers['last-event-id']");
   });
 
   it('LAN CORS allows Capacitor WebView origins including Android http://localhost', () => {
@@ -75,5 +89,21 @@ describe('tablet login bounce guards', () => {
     expect(CAPACITOR_WEBVIEW_ORIGINS).toContain('http://localhost:8080');
     const api = read('src/main/api.ts');
     expect(api).toContain('CAPACITOR_WEBVIEW_ORIGINS');
+  });
+
+  it('Waiter store listing keeps local-network and privacy extras', () => {
+    const plist = read('ios/App/App/Info.plist');
+    expect(plist).toContain('NSLocalNetworkUsageDescription');
+    expect(plist).toContain('NSAllowsLocalNetworking');
+    expect(plist).not.toContain('NSAllowsArbitraryLoads');
+    expect(plist).toContain('ITSAppUsesNonExemptEncryption');
+    const gradle = read('android/app/build.gradle');
+    const version = JSON.parse(read('package.json')).version;
+    expect(gradle).toContain('com.codeorbit.waiter');
+    expect(gradle).toContain(`versionName "${version}"`);
+    const listing = JSON.parse(read('store/en.json'));
+    expect(listing.bundleId).toBe('com.codeorbit.waiter');
+    expect(read('public/legal/privacy.html')).toContain('Privacy Policy');
+    expect(read('public/legal/support.html')).toContain('same Wi-Fi');
   });
 });

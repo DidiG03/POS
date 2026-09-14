@@ -7,11 +7,13 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BrandMark } from '../../components/BrandMark';
+import { PageSpinner } from '../../components/PageSpinner';
 import { DevEditionSwitch } from './DevEditionSwitch';
 import { Button, Field, Input, cn } from '../../components/ui';
 import { IconArrowLeft } from '../../components/icons';
 import { toast } from '../../stores/toasts';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { writeStoredFlag } from '../../utils/storedFlag';
 import type {
   LicenseEdition,
   LicensePlanQuote,
@@ -185,6 +187,11 @@ export default function LicenseGate({
   useEffect(() => {
     if (!isHost) return;
     setDraft(loadDraft());
+  }, [isHost]);
+
+  useEffect(() => {
+    if (!isHost) return;
+    if (!status?.required || status.licensed) return;
     void window.api.license
       .getPlans()
       .then((p) => {
@@ -193,7 +200,7 @@ export default function LicenseGate({
       .catch(() => {
         // prices stay hidden if billing is unreachable
       });
-  }, [isHost]);
+  }, [isHost, status?.required, status?.licensed]);
 
   useEffect(() => {
     void refresh();
@@ -219,7 +226,13 @@ export default function LicenseGate({
 
   useEffect(() => {
     if (isHost) {
-      if (status) useLicenseCapabilities.getState().setEdition(status.edition);
+      if (status) {
+        useLicenseCapabilities.getState().setEdition(status.edition);
+        writeStoredFlag(
+          'pos-license-ok',
+          !status.required || Boolean(status.licensed),
+        );
+      }
       return;
     }
     let cancelled = false;
@@ -239,11 +252,7 @@ export default function LicenseGate({
 
   if (!isHost) return <>{children}</>;
   if (!status) {
-    return (
-      <div className="flex h-full items-center justify-center px-4 pos-app pos-app--auth text-gray-200">
-        {t('common.loading')}
-      </div>
-    );
+    return <PageSpinner message={t('common.loading')} />;
   }
   if (!status.required || status.licensed) return <>{children}</>;
 

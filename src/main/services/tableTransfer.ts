@@ -6,6 +6,14 @@ import {
 } from './realtime';
 import { moveCoveringReservationForTableTransfer } from './reservations';
 import { buildTableSessionKey } from './tableSession';
+import { compactTicketLogSession } from './ticketLogCompact';
+import {
+  DestinationTableOccupiedError,
+  getOpenedAt,
+  isTableOccupied,
+  moveTableOccupancy,
+  setTableOccupied,
+} from './tableOccupancy';
 
 export type TransferTableInput = {
   fromArea: string;
@@ -48,36 +56,6 @@ async function updateKdsSessionOwner(
   } catch {
     // ignore if KDS tables not migrated
   }
-}
-
-async function readOpenMap(): Promise<Record<string, boolean>> {
-  const row = await prisma.syncState
-    .findUnique({ where: { key: 'tables:open' } })
-    .catch(() => null);
-  return ((row?.valueJson as any) || {}) as Record<string, boolean>;
-}
-
-async function writeOpenMap(map: Record<string, boolean>) {
-  await prisma.syncState.upsert({
-    where: { key: 'tables:open' },
-    create: { key: 'tables:open', valueJson: map },
-    update: { valueJson: map },
-  });
-}
-
-async function readOpenAtMap(): Promise<Record<string, string>> {
-  const row = await prisma.syncState
-    .findUnique({ where: { key: 'tables:openAt' } })
-    .catch(() => null);
-  return ((row?.valueJson as any) || {}) as Record<string, string>;
-}
-
-async function writeOpenAtMap(map: Record<string, string>) {
-  await prisma.syncState.upsert({
-    where: { key: 'tables:openAt' },
-    create: { key: 'tables:openAt', valueJson: map },
-    update: { valueJson: map },
-  });
 }
 
 /**
@@ -394,25 +372,18 @@ export async function transferTableLocal(
   }
 
   // If moving table, ensure destination isn't already open
-  const openMap = await readOpenMap();
-  const fromKey = `${fromArea}:${fromLabel}`;
-  const toKey = `${toArea}:${toLabel}`;
-  if (!openMap[fromKey]) {
-    // Some flows may create ticket logs without open-map; don't hard fail, but warn behavior.
-    // We'll allow transfer and mark destination open.
-  }
-  if (movingTable && openMap[toKey])
+  const fromOpen = await isTableOccupied(fromArea, fromLabel);
+  if (movingTable && (await isTableOccupied(toArea, toLabel)))
     return {
       ok: false,
       error: `Destination table ${toArea} ${toLabel} is already open`,
     };
 
-  // Move openAt timestamp (if any)
-  const openAtMap = await readOpenAtMap();
-  const fromAt = openAtMap[fromKey];
+  const fromAtDate = await getOpenedAt(fromArea, fromLabel);
+  const fromAt = fromAtDate ? fromAtDate.toISOString() : undefined;
   // A move carries the sitting over to the destination key, so resolve the
   // timestamp it will land on now — the destination TicketLog row is written
-  // before the map update and has to share that session key.
+  // before occupancy updates and has to share that session key.
   const toAt = fromAt || new Date().toISOString();
 
   // Resolve display names for the structured audit tag.
@@ -463,6 +434,7 @@ export async function transferTableLocal(
     if (e?.code === 'P2002' && transferIdem) return { ok: true };
     throw e;
   }
+  await compactTicketLogSession(destinationSessionKey);
 
   // Rows that represented the ticket before this transfer (same physical
   // table after an owner handoff, or the source table after a move) must
@@ -503,17 +475,16 @@ export async function transferTableLocal(
     }
   };
 
-  // Update open maps
+  // Update occupancy rows (one row per table — not a shared JSON map).
   if (movingTable) {
-    // Close old key, open new key
-    delete openMap[fromKey];
-    openMap[toKey] = true;
-    await writeOpenMap(openMap);
-
-    // Move openAt timestamp if present, otherwise set now
-    delete openAtMap[fromKey];
-    openAtMap[toKey] = toAt;
-    await writeOpenAtMap(openAtMap);
+    try {
+      await moveTableOccupancy(fromArea, fromLabel, toArea, toLabel);
+    } catch (e) {
+      if (e instanceof DestinationTableOccupiedError) {
+        return { ok: false, error: e.message };
+      }
+      throw e;
+    }
 
     await prependMovedOutToPriorSessionRows();
 
@@ -567,13 +538,10 @@ export async function transferTableLocal(
       toLabel,
     );
   } else {
-    // Not moving table: ensure openAt exists (no-op otherwise). Reuse the
-    // timestamp baked into `destinationSessionKey` so the handoff row and any
-    // later fire on this table agree on the session.
-    if (!openAtMap[fromKey] && openMap[fromKey]) {
-      openAtMap[fromKey] = toAt;
-      await writeOpenAtMap(openAtMap);
-    }
+    // Not moving table: ensure occupancy exists (no-op if already open).
+    // Reuse the timestamp baked into `destinationSessionKey` so the handoff
+    // row and any later fire on this table agree on the session.
+    if (fromOpen) await setTableOccupied(fromArea, fromLabel, true);
     // Owner handoff on the same table: snapshot row is `createdLog`; prior
     // rows still have the old waiter as userId — tag them moved-out so only
     // the colleague appears in "Tickets by staff" / revenue for this sale.

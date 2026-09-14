@@ -1,8 +1,19 @@
-/* Fonts are bundled, not fetched: POS terminals routinely run on a LAN with
- * no internet access, and a webfont that silently fails to load changes every
- * metric on the screen. */
-@import '@fontsource-variable/inter/index.css';
 @import 'tailwindcss';
+
+/* Latin-only variable Inter (~48KB). Albanian sits in Latin-1; skip
+ * cyrillic/greek/vietnamese/italic cuts that Lighthouse counted as payload. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2')
+    format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
 
 /* ===========================================================================
  * Design tokens
@@ -120,6 +131,12 @@
   --pos-control-h: 34px;
   --pos-control-h-lg: 40px;
   --pos-header-h: 56px;
+
+  --pos-floor-bg: #07090c;
+  --pos-floor-grid: rgba(255, 255, 255, 0.045);
+  --pos-floor-table: #52525b;
+  --pos-floor-table-fg: #f4f4f5;
+  --pos-floor-room: rgba(17, 24, 39, 0.92);
 }
 
 html[data-theme='light'] {
@@ -140,7 +157,7 @@ html[data-theme='light'] {
   --pos-surface-2: #eef1f6;
   --pos-surface-3: #e2e8f0;
   --pos-fg: #0b1220;
-  --pos-fg-muted: #5b6b82;
+  --pos-fg-muted: #3f4f66;
 
   --pos-border: rgba(15, 23, 42, 0.1);
   --pos-border-strong: rgba(15, 23, 42, 0.16);
@@ -163,6 +180,12 @@ html[data-theme='light'] {
   --shadow-lg: 0 10px 28px -8px rgba(15, 23, 42, 0.14);
   --shadow-xl: 0 16px 40px -12px rgba(15, 23, 42, 0.16);
   --shadow-2xl: 0 24px 56px -16px rgba(15, 23, 42, 0.18);
+
+  --pos-floor-bg: #eef1f6;
+  --pos-floor-grid: rgba(15, 23, 42, 0.08);
+  --pos-floor-table: #cfd6e0;
+  --pos-floor-table-fg: #1e293b;
+  --pos-floor-room: #e4e9f1;
 }
 
 /* Kitchen window keeps its own theme even if the till is in light mode. */
@@ -244,6 +267,23 @@ input[type='number'],
   color: #fff;
 }
 
+button:not(:disabled),
+[type='button']:not(:disabled),
+[type='submit']:not(:disabled),
+[type='reset']:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+summary {
+  cursor: pointer;
+}
+
+button:disabled,
+[type='button']:disabled,
+[type='submit']:disabled,
+[type='reset']:disabled,
+[role='button'][aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
 @media (any-pointer: coarse) {
   button,
   .btn {
@@ -277,6 +317,43 @@ html[data-shell='capacitor'] body {
   .pos-app--mobile-tabs {
     --pos-mobile-tab-h: calc(3.5rem + env(safe-area-inset-bottom, 0px));
   }
+}
+
+/* Keep chrome visible; sit in the same well as Tables/Orders. */
+:root {
+  --pos-loader-top: calc(env(safe-area-inset-top, 0px) + var(--pos-header-h));
+  --pos-loader-bottom: var(--pos-mobile-tab-h, 0px);
+}
+html[data-shell='capacitor'] {
+  --pos-loader-bottom: 0px;
+}
+@media (max-width: 639px) {
+  html[data-shell='capacitor'] {
+    --pos-loader-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+.pos-loader {
+  position: fixed;
+  z-index: 20;
+  top: var(--pos-loader-top);
+  right: 0;
+  bottom: var(--pos-loader-bottom);
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+  pointer-events: none;
+}
+.pos-loader > * {
+  pointer-events: auto;
+}
+.pos-loader--lock {
+  inset: 0;
+  z-index: 40;
+  pointer-events: auto;
+  background-color: var(--pos-canvas);
 }
 
 .pos-toast-anchor {
@@ -380,7 +457,7 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-nav-link {
-    @apply inline-flex items-center gap-2 rounded px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     min-height: var(--pos-control-h);
   }
@@ -407,7 +484,7 @@ html[data-shell='capacitor'] body {
     padding-right: max(0.25rem, var(--safe-right));
   }
   .pos-mobile-tab {
-    @apply flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-[10px] font-semibold leading-tight;
+    @apply flex min-w-0 flex-1 flex-col cursor-pointer items-center justify-center gap-0.5 px-1 py-1.5 text-[10px] font-semibold leading-tight;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     min-height: 48px;
     -webkit-tap-highlight-color: transparent;
@@ -422,7 +499,7 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-side-link {
-    @apply flex items-center gap-2.5 rounded px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-100;
+    @apply flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
   }
   .pos-side-link--active {
@@ -444,10 +521,13 @@ html[data-shell='capacitor'] body {
     background: var(--pos-surface-2);
   }
   .pos-segment {
-    @apply inline-flex items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
-    @apply text-gray-400 hover:text-gray-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
+    color: var(--pos-fg-muted);
     min-height: calc(var(--pos-control-h) - 6px);
+  }
+  .pos-segment:hover {
+    color: var(--pos-fg);
   }
   .pos-segment--active {
     background: color-mix(in srgb, var(--pos-accent) 22%, var(--pos-surface-3));
@@ -459,7 +539,7 @@ html[data-shell='capacitor'] body {
     stroke-width: 1.7;
   }
   .pos-icon-btn {
-    @apply relative inline-flex items-center justify-center rounded transition-colors duration-100;
+    @apply relative inline-flex cursor-pointer items-center justify-center rounded transition-colors duration-100;
     color: var(--pos-fg-muted);
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     width: var(--pos-control-h);
@@ -469,6 +549,36 @@ html[data-shell='capacitor'] body {
   .pos-icon-btn:hover {
     background: var(--pos-hover);
     color: var(--pos-fg);
+  }
+
+  .sidebar-edge-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    z-index: 30;
+    display: flex;
+    width: 20px;
+    height: 20px;
+    transform: translate(50%, -50%);
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid var(--pos-border);
+    background: var(--pos-canvas);
+    color: var(--pos-fg-muted);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  }
+  .sidebar-edge-toggle:hover {
+    color: var(--pos-fg);
+    background: var(--pos-surface-3);
+  }
+  .sidebar-edge-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--pos-accent) 70%, transparent);
+    outline-offset: 1px;
+  }
+  .sidebar-edge-toggle .pos-icon {
+    width: 13px;
+    height: 13px;
   }
 
   .pos-surface-panel {
@@ -502,8 +612,56 @@ html[data-shell='capacitor'] body {
     background: var(--pos-well);
   }
 
+  .ticket-line {
+    background: var(--pos-surface-2);
+    color: var(--pos-fg);
+    border: 1px solid var(--pos-border);
+    border-radius: var(--pos-radius);
+  }
+  .ticket-line--selectable:hover {
+    background: var(--pos-surface-3);
+  }
+  .ticket-line--selected {
+    box-shadow: 0 0 0 2px var(--pos-accent-ring);
+  }
+  .ticket-line-muted {
+    color: var(--pos-fg-muted);
+  }
+  .ticket-line-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: 999px;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-control-bg);
+    color: var(--pos-fg);
+    font-size: 0.75rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .ticket-line-btn:hover:not(:disabled) {
+    background: var(--pos-hover);
+  }
+  .ticket-line-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .ticket-line-btn--danger {
+    background: #b91c1c;
+    border-color: transparent;
+    color: #fff;
+  }
+  .ticket-line-btn--danger:hover:not(:disabled) {
+    background: #991b1b;
+  }
+
   .pos-btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
     @apply text-gray-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
@@ -516,7 +674,7 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
@@ -528,7 +686,7 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
     color: var(--pos-fg-muted);
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
@@ -542,7 +700,7 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-danger-btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
@@ -554,7 +712,7 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-signout-btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
     @apply text-gray-400 hover:text-rose-200;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40;
     min-height: var(--pos-control-h);
@@ -757,7 +915,29 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-spinner {
-    @apply size-6 animate-spin text-gray-400;
+    @apply shrink-0 animate-spin rounded-full;
+    border: 2.5px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-top-color: currentColor;
+  }
+
+  .pos-skip-link {
+    position: absolute;
+    left: 0.75rem;
+    top: 0.5rem;
+    z-index: 80;
+    transform: translateY(-160%);
+    border-radius: var(--pos-radius);
+    background: var(--pos-surface);
+    color: var(--pos-fg);
+    border: 1px solid var(--pos-border-strong);
+    padding: 0.5rem 0.75rem;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .pos-skip-link:focus {
+    transform: none;
+    outline: 2px solid color-mix(in srgb, var(--pos-accent) 70%, transparent);
+    outline-offset: 2px;
   }
 
   .pos-divider {
@@ -766,14 +946,15 @@ html[data-shell='capacitor'] body {
   }
 
   .pos-kbd {
-    @apply inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium text-gray-400;
+    @apply inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium;
+    color: var(--pos-fg-muted);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface-2);
     font-variant-numeric: tabular-nums;
   }
 
   .pos-floor-chip {
-    @apply inline-flex items-center rounded-md px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center rounded-md px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
     min-height: var(--pos-control-h);
     border: 1px solid var(--pos-border-strong);
     background: color-mix(in srgb, var(--pos-canvas) 82%, transparent);
@@ -793,6 +974,51 @@ html[data-shell='capacitor'] body {
     @apply inline-flex items-center gap-1 rounded-lg p-1;
     border: 1px solid var(--pos-border-strong);
     background: color-mix(in srgb, var(--pos-canvas) 88%, transparent);
+  }
+
+  .pos-floor-canvas {
+    background-color: var(--pos-floor-bg);
+    background-image:
+      linear-gradient(var(--pos-floor-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--pos-floor-grid) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  .pos-floor-canvas--editor {
+    background-image: none;
+  }
+
+  .pos-floor-table {
+    color: #fff;
+  }
+  .pos-floor-table--neutral {
+    background-color: var(--pos-floor-table);
+    color: var(--pos-floor-table-fg);
+  }
+  .pos-floor-table-badge {
+    background: rgba(0, 0, 0, 0.4);
+  }
+  .pos-floor-table--neutral .pos-floor-table-badge {
+    background: color-mix(in srgb, var(--pos-floor-table-fg) 12%, transparent);
+  }
+  .pos-floor-table-rule {
+    background: rgba(255, 255, 255, 0.55);
+  }
+  .pos-floor-table--neutral .pos-floor-table-rule {
+    background: color-mix(in srgb, var(--pos-floor-table-fg) 35%, transparent);
+  }
+
+  .pos-floor-mode {
+    @apply flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 py-2 transition-colors duration-100 sm:flex-initial sm:gap-2 sm:px-3;
+    min-height: 0;
+    color: var(--pos-fg-muted);
+  }
+  .pos-floor-mode:hover {
+    background: var(--pos-hover);
+    color: var(--pos-fg);
+  }
+  .pos-floor-mode--active {
+    background: var(--pos-surface);
+    color: var(--pos-fg);
   }
 
   /* Admin back-office — scoped so the till / KDS keep their own chrome. */
@@ -830,11 +1056,18 @@ html[data-shell='capacitor'] body {
   }
   .admin-app .pos-side-link--active {
     background: transparent;
-    color: #fff;
+    color: var(--pos-fg);
     box-shadow: inset 2px 0 0 var(--pos-accent);
   }
   .admin-app .pos-side-link--idle:hover {
-    background: rgba(255, 255, 255, 0.035);
+    background: var(--pos-hover);
+  }
+  .admin-app .admin-rail.is-collapsed .pos-side-link,
+  .admin-app .admin-settings-nav.is-collapsed .pos-side-link {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+    gap: 0;
   }
   .admin-app .pos-section-label {
     font-size: 10px;
@@ -956,25 +1189,26 @@ html[data-shell='capacitor'] body {
   }
   .review-heat-grid {
     display: grid;
-    grid-template-columns: 2.85rem repeat(7, minmax(0, 1.55rem));
-    gap: 4px;
+    gap: 5px;
     align-items: center;
-    width: max-content;
-    max-width: 100%;
+    width: 100%;
+    max-width: none;
   }
   .review-heat-hour {
     font-size: 10px;
     color: #94a3b8;
     line-height: 1;
-    text-align: right;
-    padding-right: 2px;
+    text-align: center;
+    padding-top: 4px;
     white-space: nowrap;
   }
   .review-heat-day {
     font-size: 10px;
     color: #94a3b8;
-    text-align: center;
-    padding-top: 2px;
+    text-align: right;
+    padding-right: 6px;
+    white-space: nowrap;
+    line-height: 1;
   }
   .review-heat-tip {
     margin-top: 0.4rem;
@@ -994,7 +1228,7 @@ html[data-shell='capacitor'] body {
     min-width: 0;
     line-height: 0;
     border-radius: 5px;
-    cursor: default;
+    cursor: pointer;
     background: #161c27;
   }
   .review-heat-cell:focus-visible {

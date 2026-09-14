@@ -11,7 +11,9 @@ export type SetTableOpenOptions = {
 /**
  * Apply the full table open/close side effects for one table. Must run
  * under `withTableLock(area, label, …)` so concurrent sends / transfers /
- * closes cannot interleave half-updates on `tables:open` and `tables:openAt`.
+ * closes cannot interleave half-updates on the same sitting.
+ *
+ * Occupancy is one `TableOccupancy` row; a repeated open keeps `openedAt`.
  *
  * Both Electron IPC (`tables:setOpen`) and the LAN HTTP API (`POST
  * `/tables/open`) call through here so tablets and laptops stay in sync.
@@ -23,22 +25,6 @@ export async function applyTableOpenState(
   options?: SetTableOpenOptions,
 ): Promise<void> {
   await coreServices.setTableOpen(area, label, open);
-
-  const keyAt = 'tables:openAt';
-  const atRow = await prisma.syncState.findUnique({ where: { key: keyAt } });
-  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-  const kKey = `${area}:${label}`;
-  // IMPORTANT: do NOT reset openAt on repeated "open=true" calls.
-  if (open) {
-    if (!atMap[kKey]) atMap[kKey] = new Date().toISOString();
-  } else {
-    delete atMap[kKey];
-  }
-  await prisma.syncState.upsert({
-    where: { key: keyAt },
-    create: { key: keyAt, valueJson: atMap },
-    update: { valueJson: atMap },
-  });
 
   if (!open) {
     try {

@@ -1,5 +1,9 @@
 import { app, BrowserWindow, shell } from 'electron';
 import {
+  attachWindowRecovery,
+  installOsResumeRecovery,
+} from './services/windowRecovery';
+import {
   allowNextQuit,
   applyOpenAtLogin,
   attachMainWindowHideOnClose,
@@ -66,6 +70,8 @@ import {
   TransferTableInputSchema,
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { FISCAL_TRANSMIT_WINDOW_MS } from '@shared/fiscalDefer';
 import {
   activateKey,
   activateSession,
@@ -85,6 +91,7 @@ import {
   setUnpackagedDevEdition,
   storePlanBlocksKds,
   storePlanBlocksReservations,
+  storePlanBlocksTables,
   withLicenseEdition,
 } from './services/license';
 import { licenseStatusForRenderer } from './services/licenseStatus';
@@ -116,13 +123,21 @@ import {
   unbindSender,
 } from './services/ipcSession';
 import { classifyPrinterError } from './print';
-import { prisma } from '@db/client';
+import { configureSqlite, prisma } from '@db/client';
 import type { Prisma } from '@prisma/client';
 import {
   expireStaleMenuStock,
   consumeMenuStockForTicketLines,
   localCalendarDateKey,
+  applyDailyStockPatch,
+  applyOnHandStockPatch,
+  stockLinesFromTicketItems,
 } from './services/menuStock';
+import {
+  costWritePayload,
+  emptyCostLine,
+  parseCostBreakdown,
+} from '@shared/itemCost';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import type * as http from 'node:http';
@@ -141,17 +156,30 @@ import {
   fiscalizePaymentOnce,
   flagVoidAfterFiscalization,
   listFiscalClaimsNeedingReview,
+  listFiscalClaimsDeferred,
   resolveFiscalClaim,
   testFiscalConnection,
   getFiscalTokenHint,
   testMinimalCloudInvoice,
 } from './services/fiscal';
 import {
+  startFiscalDeferLoop,
+  stopFiscalDeferLoop,
+} from './services/fiscal/deferred';
+import {
   transferTableLocal,
   parseTransferTag,
   isTransferredOutNote,
 } from './services/tableTransfer';
-import { setTableOpenWithSideEffects } from './services/tableOpen';
+import {
+  setTableOpenWithSideEffects,
+  applyTableOpenState,
+} from './services/tableOpen';
+import {
+  backfillTableOccupancyFromSyncState,
+  listOccupiedTables,
+} from './services/tableOccupancy';
+import { compactTicketLogSession } from './services/ticketLogCompact';
 import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
@@ -236,6 +264,11 @@ import {
   getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
+import {
+  asTicketLogItems,
+  rowIsInOpenSession,
+  ticketCreatedAtIso,
+} from '@shared/ticketLogItems';
 import { splitTableKey } from '@shared/utils/tableKey';
 import { normalizeProductCode } from '@shared/barcodeScan';
 
@@ -622,6 +655,9 @@ async function ensureLocalDbColumns(): Promise<void> {
     // 20260517190000_menuitem_stock_qty_day
     `ALTER TABLE "MenuItem" ADD COLUMN "stockRemaining" INTEGER;`,
     `ALTER TABLE "MenuItem" ADD COLUMN "stockDay" TEXT;`,
+    // 20260910170000_menuitem_cost
+    `ALTER TABLE "MenuItem" ADD COLUMN "costPrice" DECIMAL;`,
+    `ALTER TABLE "MenuItem" ADD COLUMN "costBreakdown" JSONB;`,
     // 20260613190000_reservation_external_sync
     `ALTER TABLE "Reservation" ADD COLUMN "externalSource" TEXT;`,
     `ALTER TABLE "Reservation" ADD COLUMN "externalId" TEXT;`,
@@ -646,6 +682,25 @@ async function ensureLocalDbColumns(): Promise<void> {
   try {
     await (prisma as any).$executeRawUnsafe(
       `CREATE INDEX IF NOT EXISTS "TicketLog_sessionKey_idx" ON "TicketLog"("sessionKey");`,
+    );
+  } catch {
+    // ignore
+  }
+  try {
+    await (prisma as any).$executeRawUnsafe(`
+CREATE TABLE IF NOT EXISTS "TableOccupancy" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "area" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "openedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`);
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS "TableOccupancy_area_label_key" ON "TableOccupancy"("area", "label");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "TableOccupancy_area_idx" ON "TableOccupancy"("area");`,
     );
   } catch {
     // ignore
@@ -682,25 +737,15 @@ function createWindow() {
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
-    if (!startHidden) mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(RENDERER_INDEX_HTML);
   }
+  attachWindowRecovery(mainWindow);
   attachMainWindowHideOnClose(mainWindow);
-
-  const onMainFailLoad = (_e: any, ec: number, ed: string, vu: string) => {
-    console.error('Renderer failed load', { ec, ed, vu });
-  };
-  mainWindow.webContents.on('did-fail-load', onMainFailLoad);
 
   const mainWcId = mainWindow.webContents.id;
   registerWindowKind(mainWcId, 'pos');
   mainWindow.on('closed', () => {
-    try {
-      mainWindow?.webContents.removeListener('did-fail-load', onMainFailLoad);
-    } catch {
-      // ignore
-    }
     cleanupSenderRateLimits(mainWcId);
     unbindSender(mainWcId);
     mainWindow = null;
@@ -742,6 +787,7 @@ function createAdminWindow() {
     adminWindow.loadFile(RENDERER_INDEX_HTML, {
       hash: '/admin',
     });
+  attachWindowRecovery(adminWindow);
   // SECURITY/MEM: rate limits are keyed by webContents.id (event.sender.id),
   // not BrowserWindow.id. Capture it now before the window is gone.
   const adminWcId = adminWindow.webContents.id;
@@ -781,6 +827,7 @@ function createKdsWindow() {
     kdsWindow.loadFile(RENDERER_INDEX_HTML, {
       hash: '/kds',
     });
+  attachWindowRecovery(kdsWindow);
   const kdsWcId = kdsWindow.webContents.id;
   registerWindowKind(kdsWcId, 'kds');
   kdsWindow.on('closed', () => {
@@ -815,6 +862,7 @@ function createReservationWindow() {
     reservationWindow.loadFile(RENDERER_INDEX_HTML, {
       hash: '/reservations',
     });
+  attachWindowRecovery(reservationWindow);
   // Match admin window: capture webContents.id for rate-limit cleanup BEFORE close.
   const wcId = reservationWindow.webContents.id;
   registerWindowKind(wcId, 'reservations');
@@ -888,20 +936,11 @@ function startAutoVoidStaleTicketsLoop() {
     if (autoVoidRunning) return; // overlap guard
     autoVoidRunning = true;
     try {
-      const keyOpen = 'tables:open';
-      const openRow = await prisma.syncState
-        .findUnique({ where: { key: keyOpen } })
-        .catch(() => null);
-      const openMap = ((openRow?.valueJson as any) || {}) as Record<
-        string,
-        boolean
-      >;
-
-      const keyAt = 'tables:openAt';
-      const atRow = await prisma.syncState
-        .findUnique({ where: { key: keyAt } })
-        .catch(() => null);
-      const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
+      const now = Date.now();
+      const occupied = await listOccupiedTables().catch(() => []);
+      const staleKeys = occupied
+        .filter((t) => now - t.openedAt.getTime() > cutoffMs)
+        .map((t) => `${t.area}:${t.label}`);
 
       const keyClosedOverride = 'tables:closedOverride';
       const closedRow = await prisma.syncState
@@ -911,16 +950,6 @@ function startAutoVoidStaleTicketsLoop() {
         string,
         string
       >;
-
-      const now = Date.now();
-      const staleKeys = Object.entries(atMap)
-        .filter(([k, iso]) => {
-          if (!openMap[k]) return false;
-          const t = iso ? new Date(iso).getTime() : NaN;
-          if (!Number.isFinite(t)) return false;
-          return now - t > cutoffMs;
-        })
-        .map(([k]) => k);
 
       if (staleKeys.length === 0) return;
 
@@ -993,25 +1022,10 @@ function startAutoVoidStaleTicketsLoop() {
           // ignore
         }
 
-        // Close table locally (open map + openAt) so UI immediately turns green.
-        // Hold the per-table lock around both writes so a concurrent
-        // `tickets:log` from a stale device cannot insert between the
-        // open-map flip and the openAt cleanup.
+        // Close occupancy so the floor immediately turns green.
         try {
           await withTableLock(area, tableLabel, async () => {
-            await coreServices.setTableOpen(area, tableLabel, false);
-            try {
-              delete atMap[`${area}:${tableLabel}`];
-              await prisma.syncState
-                .upsert({
-                  where: { key: keyAt },
-                  create: { key: keyAt, valueJson: atMap },
-                  update: { valueJson: atMap },
-                })
-                .catch(() => null);
-            } catch {
-              // ignore
-            }
+            await applyTableOpenState(area, tableLabel, false);
           });
         } catch {
           // ignore
@@ -1156,16 +1170,8 @@ function startAutoCloseShiftsLoop() {
       // Determine which open tables belong to which user (by latest ticket-log owner).
       // Read the open-tables map once; if there are no open tables, no shift can be
       // blocked by an "open ticket".
-      const openRow = await prisma.syncState
-        .findUnique({ where: { key: 'tables:open' } })
-        .catch(() => null);
-      const openMap = ((openRow?.valueJson as any) || {}) as Record<
-        string,
-        boolean
-      >;
-      const openTableKeys = Object.entries(openMap)
-        .filter(([, v]) => Boolean(v))
-        .map(([k]) => k);
+      const openTables = await coreServices.listOpenTables().catch(() => []);
+      const openTableKeys = openTables.map((t) => `${t.area}:${t.label}`);
 
       // Map userId -> has at least one open ticket
       const usersWithOpenTickets = new Set<number>();
@@ -1581,6 +1587,12 @@ function licenseToBillingDto(st: Awaited<ReturnType<typeof getLicenseStatus>>) {
 
 app.whenReady().then(async () => {
   if (!isPrimaryInstance) return;
+  try {
+    await configureSqlite();
+  } catch (e) {
+    console.warn('[startup] configureSqlite failed:', e);
+  }
+  installOsResumeRecovery();
   configureHostRuntime({
     getMainWindow: () => mainWindow,
     createMainWindow: () => {
@@ -1636,6 +1648,11 @@ app.whenReady().then(async () => {
     console.warn('[startup] ensureLocalDbColumns failed:', e),
   );
   try {
+    await backfillTableOccupancyFromSyncState();
+  } catch (e) {
+    console.warn('[startup] occupancy backfill failed:', e);
+  }
+  try {
     const backfill = await backfillSalesLedgerFromPrintJobs();
     if (backfill.written > 0) {
       console.log(
@@ -1669,6 +1686,7 @@ app.whenReady().then(async () => {
   }
   // Local printer retry queue (LAN API is independent).
   startPrinterStationLoop();
+  startFiscalDeferLoop();
   // Notifications: automatically delete notifications older than 1 week (DB retention).
   startNotificationRetentionLoop(prisma, { days: 7 });
   startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
@@ -1723,6 +1741,7 @@ app.on('before-quit', (event) => {
   stopAutoNoShowReservationsLoop();
   stopGoogleCalendarSyncLoop();
   stopPrinterStationLoop();
+  stopFiscalDeferLoop();
   // Left running, its 60s purge could fire while prisma.$disconnect() is in
   // flight below and error out mid-shutdown.
   stopKdsRetentionLoop();
@@ -2235,6 +2254,8 @@ ipcHandle('shifts:clockIn', async (_e, { userId }, ctx) => {
       openedById: already.openedById,
       closedById: already.closedById ?? null,
     };
+  const settings = await coreServices.readSettings().catch(() => null);
+  if (!isClockCaptureEnabled(settings)) return null;
   const created = await prisma.dayShift.create({
     data: { openedById: userId, totalsJson: {} } as any,
   });
@@ -2264,16 +2285,9 @@ ipcHandle('shifts:clockOut', async (_e, { userId, force }, ctx) => {
   if (!force) {
     const openTables: Array<{ area: string; label: string }> = [];
     try {
-      const openRow = await prisma.syncState
-        .findUnique({ where: { key: 'tables:open' } })
-        .catch(() => null);
-      const openMap = ((openRow?.valueJson as any) || {}) as Record<
-        string,
-        boolean
-      >;
-      const keys = Object.entries(openMap)
-        .filter(([, v]) => Boolean(v))
-        .map(([k]) => k);
+      const keys = (await coreServices.listOpenTables().catch(() => [])).map(
+        (t) => `${t.area}:${t.label}`,
+      );
 
       // Pull the latest ticket-log row per open table and only count
       // those whose current owner matches the user clocking out. This
@@ -2640,8 +2654,11 @@ ipcHandle('settings:testFiscalMinimalInvoice', async () => {
  * of the retry loop until an admin has checked easyPos.
  */
 ipcHandle('settings:listFiscalReviews', async () => {
-  const rows = await listFiscalClaimsNeedingReview();
-  return rows.map(({ idempotencyKey, record }) => ({
+  const [review, deferred] = await Promise.all([
+    listFiscalClaimsNeedingReview(),
+    listFiscalClaimsDeferred(),
+  ]);
+  const mappedReview = review.map(({ idempotencyKey, record }) => ({
     idempotencyKey,
     kind:
       record.state === 'CORRECTION_REQUIRED'
@@ -2652,12 +2669,29 @@ ipcHandle('settings:listFiscalReviews', async () => {
     total: record.context?.total ?? null,
     attempts: record.attempts,
     lastError: record.lastError ?? null,
-    // The invoice to correct — useless to an admin without these.
     nslf: record.result?.nslf ?? null,
     nivf: record.result?.nivf ?? null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    deadlineAt: null as string | null,
   }));
+  const mappedDeferred = deferred.map(({ idempotencyKey, record }) => ({
+    idempotencyKey,
+    kind: 'deferred' as const,
+    area: record.context?.area ?? null,
+    tableLabel: record.context?.tableLabel ?? null,
+    total: record.context?.total ?? null,
+    attempts: record.attempts,
+    lastError: record.lastError ?? null,
+    nslf: record.result?.nslf ?? null,
+    nivf: record.result?.nivf ?? null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    deadlineAt: new Date(
+      Date.parse(record.createdAt) + FISCAL_TRANSMIT_WINDOW_MS,
+    ).toISOString(),
+  }));
+  return [...mappedDeferred, ...mappedReview];
 });
 
 ipcHandle('settings:resolveFiscalReview', async (_e, payload) => {
@@ -2868,19 +2902,8 @@ ipcHandle('print:cancelRetry', async (_e, payload) => {
 
 ipcHandle('system:openExternal', async (_e, payload) => {
   try {
-    const url = String((payload as any)?.url || '').trim();
-    if (!url) return false;
-    // SECURITY: only allow http/https/mailto. Reject file:, javascript:, custom protocols, etc.
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return false;
-    }
-    const allowed = new Set(['http:', 'https:', 'mailto:']);
-    if (!allowed.has(parsed.protocol)) return false;
-    await shell.openExternal(parsed.toString());
-    return true;
+    const { openExternalUrl } = await import('./services/openExternalUrl');
+    return await openExternalUrl(String((payload as any)?.url || ''));
   } catch {
     return false;
   }
@@ -3008,6 +3031,9 @@ ipcHandle('tickets:print', async (_e, input) => {
     // Use internal settings (includes fiscal auth token). `readSettings()`
     // strips secrets before sending to the renderer.
     const settings = await coreServices.readSettings();
+    let fiscalExtra:
+      | { fiscalPending?: boolean; fiscalMessage?: string }
+      | undefined;
 
     // Local-first: print directly via local PrintJob
     const requested = {
@@ -3107,7 +3133,7 @@ ipcHandle('tickets:print', async (_e, input) => {
       const outcome = await fiscalizePaymentOnce(payload, settings as any, {
         idempotencyKey: idempotencyKey || undefined,
       });
-      if (outcome.kind !== 'ok') {
+      if (outcome.kind === 'needs-review') {
         broadcastPrinterEvent({
           level: 'error',
           kind: 'fiscal',
@@ -3116,27 +3142,43 @@ ipcHandle('tickets:print', async (_e, input) => {
           at: Date.now(),
           context: { area, tableLabel, kind: 'PAYMENT' },
         });
-        if (outcome.kind === 'needs-review') {
-          // Admins were already notified by `fiscalizePaymentOnce`. Retrying
-          // could file a second invoice, so tell the caller to stop.
-          return {
-            ok: false,
-            code: 'FISCAL_NEEDS_REVIEW',
-            error: outcome.message,
-            permanent: true,
-          };
-        }
-        if (outcome.kind === 'rejected') {
-          // Nothing was filed, but the same request will be refused again
-          // until the configuration is fixed. Park it where an admin can see
-          // it and release it, rather than retrying it into the ground.
-          return {
-            ok: false,
-            code: 'FISCAL_REJECTED',
-            error: outcome.message,
-            permanent: true,
-          };
-        }
+        // Admins were already notified by `fiscalizePaymentOnce`. Retrying
+        // could file a second invoice, so tell the caller to stop.
+        return {
+          ok: false,
+          code: 'FISCAL_NEEDS_REVIEW',
+          error: outcome.message,
+          permanent: true,
+        };
+      }
+      if (outcome.kind === 'rejected') {
+        broadcastPrinterEvent({
+          level: 'error',
+          kind: 'fiscal',
+          message: outcome.message,
+          detail: outcome.message,
+          at: Date.now(),
+          context: { area, tableLabel, kind: 'PAYMENT' },
+        });
+        // Nothing was filed, but the same request will be refused again
+        // until the configuration is fixed. Park it where an admin can see
+        // it and release it, rather than retrying it into the ground.
+        return {
+          ok: false,
+          code: 'FISCAL_REJECTED',
+          error: outcome.message,
+          permanent: true,
+        };
+      }
+      if (outcome.kind === 'retryable') {
+        broadcastPrinterEvent({
+          level: 'error',
+          kind: 'fiscal',
+          message: outcome.message,
+          detail: outcome.message,
+          at: Date.now(),
+          context: { area, tableLabel, kind: 'PAYMENT' },
+        });
         try {
           const uid = Number(meta?.userId || 0);
           if (uid) {
@@ -3160,6 +3202,12 @@ ipcHandle('tickets:print', async (_e, input) => {
         };
       }
       payload = outcome.payload;
+      if (outcome.kind === 'deferred') {
+        fiscalExtra = {
+          fiscalPending: true,
+          fiscalMessage: outcome.message,
+        };
+      }
       const fiscalWarning = String(
         (payload as any)?.meta?.fiscalWarning || '',
       ).trim();
@@ -3192,7 +3240,7 @@ ipcHandle('tickets:print', async (_e, input) => {
         if (closeTable) {
           await closeTableAfterAcceptedPayment(area, tableLabel);
         }
-        return paymentPrintAccepted(true, closeTable);
+        return paymentPrintAccepted(true, closeTable, fiscalExtra);
       }
       return true;
     }
@@ -3284,7 +3332,7 @@ ipcHandle('tickets:print', async (_e, input) => {
       if (closeTable) {
         await closeTableAfterAcceptedPayment(area, tableLabel);
       }
-      return paymentPrintAccepted(ok, closeTable);
+      return paymentPrintAccepted(ok, closeTable, fiscalExtra);
     }
     return ok;
   };
@@ -3325,15 +3373,9 @@ ipcHandle('tables:setOpen', async (_e, input) => {
   return setTableOpenWithSideEffects(area, label, open);
 });
 
-// Local-first: always use local SyncState for open tables
+// Local-first: always use local occupancy rows for open tables
 ipcHandle('tables:listOpen', async (_e) => {
-  const key = 'tables:open';
-  const row = await prisma.syncState.findUnique({ where: { key } });
-  const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-  return Object.entries(map)
-    .filter(([, v]) => Boolean(v))
-    .map(([k]) => splitTableKey(k))
-    .filter((p): p is { area: string; label: string } => Boolean(p));
+  return coreServices.listOpenTables();
 });
 
 ipcHandle('tables:getFloorSnapshot', async (_e, input) => {
@@ -3360,6 +3402,35 @@ function normalizeMenuStockLevel(raw: unknown): 'OK' | 'LOW' | 'OUT' {
   if (s === 'LOW') return 'LOW';
   if (s === 'OUT') return 'OUT';
   return 'OK';
+}
+
+function menuItemCostDto(i: { costPrice?: unknown; costBreakdown?: unknown }): {
+  costPrice: number | null;
+  costBreakdown: { id: string; label: string; amount: number }[] | null;
+} {
+  const costBreakdown = parseCostBreakdown(i.costBreakdown);
+  const fromPrice =
+    i.costPrice != null && Number.isFinite(Number(i.costPrice))
+      ? Number(i.costPrice)
+      : null;
+  return {
+    costPrice: fromPrice,
+    costBreakdown: costBreakdown.length ? costBreakdown : null,
+  };
+}
+
+function menuItemCostWrite(input: {
+  costPrice?: number | null;
+  costBreakdown?: { id: string; label: string; amount: number }[] | null;
+}): { costPrice: number | null; costBreakdown: unknown } | null {
+  if (input.costBreakdown !== undefined) {
+    return costWritePayload(input.costBreakdown ?? []);
+  }
+  if (input.costPrice === undefined) return null;
+  if (input.costPrice == null) {
+    return { costPrice: null, costBreakdown: null };
+  }
+  return costWritePayload([emptyCostLine(Number(input.costPrice))]);
 }
 
 // Local-first: always use local DB for menu
@@ -3393,6 +3464,7 @@ ipcHandle('menu:listCategoriesWithItems', async (_e) => {
         i.stockRemaining != null && Number.isFinite(Number(i.stockRemaining))
           ? Number(i.stockRemaining)
           : null,
+      ...menuItemCostDto(i),
     })),
   }));
 });
@@ -3502,6 +3574,7 @@ ipcHandle('menu:createItem', async (_e, payload) => {
     ...(typeof input.stockLevel === 'string'
       ? { stockLevel: normalizeMenuStockLevel(input.stockLevel) }
       : {}),
+    ...(menuItemCostWrite(input) ?? {}),
   };
   // Retry a couple of times in case a concurrent create grabbed the SKU
   // between the availability check and the insert.
@@ -3568,6 +3641,7 @@ ipcHandle('menu:updateItem', async (_e, payload) => {
     ...(typeof (input as any).station === 'string'
       ? { station: String((input as any).station).toUpperCase() }
       : {}),
+    ...(menuItemCostWrite(input) ?? {}),
   };
 
   if (typeof input.sku === 'string') {
@@ -3593,38 +3667,35 @@ ipcHandle('menu:updateItem', async (_e, payload) => {
       ? normalizeMenuStockLevel(input.stockLevel)
       : undefined;
 
+  const onHandInventory = storePlanBlocksTables();
   const touchesQtyOnly =
-    stockLevelIn === undefined &&
-    stockRemainingIn !== undefined &&
-    curLevel === 'LOW';
+    stockLevelIn === undefined && stockRemainingIn !== undefined;
+  const restaurantQtyOnly = touchesQtyOnly && curLevel === 'LOW';
 
-  if (stockLevelIn !== undefined || touchesQtyOnly) {
+  if (onHandInventory && (stockLevelIn !== undefined || touchesQtyOnly)) {
+    Object.assign(
+      data,
+      applyOnHandStockPatch({
+        stockLevelIn,
+        stockRemainingIn,
+        existingRemaining:
+          existing.stockRemaining != null &&
+          Number.isFinite(Number(existing.stockRemaining))
+            ? Number(existing.stockRemaining)
+            : null,
+      }),
+    );
+  } else if (stockLevelIn !== undefined || restaurantQtyOnly) {
     const nextLevel = stockLevelIn ?? curLevel;
-
-    if (nextLevel === 'OK') {
-      data.stockLevel = 'OK';
-      data.stockRemaining = null;
-      data.stockDay = null;
-    } else if (nextLevel === 'OUT') {
-      data.stockLevel = 'OUT';
-      data.stockRemaining = null;
-      data.stockDay = today;
-    } else {
-      let rem: number | null = null;
-      if (stockRemainingIn !== undefined && stockRemainingIn !== null) {
-        rem = Math.floor(Number(stockRemainingIn));
-      } else if (existing.stockRemaining != null) {
-        rem = existing.stockRemaining;
-      }
-      if (rem == null || rem < 1) {
-        throw new Error(
-          'Low stock requires “how many left” as a whole number ≥ 1.',
-        );
-      }
-      data.stockLevel = 'LOW';
-      data.stockRemaining = rem;
-      data.stockDay = today;
-    }
+    Object.assign(
+      data,
+      applyDailyStockPatch({
+        nextLevel,
+        stockRemainingIn,
+        existingRemaining: existing.stockRemaining,
+        today,
+      }),
+    );
   }
 
   await prisma.menuItem.update({
@@ -3664,14 +3735,7 @@ ipcHandle('admin:getOverview', async (_e) => {
   ] = await Promise.all([
     prisma.user.count({ where: { active: true } }),
     prisma.dayShift.count({ where: { closedAt: null } }),
-    (async () => {
-      const key = 'tables:open';
-      const row = await prisma.syncState
-        .findUnique({ where: { key } })
-        .catch(() => null);
-      const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-      return Object.values(map).filter(Boolean).length;
-    })(),
+    (async () => coreServices.countOpenTables().catch(() => 0))(),
     prisma.inventoryItem
       .count({
         where: {
@@ -4089,12 +4153,17 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
               ...(sessionKey ? { sessionKey } : {}),
             } as any,
           });
-          await consumeMenuStockForTicketLines(tx, stockConsumeLines);
+          await consumeMenuStockForTicketLines(
+            tx,
+            stockConsumeLines,
+            storePlanBlocksTables() ? 'onHand' : 'daily',
+          );
         });
       } catch (e: any) {
         if (e?.code === 'P2002' && idempotencyKey) return { ok: true };
         throw e;
       }
+      await compactTicketLogSession(sessionKey);
 
       // Notify every other client so the table's waiter badge / metrics
       // refresh in real time. Without this, a table that waiter B
@@ -4159,35 +4228,16 @@ ipcHandle('tickets:getLatestForTable', async (_e, input) => {
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
   if (!area || !tableLabel) return null;
-  // Scope to the current open session via `tables:openAt`. Tables get
-  // reused — without this scope, opening a table that was paid out
-  // earlier flashes the previous owner's items in the ticket panel
-  // until the next round-trip refresh, which looks broken (and was
-  // the source of the "shows the wrong order right after Send" bug).
-  // Falling back to the all-time latest only when there's no openAt
-  // entry preserves behaviour for callers that intentionally inspect
-  // historical state (e.g. tooltip code paths that pre-date sessions).
-  const atRow = await prisma.syncState
-    .findUnique({ where: { key: 'tables:openAt' } })
-    .catch(() => null);
-  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-  const sinceIso = atMap[`${area}:${tableLabel}`];
-  const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-  const since =
-    sinceParsed && Number.isFinite(sinceParsed.getTime()) ? sinceParsed : null;
-  const where: any = { area, tableLabel };
-  if (since) where.createdAt = { gte: since };
-  const last = await prisma.ticketLog.findFirst({
-    where,
-    orderBy: { createdAt: 'desc' },
-  });
+  // Scope to the current open sitting. TicketLog rows are cumulative
+  // snapshots that survive payout — without occupancy, this would paint
+  // the previous owner's items on a free table.
+  const last = await findLatestTicketLogForCurrentSession(area, tableLabel);
   if (!last) return null;
-  const items = Array.isArray(last.itemsJson) ? (last.itemsJson as any[]) : [];
   return {
-    items: items as any,
+    items: asTicketLogItems(last.itemsJson),
     note: stripTransferTagsFromNote(last.note) || null,
     covers: last.covers ?? null,
-    createdAt: last.createdAt.toISOString(),
+    createdAt: ticketCreatedAtIso(last.createdAt),
     userId: last.userId,
   };
 });
@@ -4866,6 +4916,7 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   if (!userId) return [];
   const settings = await readSettings().catch(() => ({}));
   const defaultVatEnabled = isVatEnabledFromSettings(settings);
+  const fiscalTin = String((settings as any)?.fiscal?.nipt || '').trim();
   const where: any = { userId };
   if (input?.startIso || input?.endIso) {
     where.createdAt = {};
@@ -4902,13 +4953,10 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
       (visibleRows as any[]).map((r: any) => `${r.area}|${r.tableLabel}`),
     ),
   );
-  const openRow = await prisma.syncState
-    .findUnique({ where: { key: 'tables:open' } })
-    .catch(() => null);
-  const openMap = ((openRow?.valueJson as any) || {}) as Record<
-    string,
-    boolean
-  >;
+  const openMap: Record<string, boolean> = {};
+  for (const t of await coreServices.listOpenTables().catch(() => [])) {
+    openMap[`${t.area}:${t.label}`] = true;
+  }
 
   const paymentsByTable = new Map<
     string,
@@ -4960,7 +5008,7 @@ ipcHandle('admin:listTicketsByUser', async (_e, input) => {
       arr.push({
         atMs: at,
         vatEnabled: Boolean(sale.vatEnabled),
-        sale: mapOrderToFiscalSaleRow(sale),
+        sale: mapOrderToFiscalSaleRow(sale, { tin: fiscalTin }),
       });
       paymentsByTable.set(k, arr);
     }
@@ -5307,13 +5355,8 @@ ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
   const sales = await fetchPaidSales({ from: start, to: end, userId });
   const { revenueNet, revenueVat } = sumPaidRevenue(sales);
   // Open orders: open tables where latest ticket owner is this user.
-  const openList = await prisma.syncState
-    .findUnique({ where: { key: 'tables:open' } })
-    .catch(() => null);
-  const map = ((openList?.valueJson as any) || {}) as Record<string, boolean>;
-  const openKeys = Object.entries(map)
-    .filter(([, v]) => Boolean(v))
-    .map(([k]) => k);
+  const openList = await coreServices.listOpenTables().catch(() => []);
+  const openKeys = openList.map((t) => `${t.area}:${t.label}`);
   const latests = await Promise.all(
     openKeys.map(async (k: string) => {
       const parsed = splitTableKey(k);
@@ -5370,18 +5413,23 @@ ipcHandle('covers:save', async (_e, { area, label, covers }) => {
 });
 
 ipcHandle('covers:getLast', async (_e, { area, label }) => {
-  // Scope to the current session via `tables:openAt`, mirroring
-  // `tickets:getLatestForTable`. Without this, reopening a label after
-  // payout flashes the previous guest count until refresh — the
-  // renderer `coversKnown` effect calls into here whenever `isOpen`
-  // flips true.
+  // Scope to the current sitting. An unoccupied table has no guest count.
   const sessionStart = await getTableSessionStartedAt(area, label);
-  const where: any = { area, label };
-  if (sessionStart) where.createdAt = { gte: sessionStart };
-  const row = await prisma.covers.findFirst({
-    where,
+  if (!sessionStart) return null;
+  const sqlHit = await prisma.covers
+    .findFirst({
+      where: { area, label, createdAt: { gte: sessionStart } },
+      orderBy: { id: 'desc' },
+    })
+    .catch(() => null);
+  if (sqlHit) return sqlHit.covers ?? null;
+  const recent = await prisma.covers.findMany({
+    where: { area, label },
     orderBy: { id: 'desc' },
+    take: 20,
   });
+  const startMs = sessionStart.getTime();
+  const row = recent.find((r) => rowIsInOpenSession(r.createdAt, startMs));
   return row?.covers ?? null;
 });
 
@@ -5589,6 +5637,7 @@ ipcHandle('requests:approve', async (_e, input, ctx) => {
         ...(sessionKey ? { sessionKey } : {}),
       } as any,
     });
+    await compactTicketLogSession(sessionKey);
   } catch {
     // ignore
   }

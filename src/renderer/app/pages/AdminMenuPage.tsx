@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { type ParsedMenuRow, parseMenuWorkbook } from '../../utils/menuImport';
 import { type KdsStation } from '@shared/kdsStations';
 import { PageSpinner } from '../../components/PageSpinner';
+import { reportAppError } from '../../utils/reportAppError';
 import {
   normalizeStock,
   type StockLevel,
@@ -21,6 +22,13 @@ import { Badge } from '../../components/ui/Badge';
 import { EmptyState } from '../../components/ui/Surface';
 import { cn } from '../../components/ui/cn';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { ItemCostFields } from '../../components/ItemCostFields';
+import {
+  costWritePayload,
+  emptyCostLine,
+  seedCostLines,
+  type ItemCostLine,
+} from '@shared/itemCost';
 
 type MenuItem = {
   id: number;
@@ -34,6 +42,8 @@ type MenuItem = {
   station?: 'KITCHEN' | 'BAR' | 'DESSERT';
   stockLevel?: 'OK' | 'LOW' | 'OUT';
   stockRemaining?: number | null;
+  costPrice?: number | null;
+  costBreakdown?: { id: string; label: string; amount: number }[] | null;
 };
 
 type MenuCategory = {
@@ -197,7 +207,7 @@ function Modal({
             onClick={onClose}
           />
         </div>
-        <div className="p-4 sm:p-5">
+        <div className="max-h-[min(78vh,44rem)] overflow-auto p-4 sm:p-5">
           <div className="admin-panel p-4 sm:p-5">{children}</div>
         </div>
       </div>
@@ -242,6 +252,10 @@ export default function AdminMenuPage() {
         setSelectedId(data?.[0]?.id ?? null);
     } catch (e: any) {
       setErr(e?.message || t('adminMenu.loadFailed'));
+      reportAppError(e, {
+        fallback: t('adminMenu.loadFailed'),
+        key: 'adminMenu.load',
+      });
     } finally {
       initialLoad.current = false;
       setLoading(false);
@@ -277,9 +291,10 @@ export default function AdminMenuPage() {
   const [newCatKdsStation, setNewCatKdsStation] = useState<KdsStation | ''>('');
 
   const resolvedNewCatName = useMemo(() => {
-    if (newCatName === OTHER_CATEGORY) return newCatCustomName.trim();
+    if (!hasTables || newCatName === OTHER_CATEGORY)
+      return newCatCustomName.trim();
     return String(newCatName || '').trim();
-  }, [newCatName, newCatCustomName]);
+  }, [hasTables, newCatName, newCatCustomName]);
 
   const newCatNameTaken = useMemo(() => {
     const n = resolvedNewCatName.toLowerCase();
@@ -302,7 +317,10 @@ export default function AdminMenuPage() {
       return await fn();
     } catch (e: any) {
       setErr(e?.message || t('adminMenu.actionFailed'));
-      throw e;
+      reportAppError(e, {
+        fallback: t('adminMenu.actionFailed'),
+        key: `adminMenu.${label}`,
+      });
     } finally {
       setSaving(null);
     }
@@ -370,84 +388,136 @@ export default function AdminMenuPage() {
 
           {showAddCategory ? (
             <div className="space-y-2 border-b border-white/7 px-3 py-3">
-              <div className="flex items-center gap-2">
-                <Select
-                  className="flex-1"
-                  value={newCatName}
-                  onChange={(e) => {
-                    const next = e.target.value as NewCategorySelection;
-                    setNewCatName(next);
-                    if (next === OTHER_CATEGORY) {
-                      setNewCatCustomName('');
-                      setNewCatKdsStation('');
-                    } else {
-                      setNewCatCustomName('');
-                      setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
-                    }
-                  }}
-                  title={t('adminMenu.addCategory')}
-                  disabled={busy}
-                >
-                  <option value="">{t('adminMenu.selectCategory')}</option>
-                  {CATEGORY_PRESETS.map((n) => {
-                    const taken = cats.some(
-                      (c) => c.name.trim().toLowerCase() === n.toLowerCase(),
-                    );
-                    return (
-                      <option key={n} value={n} disabled={taken}>
-                        {presetLabel(t, n)}
-                        {taken ? ` ${t('adminMenu.alreadyExists')}` : ''}
+              {hasTables ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      className="flex-1"
+                      value={newCatName}
+                      onChange={(e) => {
+                        const next = e.target.value as NewCategorySelection;
+                        setNewCatName(next);
+                        if (next === OTHER_CATEGORY) {
+                          setNewCatCustomName('');
+                          setNewCatKdsStation('');
+                        } else {
+                          setNewCatCustomName('');
+                          setNewCatKdsStation(
+                            guessDefaultKdsStation(next) ?? '',
+                          );
+                        }
+                      }}
+                      title={t('adminMenu.addCategory')}
+                      disabled={busy}
+                    >
+                      <option value="">{t('adminMenu.selectCategory')}</option>
+                      {CATEGORY_PRESETS.map((n) => {
+                        const taken = cats.some(
+                          (c) =>
+                            c.name.trim().toLowerCase() === n.toLowerCase(),
+                        );
+                        return (
+                          <option key={n} value={n} disabled={taken}>
+                            {presetLabel(t, n)}
+                            {taken ? ` ${t('adminMenu.alreadyExists')}` : ''}
+                          </option>
+                        );
+                      })}
+                      <option value={OTHER_CATEGORY}>
+                        {t('adminMenu.other')}
                       </option>
-                    );
-                  })}
-                  <option value={OTHER_CATEGORY}>{t('adminMenu.other')}</option>
-                </Select>
-                <input
-                  type="color"
-                  className="h-[var(--pos-control-h)] w-10 shrink-0 cursor-pointer rounded border border-white/10 bg-transparent"
-                  value={newCatColor}
-                  onChange={(e) => setNewCatColor(e.target.value)}
-                  title={t('adminMenu.categoryColor')}
-                  disabled={busy}
-                />
-                <IconButton
-                  label={t('common.add')}
-                  icon={<IconPlus />}
-                  variant="primary"
-                  disabled={!canAddCategory}
-                  onClick={() => void addCategory()}
-                />
-              </div>
-              {newCatName === OTHER_CATEGORY ? (
-                <Field
-                  label={t('adminMenu.categoryName')}
-                  error={
-                    newCatCustomName.trim() && newCatNameTaken
-                      ? t('adminMenu.nameTaken')
-                      : undefined
-                  }
-                >
-                  <Input
-                    placeholder={t('adminMenu.categoryNamePlaceholder')}
-                    value={newCatCustomName}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      setNewCatCustomName(next);
-                      setNewCatKdsStation(guessDefaultKdsStation(next) ?? '');
-                    }}
+                    </Select>
+                    <input
+                      type="color"
+                      className="h-[var(--pos-control-h)] w-10 shrink-0 cursor-pointer rounded border border-white/10 bg-transparent"
+                      value={newCatColor}
+                      onChange={(e) => setNewCatColor(e.target.value)}
+                      title={t('adminMenu.categoryColor')}
+                      disabled={busy}
+                    />
+                    <IconButton
+                      label={t('common.add')}
+                      icon={<IconPlus />}
+                      variant="primary"
+                      disabled={!canAddCategory}
+                      onClick={() => void addCategory()}
+                    />
+                  </div>
+                  {newCatName === OTHER_CATEGORY ? (
+                    <Field
+                      label={t('adminMenu.categoryName')}
+                      error={
+                        newCatCustomName.trim() && newCatNameTaken
+                          ? t('adminMenu.nameTaken')
+                          : undefined
+                      }
+                    >
+                      <Input
+                        placeholder={t('adminMenu.categoryNamePlaceholder')}
+                        value={newCatCustomName}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setNewCatCustomName(next);
+                          setNewCatKdsStation(
+                            guessDefaultKdsStation(next) ?? '',
+                          );
+                        }}
+                        disabled={busy}
+                      />
+                    </Field>
+                  ) : null}
+                  {newCatName ? (
+                    <Field label={t('adminMenu.kdsDisplay')}>
+                      <KdsStationSelect
+                        value={newCatKdsStation}
+                        onChange={setNewCatKdsStation}
+                        disabled={busy}
+                      />
+                    </Field>
+                  ) : null}
+                </>
+              ) : (
+                <div className="flex items-end gap-2">
+                  <Field
+                    className="min-w-0 flex-1"
+                    label={t('adminMenu.categoryName')}
+                    error={
+                      newCatCustomName.trim() && newCatNameTaken
+                        ? t('adminMenu.nameTaken')
+                        : undefined
+                    }
+                  >
+                    <Input
+                      autoFocus
+                      placeholder={t('adminMenu.categoryNamePlaceholder')}
+                      value={newCatCustomName}
+                      onChange={(e) => setNewCatCustomName(e.target.value)}
+                      disabled={busy}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && canAddCategory) {
+                          e.preventDefault();
+                          void addCategory();
+                        }
+                      }}
+                    />
+                  </Field>
+                  <input
+                    type="color"
+                    className="mb-0 h-[var(--pos-control-h)] w-10 shrink-0 cursor-pointer rounded border border-white/10 bg-transparent"
+                    value={newCatColor}
+                    onChange={(e) => setNewCatColor(e.target.value)}
+                    title={t('adminMenu.categoryColor')}
                     disabled={busy}
                   />
-                </Field>
-              ) : null}
-              {newCatName && hasTables ? (
-                <Field label={t('adminMenu.kdsDisplay')}>
-                  <KdsStationSelect
-                    value={newCatKdsStation}
-                    onChange={setNewCatKdsStation}
-                    disabled={busy}
+                  <IconButton
+                    label={t('common.add')}
+                    icon={<IconPlus />}
+                    variant="primary"
+                    disabled={!canAddCategory}
+                    onClick={() => void addCategory()}
                   />
-                </Field>
-              ) : null}
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -1184,6 +1254,8 @@ function AddItemForm({
     vatRate?: number;
     isKg: boolean;
     sku?: string;
+    costPrice?: number | null;
+    costBreakdown?: ItemCostLine[] | null;
   }) => Promise<any>;
 }) {
   const { t } = useTranslation();
@@ -1193,16 +1265,23 @@ function AddItemForm({
   const [vat, setVat] = useState('0.2');
   const [isKg, setIsKg] = useState(false);
   const [sku, setSku] = useState('');
+  const [cost, setCost] = useState('');
 
   const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
 
   function submit() {
+    const costNum = Number(String(cost).replace(',', '.').trim());
+    const costPayload =
+      !hasTables && cost.trim() !== '' && Number.isFinite(costNum)
+        ? costWritePayload([emptyCostLine(costNum)])
+        : {};
     onAdd({
       name: name.trim(),
       price: Number(price),
       vatRate: vat ? Number(vat) : undefined,
       isKg,
       ...(hasTables ? {} : { sku: sku.trim() || undefined }),
+      ...costPayload,
     });
   }
 
@@ -1259,6 +1338,18 @@ function AddItemForm({
           />
         </Field>
       </div>
+
+      {!hasTables ? (
+        <Field label={t('stockPanel.unitCost')} hint={t('adminMenu.costHint')}>
+          <Input
+            placeholder="0.00"
+            inputMode="decimal"
+            value={cost}
+            onChange={(e) => setCost(e.target.value.replace(/[^0-9.]/g, ''))}
+            disabled={disabled}
+          />
+        </Field>
+      ) : null}
 
       <label className="flex items-center gap-2 text-[13px]">
         <input
@@ -1338,15 +1429,14 @@ function CategoryEditor({
   }
 
   const nextName = name.trim();
-  const preset = CATEGORY_PRESETS.find(
-    (p) => p.toLowerCase() === nextName.toLowerCase(),
-  );
   const nameTaken = Boolean(
-    preset &&
+    nextName &&
       allCategories.some(
         (c) =>
           Number(c.id) !== Number(category.id) &&
-          String(c.name || '').toLowerCase() === preset.toLowerCase(),
+          String(c.name || '')
+            .trim()
+            .toLowerCase() === nextName.toLowerCase(),
       ),
   );
 
@@ -1358,25 +1448,34 @@ function CategoryEditor({
           label={t('adminMenu.name')}
           error={nameTaken ? t('adminMenu.nameTaken') : undefined}
         >
-          <Select
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={disabled}
-          >
-            {!CATEGORY_PRESETS.some(
-              (p) =>
-                p.toLowerCase() === String(category.name || '').toLowerCase(),
-            ) && (
-              <option value={category.name}>
-                {t('adminMenu.legacy', { name: category.name })}
-              </option>
-            )}
-            {CATEGORY_PRESETS.map((n) => (
-              <option key={n} value={n}>
-                {presetLabel(t, n)}
-              </option>
-            ))}
-          </Select>
+          {hasTables ? (
+            <Select
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={disabled}
+            >
+              {!CATEGORY_PRESETS.some(
+                (p) =>
+                  p.toLowerCase() === String(category.name || '').toLowerCase(),
+              ) && (
+                <option value={category.name}>
+                  {t('adminMenu.legacy', { name: category.name })}
+                </option>
+              )}
+              {CATEGORY_PRESETS.map((n) => (
+                <option key={n} value={n}>
+                  {presetLabel(t, n)}
+                </option>
+              ))}
+            </Select>
+          ) : (
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={t('adminMenu.categoryNamePlaceholder')}
+              disabled={disabled}
+            />
+          )}
         </Field>
         <Field className="md:col-span-6" label={t('adminMenu.color')}>
           <div className="flex items-center gap-2">
@@ -1477,6 +1576,8 @@ function ItemRow({
     active?: boolean;
     stockLevel?: StockLevel;
     stockRemaining?: number | null;
+    costPrice?: number | null;
+    costBreakdown?: ItemCostLine[] | null;
   }) => Promise<any>;
   onDelete: () => Promise<any>;
 }) {
@@ -1629,6 +1730,8 @@ function EditItemModal({
     active?: boolean;
     stockLevel?: StockLevel;
     stockRemaining?: number | null;
+    costPrice?: number | null;
+    costBreakdown?: ItemCostLine[] | null;
   }) => Promise<any>;
   onClose: () => void;
 }) {
@@ -1645,9 +1748,27 @@ function EditItemModal({
   );
   const [stockQty, setStockQty] = useState(() =>
     item.stockRemaining != null && Number.isFinite(Number(item.stockRemaining))
-      ? String(Math.max(1, Math.floor(Number(item.stockRemaining))))
-      : '10',
+      ? String(
+          Math.max(hasTables ? 1 : 0, Math.floor(Number(item.stockRemaining))),
+        )
+      : hasTables
+        ? '10'
+        : '',
   );
+  const [costLines, setCostLines] = useState<ItemCostLine[]>(() =>
+    seedCostLines(item.costPrice, item.costBreakdown),
+  );
+  const [currency, setCurrency] = useState('EUR');
+
+  useEffect(() => {
+    void window.api.settings
+      .get()
+      .then((s: any) => {
+        const cur = String(s?.currency || '').trim();
+        if (cur) setCurrency(cur);
+      })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     setName(item.name);
@@ -1660,9 +1781,17 @@ function EditItemModal({
     setStockQty(
       item.stockRemaining != null &&
         Number.isFinite(Number(item.stockRemaining))
-        ? String(Math.max(1, Math.floor(Number(item.stockRemaining))))
-        : '10',
+        ? String(
+            Math.max(
+              hasTables ? 1 : 0,
+              Math.floor(Number(item.stockRemaining)),
+            ),
+          )
+        : hasTables
+          ? '10'
+          : '',
     );
+    setCostLines(seedCostLines(item.costPrice, item.costBreakdown));
   }, [
     item.id,
     item.name,
@@ -1673,11 +1802,16 @@ function EditItemModal({
     item.active,
     item.stockLevel,
     item.stockRemaining,
+    item.costPrice,
+    item.costBreakdown,
+    hasTables,
   ]);
 
   const stockQtyNum = parseInt(String(stockQty).trim(), 10);
-  const stockQtyOk =
-    stockLevel !== 'LOW' || (Number.isFinite(stockQtyNum) && stockQtyNum >= 1);
+  const stockQtyOk = hasTables
+    ? stockLevel !== 'LOW' || (Number.isFinite(stockQtyNum) && stockQtyNum >= 1)
+    : stockQty.trim() === '' ||
+      (Number.isFinite(stockQtyNum) && stockQtyNum >= 0);
 
   const canSubmit =
     name.trim().length > 0 && price.length > 0 && !disabled && stockQtyOk;
@@ -1738,30 +1872,40 @@ function EditItemModal({
           </Field>
         </div>
 
-        <Field
-          label={t(
-            hasTables
-              ? 'adminMenu.waiterAvailability'
-              : 'adminMenu.tillAvailability',
-          )}
-        >
-          <Select
-            value={stockLevel}
-            onChange={(e) => setStockLevel(e.target.value as StockLevel)}
+        {!hasTables ? (
+          <ItemCostFields
+            sellPrice={price}
+            showSellPrice={false}
+            lines={costLines}
+            onChangeLines={setCostLines}
+            onHand={
+              stockQty.trim() !== '' && Number.isFinite(stockQtyNum)
+                ? Math.max(0, stockQtyNum)
+                : null
+            }
+            currency={currency}
             disabled={disabled}
-          >
-            <option value="OK">{t('adminMenu.inStock')}</option>
-            <option value="LOW">{t('adminMenu.lowStockWarn')}</option>
-            <option value="OUT">{t('adminMenu.outOfStockUnavail')}</option>
-          </Select>
-        </Field>
+          />
+        ) : null}
 
-        {stockLevel === 'LOW' ? (
+        {hasTables ? (
+          <Field label={t('adminMenu.waiterAvailability')}>
+            <Select
+              value={stockLevel}
+              onChange={(e) => setStockLevel(e.target.value as StockLevel)}
+              disabled={disabled}
+            >
+              <option value="OK">{t('adminMenu.inStock')}</option>
+              <option value="LOW">{t('adminMenu.lowStockWarn')}</option>
+              <option value="OUT">{t('adminMenu.outOfStockUnavail')}</option>
+            </Select>
+          </Field>
+        ) : null}
+
+        {hasTables && stockLevel === 'LOW' ? (
           <Field
             label={t('adminMenu.howManyLeft')}
-            hint={t(
-              hasTables ? 'adminMenu.stockHint' : 'adminMenu.stockHintStore',
-            )}
+            hint={t('adminMenu.stockHint')}
           >
             <Input
               type="number"
@@ -1769,6 +1913,24 @@ function EditItemModal({
               step={1}
               className="max-w-xs"
               value={stockQty}
+              onChange={(e) => setStockQty(e.target.value)}
+              disabled={disabled}
+            />
+          </Field>
+        ) : null}
+
+        {!hasTables ? (
+          <Field
+            label={t('adminMenu.howManyLeftStore')}
+            hint={t('adminMenu.stockHintStore')}
+          >
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              className="max-w-xs"
+              value={stockQty}
+              placeholder={t('stockPanel.untrackedPlaceholder')}
               onChange={(e) => setStockQty(e.target.value)}
               disabled={disabled}
             />
@@ -1821,19 +1983,36 @@ function EditItemModal({
               vatRate: number;
               isKg: boolean;
               active: boolean;
-              stockLevel: StockLevel;
+              stockLevel?: StockLevel;
               stockRemaining?: number | null;
+              costPrice?: number | null;
+              costBreakdown?: ItemCostLine[] | null;
             } = {
               name: name.trim(),
               price: Number(price || 0),
               vatRate: Number(vat || 0),
               isKg,
               active,
-              stockLevel,
             };
             if (!hasTables && sku.trim()) patch.sku = sku.trim();
-            if (stockLevel === 'LOW') {
-              patch.stockRemaining = Math.max(1, Math.floor(stockQtyNum || 1));
+            if (!hasTables) {
+              const costPayload = costWritePayload(costLines);
+              patch.costPrice = costPayload.costPrice;
+              patch.costBreakdown = costPayload.costBreakdown;
+              if (stockQty.trim() !== '') {
+                patch.stockRemaining = Math.max(
+                  0,
+                  Math.floor(stockQtyNum || 0),
+                );
+              }
+            } else {
+              patch.stockLevel = stockLevel;
+              if (stockLevel === 'LOW') {
+                patch.stockRemaining = Math.max(
+                  1,
+                  Math.floor(stockQtyNum || 1),
+                );
+              }
             }
             return onSave(patch);
           }}

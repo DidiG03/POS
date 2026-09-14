@@ -50,6 +50,16 @@ export type FiscalClaimState =
   | 'REGISTERED'
   /** The provider definitively did not register it. Safe to retry. */
   | 'FAILED'
+  /**
+   * Nothing was filed (CIS/internet down) but the sale was taken. The host
+   * must transmit this exact draft within the legal 48-hour window.
+   */
+  | 'DEFERRED'
+  /**
+   * The sale was voided before the deferred invoice was transmitted.
+   * Never send this draft; nothing exists upstream.
+   */
+  | 'ABANDONED'
   /** Outcome indeterminate. A human must check easyPos before retrying. */
   | 'UNKNOWN'
   /**
@@ -66,6 +76,8 @@ const CLAIM_STATES: FiscalClaimState[] = [
   'PENDING',
   'REGISTERED',
   'FAILED',
+  'DEFERRED',
+  'ABANDONED',
   'UNKNOWN',
   'CORRECTION_REQUIRED',
   'CORRECTED',
@@ -73,6 +85,14 @@ const CLAIM_STATES: FiscalClaimState[] = [
 
 /** States that mean a person still has work to do in easyPos. */
 const REVIEW_STATES = new Set<FiscalClaimState>([
+  'UNKNOWN',
+  'CORRECTION_REQUIRED',
+]);
+
+/** Must survive prune: still in flight, still to send, or still for a human. */
+const KEEP_FROM_PRUNE = new Set<FiscalClaimState>([
+  'PENDING',
+  'DEFERRED',
   'UNKNOWN',
   'CORRECTION_REQUIRED',
 ]);
@@ -87,6 +107,7 @@ export interface StoredFiscalResult {
    */
   eic?: string;
   link?: string;
+  qrCode?: string;
   status?: 'accepted' | 'pending';
   warning?: string;
 }
@@ -101,6 +122,12 @@ export interface FiscalClaimRecord {
   context?: { area?: string; tableLabel?: string; total?: number };
   result?: StoredFiscalResult;
   lastError?: string;
+  /** Frozen invoice body for a deferred transmit. Byte-identical on replay. */
+  draft?: unknown;
+  /** ISO time the host should next try a deferred transmit. */
+  nextAttemptAt?: string;
+  /** Last 48h-window alert that was sent, so we do not spam. */
+  lastAlertKey?: string;
 }
 
 export type FiscalClaimDecision =
@@ -149,6 +176,9 @@ function parseRecord(valueJson: unknown): FiscalClaimRecord | null {
     context: (raw.context as FiscalClaimRecord['context']) || undefined,
     result: (raw.result as StoredFiscalResult) || undefined,
     lastError: raw.lastError ? String(raw.lastError) : undefined,
+    draft: raw.draft !== undefined ? raw.draft : undefined,
+    nextAttemptAt: raw.nextAttemptAt ? String(raw.nextAttemptAt) : undefined,
+    lastAlertKey: raw.lastAlertKey ? String(raw.lastAlertKey) : undefined,
   };
 }
 
@@ -232,6 +262,10 @@ export async function claimFiscalRegistration(
     return { outcome: 'replay', result: existing.result || {} };
   }
 
+  if (existing.state === 'ABANDONED') {
+    return { outcome: 'replay', result: existing.result || {} };
+  }
+
   if (existing.state === 'UNKNOWN') {
     return {
       outcome: 'needs-review',
@@ -265,7 +299,7 @@ export async function claimFiscalRegistration(
     };
   }
 
-  // FAILED: the provider definitively rejected it, so a retry is safe.
+  // FAILED / DEFERRED: nothing was filed, so a retry is safe.
   // Take ownership with a new attempt id, then confirm we won the race —
   // if another attempt wrote after us, let that one proceed instead.
   const retry: FiscalClaimRecord = {
@@ -324,6 +358,54 @@ export async function settleFiscalClaimFailed(
     state: 'FAILED',
     lastError: error,
   });
+}
+
+/**
+ * CIS/internet was unreachable. The sale may complete; this draft is
+ * transmitted later under the same docId.
+ */
+export async function settleFiscalClaimDeferred(
+  idempotencyKey: string,
+  attemptId: string,
+  error: string,
+  draft: unknown,
+  nextAttemptAt: string,
+): Promise<void> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  await settle(idempotencyKey, attemptId, {
+    state: 'DEFERRED',
+    lastError: error,
+    draft: draft ?? existing?.draft,
+    nextAttemptAt,
+  });
+}
+
+/**
+ * The sitting was voided before a deferred invoice went out. Drop the
+ * draft so the host loop cannot file a tax document for a cancelled sale.
+ */
+export async function abandonUnsentFiscalClaim(
+  idempotencyKey: string,
+  reason: string,
+): Promise<boolean> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing) return false;
+  if (
+    existing.state === 'REGISTERED' ||
+    existing.state === 'CORRECTION_REQUIRED' ||
+    existing.state === 'CORRECTED'
+  ) {
+    return false;
+  }
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    state: 'ABANDONED',
+    updatedAt: nowIso(),
+    lastError: reason,
+    draft: undefined,
+    nextAttemptAt: undefined,
+  });
+  return true;
 }
 
 /** We cannot tell whether the invoice registered. Block automatic retries. */
@@ -413,15 +495,11 @@ export async function flagFiscalCorrectionRequired(input: {
   ]
     .filter(Boolean)
     .join(' ');
-  const ids = [
-    record.result?.nivf && `NIVF ${record.result.nivf}`,
-    record.result?.nslf && `NSLF ${record.result.nslf}`,
-  ].filter(Boolean);
+  const cancel = /cancel/i.test(input.reason);
   await notifyAdminsAndActor({
-    message:
-      `Corrective fiscal invoice required${where ? ` for ${where}` : ''}: ${input.reason}` +
-      (ids.length ? ` · ${ids.join(' · ')}` : '') +
-      ` · docId ${key} · Issue the correction in easyPos, then mark it done in Settings › Fiskalizimi.`,
+    message: cancel
+      ? `Fiskalizimi needs a cancellation${where ? ` on ${where}` : ''}. File it in Settings › Fiskalizimi.`
+      : `Fiskalizimi needs a corrective invoice${where ? ` on ${where}` : ''}. File it in Settings › Fiskalizimi.`,
     actorUserId: input.actorUserId,
     type: 'SECURITY',
   }).catch(() => undefined);
@@ -451,7 +529,7 @@ export async function pruneFiscalClaims(options?: {
   const expired = (stale as any[])
     .filter((row) => {
       const record = parseRecord(row?.valueJson);
-      return !record || !REVIEW_STATES.has(record.state);
+      return !record || !KEEP_FROM_PRUNE.has(record.state);
     })
     .map((row) => String(row.key));
   if (expired.length === 0) return 0;
@@ -514,7 +592,8 @@ export async function findRegisteredClaimForTable(input: {
   let best: { idempotencyKey: string; record: FiscalClaimRecord } | null = null;
   for (const row of rows as any[]) {
     const record = parseRecord(row?.valueJson);
-    if (!record || record.state !== 'REGISTERED') continue;
+    if (!record) continue;
+    if (record.state !== 'REGISTERED') continue;
     if (record.context?.area !== input.area) continue;
     if (record.context?.tableLabel !== input.tableLabel) continue;
     if (!best || record.updatedAt > best.record.updatedAt) {
@@ -525,6 +604,55 @@ export async function findRegisteredClaimForTable(input: {
     }
   }
   return best;
+}
+
+const UNSENT_STATES = new Set<FiscalClaimState>([
+  'DEFERRED',
+  'PENDING',
+  'FAILED',
+]);
+
+/** Latest unsent claim for this table — void must drop it rather than file it. */
+export async function findUnsentClaimForTable(input: {
+  area: string;
+  tableLabel: string;
+  since: Date;
+}): Promise<{ idempotencyKey: string; record: FiscalClaimRecord } | null> {
+  const rows = await prisma.syncState
+    .findMany({
+      where: {
+        key: { startsWith: KEY_PREFIX },
+        updatedAt: { gte: input.since },
+      },
+    })
+    .catch(() => [] as any[]);
+  let best: { idempotencyKey: string; record: FiscalClaimRecord } | null = null;
+  for (const row of rows as any[]) {
+    const record = parseRecord(row?.valueJson);
+    if (!record || !UNSENT_STATES.has(record.state)) continue;
+    if (record.context?.area !== input.area) continue;
+    if (record.context?.tableLabel !== input.tableLabel) continue;
+    if (!best || record.updatedAt > best.record.updatedAt) {
+      best = {
+        idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
+        record,
+      };
+    }
+  }
+  return best;
+}
+
+export async function markFiscalDeferAlert(
+  idempotencyKey: string,
+  lastAlertKey: string,
+): Promise<void> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing || existing.state !== 'DEFERRED') return;
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    lastAlertKey,
+    updatedAt: nowIso(),
+  });
 }
 
 /** Every claim awaiting human reconciliation. */
@@ -538,6 +666,26 @@ export async function listFiscalClaimsNeedingReview(): Promise<
   for (const row of rows as any[]) {
     const record = parseRecord(row?.valueJson);
     if (record && REVIEW_STATES.has(record.state)) {
+      out.push({
+        idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
+        record,
+      });
+    }
+  }
+  return out;
+}
+
+/** Sales taken while CIS was unreachable — the host must still transmit them. */
+export async function listFiscalClaimsDeferred(): Promise<
+  Array<{ idempotencyKey: string; record: FiscalClaimRecord }>
+> {
+  const rows = await prisma.syncState
+    .findMany({ where: { key: { startsWith: KEY_PREFIX } } })
+    .catch(() => [] as any[]);
+  const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
+  for (const row of rows as any[]) {
+    const record = parseRecord(row?.valueJson);
+    if (record?.state === 'DEFERRED') {
       out.push({
         idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
         record,

@@ -20,7 +20,12 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 import { attachKdsBumpBarInput } from './bumpBarInput';
+import {
+  attachWindowRecovery,
+  installOsResumeRecovery,
+} from '../services/windowRecovery';
 import { parseKdsStation, type KdsStation } from '@shared/kdsStations';
+import { initSentry } from '../services/sentry';
 import {
   cleanup as cleanupUpdater,
   registerUpdateListener,
@@ -29,6 +34,7 @@ import {
 } from '../updater';
 
 app.setName('OneTap KDS');
+initSentry();
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -219,6 +225,7 @@ function createWindow(): void {
 
   const cfg = readConfig();
   loadHash(mainWindow, cfg ? '/kds' : '/kds-setup');
+  attachWindowRecovery(mainWindow);
 }
 
 // --- IPC: setup / discovery / connection test --------------------------------
@@ -357,6 +364,7 @@ ipcMain.handle('kdsApp:discover', async () => {
 // --- Lifecycle ---------------------------------------------------------------
 
 app.whenReady().then(() => {
+  installOsResumeRecovery();
   // Empty application menu — kitchen display is a kiosk; staff don't need
   // File/Edit/View. The system shortcut for DevTools (F12) still works.
   try {

@@ -83,11 +83,11 @@ const ALLOWED_LOCAL_ONLY: Record<string, string[]> = {
   // talks to the local POS host, not the cloud), so the field never syncs
   // to the multi-tenant Postgres schema.
   Category: ['kdsStation'],
-  MenuItem: ['stockLevel', 'stockRemaining', 'stockDay'],
+  MenuItem: ['stockLevel', 'stockRemaining', 'stockDay', 'costPrice', 'costBreakdown'],
   // Printer-offline retry queue lives only on the LAN POS host (SQLite).
   PrintJob: ['attempts', 'lastError', 'nextAttemptAt', 'printerProfileId'],
-  // Dining-session grouping is derived from the LAN host's `tables:openAt`
-  // map, which the cloud schema has no equivalent of.
+  // Dining-session grouping is derived from the LAN host occupancy rows
+  // (`TableOccupancy.openedAt`), which the cloud schema has no equivalent of.
   TicketLog: ['sessionKey'],
   // Till-local sales ledger. Cloud Order/Payment stay the unused stub;
   // revenue is recorded on the POS host at settlement.

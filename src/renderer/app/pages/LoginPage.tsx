@@ -10,7 +10,9 @@ import {
   staffPosHomePath,
 } from '@shared/editionCapabilities';
 import { isClockOnlyRole } from '@shared/utils/roles';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { BrandMark } from '../../components/BrandMark';
+import { DocumentMeta } from '../../components/DocumentMeta';
 import { DevEditionSwitch } from '../components/DevEditionSwitch';
 import {
   Button,
@@ -193,13 +195,16 @@ export default function LoginPage() {
           navigate('/admin');
           return;
         }
-        // Staff requires open shift (but KDS clients should be usable without shift clock-in)
+        // Staff requires an open shift when the venue captures clock times.
         if (!isKdsContext) {
-          const open = await window.api.shifts.getOpen(user.id);
-          if (!open) {
-            setShowShiftConfirm(true);
-            setPendingUser(user);
-            return;
+          const settings = await window.api.settings.get().catch(() => null);
+          if (isClockCaptureEnabled(settings)) {
+            const open = await window.api.shifts.getOpen(user.id);
+            if (!open) {
+              setShowShiftConfirm(true);
+              setPendingUser(user);
+              return;
+            }
           }
         }
         setUser(user);
@@ -229,6 +234,7 @@ export default function LoginPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showShiftConfirm, setShowShiftConfirm] = useState(false);
   const [pendingUser, setPendingUser] = useState<any>(null);
+  const [captureClock, setCaptureClock] = useState<boolean | null>(null);
   // The app-level BootScreen (main.tsx) already verifies the backend is alive
   // before the router renders, so we never show a second full-page spinner.
   // We track staffLoading to show a subtle inline indicator in the staff grid.
@@ -246,6 +252,7 @@ export default function LoginPage() {
       const s = await window.api.settings.get();
       setEnableAdmin(s.enableAdmin ?? false);
       setDevEditionSwitch(Boolean(s.devEditionSwitch));
+      setCaptureClock(isClockCaptureEnabled(s));
       useLicenseCapabilities.getState().setEdition(s.licenseEdition);
       setNotice(null);
 
@@ -285,7 +292,7 @@ export default function LoginPage() {
       if (cancelled) return;
       setStaff(list);
       setStaffLoading(false);
-      if (!isAdminContext) {
+      if (!isAdminContext && isClockCaptureEnabled(s)) {
         try {
           const ids = await window.api.shifts.listOpen();
           if (cancelled) return;
@@ -319,6 +326,7 @@ export default function LoginPage() {
       // on devices without a safe area.
       className="h-dvh flex flex-col items-center justify-center pos-app pos-app--auth overflow-y-auto px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
     >
+      <DocumentMeta title={t('login.selectStaff')} />
       <div className="mb-6 shrink-0 space-y-3">
         <BrandMark size="lg" subtitle={t('brand.tagline')} />
         <DevEditionSwitch allowed={devEditionSwitch} />
@@ -501,6 +509,35 @@ export default function LoginPage() {
                       staffLoading
                         ? t('login.loadingStaff')
                         : t('login.noAdminUsersShort')
+                    }
+                  />
+                )}
+              </div>
+            </div>
+          ) : !showPin && !isAdminContext && captureClock !== true ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 space-y-1.5 overflow-auto">
+                {staff.map((s) => (
+                  <StaffTile
+                    key={s.id}
+                    name={s.displayName}
+                    selected={selectedId === s.id}
+                    onClick={() => {
+                      setSelectedId(s.id);
+                      setPin('');
+                      setError(null);
+                      setShowPin(true);
+                    }}
+                  />
+                ))}
+                {staff.length === 0 && (
+                  <EmptyState
+                    compact
+                    icon={<IconUsers />}
+                    title={
+                      staffLoading
+                        ? t('login.loadingStaff')
+                        : t('login.noStaffSync')
                     }
                   />
                 )}

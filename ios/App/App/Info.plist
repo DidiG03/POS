@@ -66,15 +66,18 @@
 			</array>
 		</dict>
 	</dict>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.business</string>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>This app needs to connect to the POS computer on your local Wi-Fi network to take orders.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- Required so the WebView can fetch http://<lan-ip>:3333 from the
-		     POS PC. Without this, iOS blocks the fetch before it reaches the
-		     network and our boot screen retries forever. -->
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
+		<!-- LAN POS hosts have no public TLS cert. Local networking covers
+		     RFC1918 / .local HTTP. Do not allow arbitrary internet HTTP. -->
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
@@ -9,6 +10,8 @@ import {
   salaryWriteData,
   type SalaryPeriod,
 } from '@shared/staffSalary';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { reportAppError } from '../../utils/reportAppError';
 import { IconClose } from '../../components/icons';
 import { KebabMenu } from '../components/SettingsChrome';
 import { Button } from '../../components/ui/Button';
@@ -120,6 +123,7 @@ function RoleSelect({
 
 export default function AdminPage() {
   const { t } = useTranslation();
+  const [params] = useSearchParams();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [ov, setOv] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
@@ -174,6 +178,7 @@ export default function AdminPage() {
   }, [staffStatus]);
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const [billingPaused, setBillingPaused] = useState(false);
+  const [captureClock, setCaptureClock] = useState(true);
   const me = useAdminSessionStore((s) => s.user);
   // Simplified view: hide sales trends entirely
 
@@ -186,11 +191,14 @@ export default function AdminPage() {
     };
     (async () => {
       safeSet(setAdminNotice, null);
+      let clockOn = true;
       try {
         const s = await window.api.settings.get().catch(() => null as any);
         if (cancelled) return;
         const cur = String((s as any)?.currency || '').trim();
         if (cur) safeSet(setCurrency, cur);
+        clockOn = isClockCaptureEnabled(s);
+        safeSet(setCaptureClock, clockOn);
       } catch {
         // ignore
       }
@@ -199,7 +207,9 @@ export default function AdminPage() {
       const [ovRes, shRes, topRes, usersRes, billingRes] =
         await Promise.allSettled([
           window.api.admin.getOverview(),
-          window.api.admin.listShifts(),
+          clockOn
+            ? window.api.admin.listShifts()
+            : Promise.resolve([] as AdminShift[]),
           window.api.admin.getTopSellingToday(),
           window.api.auth.listUsers(),
           (window.api as any).billing?.getStatus?.() ?? Promise.resolve(null),
@@ -237,6 +247,17 @@ export default function AdminPage() {
       cancelled = true;
     };
   }, [me?.id, me?.role, t]);
+
+  useEffect(() => {
+    if (params.get('focus') !== 'staff') return;
+    const id = window.setTimeout(() => {
+      document.getElementById('admin-staff')?.scrollIntoView({
+        block: 'start',
+        behavior: 'smooth',
+      });
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [params, users.length]);
 
   // Removed sales trends fetch for simplified overview
   const openUserIds = useMemo(
@@ -418,7 +439,7 @@ export default function AdminPage() {
 
   const quietDay = hasTables
     ? !ov?.revenueTodayNet && !ov?.coversToday && !ov?.openOrders && !topSelling
-    : !ov?.revenueTodayNet && !ov?.openOrders && !topSelling;
+    : !ov?.revenueTodayNet && !topSelling;
 
   async function setStaffActive(id: number, name: string, active: boolean) {
     setStaffStatus(null);
@@ -440,6 +461,12 @@ export default function AdminPage() {
             ? t('adminOverview.enableFailed')
             : t('adminOverview.disableFailed')),
       });
+      reportAppError(e, {
+        fallback: active
+          ? t('adminOverview.enableFailed')
+          : t('adminOverview.disableFailed'),
+        key: `admin.staffActive:${id}`,
+      });
     }
   }
 
@@ -458,6 +485,10 @@ export default function AdminPage() {
       setStaffStatus({
         kind: 'error',
         message: e?.message || t('adminOverview.deleteFailed'),
+      });
+      reportAppError(e, {
+        fallback: t('adminOverview.deleteFailed'),
+        key: `admin.staffDelete:${id}`,
       });
     }
   }
@@ -493,14 +524,12 @@ export default function AdminPage() {
               value={ov?.coversToday ?? 0}
             />
           ) : null}
-          <Stat
-            title={t(
-              hasTables
-                ? 'adminOverview.openOrders'
-                : 'adminOverview.openSales',
-            )}
-            value={ov?.openOrders}
-          />
+          {hasTables ? (
+            <Stat
+              title={t('adminOverview.openOrders')}
+              value={ov?.openOrders}
+            />
+          ) : null}
           <Stat
             title={t('adminOverview.topSellingToday')}
             value={topSelling ? topSelling.name : '—'}
@@ -514,76 +543,82 @@ export default function AdminPage() {
         </div>
         {quietDay ? (
           <p className="mt-3 text-[12px] text-gray-500">
-            {t('adminOverview.emptyTodayHint')}
+            {t(
+              captureClock
+                ? 'adminOverview.emptyTodayHint'
+                : 'adminOverview.emptyTodayHintNoClock',
+            )}
           </p>
         ) : null}
       </section>
 
-      <section>
-        <div className="mb-3 flex items-end justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="admin-kicker">{t('adminOverview.operations')}</h2>
-            <p className="mt-1.5 text-[12px] leading-snug text-gray-500">
-              {t(
+      {captureClock ? (
+        <section>
+          <div className="mb-3 flex items-end justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="admin-kicker">{t('adminOverview.operations')}</h2>
+              <p className="mt-1.5 text-[12px] leading-snug text-gray-500">
+                {t(
+                  hasTables
+                    ? 'adminOverview.operationsHelp'
+                    : 'adminOverview.operationsHelpStore',
+                )}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setShiftFilter('ALL');
+                setShiftView('SHIFTS');
+                setShiftRange('TODAY');
+                setShowShiftsModal(true);
+                void refreshShifts();
+              }}
+            >
+              {t('adminOverview.viewAll')}
+            </Button>
+          </div>
+          {openShifts.length === 0 ? (
+            <EmptyState
+              compact
+              title={t('adminOverview.noOpenShifts')}
+              description={t(
                 hasTables
-                  ? 'adminOverview.operationsHelp'
-                  : 'adminOverview.operationsHelpStore',
+                  ? 'adminOverview.noOpenShiftsHint'
+                  : 'adminOverview.noOpenShiftsHintStore',
               )}
-            </p>
-          </div>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setShiftFilter('ALL');
-              setShiftView('SHIFTS');
-              setShiftRange('TODAY');
-              setShowShiftsModal(true);
-              void refreshShifts();
-            }}
-          >
-            {t('adminOverview.viewAll')}
-          </Button>
-        </div>
-        {openShifts.length === 0 ? (
-          <EmptyState
-            compact
-            title={t('adminOverview.noOpenShifts')}
-            description={t(
-              hasTables
-                ? 'adminOverview.noOpenShiftsHint'
-                : 'adminOverview.noOpenShiftsHintStore',
-            )}
-          />
-        ) : (
-          <div className="admin-list divide-y divide-white/[0.06]">
-            {openShifts.slice(0, 4).map((s) => (
-              <div
-                key={s.id}
-                className="flex items-center justify-between gap-3 py-2.5"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-[13px] font-medium text-gray-100">
-                    {s.userName}
+            />
+          ) : (
+            <div className="admin-list divide-y divide-white/[0.06]">
+              {openShifts.slice(0, 4).map((s) => (
+                <div
+                  key={s.id}
+                  className="flex items-center justify-between gap-3 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px] font-medium text-gray-100">
+                      {s.userName}
+                    </div>
+                    <div className="mt-0.5 text-[12px] text-gray-500">
+                      {t('adminOverview.sinceOpened', {
+                        when: new Date(s.openedAt).toLocaleString(),
+                      })}
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-[12px] text-gray-500">
-                    {t('adminOverview.sinceOpened', {
-                      when: new Date(s.openedAt).toLocaleString(),
-                    })}
+                  <div className="shrink-0 text-right">
+                    <div className="text-[13px] font-medium tabular-nums text-gray-200">
+                      {formatShiftDuration(s.durationHours, t)}
+                    </div>
                   </div>
                 </div>
-                <div className="shrink-0 text-right">
-                  <div className="text-[13px] font-medium tabular-nums text-gray-200">
-                    {formatShiftDuration(s.durationHours, t)}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
 
-      {showShiftsModal && (
+      {captureClock && showShiftsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
           <button
             type="button"
@@ -840,15 +875,20 @@ export default function AdminPage() {
         </div>
       )}
 
-      <section>
+      <section id="admin-staff">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div className="min-w-0">
             <h2 className="admin-kicker">{t('adminOverview.staffMembers')}</h2>
             <p className="mt-1.5 text-[12px] leading-snug text-gray-500">
-              {t('adminOverview.staffHelp', {
-                active: staffTotals.active,
-                onShift: staffTotals.onShift,
-              })}
+              {t(
+                captureClock
+                  ? 'adminOverview.staffHelp'
+                  : 'adminOverview.staffHelpNoClock',
+                {
+                  active: staffTotals.active,
+                  onShift: staffTotals.onShift,
+                },
+              )}
             </p>
           </div>
           <div className="flex min-w-0 items-center gap-2">
@@ -946,7 +986,7 @@ export default function AdminPage() {
                         <Badge tone="danger">
                           {t('adminOverview.inactive')}
                         </Badge>
-                      ) : onShift ? (
+                      ) : captureClock && onShift ? (
                         <Badge tone="accent" dot>
                           {t('adminOverview.colOnShift')}
                         </Badge>
@@ -1178,6 +1218,10 @@ function AddStaffModal({
       await onSuccess();
     } catch (e: any) {
       setError(e?.message || t('adminOverview.createUserFailed'));
+      reportAppError(e, {
+        fallback: t('adminOverview.createUserFailed'),
+        key: 'admin.createUser',
+      });
     } finally {
       setSaving(false);
     }
@@ -1378,6 +1422,10 @@ function EditStaffModal({
     } catch (e: any) {
       const msg = e?.message || t('adminOverview.updateFailed');
       setError(msg);
+      reportAppError(e, {
+        fallback: t('adminOverview.updateFailed'),
+        key: `admin.updateUser:${staff.id}`,
+      });
       onError(msg);
     } finally {
       setSaving(false);

@@ -4,15 +4,49 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="theme-color" content="#0b1220" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="Point of sale for restaurants and retail: tables, tickets, payments, and kitchen display."
+    />
+    <meta property="og:title" content="OneTap POS" />
+    <meta
+      property="og:description"
+      content="Point of sale for restaurants and retail: tables, tickets, payments, and kitchen display."
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta
       name="apple-mobile-web-app-status-bar-style"
       content="black-translucent"
     />
     <title>OneTap POS</title>
+    <style>
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+        background: #0b1220;
+        color: #eef2f7;
+      }
+      html[data-theme='light'],
+      html[data-theme='light'] body,
+      html[data-theme='light'] #root {
+        background: #f4f6fa;
+        color: #0b1220;
+      }
+      .pos-boot-shell {
+        min-height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font: 600 18px/1.2 system-ui, sans-serif;
+      }
+    </style>
     <script>
       try {
         var t = localStorage.getItem('pos-ui-theme');
@@ -20,11 +54,17 @@
           document.documentElement.setAttribute('data-theme', t);
           document.documentElement.style.colorScheme = t;
         }
+        var lng = localStorage.getItem('pos-ui-lang');
+        if (lng === 'en' || lng === 'sq') {
+          document.documentElement.lang = lng;
+        }
       } catch (e) {}
     </script>
   </head>
-  <body class="pos-app font-sans text-gray-100 antialiased">
-    <div id="root"></div>
+  <body class="pos-app font-sans antialiased">
+    <div id="root">
+      <div class="pos-boot-shell">OneTap POS</div>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

@@ -8,9 +8,9 @@
  */
 
 import { prisma } from '@db/client';
-import { splitTableKey } from '@shared/utils/tableKey';
 import { coreServices } from './core';
 import { isTransferredOutNote } from './tableTransfer';
+import { listOccupiedTables } from './tableOccupancy';
 import {
   effectiveVatRate,
   latestRowPerSession,
@@ -21,36 +21,14 @@ import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 
 export async function listMyActiveTickets(userId: number): Promise<any[]> {
   if (!userId) return [];
-  const [openRow, atRow] = await Promise.all([
-    prisma.syncState
-      .findUnique({ where: { key: 'tables:open' } })
-      .catch(() => null),
-    prisma.syncState
-      .findUnique({ where: { key: 'tables:openAt' } })
-      .catch(() => null),
-  ]);
-  const openMap = ((openRow?.valueJson as any) || {}) as Record<
-    string,
-    boolean
-  >;
-  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-  const openKeys = Object.entries(openMap)
-    .filter(([, v]) => Boolean(v))
-    .map(([k]) => k);
+  const occupied = await listOccupiedTables();
   const activeSettings = await coreServices.readSettings().catch(() => ({}));
   const activeVatEnabled = isVatEnabledFromSettings(activeSettings);
 
   const tickets = await Promise.all(
-    openKeys.map(async (k) => {
-      const parsed = splitTableKey(k);
-      if (!parsed) return null;
-      const { area, label: tableLabel } = parsed;
-      const sinceIso = atMap[k];
-      const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-      const since =
-        sinceParsed && Number.isFinite(sinceParsed.getTime())
-          ? sinceParsed
-          : null;
+    occupied.map(async (t) => {
+      const { area, label: tableLabel } = t;
+      const since = t.openedAt;
       const ownerWhere: any = { area, tableLabel };
       if (since) ownerWhere.createdAt = { gte: since };
       const last = await prisma.ticketLog

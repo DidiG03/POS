@@ -1,37 +1,30 @@
-/**
- * Sentry error tracking configuration
- *
- * To enable Sentry, set SENTRY_DSN in your .env file or environment variables.
- * Get your DSN from https://sentry.io/ → Your Project → Settings → Client Keys (DSN)
- *
- * For development, Sentry will be disabled unless SENTRY_DSN is set.
- * In production, it's recommended to always set SENTRY_DSN.
- */
-
 import * as Sentry from '@sentry/electron';
 import { app } from 'electron';
 import os from 'node:os';
+import { POS_SENTRY_DSN } from '@shared/sentryDsn';
 
-const DSN = process.env.SENTRY_DSN || '';
-const ENABLED = Boolean(DSN && DSN.trim().length > 0);
 const IS_DEV =
   process.env.NODE_ENV !== 'production' || process.env.ELECTRON_IS_DEV === '1';
 
+let enabled = false;
+
+function resolveDsn(): string {
+  return String(process.env.SENTRY_DSN || POS_SENTRY_DSN || '').trim();
+}
+
 export function initSentry(): void {
-  if (!ENABLED) {
-    console.log('[Sentry] Not initialized - SENTRY_DSN not set');
+  const dsn = resolveDsn();
+  if (!dsn) {
+    console.log('[Sentry] Not initialized - no DSN');
     return;
   }
 
   try {
     Sentry.init({
-      dsn: DSN,
+      dsn,
       environment: IS_DEV ? 'development' : 'production',
       release: app.getVersion(),
-      // Enable debug in development to see what's being sent
       debug: IS_DEV && process.env.SENTRY_DEBUG === 'true',
-
-      // Only send errors in production; in dev, log to console
       beforeSend(event, hint) {
         if (IS_DEV) {
           console.error('[Sentry Event (dev mode)]', {
@@ -39,62 +32,47 @@ export function initSentry(): void {
             exception: event.exception,
             error: hint.originalException,
           });
-          // In development, return null to prevent sending
-          // Set SENTRY_DEBUG=true to see what would be sent
           if (process.env.SENTRY_DEBUG !== 'true') {
             return null;
           }
         }
         return event;
       },
-
-      // Configure sample rate (1.0 = 100% of events)
       tracesSampleRate: IS_DEV ? 1.0 : 0.1,
-
-      // Add useful context
       initialScope: {
         tags: {
           platform: os.platform(),
           arch: os.arch(),
           electron_version: process.versions.electron,
           node_version: process.versions.node,
+          app: 'pos-host',
         },
       },
-
-      // Ignore common errors that aren't actionable
       ignoreErrors: [
-        // Network errors that are handled
         'NetworkError',
         'Failed to fetch',
         'Network request failed',
-        // User cancellation
         'User cancelled',
         'User canceled',
-        // Browser extension errors (not our code)
         /Extension context invalidated/,
-        // ResizeObserver errors (known browser issue)
         /ResizeObserver loop/,
       ],
-
-      // Don't send breadcrumbs for console logs in production (privacy)
       maxBreadcrumbs: IS_DEV ? 100 : 50,
     });
-
+    enabled = true;
     console.log('[Sentry] Initialized successfully');
   } catch (error) {
+    enabled = false;
     console.error('[Sentry] Initialization failed', error);
   }
 }
 
-/**
- * Set user context (call after login)
- */
 export function setSentryUser(
   userId: number | null,
   displayName?: string,
   role?: string,
 ): void {
-  if (!ENABLED) return;
+  if (!enabled) return;
   try {
     Sentry.setUser(
       userId ? { id: String(userId), username: displayName, role } : null,
@@ -104,15 +82,12 @@ export function setSentryUser(
   }
 }
 
-/**
- * Add breadcrumb (useful for debugging user actions)
- */
 export function addBreadcrumb(
   message: string,
   category?: string,
   level: Sentry.SeverityLevel = 'info',
 ): void {
-  if (!ENABLED) return;
+  if (!enabled) return;
   try {
     Sentry.addBreadcrumb({
       message,
@@ -125,14 +100,11 @@ export function addBreadcrumb(
   }
 }
 
-/**
- * Capture an exception manually
- */
 export function captureException(
   error: Error,
   context?: Record<string, any>,
 ): void {
-  if (!ENABLED) {
+  if (!enabled) {
     if (IS_DEV) {
       console.error('[Exception (Sentry disabled)]', error, context);
     }
@@ -147,14 +119,11 @@ export function captureException(
   }
 }
 
-/**
- * Capture a message manually
- */
 export function captureMessage(
   message: string,
   level: Sentry.SeverityLevel = 'info',
 ): void {
-  if (!ENABLED) {
+  if (!enabled) {
     if (IS_DEV) {
       console.log(`[${level.toUpperCase()} (Sentry disabled)]`, message);
     }
@@ -167,4 +136,4 @@ export function captureMessage(
   }
 }
 
-export const sentryEnabled = ENABLED;
+export const sentryEnabled = () => enabled;

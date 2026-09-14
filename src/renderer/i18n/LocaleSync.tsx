@@ -1,9 +1,6 @@
 import { type ReactNode, useEffect } from 'react';
 import i18n from './config';
-
-function normalizeLng(v: unknown): 'en' | 'sq' {
-  return String(v || '').toLowerCase() === 'sq' ? 'sq' : 'en';
-}
+import { normalizeLng, writeStoredPosUiLang } from './locale';
 
 export function LocaleSync({ children }: { children: ReactNode }) {
   useEffect(() => {
@@ -14,19 +11,11 @@ export function LocaleSync({ children }: { children: ReactNode }) {
         const lng = normalizeLng(s?.preferences?.language);
         if (cancelled) return;
         await i18n.changeLanguage(lng);
-        try {
-          document.documentElement.lang = lng;
-        } catch {
-          // ignore non-browser
-        }
+        writeStoredPosUiLang(lng);
       } catch {
         if (!cancelled) {
           await i18n.changeLanguage('en');
-          try {
-            document.documentElement.lang = 'en';
-          } catch {
-            // ignore
-          }
+          writeStoredPosUiLang('en');
         }
       }
     })();
@@ -35,11 +24,7 @@ export function LocaleSync({ children }: { children: ReactNode }) {
       const d = (ev as CustomEvent<{ lng?: string }>).detail;
       const lng = normalizeLng(d?.lng);
       void i18n.changeLanguage(lng);
-      try {
-        document.documentElement.lang = lng;
-      } catch {
-        // ignore
-      }
+      writeStoredPosUiLang(lng);
     };
     window.addEventListener('pos:localeChanged', onLocale);
     return () => {

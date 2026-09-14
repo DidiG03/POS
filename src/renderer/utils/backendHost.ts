@@ -79,6 +79,10 @@ export function resolveBackendHost(): BackendHost {
   return { host, httpPort, httpsPort };
 }
 
+export function hasConfiguredBackendHost(): boolean {
+  return Boolean(resolveBackendHost().host.trim());
+}
+
 export function getHttpBase(): string {
   const { host, httpPort } = resolveBackendHost();
   return buildLanHttpUrl(host, httpPort);

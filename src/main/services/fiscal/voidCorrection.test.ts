@@ -144,7 +144,7 @@ describe('flagVoidAfterFiscalization', () => {
     });
 
     expect(flagged).toBe(true);
-    expect(notifications[0].message).toContain('Corrective fiscal invoice');
+    expect(notifications[0].message).toMatch(/Fiskalizimi/i);
   });
 
   it('leaves an earlier party out of it', async () => {
@@ -194,7 +194,7 @@ describe('flagVoidAfterFiscalization', () => {
   it('never lets a bookkeeping failure block the void', async () => {
     await fiscalizeSale();
     const { prisma } = await import('@db/client');
-    vi.mocked(prisma.syncState.findMany).mockRejectedValueOnce(
+    vi.mocked(prisma.syncState.findMany).mockRejectedValue(
       new Error('disk full'),
     );
 

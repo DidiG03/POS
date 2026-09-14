@@ -8,6 +8,9 @@ export type PrintTicketOk = {
   printed: boolean;
   queued?: boolean;
   tableClosed?: boolean;
+  /** Invoice not yet at CIS; host will transmit (48h window). */
+  fiscalPending?: boolean;
+  fiscalMessage?: string;
 };
 
 export type PrintTicketErr = {
@@ -87,11 +90,18 @@ export async function closeTableAfterIdempotentPayment(
 export function paymentPrintAccepted(
   printed: boolean,
   tableClosed = true,
+  fiscal?: { fiscalPending?: boolean; fiscalMessage?: string },
 ): PrintTicketOk {
   return {
     ok: true,
     printed,
     queued: !printed,
     tableClosed,
+    ...(fiscal?.fiscalPending
+      ? {
+          fiscalPending: true,
+          fiscalMessage: fiscal.fiscalMessage,
+        }
+      : {}),
   };
 }

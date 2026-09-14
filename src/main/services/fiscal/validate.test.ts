@@ -75,6 +75,12 @@ describe('articles', () => {
     );
   });
 
+  it('rejects a negative unit price', () => {
+    expect(fields(base({ articles: [article({ price: -10 })] }))).toContain(
+      'articles[0].price',
+    );
+  });
+
   it('must be absent on a SUMMARY', () => {
     const issues = fields(
       base({

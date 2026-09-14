@@ -45,3 +45,12 @@ export const useTableStatus = create<TableStatusState>()(
     },
   ),
 );
+
+// SSE in main.tsx talks to this hook. TablesPage used to install it on
+// mount and null it on leave, so OrderPage missed occupancy events.
+if (typeof window !== 'undefined') {
+  (window as any).__tableStatusStore__ = {
+    setOpen: (area: string, label: string, open: boolean) =>
+      useTableStatus.getState().setOpen(area, label, open),
+  };
+}

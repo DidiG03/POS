@@ -1,19 +1,28 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { reportAppError } from '../../utils/reportAppError';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { useSessionStore } from '../../stores/session';
 
 export default function ClockPage() {
   const user = useSessionStore((s) => s.user);
   const setUser = useSessionStore((s) => s.setUser);
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [open, setOpen] = useState<any>(null);
+  const [captureClock, setCaptureClock] = useState(true);
   const [busy, setBusy] = useState<'in' | 'out' | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   async function refresh() {
     if (!user?.id) return;
-    const o = await window.api.shifts.getOpen(user.id).catch(() => null);
+    const [o, settings] = await Promise.all([
+      window.api.shifts.getOpen(user.id).catch(() => null),
+      window.api.settings.get().catch(() => null),
+    ]);
     setOpen(o);
+    setCaptureClock(isClockCaptureEnabled(settings));
   }
 
   useEffect(() => {
@@ -70,6 +79,17 @@ export default function ClockPage() {
           </div>
         </div>
 
+        {!captureClock ? (
+          <div className="mb-4 p-3 rounded-lg border border-white/10 bg-white/5 text-sm text-gray-300">
+            <div className="font-medium text-gray-100">
+              {t('layout.clockCaptureOff')}
+            </div>
+            <div className="mt-1 text-gray-400">
+              {t('layout.clockCaptureOffBody')}
+            </div>
+          </div>
+        ) : null}
+
         {err && (
           <div className="mb-4 p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">
             {err}
@@ -79,7 +99,7 @@ export default function ClockPage() {
         <div className="flex gap-3">
           <button
             className="flex-1 pos-btn-primary py-3 text-base disabled:opacity-60"
-            disabled={busy != null || isOpen}
+            disabled={busy != null || isOpen || !captureClock}
             onClick={async () => {
               if (!user?.id) return;
               setErr(null);
@@ -89,6 +109,10 @@ export default function ClockPage() {
                 await refresh();
               } catch (e: any) {
                 setErr(e?.message || 'Clock in failed');
+                reportAppError(e, {
+                  fallback: t('layout.clockInFailed'),
+                  key: `shifts.clockIn:${user.id}`,
+                });
               } finally {
                 setBusy(null);
               }
@@ -99,7 +123,7 @@ export default function ClockPage() {
           </button>
           <button
             className="flex-1 rounded-lg bg-rose-700 py-3 text-base font-semibold text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
-            disabled={busy != null || !isOpen}
+            disabled={busy != null || !isOpen || !captureClock}
             onClick={async () => {
               if (!user?.id) return;
               const ok = window.confirm('Clock out now?');
@@ -121,6 +145,10 @@ export default function ClockPage() {
                 navigate('/');
               } catch (e: any) {
                 setErr(e?.message || 'Clock out failed');
+                reportAppError(e, {
+                  fallback: t('layout.clockOutFailed'),
+                  key: `shifts.clockOut:${user.id}`,
+                });
               } finally {
                 setBusy(null);
               }

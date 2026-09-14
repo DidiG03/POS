@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SettingsDTO } from '@shared/ipc';
 import {
+  createEasyPosCancellation,
   createEasyPosSale,
   fiscalOutcomeOf,
   isFiscalRetryable,
@@ -238,5 +239,30 @@ describe('createEasyPosSale error classification', () => {
     expect(result.nslf).toBe('NSLF-1');
     expect(result.nivf).toBe('NIVF-1');
     expect(result.status).toBe('accepted');
+  });
+});
+
+describe('createEasyPosCancellation', () => {
+  it('posts invoiceType CANCEL with iicRef only', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, { response: { nslf: 'C1', nivf: 'N1' } }),
+    );
+    const out = await createEasyPosCancellation(settings, {
+      docId: 'cancel-doc-1',
+      correctiveInvoice: {
+        iicRef: 'ORIG-IIC',
+        type: 'CANCELLATION',
+        issueDateTimeRef: '2026-09-10T19:05:13.876Z',
+      },
+    });
+    expect(out.status).toBe('accepted');
+    const init = fetchMock.mock.calls[0][1] as { body: string };
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({
+      app: 'OneTap POS',
+      invoiceType: 'CANCEL',
+      iicRef: 'ORIG-IIC',
+      docId: 'cancel-doc-1',
+    });
   });
 });

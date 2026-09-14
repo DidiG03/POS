@@ -20,6 +20,7 @@ import {
   Textarea,
 } from '../../components/ui';
 import { occupancyOverlapsInstant } from '@shared/tableOccupancy';
+import { reportAppError } from '../../utils/reportAppError';
 
 export type ReservationEditorProps = {
   open: boolean;
@@ -243,8 +244,14 @@ export default function ReservationEditor({
       .then((labels) => {
         if (!cancelled) setLayoutLabels(Array.isArray(labels) ? labels : []);
       })
-      .catch(() => {
-        if (!cancelled) setLayoutLabels([]);
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setLayoutLabels([]);
+          reportAppError(e, {
+            fallback: t('tables.layoutLoadFailed'),
+            key: `layout.labels:${formArea}`,
+          });
+        }
       })
       .finally(() => {
         if (!cancelled) setLabelsLoading(false);
@@ -377,12 +384,15 @@ export default function ReservationEditor({
       onSaved(r);
       onClose();
     } catch (e: any) {
-      setError(
-        mapReservationConflict(
-          cleanErrorMessage(e, t('reservations.saveFailed')),
-          t,
-        ),
+      const msg = mapReservationConflict(
+        cleanErrorMessage(e, t('reservations.saveFailed')),
+        t,
       );
+      setError(msg);
+      reportAppError(e, {
+        fallback: t('reservations.saveFailed'),
+        key: 'reservations.save',
+      });
     } finally {
       setBusy(false);
     }
@@ -399,6 +409,10 @@ export default function ReservationEditor({
       onClose();
     } catch (e: any) {
       setError(cleanErrorMessage(e, t('reservations.deleteFailed')));
+      reportAppError(e, {
+        fallback: t('reservations.deleteFailed'),
+        key: 'reservations.delete',
+      });
       setConfirmDelete(false);
     } finally {
       setBusy(false);

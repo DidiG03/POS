@@ -1,6 +1,11 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { FiscalSaleDTO } from '@shared/ipc';
+import {
+  fiscalOriginalVerifyUrl,
+  fiscalVoidVerifyUrl,
+} from '@shared/fiscalReceipt';
+import { FiscalVerifyQr } from '../../components/FiscalVerifyQr';
 import { Badge, Button, Field, Input } from '../../components/ui';
 import { toast } from '../../stores/toasts';
 
@@ -42,6 +47,11 @@ export function TicketSalePanel({
   }
 
   const voided = sale.status.toUpperCase() === 'VOID';
+  const cancelFiled = sale.corrections.some(
+    (c) => c.kind === 'CANCEL' && c.correctionNslf,
+  );
+  const verifyUrl = fiscalVoidVerifyUrl(sale);
+  const originalUrl = fiscalOriginalVerifyUrl(sale);
   const live = sale.items.filter((it) => !it.voided);
 
   const resetForm = () => {
@@ -135,6 +145,36 @@ export function TicketSalePanel({
       )}
 
       {voided ? <Badge tone="danger">{t('fiscal.salesVoided')}</Badge> : null}
+
+      {voided && (sale.fiscalNslf || sale.fiscalNivf) && !cancelFiled ? (
+        <p className="text-[12px] leading-relaxed text-gray-400">
+          {t('fiscal.salesVerifyCancelPending')}
+        </p>
+      ) : null}
+
+      {voided && cancelFiled && verifyUrl ? (
+        <FiscalVerifyQr
+          value={verifyUrl}
+          caption={t('fiscal.salesVerifyCancelQr')}
+          openLabel={t('fiscal.salesOpenOfficial')}
+        />
+      ) : null}
+
+      {originalUrl ? (
+        <FiscalVerifyQr
+          value={originalUrl}
+          caption={
+            voided && cancelFiled
+              ? t('fiscal.salesVerifyOriginalQr')
+              : t('fiscal.salesVerifyQr')
+          }
+          openLabel={t('fiscal.salesOpenOfficial')}
+        />
+      ) : sale.fiscalNslf || sale.fiscalNivf ? (
+        <p className="text-[12px] leading-relaxed text-gray-400">
+          {t('fiscal.salesVerifyNeedsNipt')}
+        </p>
+      ) : null}
 
       {sale.corrections.length > 0 ? (
         <div className="space-y-1 text-gray-400">

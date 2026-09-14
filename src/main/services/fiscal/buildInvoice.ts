@@ -320,6 +320,75 @@ export function buildElectronicInvoice(
   return request;
 }
 
+/* ------------------------------------------------------------------ *
+ * CORRECTIVE (partial — remaining lines, original IIC)
+ * ------------------------------------------------------------------ */
+
+export interface CorrectiveInvoiceInput extends BaseInvoiceInput {
+  articles: InvoiceArticle[];
+  payment: InvoicePayment[];
+  original: {
+    iic: string;
+    issueDateTime?: string;
+    eic?: string;
+  };
+  /** Required only when the original was an electronic invoice (P9). */
+  buyer?: InvoiceBuyer;
+}
+
+/**
+ * A restated invoice for the lines that survive a partial void.
+ *
+ * Cash / non-electronic originals are a NORMAL register with
+ * `correctiveInvoice.type = CORRECTIVE`. Electronic originals are P9 and
+ * need the buyer from the original e-invoice — without that we refuse
+ * rather than file a P9 CIS will reject.
+ */
+export function buildCorrectiveInvoice(
+  input: CorrectiveInvoiceInput,
+): RegisterInvoiceRequest {
+  const iicRef = String(input.original?.iic || '').trim();
+  if (!iicRef) {
+    throw new Error(
+      'Cannot file a corrective invoice without the original IIC (correctiveInvoice.iicRef).',
+    );
+  }
+  const ref: CorrectiveInvoiceRef = {
+    iicRef,
+    type: 'CORRECTIVE',
+    ...(input.original.issueDateTime
+      ? { issueDateTimeRef: input.original.issueDateTime }
+      : {}),
+  };
+  const electronic = Boolean(String(input.original.eic || '').trim());
+  if (electronic) {
+    if (!input.buyer) {
+      throw new Error(
+        `Invoice ${iicRef} is electronic (has an EIC) so a partial corrective is process P9 and needs the original buyer. File it in easyPos.`,
+      );
+    }
+    return buildElectronicInvoice({
+      docId: input.docId,
+      operatorCode: input.operatorCode,
+      currency: input.currency,
+      invoiceRebate: input.invoiceRebate,
+      articles: input.articles,
+      payment: input.payment,
+      selectedProcess: 'P9',
+      buyer: input.buyer,
+      correctiveInvoice: ref,
+    });
+  }
+  const request: RegisterInvoiceRequest = {
+    ...base(input),
+    articles: input.articles,
+    payment: input.payment,
+    correctiveInvoice: ref,
+  };
+  assertValidRegisterInvoice(request);
+  return request;
+}
+
 /**
  * P9/P10 reference an invoice that must itself have an EIC.
  *

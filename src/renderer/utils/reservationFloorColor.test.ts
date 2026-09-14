@@ -45,7 +45,7 @@ describe('reservationTableColorClass', () => {
     expect(
       reservationTableColorClass([completed('2026-08-27T19:00:00')], true),
     ).toBe(RESERVATION_TABLE_FREE_CLASS);
-    expect(RESERVATION_TABLE_FREE_CLASS).toMatch(/zinc|gray/);
+    expect(RESERVATION_TABLE_FREE_CLASS).toMatch(/neutral|zinc|gray/);
     expect(RESERVATION_TABLE_FREE_CLASS).not.toMatch(/emerald|green/);
   });
 

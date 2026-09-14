@@ -8,13 +8,11 @@ import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { useReservationSessionStore } from './stores/reservationSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { Toaster } from './components/Toaster';
-import { UpdateNotification } from './components/UpdateNotification';
 import {
   PosServerScanHost,
   PosServerScanPanel,
 } from './app/components/PosServerScan';
-import { initMobileShell } from './utils/mobileShell';
+import { initMobileShell, hideMobileSplash } from './utils/mobileShell';
 import { resumeMainProcessSession } from './utils/resumeSession';
 import './i18n/config';
 import { I18nextProvider, useTranslation } from 'react-i18next';
@@ -22,11 +20,13 @@ import i18n from './i18n/config';
 import { LocaleSync } from './i18n/LocaleSync';
 import { ThemeSync } from './i18n/ThemeSync';
 import { bootPosUiTheme } from './theme';
-import LicenseGate from './app/components/LicenseGate';
-import { BrandMark } from './components/BrandMark';
+import { PageSpinner } from './components/PageSpinner';
+import { useLicenseCapabilities } from './stores/licenseCapabilities';
+import { readStoredFlag, writeStoredFlag } from './utils/storedFlag';
 import {
   getHttpBase,
   getHttpsBase,
+  hasConfiguredBackendHost,
   resolveBackendHost,
 } from './utils/backendHost';
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
@@ -43,11 +43,14 @@ import {
 import {
   installPosReadCache,
   peekSettings,
-  invalidateFloorCache,
-  invalidateFloorSnapshots,
-  invalidateTicketCache,
   emitPosSyncCatchup,
+  emitPosSyncCatchupSoon,
 } from './utils/posReadCache';
+import { installPosRealtimeSync } from './utils/posRealtimeSync';
+import { installWakeUiRecovery } from './utils/wakeUiRecovery';
+import { installUnhandledErrorToasts } from './utils/reportAppError';
+import { initRendererSentry } from './utils/sentryBrowser';
+import { POS_BACKEND_HOST_CHANGED } from './utils/posServerScanEvent';
 import { clearInflight, dedupe } from './utils/swrCache';
 import {
   lanAuthGeneration,
@@ -104,21 +107,6 @@ async function syncTabletToHostVersion(): Promise<void> {
 
 void initMobileShell();
 if (!(window as any).__KDS_APP__) bootPosUiTheme();
-
-// Initialize Sentry in renderer (if available via Electron preload)
-// @sentry/electron automatically sets up renderer instrumentation when initialized in main process,
-// but we expose it on window for ErrorBoundary to use
-if (typeof window !== 'undefined') {
-  try {
-    // Check if Sentry is available (set by @sentry/electron in renderer)
-    const Sentry = (window as any).__SENTRY__;
-    if (Sentry && Sentry.getCurrentHub) {
-      (window as any).__sentry__ = Sentry.getCurrentHub().getClient();
-    }
-  } catch {
-    // Sentry not available (e.g., SENTRY_DSN not set) - this is fine
-  }
-}
 
 // Polyfill window.api for browser (tablets) by calling the LAN HTTP API
 // When running inside Electron, preload already defines window.api
@@ -326,29 +314,6 @@ if (!(window as any).api) {
     // last failure window.
     sseBackoffMs = 1000;
     try {
-      const p = (payload || {}) as {
-        area?: string;
-        label?: string;
-        tableLabel?: string;
-        open?: boolean;
-      };
-      if (eventName === 'pos:ticketsChanged') {
-        const area = String(p.area || '');
-        const label = String(p.tableLabel || p.label || '');
-        if (area && label) invalidateTicketCache(area, label);
-        invalidateFloorSnapshots();
-      } else if (eventName === 'pos:tablesChanged') {
-        const area = String(p.area || '');
-        const label = String(p.label || p.tableLabel || '');
-        if (area && label && p.open === false) {
-          invalidateTicketCache(area, label);
-        }
-        invalidateFloorCache();
-      }
-    } catch {
-      // cache invalidation is best-effort
-    }
-    try {
       window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
     } catch {
       // ignore — listener fan-out is best-effort
@@ -388,7 +353,7 @@ if (!(window as any).api) {
         markSseOpen(true);
         // Android/iOS drop EventSource while backgrounded; missed voids and
         // table closes never replay. Refetch as soon as the socket is back.
-        emitPosSyncCatchup();
+        emitPosSyncCatchupSoon();
         void syncTabletToHostVersion();
       });
 
@@ -422,6 +387,7 @@ if (!(window as any).api) {
           handleSseEvent('pos:tablesChanged', data);
         } catch (e) {
           void e;
+          emitPosSyncCatchupSoon();
         }
       });
       // Reservations: a HOST/ADMIN on another device created/edited/cancelled
@@ -434,6 +400,7 @@ if (!(window as any).api) {
           handleSseEvent('pos:reservationsChanged', data);
         } catch (e) {
           void e;
+          emitPosSyncCatchupSoon();
         }
       });
       // Tickets: another waiter just appended an item to a table. The
@@ -447,6 +414,7 @@ if (!(window as any).api) {
           handleSseEvent('pos:ticketsChanged', data);
         } catch (e) {
           void e;
+          emitPosSyncCatchupSoon();
         }
       });
       // Floor layout: admin re-published the shared layout for an area.
@@ -456,6 +424,7 @@ if (!(window as any).api) {
           handleSseEvent('pos:layoutChanged', data);
         } catch (e) {
           void e;
+          emitPosSyncCatchupSoon();
         }
       });
       es.addEventListener('tableMerges', (ev: any) => {
@@ -464,7 +433,11 @@ if (!(window as any).api) {
           handleSseEvent('pos:tableMergesChanged', data);
         } catch (e) {
           void e;
+          emitPosSyncCatchupSoon();
         }
+      });
+      es.addEventListener('catchup', () => {
+        emitPosSyncCatchup();
       });
 
       // Watchdog: if the socket hasn't received anything for a long time
@@ -525,7 +498,6 @@ if (!(window as any).api) {
       }
       stopSse();
     });
-    window.addEventListener('beforeunload', stopSse);
     window.addEventListener('pagehide', stopSse);
     // Foreground / connectivity recovery: the three signals that reliably
     // fire when a real device wakes the WebView back up. Each one forces a
@@ -534,7 +506,7 @@ if (!(window as any).api) {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         ensureSse();
-        emitPosSyncCatchup();
+        emitPosSyncCatchupSoon();
         void syncTabletToHostVersion();
       }
     });
@@ -544,6 +516,11 @@ if (!(window as any).api) {
     // means the page was resurrected from cache with all timers paused.
     window.addEventListener('pageshow', (ev: any) => {
       if (ev && ev.persisted) ensureSse();
+    });
+    window.addEventListener(POS_BACKEND_HOST_CHANGED, () => {
+      sseBackoffMs = 1000;
+      stopSse();
+      startSse();
     });
   } catch {
     // ignore
@@ -1385,6 +1362,7 @@ if (!(window as any).api) {
 }
 
 installPosReadCache();
+installPosRealtimeSync();
 
 // Standalone KDS app: bridge auto-updater IPC exposed by preload.
 if ((window as any).__KDS_APP__ && (window as any).kdsApp?.updater) {
@@ -1395,6 +1373,62 @@ if ((window as any).__KDS_APP__ && (window as any).kdsApp?.updater) {
 }
 
 const router = createHashRouter(routes);
+
+const LicenseGate = React.lazy(() => import('./app/components/LicenseGate'));
+const UpdateNotification = React.lazy(() =>
+  import('./components/UpdateNotification').then((m) => ({
+    default: m.UpdateNotification,
+  })),
+);
+const Toaster = React.lazy(() =>
+  import('./components/Toaster').then((m) => ({ default: m.Toaster })),
+);
+
+const LICENSE_OK_KEY = 'pos-license-ok';
+
+function isElectronLicenseHost(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    Boolean((window as any).api?.license) &&
+    !(window as any).__BROWSER_CLIENT__ &&
+    !(window as any).__KDS_APP__
+  );
+}
+
+function MaybeLicenseGate({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
+  const host = isElectronLicenseHost();
+  const [blocked, setBlocked] = useState(
+    () => host && !readStoredFlag(LICENSE_OK_KEY, true),
+  );
+
+  useEffect(() => {
+    if (!host) return;
+    let cancelled = false;
+    void window.api.license
+      .getStatus()
+      .then((s) => {
+        if (cancelled) return;
+        const ok = !s?.required || Boolean(s?.licensed);
+        writeStoredFlag(LICENSE_OK_KEY, ok);
+        useLicenseCapabilities.getState().setEdition(s?.edition);
+        setBlocked(!ok);
+      })
+      .catch(() => {
+        if (!cancelled) useLicenseCapabilities.getState().setEdition(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [host]);
+
+  if (!host || !blocked) return <>{children}</>;
+  return (
+    <React.Suspense fallback={<PageSpinner message={t('common.loading')} />}>
+      <LicenseGate>{children}</LicenseGate>
+    </React.Suspense>
+  );
+}
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -1410,38 +1444,13 @@ function BootScreen({
   showScan?: boolean;
 }) {
   return (
-    <div className="min-h-screen flex items-center justify-center pos-app pos-app--auth text-gray-100 px-6">
-      <div className="flex flex-col items-center gap-5 w-full max-w-md">
-        <BrandMark size="lg" />
-        {!showScan ? (
-          <svg
-            className="pos-spinner"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
-        ) : null}
-        <div className="text-sm text-gray-300 text-center">{message}</div>
-        {detail && !showScan ? (
-          <div className="text-xs text-gray-500 text-center">{detail}</div>
-        ) : null}
-        {showScan ? <PosServerScanPanel /> : null}
-      </div>
-    </div>
+    <PageSpinner
+      message={message}
+      detail={showScan ? undefined : detail}
+      spinner={!showScan}
+    >
+      {showScan ? <PosServerScanPanel autoScan /> : null}
+    </PageSpinner>
   );
 }
 
@@ -1451,6 +1460,17 @@ function Root() {
   const [msg, setMsg] = useState(() => t('boot.starting'));
   const [detail, setDetail] = useState<string | undefined>(undefined);
   const [backendUnreachable, setBackendUnreachable] = useState(false);
+  const [hostEpoch, setHostEpoch] = useState(0);
+
+  useEffect(() => {
+    const onHost = () => setHostEpoch((n) => n + 1);
+    window.addEventListener(POS_BACKEND_HOST_CHANGED, onHost);
+    return () => window.removeEventListener(POS_BACKEND_HOST_CHANGED, onHost);
+  }, []);
+
+  useEffect(() => {
+    if (ready || backendUnreachable) void hideMobileSplash();
+  }, [ready, backendUnreachable]);
 
   useEffect(() => {
     const onForce = (ev: any) => {
@@ -1556,6 +1576,12 @@ function Root() {
       setBackendUnreachable(false);
       setMsg(t('boot.connecting'));
       setDetail(undefined);
+      if (!isKdsApp && !hasConfiguredBackendHost()) {
+        setBackendUnreachable(true);
+        setMsg(t('boot.cannotReach'));
+        setDetail(t('boot.cannotReachDetail'));
+        return;
+      }
       const cachedSettings = !isKdsApp ? peekSettings() : undefined;
       if (cachedSettings) {
         await resumeMainProcessSession().catch(() => {});
@@ -1598,7 +1624,7 @@ function Root() {
             continue;
           }
           // Minimal "backend is ready" checks. KDS only needs the kitchen API;
-          // waiter tablets need settings + the staff directory.
+          // the till needs settings. The staff directory loads on the login screen.
           if (isKdsApp) {
             const kdsApp = (window as any).kdsApp as
               | {
@@ -1619,10 +1645,8 @@ function Root() {
               await (window as any).api.kds.debug();
             }
           } else {
-            await Promise.all([
-              (window as any).api.settings.get(),
-              (window as any).api.auth.listUsers(),
-            ]);
+            await (window as any).api.settings.get();
+            void (window as any).api.auth.listUsers().catch(() => null);
             void syncTabletToHostVersion();
           }
           if (cancelled) return;
@@ -1664,7 +1688,13 @@ function Root() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, hostEpoch]);
+
+  useEffect(() => {
+    if (!ready) return;
+    void import('./app/AppLayout');
+    void import('./app/pages/TablesPage');
+  }, [ready]);
 
   if (!ready) {
     const lanClient =
@@ -1682,9 +1712,19 @@ function Root() {
   return (
     <>
       <RouterProvider router={router} />
-      {(window as any).__KDS_APP__ ? <UpdateNotification /> : null}
+      {(window as any).__KDS_APP__ ? (
+        <React.Suspense fallback={null}>
+          <UpdateNotification />
+        </React.Suspense>
+      ) : null}
     </>
   );
+}
+
+if (typeof window !== 'undefined') {
+  initRendererSentry();
+  installWakeUiRecovery();
+  installUnhandledErrorToasts();
 }
 
 createRoot(document.getElementById('root')!).render(
@@ -1693,11 +1733,13 @@ createRoot(document.getElementById('root')!).render(
       <LocaleSync>
         <ThemeSync>
           <ErrorBoundary>
-            <LicenseGate>
+            <MaybeLicenseGate>
               <Root />
-            </LicenseGate>
+            </MaybeLicenseGate>
             <PosServerScanHost />
-            <Toaster />
+            <React.Suspense fallback={null}>
+              <Toaster />
+            </React.Suspense>
           </ErrorBoundary>
         </ThemeSync>
       </LocaleSync>

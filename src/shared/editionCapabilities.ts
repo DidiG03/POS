@@ -41,10 +41,11 @@ export function formatSaleLocation(input: {
   diningFloor: boolean;
   area?: string | null;
   tableLabel?: string | null;
+  emptyLabel?: string;
 }): string {
   const label = String(input.tableLabel || '').trim();
   if (!input.diningFloor || isStoreCounterArea(input.area)) {
-    return label || 'Sale';
+    return label || input.emptyLabel || 'Sale';
   }
   const area = String(input.area || '').trim();
   if (area && label) return `${area} - ${label}`;

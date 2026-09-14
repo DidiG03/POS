@@ -71,6 +71,8 @@ export type ReceiptLayout = {
   sep: string;
   /** Double-width (GS ! 0x11) characters eat two columns. */
   doubleWidthCols: number;
+  /** Font B (9×17) columns — denser than Font A, used on kitchen slips. */
+  fontBCols: number;
 };
 
 export function receiptPaperMm(raw: unknown): ReceiptPaperMm {
@@ -87,6 +89,7 @@ export function receiptLayout(paperMm: ReceiptPaperMm): ReceiptLayout {
     nameCols: cols - priceCols,
     sep: '-'.repeat(cols),
     doubleWidthCols: Math.floor(cols / 2),
+    fontBCols: paperMm === 58 ? 42 : 64,
   };
 }
 
@@ -191,3 +194,48 @@ export function encodeEscposText(s: string): Buffer {
 export const ESC_POS_PC850 = Buffer.from([0x1b, 0x74, 0x02]);
 /** ESC M 0 — Font A (12×24), 48 glyphs across 80mm paper. */
 export const ESC_POS_FONT_A = Buffer.from([0x1b, 0x4d, 0x00]);
+/** ESC M 1 — Font B (9×17), smaller type for kitchen order lines. */
+export const ESC_POS_FONT_B = Buffer.from([0x1b, 0x4d, 0x01]);
+
+const GS = Buffer.from([0x1d]);
+
+/**
+ * QR Code: Model 2, error correction M, modules large enough for a phone.
+ *
+ * The previous sequence sent the *alignment* byte as the QR model
+ * (`GS ( k … 0x41 n`). Center is 49, which is QR Model 1 — the 1994
+ * variant phone cameras often refuse. Model 2 (n=50) is what every
+ * scanner expects. Module size used to drop to 3 for long fiscal URLs,
+ * which made the code too dense for thermal paper.
+ */
+export function escposQrCode(
+  data: string,
+  options?: { moduleSize?: number; paperMm?: ReceiptPaperMm },
+): Buffer {
+  const text = String(data || '');
+  const d = Buffer.from(text, 'utf8');
+  const storeLen = d.length + 3;
+  const pL = storeLen & 0xff;
+  const pH = (storeLen >> 8) & 0xff;
+  let moduleSize = options?.moduleSize;
+  if (moduleSize == null) {
+    moduleSize = options?.paperMm === 58 ? 5 : 6;
+  }
+  moduleSize = Math.min(8, Math.max(5, Math.round(moduleSize)));
+  return Buffer.concat([
+    // Select model: Model 2, n2 = 0. Four-byte form per Epson.
+    GS,
+    Buffer.from([0x28, 0x6b, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]),
+    // Module size (dots). Floor of 5 so a camera can resolve it.
+    GS,
+    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, moduleSize]),
+    // Error correction M (15%) — thermal smudges eat L (7%).
+    GS,
+    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x31]),
+    GS,
+    Buffer.from([0x28, 0x6b, pL, pH, 0x31, 0x50, 0x30]),
+    d,
+    GS,
+    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]),
+  ]);
+}

@@ -216,8 +216,11 @@ describe('fiscalizePaymentOnce', () => {
     const first = await fiscalizePaymentOnce(payment(), settings, {
       idempotencyKey: KEY,
     });
-    expect(first.kind).toBe('retryable');
-    expect((await readFiscalClaim(KEY))?.state).toBe('FAILED');
+    expect(first.kind).toBe('deferred');
+    if (first.kind !== 'deferred') throw new Error('unreachable');
+    expect(first.payload.meta?.fiscalStatus).toBe('pending');
+    expect((await readFiscalClaim(KEY))?.state).toBe('DEFERRED');
+    expect((await readFiscalClaim(KEY))?.draft).toBeTruthy();
 
     createSale.mockResolvedValueOnce({ nslf: 'NSLF-2', status: 'accepted' });
     const second = await fiscalizePaymentOnce(payment(), settings, {

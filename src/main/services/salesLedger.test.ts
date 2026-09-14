@@ -11,6 +11,11 @@ vi.mock('@db/client', () => ({ prisma: {} }));
 vi.mock('./core', () => ({
   coreServices: { readSettings: vi.fn().mockResolvedValue({}) },
 }));
+vi.mock('./license', () => ({ storePlanBlocksTables: () => false }));
+vi.mock('./menuStock', () => ({
+  consumeMenuStockForTicketLines: vi.fn(),
+  stockLinesFromTicketItems: () => [],
+}));
 
 import { writeSettledSale } from './salesLedger';
 

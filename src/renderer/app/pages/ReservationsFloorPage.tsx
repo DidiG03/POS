@@ -19,6 +19,7 @@ import {
   type TableMergeGroup,
 } from '@shared/tableMerge';
 import { toast } from '../../stores/toasts';
+import { reportAppError } from '../../utils/reportAppError';
 import {
   isReservationQuickStatusTooEarly,
   reservationQuickStatusUnlockHint,
@@ -289,6 +290,10 @@ export default function ReservationsFloorPage() {
       } catch (e: any) {
         if (gen !== reloadGen.current) return;
         setError(e?.message || t('reservations.loadFailed'));
+        reportAppError(e, {
+          fallback: t('reservations.loadFailed'),
+          key: `reservations.list:${area}`,
+        });
         if (!opts?.silent) setResReadyKey(myKey);
       }
     },
@@ -346,9 +351,17 @@ export default function ReservationsFloorPage() {
       setMergeGroups([]);
       return;
     }
-    const groups = await window.api.layout.getMerges(area).catch(() => []);
+    const groups = await window.api.layout
+      .getMerges(area)
+      .catch((e: unknown) => {
+        reportAppError(e, {
+          fallback: t('tables.mergesLoadFailed'),
+          key: `layout.merges:${area}`,
+        });
+        return [];
+      });
     setMergeGroups(sanitizeMergeGroups(groups));
-  }, [area]);
+  }, [area, t]);
 
   useEffect(() => {
     void reloadMerges();
@@ -746,6 +759,7 @@ export default function ReservationsFloorPage() {
       {area && me?.id ? (
         <div className="relative min-h-0 flex-1 flex flex-col">
           <FloorCanvas
+            key={`${me.id}:${area}:${HOST_LAYOUT_SCOPE}`}
             userId={me.id}
             area={area}
             scope={HOST_LAYOUT_SCOPE}
@@ -769,14 +783,12 @@ export default function ReservationsFloorPage() {
             onCommitMerges={(groups) => void commitMerges(groups)}
             onMergeBlocked={() => toast.error(t('reservations.mergeOccupied'))}
           />
-          {!viewReady && (
-            <div className="absolute inset-0 z-20 bg-gray-900">
-              <PageSpinner
-                variant="overlay"
-                message={t('reservations.loadingReservations')}
-              />
-            </div>
-          )}
+          {!viewReady ? (
+            <PageSpinner
+              variant="overlay"
+              message={t('reservations.loadingReservations')}
+            />
+          ) : null}
         </div>
       ) : null}
 

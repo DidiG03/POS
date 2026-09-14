@@ -9,8 +9,11 @@ import {
 } from '@shared/orderAddMode';
 import {
   bindTicketTable,
+  draftHasLiveBill,
+  emptyTicketDraft,
   mergeLocalStagedOntoHydrated,
   pruneStaleTicketDrafts,
+  pruneLiveBillsForClosedTables,
   revivePersistedTicketDraft,
   applyLocalPaidOntoHydrated,
   shouldKeepLocalDraftOnEmptyLog,
@@ -112,7 +115,8 @@ interface TicketState {
   hasHydrated: boolean;
   setHasHydrated: (v: boolean) => void;
   setAddMode: (mode: OrderAddMode) => void;
-  bindTable: (key: string | null) => void;
+  bindTable: (key: string | null, opts?: { keepLiveBill?: boolean }) => void;
+  dropOrphanLiveBills: (openKeys: string[]) => void;
   addItem: (input: {
     sku: string;
     name: string;
@@ -185,7 +189,29 @@ export const useTicketStore = create<TicketState>()(
         else if (next === 'seat') get().ensureSeats();
         else set({ activeCourseId: null, activeSeatId: null });
       },
-      bindTable: (key) => set((s) => bindTicketTable(s, key)),
+      bindTable: (key, opts) =>
+        set((s) => bindTicketTable(s, key, Date.now(), opts)),
+      dropOrphanLiveBills: (openKeys) =>
+        set((s) => {
+          const drafts = pruneLiveBillsForClosedTables(s.drafts, openKeys);
+          const bound = s.boundKey;
+          const boundOpen = Boolean(bound && openKeys.includes(bound));
+          if (!bound || boundOpen || !draftHasLiveBill(s)) {
+            return { drafts };
+          }
+          const empty = emptyTicketDraft();
+          return {
+            addMode: empty.addMode,
+            lines: empty.lines as TicketLine[],
+            courses: empty.courses,
+            seats: empty.seats,
+            activeCourseId: empty.activeCourseId,
+            activeSeatId: empty.activeSeatId,
+            orderNote: empty.orderNote,
+            drafts,
+            savedAt: Date.now(),
+          };
+        }),
       addItem: ({
         sku,
         name,

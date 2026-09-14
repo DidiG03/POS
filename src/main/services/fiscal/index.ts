@@ -8,6 +8,7 @@ import {
   isFiscalRetryable,
   testEasyPosConnection,
 } from './easypos';
+import { backoffDelayMs } from './backoff';
 import { docIdFromKey } from './docId';
 import {
   ensureDailyBalanceForCash,
@@ -16,16 +17,20 @@ import {
 } from './balance';
 import { fiscalConfig } from './config';
 import { mapPaymentMethod } from './paymentMethod';
+import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import { notifyAdminsAndActor } from '../adminAlerts';
 import { getTableSessionStartedAt } from '../tableSession';
 import {
   claimFiscalRegistration,
   findRegisteredClaimForTable,
+  findUnsentClaimForTable,
   flagFiscalCorrectionRequired,
   notifyFiscalReviewNeeded,
   settleFiscalClaimFailed,
+  settleFiscalClaimDeferred,
   settleFiscalClaimRegistered,
   settleFiscalClaimUnknown,
+  abandonUnsentFiscalClaim,
   type StoredFiscalResult,
 } from './claims';
 
@@ -37,6 +42,7 @@ export {
 
 export {
   listFiscalClaimsNeedingReview,
+  listFiscalClaimsDeferred,
   readFiscalClaim,
   resolveFiscalClaim,
 } from './claims';
@@ -48,6 +54,11 @@ export function isFiscalEnabled(settings: SettingsDTO): boolean {
 export type FiscalizeOutcome =
   /** Safe to print and record. Payload carries any fiscal identifiers. */
   | { kind: 'ok'; payload: TicketPrintPayload; replayed?: boolean }
+  /**
+   * CIS was unreachable. The sale may complete; the host will transmit
+   * this same invoice when the link is back (48-hour legal window).
+   */
+  | { kind: 'deferred'; payload: TicketPrintPayload; message: string }
   /** Nothing was filed, and a later attempt has a real chance. */
   | { kind: 'retryable'; message: string }
   /**
@@ -98,7 +109,13 @@ async function reportDraftAdjustment(
 function withFiscalMeta(
   payload: TicketPrintPayload,
   result: StoredFiscalResult,
+  settings?: SettingsDTO,
 ): TicketPrintPayload {
+  const tin =
+    String((result as any).tin || '').trim() ||
+    tinFromVerifyUrl(result.link) ||
+    tinFromVerifyUrl(result.qrCode) ||
+    fiscalTinFromSettings(settings);
   return {
     ...payload,
     meta: {
@@ -108,6 +125,8 @@ function withFiscalMeta(
       fiscalNivf: result.nivf || undefined,
       fiscalEic: result.eic || undefined,
       fiscalLink: result.link || undefined,
+      fiscalQrCode: (result as any).qrCode || undefined,
+      fiscalTin: tin || undefined,
       fiscalWarning: result.warning || undefined,
       fiscalStatus: result.status,
     },
@@ -323,7 +342,7 @@ export async function fiscalizePaymentOnce(
   if (decision.outcome === 'replay') {
     return {
       kind: 'ok',
-      payload: withFiscalMeta(payload, decision.result),
+      payload: withFiscalMeta(payload, decision.result, settings),
       replayed: true,
     };
   }
@@ -345,19 +364,45 @@ export async function fiscalizePaymentOnce(
       nivf: result.nivf || undefined,
       eic: result.eic || undefined,
       link: result.link || undefined,
+      qrCode: result.qrCode || undefined,
       status: result.status,
       warning: result.warning || undefined,
     }).catch(() => undefined);
-    return { kind: 'ok', payload: withFiscalMeta(payload, result) };
+    return { kind: 'ok', payload: withFiscalMeta(payload, result, settings) };
   } catch (e: any) {
     const message = String(e?.message || e);
     if (fiscalOutcomeOf(e) === 'not-registered') {
-      // FAILED either way: nothing was filed, so the key stays usable once
-      // the underlying problem is fixed and an admin releases the payment.
+      if (isFiscalRetryable(e)) {
+        // Nothing was filed. Take the sale and transmit this exact draft
+        // when CIS is reachable again — that is the 48-hour fiskalizimi rule.
+        const frozen = JSON.parse(JSON.stringify(draft));
+        const nextAttemptAt = new Date(
+          Date.now() + backoffDelayMs(1),
+        ).toISOString();
+        await settleFiscalClaimDeferred(
+          docId,
+          decision.attemptId,
+          message,
+          frozen,
+          nextAttemptAt,
+        ).catch(() => undefined);
+        return {
+          kind: 'deferred',
+          payload: withFiscalMeta(
+            payload,
+            {
+              status: 'pending',
+              warning:
+                'Fiskalizimi is unreachable. This sale is recorded and the invoice will be sent when the connection is back.',
+            },
+            settings,
+          ),
+          message,
+        };
+      }
       await settleFiscalClaimFailed(docId, decision.attemptId, message).catch(
         () => undefined,
       );
-      if (isFiscalRetryable(e)) return { kind: 'retryable', message };
       await notifyAdminsAndActor({
         message:
           `Fiskalizimi refused this sale and will keep refusing it until it is fixed` +
@@ -386,11 +431,10 @@ const CLOSED_TABLE_LOOKBACK_MS = 12 * 60 * 60 * 1000;
  * had already been declared to the tax service.
  *
  * A void after fiskalizimi is not a local bookkeeping edit: an invoice
- * exists upstream for money the customer is no longer paying, and only a
- * corrective document filed in easyPos can undo it. This POS cannot issue
- * that, so the least it can do is refuse to let the divergence pass
- * unnoticed. No-ops on the overwhelmingly common case where the table was
- * never fiscalized in this session.
+ * exists upstream for money the customer is no longer paying. Admin reverse
+ * files a cancellation or a restated corrective automatically. This waiter-
+ * path flag is the safety net when a ticket is voided without going through
+ * that panel.
  */
 export async function flagVoidAfterFiscalization(input: {
   area: string;
@@ -414,6 +458,17 @@ export async function flagVoidAfterFiscalization(input: {
     const since =
       (await getTableSessionStartedAt(input.area, input.tableLabel)) ??
       new Date(Date.now() - CLOSED_TABLE_LOOKBACK_MS);
+    const unsent = await findUnsentClaimForTable({
+      area: input.area,
+      tableLabel: input.tableLabel,
+      since,
+    });
+    if (unsent) {
+      return await abandonUnsentFiscalClaim(
+        unsent.idempotencyKey,
+        input.reason,
+      );
+    }
     const found = await findRegisteredClaimForTable({
       area: input.area,
       tableLabel: input.tableLabel,

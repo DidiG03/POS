@@ -33,6 +33,7 @@ import {
 } from '../../components/icons';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { TicketSalePanel } from '../components/TicketSalePanel';
+import { PageSpinner } from '../../components/PageSpinner';
 
 type TicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
 
@@ -295,16 +296,18 @@ function TicketCard({
   computeServiceCharge,
   mode,
   onSaleCorrected,
+  autoOpen,
 }: {
   ticket: Ticket;
   prefs: Preferences | null;
   computeServiceCharge: (base: number, p: Preferences | null) => number;
   mode: 'list' | 'grid';
   onSaleCorrected?: () => void;
+  autoOpen?: boolean;
 }) {
   const { t } = useTranslation();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(Boolean(autoOpen));
   const liveItems = ticket.items.filter((it) => !it.voided);
   const voidedItems = ticket.items.filter((it) => it.voided);
   const isVoided = ((ticket.status as TicketStatus) || 'PAID') === 'VOIDED';
@@ -324,7 +327,14 @@ function TicketCard({
       : 'border-white/7';
 
   return (
-    <article className={cn('rounded-xl border bg-gray-800 p-4', cardTone)}>
+    <article
+      id={autoOpen ? `ticket-${ticket.id}` : undefined}
+      className={cn(
+        'rounded-xl border bg-gray-800 p-4',
+        cardTone,
+        autoOpen && 'ring-1 ring-sky-400/70',
+      )}
+    >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -516,17 +526,30 @@ const STATUS_FILTER_LABEL: Record<(typeof STATUS_FILTERS)[number], string> = {
 };
 
 export default function AdminUserTicketsPage() {
+  const { t } = useTranslation();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const { userId } = useParams();
   const [params, setParams] = useSearchParams();
   const start = params.get('start') || undefined;
   const end = params.get('end') || undefined;
   const name = params.get('name') || '';
+  const tableFilter = params.get('table') || '';
+  const areaFilter = params.get('area') || '';
+  const openTicketId = Number(params.get('ticket') || 0);
+  const shouldOpen = params.get('open') === '1';
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [view, setView] = useState<'list' | 'grid4'>('list');
-  const [statusFilter, setStatusFilter] = useState<TicketStatus | 'ALL'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<TicketStatus | 'ALL'>(
+    (STATUS_FILTERS as readonly string[]).includes(
+      String(params.get('status') || 'ALL').toUpperCase(),
+    )
+      ? (String(params.get('status') || 'ALL').toUpperCase() as
+          | TicketStatus
+          | 'ALL')
+      : 'ALL',
+  );
 
   const refreshTickets = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -624,11 +647,41 @@ export default function AdminUserTicketsPage() {
   }, [tickets, prefs]);
 
   const filteredTickets = useMemo(() => {
-    if (statusFilter === 'ALL') return tickets;
-    return tickets.filter(
-      (t) => ((t.status as TicketStatus) || 'PAID') === statusFilter,
-    );
-  }, [statusFilter, tickets]);
+    return tickets.filter((t) => {
+      if (
+        statusFilter !== 'ALL' &&
+        ((t.status as TicketStatus) || 'PAID') !== statusFilter
+      ) {
+        return false;
+      }
+      if (tableFilter && t.tableLabel !== tableFilter) return false;
+      if (areaFilter && t.area !== areaFilter) return false;
+      return true;
+    });
+  }, [statusFilter, tickets, tableFilter, areaFilter]);
+
+  useEffect(() => {
+    if (!shouldOpen || !openTicketId || loading) return;
+    const id = window.setTimeout(() => {
+      document.getElementById(`ticket-${openTicketId}`)?.scrollIntoView({
+        block: 'center',
+        behavior: 'smooth',
+      });
+    }, 50);
+    return () => window.clearTimeout(id);
+  }, [shouldOpen, openTicketId, loading, filteredTickets.length]);
+
+  function clearTrace() {
+    const next = new URLSearchParams(params);
+    next.delete('table');
+    next.delete('area');
+    next.delete('ticket');
+    next.delete('open');
+    next.delete('status');
+    next.delete('sale');
+    setParams(next);
+    setStatusFilter('ALL');
+  }
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-4 sm:space-y-5">
@@ -649,6 +702,23 @@ export default function AdminUserTicketsPage() {
               : 'User Sales'}
         </h1>
       </div>
+
+      {tableFilter || areaFilter ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-gray-400">
+          <span>
+            {t('inbox.showingTable', {
+              table: [areaFilter, tableFilter].filter(Boolean).join(' '),
+            })}
+          </span>
+          <button
+            type="button"
+            className="font-medium text-sky-300 hover:text-sky-200"
+            onClick={clearTrace}
+          >
+            {t('inbox.showAllTickets')}
+          </button>
+        </div>
+      ) : null}
 
       <Card padded={false}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
@@ -761,11 +831,9 @@ export default function AdminUserTicketsPage() {
       </div>
 
       {loading ? (
-        <Card>
-          <div className="py-6 text-center text-[13px] text-gray-400">
-            Loading…
-          </div>
-        </Card>
+        <div className="relative min-h-[40vh] overflow-hidden">
+          <PageSpinner variant="overlay" message={t('common.loading')} />
+        </div>
       ) : filteredTickets.length === 0 ? (
         <Card padded={false}>
           <EmptyState
@@ -788,6 +856,12 @@ export default function AdminUserTicketsPage() {
               computeServiceCharge={computeServiceCharge}
               mode="grid"
               onSaleCorrected={() => void refreshTickets({ silent: true })}
+              autoOpen={
+                shouldOpen &&
+                (openTicketId
+                  ? t.id === openTicketId
+                  : filteredTickets.length === 1)
+              }
             />
           ))}
         </div>
@@ -801,6 +875,12 @@ export default function AdminUserTicketsPage() {
               computeServiceCharge={computeServiceCharge}
               mode="list"
               onSaleCorrected={() => void refreshTickets({ silent: true })}
+              autoOpen={
+                shouldOpen &&
+                (openTicketId
+                  ? t.id === openTicketId
+                  : filteredTickets.length === 1)
+              }
             />
           ))}
         </div>

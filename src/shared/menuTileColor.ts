@@ -116,13 +116,27 @@ export function menuTileStyle(
   hex: string | null | undefined,
   theme: PosUiTheme,
   fallback = FALLBACK_MENU_TILE_BG,
-): { backgroundColor: string; color: string; border?: string } {
-  const backgroundColor = menuTileFill(hex, theme, fallback);
-  const color = readableTextOnHex(backgroundColor);
-  if (theme !== 'light') return { backgroundColor, color };
+): {
+  backgroundColor: string;
+  color: string;
+  boxShadow: string;
+  border?: string;
+} {
+  const rgb = parseHexRgb(hex);
+  const raw = rgb ? String(hex) : fallback;
+  const strip = raw.startsWith('#') ? raw : `#${raw}`;
+  const boxShadow = `inset 0 -4px 0 0 ${strip}`;
+  if (theme === 'light') {
+    return {
+      backgroundColor: '#f1f5f9',
+      color: '#0f172a',
+      boxShadow,
+      border: '1px solid rgba(15, 23, 42, 0.10)',
+    };
+  }
   return {
-    backgroundColor,
-    color,
-    border: '1px solid rgba(15, 23, 42, 0.10)',
+    backgroundColor: '#1b2433',
+    color: '#ffffff',
+    boxShadow,
   };
 }

@@ -9,6 +9,7 @@ import {
 import { EmptyState, cn } from '../../components/ui';
 import { PageSpinner } from '../../components/PageSpinner';
 import { pollIntervalMs } from '../../utils/netQuality';
+import { reportAppError } from '../../utils/reportAppError';
 import { IconCheck, IconFlame } from '../../components/icons';
 
 function fmtAgo(iso: string | null, atMs: number): string {
@@ -181,8 +182,13 @@ export default function WaiterOrdersPage() {
         const rows = await window.api.kds.listFloorOrders();
         if (!alive) return;
         setOrders(Array.isArray(rows) ? rows : []);
-      } catch {
-        if (alive) setOrders([]);
+      } catch (e) {
+        if (alive) {
+          reportAppError(e, {
+            fallback: t('waiterOrders.loadFailed'),
+            key: 'waiterOrders.load',
+          });
+        }
       } finally {
         running = false;
         if (alive) setLoading(false);
@@ -208,7 +214,7 @@ export default function WaiterOrdersPage() {
       if (pollTimer != null) window.clearTimeout(pollTimer);
       window.removeEventListener('pos:ticketsChanged', onSse);
     };
-  }, []);
+  }, [t]);
 
   if (loading && orders.length === 0) {
     return <PageSpinner message={t('waiterOrders.loading')} />;

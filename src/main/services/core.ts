@@ -1,45 +1,47 @@
 import { prisma } from '@db/client';
-import { splitTableKey } from '@shared/utils/tableKey';
+import { KeyedAsyncMutex } from '@shared/asyncMutex';
+import {
+  countOccupiedTables,
+  isTableOccupied,
+  listOccupiedTables,
+  setTableOccupied,
+} from './tableOccupancy';
 
 /**
- * Per-table in-process serialization for `tables:open` map mutations.
+ * Per-table in-process serialization for open / pay / log / void.
  *
- * The `tables:open` map is a single JSON column read-modify-written by
- * `setTableOpen`. Without serialization, two concurrent waiters can both
- * read `{}`, both add their own key, and both write — the loser's entry
- * survives but the winner's prior state is overwritten. The same applies
- * to the parallel `tables:openAt` and `tables:owner` maps.
+ * Occupancy itself is one SQLite row per table (`TableOccupancy`), so two
+ * waiters opening different tables no longer clobber a shared JSON map.
+ * This mutex still serializes the larger critical section on one table
+ * (open + ticket log + KDS + pay) so those steps cannot interleave.
  *
  * Both the Electron IPC handlers AND the embedded HTTP API run inside the
- * same Node process, so a single in-memory mutex map closes the gap for
- * every code path that mutates open-table state. We key the lock by
- * `area:label` so different tables still proceed in parallel.
+ * same Node process, so a single in-memory mutex map covers every code
+ * path. We key the lock by `area:label` so different tables still proceed
+ * in parallel. A waiter who cannot acquire T7 within 8s gets TABLE_BUSY
+ * instead of hanging behind a stuck payment.
  */
-const tableLocks: Map<string, Promise<unknown>> = new Map();
+const tableLocks = new KeyedAsyncMutex();
+
+/** How long a second waiter will wait for the same table before failing. */
+export const TABLE_LOCK_WAIT_MS = 8_000;
 
 export async function withTableLock<T>(
   area: string,
   label: string,
   fn: () => Promise<T>,
+  waitMs: number = TABLE_LOCK_WAIT_MS,
 ): Promise<T> {
   const key = `${area}:${label}`;
-  const previous = tableLocks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const next = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  // Chain *after* the previous holder finishes (success or failure) so
-  // we never deadlock on a thrown body.
-  const chained = previous.catch(() => undefined).then(() => next);
-  tableLocks.set(key, chained);
-  await previous.catch(() => undefined);
   try {
-    return await fn();
-  } finally {
-    release();
-    // Only clear the slot if no one queued behind us, otherwise we'd
-    // strand the next waiter without a head pointer.
-    if (tableLocks.get(key) === chained) tableLocks.delete(key);
+    return await tableLocks.runExclusive(key, fn, waitMs);
+  } catch (err) {
+    if ((err as { code?: string })?.code === 'LOCK_TIMEOUT') {
+      const busy = new Error(`Table ${key} is busy`);
+      (busy as { code?: string }).code = 'TABLE_BUSY';
+      throw busy;
+    }
+    throw err;
   }
 }
 
@@ -279,49 +281,33 @@ export const coreServices = {
   },
 
   /**
-   * Plain read-modify-write of the `tables:open` map. Callers are
-   * responsible for taking `withTableLock(area, label, …)` around any
-   * critical section that needs to serialize against other writers —
-   * see `tables:setOpen`, `tickets:log`, and the void handlers for
-   * examples.
+   * Open or close one table row. Callers are responsible for taking
+   * `withTableLock(area, label, …)` around any critical section that
+   * needs to serialize against other writers on the same table —
+   * see `tables:setOpen`, `tickets:log`, and the void handlers.
    *
    * The lock USED to live inside this function but that produced a
    * self-deadlock: the IPC handler wraps the whole "set open + write
-   * openAt + close KDS" block in `withTableLock`, and then awaited
+   * openedAt + close KDS" block in `withTableLock`, and then awaited
    * this call which tried to acquire the same lock from inside the
    * holder. The Pay button (and any flow that closes a table) hung
    * forever. Keeping the lock only at the outer call sites avoids the
    * re-entrancy problem without needing `AsyncLocalStorage`.
    */
   async setTableOpen(area: string, label: string, open: boolean) {
-    const key = 'tables:open';
-    const row = await prisma.syncState.findUnique({ where: { key } });
-    const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-    const k = `${area}:${label}`;
-    if (open) map[k] = true;
-    else delete map[k];
-    await prisma.syncState.upsert({
-      where: { key },
-      create: { key, valueJson: map },
-      update: { valueJson: map },
-    });
+    await setTableOccupied(area, label, open);
   },
 
   async isTableOpen(area: string, label: string): Promise<boolean> {
-    const row = await prisma.syncState
-      .findUnique({ where: { key: 'tables:open' } })
-      .catch(() => null);
-    const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-    return Boolean(map[`${area}:${label}`]);
+    return isTableOccupied(area, label);
   },
 
   async listOpenTables() {
-    const key = 'tables:open';
-    const row = await prisma.syncState.findUnique({ where: { key } });
-    const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-    return Object.entries(map)
-      .filter(([, v]) => Boolean(v))
-      .map(([k]) => splitTableKey(k))
-      .filter((p): p is { area: string; label: string } => Boolean(p));
+    const tables = await listOccupiedTables();
+    return tables.map((t) => ({ area: t.area, label: t.label }));
+  },
+
+  async countOpenTables() {
+    return countOccupiedTables();
   },
 };

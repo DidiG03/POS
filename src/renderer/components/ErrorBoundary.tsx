@@ -1,6 +1,8 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { Button, Card } from './ui';
-import { IconAlert } from './icons';
+import { Button } from './ui/Button';
+import { Card } from './ui/Surface';
+import { emitPosSyncCatchup } from '../utils/posReadCache';
+import { reportAppError } from '../utils/reportAppError';
 
 interface Props {
   children: ReactNode;
@@ -13,10 +15,32 @@ interface State {
   errorInfo: ErrorInfo | null;
 }
 
+const RECOVER_KEY = 'pos-error-boundary-recover-at';
+const RECOVER_MS = 8_000;
+
+function recentlyRecovered(now = Date.now()): boolean {
+  try {
+    const at = Number(sessionStorage.getItem(RECOVER_KEY) || 0);
+    return Number.isFinite(at) && now - at < RECOVER_MS;
+  } catch {
+    return false;
+  }
+}
+
+function markRecovered(now = Date.now()): void {
+  try {
+    sessionStorage.setItem(RECOVER_KEY, String(now));
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * React Error Boundary to catch render errors and send to Sentry
  */
 export class ErrorBoundary extends Component<Props, State> {
+  private recoverTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(props: Props) {
     super(props);
     this.state = {
@@ -30,32 +54,55 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    // Log to Sentry if available
-    if ((window as any).__sentry__) {
-      try {
-        (window as any).__sentry__.captureException(error, {
-          contexts: {
-            react: {
-              componentStack: errorInfo.componentStack,
-            },
-          },
-        });
-      } catch (e) {
-        // Sentry not initialized or failed
-        console.error('[ErrorBoundary] Failed to report to Sentry', e);
-      }
-    }
+  componentDidMount() {
+    window.addEventListener('pos:syncCatchup', this.onSyncCatchup);
+  }
 
+  componentWillUnmount() {
+    window.removeEventListener('pos:syncCatchup', this.onSyncCatchup);
+    if (this.recoverTimer != null) clearTimeout(this.recoverTimer);
+  }
+
+  onSyncCatchup = () => {
+    if (!this.state.hasError) return;
+    if (recentlyRecovered()) return;
+    this.clearError();
+  };
+
+  clearError = () => {
+    this.setState({
+      hasError: false,
+      error: null,
+      errorInfo: null,
+    });
+  };
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     this.setState({
       error,
       errorInfo,
+    });
+
+    reportAppError(error, {
+      key: 'react.render',
+      extra: { componentStack: errorInfo.componentStack },
     });
 
     // Also log to console in development
     if (process.env.NODE_ENV !== 'production') {
       console.error('[ErrorBoundary] Caught error:', error, errorInfo);
     }
+
+    if (recentlyRecovered()) return;
+    markRecovered();
+    this.recoverTimer = setTimeout(() => {
+      this.clearError();
+      try {
+        emitPosSyncCatchup();
+      } catch {
+        // ignore
+      }
+    }, 50);
   }
 
   render() {
@@ -69,8 +116,20 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="pos-app pos-app--auth flex min-h-screen flex-col items-center justify-center p-6">
           <Card className="w-full max-w-md">
             <div className="flex items-start gap-3">
-              <span className="mt-px shrink-0 text-rose-400">
-                <IconAlert />
+              <span className="mt-px shrink-0 text-rose-400" aria-hidden>
+                <svg
+                  className="pos-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+                  <path d="M12 9v4" />
+                  <path d="M12 17h.01" />
+                </svg>
               </span>
               <div className="min-w-0">
                 <h2 className="text-[15px] font-semibold tracking-tight text-gray-50">
@@ -99,11 +158,22 @@ export class ErrorBoundary extends Component<Props, State> {
               block
               className="mt-4"
               onClick={() => {
-                this.setState({
-                  hasError: false,
-                  error: null,
-                  errorInfo: null,
-                });
+                this.clearError();
+                try {
+                  emitPosSyncCatchup();
+                } catch {
+                  // ignore
+                }
+              }}
+            >
+              Try again
+            </Button>
+            <Button
+              variant="secondary"
+              block
+              className="mt-2"
+              onClick={() => {
+                this.clearError();
                 window.location.reload();
               }}
             >

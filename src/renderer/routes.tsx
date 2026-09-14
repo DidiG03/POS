@@ -1,16 +1,12 @@
 import type { RouteObject } from 'react-router-dom';
-import { Navigate } from 'react-router-dom';
-import AppLayout from './app/AppLayout';
-import AdminLayout from './app/AdminLayout';
-import ReservationsLayout from './app/ReservationsLayout';
-import React from 'react';
+import { Navigate, useRouteError } from 'react-router-dom';
+import React, { useEffect } from 'react';
 import { useSessionStore } from './stores/session';
 import { useAdminSessionStore } from './stores/adminSession';
 import { useReservationSessionStore } from './stores/reservationSession';
 import { useLicenseCapabilities } from './stores/licenseCapabilities';
 import { staffPosHomePath } from '@shared/editionCapabilities';
 import { useKdsOrdersAccess } from './app/useKdsOrdersAccess';
-import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   isClockOnlyRole,
@@ -19,41 +15,79 @@ import {
 } from '@shared/utils/roles';
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import { PageSpinner } from './components/PageSpinner';
-import { ConfirmDialog } from './components/ui';
 import { shouldDeferShiftGuard } from './stores/sessionPersist';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { resumeMainProcessSession } from './utils/resumeSession';
+import { Button } from './components/ui';
+import { isChunkLoadError, retryLazyImport } from './utils/lazyRetry';
 
-const LoginPage = React.lazy(() => import('./app/pages/LoginPage'));
-const TablesPage = React.lazy(() => import('./app/pages/TablesPage'));
-const OrderPage = React.lazy(() => import('./app/pages/OrderPage'));
-const ReportsPage = React.lazy(() => import('./app/pages/ReportsPage'));
-const WaiterOrdersPage = React.lazy(
-  () => import('./app/pages/WaiterOrdersPage'),
+function lazyPage<T extends { default: React.ComponentType<any> }>(
+  importer: () => Promise<T>,
+) {
+  return React.lazy(() => retryLazyImport(importer));
+}
+
+const LoginPage = lazyPage(() => import('./app/pages/LoginPage'));
+const AppLayout = lazyPage(() => import('./app/AppLayout'));
+const AdminLayout = lazyPage(() => import('./app/AdminLayout'));
+const ReservationsLayout = lazyPage(() => import('./app/ReservationsLayout'));
+const ConfirmDialog = lazyPage(() =>
+  import('./components/ui/Modal').then((m) => ({ default: m.ConfirmDialog })),
 );
-const ClockPage = React.lazy(() => import('./app/pages/ClockPage'));
-const AdminPage = React.lazy(() => import('./app/pages/AdminPage'));
-const AdminTicketsPage = React.lazy(
-  () => import('./app/pages/AdminTicketsPage'),
-);
-const AdminUserTicketsPage = React.lazy(
+const TablesPage = lazyPage(() => import('./app/pages/TablesPage'));
+const OrderPage = lazyPage(() => import('./app/pages/OrderPage'));
+const ReportsPage = lazyPage(() => import('./app/pages/ReportsPage'));
+const WaiterOrdersPage = lazyPage(() => import('./app/pages/WaiterOrdersPage'));
+const ClockPage = lazyPage(() => import('./app/pages/ClockPage'));
+const AdminPage = lazyPage(() => import('./app/pages/AdminPage'));
+const AdminTicketsPage = lazyPage(() => import('./app/pages/AdminTicketsPage'));
+const AdminUserTicketsPage = lazyPage(
   () => import('./app/pages/AdminUserTicketsPage'),
 );
-const AdminSettingsPage = React.lazy(
+const AdminSettingsPage = lazyPage(
   () => import('./app/pages/AdminSettingsPage'),
 );
-const AdminMenuPage = React.lazy(() => import('./app/pages/AdminMenuPage'));
-const AdminStockPage = React.lazy(() => import('./app/pages/AdminStockPage'));
-const AdminReviewPage = React.lazy(() => import('./app/pages/AdminReviewPage'));
-const KdsPage = React.lazy(() => import('./app/pages/KdsPage'));
-const KdsSetupPage = React.lazy(() => import('./app/pages/KdsSetupPage'));
-const ReservationsLoginPage = React.lazy(
+const AdminMenuPage = lazyPage(() => import('./app/pages/AdminMenuPage'));
+const AdminStockPage = lazyPage(() => import('./app/pages/AdminStockPage'));
+const AdminReviewPage = lazyPage(() => import('./app/pages/AdminReviewPage'));
+const KdsPage = lazyPage(() => import('./app/pages/KdsPage'));
+const KdsSetupPage = lazyPage(() => import('./app/pages/KdsSetupPage'));
+const ReservationsLoginPage = lazyPage(
   () => import('./app/pages/ReservationsLoginPage'),
 );
-const ReservationsFloorPage = React.lazy(
+const ReservationsFloorPage = lazyPage(
   () => import('./app/pages/ReservationsFloorPage'),
 );
-const ReservationsListPage = React.lazy(
+const ReservationsListPage = lazyPage(
   () => import('./app/pages/ReservationsListPage'),
 );
+
+function RouteErrorPage() {
+  const err = useRouteError();
+  const { t } = useTranslation();
+  const chunk = isChunkLoadError(err);
+  useEffect(() => {
+    if (!chunk) return;
+    const id = window.setTimeout(() => window.location.reload(), 450);
+    return () => window.clearTimeout(id);
+  }, [chunk]);
+  return (
+    <PageSpinner
+      message={chunk ? t('boot.reloadChunk') : t('common.toastError')}
+      spinner={chunk}
+    >
+      {chunk ? null : (
+        <Button variant="primary" onClick={() => window.location.reload()}>
+          {t('routes.reload')}
+        </Button>
+      )}
+    </PageSpinner>
+  );
+}
+
+function withRouteError(route: RouteObject): RouteObject {
+  return { errorElement: <RouteErrorPage />, ...route };
+}
 
 function SuspenseFallback() {
   const { t } = useTranslation();
@@ -69,9 +103,46 @@ function withSuspenseNoFallback(el: React.ReactElement) {
   return <React.Suspense fallback={null}>{el}</React.Suspense>;
 }
 
+/**
+ * Privileged IPC is bound to this window's sender id. A persisted Zustand
+ * user is not enough: after restart / HMR the till can paint Tables while
+ * main still has no session, which floods `ipc_denied`. Wait until the
+ * token is rebound (or there is nothing to bind).
+ */
+function useIpcSessionReady(needsBind: boolean): boolean {
+  const [bound, setBound] = React.useState(false);
+  useEffect(() => {
+    if (!needsBind) {
+      setBound(false);
+      return;
+    }
+    let cancelled = false;
+    let attempts = 0;
+    let retry: number | null = null;
+    const run = () => {
+      void resumeMainProcessSession().then((ok) => {
+        if (cancelled) return;
+        if (ok || attempts >= 8) {
+          setBound(true);
+          return;
+        }
+        attempts += 1;
+        retry = window.setTimeout(run, 300);
+      });
+    };
+    run();
+    return () => {
+      cancelled = true;
+      if (retry != null) window.clearTimeout(retry);
+    };
+  }, [needsBind]);
+  return !needsBind || bound;
+}
+
 function RequireAuth({ children }: { children: React.ReactElement }) {
   const { t } = useTranslation();
   const user = useSessionStore((s) => s.user);
+  const sessionToken = useSessionStore((s) => s.sessionToken);
   const hasHydrated = useSessionStore((s) => s.hasHydrated);
   const authenticatedAt = useSessionStore((s) => s.authenticatedAt);
   // If running in browser (not Electron), require an open shift. This catches
@@ -84,6 +155,9 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
   const isKdsContext =
     typeof window !== 'undefined' &&
     (window.location.hash || '').startsWith('#/kds');
+  const ipcReady = useIpcSessionReady(
+    Boolean(user && sessionToken && !isBrowser),
+  );
   const clockOnly = Boolean(user && isClockOnlyRole((user as any).role));
   // Keep the waiter on the floor. A missing shift used to swap in LoginPage
   // while the JWT was still live, which bounced PIN → Tables → PIN.
@@ -113,6 +187,13 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
     const check = async (): Promise<void> => {
       if (cancelled) return;
       try {
+        const settings = await (window as any).api.settings
+          .get()
+          .catch(() => null);
+        if (!isClockCaptureEnabled(settings)) {
+          if (!cancelled) setNeedsShift(false);
+          return;
+        }
         const open = await (window as any).api.shifts.getOpen(userId);
         if (cancelled) return;
         if (open) {
@@ -148,41 +229,46 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
   ]);
   if (!hasHydrated) return <SuspenseFallback />;
   if (!user) return withSuspenseNoFallback(<LoginPage />);
+  if (!ipcReady) return <SuspenseFallback />;
   return (
     <>
       {children}
-      <ConfirmDialog
-        open={isBrowser && needsShift}
-        title={t('login.startShiftTitle', { name: user.displayName })}
-        body={t('login.resumeShiftBody')}
-        confirmLabel={t('common.confirm')}
-        cancelLabel={t('common.cancel')}
-        busy={shiftBusy}
-        onConfirm={() => {
-          void (async () => {
-            setShiftBusy(true);
-            try {
-              await (window as any).api.shifts.clockIn(user.id);
-              setNeedsShift(false);
-            } catch {
-              // Stay on the prompt; PIN bounce is worse than a retry.
-            } finally {
-              setShiftBusy(false);
-            }
-          })();
-        }}
-        onCancel={() => {
-          try {
-            window.dispatchEvent(
-              new CustomEvent('pos:forceLogout', {
-                detail: { reason: t('login.notClockedIn') },
-              }),
-            );
-          } catch {
-            // ignore
-          }
-        }}
-      />
+      {isBrowser && needsShift ? (
+        <React.Suspense fallback={null}>
+          <ConfirmDialog
+            open
+            title={t('login.startShiftTitle', { name: user.displayName })}
+            body={t('login.resumeShiftBody')}
+            confirmLabel={t('common.confirm')}
+            cancelLabel={t('common.cancel')}
+            busy={shiftBusy}
+            onConfirm={() => {
+              void (async () => {
+                setShiftBusy(true);
+                try {
+                  await (window as any).api.shifts.clockIn(user.id);
+                  setNeedsShift(false);
+                } catch {
+                  // Stay on the prompt; PIN bounce is worse than a retry.
+                } finally {
+                  setShiftBusy(false);
+                }
+              })();
+            }}
+            onCancel={() => {
+              try {
+                window.dispatchEvent(
+                  new CustomEvent('pos:forceLogout', {
+                    detail: { reason: t('login.notClockedIn') },
+                  }),
+                );
+              } catch {
+                // ignore
+              }
+            }}
+          />
+        </React.Suspense>
+      ) : null}
     </>
   );
 }
@@ -193,19 +279,24 @@ function RequireAdmin({ children }: { children: React.ReactElement }) {
   // afterward. (Previously these hooks lived after an early return, which
   // tripped react-hooks/rules-of-hooks.)
   const adminUser = useAdminSessionStore((s) => s.user);
+  const adminToken = useAdminSessionStore((s) => s.sessionToken);
   const staffUser = useSessionStore((s) => s.user);
+  const staffToken = useSessionStore((s) => s.sessionToken);
   const isBrowser =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
-  // Admin panel is not available on browser/tablet clients
-  if (isBrowser) return <Navigate to="/" replace />;
-  // Admin window uses its own persisted session so it doesn't get overwritten by waiter login.
   const isAdminContext =
     typeof window !== 'undefined' &&
     (window.location.hash || '').startsWith('#/admin');
   const user = isAdminContext ? adminUser : staffUser;
+  const ipcReady = useIpcSessionReady(
+    Boolean(user && (isAdminContext ? adminToken : staffToken) && !isBrowser),
+  );
+  // Admin panel is not available on browser/tablet clients
+  if (isBrowser) return <Navigate to="/" replace />;
   if (!user) return withSuspenseNoFallback(<LoginPage />);
   if (user.role !== 'ADMIN') return withSuspenseNoFallback(<LoginPage />);
+  if (!ipcReady) return <SuspenseFallback />;
   return children;
 }
 
@@ -365,14 +456,13 @@ function RequireKdsAccess({ children }: { children: React.ReactElement }) {
 }
 
 export const routes: RouteObject[] = [
-  { path: '/', element: withSuspenseNoFallback(<LoginPage />) },
+  {
+    path: '/',
+    element: withSuspenseNoFallback(<LoginPage />),
+  },
   {
     path: '/app',
-    element: (
-      <RequireAuth>
-        <AppLayout />
-      </RequireAuth>
-    ),
+    element: <RequireAuth>{withSuspense(<AppLayout />)}</RequireAuth>,
     children: [
       // No home screen: restaurant → tables, store → till sale.
       { index: true, element: <AppIndexRedirect /> },
@@ -425,11 +515,7 @@ export const routes: RouteObject[] = [
   // Standalone admin shell for separate window
   {
     path: '/admin',
-    element: (
-      <RequireAdmin>
-        <AdminLayout />
-      </RequireAdmin>
-    ),
+    element: <RequireAdmin>{withSuspense(<AdminLayout />)}</RequireAdmin>,
     children: [
       { index: true, element: withSuspense(<AdminPage />) },
       { path: 'review', element: withSuspense(<AdminReviewPage />) },
@@ -469,9 +555,7 @@ export const routes: RouteObject[] = [
     path: '/reservations/app',
     element: (
       <RequireReservations>
-        <RequireHost>
-          <ReservationsLayout />
-        </RequireHost>
+        <RequireHost>{withSuspense(<ReservationsLayout />)}</RequireHost>
       </RequireReservations>
     ),
     children: [
@@ -479,4 +563,4 @@ export const routes: RouteObject[] = [
       { path: 'list', element: withSuspense(<ReservationsListPage />) },
     ],
   },
-];
+].map(withRouteError);

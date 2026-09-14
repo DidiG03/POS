@@ -1,5 +1,7 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -10,24 +12,22 @@ import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../stores/session';
 import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { useTableStatus } from '@renderer/stores/tableStatus';
-import { UpdateNotification } from '../components/UpdateNotification';
-import { PrinterNotification } from '../components/PrinterNotification';
-import { FailedSyncPanel } from '../components/FailedSyncPanel';
+import { NotificationsPanel } from '../components/NotificationsPanel';
 import { BrandMark } from '../components/BrandMark';
+import { DocumentMeta } from '../components/DocumentMeta';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { formatNotificationTime } from '@shared/notificationDisplay';
 import { useKdsOrdersAccess } from './useKdsOrdersAccess';
 import { toast } from '../stores/toasts';
+import { reportAppError } from '../utils/reportAppError';
 import { getOfflineQueueCount } from '../utils/offlineQueue';
 import { isHostUnreachable } from '../utils/netQuality';
-import {
-  Badge,
-  Button,
-  ConfirmDialog,
-  EmptyState,
-  Modal,
-  StatusChip,
-  cn,
-} from '../components/ui';
+import { Button } from '../components/ui/Button';
+import { ConfirmDialog, Modal } from '../components/ui/Modal';
+import { EmptyState } from '../components/ui/Surface';
+import { StatusChip } from '../components/ui/Badge';
+import { cn } from '../components/ui/cn';
 import {
   IconBell,
   IconClock,
@@ -39,6 +39,22 @@ import {
   IconWifiOff,
 } from '../components/icons';
 
+const UpdateNotification = lazy(() =>
+  import('../components/UpdateNotification').then((m) => ({
+    default: m.UpdateNotification,
+  })),
+);
+const PrinterNotification = lazy(() =>
+  import('../components/PrinterNotification').then((m) => ({
+    default: m.PrinterNotification,
+  })),
+);
+const FailedSyncPanel = lazy(() =>
+  import('../components/FailedSyncPanel').then((m) => ({
+    default: m.FailedSyncPanel,
+  })),
+);
+
 export default function AppLayout() {
   const { t } = useTranslation();
   const { user, setUser } = useSessionStore();
@@ -49,6 +65,7 @@ export default function AppLayout() {
   const location = useLocation();
   const flushTablesFloor = location.pathname.includes('/app/tables');
   const [hasOpen, setHasOpen] = useState<boolean>(false);
+  const [captureClock, setCaptureClock] = useState(false);
   const [confirmModal, setConfirmModal] = useState<boolean>(false);
   const isBrowserClient =
     typeof window !== 'undefined' &&
@@ -248,8 +265,14 @@ export default function AppLayout() {
     let cancelled = false;
     (async () => {
       if (!user) return;
-      const open = await window.api.shifts.getOpen(user.id).catch(() => null);
-      if (!cancelled) setHasOpen(Boolean(open));
+      const [open, settings] = await Promise.all([
+        window.api.shifts.getOpen(user.id).catch(() => null),
+        window.api.settings.get().catch(() => null),
+      ]);
+      if (!cancelled) {
+        setHasOpen(Boolean(open));
+        setCaptureClock(isClockCaptureEnabled(settings));
+      }
     })();
     return () => {
       cancelled = true;
@@ -287,7 +310,7 @@ export default function AppLayout() {
       Icon: (props: { className?: string }) => ReactNode;
       isActive: boolean;
     }> = [];
-    if (!isWaiter) {
+    if (!isWaiter && (captureClock || clockOnly)) {
       items.push({
         to: '/app/clock',
         label: t('layout.clock'),
@@ -321,6 +344,7 @@ export default function AppLayout() {
     }
     return items;
   }, [
+    captureClock,
     clockOnly,
     hasTables,
     isWaiter,
@@ -332,6 +356,9 @@ export default function AppLayout() {
     t,
   ]);
   const showMobileTabBar = navItems.length > 0;
+  const pageTitle =
+    navItems.find((item) => item.isActive)?.label ||
+    (flushTablesFloor ? t('layout.tables') : t('brand.product'));
 
   const syncTone = !syncOk ? 'danger' : queued > 0 ? 'warn' : 'accent';
   const syncTitle = !syncOk
@@ -347,6 +374,17 @@ export default function AppLayout() {
         showMobileTabBar && 'pos-app--mobile-tabs',
       )}
     >
+      <DocumentMeta title={pageTitle} />
+      <button
+        type="button"
+        className="pos-skip-link"
+        onClick={() => {
+          const main = document.getElementById('pos-main');
+          main?.focus();
+        }}
+      >
+        {t('layout.skipToContent')}
+      </button>
       <Modal
         open={Boolean(user && billingPaused && !clockOnly)}
         onClose={() => {}}
@@ -372,11 +410,11 @@ export default function AppLayout() {
           </>
         }
       >
-        <div className="text-[13px] leading-relaxed text-gray-300">
+        <div className="text-[13px] leading-relaxed text-[color:var(--pos-fg)]">
           {t('layout.billingPausedBody')}
         </div>
         {billingCheckedAt > 0 && (
-          <div className="mt-3 text-[12px] text-gray-500">
+          <div className="mt-3 text-[12px] text-[color:var(--pos-fg-muted)]">
             {t('common.lastChecked', {
               time: new Date(billingCheckedAt).toLocaleTimeString(),
             })}
@@ -410,10 +448,10 @@ export default function AppLayout() {
                 className="hidden h-5 w-px shrink-0 bg-white/8 sm:block"
                 aria-hidden
               />
-              {hasOpen ? (
+              {hasOpen && captureClock ? (
                 <button
                   type="button"
-                  className="min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium text-gray-300 transition-colors hover:bg-white/6 hover:text-gray-50"
+                  className="min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)]"
                   style={{ minHeight: 0 }}
                   title={t('layout.clockOut')}
                   aria-label={t('layout.clockOut')}
@@ -441,7 +479,7 @@ export default function AppLayout() {
                   {user.displayName}
                 </button>
               ) : (
-                <div className="min-w-0 truncate px-1.5 text-[13px] font-medium text-gray-400">
+                <div className="min-w-0 truncate px-1.5 text-[13px] font-medium text-[color:var(--pos-fg-muted)]">
                   {user.displayName}
                 </div>
               )}
@@ -451,7 +489,10 @@ export default function AppLayout() {
 
         {/* Center nav — phones use the bottom tab bar instead so the header
             stays compact and Reports / Orders stay reachable. */}
-        <nav className="hidden min-w-0 max-w-full items-center overflow-x-auto sm:flex">
+        <nav
+          className="hidden min-w-0 max-w-full items-center overflow-x-auto sm:flex"
+          aria-label={t('layout.primaryNav')}
+        >
           <div className="pos-segmented">
             {navItems.map((item) => (
               <NavLink
@@ -515,6 +556,8 @@ export default function AppLayout() {
             <button
               className="pos-icon-btn"
               aria-label={t('common.notifications')}
+              aria-expanded={showNotifications}
+              aria-haspopup="dialog"
               onClick={() => setShowNotifications((v) => !v)}
               type="button"
             >
@@ -527,16 +570,18 @@ export default function AppLayout() {
             </button>
             {showNotifications && (
               <div
-                className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-80 max-w-[calc(100vw-1.25rem)] overflow-hidden"
+                className="pos-surface-panel absolute right-0 z-50 mt-1.5 w-[22.5rem] max-w-[calc(100vw-1.25rem)] overflow-hidden"
                 tabIndex={-1}
+                role="dialog"
+                aria-label={t('common.notifications')}
               >
-                <div className="flex items-center justify-between gap-3 border-b border-white/7 px-3 py-2.5">
-                  <div className="text-[13px] font-semibold text-gray-100">
+                <div className="flex items-center justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-2.5">
+                  <div className="text-[13px] font-semibold text-[color:var(--pos-fg)]">
                     {t('common.notifications')}
                   </div>
                   {user && unreadCount > 0 && (
                     <button
-                      className="rounded px-1 text-[12px] font-medium text-gray-400 hover:text-gray-100"
+                      className="rounded px-1 text-[12px] font-medium text-[color:var(--pos-fg-muted)] hover:text-[color:var(--pos-fg)]"
                       style={{ minHeight: 0 }}
                       onClick={async () => {
                         await window.api.notifications
@@ -555,6 +600,8 @@ export default function AppLayout() {
                     <NotificationsList
                       userId={user.id}
                       onCount={handleNotifCount}
+                      admin={String(user.role || '').toUpperCase() === 'ADMIN'}
+                      onNavigate={() => setShowNotifications(false)}
                     />
                   ) : (
                     <EmptyState
@@ -586,8 +633,10 @@ export default function AppLayout() {
       </header>
 
       <main
+        id="pos-main"
+        tabIndex={-1}
         className={cn(
-          'flex min-h-0 flex-1 flex-col overflow-hidden',
+          'flex min-h-0 flex-1 flex-col overflow-hidden outline-none',
           !flushTablesFloor && 'safe-x py-3 sm:py-5',
           !flushTablesFloor &&
             (showMobileTabBar
@@ -625,7 +674,7 @@ export default function AppLayout() {
         </nav>
       ) : null}
 
-      {user && (
+      {user && captureClock && (
         <ConfirmDialog
           open={confirmModal}
           title={t('layout.clockOutConfirmTitle')}
@@ -634,36 +683,46 @@ export default function AppLayout() {
           destructive
           onCancel={() => setConfirmModal(false)}
           onConfirm={async () => {
-            const r: any = await window.api.shifts.clockOut(user.id);
-            // The server refuses to close a shift while the waiter still owns
-            // open tables. Surface the reason and keep them signed in so they
-            // can finish or transfer the table.
-            if (r && typeof r === 'object' && r.ok === false) {
-              toast.error(
-                String(
-                  r.error ||
-                    t(
-                      hasTables
-                        ? 'layout.clockOutOpenTables'
-                        : 'layout.clockOutOpenSale',
-                    ),
-                ),
-                {
-                  title: t('layout.clockOutBlockedTitle'),
-                },
-              );
+            try {
+              const r: any = await window.api.shifts.clockOut(user.id);
+              // The server refuses to close a shift while the waiter still owns
+              // open tables. Surface the reason and keep them signed in so they
+              // can finish or transfer the table.
+              if (r && typeof r === 'object' && r.ok === false) {
+                toast.error(
+                  String(
+                    r.error ||
+                      t(
+                        hasTables
+                          ? 'layout.clockOutOpenTables'
+                          : 'layout.clockOutOpenSale',
+                      ),
+                  ),
+                  {
+                    title: t('layout.clockOutBlockedTitle'),
+                  },
+                );
+                setConfirmModal(false);
+                return;
+              }
+              setHasOpen(false);
+              forceLogout(t('common.clockedOut'));
+            } catch (e) {
+              reportAppError(e, {
+                fallback: t('layout.clockOutFailed'),
+                key: `shifts.clockOut:${user.id}`,
+              });
               setConfirmModal(false);
-              return;
             }
-            setHasOpen(false);
-            forceLogout(t('common.clockedOut'));
           }}
         />
       )}
 
-      <UpdateNotification />
-      <PrinterNotification />
-      <FailedSyncPanel />
+      <Suspense fallback={null}>
+        <UpdateNotification />
+        <PrinterNotification />
+        <FailedSyncPanel />
+      </Suspense>
     </div>
   );
 }
@@ -671,11 +730,14 @@ export default function AppLayout() {
 function NotificationsList({
   userId,
   onCount,
+  admin = false,
+  onNavigate,
 }: {
   userId: number;
   onCount: (n: number) => void;
+  admin?: boolean;
+  onNavigate?: () => void;
 }) {
-  const { t } = useTranslation();
   const [items, setItems] = useState<
     {
       id: number;
@@ -686,6 +748,7 @@ function NotificationsList({
     }[]
   >([]);
   useEffect(() => {
+    if (!userId) return;
     let cancelled = false;
     (async () => {
       const all = await window.api.notifications.list(userId).catch(() => []);
@@ -703,38 +766,12 @@ function NotificationsList({
   const filtered = items.filter(
     (n) => !/requested to add items/i.test(n.message),
   );
-  if (!filtered.length)
-    return (
-      <EmptyState
-        compact
-        icon={<IconBell />}
-        title={t('common.noNotifications')}
-      />
-    );
   return (
-    <ul className="space-y-1">
-      {filtered.map((n) => (
-        <li
-          key={n.id}
-          className={cn(
-            'rounded-lg border px-2.5 py-2',
-            n.readAt
-              ? 'border-transparent bg-white/3'
-              : 'border-white/12 bg-white/[0.05]',
-          )}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] text-gray-500 tabular">
-              {formatNotificationTimestamp(n.createdAt, t)}
-            </span>
-            {!n.readAt && <Badge tone="accent">{t('common.newBadge')}</Badge>}
-          </div>
-          <div className="mt-1 text-[13px] leading-snug text-gray-200">
-            {n.message}
-          </div>
-        </li>
-      ))}
-    </ul>
+    <NotificationsPanel
+      items={filtered}
+      admin={admin}
+      onNavigate={onNavigate}
+    />
   );
 }
 
@@ -786,7 +823,7 @@ function OwnerRequests({ userId }: { userId: number }) {
                 })}
               </div>
               <span className="shrink-0 text-[11px] text-gray-500 tabular">
-                {formatNotificationTimestamp(r.createdAt, t)}
+                {formatNotificationTime(r.createdAt, t)}
               </span>
             </div>
             {r.note && (
@@ -819,10 +856,13 @@ function OwnerRequests({ userId }: { userId: number }) {
                   if (deciding != null) return;
                   setDeciding(r.id);
                   try {
-                    await window.api.requests
-                      .approve(r.id, userId)
-                      .catch(() => {});
+                    await window.api.requests.approve(r.id, userId);
                     setRows((prev) => prev.filter((x) => x.id !== r.id));
+                  } catch (e) {
+                    reportAppError(e, {
+                      fallback: t('layout.requestDecideFailed'),
+                      key: `requests.approve:${r.id}`,
+                    });
                   } finally {
                     setDeciding(null);
                   }
@@ -837,10 +877,13 @@ function OwnerRequests({ userId }: { userId: number }) {
                   if (deciding != null) return;
                   setDeciding(r.id);
                   try {
-                    await window.api.requests
-                      .reject(r.id, userId)
-                      .catch(() => {});
+                    await window.api.requests.reject(r.id, userId);
                     setRows((prev) => prev.filter((x) => x.id !== r.id));
+                  } catch (e) {
+                    reportAppError(e, {
+                      fallback: t('layout.requestDecideFailed'),
+                      key: `requests.reject:${r.id}`,
+                    });
                   } finally {
                     setDeciding(null);
                   }
@@ -854,38 +897,4 @@ function OwnerRequests({ userId }: { userId: number }) {
       </ul>
     </div>
   );
-}
-
-function formatNotificationTimestamp(
-  iso: string,
-  tr: (key: string, opt?: Record<string, unknown>) => string,
-): string {
-  const createdAt = new Date(iso).getTime();
-  const now = Date.now();
-  const diffMs = Math.max(0, now - createdAt);
-  const minuteMs = 60 * 1000;
-  const hourMs = 60 * minuteMs;
-  const dayMs = 24 * hourMs;
-  const weekMs = 7 * dayMs;
-
-  if (diffMs < hourMs) {
-    const minutes = Math.max(1, Math.floor(diffMs / minuteMs));
-    return tr('time.minutesAgo', { count: minutes });
-  }
-  if (diffMs < dayMs) {
-    const hours = Math.max(1, Math.floor(diffMs / hourMs));
-    return tr('time.hoursAgo', { count: hours });
-  }
-  if (diffMs < weekMs) {
-    const days = Math.max(1, Math.floor(diffMs / dayMs));
-    return tr('time.daysAgo', { count: days });
-  }
-
-  const d = new Date(iso);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mm}/${yy} ${hh}:${min}`;
 }

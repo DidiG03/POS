@@ -180,9 +180,19 @@ function validateArticles(request: RegisterInvoiceRequest): ValidationIssue[] {
     const at = `articles[${index}]`;
     if (!String(article.articleId || '').trim()) {
       issues.push({ field: `${at}.articleId`, message: 'Required.' });
+    } else if (String(article.articleId).trim().length > 100) {
+      issues.push({
+        field: `${at}.articleId`,
+        message: 'Must be at most 100 characters.',
+      });
     }
     if (!String(article.name || '').trim()) {
       issues.push({ field: `${at}.name`, message: 'Required.' });
+    } else if (String(article.name).trim().length > 100) {
+      issues.push({
+        field: `${at}.name`,
+        message: 'Must be at most 100 characters.',
+      });
     }
     if (!String(article.soldIn || '').trim()) {
       issues.push({
@@ -212,6 +222,12 @@ function validateArticles(request: RegisterInvoiceRequest): ValidationIssue[] {
     }
     if (num(article.price) == null) {
       issues.push({ field: `${at}.price`, message: 'Must be a number.' });
+    } else if (Number(article.price) < 0) {
+      issues.push({
+        field: `${at}.price`,
+        message:
+          'Must be zero or greater. Discounts belong on rebate or invoiceRebate, not a negative unit price.',
+      });
     }
     issues.push(...rebateIssues(article.rebate, `${at}.rebate`));
   });

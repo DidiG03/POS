@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useToastStore, type ToastLevel } from '../stores/toasts';
-import { IconButton, cn } from './ui';
+import { IconButton } from './ui/Button';
+import { cn } from './ui/cn';
 import { IconAlert, IconCheck, IconClose, IconInfo } from './icons';
 
 const EDGE: Record<ToastLevel, string> = {

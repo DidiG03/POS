@@ -36,7 +36,13 @@ function storeForCurrentShell(): SessionStore {
   return useSessionStore as SessionStore;
 }
 
-function waitForPersistHydration(store: SessionStore, ms = 800): Promise<void> {
+/** Long enough for localStorage rehydration; short enough that a wedged persist cannot block boot. */
+export const PERSIST_HYDRATION_WAIT_MS = 4_000;
+
+function waitForPersistHydration(
+  store: SessionStore,
+  ms = PERSIST_HYDRATION_WAIT_MS,
+): Promise<void> {
   if (store.persist?.hasHydrated?.()) return Promise.resolve();
   return new Promise((resolve) => {
     let settled = false;
@@ -53,15 +59,23 @@ function waitForPersistHydration(store: SessionStore, ms = 800): Promise<void> {
   });
 }
 
-export async function resumeMainProcessSession(): Promise<void> {
+/**
+ * Bind the persisted PIN session to this window's IPC sender.
+ *
+ * Returns true when the renderer may call session-gated channels (or when
+ * there is no session and the login screen should show). False means the
+ * bind did not complete and the caller should wait rather than hit those
+ * channels — that is what produced `ipc_denied` / unauthenticated floods.
+ */
+export async function resumeMainProcessSession(): Promise<boolean> {
   // Browser and Capacitor clients talk to the host over HTTP, which carries
   // its own bearer token; there is no main-process binding to restore, and
   // their `window.api` shim has no real session to report on.
   if (typeof window !== 'undefined' && (window as any).__BROWSER_CLIENT__)
-    return;
+    return true;
 
   const api = (window as any)?.api;
-  if (typeof api?.auth?.resumeSession !== 'function') return;
+  if (typeof api?.auth?.resumeSession !== 'function') return true;
 
   const store = storeForCurrentShell();
   await waitForPersistHydration(store);
@@ -70,17 +84,20 @@ export async function resumeMainProcessSession(): Promise<void> {
     // A persisted user with no token predates this mechanism (or was revoked).
     // It cannot be proven, so it cannot be trusted.
     if (user) setUser(null);
-    return;
+    return true;
   }
 
-  let resumed: unknown;
   try {
-    resumed = await api.auth.resumeSession(sessionToken);
+    const resumed = await api.auth.resumeSession(sessionToken);
+    if (!resumed) {
+      setUser(null);
+      return true;
+    }
+    return true;
   } catch {
     // Transport failure is not proof of an invalid session. Leave the stored
-    // session alone; the guarded channels will reject until a retry succeeds,
-    // which is the safe direction to fail in.
-    return;
+    // session alone and tell the gate to wait — calling notifications/floor
+    // now would only log ipc_denied.
+    return false;
   }
-  if (!resumed) setUser(null);
 }

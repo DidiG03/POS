@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
+import { reportAppError } from '../../utils/reportAppError';
 import { computeDateRange, type DateRangePreset } from '@shared/dateRange';
 import {
   Badge,
@@ -31,12 +32,17 @@ export default function AdminTicketsPage() {
   const { t } = useTranslation();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const me = useAdminSessionStore((s) => s.user);
   const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState('');
   const [range, setRange] = useState<DateRangePreset>('today');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+  const [tracing, setTracing] = useState(
+    Boolean(params.get('table') || params.get('sale')),
+  );
+  const [traceMiss, setTraceMiss] = useState(false);
 
   async function load() {
     if (!me || me.role !== 'ADMIN') {
@@ -56,6 +62,81 @@ export default function AdminTicketsPage() {
     void load();
   }, [me?.id, me?.role, range, customStart, customEnd]);
 
+  useEffect(() => {
+    const table = String(params.get('table') || '').trim();
+    const area = String(params.get('area') || '').trim();
+    const sale = String(params.get('sale') || '').trim();
+    const startIso = params.get('start') || undefined;
+    const endIso = params.get('end') || undefined;
+    const wantStatus = String(params.get('status') || '').toUpperCase();
+    if (!table && !sale) {
+      setTracing(false);
+      setTraceMiss(false);
+      return;
+    }
+    if (!me || me.role !== 'ADMIN') return;
+    let cancelled = false;
+    setTracing(true);
+    setTraceMiss(false);
+    (async () => {
+      const counts = await window.api.admin
+        .listTicketCounts({ startIso, endIso })
+        .catch(() => []);
+      for (const row of counts) {
+        if (cancelled) return;
+        if (!row.tickets) continue;
+        const tickets = await window.api.admin
+          .listTicketsByUser(row.id, { startIso, endIso })
+          .catch(() => []);
+        const ranked = tickets.filter((ticket: any) => {
+          if (sale && String(ticket?.sale?.orderId || '') === sale) return true;
+          if (table && String(ticket.tableLabel || '') !== table) return false;
+          if (area && String(ticket.area || '') !== area) return false;
+          return Boolean(table);
+        });
+        const hit =
+          ranked.find(
+            (ticket: any) =>
+              wantStatus &&
+              wantStatus !== 'ALL' &&
+              String(ticket.status || '').toUpperCase() === wantStatus,
+          ) || ranked[0];
+        if (!hit) continue;
+        const next = new URLSearchParams();
+        if (startIso) next.set('start', startIso);
+        if (endIso) next.set('end', endIso);
+        next.set('name', row.name);
+        if (table) next.set('table', table);
+        if (area) next.set('area', area);
+        if (params.get('open')) next.set('open', '1');
+        if (params.get('status')) {
+          next.set('status', String(params.get('status')));
+        }
+        next.set('ticket', String(hit.id));
+        navigate(`/admin/tickets/${row.id}?${next.toString()}`, {
+          replace: true,
+        });
+        return;
+      }
+      if (!cancelled) {
+        setTracing(false);
+        setTraceMiss(true);
+      }
+    })().catch((e: unknown) => {
+      reportAppError(e, {
+        fallback: t('common.actionFailed'),
+        key: 'adminTickets.trace',
+      });
+      if (!cancelled) {
+        setTracing(false);
+        setTraceMiss(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [me?.id, me?.role, params, navigate]);
+
   const filtered = rows
     .filter((r) => r.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => b.tickets - a.tickets);
@@ -73,6 +154,20 @@ export default function AdminTicketsPage() {
 
   return (
     <div className="admin-page">
+      {tracing ? (
+        <div className="mb-3 text-[13px] text-gray-400">
+          {t('inbox.tracingTicket', {
+            table: params.get('table') || params.get('sale') || '',
+          })}
+        </div>
+      ) : traceMiss ? (
+        <div className="mb-3 rounded-lg border border-white/8 bg-white/3 px-3 py-2 text-[13px] text-gray-400">
+          <div className="font-medium text-gray-200">
+            {t('inbox.traceMissTitle')}
+          </div>
+          <div className="mt-0.5">{t('inbox.traceMissBody')}</div>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-end gap-2">
         <SearchInput
           value={q}

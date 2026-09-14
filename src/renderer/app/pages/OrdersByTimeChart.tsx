@@ -111,43 +111,48 @@ export function OrdersByTimeChart({
         className="review-heat-grid"
         role="img"
         aria-label={t('adminReview.ordersByTime')}
+        style={{
+          gridTemplateColumns: `3.5rem repeat(${hourList.length}, minmax(1.5rem, 1fr))`,
+        }}
       >
-        {hourList.map((hour) => (
-          <div key={hour} className="contents">
-            <div className="review-heat-hour">{hourLabel(hour, t)}</div>
-            {HEATMAP_DAYS_MON_FIRST.map((dow) => {
-              const cell = grid[reviewHeatmapIndex(dow, hour)];
-              const level = heatmapLevel(cell?.orders ?? 0, thresholds);
-              const day = weekdayNames[dow] || String(dow);
-              const label = t('adminReview.heatmapTooltip', {
-                day,
-                hour: hourLabel(hour, t),
-                orders: formatNumberMaxDecimals(cell?.orders ?? 0, 0),
-                revenue: fmtMoney(cell?.revenue ?? 0),
-              });
-              return (
-                <button
-                  key={`${dow}-${hour}`}
-                  type="button"
-                  className={cn(
-                    'review-heat-cell',
-                    `review-heat-cell--${level}`,
-                  )}
-                  title={label}
-                  aria-label={label}
-                  onMouseEnter={() => setHover(label)}
-                  onMouseLeave={() => setHover(null)}
-                  onFocus={() => setHover(label)}
-                  onBlur={() => setHover(null)}
-                />
-              );
-            })}
-          </div>
-        ))}
+        {HEATMAP_DAYS_MON_FIRST.map((dow) => {
+          const day = weekdayNames[dow] || String(dow);
+          return (
+            <div key={dow} className="contents">
+              <div className="review-heat-day">{day}</div>
+              {hourList.map((hour) => {
+                const cell = grid[reviewHeatmapIndex(dow, hour)];
+                const level = heatmapLevel(cell?.orders ?? 0, thresholds);
+                const label = t('adminReview.heatmapTooltip', {
+                  day,
+                  hour: hourLabel(hour, t),
+                  orders: formatNumberMaxDecimals(cell?.orders ?? 0, 0),
+                  revenue: fmtMoney(cell?.revenue ?? 0),
+                });
+                return (
+                  <button
+                    key={`${dow}-${hour}`}
+                    type="button"
+                    className={cn(
+                      'review-heat-cell',
+                      `review-heat-cell--${level}`,
+                    )}
+                    title={label}
+                    aria-label={label}
+                    onMouseEnter={() => setHover(label)}
+                    onMouseLeave={() => setHover(null)}
+                    onFocus={() => setHover(label)}
+                    onBlur={() => setHover(null)}
+                  />
+                );
+              })}
+            </div>
+          );
+        })}
         <div />
-        {HEATMAP_DAYS_MON_FIRST.map((dow) => (
-          <div key={dow} className="review-heat-day">
-            {weekdayNames[dow] || String(dow)}
+        {hourList.map((hour) => (
+          <div key={hour} className="review-heat-hour">
+            {String(hour).padStart(2, '0')}
           </div>
         ))}
       </div>

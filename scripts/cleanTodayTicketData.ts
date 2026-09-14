@@ -7,7 +7,7 @@
  *   pnpm db:clean-today -- --yes     # perform delete
  *
  * Clears: TicketLog, PrintJob, Covers, TicketRequest, KDS rows for today,
- * resets KdsDayCounter for today, and clears tables:open / tables:openAt.
+ * resets KdsDayCounter for today, and clears TableOccupancy (open tables).
  * Does NOT delete users, menu, shifts, reservations, inventory, etc.
  */
 
@@ -105,7 +105,12 @@ async function main() {
     await tx.covers.deleteMany({ where: { createdAt: whereToday } });
     await tx.ticketRequest.deleteMany({ where: { createdAt: whereToday } });
 
-    for (const key of ['tables:open', 'tables:openAt'] as const) {
+    await (tx as any).tableOccupancy.deleteMany({});
+    for (const key of [
+      'tables:open',
+      'tables:openAt',
+      'tables:occupancyMigrated',
+    ] as const) {
       await tx.syncState.upsert({
         where: { key },
         create: { key, valueJson: {} },

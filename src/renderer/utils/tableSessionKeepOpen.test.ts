@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  cachedTicketHasLines,
   cacheLooksLikeCurrentSession,
   shouldKeepCoversOnlyTableOpen,
 } from './tableSessionKeepOpen';
@@ -42,6 +43,18 @@ describe('shouldKeepCoversOnlyTableOpen', () => {
         localCovers: 4,
       }),
     ).toBe(false);
+  });
+});
+
+describe('cachedTicketHasLines', () => {
+  it('rejects missing, empty, or non-array items', () => {
+    expect(cachedTicketHasLines(null)).toBe(false);
+    expect(cachedTicketHasLines({ items: [] })).toBe(false);
+    expect(cachedTicketHasLines({ items: { name: 'Byrek' } })).toBe(false);
+  });
+
+  it('accepts a cached bill that still has lines', () => {
+    expect(cachedTicketHasLines({ items: [{ name: 'Cezar' }] })).toBe(true);
   });
 });
 

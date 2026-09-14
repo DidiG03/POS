@@ -33,10 +33,14 @@ import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
   ensureSseKeepAlive,
+  sseCatchupIfMissed,
 } from './services/realtime';
 import { getFloorSnapshot } from './services/floorSnapshot';
-import { findLatestTicketLogForCurrentSession } from './services/tableSession';
-import { splitTableKey } from '@shared/utils/tableKey';
+import {
+  asTicketLogItems,
+  rowIsInOpenSession,
+  ticketCreatedAtIso,
+} from '@shared/ticketLogItems';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
@@ -54,11 +58,13 @@ import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { authorizeLanRoute } from './services/lanPolicy';
 import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
 import { logSecurityEvent } from './services/security';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
+  gzipHtmlIfAccepted,
   resolveStaticFilePath,
   staticAssetCacheControl,
 } from './services/staticPath';
@@ -92,9 +98,12 @@ import {
   purgeKdsDoneTicketsForStation,
 } from './services/kdsRetention';
 import {
+  findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
   getCurrentTableSessionKey,
+  getTableSessionStartedAt,
 } from './services/tableSession';
+import { compactTicketLogSession } from './services/ticketLogCompact';
 import { finalizeShiftAfterClockOut } from './services/shiftSummary';
 import {
   listMyActiveTickets,
@@ -805,17 +814,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 RENDERER_ORIGIN,
               ).toString();
               const upstream = await fetch(upstreamUrl);
-              const buf = new Uint8Array(await upstream.arrayBuffer());
+              const buf = Buffer.from(await upstream.arrayBuffer());
+              const contentType =
+                upstream.headers.get('content-type') ||
+                getContentType(upstreamPath);
+              const packed = gzipHtmlIfAccepted(
+                buf,
+                contentType,
+                req.headers['accept-encoding'],
+              );
               const headers: Record<string, string> = {
-                'Content-Type':
-                  upstream.headers.get('content-type') ||
-                  getContentType(upstreamPath),
+                'Content-Type': contentType,
                 'Cache-Control': staticAssetCacheControl(upstreamPath),
+                'Content-Length': String(packed.body.length),
               };
+              if (packed.contentEncoding) {
+                headers['Content-Encoding'] = packed.contentEncoding;
+                headers.Vary = 'Accept-Encoding';
+              }
               if (corsOrigin)
                 headers['Access-Control-Allow-Origin'] = corsOrigin;
               res.writeHead(upstream.status, headers);
-              res.end(Buffer.from(buf));
+              res.end(packed.body);
               return;
             } catch {
               // fall back to local files
@@ -828,12 +848,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             ) {
               filePath = join(RENDERER_DIR, 'index.html');
             }
-            const stream = fs.createReadStream(filePath);
+            const contentType = getContentType(filePath);
             const headers: Record<string, string> = {
-              'Content-Type': getContentType(filePath),
+              'Content-Type': contentType,
               'Cache-Control': staticAssetCacheControl(filePath),
             };
             if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
+            if (contentType.includes('text/html')) {
+              const packed = gzipHtmlIfAccepted(
+                fs.readFileSync(filePath),
+                contentType,
+                req.headers['accept-encoding'],
+              );
+              headers['Content-Length'] = String(packed.body.length);
+              if (packed.contentEncoding) {
+                headers['Content-Encoding'] = packed.contentEncoding;
+                headers.Vary = 'Accept-Encoding';
+              }
+              res.writeHead(200, headers);
+              res.end(packed.body);
+              return;
+            }
+            const stream = fs.createReadStream(filePath);
             res.writeHead(200, headers);
             stream.pipe(res);
             return;
@@ -898,7 +934,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
         res.writeHead(200);
-        res.write('\n');
+        res.write('retry: 2000\n\n');
+        const lastEventHeader = req.headers['last-event-id'];
+        const lastEventQuery = parsed.query.lastEventId;
+        const lastEventRaw = Array.isArray(lastEventHeader)
+          ? lastEventHeader[0]
+          : lastEventHeader ||
+            (Array.isArray(lastEventQuery)
+              ? lastEventQuery[0]
+              : lastEventQuery) ||
+            '';
+        const lastEventId = Number(lastEventRaw);
+        const catchup = sseCatchupIfMissed(lastEventId);
+        if (catchup) res.write(catchup);
         const client = { res } as any;
         (globalThis as any).__SSE_CLIENTS__ =
           (globalThis as any).__SSE_CLIENTS__ || new Set();
@@ -1421,6 +1469,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               }
               throw e;
             }
+            await compactTicketLogSession(sessionKey);
             return { ok: true as const };
           },
         );
@@ -1469,39 +1518,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const area = String(parsed.query.area || '');
         const tableLabel = String(parsed.query.table || '');
         if (!area || !tableLabel) return send(res, 400, 'invalid', corsOrigin);
-        // Scope to the current open session — see the matching IPC
-        // handler `tickets:getLatestForTable`. Without this scope the
-        // mobile waiter view briefly shows the previous (paid-out)
-        // session's items right after Send.
-        const atRow = await prisma.syncState
-          .findUnique({ where: { key: 'tables:openAt' } })
-          .catch(() => null);
-        const atMap = ((atRow?.valueJson as any) || {}) as Record<
-          string,
-          string
-        >;
-        const sinceIso = atMap[`${area}:${tableLabel}`];
-        const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-        const since =
-          sinceParsed && Number.isFinite(sinceParsed.getTime())
-            ? sinceParsed
-            : null;
-        const where: any = { area, tableLabel };
-        if (since) where.createdAt = { gte: since };
-        const last = await prisma.ticketLog.findFirst({
-          where,
-          orderBy: { createdAt: 'desc' },
-        });
+        // Current sitting only. An unoccupied table has no bill.
+        const last = await findLatestTicketLogForCurrentSession(
+          area,
+          tableLabel,
+        );
         if (!last) return send(res, 200, null, corsOrigin);
-        const items = ((last.itemsJson as any) || []) as any[];
         return send(
           res,
           200,
           {
-            items,
+            items: asTicketLogItems(last.itemsJson),
             note: stripTransferTagsFromNote(last.note) || null,
             covers: last.covers ?? null,
-            createdAt: last.createdAt.toISOString(),
+            createdAt: ticketCreatedAtIso(last.createdAt),
             userId: last.userId,
           },
           corsOrigin,
@@ -2076,6 +2106,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
 
           let fiscalPayload = payload;
+          let fiscalPending:
+            | { fiscalPending: true; fiscalMessage?: string }
+            | undefined;
           const payKind = String(payload?.meta?.kind || '').toUpperCase();
           if (payKind === 'PAYMENT') {
             if (
@@ -2121,7 +2154,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 corsOrigin,
               );
             }
-            if (outcome.kind !== 'ok') {
+            if (outcome.kind === 'retryable') {
               return send(
                 res,
                 502,
@@ -2133,6 +2166,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 },
                 corsOrigin,
               );
+            }
+            if (outcome.kind === 'deferred') {
+              fiscalPending = {
+                fiscalPending: true,
+                fiscalMessage: outcome.message,
+              };
             }
             fiscalPayload = outcome.payload;
           }
@@ -2186,7 +2225,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             return send(
               res,
               200,
-              paymentPrintAccepted(r.ok, closeTable),
+              paymentPrintAccepted(r.ok, closeTable, fiscalPending),
               corsOrigin,
             );
           }
@@ -2617,18 +2656,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/tables/open') {
-        const key = 'tables:open';
-        const row = await prisma.syncState.findUnique({ where: { key } });
-        const map = ((row?.valueJson as any) || {}) as Record<string, boolean>;
-        return send(
-          res,
-          200,
-          Object.entries(map)
-            .filter(([, v]) => Boolean(v))
-            .map(([k]) => splitTableKey(k))
-            .filter((p): p is { area: string; label: string } => Boolean(p)),
-          corsOrigin,
-        );
+        return send(res, 200, await coreServices.listOpenTables(), corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/tables/floor-snapshot') {
         const area = String(parsed.query.area || '').trim();
@@ -2817,6 +2845,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             },
             corsOrigin,
           );
+        const settings = await coreServices.readSettings().catch(() => null);
+        if (!isClockCaptureEnabled(settings))
+          return send(res, 200, null, corsOrigin);
         const created = await prisma.dayShift.create({
           data: { openedById: Number(userId), totalsJson: {} as any } as any,
         });
@@ -2853,21 +2884,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (!force) {
           const openTables: Array<{ area: string; label: string }> = [];
           try {
-            const openRow = await prisma.syncState
-              .findUnique({ where: { key: 'tables:open' } })
-              .catch(() => null);
-            const openMap = ((openRow?.valueJson as any) || {}) as Record<
-              string,
-              boolean
-            >;
-            const keys = Object.entries(openMap)
-              .filter(([, v]) => Boolean(v))
-              .map(([k]) => k);
-            for (const key of keys) {
-              const idx = key.indexOf(':');
-              if (idx <= 0) continue;
-              const area = key.slice(0, idx);
-              const label = key.slice(idx + 1);
+            const keys = await coreServices.listOpenTables();
+            for (const { area, label } of keys) {
               const last = await prisma.ticketLog
                 .findFirst({
                   where: { area, tableLabel: label },
@@ -3100,25 +3118,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const area = String(parsed.query.area || '');
         const label = String(parsed.query.label || '');
         if (!area || !label) return send(res, 400, 'invalid', corsOrigin);
-        const openAtRow = await prisma.syncState
-          .findUnique({ where: { key: 'tables:openAt' } })
+        const sessionStart = await getTableSessionStartedAt(area, label);
+        if (!sessionStart) return send(res, 200, null, corsOrigin);
+        const sqlHit = await prisma.covers
+          .findFirst({
+            where: { area, label, createdAt: { gte: sessionStart } },
+            orderBy: { id: 'desc' },
+          })
           .catch(() => null);
-        const openAtMap = ((openAtRow?.valueJson as any) || {}) as Record<
-          string,
-          string
-        >;
-        const sinceIso = openAtMap[`${area}:${label}`];
-        const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-        const sessionStart =
-          sinceParsed && Number.isFinite(sinceParsed.getTime())
-            ? sinceParsed
-            : null;
-        const where: any = { area, label };
-        if (sessionStart) where.createdAt = { gte: sessionStart };
-        const row = await prisma.covers.findFirst({
-          where,
+        if (sqlHit) return send(res, 200, sqlHit.covers ?? null, corsOrigin);
+        const recent = await prisma.covers.findMany({
+          where: { area, label },
           orderBy: { id: 'desc' },
+          take: 20,
         });
+        const row = recent.find((r) =>
+          rowIsInOpenSession(r.createdAt, sessionStart.getTime()),
+        );
         return send(res, 200, row?.covers ?? null, corsOrigin);
       }
 
@@ -3129,17 +3145,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const [users, openShifts, openTables, sales] = await Promise.all([
           prisma.user.count({ where: { active: true } }),
           prisma.dayShift.count({ where: { closedAt: null } }),
-          (async () => {
-            const key = 'tables:open';
-            const row = await prisma.syncState
-              .findUnique({ where: { key } })
-              .catch(() => null);
-            const map = ((row?.valueJson as any) || {}) as Record<
-              string,
-              boolean
-            >;
-            return Object.values(map).filter(Boolean).length;
-          })(),
+          coreServices.countOpenTables().catch(() => 0),
           fetchPaidSales({ from: todayStart, to: todayEnd }),
         ]);
         const settings = await coreServices.readSettings();
@@ -3196,21 +3202,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         });
         const { revenueNet: revenueTodayNet, revenueVat: revenueTodayVat } =
           sumPaidRevenue(sales);
-        const openRow = await prisma.syncState
-          .findUnique({ where: { key: 'tables:open' } })
-          .catch(() => null);
-        const openMap = ((openRow?.valueJson as any) || {}) as Record<
-          string,
-          boolean
-        >;
-        const openKeys = Object.entries(openMap)
-          .filter(([, v]) => Boolean(v))
-          .map(([k]) => k);
+        const openList = await coreServices.listOpenTables().catch(() => []);
         const latestMatches = await Promise.all(
-          openKeys.map(async (k) => {
-            const parsed = splitTableKey(k);
-            if (!parsed) return false;
-            const { area, label } = parsed;
+          openList.map(async ({ area, label }) => {
             const last = await prisma.ticketLog
               .findFirst({
                 where: { area, tableLabel: label },

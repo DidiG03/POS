@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { invalidateCachePrefix } from './swrCache';
+import { cacheLatestTicket, ingestFloorSnapshot } from './posReadCache';
 import { readTicketForTable, type TicketReadDeps } from './ticketRead';
 
 function deps(
@@ -21,6 +23,10 @@ function deps(
 }
 
 describe('readTicketForTable', () => {
+  beforeEach(() => {
+    invalidateCachePrefix('pos:ticket:');
+    invalidateCachePrefix('pos:floor:');
+  });
   it('returns the lines the host reports', async () => {
     const d = deps([{ items: [{ name: 'Byrek', qty: 1 }], note: 'no salt' }]);
     const read = await readTicketForTable('Salla', 'T7', d);
@@ -77,6 +83,86 @@ describe('readTicketForTable', () => {
 
   it('treats a missing ticket as an empty bill, not a failure', async () => {
     const d = deps([null, null]);
+
+    await expect(readTicketForTable('Salla', 'T7', d)).resolves.toEqual({
+      ok: true,
+      items: [],
+      note: '',
+    });
+  });
+
+  it('uses the floor snapshot when getLatestForTable is empty', async () => {
+    const d: TicketReadDeps & { calls: number; invalidated: number } = {
+      ...deps([{ items: [] }, { items: [] }]),
+      fetchFloor: async () => ({
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T7',
+            openedAt: '2026-09-11T13:55:42.708Z',
+            userId: 1,
+            covers: 2,
+            total: 1600,
+            items: [
+              { name: 'Sallatë Ullishtja', qty: 1, unitPrice: 600 },
+              { name: 'Sallatë cezar', qty: 1, unitPrice: 600 },
+            ],
+            note: null,
+          },
+        ],
+      }),
+    };
+
+    await expect(readTicketForTable('Salla', 'T7', d)).resolves.toEqual({
+      ok: true,
+      items: [
+        { name: 'Sallatë Ullishtja', qty: 1, unitPrice: 600 },
+        { name: 'Sallatë cezar', qty: 1, unitPrice: 600 },
+      ],
+      note: '',
+    });
+  });
+
+  it('uses an already-ingested floor bill when the live floor fetch is empty', async () => {
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T8',
+            openedAt: '2026-09-11T14:00:31.983Z',
+            userId: 1,
+            covers: 3,
+            total: 500,
+            items: [{ name: 'Ravioli 4-Djathrat', qty: 1, unitPrice: 500 }],
+            note: null,
+          },
+        ],
+      },
+      { area: 'Salla' },
+    );
+    const d: TicketReadDeps & { calls: number; invalidated: number } = {
+      ...deps([null, null]),
+      fetchFloor: async () => null,
+    };
+
+    await expect(readTicketForTable('Salla', 'T8', d)).resolves.toEqual({
+      ok: true,
+      items: [{ name: 'Ravioli 4-Djathrat', qty: 1, unitPrice: 500 }],
+      note: '',
+    });
+  });
+
+  it('does not restore a leftover cache for a table missing from the floor', async () => {
+    ingestFloorSnapshot({ tables: [] }, { area: 'Salla' });
+    cacheLatestTicket('Salla', 'T7', {
+      items: [{ name: 'Sallatë cezar', qty: 1, unitPrice: 600 }],
+      note: '',
+    });
+    const d: TicketReadDeps & { calls: number; invalidated: number } = {
+      ...deps([null, null]),
+      fetchFloor: async () => ({ tables: [] }),
+    };
 
     await expect(readTicketForTable('Salla', 'T7', d)).resolves.toEqual({
       ok: true,

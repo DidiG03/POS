@@ -222,7 +222,18 @@ export function postCancelInvoice(
   request: CancelInvoiceRequest,
   options?: PostOptions,
 ): Promise<FiscalHttpResult> {
-  return postFiscal(settings, FISCAL_ROUTES.cancel, request, options);
+  const iicRef = String(request.correctiveInvoice?.iicRef || '').trim();
+  const body: CancelInvoiceRequest = {
+    docId: String(request.docId || '').trim(),
+    correctiveInvoice: { iicRef },
+  };
+  const operatorCode = String(request.operatorCode || '').trim();
+  if (operatorCode) body.operatorCode = operatorCode;
+  if (request.isEinvoice === true) {
+    body.isEinvoice = true;
+    if (request.selectedProcess) body.selectedProcess = request.selectedProcess;
+  }
+  return postFiscal(settings, FISCAL_ROUTES.cancel, body, options);
 }
 
 export function postInvoiceStatus(

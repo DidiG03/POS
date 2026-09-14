@@ -212,12 +212,11 @@ jobs:
             echo
             echo "Windows POS and KDS installers are published onto this same tag."
             echo
-            echo "### Changes since v0.2.27"
-            echo "- Sales ledger with durable receipts, paid-at timestamps, and sale corrections"
-            echo "- Fiscal EasyPOS recovery, corrective invoices, and payment EIC"
-            echo "- Store vs restaurant editions, staff salary, and paid analytics"
-            echo "- Ticket courses and seats, waiter orders, KDS floor orders, and barcode scan"
-            echo "- UI theme refresh and POS LAN server discovery"
+            echo "### Changes since v0.2.28"
+            echo "- Floor plan waits on a spinner instead of flashing the empty-area state"
+            echo "- Error toasts for failed actions, plus Sentry reports from tills and Waiter devices"
+            echo "- Faster, more reliable Waiter phones after wake, host scan, and dropped SSE"
+            echo "- SQLite busy handling, table occupancy, item cost, and fiscal correction updates"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

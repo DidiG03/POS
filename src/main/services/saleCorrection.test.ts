@@ -58,6 +58,11 @@ vi.mock('@db/client', () => ({
         db.corrections.push(row);
         return row;
       }),
+      update: vi.fn(async ({ where, data }: any) => {
+        const row = db.corrections.find((c) => c.id === Number(where.id));
+        if (row) Object.assign(row, data);
+        return row;
+      }),
     },
     $transaction: vi.fn(async (fn: any) =>
       fn({
@@ -82,9 +87,18 @@ vi.mock('@db/client', () => ({
             db.corrections.push(row);
             return { id: row.id };
           },
+          update: async ({ where, data }: any) => {
+            const row = db.corrections.find((c) => c.id === Number(where.id));
+            if (row) Object.assign(row, data);
+            return row;
+          },
         },
       }),
     ),
+    syncState: {
+      findUnique: vi.fn(async () => null),
+      upsert: vi.fn(async () => ({})),
+    },
   },
 }));
 
@@ -105,7 +119,29 @@ vi.mock('./fiscal/claims', () => ({
   }),
 }));
 
+vi.mock('./fiscal/cancel', () => ({
+  cancelInvoice: vi.fn(async () => ({
+    kind: 'rejected',
+    docId: 'cancel-test',
+    message: 'not configured in test',
+  })),
+}));
+
+const { registerCorrectiveInvoice } = vi.hoisted(() => ({
+  registerCorrectiveInvoice: vi.fn(async () => ({
+    kind: 'rejected',
+    docId: 'corr-test',
+    message: 'not configured in test',
+  })),
+}));
+
+vi.mock('./fiscal/corrective', () => ({
+  registerCorrectiveInvoice,
+}));
+
 import { applySaleCorrection, mapOrderToFiscalSaleRow } from './saleCorrection';
+import { coreServices } from './core';
+import { cancelInvoice } from './fiscal/cancel';
 
 function seedSale(options?: { fiscalized?: boolean; status?: string }) {
   db.orders.set(1, {
@@ -155,6 +191,7 @@ beforeEach(() => {
   db.nextCorrectionId = 1;
   flagged.length = 0;
   notified.length = 0;
+  registerCorrectiveInvoice.mockClear();
 });
 
 describe('applySaleCorrection — cancellation', () => {
@@ -229,6 +266,37 @@ describe('applySaleCorrection — cancellation', () => {
     expect(notified).toHaveLength(1);
     expect(notified[0].message).toContain('reversed');
   });
+
+  it('stamps the cancellation IIC once CIS accepts it', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true },
+    } as any);
+    vi.mocked(cancelInvoice).mockResolvedValueOnce({
+      kind: 'complete',
+      docId: 'cancel-ok',
+      identifiers: { iic: 'NSLF-CANCEL', fic: 'NIVF-CANCEL' },
+    } as any);
+
+    const result = await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Guest never served',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      needsFiling: false,
+      cancellation: { state: 'FILED', nslf: 'NSLF-CANCEL' },
+    });
+    expect(db.corrections[0]).toMatchObject({
+      correctionNslf: 'NSLF-CANCEL',
+      correctionNivf: 'NIVF-CANCEL',
+    });
+    expect(db.corrections[0].filedAt).toBeInstanceOf(Date);
+    expect(flagged).toHaveLength(0);
+  });
 });
 
 describe('applySaleCorrection — corrective', () => {
@@ -262,6 +330,38 @@ describe('applySaleCorrection — corrective', () => {
     });
 
     expect(flagged[0].reason).toContain('Corrective invoice required for 1');
+  });
+
+  it('files the restated invoice when fiskalizimi is on', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+    } as any);
+    registerCorrectiveInvoice.mockResolvedValueOnce({
+      kind: 'complete',
+      docId: 'corr-ok',
+      identifiers: { fic: 'NIVF-CORR' },
+    });
+
+    const result = await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee charged twice',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      needsFiling: false,
+      corrective: { state: 'FILED', nivf: 'NIVF-CORR' },
+    });
+    expect(flagged).toHaveLength(0);
+    expect(registerCorrectiveInvoice).toHaveBeenCalledTimes(1);
+    const sent = registerCorrectiveInvoice.mock.calls[0][1];
+    expect(sent.original.iic).toBe('IIC-1');
+    expect(sent.articles.map((a: any) => a.name)).toEqual(['Tavë kosi']);
+    expect(sent.payment[0].amount).toBe(1000);
   });
 });
 
@@ -336,6 +436,9 @@ describe('mapOrderToFiscalSaleRow', () => {
       fiscalNivf: 'NIVF-1',
       fiscalEic: 'EIC-1',
       docId: 'doc-1',
+      fiscalLink: null,
+      fiscalQrCode: null,
+      fiscalTin: null,
     });
     expect(row.items).toEqual([
       { id: 1, name: 'Espresso', qty: 2, unitPrice: 150, voided: false },

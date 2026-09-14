@@ -7,6 +7,13 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { PageSpinner } from '../../components/PageSpinner';
+import { floorTableA11yName } from '../../utils/floorTableA11y';
+import {
+  isFloorLayoutPending,
+  isFloorLayoutVacant,
+} from '../../utils/floorLayoutState';
+import { reportAppError } from '../../utils/reportAppError';
 import {
   DEFAULT_TABLE_COLOR,
   TABLE_COLOR_PALETTE,
@@ -436,6 +443,8 @@ type FloorCanvasProps = {
   badgeByLabel?: BadgeMap;
   /** When set, tables show a divider + this count under the label. */
   usageCountByLabel?: Record<string, number>;
+  /** Labels to ring so a notification can point at a table on the floor. */
+  highlightLabels?: string[];
   // Interactions
   onTableClick?: (label: string, members?: string[]) => void;
   /** Press-and-hold or right-click on a table (host floor, not the layout editor). */
@@ -469,6 +478,7 @@ export default function FloorCanvas({
   unlistedColorClass,
   badgeByLabel,
   usageCountByLabel,
+  highlightLabels,
   onTableClick,
   onTableLongPress,
   onLayoutReady,
@@ -498,6 +508,7 @@ export default function FloorCanvas({
   // update) — never on per-node edits — so the editor re-centres the
   // layout on load/resize without snapping back to centre mid-drag.
   const [layoutVersion, setLayoutVersion] = useState(0);
+  const [layoutFailed, setLayoutFailed] = useState(false);
   const onLayoutReadyRef = useRef(onLayoutReady);
   onLayoutReadyRef.current = onLayoutReady;
 
@@ -506,6 +517,7 @@ export default function FloorCanvas({
   useEffect(() => {
     let cancelled = false;
     setNodes(null);
+    setLayoutFailed(false);
     setSaveError(null);
     (async () => {
       if (!area) {
@@ -514,12 +526,28 @@ export default function FloorCanvas({
         onLayoutReadyRef.current?.({ area, tableCount: 0 });
         return;
       }
+      let loadFailed = false;
       const saved = await (window as any).api.layout
         .get(userId, area, scope)
-        .catch(() => null);
+        .catch((e: unknown) => {
+          loadFailed = true;
+          reportAppError(e, {
+            fallback: t('tables.layoutLoadFailed'),
+            key: `layout.get:${userId}:${area}:${scope}`,
+          });
+          return null;
+        });
       if (cancelled) return;
+      if (loadFailed) {
+        setLayoutFailed(true);
+        setNodes([]);
+        setDirty(false);
+        onLayoutReadyRef.current?.({ area, tableCount: 0 });
+        return;
+      }
       const next =
         Array.isArray(saved) && saved.length ? normaliseSavedNodes(saved) : [];
+      setLayoutFailed(false);
       setNodes(next);
       setDirty(false);
       setLayoutVersion((v) => v + 1);
@@ -529,7 +557,7 @@ export default function FloorCanvas({
     return () => {
       cancelled = true;
     };
-  }, [userId, area, scope]);
+  }, [userId, area, scope, t]);
 
   // Latest nodes, readable without making memos/callbacks depend on every
   // edit (which would otherwise recompute the editor centring on each drag).
@@ -551,9 +579,16 @@ export default function FloorCanvas({
       if (!isEditorRef.current || !dirtyRef.current) return;
       const draft = nodesRef.current;
       if (!draft?.length) return;
-      void (window as any).api.layout.save(uid, a, draft, sc);
+      void (window as any).api.layout
+        .save(uid, a, draft, sc)
+        .catch((e: unknown) => {
+          reportAppError(e, {
+            fallback: t('tables.layoutSaveFailed'),
+            key: `layout.save:${uid}:${a}:${sc}`,
+          });
+        });
     };
-  }, [userId, area, scope]);
+  }, [userId, area, scope, t]);
 
   // Editor centring offset: translate-only (scale 1) so the dining-room
   // plate (and any pieces on it) sit centred in the canvas like the
@@ -812,18 +847,26 @@ export default function FloorCanvas({
         scope,
       );
       if (ok === false) {
-        setSaveError('Could not save the floor layout.');
+        const msg = t('tables.layoutSaveFailed');
+        setSaveError(msg);
+        reportAppError(new Error(msg), {
+          fallback: msg,
+          key: `layout.save:${userId}:${area}:${scope}`,
+        });
         return;
       }
       setDirty(false);
     } catch (e: any) {
-      setSaveError(
-        String(e?.message || e || 'Could not save the floor layout.'),
-      );
+      const msg = String(e?.message || e || t('tables.layoutSaveFailed'));
+      setSaveError(msg);
+      reportAppError(e, {
+        fallback: t('tables.layoutSaveFailed'),
+        key: `layout.save:${userId}:${area}:${scope}`,
+      });
     } finally {
       setSaving(false);
     }
-  }, [nodes, userId, area, scope]);
+  }, [nodes, userId, area, scope, t]);
 
   const tables = useMemo(() => (nodes || []).filter(isFloorTableNode), [nodes]);
   const areas = useMemo(() => (nodes || []).filter(isFloorAreaNode), [nodes]);
@@ -1169,18 +1212,30 @@ export default function FloorCanvas({
           try {
             const saved = await (window as any).api.layout
               .get(userId, area, scope)
-              .catch(() => null);
+              .catch((e: unknown) => {
+                reportAppError(e, {
+                  fallback: t('tables.layoutLoadFailed'),
+                  key: `layout.get:${userId}:${area}:${scope}`,
+                });
+                return null;
+              });
             if (cancelled) return;
             if (!Array.isArray(saved)) return;
             setNodes(normaliseSavedNodes(saved));
             setDirty(false);
             setLayoutVersion((v) => v + 1);
-          } catch {
-            // ignore
+          } catch (e) {
+            reportAppError(e, {
+              fallback: t('tables.layoutLoadFailed'),
+              key: `layout.get:${userId}:${area}:${scope}`,
+            });
           }
         })();
-      } catch {
-        // ignore
+      } catch (e) {
+        reportAppError(e, {
+          fallback: t('tables.layoutLoadFailed'),
+          key: `layout.event:${area}`,
+        });
       }
     };
     window.addEventListener('pos:layoutChanged', onLayoutChanged);
@@ -1188,7 +1243,7 @@ export default function FloorCanvas({
       cancelled = true;
       window.removeEventListener('pos:layoutChanged', onLayoutChanged);
     };
-  }, [area, userId, scope, editable, dirty]);
+  }, [area, userId, scope, editable, dirty, t]);
 
   const shellStaticHeightClasses =
     'h-[calc(100dvh-260px)] min-h-[320px] sm:h-[calc(100vh-300px)] sm:min-h-[420px] max-h-[1100px]';
@@ -1318,29 +1373,26 @@ export default function FloorCanvas({
           lives on the dining-room plate (same coords as the pieces). */}
       <div
         ref={outerRef}
-        className={`relative bg-black ${
-          flush ? '' : 'rounded-lg border border-gray-700'
-        } ${
+        className={`relative pos-floor-canvas ${
+          editable ? 'pos-floor-canvas--editor' : ''
+        } ${flush ? '' : 'rounded-lg border border-[var(--pos-border-strong)]'} ${
           fillAvailableHeight ? 'min-h-0 flex-1' : shellStaticHeightClasses
         } ${editable ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden touch-none'}`}
-        style={
-          editable
-            ? { backgroundColor: '#07090c' }
-            : {
-                backgroundImage:
-                  'linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)',
-                backgroundSize: '40px 40px',
-              }
-        }
       >
+        {isFloorLayoutPending(nodes) && !editable ? (
+          <PageSpinner message={t('tables.loading')} />
+        ) : null}
         {!editable && isZoomed && (
           <button
             type="button"
             onClick={resetZoom}
-            className="absolute top-2 right-2 z-20 px-2.5 py-1.5 rounded-full bg-gray-900/80 backdrop-blur text-xs font-semibold text-white border border-white/10 shadow-lg active:scale-95"
-            title="Reset zoom"
+            className="absolute top-2 right-2 z-20 px-2.5 py-1.5 rounded-full bg-[var(--pos-surface)]/90 backdrop-blur text-xs font-semibold text-[var(--pos-fg)] border border-[var(--pos-border)] shadow-lg active:scale-95"
+            title={t('tables.resetZoom')}
+            aria-label={t('tables.resetZoom')}
           >
-            {Math.round(userZoom.scale * 100)}% • Reset
+            {t('tables.resetZoomPct', {
+              pct: Math.round(userZoom.scale * 100),
+            })}
           </button>
         )}
         <div
@@ -1414,7 +1466,7 @@ export default function FloorCanvas({
                   top: 0,
                   width: FLOOR_ROOM_W,
                   height: FLOOR_ROOM_H,
-                  backgroundColor: 'rgba(17, 24, 39, 0.92)',
+                  backgroundColor: 'var(--pos-floor-room)',
                   backgroundImage:
                     'linear-gradient(rgba(251,191,36,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(251,191,36,0.07) 1px, transparent 1px)',
                   backgroundSize: `${FLOOR_GRID}px ${FLOOR_GRID}px`,
@@ -1429,7 +1481,7 @@ export default function FloorCanvas({
                   <span className="opacity-50 text-xs">▾</span>
                   {t('settingsFloor.entrance')}
                 </div>
-                {(!nodes || nodes.length === 0) && (
+                {isFloorLayoutVacant(nodes) && (
                   <div className="absolute inset-0 flex items-center justify-center text-sm text-amber-100/70 text-center px-8">
                     {t('settingsFloor.startHere')}
                   </div>
@@ -1452,12 +1504,17 @@ export default function FloorCanvas({
             {renderTables.map((t) => {
               const canMergeDrag =
                 mergeEnabled && !editable && !membersOccupied(t.memberLabels);
+              const traced = Boolean(
+                highlightLabels?.some((label) =>
+                  t.memberLabels.includes(label),
+                ),
+              );
               return (
                 <MemoCircle
                   key={t.displayKey}
                   node={t}
                   editable={editable}
-                  selected={selectedId === t.id}
+                  selected={selectedId === t.id || traced}
                   mergeHighlight={mergeHoverKey === t.displayKey}
                   mergeDragEnabled={canMergeDrag}
                   onMove={handleMove}
@@ -1513,7 +1570,7 @@ export default function FloorCanvas({
                 />
               );
             })}
-            {(!nodes || nodes.length === 0) && !editable && (
+            {isFloorLayoutVacant(nodes) && !layoutFailed && !editable && (
               <div className="absolute inset-0 flex items-center justify-center text-sm opacity-70 text-center px-4">
                 {emptyMessage ||
                   (showToolbar
@@ -1576,7 +1633,8 @@ function Inspector({
           type="button"
           className="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600"
           onClick={onClose}
-          title="Close inspector"
+          title={t('common.close')}
+          aria-label={t('common.close')}
         >
           <IconClose />
         </button>
@@ -1665,7 +1723,7 @@ function Inspector({
                       ? 'border-emerald-400'
                       : 'border-gray-700 hover:border-gray-500'
                   }`}
-                  style={{ backgroundColor: DEFAULT_TABLE_COLOR }}
+                  style={{ backgroundColor: 'var(--pos-floor-table)' }}
                   onClick={() =>
                     onChange(node.id, {
                       color: undefined,
@@ -2242,6 +2300,7 @@ function Circle({
   badge?: string;
   usageCount?: number;
 }) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number }>({
     x: node.x,
@@ -2476,14 +2535,16 @@ function Circle({
   }, [editable, mergeDragEnabled]);
 
   const shape: TableShape = node.shape ?? 'circle';
-  const w = Math.max(36, Number(node.w) || (shape === 'rect' ? 100 : 64));
-  const h = Math.max(36, Number(node.h) || (shape === 'rect' ? 56 : 64));
+  const fill = resolveTableFillColor(node.color);
+  const useTokenFill = !colorClass && fill === DEFAULT_TABLE_COLOR;
+  const w = Math.max(44, Number(node.w) || (shape === 'rect' ? 100 : 64));
+  const h = Math.max(44, Number(node.h) || (shape === 'rect' ? 56 : 64));
   const radius =
     shape === 'circle' ? '9999px' : shape === 'square' ? '10px' : '12px';
   const ring = selected
-    ? 'ring-2 ring-emerald-300 ring-offset-2 ring-offset-gray-900'
+    ? 'ring-2 ring-emerald-300 ring-offset-2 ring-offset-[var(--pos-floor-bg)]'
     : mergeHighlight
-      ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-gray-900'
+      ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-[var(--pos-floor-bg)]'
       : '';
   const cursorClass = editable
     ? 'cursor-move'
@@ -2492,13 +2553,25 @@ function Circle({
         ? 'cursor-grabbing'
         : 'cursor-grab'
       : 'cursor-pointer';
+  const tableName = floorTableA11yName({
+    label: node.label,
+    occupied: Boolean(colorClass),
+    openLabel: t('tables.statusOpen'),
+    freeLabel: t('tables.statusFree'),
+    detail:
+      badge ||
+      (node.seats ? t('tables.a11ySeats', { count: node.seats }) : null),
+  });
   return (
     // Outer wrapper sized to the table; allows the floating delete
     // button to overflow past the table edge without being clipped.
     <div
       ref={ref}
       data-haptic={editable ? 'off' : 'light'}
-      className={`absolute ${cursorClass} select-none`}
+      role={editable ? undefined : 'button'}
+      tabIndex={editable ? undefined : 0}
+      aria-label={tableName}
+      className={`absolute ${cursorClass} select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70`}
       style={{
         left: pos.x,
         top: pos.y,
@@ -2522,6 +2595,13 @@ function Circle({
         if (Date.now() < suppressClickUntilRef.current) return;
         onClickRef.current?.();
       }}
+      onKeyDown={(e) => {
+        if (editable) return;
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        if (Date.now() < suppressClickUntilRef.current) return;
+        onClickRef.current?.();
+      }}
       onContextMenu={(e) => {
         if (editable || !onLongPressRef.current) return;
         e.preventDefault();
@@ -2531,18 +2611,18 @@ function Circle({
           clientY: e.clientY,
         });
       }}
-      title={node.seats ? `${node.label} · seats ${node.seats}` : node.label}
+      title={tableName}
     >
       {/* Inner surface holds the colored background, label and seats —
           everything that should be clipped to the table's shape stays
           inside this layer. */}
       <div
-        className={`relative w-full h-full ${colorClass || ''} flex items-center justify-center shadow-lg overflow-hidden ${ring}`}
+        className={`relative w-full h-full pos-floor-table ${
+          useTokenFill ? 'pos-floor-table--neutral' : ''
+        } ${colorClass || ''} flex items-center justify-center shadow-lg overflow-hidden ${ring}`}
         style={{
           borderRadius: radius,
-          ...(colorClass
-            ? {}
-            : { backgroundColor: resolveTableFillColor(node.color) }),
+          ...(colorClass || useTokenFill ? {} : { backgroundColor: fill }),
         }}
       >
         <div className="flex flex-col items-center leading-none px-1">
@@ -2555,13 +2635,16 @@ function Circle({
           </span>
           {usageCount != null && usageCount > 0 ? (
             <>
-              <span className="my-0.5 h-px w-5 bg-white/55" aria-hidden />
+              <span
+                className="my-0.5 h-px w-5 pos-floor-table-rule"
+                aria-hidden
+              />
               <span className="text-[11px] font-bold tabular-nums">
                 {usageCount}
               </span>
             </>
           ) : badge ? (
-            <span className="mt-0.5 text-[10px] font-semibold px-1 rounded bg-black/40 max-w-[80px] truncate">
+            <span className="pos-floor-table-badge mt-0.5 text-[10px] font-semibold px-1 rounded max-w-[80px] truncate">
               {badge}
             </span>
           ) : null}

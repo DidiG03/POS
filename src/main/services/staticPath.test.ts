@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { join, resolve } from 'node:path';
-import { resolveStaticFilePath, staticAssetCacheControl } from './staticPath';
+import { gunzipSync } from 'node:zlib';
+import {
+  gzipHtmlIfAccepted,
+  resolveStaticFilePath,
+  staticAssetCacheControl,
+} from './staticPath';
 
 const ROOT = resolve('/srv/pos/dist/renderer');
 
@@ -65,7 +70,7 @@ describe('resolveStaticFilePath', () => {
 describe('staticAssetCacheControl', () => {
   it('never caches HTML so tablets pick up a host update', () => {
     expect(staticAssetCacheControl('/srv/pos/dist/renderer/index.html')).toBe(
-      'no-store, must-revalidate',
+      'no-cache, must-revalidate',
     );
   });
 
@@ -75,5 +80,27 @@ describe('staticAssetCacheControl', () => {
         '/srv/pos/dist/renderer/assets/index-AbCdEfGh.js',
       ),
     ).toBe('public, max-age=31536000, immutable');
+  });
+});
+
+describe('gzipHtmlIfAccepted', () => {
+  it('gzips HTML when the client accepts gzip', () => {
+    const html = Buffer.from(
+      '<!doctype html><html><body>OneTap POS</body></html>',
+    );
+    const packed = gzipHtmlIfAccepted(
+      html,
+      'text/html; charset=utf-8',
+      'gzip, deflate',
+    );
+    expect(packed.contentEncoding).toBe('gzip');
+    expect(gunzipSync(packed.body).toString()).toBe(html.toString());
+  });
+
+  it('leaves scripts uncompressed at this layer', () => {
+    const js = Buffer.from('console.log("hi")');
+    const packed = gzipHtmlIfAccepted(js, 'application/javascript', 'gzip');
+    expect(packed.contentEncoding).toBeUndefined();
+    expect(packed.body).toBe(js);
   });
 });

@@ -6,10 +6,12 @@
  *
  * Electron's `contextBridge.exposeInMainWorld` freezes `window.api`. Never
  * assign onto that object — it throws and kills the renderer. The browser
- * / Capacitor polyfill is a plain object; wrap that in place. Host IPC is
- * local SQLite, so skipping the wrap there is fine.
+ * / Capacitor polyfill is a plain object; wrap that in place. Frozen IPC
+ * still has to ingest floor bills: call `readFloorSnapshot`, do not rely
+ * on wrapping `getFloorSnapshot`.
  */
 import type { FloorSnapshot } from '@shared/ipc';
+import { asTicketLogItems } from '@shared/ticketLogItems';
 import {
   invalidateCache,
   invalidateCachePrefix,
@@ -55,25 +57,44 @@ export function cacheLatestTicket(
 
 export function ingestFloorSnapshot(
   snap: FloorSnapshot | null | undefined,
-  opts?: { mergeOpen?: boolean },
+  opts?: { mergeOpen?: boolean; area?: string },
 ): void {
   if (!snap || !Array.isArray(snap.tables)) return;
+  const scopeArea = opts && 'area' in opts ? String(opts.area || '') : '';
+  if (opts && 'area' in opts) {
+    const prevSnap = peekFloorSnapshot(scopeArea);
+    const nextKeys = new Set(
+      snap.tables.map((row) => `${row.area}:${row.label}`),
+    );
+    if (prevSnap && Array.isArray(prevSnap.tables)) {
+      for (const row of prevSnap.tables) {
+        if (!nextKeys.has(`${row.area}:${row.label}`)) {
+          invalidateCache(POS_CACHE.ticket(row.area, row.label));
+        }
+      }
+    }
+    writeCache(POS_CACHE.floor(scopeArea), snap);
+  }
   const open: Array<{ area: string; label: string }> = [];
   for (const row of snap.tables) {
     open.push({ area: row.area, label: row.label });
-    cacheLatestTicket(row.area, row.label, {
-      items: row.items,
-      note: row.note,
-      covers: row.covers,
-      createdAt: row.openedAt || new Date().toISOString(),
-      userId: row.userId,
-    });
+    const items = asTicketLogItems(row.items);
+    if (items.length > 0) {
+      cacheLatestTicket(row.area, row.label, {
+        items,
+        note: row.note,
+        covers: row.covers,
+        createdAt: row.openedAt || new Date().toISOString(),
+        userId: row.userId,
+      });
+    }
   }
   if (opts?.mergeOpen) {
     const prev = peek<Array<{ area: string; label: string }>>(
       POS_CACHE.openTables,
     );
     const areas = new Set(open.map((t) => t.area));
+    if (scopeArea) areas.add(scopeArea);
     const kept = (Array.isArray(prev) ? prev : []).filter(
       (t) => !areas.has(t.area),
     );
@@ -81,6 +102,29 @@ export function ingestFloorSnapshot(
     return;
   }
   writeCache(POS_CACHE.openTables, open);
+}
+
+/**
+ * Fetch the floor snapshot and copy any bills into the ticket cache.
+ * Safe on Electron (frozen bridge) and on tablets (writable polyfill).
+ */
+export async function readFloorSnapshot(
+  area?: string,
+): Promise<FloorSnapshot | null> {
+  if (typeof window === 'undefined') return null;
+  const fn = (window as any).api?.tables?.getFloorSnapshot;
+  if (typeof fn !== 'function') return null;
+  try {
+    const snap = (await fn(area)) as FloorSnapshot;
+    if (!snap || !Array.isArray(snap.tables)) return null;
+    ingestFloorSnapshot(snap, {
+      mergeOpen: Boolean(area),
+      area: String(area || ''),
+    });
+    return snap;
+  } catch {
+    return null;
+  }
 }
 
 export function prefetchHotReads(): void {
@@ -146,13 +190,6 @@ function applyReadWraps(api: any): void {
   wrapMethod(api.menu, 'listCategoriesWithItems', () => POS_CACHE.menu, 45_000);
   wrapMethod(api.auth, 'listUsers', () => POS_CACHE.users, 60_000);
   wrapMethod(api.tables, 'listOpen', () => POS_CACHE.openTables, 4_000);
-  wrapMethod(
-    api.tickets,
-    'getLatestForTable',
-    (area: string, label: string) =>
-      POS_CACHE.ticket(String(area), String(label)),
-    8_000,
-  );
 
   wrapAfter(api.settings, 'update', () => {
     invalidateCache(POS_CACHE.settings);
@@ -220,7 +257,10 @@ function applyReadWraps(api: any): void {
           () => orig(area),
           { maxAgeMs: 4_000 },
         )) as FloorSnapshot;
-        ingestFloorSnapshot(snap, { mergeOpen: Boolean(area) });
+        ingestFloorSnapshot(snap, {
+          mergeOpen: Boolean(area),
+          area: String(area || ''),
+        });
         return snap;
       };
     } catch {
@@ -276,4 +316,24 @@ export function emitPosSyncCatchup(): void {
   } catch {
     // ignore
   }
+}
+
+/** Phone picked a different till — drop host-specific reads before reconnecting. */
+export function invalidateHostScopedCaches(): void {
+  invalidateCache(POS_CACHE.settings);
+  invalidateCache(POS_CACHE.menu);
+  invalidateCache(POS_CACHE.users);
+  emitPosSyncCatchup();
+}
+
+let catchupSoonTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Coalesce bursty parse/reconnect misses into one refetch. */
+export function emitPosSyncCatchupSoon(delayMs = 400): void {
+  if (typeof window === 'undefined') return;
+  if (catchupSoonTimer != null) return;
+  catchupSoonTimer = setTimeout(() => {
+    catchupSoonTimer = null;
+    emitPosSyncCatchup();
+  }, delayMs);
 }

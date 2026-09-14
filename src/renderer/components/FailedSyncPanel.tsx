@@ -10,6 +10,7 @@ import {
   getFailedSyncItems,
   retryFailedSyncItem,
 } from '../utils/offlineQueue';
+import { reportAppError } from '../utils/reportAppError';
 
 const FAILED_CHANGE_EVENT = 'offline-queue:failed-changed';
 
@@ -74,39 +75,67 @@ export function FailedSyncPanel() {
     async (id: string) => {
       setBusyId(id);
       try {
-        await retryFailedSyncItem(id).catch(() => null);
+        await retryFailedSyncItem(id);
         await refresh();
+      } catch (e) {
+        reportAppError(e, {
+          fallback: t('failedSync.retryFailed'),
+          key: `failedSync.retry:${id}`,
+        });
       } finally {
         setBusyId(null);
       }
     },
-    [refresh],
+    [refresh, t],
   );
 
   const handleDismiss = useCallback(
     async (id: string) => {
       setBusyId(id);
       try {
-        await dismissFailedSyncItem(id).catch(() => null);
+        await dismissFailedSyncItem(id);
         await refresh();
+      } catch (e) {
+        reportAppError(e, {
+          fallback: t('failedSync.dismissFailed'),
+          key: `failedSync.dismiss:${id}`,
+        });
       } finally {
         setBusyId(null);
       }
     },
-    [refresh],
+    [refresh, t],
   );
 
   const handleRetryAll = useCallback(async () => {
     const ids = items.map((i) => i.id);
-    for (const id of ids) await retryFailedSyncItem(id).catch(() => null);
+    for (const id of ids) {
+      try {
+        await retryFailedSyncItem(id);
+      } catch (e) {
+        reportAppError(e, {
+          fallback: t('failedSync.retryFailed'),
+          key: `failedSync.retry:${id}`,
+        });
+      }
+    }
     await refresh();
-  }, [items, refresh]);
+  }, [items, refresh, t]);
 
   const handleDismissAll = useCallback(async () => {
     const ids = items.map((i) => i.id);
-    for (const id of ids) await dismissFailedSyncItem(id).catch(() => null);
+    for (const id of ids) {
+      try {
+        await dismissFailedSyncItem(id);
+      } catch (e) {
+        reportAppError(e, {
+          fallback: t('failedSync.dismissFailed'),
+          key: `failedSync.dismiss:${id}`,
+        });
+      }
+    }
     await refresh();
-  }, [items, refresh]);
+  }, [items, refresh, t]);
 
   if (items.length === 0) return null;
 

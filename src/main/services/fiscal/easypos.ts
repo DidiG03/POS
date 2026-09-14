@@ -19,7 +19,7 @@ import {
 import { classifyFiscalAttempt, neverReachedProvider } from './classify';
 import { registerInvoiceWithRecovery, type RecoveryOptions } from './recover';
 import { newDocId } from './docId';
-import type { RegisterInvoiceRequest } from './apiTypes';
+import type { RegisterInvoiceRequest, CancelInvoiceRequest } from './apiTypes';
 
 export {
   assertFiscalConfigured,
@@ -33,6 +33,7 @@ export type FiscalSaleResult = {
   /** Electronic invoice identifier. Present only for e-invoices. */
   eic?: string;
   link: string;
+  qrCode?: string;
   /**
    * Only ever `'accepted'` now. Kept in the shape because receipts, the
    * claim store and the LAN API all read it.
@@ -392,6 +393,9 @@ function resultFromResponse(input: {
       nivf: verdict.identifiers.fic || '',
       ...(verdict.identifiers.eic ? { eic: verdict.identifiers.eic } : {}),
       link: verdict.identifiers.link || '',
+      ...(verdict.identifiers.qrCode
+        ? { qrCode: verdict.identifiers.qrCode }
+        : {}),
       status: 'accepted',
       raw: input.data,
     };
@@ -644,6 +648,9 @@ export async function createEasyPosSale(
       nivf: outcome.identifiers.fic || '',
       ...(outcome.identifiers.eic ? { eic: outcome.identifiers.eic } : {}),
       link: outcome.identifiers.link || '',
+      ...(outcome.identifiers.qrCode
+        ? { qrCode: outcome.identifiers.qrCode }
+        : {}),
       status: 'accepted',
       raw: outcome.raw,
     };
@@ -660,4 +667,41 @@ export async function createEasyPosSale(
   // 'unresolved': the recovery sequence could not establish whether the
   // document exists. Never retried automatically.
   throw fiscalError(outcome.message, 'unknown', false);
+}
+
+/**
+ * Local easyPos middleware: a cancellation is a new invoice of type CANCEL
+ * on `/v1/invoices/new`, not the cloud `/invoice/cancel` route.
+ *
+ * One shot, no status poll — the middleware has none. A timeout is
+ * unknown, same as a local register.
+ */
+export async function createEasyPosCancellation(
+  settings: SettingsDTO,
+  request: CancelInvoiceRequest,
+): Promise<FiscalSaleResult> {
+  const { cloud } = fiscalConfig(settings);
+  if (cloud) {
+    throw new Error(
+      'createEasyPosCancellation is the local-middleware path. Cloud cancellations use POST /invoice/cancel.',
+    );
+  }
+  const body = {
+    app: 'OneTap POS',
+    invoiceType: 'CANCEL',
+    iicRef: request.correctiveInvoice.iicRef,
+    docId: request.docId,
+    ...(request.operatorCode ? { operatorCode: request.operatorCode } : {}),
+  };
+  const data = await easyPosRequest(
+    settings,
+    '/v1/invoices/new',
+    { method: 'POST', body: JSON.stringify(body) },
+    { retryOnGatewayError: false },
+  );
+  return resultFromResponse({
+    data,
+    httpStatus: 200,
+    isEinvoice: request.isEinvoice === true,
+  });
 }

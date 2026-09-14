@@ -1,8 +1,12 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { invalidateCache } from './swrCache';
+import { invalidateCache, invalidateCachePrefix, peek } from './swrCache';
 import {
+  ingestFloorSnapshot,
   installPosReadCache,
+  peekFloorSnapshot,
+  peekLatestTicket,
   POS_CACHE,
+  readFloorSnapshot,
   resetPosReadCacheForTests,
 } from './posReadCache';
 
@@ -12,6 +16,7 @@ describe('installPosReadCache', () => {
   beforeEach(() => {
     resetPosReadCacheForTests();
     invalidateCache(POS_CACHE.settings);
+    invalidateCachePrefix('pos:ticket:');
     (globalThis as any).window = {};
   });
 
@@ -49,5 +54,111 @@ describe('installPosReadCache', () => {
     expect(a).toEqual({ theme: 'dark' });
     expect(b).toEqual({ theme: 'dark' });
     expect(calls).toBe(1);
+  });
+
+  it('does not wrap getLatestForTable so an empty floor row cannot masquerade as the bill', () => {
+    const getLatestForTable = async () => ({ items: [{ name: 'Byrek' }] });
+    const api = { tickets: { getLatestForTable }, tables: {} };
+    (window as any).api = api;
+    installPosReadCache();
+    expect(api.tickets.getLatestForTable).toBe(getLatestForTable);
+  });
+
+  it('ingests floor bills even when Electron froze getFloorSnapshot', async () => {
+    const getFloorSnapshot = async () => ({
+      tables: [
+        {
+          area: 'Salla',
+          label: 'T7',
+          openedAt: '2026-09-11T13:55:42.708Z',
+          userId: 1,
+          covers: 2,
+          total: 600,
+          items: [{ name: 'Sallatë cezar', qty: 1, unitPrice: 600 }],
+          note: null,
+        },
+      ],
+    });
+    const tables = Object.freeze({ getFloorSnapshot });
+    (window as any).api = Object.freeze({ tables });
+    installPosReadCache();
+    expect((window as any).api.tables.getFloorSnapshot).toBe(getFloorSnapshot);
+    await readFloorSnapshot('Salla');
+    expect(peekLatestTicket('Salla', 'T7')?.items?.[0]?.name).toBe(
+      'Sallatë cezar',
+    );
+  });
+});
+
+describe('ingestFloorSnapshot', () => {
+  beforeEach(() => {
+    invalidateCachePrefix('pos:ticket:');
+    invalidateCachePrefix('pos:floor:');
+    invalidateCache(POS_CACHE.openTables);
+  });
+
+  it('does not cache an empty snapshot as the table bill', () => {
+    ingestFloorSnapshot({
+      tables: [
+        {
+          area: 'Salla',
+          label: 'T7',
+          openedAt: '2026-09-11T13:55:42.708Z',
+          userId: 1,
+          covers: 2,
+          total: 0,
+          items: [],
+          note: null,
+        },
+      ],
+    });
+    expect(peekLatestTicket('Salla', 'T7')).toBeUndefined();
+  });
+
+  it('caches a snapshot that still has lines', () => {
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T7',
+            openedAt: '2026-09-11T13:55:42.708Z',
+            userId: 1,
+            covers: 2,
+            total: 600,
+            items: [{ name: 'Sallatë cezar', qty: 1, unitPrice: 600 }],
+            note: null,
+          },
+        ],
+      },
+      { area: 'Salla' },
+    );
+    expect(peekLatestTicket('Salla', 'T7')?.items?.[0]?.name).toBe(
+      'Sallatë cezar',
+    );
+    expect(peekFloorSnapshot('Salla')?.tables?.[0]?.label).toBe('T7');
+  });
+
+  it('clears occupancy for an area whose snapshot has no tables', () => {
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T7',
+            openedAt: '2026-09-11T13:55:42.708Z',
+            userId: 1,
+            covers: 2,
+            total: 600,
+            items: [{ name: 'Sallatë cezar', qty: 1, unitPrice: 600 }],
+            note: null,
+          },
+        ],
+      },
+      { mergeOpen: true, area: 'Salla' },
+    );
+    ingestFloorSnapshot({ tables: [] }, { mergeOpen: true, area: 'Salla' });
+    expect(peek(POS_CACHE.openTables)).toEqual([]);
+    expect(peekLatestTicket('Salla', 'T7')).toBeUndefined();
   });
 });

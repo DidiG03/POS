@@ -95,6 +95,10 @@ model MenuItem {
   stockRemaining Int?
   /// Local calendar day (YYYY-MM-DD) when LOW/OUT was set; before midnight reset applies.
   stockDay       String?
+  /// What the store paid per unit (sum of costBreakdown when that is set).
+  costPrice      Decimal?
+  /// Optional cost split, e.g. [{ "id", "label", "amount" }].
+  costBreakdown  Json?
   recipe     RecipeComponent[]
   orderItems OrderItem[]
 }
@@ -399,6 +403,21 @@ model SyncState {
   key       String   @id
   valueJson Json?
   updatedAt DateTime @updatedAt
+}
+
+/// One row per occupied table. Replaces the `tables:open` / `tables:openAt`
+/// SyncState JSON maps so concurrent waiters on different tables cannot
+/// overwrite each other during a rush.
+model TableOccupancy {
+  id        Int      @id @default(autoincrement())
+  area      String
+  label     String
+  openedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([area, label])
+  @@index([area])
 }
 
 model Area {

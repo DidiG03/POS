@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { useOrderContext } from '@shared/stores/orderContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useTicketStore } from '../../stores/ticket';
 import { tableKey } from '@shared/utils/tableKey';
@@ -12,14 +12,16 @@ import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
 import FloorCanvas from '../components/FloorCanvas';
 import { sanitizeMergeGroups, type TableMergeGroup } from '@shared/tableMerge';
 import type { FloorSnapshot, FloorTableSnapshot } from '@shared/ipc';
-import { pollIntervalMs } from '../../utils/netQuality';
+import { isSseHealthy, pollIntervalMs } from '../../utils/netQuality';
 import {
   peekFloorSnapshot,
-  peekLatestTicket,
   peekSettings,
   prefetchHotReads,
+  readFloorSnapshot,
 } from '../../utils/posReadCache';
-import { cacheLooksLikeCurrentSession } from '../../utils/tableSessionKeepOpen';
+import { peekTableBill } from '../../utils/tableBill';
+import { applyHostOpenTables } from '../../utils/openTablesSync';
+import { reportAppError } from '../../utils/reportAppError';
 import {
   IconClock,
   IconCovers,
@@ -73,9 +75,11 @@ export default function TablesPage() {
   const { setSelectedTable, pendingAction, setPendingAction } =
     useOrderContext();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const traceArea = String(params.get('area') || '').trim();
+  const traceTable = String(params.get('table') || '').trim();
 
   const openMap = useTableStatus((s) => s.openMap);
-  const setAll = useTableStatus((s) => s.setAll);
   const setOpen = useTableStatus((s) => s.setOpen);
 
   const openMapKey = useMemo(() => {
@@ -100,25 +104,31 @@ export default function TablesPage() {
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
   const [mergeGroups, setMergeGroups] = useState<TableMergeGroup[]>([]);
 
-  useEffect(() => {
-    (window as any).__tableStatusStore__ = { setOpen };
-    return () => {
-      (window as any).__tableStatusStore__ = null;
-    };
-  }, [setOpen]);
-
   const reloadMerges = useCallback(async () => {
     if (!area) {
       setMergeGroups([]);
       return;
     }
-    const groups = await window.api.layout.getMerges(area).catch(() => []);
+    const groups = await window.api.layout
+      .getMerges(area)
+      .catch((e: unknown) => {
+        reportAppError(e, {
+          fallback: t('tables.mergesLoadFailed'),
+          key: `layout.merges:${area}`,
+        });
+        return [];
+      });
     setMergeGroups(sanitizeMergeGroups(groups));
-  }, [area]);
+  }, [area, t]);
 
   useEffect(() => {
     void reloadMerges();
   }, [reloadMerges]);
+
+  useEffect(() => {
+    if (!traceArea) return;
+    if (areas.some((a) => a.name === traceArea)) setArea(traceArea);
+  }, [traceArea, areas]);
 
   useEffect(() => {
     const onMerges = (ev: any) => {
@@ -152,6 +162,10 @@ export default function TablesPage() {
           open?: boolean;
         };
         if (a && l && typeof o === 'boolean') setOpen(a, l, o);
+        const openKeys = Object.entries(useTableStatus.getState().openMap)
+          .filter(([, open]) => open)
+          .map(([k]) => k);
+        useTicketStore.getState().dropOrphanLiveBills(openKeys);
       } catch {
         // ignore
       }
@@ -193,12 +207,14 @@ export default function TablesPage() {
             return { area: k.slice(0, idx), label: k.slice(idx + 1) };
           })
           .filter((e) => e.area && e.label);
-        setAll([
+        applyHostOpenTables([
           ...others,
           ...tables.map((r) => ({ area: r.area, label: r.label })),
         ]);
       } else {
-        setAll(tables.map((r) => ({ area: r.area, label: r.label })));
+        applyHostOpenTables(
+          tables.map((r) => ({ area: r.area, label: r.label })),
+        );
       }
       const mergeScoped = <T,>(
         setter: (
@@ -236,7 +252,7 @@ export default function TablesPage() {
       mergeScoped(setMetricsByTable, metrics);
       mergeScoped(setOpenedAtByTable, opened);
     },
-    [setAll],
+    [],
   );
 
   useEffect(() => {
@@ -281,6 +297,7 @@ export default function TablesPage() {
     }
     void load();
     void prefetchHotReads();
+    void import('./OrderPage');
     const onVisible = () => {
       if (document.visibilityState === 'visible') void load();
     };
@@ -316,7 +333,7 @@ export default function TablesPage() {
         const api = window.api as any;
         let snap: FloorSnapshot | null = null;
         if (typeof api.tables?.getFloorSnapshot === 'function') {
-          snap = await api.tables.getFloorSnapshot(area || undefined);
+          snap = await readFloorSnapshot(area || undefined);
         }
         if (cancelled || gen !== pollGenRef.current) return;
         if (snap && Array.isArray(snap.tables)) {
@@ -324,7 +341,7 @@ export default function TablesPage() {
         } else {
           const open = await window.api.tables.listOpen();
           if (cancelled || gen !== pollGenRef.current) return;
-          if (Array.isArray(open)) setAll(open);
+          if (Array.isArray(open)) applyHostOpenTables(open);
         }
         setOpenLoaded(true);
         setOpenLoadError(null);
@@ -340,23 +357,26 @@ export default function TablesPage() {
       }
     };
 
+    const nextPollMs = () =>
+      isSseHealthy() && !isHidden() ? 20_000 : pollIntervalMs(4000, isHidden());
+
     const poll = async () => {
       await load(false);
       if (!cancelled && gen === pollGenRef.current) {
-        timer = setTimeout(poll, pollIntervalMs(4000, isHidden()));
+        timer = setTimeout(poll, nextPollMs());
       }
     };
 
     void load(true).then(() => {
       if (!cancelled && gen === pollGenRef.current) {
-        timer = setTimeout(poll, pollIntervalMs(4000, isHidden()));
+        timer = setTimeout(poll, nextPollMs());
       }
     });
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [applySnapshot, area, setAll, userMap]);
+  }, [applySnapshot, area, userMap]);
 
   const openLabelsInArea = useMemo(() => {
     if (!area) return [] as string[];
@@ -370,11 +390,10 @@ export default function TablesPage() {
     const refresh = () => {
       const api = window.api as any;
       if (typeof api.tables?.getFloorSnapshot !== 'function') return;
-      void api.tables
-        .getFloorSnapshot(area || undefined)
-        .then((snap: FloorSnapshot) =>
-          applySnapshot(snap, userMap, area || undefined),
-        )
+      void readFloorSnapshot(area || undefined)
+        .then((snap: FloorSnapshot | null) => {
+          if (snap) applySnapshot(snap, userMap, area || undefined);
+        })
         .catch(() => undefined);
     };
     const onTicketsChanged = (ev: any) => {
@@ -483,17 +502,15 @@ export default function TablesPage() {
       const openLabel =
         labels.find((l) => isOpenFn(area, l)) || labels[0] || label;
       setSelectedTable({ id: 0, label: openLabel, area });
-      bindTable(tableKey(area, openLabel));
+      bindTable(tableKey(area, openLabel), {
+        keepLiveBill: isOpenFn(area, openLabel),
+      });
       const action = pendingAction;
       if (action) setPendingAction(null);
       if (isOpenFn(area, openLabel)) {
-        const cached = peekLatestTicket(area, openLabel);
-        const openedAt = openedAtByTable[`${area}:${openLabel}`];
-        const cacheFresh =
-          Boolean(cached?.items) &&
-          cacheLooksLikeCurrentSession(cached, openedAt);
-        if (cacheFresh && cached?.items) {
-          hydrate({ items: cached.items as any, note: cached.note || '' });
+        const peeked = peekTableBill(area, openLabel);
+        if (peeked) {
+          hydrate({ items: peeked.items as any, note: peeked.note });
         }
         navigate('/app/order');
         return;
@@ -509,7 +526,6 @@ export default function TablesPage() {
       hydrate,
       bindTable,
       navigate,
-      openedAtByTable,
     ],
   );
 
@@ -518,15 +534,17 @@ export default function TablesPage() {
   }
 
   return (
-    <div className="h-full min-h-0 relative overflow-hidden bg-black">
+    <div className="h-full min-h-0 relative overflow-hidden bg-[var(--pos-floor-bg)]">
+      <h1 className="sr-only">{t('layout.tables')}</h1>
       <div className="absolute inset-0 flex flex-col">
         {areasReady && !area ? (
-          <div className="flex-1 flex items-center justify-center text-sm text-gray-400 px-6 text-center">
+          <div className="flex-1 flex items-center justify-center text-sm text-[color:var(--pos-fg-muted)] px-6 text-center">
             {t('tables.noAreas')}
           </div>
         ) : null}
         {user && area ? (
           <FloorCanvas
+            key={`${user.id}:${area}`}
             userId={user.id}
             area={area}
             editable={false}
@@ -537,6 +555,7 @@ export default function TablesPage() {
             colorByLabel={colorByLabel}
             badgeByLabel={badgeByLabel}
             mergeGroups={mergeGroups}
+            highlightLabels={traceTable ? [traceTable] : undefined}
             onTableClick={handleTableClick}
           />
         ) : null}
@@ -547,6 +566,8 @@ export default function TablesPage() {
           {areas.map((a) => (
             <button
               key={a.name}
+              type="button"
+              aria-pressed={area === a.name}
               className={`pos-floor-chip ${
                 area === a.name ? 'pos-floor-chip--active' : ''
               }`}
@@ -607,11 +628,7 @@ function ModeButton({
 }) {
   return (
     <button
-      className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 rounded-md transition-colors duration-100 min-h-0 ${
-        active
-          ? 'bg-gray-50 text-gray-900'
-          : 'text-gray-300 hover:bg-white/8 hover:text-gray-50'
-      }`}
+      className={`pos-floor-mode ${active ? 'pos-floor-mode--active' : ''}`}
       onClick={onClick}
       title={label}
       type="button"

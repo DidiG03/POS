@@ -16,6 +16,7 @@
 // client must not prevent the others from receiving the update, and a
 // failure to broadcast must not roll back the underlying DB write.
 import { BrowserWindow } from 'electron';
+import { invalidateFloorSnapshotCache } from './floorSnapshot';
 
 type SseClient = {
   res: {
@@ -68,12 +69,51 @@ export function ensureSseKeepAlive(): void {
   }
 }
 
+let sseEventId = 0;
+
+/** @internal vitest */
+export function resetSseEventIdForTests(): void {
+  sseEventId = 0;
+}
+
+/** @internal vitest */
+export function advanceSseEventIdForTests(n = 1): void {
+  sseEventId += n;
+}
+
+export function currentSseEventId(): number {
+  return sseEventId;
+}
+
+export function formatSseEvent(
+  eventName: string,
+  payload: unknown,
+  id?: number,
+): string {
+  const body = `event: ${eventName}\ndata: ${JSON.stringify(payload ?? null)}\n\n`;
+  return id != null ? `id: ${id}\n${body}` : body;
+}
+
+/**
+ * Private hint for one reconnecting tablet. Do not bump the global id —
+ * other sockets must not skip events because this client missed some.
+ */
+export function sseCatchupIfMissed(lastEventId: number): string | null {
+  if (!Number.isFinite(lastEventId) || lastEventId < 0) return null;
+  if (lastEventId >= sseEventId) return null;
+  return formatSseEvent('catchup', {
+    missed: true,
+    last: lastEventId,
+    current: sseEventId,
+  });
+}
+
 function broadcastSse(eventName: string, payload: unknown): void {
   try {
     const clients: Set<SseClient> =
       (globalThis as any).__SSE_CLIENTS__ || new Set();
-    const evt = `event: ${eventName}\ndata: ${JSON.stringify(payload ?? null)}\n\n`;
-    writeSseToClients(clients, evt);
+    sseEventId += 1;
+    writeSseToClients(clients, formatSseEvent(eventName, payload, sseEventId));
   } catch {
     // ignore — no global SSE registry yet (server not started)
   }
@@ -139,6 +179,7 @@ export type TableStatusPayload = {
  * don't break older clients that only ship the LAN HTTP `tables` event.
  */
 export function broadcastTableStatusChanged(payload: TableStatusPayload): void {
+  invalidateFloorSnapshotCache(payload.area);
   broadcastIpc('tables:changed', payload);
   // Keep the SSE event name as `tables` to match the renderer listener
   // (`es.addEventListener('tables', …)` in src/renderer/main.tsx).
@@ -163,6 +204,7 @@ export type TicketChangePayload = {
  * of waiting for the next 5s poll.
  */
 export function broadcastTicketsChanged(payload: TicketChangePayload): void {
+  invalidateFloorSnapshotCache(payload.area);
   broadcastIpc('tickets:changed', payload);
   // SSE event name kept lowercase singular `ticket` to match the existing
   // POST /tickets event name so clients only need one listener.

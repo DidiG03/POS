@@ -4,8 +4,6 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const syncStateFindUnique = vi.fn();
-const syncStateUpsert = vi.fn();
 const setTableOpen = vi.fn();
 const kdsOrderFindFirst = vi.fn();
 const kdsOrderUpdate = vi.fn();
@@ -13,10 +11,6 @@ const broadcastTableStatusChanged = vi.fn();
 
 vi.mock('@db/client', () => ({
   prisma: {
-    syncState: {
-      findUnique: (...a: any[]) => syncStateFindUnique(...a),
-      upsert: (...a: any[]) => syncStateUpsert(...a),
-    },
     kdsOrder: {
       findFirst: (...a: any[]) => kdsOrderFindFirst(...a),
       update: (...a: any[]) => kdsOrderUpdate(...a),
@@ -48,28 +42,16 @@ import { applyTableOpenState, setTableOpenWithSideEffects } from './tableOpen';
 describe('applyTableOpenState', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    syncStateFindUnique.mockResolvedValue({ valueJson: {} });
-    syncStateUpsert.mockResolvedValue({});
     setTableOpen.mockResolvedValue(undefined);
     kdsOrderFindFirst.mockResolvedValue(null);
     kdsOrderUpdate.mockResolvedValue({});
     seatCoveringReservationForOpenTable.mockResolvedValue(undefined);
   });
 
-  it('sets openAt on first open and broadcasts', async () => {
+  it('opens occupancy and broadcasts', async () => {
     await applyTableOpenState('Sallon', 'T1', true);
 
     expect(setTableOpen).toHaveBeenCalledWith('Sallon', 'T1', true);
-    expect(syncStateUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { key: 'tables:openAt' },
-        create: expect.objectContaining({
-          valueJson: expect.objectContaining({
-            'Sallon:T1': expect.any(String),
-          }),
-        }),
-      }),
-    );
     expect(broadcastTableStatusChanged).toHaveBeenCalledWith({
       area: 'Sallon',
       label: 'T1',
@@ -82,36 +64,12 @@ describe('applyTableOpenState', () => {
     );
   });
 
-  it('does not reset openAt when re-opening an already-open table', async () => {
-    syncStateFindUnique.mockResolvedValue({
-      valueJson: { 'Sallon:T1': '2026-01-01T10:00:00.000Z' },
-    });
-
-    await applyTableOpenState('Sallon', 'T1', true);
-
-    expect(syncStateUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: {
-          valueJson: { 'Sallon:T1': '2026-01-01T10:00:00.000Z' },
-        },
-      }),
-    );
-  });
-
-  it('clears openAt, closes KDS, and broadcasts on close', async () => {
-    syncStateFindUnique.mockResolvedValue({
-      valueJson: { 'Sallon:T1': '2026-01-01T10:00:00.000Z' },
-    });
+  it('closes occupancy, closes KDS, and broadcasts on close', async () => {
     kdsOrderFindFirst.mockResolvedValue({ id: 42 });
 
     await applyTableOpenState('Sallon', 'T1', false);
 
     expect(setTableOpen).toHaveBeenCalledWith('Sallon', 'T1', false);
-    expect(syncStateUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: { valueJson: {} },
-      }),
-    );
     expect(kdsOrderUpdate).toHaveBeenCalledWith({
       where: { id: 42 },
       data: { closedAt: expect.any(Date) },
@@ -133,8 +91,6 @@ describe('applyTableOpenState', () => {
 describe('setTableOpenWithSideEffects', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    syncStateFindUnique.mockResolvedValue({ valueJson: {} });
-    syncStateUpsert.mockResolvedValue({});
     setTableOpen.mockResolvedValue(undefined);
     kdsOrderFindFirst.mockResolvedValue(null);
   });

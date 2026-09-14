@@ -72,6 +72,11 @@ export interface SettingsDTO {
       mode?: 'PERCENT' | 'AMOUNT';
       value?: number; // percent or fixed amount (same currency)
     };
+    /**
+     * Record waiter/staff clock-in and clock-out. Default true (current
+     * behaviour). When false, staff log in without starting a shift.
+     */
+    captureClockInOut?: boolean;
   };
   // Multi-printer support (recommended). Backward compatible with legacy `printer`.
   printers?: PrinterProfileDTO[];
@@ -341,6 +346,10 @@ export interface TicketPrintMeta {
   /** EIC — present only for electronic invoices. */
   fiscalEic?: string;
   fiscalLink?: string;
+  /** Provider QR payload when it is a URL or CIS string, not a PDF. */
+  fiscalQrCode?: string;
+  /** Seller NIPT used in the CIS verification QR. */
+  fiscalTin?: string;
   fiscalWarning?: string;
   fiscalStatus?: string;
 }
@@ -457,6 +466,10 @@ export interface MenuItemDTO {
   stockLevel?: 'OK' | 'LOW' | 'OUT';
   /** Whole units left today while LOW (optional legacy warning-only LOW when omitted). */
   stockRemaining?: number | null;
+  /** What the store paid per unit (sum of costBreakdown when that is set). */
+  costPrice?: number | null;
+  /** Optional cost split, e.g. purchase + packaging. */
+  costBreakdown?: { id: string; label: string; amount: number }[] | null;
 }
 
 export interface MenuCategoryDTO {
@@ -494,6 +507,12 @@ export type UpdateMenuCategoryInput = z.infer<
   typeof UpdateMenuCategoryInputSchema
 >;
 
+const MenuItemCostLineSchema = z.object({
+  id: z.string().min(1),
+  label: z.string(),
+  amount: z.number().finite().min(0),
+});
+
 export const CreateMenuItemInputSchema = z.object({
   categoryId: z.number(),
   name: z.string().min(1),
@@ -504,7 +523,13 @@ export const CreateMenuItemInputSchema = z.object({
   isKg: z.boolean().optional(),
   station: z.enum(['KITCHEN', 'BAR', 'DESSERT']).optional(),
   stockLevel: z.enum(['OK', 'LOW', 'OUT']).optional(),
-  stockRemaining: z.coerce.number().int().min(0).optional().nullable(),
+  stockRemaining: z
+    .union([z.null(), z.coerce.number().int().min(0)])
+    .optional(),
+  costPrice: z.union([z.null(), z.coerce.number().finite().min(0)]).optional(),
+  costBreakdown: z
+    .union([z.null(), z.array(MenuItemCostLineSchema)])
+    .optional(),
 });
 export type CreateMenuItemInput = z.infer<typeof CreateMenuItemInputSchema>;
 
@@ -519,7 +544,13 @@ export const UpdateMenuItemInputSchema = z.object({
   isKg: z.boolean().optional(),
   station: z.enum(['KITCHEN', 'BAR', 'DESSERT']).optional(),
   stockLevel: z.enum(['OK', 'LOW', 'OUT']).optional(),
-  stockRemaining: z.coerce.number().int().min(0).optional().nullable(),
+  stockRemaining: z
+    .union([z.null(), z.coerce.number().int().min(0)])
+    .optional(),
+  costPrice: z.union([z.null(), z.coerce.number().finite().min(0)]).optional(),
+  costBreakdown: z
+    .union([z.null(), z.array(MenuItemCostLineSchema)])
+    .optional(),
 });
 export type UpdateMenuItemInput = z.infer<typeof UpdateMenuItemInputSchema>;
 
@@ -1240,6 +1271,12 @@ export interface FiscalSaleDTO {
   fiscalNslf: string | null;
   /** FIC. */
   fiscalNivf: string | null;
+  /** Official CIS / easyPos verification URL when the provider returned one. */
+  fiscalLink?: string | null;
+  /** Provider QR payload when it is a URL, not an image dump. */
+  fiscalQrCode?: string | null;
+  /** Seller NIPT — CIS InvoiceCheck requires this next to the IIC. */
+  fiscalTin?: string | null;
   /** easyPos docId for the original invoice. */
   docId: string | null;
   items: {
@@ -1258,6 +1295,10 @@ export interface FiscalSaleDTO {
     /** Null while the corrective document still has to be filed. */
     filedAt: string | null;
     createdAt: string;
+    /** IIC of the cancellation / corrective invoice, once CIS accepted it. */
+    correctionNslf?: string | null;
+    /** FIC of the cancellation / corrective invoice. */
+    correctionNivf?: string | null;
   }[];
 }
 
@@ -1672,8 +1713,9 @@ export interface FiscalReviewDTO {
   /**
    * `unknown-outcome`: we never learned whether the invoice was filed.
    * `correction-required`: it was filed, then the ticket was voided.
+   * `deferred`: sale taken offline; host is still transmitting (48h window).
    */
-  kind: 'unknown-outcome' | 'correction-required';
+  kind: 'unknown-outcome' | 'correction-required' | 'deferred';
   area: string | null;
   tableLabel: string | null;
   total: number | null;
@@ -1683,6 +1725,8 @@ export interface FiscalReviewDTO {
   nivf: string | null;
   createdAt: string;
   updatedAt: string;
+  /** ISO deadline for deferred transmits. */
+  deadlineAt?: string | null;
 }
 
 /**

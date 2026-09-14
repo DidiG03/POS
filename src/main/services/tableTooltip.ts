@@ -1,5 +1,11 @@
 import { prisma } from '@db/client';
+import { asTicketLogItems, rowIsInOpenSession } from '@shared/ticketLogItems';
 import { dayBounds } from './reservations';
+import {
+  findLatestTicketLogSince,
+  getTableSessionStartedAt,
+} from './tableSession';
+import { isTableOccupied } from './tableOccupancy';
 
 export type TableTooltip = {
   covers: number | null;
@@ -64,39 +70,24 @@ export async function getTableTooltip(
   tableLabel: string,
 ): Promise<TableTooltip | null> {
   if (!area || !tableLabel) return null;
-  const openRow = await prisma.syncState.findUnique({
-    where: { key: 'tables:open' },
-  });
-  const openMap = ((openRow?.valueJson as any) || {}) as Record<
-    string,
-    boolean
-  >;
-  const k = `${area}:${tableLabel}`;
-  if (!openMap[k]) return null;
+  if (!(await isTableOccupied(area, tableLabel))) return null;
 
-  const atRow = await prisma.syncState.findUnique({
-    where: { key: 'tables:openAt' },
-  });
-  const atMap = ((atRow?.valueJson as any) || {}) as Record<string, string>;
-  const sinceIso = atMap[k];
-  const sinceParsed = sinceIso ? new Date(sinceIso) : null;
-  const since =
-    sinceParsed && Number.isFinite(sinceParsed.getTime()) ? sinceParsed : null;
-  const where: any = { area, tableLabel };
-  if (since) where.createdAt = { gte: since };
-  const [last, coversRow] = await Promise.all([
-    prisma.ticketLog.findFirst({ where, orderBy: { createdAt: 'desc' } }),
-    prisma.covers.findFirst({
-      where: {
-        area,
-        label: tableLabel,
-        ...(since ? { createdAt: { gte: since } as any } : {}),
-      },
+  const since = await getTableSessionStartedAt(area, tableLabel);
+  const [last, coverRows] = await Promise.all([
+    findLatestTicketLogSince(area, tableLabel, since),
+    prisma.covers.findMany({
+      where: { area, label: tableLabel },
       orderBy: { id: 'desc' },
-    } as any),
+      take: 20,
+    }),
   ]);
-  const items = ((last?.itemsJson as any[]) || []).filter(
-    (it: any) => !it.voided,
+  const coversRow = since
+    ? coverRows.find((row) =>
+        rowIsInOpenSession(row.createdAt, since.getTime()),
+      )
+    : coverRows[0];
+  const items = asTicketLogItems(last?.itemsJson).filter(
+    (it: any) => !it?.voided,
   );
   const total = items.reduce(
     (s: number, it: any) => s + Number(it.unitPrice || 0) * Number(it.qty || 1),

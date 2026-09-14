@@ -1,0 +1,13 @@
+{
+  "appName": "OneTap Waiter",
+  "bundleId": "com.codeorbit.waiter",
+  "subtitle": "Take orders at the table",
+  "promotionalText": "Connect to your OneTap POS till over Wi-Fi and send tickets from any table.",
+  "description": "OneTap Waiter is the handheld companion for OneTap POS.\n\nStaff join the same Wi-Fi as the till, sign in with their PIN, and take orders at the table. Tickets, occupancy, and the kitchen display stay in sync with the POS computer in the venue.\n\nThis app needs a OneTap POS computer on the local network. It is not a standalone checkout.\n\n• Floor map and open tables\n• Send courses to the kitchen\n• Pay, transfer, and void with the till\n• Works on iPhone, iPad, and Android tablets\n\nRequires the OneTap POS host running on the restaurant computer.",
+  "keywords": "POS,waiter,restaurant,orders,tables,hospitality,till",
+  "category": "Business",
+  "secondaryCategory": "Food & Drink",
+  "privacyPolicyPath": "/legal/privacy.html",
+  "supportPath": "/legal/support.html",
+  "reviewNotes": "This is a companion app for a local restaurant POS. It does not have a public cloud login.\n\nTo review: install OneTap POS on a Mac/PC on the same Wi-Fi as the review device, open the till, then in the app scan for the host (or enter its LAN IP). Sign in with a staff PIN created on the till.\n\nA screen recording of login → open table → send ticket is attached. Local Network permission must be allowed on iOS.\n\nDemo PIN / pairing: provide in App Store Connect notes before submit (venue-specific)."
+}

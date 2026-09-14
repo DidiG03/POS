@@ -15,6 +15,13 @@ export function shouldKeepCoversOnlyTableOpen(opts: {
   return hasLocalCovers(opts.localCovers) || hasLocalCovers(opts.serverCovers);
 }
 
+/** Empty arrays are truthy — they must not count as "we already have the bill". */
+export function cachedTicketHasLines(
+  cached: { items?: unknown } | null | undefined,
+): boolean {
+  return Array.isArray(cached?.items) && cached.items.length > 0;
+}
+
 export function cacheLooksLikeCurrentSession(
   cached: { createdAt?: string | null } | null | undefined,
   openedAt?: string | null,

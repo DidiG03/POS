@@ -1,4 +1,5 @@
 import { normalize, resolve, sep } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 /**
  * Resolve a request path to a file inside `rootDir`, or `null` when it escapes.
@@ -48,17 +49,30 @@ export function resolveStaticFilePath(
 
 /**
  * LAN tablets (Safari / Chrome / Capacitor WebView) cache `/renderer/`
- * aggressively. HTML must always revalidate so a POS update swaps in the
- * new hashed JS; the hashed `/assets/*` files themselves can be immutable.
+ * aggressively. HTML must revalidate so a POS update swaps in the new hashed
+ * JS. Use `no-cache` (revalidate) rather than `no-store` so back/forward cache
+ * can still restore the till after a same-tab navigation.
  */
 export function staticAssetCacheControl(filePath: string): string {
   const n = String(filePath || '').replace(/\\/g, '/');
   const base = n.split('/').pop() || '';
   if (!base || base === 'index.html' || n.endsWith('.html')) {
-    return 'no-store, must-revalidate';
+    return 'no-cache, must-revalidate';
   }
   if (/-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/i.test(base)) {
     return 'public, max-age=31536000, immutable';
   }
   return 'no-store';
+}
+
+/** Gzip HTML when the client asks for it (Lighthouse document compression). */
+export function gzipHtmlIfAccepted(
+  body: Buffer,
+  contentType: string,
+  acceptEncoding?: string,
+): { body: Buffer; contentEncoding?: 'gzip' } {
+  if (!contentType.includes('text/html')) return { body };
+  if (!String(acceptEncoding || '').includes('gzip')) return { body };
+  if (body.length < 32) return { body };
+  return { body: gzipSync(body), contentEncoding: 'gzip' };
 }

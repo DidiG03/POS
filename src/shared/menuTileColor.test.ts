@@ -4,6 +4,7 @@ import {
   hexLuma,
   lightenMenuTile,
   menuTileFill,
+  menuTileStyle,
   readableTextOnHex,
 } from './menuTileColor';
 
@@ -29,5 +30,20 @@ describe('menuTileFill', () => {
   it('still uses dark type on an already-bright colour', () => {
     const fill = menuTileFill('#facc15', 'light');
     expect(readableTextOnHex(fill)).toBe('#0f172a');
+  });
+});
+
+describe('menuTileStyle', () => {
+  it('puts the category colour on a bottom strip, not the whole tile', () => {
+    const style = menuTileStyle('#2563eb', 'dark');
+    expect(style.backgroundColor).not.toBe('#2563eb');
+    expect(style.boxShadow).toContain('#2563eb');
+    expect(style.color).toBe('#ffffff');
+  });
+
+  it('keeps a light body in light mode with the vivid strip', () => {
+    const style = menuTileStyle('#7f1d1d', 'light');
+    expect(hexLuma(style.backgroundColor)).toBeGreaterThan(0.8);
+    expect(style.boxShadow).toContain('#7f1d1d');
   });
 });

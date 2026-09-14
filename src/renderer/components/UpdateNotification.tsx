@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { UpdateStatusDTO } from '@shared/ipc';
+import { SpinnerGlyph } from './SpinnerGlyph';
 
 interface UpdateEvent {
   event: string;
@@ -275,7 +276,7 @@ export function UpdateNotification() {
     return (
       <div className="pos-toast-anchor fixed right-4 bg-gray-700 text-white rounded-lg shadow-lg p-3 max-w-[min(24rem,calc(100vw-1.5rem))] z-50">
         <div className="flex items-center gap-2">
-          <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+          <SpinnerGlyph className="size-4 text-white" />
           <span className="text-sm">Checking for updates...</span>
         </div>
       </div>

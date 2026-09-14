@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BrandMark } from '../../components/BrandMark';
+import { PageSpinner } from '../../components/PageSpinner';
 import {
   ALL_KDS_STATIONS,
   kdsStationLabel,
@@ -45,7 +46,9 @@ import {
   KDS_DEV_BUMP_MENU,
   kdsItemIsBumpable,
 } from './kdsDevBumpMenu';
+import i18n from '../../i18n/config';
 import { pollIntervalMs } from '../../utils/netQuality';
+import { reportAppError } from '../../utils/reportAppError';
 import {
   IconCheck,
   IconChevronLeft,
@@ -582,9 +585,19 @@ export default function KdsPage() {
           ticketId: ticket.ticketId,
           cooker: cookerRef.current,
         })
-        .catch(() => false);
+        .catch((e: unknown) => {
+          reportAppError(e, {
+            fallback: i18n.t('kds.bumpFailed'),
+            key: `kds.bump:${ticket.ticketId}`,
+          });
+          return false;
+        });
       bumping.current.delete(ticket.ticketId);
       if (!ok) {
+        reportAppError(new Error(i18n.t('kds.bumpFailed')), {
+          fallback: i18n.t('kds.bumpFailed'),
+          key: `kds.bump:${ticket.ticketId}`,
+        });
         // Put the card back exactly as it was, whichever optimistic edit we
         // made: dropping any partially-edited copy first covers the two-stage
         // and cooker paths, where the card stayed on the board with its lines
@@ -641,15 +654,23 @@ export default function KdsPage() {
           itemIdx,
           cooker: cookerRef.current,
         } as any)
-        .catch(() => false);
+        .catch((e: unknown) => {
+          reportAppError(e, {
+            fallback: i18n.t('kds.bumpFailed'),
+            key: `kds.bumpItem:${ticketId}:${itemIdx}`,
+          });
+          return false;
+        });
       bumpingItems.current.delete(inFlightKey);
       if (!ok) {
         // The line is still pending on the host. Leaving it struck through
         // means the kitchen stops cooking something the pass is expecting, so
         // restore the ticket and say why.
-        setErr(
-          'That item could not be bumped. Check the connection to the POS host.',
-        );
+        setErr(i18n.t('kds.bumpFailed'));
+        reportAppError(new Error(i18n.t('kds.bumpFailed')), {
+          fallback: i18n.t('kds.bumpFailed'),
+          key: `kds.bumpItem:${ticketId}:${itemIdx}`,
+        });
         patchBoard((arr) =>
           arr.some((t) => t.ticketId === ticketId)
             ? arr.map((t) => (t.ticketId === ticketId ? ticket : t))
@@ -784,7 +805,11 @@ export default function KdsPage() {
         setLoading(false);
       } catch (e: any) {
         if (!alive) return;
-        setErr(e?.message || 'Failed to load KDS tickets');
+        setErr(e?.message || i18n.t('kds.loadFailed'));
+        reportAppError(e, {
+          fallback: i18n.t('kds.loadFailed'),
+          key: 'kds.listTickets',
+        });
         setLoading(false);
       }
     };
@@ -1035,8 +1060,20 @@ export default function KdsPage() {
                 station: stationRef.current,
                 cooker: cookerRef.current,
               })
-              .catch(() => ({ ok: false, ticketId: null }));
-            if (!res?.ok) return;
+              .catch((e: unknown) => {
+                reportAppError(e, {
+                  fallback: i18n.t('kds.recallFailed'),
+                  key: 'kds.recall',
+                });
+                return { ok: false, ticketId: null };
+              });
+            if (!res?.ok) {
+              reportAppError(new Error(i18n.t('kds.recallFailed')), {
+                fallback: i18n.t('kds.recallFailed'),
+                key: 'kds.recall',
+              });
+              return;
+            }
             applyTab('NEW');
             setSelectedIdx(0);
             selectedIdxRef.current = 0;
@@ -1049,7 +1086,13 @@ export default function KdsPage() {
                 limit: 120,
                 cooker: cookerRef.current,
               })
-              .catch(() => [])) as KdsTicket[];
+              .catch((e: unknown) => {
+                reportAppError(e, {
+                  fallback: i18n.t('kds.loadFailed'),
+                  key: 'kds.listTickets',
+                });
+                return [];
+              })) as KdsTicket[];
             commitBoard(seq, Array.isArray(rows) ? rows : []);
           })();
           return;
@@ -1076,11 +1119,25 @@ export default function KdsPage() {
             }
           }
           void (async () => {
-            const res = await window.api.kds.recall(payload).catch(() => ({
-              ok: false,
-              ticketId: null,
-            }));
-            if (!res?.ok) return;
+            const res = await window.api.kds
+              .recall(payload)
+              .catch((e: unknown) => {
+                reportAppError(e, {
+                  fallback: i18n.t('kds.recallFailed'),
+                  key: 'kds.recallSelected',
+                });
+                return {
+                  ok: false,
+                  ticketId: null,
+                };
+              });
+            if (!res?.ok) {
+              reportAppError(new Error(i18n.t('kds.recallFailed')), {
+                fallback: i18n.t('kds.recallFailed'),
+                key: 'kds.recallSelected',
+              });
+              return;
+            }
             applyTab('NEW');
             setSelectedIdx(0);
             selectedIdxRef.current = 0;
@@ -1093,7 +1150,13 @@ export default function KdsPage() {
                 limit: 120,
                 cooker: cookerRef.current,
               })
-              .catch(() => [])) as KdsTicket[];
+              .catch((e: unknown) => {
+                reportAppError(e, {
+                  fallback: i18n.t('kds.loadFailed'),
+                  key: 'kds.listTickets',
+                });
+                return [];
+              })) as KdsTicket[];
             commitBoard(seq, Array.isArray(rows) ? rows : []);
           })();
           return;
@@ -1120,7 +1183,13 @@ export default function KdsPage() {
                   limit: 80,
                   cooker: cookerRef.current,
                 })
-                .catch(() => [])) as KdsTicket[];
+                .catch((e: unknown) => {
+                  reportAppError(e, {
+                    fallback: i18n.t('kds.loadFailed'),
+                    key: 'kds.listTickets',
+                  });
+                  return [];
+                })) as KdsTicket[];
               commitBoard(seq, Array.isArray(rows) ? rows : []);
               setSelectedIdx(0);
               selectedIdxRef.current = 0;
@@ -1252,7 +1321,6 @@ export default function KdsPage() {
         </div>
       </div>
 
-      {loading && <div className="opacity-70">Loading…</div>}
       {err && (
         <div className="mb-3 p-3 rounded bg-rose-900/30 border border-rose-700 text-rose-200 text-sm">
           {err}
@@ -1432,8 +1500,12 @@ export default function KdsPage() {
             </div>
           </section>
         </div>
-      ) : tickets.length === 0 && !loading ? (
-        <div className="flex flex-1 items-center justify-center min-h-0 py-8">
+      ) : loading && tickets.length === 0 ? (
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <PageSpinner variant="overlay" message="Loading…" />
+        </div>
+      ) : tickets.length === 0 ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center py-8">
           <BrandMark size="lg" />
         </div>
       ) : (
@@ -1709,8 +1781,8 @@ export default function KdsPage() {
             onClick={(e) => e.stopPropagation()}
           >
             {ticketSummaryLoading && !ticketSummary ? (
-              <div className="p-8 text-center text-lg opacity-80">
-                Loading ticket…
+              <div className="relative min-h-[240px] overflow-hidden">
+                <PageSpinner variant="overlay" message="Loading ticket…" />
               </div>
             ) : ticketSummary ? (
               <>

@@ -6,7 +6,18 @@ import {
   formatSaleLocation,
   isStoreCounterArea,
 } from '@shared/editionCapabilities';
-import { kitchenSlipNeedsCourseBanner } from '@shared/ticketCourseFire';
+import {
+  printCopyFromSettings,
+  printLangFromSettings,
+  printPaymentMethod,
+  printStaffLabel,
+} from '@shared/printCopy';
+import {
+  fiscalTinFromSettings,
+  fiscalVerificationQr,
+  isFiscalPending,
+  isFiscalRegistered,
+} from '@shared/fiscalReceipt';
 import { getActiveLicenseEdition } from './services/license';
 import os from 'node:os';
 import { BrowserWindow } from 'electron';
@@ -18,6 +29,7 @@ import {
   ESC_POS_FONT_A,
   ESC_POS_PC850,
   encodeEscposText,
+  escposQrCode,
   formatTwoCol,
   layoutFromSettings,
   wrapEscposText,
@@ -37,47 +49,17 @@ function receiptDiningFloor(area?: string | null): boolean {
   return editionHasTables(getActiveLicenseEdition());
 }
 
-function receiptStaffLabel(diningFloor: boolean): string {
-  return diningFloor ? 'Waiter' : 'Cashier';
+function receiptStaffLabel(
+  diningFloor: boolean,
+  lang: ReturnType<typeof printLangFromSettings>,
+): string {
+  return printStaffLabel(lang, diningFloor);
 }
 
 function twoCol(left: string, right: string, layout: ReceiptLayout): Buffer[] {
   return formatTwoCol(left, right, layout)
     .split('\n')
     .map((ln) => escposText(`${ln}\n`));
-}
-
-function escposQrCode(
-  data: string,
-  options?: { moduleSize?: number; align?: 'left' | 'center' | 'right' },
-): Buffer {
-  const text = String(data || '');
-  const align = options?.align ?? 'center';
-  const alignByte = align === 'center' ? 49 : align === 'right' ? 50 : 48;
-  let moduleSize = options?.moduleSize;
-  if (moduleSize == null) {
-    // Long fiscal URLs need a smaller module size on 58mm paper.
-    moduleSize = text.length > 140 ? 3 : text.length > 90 ? 4 : 5;
-  }
-  moduleSize = Math.min(8, Math.max(2, Math.round(moduleSize)));
-  const d = Buffer.from(text, 'utf8');
-  const storeLen = d.length + 3;
-  const pL = storeLen & 0xff;
-  const pH = (storeLen >> 8) & 0xff;
-  return Buffer.concat([
-    // QR-specific alignment (ESC a alone does not center QR on many printers).
-    GS,
-    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x41, alignByte]),
-    GS,
-    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, moduleSize]),
-    GS,
-    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x30]),
-    GS,
-    Buffer.from([0x28, 0x6b, pL, pH, 0x31, 0x50, 0x30]),
-    d,
-    GS,
-    Buffer.from([0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]),
-  ]);
 }
 
 export type TicketPrintItem = {
@@ -148,7 +130,9 @@ export function buildEscposShiftSummary(
   summary: ShiftClosePrintSummary,
   settings: SettingsDTO,
 ): Buffer {
-  const restaurant = settings.restaurantName || 'Restaurant';
+  const lang = printLangFromSettings(settings);
+  const copy = printCopyFromSettings(settings);
+  const restaurant = settings.restaurantName || copy.restaurantFallback;
   const currency = settings.currency || 'EUR';
   const layout = layoutFromSettings(settings);
   const opened = formatDateTime(new Date(summary.openedAtIso));
@@ -163,43 +147,55 @@ export function buildEscposShiftSummary(
     lines.push(escposText(`${ln}\n`));
   }
   lines.push(cmdTextSize('normal'));
-  lines.push(escposText('SHIFT REPORT\n'));
+  lines.push(escposText(`${copy.shiftReport}\n`));
   lines.push(cmdBold(false));
   lines.push(escposText(`${layout.sep}\n`));
   lines.push(cmdAlign('left'));
   lines.push(
     escposText(
-      `${receiptStaffLabel(editionHasTables(getActiveLicenseEdition()))}: ${summary.waiterName}\n`,
+      `${receiptStaffLabel(editionHasTables(getActiveLicenseEdition()), lang)}: ${summary.waiterName}\n`,
     ),
   );
-  lines.push(escposText(`Opened: ${opened}\n`));
-  lines.push(escposText(`Closed: ${closed}\n`));
+  lines.push(escposText(`${copy.opened}: ${opened}\n`));
+  lines.push(escposText(`${copy.closed}: ${closed}\n`));
   lines.push(escposText(`${layout.sep}\n`));
-  lines.push(...twoCol('Orders', String(summary.orders), layout));
+  lines.push(...twoCol(copy.orders, String(summary.orders), layout));
   lines.push(
-    ...twoCol('Net sales', formatMoneyEscpos(summary.revenueNet), layout),
+    ...twoCol(copy.netSales, formatMoneyEscpos(summary.revenueNet), layout),
   );
   if (summary.vatEnabled) {
-    lines.push(...twoCol('VAT', formatMoneyEscpos(summary.revenueVat), layout));
+    lines.push(
+      ...twoCol(copy.vat, formatMoneyEscpos(summary.revenueVat), layout),
+    );
   }
   lines.push(cmdBold(true));
   lines.push(
-    ...twoCol('TOTAL', formatMoneyEscpos(summary.revenueGross), layout),
+    ...twoCol(copy.total, formatMoneyEscpos(summary.revenueGross), layout),
   );
   lines.push(cmdBold(false));
   lines.push(
-    ...twoCol('Currency', String(currency).slice(0, 3).toUpperCase(), layout),
+    ...twoCol(
+      copy.currency,
+      String(currency).slice(0, 3).toUpperCase(),
+      layout,
+    ),
   );
   if (summary.byMethod.length > 0) {
     lines.push(escposText(`${layout.sep}\n`));
-    lines.push(escposText('By payment:\n'));
+    lines.push(escposText(`${copy.byPayment}\n`));
     for (const row of summary.byMethod) {
-      lines.push(...twoCol(row.method, formatMoneyEscpos(row.amount), layout));
+      lines.push(
+        ...twoCol(
+          printPaymentMethod(lang, row.method),
+          formatMoneyEscpos(row.amount),
+          layout,
+        ),
+      );
     }
   }
   lines.push(escposText('\n'));
   lines.push(cmdAlign('center'));
-  lines.push(escposText('End of shift\n'));
+  lines.push(escposText(`${copy.endOfShift}\n`));
   lines.push(cmdAlign('left'));
   lines.push(escposText('\n'));
   lines.push(GS, Buffer.from('V'), Buffer.from([0x41]), Buffer.from([0x10]));
@@ -223,7 +219,9 @@ export function buildEscposTicket(
     ? new Date(payload.printedAtIso)
     : new Date();
   const nowStr = formatDateTime(now);
-  const restaurant = settings.restaurantName || 'Restaurant';
+  const lang = printLangFromSettings(settings);
+  const copy = printCopyFromSettings(settings);
+  const restaurant = settings.restaurantName || copy.restaurantFallback;
   const businessInfo: any = (settings as any).businessInfo || {};
   const bizAddress = String(businessInfo?.address || '').trim();
   const bizPhone = String(businessInfo?.phone || '').trim();
@@ -236,24 +234,14 @@ export function buildEscposTicket(
   lines.push(...cmdPrinterInit());
 
   const kind = String(meta?.kind || '').toUpperCase();
-  const stationLabel = String(meta?.station || '').toUpperCase();
-  const routeLabel = String(meta?.routeLabel || '').trim();
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
   const itemsToPrint: TicketPrintItem[] = hidePrices
     ? payload.items || []
     : aggregateTicketItems(payload.items || []);
 
-  // Header (restaurant-style)
-  if (kind === 'ORDER') {
-    // For kitchen/bar slips: keep header minimal (no big bold restaurant title)
-    lines.push(cmdAlign('center'));
-    lines.push(cmdBold(false));
-    lines.push(cmdTextSize('normal'));
-    // Optional small brand line (can be removed entirely if you prefer)
-    for (const ln of wrapEscposText(restaurant, layout.cols)) {
-      lines.push(escposText(`${ln}\n`));
-    }
-  } else {
+  // Header (restaurant-style). Kitchen ORDER slips skip the brand block —
+  // table + items + waiter/time at the foot is all the pass needs.
+  if (kind !== 'ORDER') {
     lines.push(cmdAlign('center'));
     lines.push(cmdBold(true));
     lines.push(cmdTextSize('lg'));
@@ -273,24 +261,8 @@ export function buildEscposTicket(
     }
     if (bizPhone) subtitleLines.push(...wrapEscposText(bizPhone, layout.cols));
     for (const ln of subtitleLines) lines.push(escposText(`${ln}\n`));
+    lines.push(escposText(`${layout.sep}\n`));
   }
-  if (kind === 'ORDER') {
-    lines.push(cmdBold(true));
-    const top = routeLabel
-      ? routeLabel.toUpperCase()
-      : stationLabel && stationLabel !== 'ALL'
-        ? stationLabel
-        : '';
-    lines.push(escposText(`${top ? top + ' ' : ''}ORDER\n`));
-    lines.push(cmdBold(false));
-    const courseLabel = String(meta?.courseLabel || '').trim();
-    if (courseLabel && kitchenSlipNeedsCourseBanner(itemsToPrint)) {
-      lines.push(cmdBold(true));
-      lines.push(escposText(`${courseLabel.toUpperCase()}\n`));
-      lines.push(cmdBold(false));
-    }
-  }
-  lines.push(escposText(`${layout.sep}\n`));
   lines.push(cmdAlign('left'));
   // Avoid Unicode bullets / fancy separators (often render as garbage on ESC/POS)
   const diningFloor = receiptDiningFloor(payload.area);
@@ -298,21 +270,26 @@ export function buildEscposTicket(
     diningFloor,
     area: payload.area,
     tableLabel: payload.tableLabel,
+    emptyLabel: copy.sale,
   });
   lines.push(escposText(`${tableInfo}\n`));
-  if (diningFloor && payload.covers)
-    lines.push(escposText(`Covers: ${payload.covers}\n`));
+  if (kind !== 'ORDER' && diningFloor && payload.covers)
+    lines.push(escposText(`${copy.covers}: ${payload.covers}\n`));
   const seatLabel = String(meta?.seatLabel || '').trim();
   if (kind !== 'ORDER' && seatLabel) {
     lines.push(cmdBold(true));
     lines.push(escposText(`${seatLabel.toUpperCase()}\n`));
     lines.push(cmdBold(false));
   }
-  if (payload.userName)
-    lines.push(
-      escposText(`${receiptStaffLabel(diningFloor)}: ${payload.userName}\n`),
-    );
-  lines.push(escposText(`${nowStr}\n`));
+  if (kind !== 'ORDER') {
+    if (payload.userName)
+      lines.push(
+        escposText(
+          `${receiptStaffLabel(diningFloor, lang)}: ${payload.userName}\n`,
+        ),
+      );
+    lines.push(escposText(`${nowStr}\n`));
+  }
   lines.push(escposText(`${layout.sep}\n`));
 
   // Items. Prices are VAT-inclusive (Albanian fiscalization): the gross
@@ -321,6 +298,10 @@ export function buildEscposTicket(
   let vat = 0;
   const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
+  if (kind === 'ORDER') {
+    lines.push(cmdTextSize('md'));
+    lines.push(cmdBold(true));
+  }
   for (const it of itemsToPrint) {
     const qty = Number(it.qty || 1);
     const linePrice = Number(it.unitPrice || 0) * qty;
@@ -330,21 +311,19 @@ export function buildEscposTicket(
       vat += splitGrossVat(linePrice, rate).vat;
     }
     if (kind === 'ORDER') {
-      lines.push(cmdTextSize('lg'));
-      lines.push(cmdBold(true));
       const itemLine = `${qty} x ${String(it.name || '')}`;
-      for (const ln of wrapEscposText(itemLine, layout.doubleWidthCols)) {
+      for (const ln of wrapEscposText(itemLine, layout.cols)) {
         lines.push(escposText(`${ln}\n`));
       }
-      lines.push(cmdBold(false));
-      lines.push(cmdTextSize('normal'));
       if (it.note) {
+        lines.push(cmdBold(false));
         for (const ln of wrapEscposText(
           `  - ${String(it.note)}`,
           layout.cols,
         )) {
           lines.push(escposText(`${ln}\n`));
         }
+        lines.push(cmdBold(true));
       }
     } else {
       const left = `${qty} x ${String(it.name || '')}`;
@@ -379,16 +358,16 @@ export function buildEscposTicket(
     : fallbackTotal;
   if (!hidePrices) {
     lines.push(escposText(`${layout.sep}\n`));
-    lines.push(...twoCol('Subtotal', formatMoneyEscpos(subtotal), layout));
+    lines.push(...twoCol(copy.subtotal, formatMoneyEscpos(subtotal), layout));
     if (vatEnabled)
-      lines.push(...twoCol('VAT', formatMoneyEscpos(vat), layout));
+      lines.push(...twoCol(copy.vat, formatMoneyEscpos(vat), layout));
     if (Number.isFinite(scAmt) && scAmt > 0) {
       const mode = String(meta?.serviceChargeMode || '').toUpperCase();
       const v = meta?.serviceChargeValue;
       const label =
         mode === 'PERCENT' && Number.isFinite(Number(v))
-          ? `Service (${Number(v)}%)`
-          : 'Service charge';
+          ? copy.servicePct(Number(v))
+          : copy.service;
       lines.push(...twoCol(label, formatMoneyEscpos(scAmt), layout));
     }
     if (Number.isFinite(discountAmt) && discountAmt > 0) {
@@ -396,46 +375,72 @@ export function buildEscposTicket(
       const dval = meta?.discountValue;
       const label =
         dtype === 'PERCENT' && Number.isFinite(Number(dval))
-          ? `Discount (${Number(dval)}%)`
-          : 'Discount';
+          ? copy.discountPct(Number(dval))
+          : copy.discount;
       lines.push(
         ...twoCol(label, '-' + formatMoneyEscpos(discountAmt), layout),
       );
     }
     lines.push(cmdBold(true));
     lines.push(cmdTextSize('md'));
-    lines.push(...twoCol('TOTAL', formatMoneyEscpos(totalFinal), layout));
+    lines.push(...twoCol(copy.total, formatMoneyEscpos(totalFinal), layout));
     lines.push(cmdTextSize('normal'));
     lines.push(cmdBold(false));
     lines.push(
-      ...twoCol('Currency', String(currency).slice(0, 3).toUpperCase(), layout),
+      ...twoCol(
+        copy.currency,
+        String(currency).slice(0, 3).toUpperCase(),
+        layout,
+      ),
     );
   }
 
   // Payment section (only for payment receipts)
   if (kind === 'PAYMENT') {
-    const method = String(
-      meta?.method || meta?.paymentMethod || '',
-    ).toUpperCase();
+    const method = printPaymentMethod(
+      lang,
+      String(meta?.method || meta?.paymentMethod || ''),
+    );
     const approvedBy = String(meta?.managerApprovedByName || '').trim();
     lines.push(escposText(`${layout.sep}\n`));
     lines.push(cmdAlign('center'));
     lines.push(cmdBold(true));
-    lines.push(escposText('PAID\n'));
+    lines.push(escposText(`${copy.paid}\n`));
     lines.push(cmdBold(false));
     lines.push(cmdAlign('left'));
-    if (method) lines.push(escposText(`Method: ${method}\n`));
-    if (approvedBy) lines.push(escposText(`Approved: ${approvedBy}\n`));
+    if (method) lines.push(escposText(`${copy.method}: ${method}\n`));
+    if (approvedBy) lines.push(escposText(`${copy.approved}: ${approvedBy}\n`));
 
     const fiscalNivf = String(meta?.fiscalNivf || '').trim();
     const fiscalNslf = String(meta?.fiscalNslf || '').trim();
     const fiscalLink = String(meta?.fiscalLink || '').trim();
-    if (meta?.fiscalEnabled && (fiscalNivf || fiscalNslf || fiscalLink)) {
-      const fiscalLineWidth = layout.cols;
+    const fiscalQrCode = String((meta as any)?.fiscalQrCode || '').trim();
+    if (meta?.fiscalEnabled && isFiscalPending(meta as any)) {
       lines.push(escposText(`${layout.sep}\n`));
       lines.push(cmdAlign('center'));
       lines.push(cmdBold(true));
-      lines.push(escposText('FISKALIZUAR\n'));
+      lines.push(escposText(`${copy.fiscalPendingTitle}\n`));
+      lines.push(cmdBold(false));
+      for (const ln of wrapEscposText(copy.fiscalPendingBody, layout.cols)) {
+        lines.push(escposText(`${ln}\n`));
+      }
+      lines.push(cmdAlign('left'));
+    } else if (meta?.fiscalEnabled && isFiscalRegistered(meta as any)) {
+      const fiscalLineWidth = layout.cols;
+      const qr = fiscalVerificationQr({
+        link: fiscalLink,
+        qrCode: fiscalQrCode,
+        nslf: fiscalNslf,
+        tin:
+          String((meta as any)?.fiscalTin || '').trim() ||
+          fiscalTinFromSettings(settings),
+        issuedAt: meta?.paidAt,
+        total: totalFinal,
+      });
+      lines.push(escposText(`${layout.sep}\n`));
+      lines.push(cmdAlign('center'));
+      lines.push(cmdBold(true));
+      lines.push(escposText(`${copy.fiscalRegistered}\n`));
       lines.push(cmdBold(false));
       if (fiscalNivf) {
         for (const ln of wrapEscposText(
@@ -453,40 +458,49 @@ export function buildEscposTicket(
           lines.push(escposText(`${ln}\n`));
         }
       }
-      if (fiscalLink) {
-        lines.push(escposText('\n'));
+      if (qr) {
+        lines.push(escposText('\n\n'));
         lines.push(cmdAlign('center'));
-        lines.push(escposQrCode(fiscalLink, { align: 'center' }));
-        lines.push(escposText('\n'));
+        lines.push(escposQrCode(qr, { paperMm: layout.paperMm }));
+        lines.push(escposText('\n\n'));
       }
       lines.push(cmdAlign('left'));
     }
   }
 
   if (payload.note) {
-    lines.push(escposText('\nNote:\n'));
-    if (kind === 'ORDER') {
-      lines.push(cmdTextSize('md'));
-      lines.push(cmdBold(true));
-    }
-    for (const ln of wrapEscposText(String(payload.note), layout.cols)) {
-      lines.push(escposText(`${ln}\n`));
-    }
     if (kind === 'ORDER') {
       lines.push(cmdBold(false));
       lines.push(cmdTextSize('normal'));
     }
+    lines.push(escposText(`\n${copy.note}:\n`));
+    for (const ln of wrapEscposText(String(payload.note), layout.cols)) {
+      lines.push(escposText(`${ln}\n`));
+    }
+  }
+
+  if (kind === 'ORDER') {
+    lines.push(cmdBold(false));
+    lines.push(cmdTextSize('normal'));
+    lines.push(escposText(`${layout.sep}\n`));
+    if (payload.userName)
+      lines.push(
+        escposText(
+          `${receiptStaffLabel(diningFloor, lang)}: ${payload.userName}\n`,
+        ),
+      );
+    lines.push(escposText(`${nowStr}\n`));
   }
 
   // Footer and cut (customer receipts only — kitchen ORDER slips stay minimal)
   lines.push(escposText('\n'));
   if (kind !== 'ORDER') {
     lines.push(cmdAlign('center'));
-    lines.push(escposText('Thank you!\n'));
-    // Business contact (below Thank you)
+    lines.push(escposText(`${copy.thankYou}\n`));
+    // Business contact (below thank-you)
     if (bizEmail) lines.push(escposText(`${bizEmail}\n`));
     if (bizWebsite) lines.push(escposText(`${bizWebsite}\n`));
-    lines.push(escposText('Powered by OneTap POS\n'));
+    lines.push(escposText(`${copy.poweredBy}\n`));
     lines.push(cmdAlign('left'));
   }
   lines.push(escposText('\n'));
@@ -503,7 +517,9 @@ export function buildHtmlReceipt(
     ? new Date(payload.printedAtIso)
     : new Date();
   const nowStr = formatDateTime(now);
-  const restaurant = settings.restaurantName || 'Restaurant';
+  const lang = printLangFromSettings(settings);
+  const copy = printCopyFromSettings(settings);
+  const restaurant = settings.restaurantName || copy.restaurantFallback;
   const businessInfo: any = (settings as any).businessInfo || {};
   const bizAddress = String(businessInfo?.address || '').trim();
   const bizPhone = String(businessInfo?.phone || '').trim();
@@ -515,10 +531,7 @@ export function buildHtmlReceipt(
   const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const kind = String(meta?.kind || '').toUpperCase();
-  const stationLabel = String(meta?.station || '').toUpperCase();
-  const routeLabel = String(meta?.routeLabel || '').trim();
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
-  const courseLabel = String(meta?.courseLabel || '').trim();
   const seatLabel = String(meta?.seatLabel || '').trim();
 
   const safe = (s: any) =>
@@ -572,24 +585,41 @@ export function buildHtmlReceipt(
 
   const scLine =
     Number.isFinite(scAmt) && scAmt > 0
-      ? `<div class="row"><div class="left">${safe(String(meta?.serviceChargeMode || '').toUpperCase() === 'PERCENT' ? `Service (${Number(meta?.serviceChargeValue || 0)}%)` : 'Service charge')}</div><div class="right">${safe(formatMoney(scAmt, currency))}</div></div>`
+      ? `<div class="row"><div class="left">${safe(String(meta?.serviceChargeMode || '').toUpperCase() === 'PERCENT' ? copy.servicePct(Number(meta?.serviceChargeValue || 0)) : copy.service)}</div><div class="right">${safe(formatMoney(scAmt, currency))}</div></div>`
       : '';
   const discountLine =
     Number.isFinite(discountAmt) && discountAmt > 0
-      ? `<div class="row"><div class="left">${safe(String(meta?.discountType || '').toUpperCase() === 'PERCENT' ? `Discount (${Number(meta?.discountValue || 0)}%)` : 'Discount')}</div><div class="right">-${safe(formatMoney(discountAmt, currency))}</div></div>`
+      ? `<div class="row"><div class="left">${safe(String(meta?.discountType || '').toUpperCase() === 'PERCENT' ? copy.discountPct(Number(meta?.discountValue || 0)) : copy.discount)}</div><div class="right">-${safe(formatMoney(discountAmt, currency))}</div></div>`
       : '';
   const fiscalNivf = String(meta?.fiscalNivf || '').trim();
   const fiscalNslf = String(meta?.fiscalNslf || '').trim();
   const fiscalLink = String(meta?.fiscalLink || '').trim();
+  const fiscalQrCode = String((meta as any)?.fiscalQrCode || '').trim();
+  const fiscalQr = fiscalVerificationQr({
+    link: fiscalLink,
+    qrCode: fiscalQrCode,
+    nslf: fiscalNslf,
+    tin:
+      String((meta as any)?.fiscalTin || '').trim() ||
+      fiscalTinFromSettings(settings),
+    issuedAt: meta?.paidAt,
+    total: totalFinal,
+  });
   const fiscalBlock =
-    kind === 'PAYMENT' &&
-    meta?.fiscalEnabled &&
-    (fiscalNivf || fiscalNslf || fiscalLink)
-      ? `<div class="sep"></div><div class="paid">FISKALIZUAR</div>${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalLink ? `<div class="small"><a href="${safe(fiscalLink)}">${safe(fiscalLink)}</a></div>` : ''}`
-      : '';
+    kind === 'PAYMENT' && meta?.fiscalEnabled && isFiscalPending(meta as any)
+      ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalPendingTitle)}</div><div class="small">${safe(copy.fiscalPendingBody)}</div>`
+      : kind === 'PAYMENT' &&
+          meta?.fiscalEnabled &&
+          isFiscalRegistered(meta as any)
+        ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalRegistered)}</div>${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalQr ? `<div class="small"><a href="${safe(fiscalQr)}">${safe(fiscalQr)}</a></div>` : ''}`
+        : '';
+  const payMethod = printPaymentMethod(
+    lang,
+    String(meta?.method || meta?.paymentMethod || ''),
+  );
   const paidBlock =
     kind === 'PAYMENT'
-      ? `<div class="sep"></div><div class="paid">PAID</div>${meta?.method || meta?.paymentMethod ? `<div class="small">Method: ${safe(String(meta?.method || meta?.paymentMethod).toUpperCase())}</div>` : ''}${fiscalBlock}`
+      ? `<div class="sep"></div><div class="paid">${safe(copy.paid)}</div>${payMethod ? `<div class="small">${safe(copy.method)}: ${safe(payMethod)}</div>` : ''}${fiscalBlock}`
       : '';
 
   const subtitleParts: string[] = [];
@@ -631,41 +661,45 @@ export function buildHtmlReceipt(
       .left { flex: 1; word-break: break-word; }
       .right { min-width: 70px; text-align: right; white-space: nowrap; }
       .note { margin-left: 8px; font-size: 11px; }
-      .orderItem { font-size: 16px; font-weight: 700; line-height: 1.35; margin: 2px 0; }
+      .orderItem { font-size: 18px; font-weight: 700; line-height: 1.25; margin: 2px 0; }
       .footer { text-align: center; margin-top: 10px; }
       .paid { text-align: center; font-weight: 800; font-size: 14px; margin: 2px 0; }
     </style>
   </head>
   <body>
-    <div class="${kind === 'ORDER' ? 'titleSlip' : 'title'}">${safe(restaurant)}</div>
-    ${subtitleHtml}
-    ${kind === 'ORDER' ? `<div class="paid">${safe(`${routeLabel ? routeLabel.toUpperCase() : stationLabel && stationLabel !== 'ALL' ? stationLabel : ''}${routeLabel || (stationLabel && stationLabel !== 'ALL') ? ' ' : ''}ORDER`)}</div>` : ''}
-    ${kind === 'ORDER' && courseLabel && kitchenSlipNeedsCourseBanner(items) ? `<div class="paid">${safe(courseLabel.toUpperCase())}</div>` : ''}
-    <div class="small">${safe(formatSaleLocation({ diningFloor: receiptDiningFloor(payload.area), area: payload.area, tableLabel: payload.tableLabel }))}</div>
-    ${receiptDiningFloor(payload.area) && payload.covers ? `<div class="small">Covers: ${safe(payload.covers)}</div>` : ''}
+    ${
+      kind === 'ORDER'
+        ? ''
+        : `<div class="title">${safe(restaurant)}</div>
+    ${subtitleHtml}`
+    }
+    <div class="${kind === 'ORDER' ? '' : 'small'}">${safe(formatSaleLocation({ diningFloor: receiptDiningFloor(payload.area), area: payload.area, tableLabel: payload.tableLabel, emptyLabel: copy.sale }))}</div>
+    ${kind !== 'ORDER' && receiptDiningFloor(payload.area) && payload.covers ? `<div class="small">${safe(copy.covers)}: ${safe(payload.covers)}</div>` : ''}
     ${kind !== 'ORDER' && seatLabel ? `<div class="paid">${safe(seatLabel.toUpperCase())}</div>` : ''}
-    ${payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area)))}: ${safe(payload.userName)}</div>` : ''}
-    <div class="small">${safe(nowStr)}</div>
+    ${kind !== 'ORDER' && payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area), lang))}: ${safe(payload.userName)}</div>` : ''}
+    ${kind !== 'ORDER' ? `<div class="small">${safe(nowStr)}</div>` : ''}
     <div class="sep"></div>
     ${rows}
     ${
       hidePrices
         ? ''
         : `<div class="sep"></div>
-    <div class="row"><div class="left">Subtotal</div><div class="right">${safe(formatMoney(subtotal, currency))}</div></div>
-    ${vatEnabled ? `<div class="row"><div class="left">VAT</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
+    <div class="row"><div class="left">${safe(copy.subtotal)}</div><div class="right">${safe(formatMoney(subtotal, currency))}</div></div>
+    ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
     ${scLine}
     ${discountLine}
-    <div class="row" style="font-weight:700"><div class="left">TOTAL</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>`
+    <div class="row" style="font-weight:700"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>`
     }
-    ${payload.note ? `<div class="sep"></div><div class="small">Note:</div><div class="${kind === 'ORDER' ? 'orderItem' : 'small'}">${safe(payload.note)}</div>` : ''}
+    ${payload.note ? `<div class="sep"></div><div class="small">${safe(copy.note)}:</div><div class="small">${safe(payload.note)}</div>` : ''}
     ${paidBlock}
     ${
       kind === 'ORDER'
-        ? ''
-        : `<div class="footer small">Thank you!</div>
+        ? `<div class="sep"></div>
+    ${payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area), lang))}: ${safe(payload.userName)}</div>` : ''}
+    <div class="small">${safe(nowStr)}</div>`
+        : `<div class="footer small">${safe(copy.thankYou)}</div>
     ${contactHtml}
-    <div class="footer small">Powered by OneTap POS</div>`
+    <div class="footer small">${safe(copy.poweredBy)}</div>`
     }
   </body>
 </html>`;

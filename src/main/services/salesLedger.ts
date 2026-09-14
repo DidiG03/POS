@@ -16,6 +16,11 @@ import {
   parsePaidAt,
   saleFiguresFromPayload,
 } from '@shared/salesLedger';
+import {
+  consumeMenuStockForTicketLines,
+  stockLinesFromTicketItems,
+} from './menuStock';
+import { storePlanBlocksTables } from './license';
 
 type Db = {
   order: any;
@@ -259,6 +264,13 @@ export async function persistReceiptAudit(input: {
         paidAt: job.createdAt instanceof Date ? job.createdAt : new Date(),
         settings,
       });
+      if (isPaymentPayload(input.payload) && storePlanBlocksTables()) {
+        await consumeMenuStockForTicketLines(
+          tx,
+          stockLinesFromTicketItems(input.payload?.items),
+          'onHand',
+        );
+      }
       return {
         duplicate: false,
         printJobId: Number(job.id),

@@ -67,17 +67,26 @@ export async function initMobileShell(): Promise<void> {
       // ignore
     }
 
-    // Hide the splash screen now that the renderer is mounted.
-    try {
-      const { SplashScreen } = await import('@capacitor/splash-screen');
-      try {
-        await SplashScreen.hide({ fadeOutDuration: 200 });
-      } catch {
-        /* ignore */
+    // Never leave the native splash up if React is slow to become ready.
+    window.setTimeout(() => {
+      void hideMobileSplash();
+    }, 8_000);
+  } catch {
+    // ignore
+  }
+}
+
+/** Hide splash after the first real UI (login, scan, or floor) is up. */
+export async function hideMobileSplash(): Promise<void> {
+  try {
+    const Cap = (
+      window as unknown as {
+        Capacitor?: { isNativePlatform?: () => boolean };
       }
-    } catch {
-      // ignore
-    }
+    ).Capacitor;
+    if (!Cap?.isNativePlatform?.()) return;
+    const { SplashScreen } = await import('@capacitor/splash-screen');
+    await SplashScreen.hide({ fadeOutDuration: 180 });
   } catch {
     // ignore
   }
