@@ -232,3 +232,16 @@ export function broadcastTableMergesChanged(
   broadcastIpc('tableMerges:changed', payload);
   broadcastSse('tableMerges', payload);
 }
+
+/**
+ * Theme + clock flags only. Never put the full settings document on the
+ * wire — tablets must refetch `/settings` for the rest, and must not
+ * cache this slice as if it were the whole host config.
+ */
+export function broadcastSettingsChanged(payload: {
+  theme?: string | null;
+  captureClockInOut?: boolean;
+}): void {
+  broadcastIpc('settings:changed', payload);
+  broadcastSse('settings', payload);
+}

@@ -32,6 +32,7 @@ import {
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import {
   getPreferredScheme,
+  isSseHealthy,
   lanBases,
   markSseOpen,
   noteSseEvent,
@@ -59,6 +60,7 @@ import {
   shouldForceLogoutOn401,
   writeLanToken,
 } from './utils/lanAuthToken';
+import { isPairingRejectedError } from './utils/lanLoginError';
 import {
   SHIFT_GUARD_GRACE_MS,
   isPersistedSessionExpired,
@@ -186,6 +188,14 @@ if (!(window as any).api) {
 
   function tokenForLanPath(path: string): string | null {
     const pathname = String(path || '').split('?')[0];
+    if (
+      pathname === '/auth/login' ||
+      pathname === '/pairing/verify' ||
+      pathname === '/auth/users' ||
+      pathname === '/health'
+    ) {
+      return null;
+    }
     if (
       pathname.startsWith('/layout/merges') ||
       pathname.startsWith('/reservations') ||
@@ -436,6 +446,15 @@ if (!(window as any).api) {
           emitPosSyncCatchupSoon();
         }
       });
+      es.addEventListener('settings', (ev: any) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          handleSseEvent('pos:settingsChanged', data);
+        } catch (e) {
+          void e;
+          emitPosSyncCatchupSoon();
+        }
+      });
       es.addEventListener('catchup', () => {
         emitPosSyncCatchup();
       });
@@ -506,8 +525,10 @@ if (!(window as any).api) {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         ensureSse();
-        emitPosSyncCatchupSoon();
         void syncTabletToHostVersion();
+        // A healthy socket already delivered tables/tickets/settings.
+        // Full cache drops belong to a dead EventSource or OS resume.
+        if (!isSseHealthy()) emitPosSyncCatchupSoon();
       }
     });
     window.addEventListener('focus', () => ensureSse());
@@ -636,9 +657,30 @@ if (!(window as any).api) {
   }
 
   function lanRequestTimeoutMs(path: string, method: string): number {
+    const pathname = String(path || '').split('?')[0];
+    if (pathname === '/auth/login' || pathname === '/pairing/verify') {
+      return IS_NATIVE_SHELL ? 12_000 : 6_000;
+    }
     if (path.includes('/print')) return LAN_PRINT_TIMEOUT_MS;
     if (method === 'GET' || method === 'HEAD') return CLIENT_GET_TIMEOUT_MS;
     return CLIENT_TIMEOUT_MS;
+  }
+
+  function lanRequestAttempts(path: string, method: string): number {
+    const pathname = String(path || '').split('?')[0];
+    if (pathname === '/auth/login' || pathname === '/pairing/verify') return 1;
+    if (method === 'GET' || method === 'HEAD') return readRetryAttempts();
+    return 2;
+  }
+
+  function lanBasesForPath(path: string): string[] {
+    const pathname = String(path || '').split('?')[0];
+    const all = lanBases(getHttpBase(), getHttpsBase());
+    if (pathname === '/auth/login' || pathname === '/pairing/verify') {
+      if (getPreferredScheme() === 'https') return all;
+      return [getHttpBase()];
+    }
+    return all;
   }
 
   // Always call the host LAN API (even when cloud mode is enabled).
@@ -653,9 +695,8 @@ if (!(window as any).api) {
       ...(((opts?.headers as any) || {}) as any),
     };
     const timeoutMs = lanRequestTimeoutMs(path, method);
-    const attempts =
-      method === 'GET' || method === 'HEAD' ? readRetryAttempts() : 2;
-    const bases = lanBases(getHttpBase(), getHttpsBase());
+    const attempts = lanRequestAttempts(path, method);
+    const bases = lanBasesForPath(path);
 
     const run = async (base: string) => {
       const r = await fetchWithRetry(
@@ -700,27 +741,31 @@ if (!(window as any).api) {
   (window as any).api = {
     auth: {
       async loginWithPin(pin: string, userId?: number, pairingCode?: string) {
-        // Tablets are served from the host LAN API. Enforce host pairing code before any login.
+        // One POST: the host already enforces pairing on /auth/login.
+        // A preflight /pairing/verify doubled wait on slow Wi-Fi.
         try {
-          await goLan('/pairing/verify', {
+          const resp = await goLan('/auth/login', {
             method: 'POST',
-            body: JSON.stringify({ pairingCode }),
+            body: JSON.stringify({ pin, userId, pairingCode }),
           });
-        } catch {
-          throw new Error('Pairing code required');
+          if (resp && typeof resp === 'object' && 'token' in resp) {
+            const t = (resp as any).token;
+            if (typeof t === 'string' && t.length > 10) setToken(t);
+            startSse();
+            return (resp as any).user ?? null;
+          }
+          if (resp == null) return null;
+          throw new Error(
+            typeof resp === 'string' && resp.trim()
+              ? resp.trim()
+              : 'Login failed',
+          );
+        } catch (e) {
+          if (isPairingRejectedError(e)) {
+            throw new Error('Pairing code required');
+          }
+          throw e;
         }
-        // Always go through host so it can proxy to cloud with correct userId translation
-        const resp = await goLan('/auth/login', {
-          method: 'POST',
-          body: JSON.stringify({ pin, userId, pairingCode }),
-        });
-        if (resp && typeof resp === 'object' && 'token' in resp) {
-          const t = (resp as any).token;
-          if (typeof t === 'string' && t.length > 10) setToken(t);
-          startSse();
-          return (resp as any).user ?? null;
-        }
-        return resp;
       },
       async verifyManagerPin(pin: string) {
         const r = await goLan('/auth/verify-manager-pin', {
@@ -729,8 +774,11 @@ if (!(window as any).api) {
         });
         return r && typeof r === 'object' ? r : { ok: false };
       },
-      async createUser() {
-        throw new Error('not supported in browser');
+      async createUser(input: any) {
+        return await goLan('/auth/create-user', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
       async logoutAdmin() {
         return true;
@@ -745,40 +793,69 @@ if (!(window as any).api) {
         return true;
       },
       async listUsers(_input?: { includeAdmins?: boolean }) {
-        // Always go through the LAN host for user listing.
+        if ((window as any).__ADMIN_APP__) {
+          const token = getToken();
+          if (token && isHostOrAdminRole(jwtRole(token))) {
+            return await goLan('/admin/users');
+          }
+        }
         return await goLan('/auth/users');
       },
-      async updateUser() {
-        throw new Error('not supported in browser');
+      async updateUser(input: any) {
+        return await goLan('/auth/update-user', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
       async syncStaffFromApi() {
         throw new Error('not supported in browser');
       },
-      async deleteUser() {
-        throw new Error('not supported in browser');
+      async deleteUser(input: any) {
+        return await goLan('/auth/delete-user', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
     },
     menu: {
       async listCategoriesWithItems() {
         return await goLan('/menu/categories');
       },
-      async createCategory() {
-        throw new Error('not supported in browser');
+      async createCategory(input: any) {
+        return await goLan('/menu/create-category', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
-      async updateCategory() {
-        throw new Error('not supported in browser');
+      async updateCategory(input: any) {
+        return await goLan('/menu/update-category', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
-      async deleteCategory() {
-        throw new Error('not supported in browser');
+      async deleteCategory(id: number) {
+        return await goLan('/menu/delete-category', {
+          method: 'POST',
+          body: JSON.stringify({ id }),
+        });
       },
-      async createItem() {
-        throw new Error('not supported in browser');
+      async createItem(input: any) {
+        return await goLan('/menu/create-item', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
-      async updateItem() {
-        throw new Error('not supported in browser');
+      async updateItem(input: any) {
+        return await goLan('/menu/update-item', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
-      async deleteItem() {
-        throw new Error('not supported in browser');
+      async deleteItem(id: number) {
+        return await goLan('/menu/delete-item', {
+          method: 'POST',
+          body: JSON.stringify({ id }),
+        });
       },
     },
     settings: {
@@ -819,10 +896,10 @@ if (!(window as any).api) {
         throw new Error('not supported in browser');
       },
       async listPrinters() {
-        throw new Error('not supported in browser');
+        return [];
       },
       async listSerialPorts() {
-        throw new Error('not supported in browser');
+        return [];
       },
     },
     license: {
@@ -1046,15 +1123,21 @@ if (!(window as any).api) {
         return await goLan('/health');
       },
     },
+    network: {
+      async getIps() {
+        return [];
+      },
+    },
     admin: {
       async getOverview() {
         return await goLan('/admin/overview');
       },
-      async openWindow() {
-        return false;
-      },
-      async listShifts() {
-        throw new Error('not supported in browser');
+      async listShifts(input?: any) {
+        const q = new URLSearchParams();
+        if (input?.startIso) q.set('startIso', String(input.startIso));
+        if (input?.endIso) q.set('endIso', String(input.endIso));
+        const suffix = q.toString() ? `?${q.toString()}` : '';
+        return await goLan('/admin/shifts' + suffix);
       },
       async listTicketCounts() {
         throw new Error('not supported in browser');
@@ -1062,20 +1145,35 @@ if (!(window as any).api) {
       async listTicketsByUser() {
         throw new Error('not supported in browser');
       },
-      async listNotifications() {
-        throw new Error('not supported in browser');
+      async listNotifications(input?: any) {
+        const q = new URLSearchParams();
+        if (input?.onlyUnread) q.set('onlyUnread', '1');
+        if (input?.limit) q.set('limit', String(input.limit));
+        const suffix = q.toString() ? `?${q.toString()}` : '';
+        const rows = await goLan('/notifications' + suffix);
+        return Array.isArray(rows) ? rows : [];
       },
       async markAllNotificationsRead() {
-        return false;
+        await goLan('/notifications/mark-all-read', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        return true;
       },
       async getTopSellingToday() {
-        throw new Error('not supported in browser');
+        return await goLan('/admin/top-selling-today');
       },
       async getSalesTrends(input: any) {
         const range = input?.range || 'daily';
         return await goLan(
           `/admin/sales-trends?range=${encodeURIComponent(range)}`,
         );
+      },
+      async getReview(input: any) {
+        return await goLan('/admin/review', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
     },
     kds: {
@@ -1364,12 +1462,17 @@ if (!(window as any).api) {
 installPosReadCache();
 installPosRealtimeSync();
 
-// Standalone KDS app: bridge auto-updater IPC exposed by preload.
-if ((window as any).__KDS_APP__ && (window as any).kdsApp?.updater) {
-  (window as any).api = {
-    ...((window as any).api || {}),
-    updater: (window as any).kdsApp.updater,
-  };
+// Standalone KDS / Admin: bridge auto-updater IPC exposed by preload.
+{
+  const companionUpdater =
+    ((window as any).__KDS_APP__ && (window as any).kdsApp?.updater) ||
+    ((window as any).__ADMIN_APP__ && (window as any).adminApp?.updater);
+  if (companionUpdater) {
+    (window as any).api = {
+      ...((window as any).api || {}),
+      updater: companionUpdater,
+    };
+  }
 }
 
 const router = createHashRouter(routes);
@@ -1391,7 +1494,8 @@ function isElectronLicenseHost(): boolean {
     typeof window !== 'undefined' &&
     Boolean((window as any).api?.license) &&
     !(window as any).__BROWSER_CLIENT__ &&
-    !(window as any).__KDS_APP__
+    !(window as any).__KDS_APP__ &&
+    !(window as any).__ADMIN_APP__
   );
 }
 
@@ -1564,10 +1668,13 @@ function Root() {
     let cancelled = false;
     (async () => {
       const isKdsApp = Boolean((window as any).__KDS_APP__);
-      const onKdsSetup =
-        isKdsApp &&
-        String(window.location.hash || '').startsWith('#/kds-setup');
-      if (onKdsSetup) {
+      const isAdminApp = Boolean((window as any).__ADMIN_APP__);
+      const isCompanionApp = isKdsApp || isAdminApp;
+      const hash = String(window.location.hash || '');
+      const onCompanionSetup =
+        (isKdsApp && hash.startsWith('#/kds-setup')) ||
+        (isAdminApp && hash.startsWith('#/admin-setup'));
+      if (onCompanionSetup) {
         setReady(true);
         return;
       }
@@ -1576,13 +1683,13 @@ function Root() {
       setBackendUnreachable(false);
       setMsg(t('boot.connecting'));
       setDetail(undefined);
-      if (!isKdsApp && !hasConfiguredBackendHost()) {
+      if (!isCompanionApp && !hasConfiguredBackendHost()) {
         setBackendUnreachable(true);
         setMsg(t('boot.cannotReach'));
         setDetail(t('boot.cannotReachDetail'));
         return;
       }
-      const cachedSettings = !isKdsApp ? peekSettings() : undefined;
+      const cachedSettings = !isCompanionApp ? peekSettings() : undefined;
       if (cachedSettings) {
         await resumeMainProcessSession().catch(() => {});
         if (cancelled) return;
@@ -1623,10 +1730,11 @@ function Root() {
             await sleep(750);
             continue;
           }
-          // Minimal "backend is ready" checks. KDS only needs the kitchen API;
+          // Minimal "backend is ready" checks. Companions probe the host;
           // the till needs settings. The staff directory loads on the login screen.
-          if (isKdsApp) {
-            const kdsApp = (window as any).kdsApp as
+          if (isCompanionApp) {
+            const companion = ((window as any).adminApp ||
+              (window as any).kdsApp) as
               | {
                   testConnection?: (input: {
                     host: string;
@@ -1635,14 +1743,16 @@ function Root() {
                 }
               | undefined;
             const backend = resolveBackendHost();
-            if (kdsApp?.testConnection) {
-              const r = await kdsApp.testConnection({
+            if (companion?.testConnection) {
+              const r = await companion.testConnection({
                 host: backend.host,
                 httpPort: Number(backend.httpPort) || 3333,
               });
-              if (!r.ok) throw new Error(r.error || 'KDS host unreachable');
-            } else {
+              if (!r.ok) throw new Error(r.error || 'POS host unreachable');
+            } else if (isKdsApp) {
               await (window as any).api.kds.debug();
+            } else {
+              await (window as any).api.health.ping();
             }
           } else {
             await (window as any).api.settings.get();
@@ -1671,9 +1781,10 @@ function Root() {
       }
       if (!cancelled) {
         const isKdsApp = Boolean((window as any).__KDS_APP__);
-        if (isKdsApp) {
+        const isAdminApp = Boolean((window as any).__ADMIN_APP__);
+        if (isKdsApp || isAdminApp) {
           try {
-            window.location.hash = '#/kds-setup';
+            window.location.hash = isAdminApp ? '#/admin-setup' : '#/kds-setup';
           } catch {
             // ignore
           }
@@ -1699,7 +1810,8 @@ function Root() {
   if (!ready) {
     const lanClient =
       Boolean((window as any).__BROWSER_CLIENT__) ||
-      Boolean((window as any).__KDS_APP__);
+      Boolean((window as any).__KDS_APP__) ||
+      Boolean((window as any).__ADMIN_APP__);
     const showScan = backendUnreachable && lanClient;
     return (
       <BootScreen
@@ -1712,7 +1824,7 @@ function Root() {
   return (
     <>
       <RouterProvider router={router} />
-      {(window as any).__KDS_APP__ ? (
+      {(window as any).__KDS_APP__ || (window as any).__ADMIN_APP__ ? (
         <React.Suspense fallback={null}>
           <UpdateNotification />
         </React.Suspense>

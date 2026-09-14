@@ -71,7 +71,6 @@ const api: Api = {
   },
   admin: {
     getOverview: () => ipcRenderer.invoke('admin:getOverview'),
-    openWindow: () => ipcRenderer.invoke('admin:openWindow'),
     listShifts: (input?: { startIso?: string; endIso?: string }) =>
       ipcRenderer.invoke('admin:listShifts', input || {}),
     listTicketCounts: (input?: { startIso?: string; endIso?: string }) =>
@@ -413,6 +412,16 @@ ipcRenderer.on('tableMerges:changed', (_e, payload) => {
   try {
     window.dispatchEvent(
       new CustomEvent('pos:tableMergesChanged', { detail: payload }),
+    );
+  } catch {
+    // ignore
+  }
+});
+
+ipcRenderer.on('settings:changed', (_e, payload) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('pos:settingsChanged', { detail: payload }),
     );
   } catch {
     // ignore

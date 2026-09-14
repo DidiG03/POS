@@ -80,10 +80,6 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'admin:listFiscalSales': { allow: ADMIN },
   'admin:correctSale': { allow: ADMIN },
   'admin:markAllNotificationsRead': { allow: ADMIN },
-  // The login screen offers an "Admin" button before anyone has authenticated.
-  // Opening the window is harmless: the window renders its own login and every
-  // admin channel is gated independently.
-  'admin:openWindow': { allow: 'public' },
 
   // ----------------------------------------------------------------- auth
   // First-run setup has no admin to authorise creating the first admin, so the
@@ -226,7 +222,8 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'reservations:delete': { allow: HOST },
   'reservations:list': { allow: HOST },
   'reservations:listCounts': { allow: HOST },
-  // Login-screen button, same reasoning as `admin:openWindow`.
+  // Login-screen button before anyone has authenticated. Opening the
+  // reservations window is harmless: it renders its own host login.
   'reservations:openWindow': { allow: 'public' },
   'reservations:setStatus': { allow: HOST },
   'reservations:update': { allow: HOST },

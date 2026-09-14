@@ -60,17 +60,20 @@ mac:
   target:
     - dmg
     - zip
+  artifactName: OneTap-KDS-${version}-${arch}.${ext}
   category: public.app-category.business
   icon: build-resources/icon.icns
 
 win:
   target:
     - nsis
+  artifactName: OneTap-KDS-Setup-${version}.${ext}
   icon: build-resources/icon.ico
 
 linux:
   target:
     - AppImage
+  artifactName: OneTap-KDS-${version}.${ext}
   category: Utility
   icon: build-resources/icon.png
 

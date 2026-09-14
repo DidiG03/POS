@@ -45,6 +45,28 @@ describe('swrCache', () => {
     expect(peek('k')).toBe('fresh');
   });
 
+  it('waits for a stale refresh when waitIfStale is set', async () => {
+    writeCache('k', 'stale');
+    const value = await swr('k', async () => 'fresh', {
+      maxAgeMs: 0,
+      waitIfStale: true,
+    });
+    expect(value).toBe('fresh');
+    expect(peek('k')).toBe('fresh');
+  });
+
+  it('keeps stale data when a waitIfStale refresh fails', async () => {
+    writeCache('k', 'stale');
+    const value = await swr(
+      'k',
+      async () => {
+        throw new Error('offline');
+      },
+      { maxAgeMs: 0, waitIfStale: true },
+    );
+    expect(value).toBe('stale');
+  });
+
   it('dedupes concurrent fetchers', async () => {
     let calls = 0;
     const fetcher = async () => {

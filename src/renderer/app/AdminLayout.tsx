@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../stores/adminSession';
 import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { BrandMark } from '../components/BrandMark';
+import { DocumentMeta } from '../components/DocumentMeta';
 import { StatusChip, cn } from '../components/ui';
 import { NotificationsPanel } from '../components/NotificationsPanel';
 import { reportAppError } from '../utils/reportAppError';
@@ -190,6 +191,7 @@ export default function AdminLayout() {
 
   return (
     <div className="admin-app pos-app flex h-screen min-h-0 text-gray-100">
+      <DocumentMeta title={t('adminLayout.panelTitle')} />
       {/* Sidebar — the back office has six sections, which is more than a
           horizontal bar can hold without truncating. */}
       <aside

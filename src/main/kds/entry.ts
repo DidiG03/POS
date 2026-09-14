@@ -157,12 +157,22 @@ async function quitKdsApp(): Promise<boolean> {
   return true;
 }
 
-function loadHash(win: BrowserWindow, hash: '/kds' | '/kds-setup'): void {
+function loadHash(
+  win: BrowserWindow,
+  hash: '/kds' | '/kds-setup',
+  opts?: { bustCache?: boolean },
+): void {
+  const bust = opts?.bustCache ? String(Date.now()) : '';
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) {
-    void win.loadURL(devUrl + '#' + hash);
+    const origin = devUrl.replace(/#.*$/, '').replace(/\?.*$/, '');
+    const q = bust ? `?posHost=${bust}` : '';
+    void win.loadURL(`${origin}${q}#${hash}`);
   } else {
-    void win.loadFile(RENDERER_INDEX_HTML, { hash });
+    void win.loadFile(RENDERER_INDEX_HTML, {
+      hash,
+      ...(bust ? { query: { posHost: bust } } : {}),
+    });
   }
 }
 
@@ -284,9 +294,9 @@ ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
   if (!cfg.host) throw new Error('Host is required');
   writeConfig(cfg);
   if (mainWindow && !mainWindow.isDestroyed()) {
-    // Navigate to KDS — this reloads preload so `__POS_HOST__` picks up
-    // the saved config. Do not call reload() separately (race with loadHash).
-    loadHash(mainWindow, '/kds');
+    // Bust the URL so Chromium reloads preload; a hash-only navigation
+    // would keep the previous `__POS_HOST__`.
+    loadHash(mainWindow, '/kds', { bustCache: true });
   }
   return cfg;
 });
@@ -317,7 +327,7 @@ ipcMain.handle('kdsApp:saveDisplayCooker', async (_e, payload) => {
 ipcMain.handle('kdsApp:resetConfig', () => {
   clearConfig();
   if (mainWindow && !mainWindow.isDestroyed())
-    loadHash(mainWindow, '/kds-setup');
+    loadHash(mainWindow, '/kds-setup', { bustCache: true });
   return true;
 });
 

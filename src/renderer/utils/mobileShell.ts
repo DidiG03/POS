@@ -23,24 +23,18 @@ export async function initMobileShell(): Promise<void> {
       // ignore
     }
 
-    // Status bar: white icons on the dark gray-900 app shell.
-    // NOTE: Capacitor's Style enum is *backwards* from iOS naming conventions
-    // — `Style.Dark` means "light/white content for a dark background" and
-    // `Style.Light` means "dark/black content for a light background". We
-    // want white icons over our dark background, so we pass Style.Dark.
+    // Status bar tracks the POS theme. Capacitor's Style enum is inverted
+    // from iOS names: Dark = white icons (dark chrome), Light = dark icons.
     try {
-      const { StatusBar, Style } = await import('@capacitor/status-bar');
-      try {
-        await StatusBar.setStyle({ style: Style.Dark });
-      } catch {
-        /* ignore */
-      }
-      // Android only: paint the status bar to match the header.
-      try {
-        await StatusBar.setBackgroundColor({ color: '#0b1220' });
-      } catch {
-        /* ignore */
-      }
+      const stored = (() => {
+        try {
+          const t = localStorage.getItem('pos-ui-theme');
+          return t === 'light' || t === 'dark' ? t : 'dark';
+        } catch {
+          return 'dark';
+        }
+      })();
+      await syncNativeChrome(stored);
     } catch {
       // plugin missing — ignore
     }
@@ -73,6 +67,33 @@ export async function initMobileShell(): Promise<void> {
     }, 8_000);
   } catch {
     // ignore
+  }
+}
+
+export async function syncNativeChrome(theme: 'light' | 'dark'): Promise<void> {
+  try {
+    const Cap = (
+      window as unknown as {
+        Capacitor?: { isNativePlatform?: () => boolean };
+      }
+    ).Capacitor;
+    if (!Cap?.isNativePlatform?.()) return;
+    const { StatusBar, Style } = await import('@capacitor/status-bar');
+    const light = theme === 'light';
+    try {
+      await StatusBar.setStyle({ style: light ? Style.Light : Style.Dark });
+    } catch {
+      /* ignore */
+    }
+    try {
+      await StatusBar.setBackgroundColor({
+        color: light ? '#f4f6fa' : '#0b1220',
+      });
+    } catch {
+      /* ignore */
+    }
+  } catch {
+    // plugin missing or not a native shell
   }
 }
 

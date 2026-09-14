@@ -98,7 +98,7 @@ export function invalidateCachePrefix(prefix: string): void {
 export async function swr<T>(
   key: string,
   fetcher: () => Promise<T>,
-  opts?: { maxAgeMs?: number },
+  opts?: { maxAgeMs?: number; waitIfStale?: boolean },
 ): Promise<T> {
   load();
   const maxAgeMs = opts?.maxAgeMs ?? 10_000;
@@ -125,6 +125,13 @@ export async function swr<T>(
     return hit.value as T;
   }
   if (hit) {
+    if (opts?.waitIfStale) {
+      try {
+        return await revalidate();
+      } catch {
+        return hit.value as T;
+      }
+    }
     void revalidate();
     return hit.value as T;
   }

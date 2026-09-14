@@ -1107,7 +1107,6 @@ export interface SecurityLogEntry {
 
 export interface ApiAdmin {
   getOverview(): Promise<AdminOverviewDTO>;
-  openWindow(): Promise<boolean>;
   listShifts(input?: {
     startIso?: string;
     endIso?: string;

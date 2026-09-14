@@ -7,6 +7,17 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
+import {
+  CreateMenuCategoryInputSchema,
+  CreateMenuItemInputSchema,
+  CreateUserInputSchema,
+  DeleteUserInputSchema,
+  UpdateMenuCategoryInputSchema,
+  UpdateMenuItemInputSchema,
+  UpdateUserInputSchema,
+} from '@shared/ipc';
+import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
+import { revokeSessionsForUser } from './services/ipcSession';
 import { coreServices, withTableLock } from './services/core';
 import { applyOpenAtLogin, isOpenAtLoginEnabled } from './services/hostRuntime';
 import {
@@ -23,6 +34,7 @@ import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
   assertDiningFloorEnabled,
+  assertStaffRoleAllowed,
   assertStoreCounterAllowed,
   storePlanBlocksKds,
   storePlanBlocksReservations,
@@ -32,6 +44,7 @@ import {
 import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
+  broadcastSettingsChanged,
   ensureSseKeepAlive,
   sseCatchupIfMissed,
 } from './services/realtime';
@@ -59,9 +72,14 @@ import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { settingsChangeFromHost } from '@shared/settingsChange';
 import { authorizeLanRoute } from './services/lanPolicy';
 import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
-import { logSecurityEvent } from './services/security';
+import {
+  logSecurityEvent,
+  sanitizeString,
+  validatePin,
+} from './services/security';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
   gzipHtmlIfAccepted,
@@ -77,6 +95,7 @@ import {
   buildSalesTrendBuckets,
   fetchPaidSales,
   fillTrendPoints,
+  getAdminReview,
   sumPaidRevenue,
   topSellingFromSales,
 } from './services/paidAnalytics';
@@ -370,6 +389,30 @@ async function parseJson(req: http.IncomingMessage): Promise<any> {
   });
 }
 
+function lanStaffDto(u: {
+  id: number;
+  displayName: string;
+  role: string;
+  active: boolean;
+  createdAt: Date | string;
+  salaryAmount?: unknown;
+  salaryPeriod?: unknown;
+}) {
+  const salary = salaryFromUser(u);
+  return {
+    id: u.id,
+    displayName: u.displayName,
+    role: u.role,
+    active: u.active,
+    createdAt:
+      u.createdAt instanceof Date
+        ? u.createdAt.toISOString()
+        : String(u.createdAt),
+    salaryAmount: salary.salaryAmount,
+    salaryPeriod: salary.salaryPeriod,
+  };
+}
+
 function base64url(input: Buffer | string) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
   return buf
@@ -405,6 +448,17 @@ async function getOrCreatePairingCode(): Promise<string> {
     security: { ...(current as any)?.security, pairingCode: created },
   });
   return created;
+}
+
+function pairingCodesMatch(provided: unknown, expected: string): boolean {
+  const a = Buffer.from(String(provided || '').trim(), 'utf8');
+  const b = Buffer.from(String(expected || '').trim(), 'utf8');
+  if (a.length === 0 || a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
 }
 
 function isLoopback(remoteAddress: string | undefined) {
@@ -998,7 +1052,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           if (isLoopback(remoteIp))
             return send(res, 200, { ok: true }, corsOrigin);
           const code = await getOrCreatePairingCode();
-          if (String(pairingCode || '').trim() !== code)
+          if (!pairingCodesMatch(pairingCode, code))
             return send(
               res,
               403,
@@ -1047,7 +1101,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             !isLoopback((req.socket as any)?.remoteAddress)
           ) {
             const code = await getOrCreatePairingCode();
-            if (String(pairingCode || '').trim() !== code) {
+            if (!pairingCodesMatch(pairingCode, code)) {
               return send(
                 res,
                 403,
@@ -1358,10 +1412,212 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               // default station, which silently breaks both flows.
               isKg: Boolean(i.isKg),
               station: i.station || 'KITCHEN',
+              stockLevel: String(i.stockLevel || 'OK').toUpperCase(),
+              stockRemaining:
+                i.stockRemaining != null &&
+                Number.isFinite(Number(i.stockRemaining))
+                  ? Number(i.stockRemaining)
+                  : null,
             })),
           })),
           corsOrigin,
         );
+      }
+
+      if (req.method === 'POST' && pathname === '/menu/create-category') {
+        try {
+          const input = CreateMenuCategoryInputSchema.parse(
+            await parseJson(req),
+          );
+          const created = await prisma.category.create({
+            data: {
+              name: input.name.trim(),
+              sortOrder: Number(input.sortOrder ?? 0),
+              active: input.active ?? true,
+              color: (input as any).color ?? null,
+              kdsStation: (input as any).kdsStation ?? null,
+            } as any,
+          });
+          return send(res, 200, { id: created.id }, corsOrigin);
+        } catch (e: any) {
+          return send(
+            res,
+            400,
+            { error: String(e?.message || e || 'create failed') },
+            corsOrigin,
+          );
+        }
+      }
+      if (req.method === 'POST' && pathname === '/menu/update-category') {
+        try {
+          const input = UpdateMenuCategoryInputSchema.parse(
+            await parseJson(req),
+          );
+          const data: any = {
+            ...(typeof input.name === 'string'
+              ? { name: input.name.trim() }
+              : {}),
+            ...(typeof input.sortOrder === 'number'
+              ? { sortOrder: input.sortOrder }
+              : {}),
+            ...((input as any).color !== undefined
+              ? { color: (input as any).color }
+              : {}),
+            ...(typeof input.active === 'boolean'
+              ? { active: input.active }
+              : {}),
+            ...((input as any).kdsStation !== undefined
+              ? { kdsStation: (input as any).kdsStation }
+              : {}),
+          };
+          await prisma.category.update({ where: { id: input.id }, data });
+          if ((input as any).kdsStation) {
+            await prisma.menuItem.updateMany({
+              where: { categoryId: input.id },
+              data: { station: (input as any).kdsStation },
+            });
+          }
+          return send(res, 200, true, corsOrigin);
+        } catch (e: any) {
+          return send(
+            res,
+            400,
+            { error: String(e?.message || e || 'update failed') },
+            corsOrigin,
+          );
+        }
+      }
+      if (req.method === 'POST' && pathname === '/menu/delete-category') {
+        const id = Number((await parseJson(req))?.id || 0);
+        if (!id) return send(res, 400, { error: 'invalid id' }, corsOrigin);
+        await prisma.category
+          .update({ where: { id }, data: { active: false } as any })
+          .catch(() => null);
+        await prisma.menuItem
+          .updateMany({
+            where: { categoryId: id },
+            data: { active: false } as any,
+          })
+          .catch(() => null);
+        return send(res, 200, true, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/menu/create-item') {
+        try {
+          const input = CreateMenuItemInputSchema.parse(await parseJson(req));
+          const category = await prisma.category.findUnique({
+            where: { id: Number(input.categoryId) },
+            select: { kdsStation: true },
+          });
+          const inheritedStation =
+            (category as any)?.kdsStation ??
+            (typeof (input as any).station === 'string'
+              ? String((input as any).station).toUpperCase()
+              : 'KITCHEN');
+          const skuBase =
+            String(input.sku || input.name || 'ITEM')
+              .trim()
+              .toUpperCase()
+              .replace(/[^A-Z0-9]+/g, '-')
+              .replace(/^-+|-+$/g, '')
+              .slice(0, 40) || 'ITEM';
+          let sku = skuBase;
+          for (let i = 0; i < 30; i++) {
+            sku = i === 0 ? skuBase : `${skuBase}-${i + 1}`;
+            const clash = await prisma.menuItem.findUnique({
+              where: { sku },
+              select: { id: true },
+            });
+            if (!clash) break;
+          }
+          const created = await prisma.menuItem.create({
+            data: {
+              name: input.name.trim(),
+              categoryId: Number(input.categoryId),
+              price: Number(input.price),
+              vatRate: Number(
+                (input as any).vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2,
+              ),
+              active: (input as any).active ?? true,
+              isKg: (input as any).isKg ?? false,
+              station: inheritedStation,
+              sku,
+              ...(typeof input.stockLevel === 'string'
+                ? { stockLevel: String(input.stockLevel).toUpperCase() }
+                : {}),
+              ...(input.stockRemaining !== undefined
+                ? { stockRemaining: input.stockRemaining }
+                : {}),
+            } as any,
+          });
+          return send(
+            res,
+            200,
+            { id: created.id, sku: created.sku },
+            corsOrigin,
+          );
+        } catch (e: any) {
+          return send(
+            res,
+            400,
+            { error: String(e?.message || e || 'create failed') },
+            corsOrigin,
+          );
+        }
+      }
+      if (req.method === 'POST' && pathname === '/menu/update-item') {
+        try {
+          const input = UpdateMenuItemInputSchema.parse(await parseJson(req));
+          const data: Record<string, unknown> = {
+            ...(typeof input.name === 'string'
+              ? { name: input.name.trim() }
+              : {}),
+            ...(typeof input.price === 'number' ? { price: input.price } : {}),
+            ...(typeof (input as any).vatRate === 'number'
+              ? { vatRate: (input as any).vatRate }
+              : {}),
+            ...(typeof input.active === 'boolean'
+              ? { active: input.active }
+              : {}),
+            ...(typeof (input as any).isKg === 'boolean'
+              ? { isKg: (input as any).isKg }
+              : {}),
+            ...(typeof input.categoryId === 'number'
+              ? { categoryId: input.categoryId }
+              : {}),
+            ...(typeof (input as any).station === 'string'
+              ? { station: String((input as any).station).toUpperCase() }
+              : {}),
+            ...(typeof input.stockLevel === 'string'
+              ? { stockLevel: String(input.stockLevel).toUpperCase() }
+              : {}),
+            ...(input.stockRemaining !== undefined
+              ? { stockRemaining: input.stockRemaining }
+              : {}),
+          };
+          if (typeof input.sku === 'string' && input.sku.trim()) {
+            data.sku = input.sku.trim();
+          }
+          await prisma.menuItem.update({
+            where: { id: input.id },
+            data: data as any,
+          });
+          return send(res, 200, true, corsOrigin);
+        } catch (e: any) {
+          return send(
+            res,
+            400,
+            { error: String(e?.message || e || 'update failed') },
+            corsOrigin,
+          );
+        }
+      }
+      if (req.method === 'POST' && pathname === '/menu/delete-item') {
+        const id = Number((await parseJson(req))?.id || 0);
+        if (!id) return send(res, 400, { error: 'invalid id' }, corsOrigin);
+        await prisma.menuItem
+          .update({ where: { id }, data: { active: false } as any })
+          .catch(() => null);
+        return send(res, 200, true, corsOrigin);
       }
 
       // Tickets
@@ -2999,6 +3255,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           200,
           rows.map((n: any) => ({
             id: n.id,
+            userId: n.userId,
             type: n.type,
             message: n.message,
             readAt: n.readAt ? new Date(n.readAt).toISOString() : null,
@@ -3089,6 +3346,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               result.fiscal.authTokenConfigured = true;
               delete result.fiscal.authToken;
             }
+          }
+          try {
+            broadcastSettingsChanged(settingsChangeFromHost(merged));
+          } catch {
+            // tablets still pick this up on the next catchup
           }
           return send(res, 200, result, corsOrigin);
         } catch (e) {
@@ -3187,6 +3449,271 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           { range: trendRange, points: fillTrendPoints(sales, buckets) },
           corsOrigin,
         );
+      }
+      if (req.method === 'GET' && pathname === '/admin/users') {
+        const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
+        return send(res, 200, users.map(lanStaffDto), corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/admin/shifts') {
+        const where: any = {};
+        if (parsed.query.startIso || parsed.query.endIso) {
+          where.openedAt = {};
+          if (parsed.query.startIso)
+            where.openedAt.gte = new Date(String(parsed.query.startIso));
+          if (parsed.query.endIso)
+            where.openedAt.lte = new Date(String(parsed.query.endIso));
+        }
+        const rows = await prisma.dayShift
+          .findMany({
+            where,
+            orderBy: { openedAt: 'desc' },
+            include: { openedBy: true, closedBy: true },
+          } as any)
+          .catch(() => []);
+        return send(
+          res,
+          200,
+          rows.map((r: any) => {
+            const end = r.closedAt ? new Date(r.closedAt) : new Date();
+            const start = new Date(r.openedAt);
+            const durationMs = Math.max(0, end.getTime() - start.getTime());
+            const durationHours = Math.round((durationMs / 36e5) * 100) / 100;
+            return {
+              id: r.id,
+              userId: r.openedById,
+              userName: r.openedBy?.displayName ?? `#${r.openedById}`,
+              openedAt: r.openedAt.toISOString(),
+              closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : null,
+              durationHours,
+              isOpen: !r.closedAt,
+            };
+          }),
+          corsOrigin,
+        );
+      }
+      if (req.method === 'GET' && pathname === '/admin/top-selling-today') {
+        const start = new Date(new Date().setHours(0, 0, 0, 0));
+        const end = new Date(new Date().setHours(23, 59, 59, 999));
+        const sales = await fetchPaidSales({ from: start, to: end });
+        return send(res, 200, topSellingFromSales(sales), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/admin/review') {
+        try {
+          const input = await parseJson(req);
+          const data = await getAdminReview(input);
+          return send(res, 200, data, corsOrigin);
+        } catch (e: any) {
+          return send(
+            res,
+            400,
+            { error: String(e?.message || e || 'review failed') },
+            corsOrigin,
+          );
+        }
+      }
+      if (req.method === 'POST' && pathname === '/auth/create-user') {
+        try {
+          const input = CreateUserInputSchema.parse(await parseJson(req));
+          if (input.pin) {
+            const pinValidation = validatePin(input.pin);
+            if (!pinValidation.valid) {
+              return send(
+                res,
+                400,
+                { error: pinValidation.error || 'Invalid PIN format' },
+                corsOrigin,
+              );
+            }
+          }
+          const sanitizedDisplayName = sanitizeString(input.displayName, 80);
+          if (!sanitizedDisplayName) {
+            return send(
+              res,
+              400,
+              { error: 'Display name is required' },
+              corsOrigin,
+            );
+          }
+          assertStaffRoleAllowed(input.role);
+          const pinHash = await bcrypt.hash(input.pin, 10);
+          const salary = salaryWriteData(
+            input.salaryAmount ?? null,
+            input.salaryPeriod ?? null,
+          );
+          const created = await prisma.user.create({
+            data: {
+              displayName: sanitizedDisplayName,
+              role: input.role,
+              pinHash,
+              active: input.active ?? true,
+              salaryAmount: salary.salaryAmount,
+              salaryPeriod: salary.salaryPeriod,
+            },
+          });
+          return send(res, 200, lanStaffDto(created), corsOrigin);
+        } catch (e: any) {
+          const status = Number(e?.statusCode) === 403 ? 403 : 400;
+          return send(
+            res,
+            status,
+            { error: String(e?.message || e || 'create failed') },
+            corsOrigin,
+          );
+        }
+      }
+      if (req.method === 'POST' && pathname === '/auth/update-user') {
+        try {
+          const input = UpdateUserInputSchema.parse(await parseJson(req));
+          if (input.pin) {
+            const pinValidation = validatePin(input.pin);
+            if (!pinValidation.valid) {
+              return send(
+                res,
+                400,
+                { error: pinValidation.error || 'Invalid PIN format' },
+                corsOrigin,
+              );
+            }
+          }
+          const sanitizedInput: any = { ...input };
+          if (input.displayName) {
+            const sanitized = sanitizeString(input.displayName, 80);
+            if (!sanitized) {
+              return send(
+                res,
+                400,
+                { error: 'Display name cannot be empty' },
+                corsOrigin,
+              );
+            }
+            sanitizedInput.displayName = sanitized;
+          }
+          if (sanitizedInput.role) assertStaffRoleAllowed(sanitizedInput.role);
+          let pinHash: string | undefined;
+          if (sanitizedInput.pin)
+            pinHash = await bcrypt.hash(sanitizedInput.pin, 10);
+          const salaryPatch =
+            input.salaryAmount !== undefined || input.salaryPeriod !== undefined
+              ? salaryWriteData(
+                  input.salaryAmount ?? null,
+                  input.salaryPeriod ?? null,
+                )
+              : null;
+          const updated = await prisma.user.update({
+            where: { id: input.id },
+            data: {
+              ...(sanitizedInput.displayName
+                ? { displayName: sanitizedInput.displayName }
+                : {}),
+              ...(sanitizedInput.role ? { role: sanitizedInput.role } : {}),
+              ...(typeof sanitizedInput.active === 'boolean'
+                ? { active: sanitizedInput.active }
+                : {}),
+              ...(pinHash ? { pinHash } : {}),
+              ...(salaryPatch
+                ? {
+                    salaryAmount: salaryPatch.salaryAmount,
+                    salaryPeriod: salaryPatch.salaryPeriod,
+                  }
+                : {}),
+            },
+          });
+          if (
+            sanitizedInput.active === false ||
+            sanitizedInput.role ||
+            Boolean(pinHash)
+          ) {
+            await revokeSessionsForUser(input.id);
+          }
+          return send(res, 200, lanStaffDto(updated), corsOrigin);
+        } catch (e: any) {
+          const status = Number(e?.statusCode) === 403 ? 403 : 400;
+          return send(
+            res,
+            status,
+            { error: String(e?.message || e || 'update failed') },
+            corsOrigin,
+          );
+        }
+      }
+      if (req.method === 'POST' && pathname === '/auth/delete-user') {
+        try {
+          const input = DeleteUserInputSchema.parse(await parseJson(req));
+          const id = Number(input.id);
+          if (!id) {
+            return send(res, 400, { error: 'invalid user id' }, corsOrigin);
+          }
+          if (!input.hard) {
+            await prisma.user.update({
+              where: { id },
+              data: { active: false },
+            });
+            await revokeSessionsForUser(id);
+            return send(res, 200, true, corsOrigin);
+          }
+          const user = await prisma.user.findUnique({ where: { id } });
+          if (!user) return send(res, 200, true, corsOrigin);
+          if (user.role === 'ADMIN' && user.active) {
+            const otherActiveAdmins = await prisma.user.count({
+              where: {
+                role: 'ADMIN' as any,
+                active: true,
+                id: { not: id },
+              } as any,
+            });
+            if (otherActiveAdmins <= 0) {
+              return send(
+                res,
+                400,
+                { error: 'cannot delete the last active admin' },
+                corsOrigin,
+              );
+            }
+          }
+          const [
+            orders,
+            tickets,
+            notifications,
+            shiftsOpened,
+            shiftsClosed,
+            reqMade,
+            reqOwned,
+          ] = await Promise.all([
+            prisma.order.count({ where: { userId: id } }),
+            prisma.ticketLog.count({ where: { userId: id } }),
+            prisma.notification.count({ where: { userId: id } }),
+            prisma.dayShift.count({ where: { openedById: id } }),
+            prisma.dayShift.count({ where: { closedById: id } }),
+            prisma.ticketRequest.count({ where: { requesterId: id } }),
+            prisma.ticketRequest.count({ where: { ownerId: id } }),
+          ]);
+          const total =
+            orders +
+            tickets +
+            notifications +
+            shiftsOpened +
+            shiftsClosed +
+            reqMade +
+            reqOwned;
+          if (total > 0) {
+            return send(
+              res,
+              400,
+              { error: 'user has history; disable instead of deleting' },
+              corsOrigin,
+            );
+          }
+          await prisma.user.delete({ where: { id } });
+          await revokeSessionsForUser(id);
+          return send(res, 200, true, corsOrigin);
+        } catch (e: any) {
+          return send(
+            res,
+            400,
+            { error: String(e?.message || e || 'delete failed') },
+            corsOrigin,
+          );
+        }
       }
 
       // Waiter-facing reports (per-user)

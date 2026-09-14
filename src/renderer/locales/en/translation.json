@@ -123,7 +123,7 @@
     "scan": "Scan",
     "scanning": "Scanning…",
     "noneFound": "No POS found on this Wi-Fi.",
-    "holdIconToScan": "Hold the icon to change POS server",
+    "holdIconToScan": "Hold the logo for 5 seconds to change POS server",
     "reloadChunk": "Couldn’t load this screen. Retrying…"
   },
   "server": {
@@ -218,8 +218,7 @@
   },
   "layout": {
     "billingPausedTitle": "POS paused — payment required",
-    "billingPausedBody": "Your subscription payment is overdue or inactive. The POS is locked until an admin completes payment.",
-    "openAdminBilling": "Open Admin Billing",
+    "billingPausedBody": "Your subscription payment is overdue or inactive. The POS is locked until an admin completes payment in the OneTap Admin app.",
     "networkBanner": "Working offline — Send and Pay still work. Orders will sync when the connection returns.",
     "clockOut": "Clock out",
     "clockOutBlockedTitle": "Cannot clock out",
@@ -261,15 +260,21 @@
     "connCannotReach": "Cannot reach POS backend",
     "connLatency": "Latency: {{ms}}ms{{extra}}",
     "connLatencyTooltip": "Latency: {{ms}} ms",
-    "connLatencyWithLast": "Latency: {{ms}} ms • Last checked: {{when}}"
+    "connLatencyWithLast": "Latency: {{ms}} ms • Last checked: {{when}}",
+    "changeTill": "Change POS"
   },
   "login": {
     "pinTooShort": "Enter 4-6 digits",
     "adminOnly": "Admin access only",
     "hostsReservations": "Hosts sign in through the Reservations panel.",
     "adminNoTablet": "Admin panel is not available on tablets",
-    "invalidPin": "Invalid PIN",
+    "useAdminApp": "Use the OneTap Admin app to open the admin panel.",
+    "invalidPin": "That PIN is incorrect. Try again.",
     "loginFailed": "Login failed",
+    "loginFailedDetail": "Login failed: {{detail}}",
+    "lanDisabled": "Tablet access is turned off on the till (Admin → Settings → LAN / Tablets).",
+    "webAccessDisabled": "Web access is turned off on the till.",
+    "hostUnavailable": "Cannot reach the POS. Check that the till is on and this phone is on the same Wi-Fi.",
     "pairingRequired": "Pairing code required (ask the manager / Admin → Settings → LAN / Tablets).",
     "loadUsersFailed": "Failed to load users.",
     "noAdminUsers": "No admin users yet. Create the first admin below or run db:seed.",

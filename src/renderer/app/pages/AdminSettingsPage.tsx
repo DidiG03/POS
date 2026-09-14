@@ -745,6 +745,14 @@ function PreferencesSettings() {
               detail: { theme: next.theme },
             }),
           );
+          window.dispatchEvent(
+            new CustomEvent('pos:settingsChanged', {
+              detail: {
+                theme: next.theme,
+                captureClockInOut: next.captureClockInOut,
+              },
+            }),
+          );
         } catch {
           // ignore non-browser
         }

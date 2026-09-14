@@ -1,12 +1,13 @@
 name: Release KDS
 
 # Trigger:
-#   - Push a tag like `kds-v0.1.0` to cut a release.
-#   - Manual run from the Actions tab via "Run workflow" (handy for
-#     publishing a draft build off the current branch without tagging).
+#   - Push `v*` (same tag as POS) so KDS Mac Intel/ARM land on that release.
+#   - Push `kds-v*` for a KDS-only rebuild.
+#   - Manual run from Actions → "Run workflow".
 on:
   push:
     tags:
+      - 'v*'
       - 'kds-v*'
   workflow_dispatch:
     inputs:
@@ -15,33 +16,36 @@ on:
         required: true
         default: 'true'
 
-# Avoid concurrent runs for the same tag clobbering uploads to the
-# release. New tag pushes cancel an in-flight build of the same tag.
 concurrency:
   group: release-kds-${{ github.ref }}
   cancel-in-progress: true
 
-# electron-builder uploads the .dmg/.exe/.AppImage + latest*.yml files
-# to a GitHub Release. That needs write access on the repo's Releases.
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build KDS (${{ matrix.os }})
+    name: Build KDS (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Build native installers per platform. Cross-building is
-          # possible but native always wins for signing/notarization.
+          # macos-latest is Apple Silicon; macos-15-intel is x86_64.
+          # Windows KDS is also published by release-windows-client.yml.
           - os: macos-latest
-            target: --mac
-          - os: ubuntu-latest
-            target: --linux
+            target: --mac --arm64
+            label: mac-arm64
+          - os: macos-15-intel
+            target: --mac --x64
+            label: mac-x64
           - os: windows-latest
             target: --win
+            label: win
+          - os: ubuntu-latest
+            target: --linux
+            label: linux
 
     steps:
       - name: Checkout
@@ -49,7 +53,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        # Version is read from `package.json#packageManager`.
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -69,19 +72,10 @@ jobs:
       - name: Build KDS bundle
         run: pnpm build:kds
 
-      - name: Build + publish installer
+      - name: Build installer
         shell: bash
         env:
-          # GitHub Releases auth — built-in token has write permissions
-          # for the repo it runs in (DidiG03/POS).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-          # Code-signing secrets are read inside the step so that
-          # MISSING secrets stay UNSET rather than being injected as
-          # empty strings. electron-builder treats `CSC_LINK=""` as a
-          # relative path and resolves it to the project root, which
-          # fails with `…/POS not a file`. Apple env vars only kick in
-          # when MAC_CSC_LINK is present.
           MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -100,20 +94,15 @@ jobs:
             echo "::error::Missing KDS main bundle (run build:kds first): dist/kds/main/index.js"
             exit 1
           fi
-          # Only export signing env vars when the secret actually has
-          # a value. An empty string here is worse than unset because
-          # electron-builder will try to use "" as a cert path.
           if [[ -n "${MAC_CSC_LINK:-}" ]]; then
             export CSC_LINK="$MAC_CSC_LINK"
             export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-}"
             echo "macOS code signing: enabled"
           else
             unset CSC_LINK CSC_KEY_PASSWORD || true
-            # Force-disable Apple notarization too — APPLE_ID being set
-            # alone (without a cert) causes electron-builder to abort.
             unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID || true
             export CSC_IDENTITY_AUTO_DISCOVERY=false
-            echo "macOS code signing: disabled (no MAC_CSC_LINK secret) — building unsigned .dmg"
+            echo "macOS code signing: disabled (no MAC_CSC_LINK secret)"
           fi
           if [[ -n "${WIN_CSC_LINK_SECRET:-}" ]]; then
             export WIN_CSC_LINK="$WIN_CSC_LINK_SECRET"
@@ -123,48 +112,29 @@ jobs:
             unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD || true
             echo "Windows code signing: disabled (no WIN_CSC_LINK secret)"
           fi
-          # Manual runs can skip publishing; tag pushes always publish.
-          PUBLISH="always"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && \
-             [[ "${{ github.event.inputs.publish }}" == "false" ]]; then
-            PUBLISH="never"
-          fi
-          # `--` ensures pnpm forwards every flag to electron-builder.
-          # Without it, macOS runners sometimes swallow `--config` and
-          # electron-builder treats the project dir as a config path →
-          # "…/POS/POS not a file".
           pnpm exec -- electron-builder \
             --config "$CONFIG" \
             ${{ matrix.target }} \
-            --publish "$PUBLISH"
+            --publish never
 
       - name: Upload installers as workflow artifact
-        # Mirror the published files to the workflow run too, so you
-        # can grab them from Actions even if the GitHub Release upload
-        # failed (e.g. permissions).
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kds-${{ matrix.os }}
+          name: kds-${{ matrix.label }}
           path: |
             dist-installers/kds/**/*.dmg
             dist-installers/kds/**/*.exe
             dist-installers/kds/**/*.AppImage
             dist-installers/kds/**/*.zip
-            dist-installers/kds/**/latest*.yml
+            dist-installers/kds/**/*.blockmap
+            dist-installers/kds/**/*.yml
           if-no-files-found: warn
           retention-days: 14
 
-  # electron-builder creates the GitHub Release as a DRAFT by default.
-  # Drafts are hidden from the Releases list AND electron-updater cannot
-  # read them, so the KDS would never see the update. After all platform
-  # builds finish uploading their assets to the `v<version>` release, flip
-  # it to published so kitchen displays can auto-update.
   publish:
-    name: Publish release
+    name: Publish GitHub Release
     needs: build
-    # Only when we actually published assets (tag push, or a manual run
-    # that didn't opt out via publish=false).
     if: >-
       github.event_name == 'push' ||
       github.event.inputs.publish != 'false'
@@ -175,22 +145,83 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve release tag from package.json
-        id: ver
-        run: |
-          set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version")"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kds-*
+          path: artifacts
 
-      - name: Mark release as published (non-draft)
+      - name: Publish installers to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.ver.outputs.tag }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --draft=false
-            echo "Published https://github.com/${{ github.repository }}/releases/tag/${TAG}"
-          else
-            echo "::warning::Release $TAG not found — nothing to publish (build may have run with publish disabled)."
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          TITLE="${TAG#v}"
+
+          mkdir -p dist
+          find artifacts -type f \( \
+            -name '*.dmg' -o -name '*.blockmap' -o -name '*.AppImage' \
+            -o -name '*.zip' -o -name '*.exe' -o -name '*.yml' \
+          \) -exec cp -v {} dist/ \;
+
+          ARM_DMG=$(ls dist/*-arm64.dmg 2>/dev/null | head -1 || true)
+          INTEL_DMG=$(ls dist/*-x64.dmg 2>/dev/null | head -1 || true)
+          ARM_ZIP=$(ls dist/*-arm64.zip 2>/dev/null | head -1 || true)
+          INTEL_ZIP=$(ls dist/*-x64.zip 2>/dev/null | head -1 || true)
+          if [[ ! -f "${ARM_DMG:-}" ]]; then
+            echo "::error::Missing macOS Apple Silicon installer (*-arm64.dmg)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
           fi
+          if [[ ! -f "${INTEL_DMG:-}" ]]; then
+            echo "::error::Missing macOS Intel installer (*-x64.dmg)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
+          fi
+          if [[ ! -f "${ARM_ZIP:-}" ]]; then
+            echo "::error::Missing macOS Apple Silicon update zip (*-arm64.zip)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
+          fi
+          if [[ ! -f "${INTEL_ZIP:-}" ]]; then
+            echo "::error::Missing macOS Intel update zip (*-x64.zip)"
+            ls -la dist artifacts/* 2>/dev/null || true
+            exit 1
+          fi
+
+          node scripts/writeMacUpdateYml.mjs \
+            "$VERSION" dist/kds-mac.yml \
+            "$ARM_ZIP" "$INTEL_ZIP" "$ARM_DMG" "$INTEL_DMG"
+
+          # Do not clobber POS updater feeds (latest.yml / latest-mac.yml).
+          rm -f dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml \
+            dist/admin.yml dist/admin-mac.yml dist/latest-admin.yml || true
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Updating existing release $TAG"
+          else
+            gh release create "$TAG" --title "$TITLE" \
+              --notes "OneTap KDS ${VERSION} (macOS Intel/ARM, Windows, Linux)."
+          fi
+
+          UPLOAD=()
+          shopt -s nullglob
+          UPLOAD+=(
+            dist/OneTap-KDS*.dmg
+            dist/OneTap-KDS*.zip
+            dist/OneTap-KDS*.exe
+            dist/OneTap-KDS*.AppImage
+            dist/OneTap-KDS*.blockmap
+            dist/kds-mac.yml
+            dist/kds.yml
+          )
+          shopt -u nullglob
+          if [[ ${#UPLOAD[@]} -eq 0 ]]; then
+            echo "::error::No installer files found to upload"
+            exit 1
+          fi
+
+          gh release upload "$TAG" "${UPLOAD[@]}" --clobber
+          echo "Published KDS to https://github.com/${{ github.repository }}/releases/tag/${TAG}"

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DiscoveredPosHost } from '@shared/posHostDiscovery';
 import {
-  persistKdsBackendHost,
+  persistCompanionBackendHost,
   resolveBackendHost,
   syncBackendHostToLocalStorage,
 } from '../../utils/backendHost';
@@ -12,7 +12,7 @@ import {
   notifyBackendHostChanged,
 } from '../../utils/posServerScanEvent';
 import { invalidateHostScopedCaches } from '../../utils/posReadCache';
-import { BrandMark } from '../../components/BrandMark';
+import { IconClose } from '../../components/icons';
 import { PosHostPicker } from './PosHostPicker';
 
 export function PosServerScanPanel({
@@ -27,21 +27,22 @@ export function PosServerScanPanel({
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [busyHost, setBusyHost] = useState<string | null>(null);
+  const backend = resolveBackendHost();
 
   const scan = useCallback(async () => {
     setScanning(true);
     try {
-      const kds = (window as any).kdsApp as
+      const companion = ((window as any).adminApp || (window as any).kdsApp) as
         | { discover?: () => Promise<DiscoveredPosHost[]> }
         | undefined;
-      if (kds?.discover) {
-        const raw = await kds.discover();
+      if (companion?.discover) {
+        const raw = await companion.discover();
         setHosts(Array.isArray(raw) ? raw : []);
       } else {
-        const backend = resolveBackendHost();
+        const current = resolveBackendHost();
         const list = await discoverPosHostsInBrowser({
-          seeds: [backend.host],
-          httpPort: Number(backend.httpPort) || 3333,
+          seeds: [current.host],
+          httpPort: Number(current.httpPort) || 3333,
         });
         setHosts(list);
       }
@@ -63,8 +64,8 @@ export function PosServerScanPanel({
       setBusyHost(h.host);
       const port = Number(h.httpPort) || 3333;
       try {
-        if ((window as any).__KDS_APP__) {
-          await persistKdsBackendHost({ host: h.host, httpPort: port });
+        if ((window as any).__KDS_APP__ || (window as any).__ADMIN_APP__) {
+          await persistCompanionBackendHost({ host: h.host, httpPort: port });
           return;
         }
         syncBackendHostToLocalStorage({
@@ -89,6 +90,8 @@ export function PosServerScanPanel({
       scanning={scanning}
       scanned={scanned}
       busyHost={busyHost}
+      currentHost={backend.host}
+      currentPort={backend.httpPort}
       onScan={() => void scan()}
       onSelect={(h) => void connectTo(h)}
       labels={{
@@ -102,18 +105,47 @@ export function PosServerScanPanel({
 
 export function PosServerScanOverlay({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center px-6">
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/75"
-        style={{ minHeight: 0 }}
-        aria-label={t('common.close')}
-        onClick={onClose}
-      />
-      <div className="relative z-10 flex w-full max-w-md flex-col items-center gap-5">
-        <BrandMark size="lg" holdToScan={false} />
-        <PosServerScanPanel autoScan onConnected={onClose} />
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[var(--pos-canvas)] px-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pos-server-scan-title"
+        className="pos-surface-panel relative w-full max-w-md overflow-hidden shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--pos-border)] px-4 py-3">
+          <div className="min-w-0">
+            <div
+              id="pos-server-scan-title"
+              className="truncate text-[15px] font-semibold tracking-tight text-[color:var(--pos-fg)]"
+            >
+              {t('boot.configureServer')}
+            </div>
+            <div className="mt-0.5 text-[12px] text-[color:var(--pos-fg-muted)]">
+              {t('boot.cannotReachDetail')}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="pos-icon-btn -mr-1 shrink-0"
+            aria-label={t('common.close')}
+            onClick={onClose}
+          >
+            <IconClose />
+          </button>
+        </div>
+        <div className="p-4">
+          <PosServerScanPanel autoScan onConnected={onClose} />
+        </div>
       </div>
     </div>
   );

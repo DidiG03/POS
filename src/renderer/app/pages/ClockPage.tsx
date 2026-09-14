@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { reportAppError } from '../../utils/reportAppError';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { clockCaptureFromChange } from '@shared/settingsChange';
 import { useSessionStore } from '../../stores/session';
 
 export default function ClockPage() {
@@ -11,7 +12,7 @@ export default function ClockPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [open, setOpen] = useState<any>(null);
-  const [captureClock, setCaptureClock] = useState(true);
+  const [captureClock, setCaptureClock] = useState(false);
   const [busy, setBusy] = useState<'in' | 'out' | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -22,12 +23,21 @@ export default function ClockPage() {
       window.api.settings.get().catch(() => null),
     ]);
     setOpen(o);
-    setCaptureClock(isClockCaptureEnabled(settings));
+    if (settings) setCaptureClock(isClockCaptureEnabled(settings));
   }
 
   useEffect(() => {
     void refresh();
   }, [user?.id]);
+
+  useEffect(() => {
+    const onSettings = (ev: Event) => {
+      const clock = clockCaptureFromChange((ev as CustomEvent).detail);
+      if (clock != null) setCaptureClock(clock);
+    };
+    window.addEventListener('pos:settingsChanged', onSettings);
+    return () => window.removeEventListener('pos:settingsChanged', onSettings);
+  }, []);
 
   if (!user) return null;
 

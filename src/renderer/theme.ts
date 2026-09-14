@@ -16,6 +16,17 @@ export function applyPosUiTheme(theme: PosUiTheme): void {
   } catch {
     // private mode
   }
+  void import('./utils/mobileShell')
+    .then((m) => m.syncNativeChrome(theme))
+    .catch(() => undefined);
+}
+
+/** Apply a host theme only when the payload actually names one. */
+export function applyHostPosUiTheme(raw: unknown): void {
+  const v = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (v === 'light' || v === 'dark') applyPosUiTheme(v);
 }
 
 export function readStoredPosUiTheme(): PosUiTheme {

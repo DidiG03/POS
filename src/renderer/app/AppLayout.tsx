@@ -17,6 +17,7 @@ import { BrandMark } from '../components/BrandMark';
 import { DocumentMeta } from '../components/DocumentMeta';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { clockCaptureFromChange } from '@shared/settingsChange';
 import { formatNotificationTime } from '@shared/notificationDisplay';
 import { useKdsOrdersAccess } from './useKdsOrdersAccess';
 import { toast } from '../stores/toasts';
@@ -271,13 +272,22 @@ export default function AppLayout() {
       ]);
       if (!cancelled) {
         setHasOpen(Boolean(open));
-        setCaptureClock(isClockCaptureEnabled(settings));
+        if (settings) setCaptureClock(isClockCaptureEnabled(settings));
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [user]);
+
+  useEffect(() => {
+    const onSettings = (ev: Event) => {
+      const clock = clockCaptureFromChange((ev as CustomEvent).detail);
+      if (clock != null) setCaptureClock(clock);
+    };
+    window.addEventListener('pos:settingsChanged', onSettings);
+    return () => window.removeEventListener('pos:settingsChanged', onSettings);
+  }, []);
 
   const clockOnly = Boolean(user && isClockOnlyRole((user as any).role));
   const isWaiter = String((user as any)?.role || '').toUpperCase() === 'WAITER';
@@ -395,17 +405,6 @@ export default function AppLayout() {
           <>
             <Button onClick={() => window.location.reload()}>
               {t('common.retry')}
-            </Button>
-            <Button
-              variant="primary"
-              onClick={async () => {
-                // Electron: open admin window (will prompt for admin PIN/login)
-                await (window.api as any).admin
-                  ?.openWindow?.()
-                  .catch(() => false);
-              }}
-            >
-              {t('layout.openAdminBilling')}
             </Button>
           </>
         }

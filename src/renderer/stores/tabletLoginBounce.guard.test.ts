@@ -15,6 +15,15 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain('shouldForceLogoutOn401');
     expect(src).toContain('lanDedupeKey');
     expect(src).toContain('lanAuthGeneration');
+    expect(src).toContain('isPairingRejectedError');
+    expect(src).toContain('lanRequestAttempts');
+    expect(src).toContain('lanBasesForPath');
+    const loginFn = src.slice(
+      src.indexOf('async loginWithPin'),
+      src.indexOf('async verifyManagerPin'),
+    );
+    expect(loginFn).toContain("goLan('/auth/login'");
+    expect(loginFn).not.toContain("goLan('/pairing/verify'");
     expect(src).toContain("clearInflight('lan:')");
     expect(src).toContain('SHIFT_GUARD_GRACE_MS');
     expect(src).toContain('sessionShellFromHash');
@@ -45,6 +54,17 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain('hasHydrated');
     expect(src).toContain('disabled={!hasHydrated}');
     expect(src).toContain('isClockCaptureEnabled');
+    expect(src).toContain('invalidateCache(POS_CACHE.settings)');
+    expect(src).toContain('applyHostPosUiTheme');
+    expect(src).toContain('classifyLanLoginError');
+    expect(src).toContain('lanLoginUserMessage');
+    expect(src).toContain('peekSettings');
+    const loginFn = src.slice(
+      src.indexOf('const onSubmit'),
+      src.indexOf('const [staff,'),
+    );
+    expect(loginFn).not.toContain('window.api.settings.get()');
+    expect(loginFn).toContain('openIds.includes');
   });
 
   it('Android Capacitor serves the app over http and never bakes in a live-reload URL', () => {
@@ -77,6 +97,35 @@ describe('tablet login bounce guards', () => {
     expect(main).toContain('hideMobileSplash');
     expect(main).toContain('POS_BACKEND_HOST_CHANGED');
     expect(main).toContain("addEventListener('catchup'");
+    expect(main).toContain("addEventListener('settings'");
+    expect(main).toContain('isSseHealthy()');
+    expect(read('src/renderer/utils/posReadCache.ts')).toContain(
+      'CATCHUP_DEBOUNCE_MS',
+    );
+    expect(read('src/renderer/utils/posReadCache.ts')).toContain(
+      'listCategoriesWithItems',
+    );
+    expect(read('src/renderer/utils/posReadCache.ts')).not.toContain(
+      'void api.settings?.get?.()',
+    );
+    expect(read('src/renderer/i18n/ThemeSync.tsx')).toContain(
+      'applyHostPosUiTheme',
+    );
+    expect(read('src/renderer/i18n/ThemeSync.tsx')).not.toContain(
+      "addEventListener('pos:settingsChanged'",
+    );
+    expect(read('src/renderer/utils/posReadCache.ts')).toContain(
+      'waitIfStale: true',
+    );
+    expect(read('src/renderer/utils/posRealtimeSync.ts')).toContain(
+      'invalidateFloorSnapshots()',
+    );
+    expect(read('src/renderer/utils/posRealtimeSync.ts')).not.toContain(
+      'invalidateFloorCache()',
+    );
+    expect(read('src/renderer/utils/mobileShell.ts')).toContain(
+      'syncNativeChrome',
+    );
     const api = read('src/main/api.ts');
     expect(api).toContain('staticAssetCacheControl');
     expect(api).toContain('appVersion: app.getVersion()');

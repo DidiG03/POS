@@ -133,7 +133,8 @@ export default function LicenseGate({
     typeof window !== 'undefined' &&
     Boolean((window as any).api?.license) &&
     !(window as any).__BROWSER_CLIENT__ &&
-    !(window as any).__KDS_APP__;
+    !(window as any).__KDS_APP__ &&
+    !(window as any).__ADMIN_APP__;
 
   const [status, setStatus] = useState<LicenseStatus | null>(
     isHost ? null : { required: false, licensed: true },

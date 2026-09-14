@@ -95,7 +95,7 @@ export async function discoverPosHostsInBrowser(opts?: {
   seeds?: string[];
   httpPort?: number;
 }): Promise<DiscoveredPosHost[]> {
-  const native = (window as any).kdsApp as
+  const native = ((window as any).adminApp || (window as any).kdsApp) as
     | { discover?: () => Promise<DiscoveredPosHost[]> }
     | undefined;
   const nativePromise = native?.discover

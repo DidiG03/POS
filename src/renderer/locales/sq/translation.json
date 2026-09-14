@@ -123,7 +123,7 @@
     "scan": "Kërko",
     "scanning": "Duke kërkuar…",
     "noneFound": "Nuk u gjet asnjë POS në këtë Wi-Fi.",
-    "holdIconToScan": "Mbaje ikonën për të ndryshuar serverin POS",
+    "holdIconToScan": "Mbaje logon 5 sekonda për të ndryshuar serverin POS",
     "reloadChunk": "Ekrani nuk u ngarkua. Duke riprovuar…"
   },
   "server": {
@@ -218,8 +218,7 @@
   },
   "layout": {
     "billingPausedTitle": "POS i ndalur — duhet pagesa",
-    "billingPausedBody": "Pagesa e abonimit është vonuar ose joaktive. POS është i kyçur derisa një administrator të përfundojë pagesën.",
-    "openAdminBilling": "Hap faturimin e admin",
+    "billingPausedBody": "Pagesa e abonimit është vonuar ose joaktive. POS është i kyçur derisa një administrator të përfundojë pagesën në aplikacionin OneTap Admin.",
     "networkBanner": "Duke punuar jashtë linje — Dërgo dhe Paguaj funksionojnë. Porositë sinkronizohen kur kthehet lidhja.",
     "clockOut": "Mbyll turnin",
     "clockOutBlockedTitle": "Nuk mund të mbyllësh turnin",
@@ -261,15 +260,21 @@
     "connCannotReach": "Nuk arrin POS në server",
     "connLatency": "Vonesa: {{ms}}ms{{extra}}",
     "connLatencyTooltip": "Vonesa: {{ms}} ms",
-    "connLatencyWithLast": "Vonesa: {{ms}} ms • Kontrolluar: {{when}}"
+    "connLatencyWithLast": "Vonesa: {{ms}} ms • Kontrolluar: {{when}}",
+    "changeTill": "Ndrysho POS"
   },
   "login": {
     "pinTooShort": "Shkruani 4-6 shifra",
     "adminOnly": "Vetëm për administrator",
     "hostsReservations": "Host-et hyjnë përmes panelit të rezervimeve.",
     "adminNoTablet": "Paneli admin nuk është i disponueshëm në tablete",
-    "invalidPin": "PIN i pavlefshëm",
+    "useAdminApp": "Hap panelin admin nga aplikacioni OneTap Admin.",
+    "invalidPin": "PIN i pasaktë. Provo sërish.",
     "loginFailed": "Hyrja dështoi",
+    "loginFailedDetail": "Hyrja dështoi: {{detail}}",
+    "lanDisabled": "Hyrja nga tabletat është e fikur te kasa (Admin → Cilësimet → LAN / Tabletat).",
+    "webAccessDisabled": "Hyrja nga webi është e fikur te kasa.",
+    "hostUnavailable": "POS nuk arrihet. Kontrollo që kasa është ndezur dhe telefoni është në të njëjtin Wi-Fi.",
     "pairingRequired": "Kërkohet kodi i çiftimit (pyet menaxherin / Admin → Cilësime → LAN / Tabletat).",
     "loadUsersFailed": "Ngarkimi i përdoruesve dështoi.",
     "noAdminUsers": "Ende nuk ka administratorë. Krijo admin-in e parë më poshtë ose ekzekuto db:seed.",

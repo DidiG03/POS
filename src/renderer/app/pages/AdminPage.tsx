@@ -178,7 +178,7 @@ export default function AdminPage() {
   }, [staffStatus]);
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const [billingPaused, setBillingPaused] = useState(false);
-  const [captureClock, setCaptureClock] = useState(true);
+  const [captureClock, setCaptureClock] = useState(false);
   const me = useAdminSessionStore((s) => s.user);
   // Simplified view: hide sales trends entirely
 

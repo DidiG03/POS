@@ -69,6 +69,12 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
     allow: 'public',
     note: 'kitchen displays render item names without logging in',
   },
+  'POST /menu/create-category': { allow: ADMIN },
+  'POST /menu/update-category': { allow: ADMIN },
+  'POST /menu/delete-category': { allow: ADMIN },
+  'POST /menu/create-item': { allow: ADMIN },
+  'POST /menu/update-item': { allow: ADMIN },
+  'POST /menu/delete-item': { allow: ADMIN },
 
   // ------------------------------------------------------------------- kds
   // Dedicated kitchen displays have no login screen, so these are open to
@@ -94,6 +100,9 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
 
   // ------------------------------------------------------------------ auth
   'POST /auth/verify-manager-pin': { allow: 'session' },
+  'POST /auth/create-user': { allow: ADMIN },
+  'POST /auth/update-user': { allow: ADMIN },
+  'POST /auth/delete-user': { allow: ADMIN },
 
   // -------------------------------------------------------- notifications
   'GET /notifications': { allow: 'session' },
@@ -102,6 +111,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   // ----------------------------------------------------------------- admin
   'GET /admin/overview': { allow: ADMIN },
   'GET /admin/sales-trends': { allow: ADMIN },
+  'GET /admin/users': { allow: ADMIN },
+  'GET /admin/shifts': { allow: ADMIN },
+  'GET /admin/top-selling-today': { allow: ADMIN },
+  'POST /admin/review': { allow: ADMIN },
   'POST /admin/billing/create-checkout': { allow: ADMIN },
   'POST /admin/billing/create-portal': { allow: ADMIN },
 

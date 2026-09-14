@@ -1,4 +1,6 @@
 import { buildLanHttpUrl, buildLanHttpsUrl } from '@shared/lanHost';
+import { clearLanTokenMemory, writeLanToken } from './lanAuthToken';
+import { invalidateHostScopedCaches } from './posReadCache';
 
 export type BackendHost = {
   host: string;
@@ -6,12 +8,13 @@ export type BackendHost = {
   httpsPort: string;
 };
 
-/** True when the renderer talks to the POS host over HTTP (tablets / KDS). */
+/** True when the renderer talks to the POS host over HTTP (tablets / KDS / Admin). */
 export function isLanHttpClient(): boolean {
   if (typeof window === 'undefined') return false;
   return (
     Boolean((window as any).__BROWSER_CLIENT__) ||
-    Boolean((window as any).__KDS_APP__)
+    Boolean((window as any).__KDS_APP__) ||
+    Boolean((window as any).__ADMIN_APP__)
   );
 }
 
@@ -108,7 +111,7 @@ export function syncBackendHostToLocalStorage(input: {
   else localStorage.removeItem('pos_backend_https');
 }
 
-export async function persistKdsBackendHost(input: {
+export async function persistCompanionBackendHost(input: {
   host: string;
   httpPort: number;
 }): Promise<void> {
@@ -118,7 +121,24 @@ export async function persistKdsBackendHost(input: {
     host: trimmedHost,
     httpPort: String(httpPort),
   });
-  const kdsApp = (window as any).kdsApp as
+  try {
+    writeLanToken('pos_api_token', null, localStorage);
+    writeLanToken('pos_host_api_token', null, localStorage);
+    clearLanTokenMemory();
+  } catch {
+    // ignore
+  }
+  invalidateHostScopedCaches();
+  try {
+    const injected = (window as any).__POS_HOST__;
+    if (injected && typeof injected === 'object') {
+      injected.host = trimmedHost;
+      injected.httpPort = httpPort;
+    }
+  } catch {
+    // contextBridge may freeze this object
+  }
+  const companion = ((window as any).adminApp || (window as any).kdsApp) as
     | {
         saveConfig?: (cfg: {
           host: string;
@@ -126,7 +146,15 @@ export async function persistKdsBackendHost(input: {
         }) => Promise<unknown>;
       }
     | undefined;
-  if (kdsApp?.saveConfig) {
-    await kdsApp.saveConfig({ host: trimmedHost, httpPort });
+  if (companion?.saveConfig) {
+    await companion.saveConfig({ host: trimmedHost, httpPort });
   }
+}
+
+/** @deprecated Use persistCompanionBackendHost */
+export async function persistKdsBackendHost(input: {
+  host: string;
+  httpPort: number;
+}): Promise<void> {
+  return persistCompanionBackendHost(input);
 }

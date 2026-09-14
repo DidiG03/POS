@@ -912,6 +912,7 @@ html[data-shell='capacitor'] {
     -webkit-user-select: none;
     user-select: none;
     touch-action: manipulation;
+    cursor: pointer;
   }
 
   .pos-spinner {

@@ -131,9 +131,9 @@ export function prefetchHotReads(): void {
   if (typeof window === 'undefined') return;
   const api = (window as any).api;
   if (!api) return;
+  // Floor already loaded settings + users. Warm the menu for the first
+  // ticket without kicking those two reads into another soft-revalidate.
   void api.menu?.listCategoriesWithItems?.().catch(() => undefined);
-  void api.settings?.get?.().catch(() => undefined);
-  void api.auth?.listUsers?.().catch(() => undefined);
 }
 
 function isWritable(obj: any, key: string): boolean {
@@ -154,13 +154,17 @@ function wrapMethod(
   method: string,
   keyFn: (...args: any[]) => string,
   maxAgeMs: number,
+  opts?: { waitIfStale?: boolean },
 ): void {
   if (!obj || typeof obj[method] !== 'function') return;
   if (!isWritable(obj, method)) return;
   const orig = obj[method].bind(obj);
   try {
     obj[method] = (...args: any[]) =>
-      swr(keyFn(...args), () => orig(...args), { maxAgeMs });
+      swr(keyFn(...args), () => orig(...args), {
+        maxAgeMs,
+        waitIfStale: opts?.waitIfStale,
+      });
   } catch {
     // Frozen bridge — leave the original IPC method alone.
   }
@@ -186,7 +190,9 @@ function wrapAfter(
 }
 
 function applyReadWraps(api: any): void {
-  wrapMethod(api.settings, 'get', () => POS_CACHE.settings, 20_000);
+  wrapMethod(api.settings, 'get', () => POS_CACHE.settings, 20_000, {
+    waitIfStale: true,
+  });
   wrapMethod(api.menu, 'listCategoriesWithItems', () => POS_CACHE.menu, 45_000);
   wrapMethod(api.auth, 'listUsers', () => POS_CACHE.users, 60_000);
   wrapMethod(api.tables, 'listOpen', () => POS_CACHE.openTables, 4_000);
@@ -283,9 +289,18 @@ export function installPosReadCache(): void {
   }
 }
 
+let catchupSoonTimer: ReturnType<typeof setTimeout> | null = null;
+let lastCatchupAt = 0;
+const CATCHUP_DEBOUNCE_MS = 2_000;
+
 /** @internal vitest */
 export function resetPosReadCacheForTests(): void {
   installed = false;
+  lastCatchupAt = 0;
+  if (catchupSoonTimer != null) {
+    clearTimeout(catchupSoonTimer);
+    catchupSoonTimer = null;
+  }
 }
 
 export function invalidateTicketCache(area?: string, label?: string): void {
@@ -310,7 +325,9 @@ export function invalidateFloorSnapshots(): void {
 
 /** Tablets missed SSE while backgrounded — drop caches and tell every screen to refetch. */
 export function emitPosSyncCatchup(): void {
+  lastCatchupAt = Date.now();
   invalidateFloorCache();
+  invalidateCache(POS_CACHE.settings);
   try {
     window.dispatchEvent(new CustomEvent('pos:syncCatchup'));
   } catch {
@@ -326,12 +343,11 @@ export function invalidateHostScopedCaches(): void {
   emitPosSyncCatchup();
 }
 
-let catchupSoonTimer: ReturnType<typeof setTimeout> | null = null;
-
 /** Coalesce bursty parse/reconnect misses into one refetch. */
 export function emitPosSyncCatchupSoon(delayMs = 400): void {
   if (typeof window === 'undefined') return;
   if (catchupSoonTimer != null) return;
+  if (Date.now() - lastCatchupAt < CATCHUP_DEBOUNCE_MS) return;
   catchupSoonTimer = setTimeout(() => {
     catchupSoonTimer = null;
     emitPosSyncCatchup();

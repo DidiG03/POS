@@ -11,7 +11,9 @@ import {
 } from '@shared/editionCapabilities';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { clockCaptureFromChange } from '@shared/settingsChange';
 import { BrandMark } from '../../components/BrandMark';
+import { resolveBackendHost } from '../../utils/backendHost';
 import { DocumentMeta } from '../../components/DocumentMeta';
 import { DevEditionSwitch } from '../components/DevEditionSwitch';
 import {
@@ -28,6 +30,15 @@ import {
   IconChevronRight,
   IconUsers,
 } from '../../components/icons';
+import { toast } from '../../stores/toasts';
+import {
+  classifyLanLoginError,
+  lanLoginUserMessage,
+} from '../../utils/lanLoginError';
+import { captureRendererException } from '../../utils/sentryBrowser';
+import { applyHostPosUiTheme } from '../../theme';
+import { POS_CACHE, peekSettings } from '../../utils/posReadCache';
+import { invalidateCache } from '../../utils/swrCache';
 
 function staffInitials(name: string): string {
   const parts = String(name || '')
@@ -91,18 +102,18 @@ export default function LoginPage() {
       return '';
     }
   });
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const isBrowserClient =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
-  // Admin window/routing can be hash-based (#/admin) or path-based (/admin). Detect both.
+  const isAdminApp =
+    typeof window !== 'undefined' && Boolean((window as any).__ADMIN_APP__);
+  // Admin login exists only in the OneTap Admin companion, never on POS.
+  const adminPath = (location?.pathname || '').replace(/\/+$/, '') || '/';
   const isAdminContext =
-    (location?.pathname || '').startsWith('/admin') ||
-    (typeof window !== 'undefined' &&
-      (window.location.hash || '').startsWith('#/admin'));
+    isAdminApp && (adminPath === '/admin' || adminPath.startsWith('/admin/'));
   const isKdsContext =
     (location?.pathname || '').startsWith('/kds') ||
     (typeof window !== 'undefined' &&
@@ -124,11 +135,27 @@ export default function LoginPage() {
     navigate(staffPosHomePath({ hasTables, clockOnly, kds }));
   };
 
+  const showLoginMessage = (message: string) => {
+    toast.error(message, { timeoutMs: 5_000 });
+  };
+
+  const clearStoredPairing = () => {
+    try {
+      localStorage.removeItem(PAIRING_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    setPairingCode('');
+    if (pairingCodeRef.current) pairingCodeRef.current.value = '';
+  };
+
   const onSubmit = async () => {
-    setError(null);
-    if (!hasHydrated) return;
+    if (!hasHydrated) {
+      showLoginMessage(t('login.loginFailed'));
+      return;
+    }
     if (pin.length < 4) {
-      setError(t('login.pinTooShort'));
+      showLoginMessage(t('login.pinTooShort'));
       return;
     }
     // Drop focus from the PIN/pairing input BEFORE we kick off the async
@@ -142,6 +169,7 @@ export default function LoginPage() {
     } catch {
       // ignore
     }
+    setSubmitting(true);
     try {
       const codeFromInput =
         pairingCodeRef.current?.value
@@ -170,7 +198,7 @@ export default function LoginPage() {
       }
       if (user) {
         if (isAdminContext && user.role !== 'ADMIN') {
-          setError(t('login.adminOnly'));
+          showLoginMessage(t('login.adminOnly'));
           return;
         }
         // Defense-in-depth: even if a stale staff list ever included a Host,
@@ -180,27 +208,34 @@ export default function LoginPage() {
           !isAdminContext &&
           String((user as any).role || '').toUpperCase() === 'HOST'
         ) {
-          setError(t('login.hostsReservations'));
+          showLoginMessage(t('login.hostsReservations'));
           return;
         }
-        // Block admin panel on browser/tablet — admin must use the desktop app
-        if (isBrowserClient && isAdminContext) {
-          setError(t('login.adminNoTablet'));
+        // Admins never enter the POS shell. Back office is OneTap Admin only.
+        if (user.role === 'ADMIN' && !isAdminApp) {
+          showLoginMessage(t('login.useAdminApp'));
           return;
         }
-        // Admin goes straight to admin shell (Electron only)
-        if (user.role === 'ADMIN' && !isBrowserClient) {
+        if (user.role === 'ADMIN' && isAdminApp) {
           setAdminUser(user);
-          if (!isAdminContext) setUser(user);
           navigate('/admin');
           return;
         }
-        // Staff requires an open shift when the venue captures clock times.
+        // Use clock flags and open-shift ids already loaded with the staff
+        // list. A second settings/getOpen round-trip is what made PIN login
+        // stall on slow Wi-Fi after the host had already accepted the PIN.
         if (!isKdsContext) {
-          const settings = await window.api.settings.get().catch(() => null);
-          if (isClockCaptureEnabled(settings)) {
-            const open = await window.api.shifts.getOpen(user.id);
-            if (!open) {
+          const clockOn = captureClock === true;
+          if (clockOn) {
+            let alreadyOpen =
+              selectedId != null && openIds.includes(selectedId);
+            if (!alreadyOpen && !openShiftKnown && selectedId != null) {
+              const open = await window.api.shifts
+                .getOpen(user.id)
+                .catch(() => null);
+              alreadyOpen = Boolean(open);
+            }
+            if (!alreadyOpen) {
               setShowShiftConfirm(true);
               setPendingUser(user);
               return;
@@ -209,30 +244,28 @@ export default function LoginPage() {
         }
         setUser(user);
         goStaffHome(user, isKdsContext);
-      } else setError(t('login.invalidPin'));
-    } catch (e: any) {
-      console.error(e);
-      const msg = String(e?.message || e || '');
-      if (msg.toLowerCase().includes('pairing code')) {
-        // Stored code is no longer valid — clear it so the input appears
-        try {
-          localStorage.removeItem(PAIRING_STORAGE_KEY);
-        } catch {
-          // ignore
-        }
-        setPairingCode('');
-        if (pairingCodeRef.current) pairingCodeRef.current.value = '';
-        setError(t('login.pairingRequired'));
-        return;
+      } else {
+        showLoginMessage(t('login.invalidPin'));
       }
-      setError(t('login.loginFailed'));
+    } catch (e: unknown) {
+      console.error(e);
+      const kind = classifyLanLoginError(e);
+      if (kind === 'pairing') clearStoredPairing();
+      showLoginMessage(lanLoginUserMessage(e, t));
+      if (kind === 'host' || kind === 'other') {
+        captureRendererException(e, { source: 'login' });
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const [staff, setStaff] = useState<{ id: number; displayName: string }[]>([]);
   const [openIds, setOpenIds] = useState<number[]>([]);
+  const [openShiftKnown, setOpenShiftKnown] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showShiftConfirm, setShowShiftConfirm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [pendingUser, setPendingUser] = useState<any>(null);
   const [captureClock, setCaptureClock] = useState<boolean | null>(null);
   // The app-level BootScreen (main.tsx) already verifies the backend is alive
@@ -245,37 +278,67 @@ export default function LoginPage() {
   const [firstAdminName, setFirstAdminName] = useState('');
   const [firstAdminPin, setFirstAdminPin] = useState('');
   const [creatingFirstAdmin, setCreatingFirstAdmin] = useState(false);
+  const [directoryEmpty, setDirectoryEmpty] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const s = await window.api.settings.get();
-      setEnableAdmin(s.enableAdmin ?? false);
-      setDevEditionSwitch(Boolean(s.devEditionSwitch));
-      setCaptureClock(isClockCaptureEnabled(s));
-      useLicenseCapabilities.getState().setEdition(s.licenseEdition);
+      setOpenShiftKnown(false);
+      setDirectoryEmpty(false);
+      const applyChrome = (s: any) => {
+        if (!s) return;
+        setDevEditionSwitch(Boolean(s.devEditionSwitch));
+        applyHostPosUiTheme(s?.preferences?.theme);
+        useLicenseCapabilities.getState().setEdition(s.licenseEdition);
+      };
+      const applySettings = (s: any) => {
+        applyChrome(s);
+        if (!s) return;
+        setCaptureClock(isClockCaptureEnabled(s));
+      };
+
+      const cached = peekSettings<any>();
+      invalidateCache(POS_CACHE.settings);
+      // Cached chrome (edition, theme) can paint immediately. Clock columns
+      // must wait for a live host read — a stale tablet cache defaults the
+      // shift feature ON and ignores Admin turning it off.
+      if (cached) applyChrome(cached);
       setNotice(null);
+
+      const settingsP = window.api.settings
+        .get()
+        .then((live) => ({ live: true as const, s: live }))
+        .catch(() => ({ live: false as const, s: cached ?? null }));
+      const usersP = window.api.auth.listUsers({
+        includeAdmins: isAdminContext,
+      });
+
+      const got = await settingsP;
+      if (cancelled) return;
+      const s = got.s;
+      if (got.live && s) applySettings(s);
+      else if (s) applyChrome(s);
 
       let users: any[] = [];
       try {
-        users = await window.api.auth.listUsers({
-          includeAdmins: isAdminContext,
-        });
+        users = await usersP;
       } catch (e: any) {
-        setNotice(e?.message || t('login.loadUsersFailed'));
+        const message = lanLoginUserMessage(e, t);
+        setNotice(message);
+        toast.error(message, { timeoutMs: 5_000 });
+        captureRendererException(e, { source: 'login.listUsers' });
         setStaff([]);
         setOpenIds([]);
+        setOpenShiftKnown(true);
         if (!cancelled) setStaffLoading(false);
         return;
       }
       if (Array.isArray(users) && users.length === 0) {
-        setNotice(
-          isAdminContext
-            ? t('login.noAdminUsersLocal')
-            : t('login.noStaffUsers'),
-        );
+        setNotice(t('login.noAdminUsersLocal'));
+        setDirectoryEmpty(true);
         setStaff([]);
         setOpenIds([]);
+        setOpenShiftKnown(true);
         if (!cancelled) setStaffLoading(false);
         return;
       }
@@ -292,18 +355,20 @@ export default function LoginPage() {
       if (cancelled) return;
       setStaff(list);
       setStaffLoading(false);
-      if (!isAdminContext && isClockCaptureEnabled(s)) {
+      if (!isAdminContext && got.live && isClockCaptureEnabled(s)) {
         try {
           const ids = await window.api.shifts.listOpen();
           if (cancelled) return;
-          setOpenIds(ids);
+          setOpenIds(Array.isArray(ids) ? ids : []);
         } catch (e) {
           void e;
           if (cancelled) return;
           setOpenIds([]);
         }
+        setOpenShiftKnown(true);
       } else {
         setOpenIds([]);
+        setOpenShiftKnown(true);
       }
     })();
     return () => {
@@ -311,8 +376,22 @@ export default function LoginPage() {
     };
   }, [reloadNonce, isAdminContext, i18n.language, t]);
 
-  const [enableAdmin, setEnableAdmin] = useState(false);
+  useEffect(() => {
+    const onSettings = (ev: Event) => {
+      const clock = clockCaptureFromChange((ev as CustomEvent).detail);
+      if (clock != null) setCaptureClock(clock);
+    };
+    window.addEventListener('pos:settingsChanged', onSettings);
+    return () => window.removeEventListener('pos:settingsChanged', onSettings);
+  }, []);
+
   const [devEditionSwitch, setDevEditionSwitch] = useState(false);
+  const adminHostLabel = isAdminApp
+    ? (() => {
+        const b = resolveBackendHost();
+        return b.host ? `${b.host}:${b.httpPort}` : '';
+      })()
+    : '';
 
   const onShift = staff.filter((s) => openIds.includes(s.id));
   const offShift = staff.filter((s) => !openIds.includes(s.id));
@@ -326,9 +405,18 @@ export default function LoginPage() {
       // on devices without a safe area.
       className="h-dvh flex flex-col items-center justify-center pos-app pos-app--auth overflow-y-auto px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
     >
-      <DocumentMeta title={t('login.selectStaff')} />
+      <DocumentMeta
+        title={
+          isAdminContext ? t('adminLayout.panelTitle') : t('login.selectStaff')
+        }
+      />
       <div className="mb-6 shrink-0 space-y-3">
         <BrandMark size="lg" subtitle={t('brand.tagline')} />
+        {adminHostLabel ? (
+          <div className="text-center text-[12px] text-gray-400">
+            {adminHostLabel}
+          </div>
+        ) : null}
         <DevEditionSwitch allowed={devEditionSwitch} />
       </div>
       <div
@@ -353,7 +441,6 @@ export default function LoginPage() {
                 onClick={() => {
                   setShowPin(false);
                   setPin('');
-                  setError(null);
                 }}
                 className="pos-icon-btn -ml-2 shrink-0"
               >
@@ -398,11 +485,6 @@ export default function LoginPage() {
                   {t('login.reservations')}
                 </Button>
               ) : null}
-              {!isBrowserClient && enableAdmin && (
-                <Button size="sm" onClick={() => window.api.admin.openWindow()}>
-                  {t('common.admin')}
-                </Button>
-              )}
             </div>
           )}
         </div>
@@ -413,74 +495,69 @@ export default function LoginPage() {
               {notice}
             </div>
           )}
-          {isAdminContext &&
-            !showPin &&
-            !staffLoading &&
-            staff.length === 0 && (
-              <div className="shrink-0 rounded-lg border border-white/7 bg-gray-900 p-3.5">
-                <div className="text-[13px] font-semibold text-gray-100">
-                  {t('login.firstAdminTitle')}
-                </div>
-                <div className="mt-0.5 text-[12px] text-gray-400">
-                  {t('login.firstAdminHelp')}
-                </div>
-                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                  <Input
-                    className="flex-1"
-                    placeholder={t('login.firstAdminNamePlaceholder')}
-                    value={firstAdminName}
-                    onChange={(e) => setFirstAdminName(e.target.value)}
-                    autoComplete="off"
-                  />
-                  <Input
-                    className="sm:w-36"
-                    placeholder={t('login.firstAdminPinPlaceholder')}
-                    value={firstAdminPin}
-                    onChange={(e) =>
-                      setFirstAdminPin(
-                        e.target.value.replace(/\D/g, '').slice(0, 8),
-                      )
-                    }
-                    inputMode="numeric"
-                    autoComplete="off"
-                  />
-                  <Button
-                    variant="primary"
-                    loading={creatingFirstAdmin}
-                    disabled={
-                      firstAdminName.trim().length < 2 ||
-                      firstAdminPin.length < 4
-                    }
-                    onClick={async () => {
-                      setError(null);
-                      setCreatingFirstAdmin(true);
-                      try {
-                        await window.api.auth.createUser({
-                          displayName: firstAdminName.trim(),
-                          role: 'ADMIN',
-                          pin: firstAdminPin,
-                          active: true,
-                        } as any);
-                        setNotice(t('login.firstAdminCreated'));
-                        setFirstAdminName('');
-                        setFirstAdminPin('');
-                        setReloadNonce((n) => n + 1);
-                      } catch (e: any) {
-                        setError(
-                          e?.message || t('login.firstAdminCreateFailed'),
-                        );
-                      } finally {
-                        setCreatingFirstAdmin(false);
-                      }
-                    }}
-                  >
-                    {creatingFirstAdmin
-                      ? t('login.firstAdminCreating')
-                      : t('login.firstAdminCreate')}
-                  </Button>
-                </div>
+          {!showPin && !staffLoading && directoryEmpty && (
+            <div className="shrink-0 rounded-lg border border-white/7 bg-gray-900 p-3.5">
+              <div className="text-[13px] font-semibold text-gray-100">
+                {t('login.firstAdminTitle')}
               </div>
-            )}
+              <div className="mt-0.5 text-[12px] text-gray-400">
+                {t('login.firstAdminHelp')}
+              </div>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <Input
+                  className="flex-1"
+                  placeholder={t('login.firstAdminNamePlaceholder')}
+                  value={firstAdminName}
+                  onChange={(e) => setFirstAdminName(e.target.value)}
+                  autoComplete="off"
+                />
+                <Input
+                  className="sm:w-36"
+                  placeholder={t('login.firstAdminPinPlaceholder')}
+                  value={firstAdminPin}
+                  onChange={(e) =>
+                    setFirstAdminPin(
+                      e.target.value.replace(/\D/g, '').slice(0, 8),
+                    )
+                  }
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+                <Button
+                  variant="primary"
+                  loading={creatingFirstAdmin}
+                  disabled={
+                    firstAdminName.trim().length < 2 || firstAdminPin.length < 4
+                  }
+                  onClick={async () => {
+                    setCreatingFirstAdmin(true);
+                    try {
+                      await window.api.auth.createUser({
+                        displayName: firstAdminName.trim(),
+                        role: 'ADMIN',
+                        pin: firstAdminPin,
+                        active: true,
+                      } as any);
+                      setNotice(t('login.firstAdminCreated'));
+                      setFirstAdminName('');
+                      setFirstAdminPin('');
+                      setReloadNonce((n) => n + 1);
+                    } catch (e: any) {
+                      showLoginMessage(
+                        e?.message || t('login.firstAdminCreateFailed'),
+                      );
+                    } finally {
+                      setCreatingFirstAdmin(false);
+                    }
+                  }}
+                >
+                  {creatingFirstAdmin
+                    ? t('login.firstAdminCreating')
+                    : t('login.firstAdminCreate')}
+                </Button>
+              </div>
+            </div>
+          )}
 
           {!showPin && isAdminContext ? (
             <div className="flex min-h-0 flex-1 flex-col">
@@ -496,7 +573,6 @@ export default function LoginPage() {
                     onClick={() => {
                       setSelectedId(s.id);
                       setPin('');
-                      setError(null);
                       setShowPin(true);
                     }}
                   />
@@ -525,7 +601,6 @@ export default function LoginPage() {
                     onClick={() => {
                       setSelectedId(s.id);
                       setPin('');
-                      setError(null);
                       setShowPin(true);
                     }}
                   />
@@ -567,7 +642,6 @@ export default function LoginPage() {
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
-                        setError(null);
                         setShowPin(true);
                       }}
                     />
@@ -591,7 +665,6 @@ export default function LoginPage() {
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
-                        setError(null);
                         setShowPin(true);
                       }}
                     />
@@ -637,15 +710,11 @@ export default function LoginPage() {
                   onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
                 />
               )}
-              {error && (
-                <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-[13px] text-rose-200">
-                  {error}
-                </div>
-              )}
               <Button
                 variant="primary"
                 size="lg"
                 block
+                loading={submitting}
                 disabled={!hasHydrated}
                 onClick={onSubmit}
               >
@@ -682,7 +751,7 @@ export default function LoginPage() {
             } catch (e: any) {
               setShowShiftConfirm(false);
               const msg = String(e?.message || e || '').trim();
-              setError(msg || t('login.loginFailed'));
+              showLoginMessage(msg || t('login.loginFailed'));
             }
           }}
         />

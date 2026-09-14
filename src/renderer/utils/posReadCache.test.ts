@@ -162,3 +162,32 @@ describe('ingestFloorSnapshot', () => {
     expect(peekLatestTicket('Salla', 'T7')).toBeUndefined();
   });
 });
+
+describe('emitPosSyncCatchupSoon', () => {
+  const prevWindow = (globalThis as any).window;
+
+  beforeEach(() => {
+    resetPosReadCacheForTests();
+    invalidateCache(POS_CACHE.settings);
+    (globalThis as any).window = prevWindow ?? {};
+  });
+
+  afterEach(() => {
+    resetPosReadCacheForTests();
+    if (prevWindow === undefined) delete (globalThis as any).window;
+    else (globalThis as any).window = prevWindow;
+  });
+
+  it('does not fire a second catchup within two seconds', async () => {
+    const { writeCache } = await import('./swrCache');
+    const { emitPosSyncCatchupSoon } = await import('./posReadCache');
+    writeCache(POS_CACHE.settings, { n: 1 });
+    emitPosSyncCatchupSoon(0);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(peek(POS_CACHE.settings)).toBeUndefined();
+    writeCache(POS_CACHE.settings, { n: 2 });
+    emitPosSyncCatchupSoon(0);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(peek(POS_CACHE.settings)).toEqual({ n: 2 });
+  });
+});

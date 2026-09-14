@@ -5,18 +5,22 @@
  */
 import { useTableStatus } from '../stores/tableStatus';
 import { useTicketStore } from '../stores/ticket';
+import { applyHostPosUiTheme } from '../theme';
+import { themeFromChange } from '@shared/settingsChange';
 import {
   emitPosSyncCatchupSoon,
-  invalidateFloorCache,
   invalidateFloorSnapshots,
   invalidateTicketCache,
+  POS_CACHE,
 } from './posReadCache';
+import { invalidateCache } from './swrCache';
 
 export type PosRealtimeEventName =
   | 'pos:tablesChanged'
   | 'pos:ticketsChanged'
   | 'pos:layoutChanged'
-  | 'pos:tableMergesChanged';
+  | 'pos:tableMergesChanged'
+  | 'pos:settingsChanged';
 
 type RealtimePayload = {
   area?: string;
@@ -50,7 +54,7 @@ export function applyPosRealtimeEvent(
         useTicketStore.getState().dropOrphanLiveBills(openKeys);
       }
     }
-    invalidateFloorCache();
+    invalidateFloorSnapshots();
     return;
   }
 
@@ -59,6 +63,15 @@ export function applyPosRealtimeEvent(
     eventName === 'pos:tableMergesChanged'
   ) {
     invalidateFloorSnapshots();
+    return;
+  }
+
+  if (eventName === 'pos:settingsChanged') {
+    // Drop the full settings cache so the next get() is live. Do not write
+    // this slim payload into POS_CACHE.settings — that blob would look like
+    // a hydrated document and turn clock back on.
+    invalidateCache(POS_CACHE.settings);
+    applyHostPosUiTheme(themeFromChange(payload));
   }
 }
 
@@ -80,10 +93,13 @@ export function installPosRealtimeSync(): void {
     'pos:tableMergesChanged',
     onEvent('pos:tableMergesChanged'),
   );
+  window.addEventListener(
+    'pos:settingsChanged',
+    onEvent('pos:settingsChanged'),
+  );
+  // Visibility catchup lives in main.tsx (gated on a dead SSE socket).
+  // Electron still pings this after OS sleep.
   window.addEventListener('pos:os-resume', () => emitPosSyncCatchupSoon());
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') emitPosSyncCatchupSoon();
-  });
 }
 
 /** @internal vitest */

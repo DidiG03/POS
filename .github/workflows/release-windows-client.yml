@@ -1,6 +1,6 @@
 name: Release Windows Client
 
-# Builds POS + KDS Windows installers and uploads them to GitHub Releases
+# Builds POS + KDS + Admin Windows installers and uploads them to GitHub Releases
 # (the public download page), not workflow artifacts.
 #
 # Trigger:
@@ -71,6 +71,11 @@ jobs:
           pnpm build:kds
           pnpm exec electron-builder --config electron-builder.kds.yml --win nsis --publish never
 
+      - name: Build Admin bundle + Windows installer
+        run: |
+          pnpm build:admin
+          pnpm exec electron-builder --config electron-builder.admin.yml --win nsis --publish never
+
       - name: Publish to GitHub Releases
         shell: bash
         env:
@@ -84,6 +89,7 @@ jobs:
 
           POS_EXE=$(ls dist/*Setup*.exe dist/*.exe 2>/dev/null | head -1)
           KDS_EXE=$(ls dist-installers/kds/*Setup*.exe dist-installers/kds/*.exe 2>/dev/null | head -1)
+          ADMIN_EXE=$(ls dist-installers/admin/*Setup*.exe dist-installers/admin/*.exe 2>/dev/null | head -1)
           if [[ ! -f "$POS_EXE" ]]; then
             echo "::error::Missing POS installer in dist/"
             exit 1
@@ -92,16 +98,23 @@ jobs:
             echo "::error::Missing KDS installer in dist-installers/kds/"
             exit 1
           fi
+          if [[ ! -f "$ADMIN_EXE" ]]; then
+            echo "::error::Missing Admin installer in dist-installers/admin/"
+            exit 1
+          fi
 
           # electron-builder names installers from productName (OneTap POS /
-          # OneTap KDS). latest.yml / kds.yml must use those exact filenames
-          # or in-app updates 404.
+          # OneTap KDS / OneTap Admin). latest.yml / kds.yml / admin.yml must
+          # use those exact filenames or in-app updates 404.
           CANONICAL_POS_NAME="OneTap-POS-Setup-${VERSION}.exe"
           CANONICAL_KDS_NAME="OneTap-KDS-Setup-${VERSION}.exe"
+          CANONICAL_ADMIN_NAME="OneTap-Admin-Setup-${VERSION}.exe"
           CANONICAL_POS="dist/${CANONICAL_POS_NAME}"
           CANONICAL_KDS="dist-installers/kds/${CANONICAL_KDS_NAME}"
+          CANONICAL_ADMIN="dist-installers/admin/${CANONICAL_ADMIN_NAME}"
           cp "$POS_EXE" "$CANONICAL_POS"
           cp "$KDS_EXE" "$CANONICAL_KDS"
+          cp "$ADMIN_EXE" "$CANONICAL_ADMIN"
 
           # electron-builder emits `latest.yml` for POS but not `latest-kds.yml`
           # when building with `--publish never` and a custom KDS channel.
@@ -144,17 +157,20 @@ jobs:
           # compatibility with any older naming expectations.
           write_update_yml "$CANONICAL_KDS" dist-installers/kds/kds.yml "$CANONICAL_KDS_NAME"
           cp dist-installers/kds/kds.yml dist-installers/kds/latest-kds.yml
+          # Admin uses setupAutoUpdater({ channel: 'admin' }) → admin.yml.
+          write_update_yml "$CANONICAL_ADMIN" dist-installers/admin/admin.yml "$CANONICAL_ADMIN_NAME"
+          cp dist-installers/admin/admin.yml dist-installers/admin/latest-admin.yml
 
-          NOTES="Windows client installers for OneTap POS ${VERSION} and OneTap KDS ${VERSION}."
+          NOTES="Windows client installers for OneTap POS ${VERSION}, OneTap KDS ${VERSION}, and OneTap Admin ${VERSION}."
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Updating existing release $TAG"
           else
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES"
           fi
 
-          UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" )
+          UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" "$CANONICAL_ADMIN" )
           shopt -s nullglob
-          UPLOAD+=( dist/latest*.yml dist-installers/kds/kds.yml dist-installers/kds/latest*.yml )
+          UPLOAD+=( dist/latest*.yml dist-installers/kds/kds.yml dist-installers/kds/latest*.yml dist-installers/admin/admin.yml dist-installers/admin/latest*.yml )
           shopt -u nullglob
 
           gh release upload "$TAG" "${UPLOAD[@]}" --clobber

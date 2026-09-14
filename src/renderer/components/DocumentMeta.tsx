@@ -26,7 +26,8 @@ export function DocumentMeta({ title }: { title?: string }) {
   const { t, i18n } = useTranslation();
 
   useEffect(() => {
-    const product = t('brand.product');
+    const isAdminApp = Boolean((window as any).__ADMIN_APP__);
+    const product = isAdminApp ? 'OneTap Admin' : t('brand.product');
     const description = t('seo.description');
     document.title = title ? `${title} · ${product}` : product;
     setMeta('description', description);

@@ -17,6 +17,7 @@ import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import { PageSpinner } from './components/PageSpinner';
 import { shouldDeferShiftGuard } from './stores/sessionPersist';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { clockCaptureFromChange } from '@shared/settingsChange';
 import { resumeMainProcessSession } from './utils/resumeSession';
 import { Button } from './components/ui';
 import { isChunkLoadError, retryLazyImport } from './utils/lazyRetry';
@@ -52,6 +53,7 @@ const AdminStockPage = lazyPage(() => import('./app/pages/AdminStockPage'));
 const AdminReviewPage = lazyPage(() => import('./app/pages/AdminReviewPage'));
 const KdsPage = lazyPage(() => import('./app/pages/KdsPage'));
 const KdsSetupPage = lazyPage(() => import('./app/pages/KdsSetupPage'));
+const AdminSetupPage = lazyPage(() => import('./app/pages/AdminSetupPage'));
 const ReservationsLoginPage = lazyPage(
   () => import('./app/pages/ReservationsLoginPage'),
 );
@@ -163,6 +165,18 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
   // while the JWT was still live, which bounced PIN → Tables → PIN.
   const [needsShift, setNeedsShift] = React.useState(false);
   const [shiftBusy, setShiftBusy] = React.useState(false);
+  const [settingsTick, setSettingsTick] = React.useState(0);
+  useEffect(() => {
+    const bump = (ev: Event) => {
+      if (ev.type === 'pos:settingsChanged') {
+        const clock = clockCaptureFromChange((ev as CustomEvent).detail);
+        if (clock === false) setNeedsShift(false);
+      }
+      setSettingsTick((n) => n + 1);
+    };
+    window.addEventListener('pos:settingsChanged', bump);
+    return () => window.removeEventListener('pos:settingsChanged', bump);
+  }, []);
   useEffect(() => {
     const userId = user?.id;
     if (
@@ -190,7 +204,8 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
         const settings = await (window as any).api.settings
           .get()
           .catch(() => null);
-        if (!isClockCaptureEnabled(settings)) {
+        // A failed or empty settings read must not assume clock-in is on.
+        if (settings == null || !isClockCaptureEnabled(settings)) {
           if (!cancelled) setNeedsShift(false);
           return;
         }
@@ -226,6 +241,7 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
     hasHydrated,
     authenticatedAt,
     clockOnly,
+    settingsTick,
   ]);
   if (!hasHydrated) return <SuspenseFallback />;
   if (!user) return withSuspenseNoFallback(<LoginPage />);
@@ -279,24 +295,21 @@ function RequireAdmin({ children }: { children: React.ReactElement }) {
   // afterward. (Previously these hooks lived after an early return, which
   // tripped react-hooks/rules-of-hooks.)
   const adminUser = useAdminSessionStore((s) => s.user);
-  const adminToken = useAdminSessionStore((s) => s.sessionToken);
-  const staffUser = useSessionStore((s) => s.user);
-  const staffToken = useSessionStore((s) => s.sessionToken);
-  const isBrowser =
-    typeof window !== 'undefined' &&
-    Boolean((window as any).__BROWSER_CLIENT__);
-  const isAdminContext =
-    typeof window !== 'undefined' &&
-    (window.location.hash || '').startsWith('#/admin');
-  const user = isAdminContext ? adminUser : staffUser;
-  const ipcReady = useIpcSessionReady(
-    Boolean(user && (isAdminContext ? adminToken : staffToken) && !isBrowser),
-  );
-  // Admin panel is not available on browser/tablet clients
-  if (isBrowser) return <Navigate to="/" replace />;
-  if (!user) return withSuspenseNoFallback(<LoginPage />);
-  if (user.role !== 'ADMIN') return withSuspenseNoFallback(<LoginPage />);
-  if (!ipcReady) return <SuspenseFallback />;
+  const isAdminApp =
+    typeof window !== 'undefined' && Boolean((window as any).__ADMIN_APP__);
+  // POS / tablets never host the back office. Only the standalone OneTap
+  // Admin app (LAN companion) may render these routes. That app talks HTTP,
+  // so there is no POS IPC session to wait for.
+  if (!isAdminApp) return <Navigate to="/" replace />;
+  if (!adminUser) return withSuspenseNoFallback(<LoginPage />);
+  if (adminUser.role !== 'ADMIN') return withSuspenseNoFallback(<LoginPage />);
+  return children;
+}
+
+function RequireAdminApp({ children }: { children: React.ReactElement }) {
+  const isAdminApp =
+    typeof window !== 'undefined' && Boolean((window as any).__ADMIN_APP__);
+  if (!isAdminApp) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -506,13 +519,9 @@ export const routes: RouteObject[] = [
           </RequirePosAccess>
         ),
       },
-      {
-        path: 'admin',
-        element: <RequireAdmin>{withSuspense(<AdminPage />)}</RequireAdmin>,
-      },
     ],
   },
-  // Standalone admin shell for separate window
+  // Standalone admin shell — OneTap Admin companion only (`__ADMIN_APP__`).
   {
     path: '/admin',
     element: <RequireAdmin>{withSuspense(<AdminLayout />)}</RequireAdmin>,
@@ -539,6 +548,12 @@ export const routes: RouteObject[] = [
     path: '/kds-setup',
     element: (
       <RequireKdsAccess>{withSuspense(<KdsSetupPage />)}</RequireKdsAccess>
+    ),
+  },
+  {
+    path: '/admin-setup',
+    element: (
+      <RequireAdminApp>{withSuspense(<AdminSetupPage />)}</RequireAdminApp>
     ),
   },
   // Reservation panel — separate window. Login lives at /reservations,

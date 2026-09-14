@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { isClockCaptureEnabled } from './clockCapture';
+import { clockCapturePreference, isClockCaptureEnabled } from './clockCapture';
+
+describe('clockCapturePreference', () => {
+  it('does not invent ON from an empty cache blob', () => {
+    expect(clockCapturePreference(undefined)).toBe(null);
+    expect(clockCapturePreference(null)).toBe(null);
+    expect(clockCapturePreference({})).toBe(null);
+    expect(clockCapturePreference({ preferences: {} })).toBe(null);
+  });
+
+  it('reads the explicit admin flag', () => {
+    expect(
+      clockCapturePreference({ preferences: { captureClockInOut: false } }),
+    ).toBe(false);
+    expect(
+      clockCapturePreference({ preferences: { captureClockInOut: true } }),
+    ).toBe(true);
+  });
+});
 
 describe('isClockCaptureEnabled', () => {
   it('stays on when the preference is missing (current waiter flow)', () => {

@@ -8,6 +8,12 @@ import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
 import { BrandMark } from '../../components/BrandMark';
 import { PageSpinner } from '../../components/PageSpinner';
 import { IconChevronLeft } from '../../components/icons';
+import { toast } from '../../stores/toasts';
+import {
+  classifyLanLoginError,
+  lanLoginUserMessage,
+} from '../../utils/lanLoginError';
+import { captureRendererException } from '../../utils/sentryBrowser';
 
 // Mirrored from LoginPage so a tablet that paired through the staff
 // login is recognised here without re-entering the code.
@@ -28,7 +34,6 @@ export default function ReservationsLoginPage() {
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [pin, setPin] = useState('');
-  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // Pairing code: pre-loaded from a previous staff/host login, but the
@@ -91,8 +96,12 @@ export default function ReservationsLoginPage() {
             active: u.active !== false,
           }));
         setStaff(filtered as any);
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || t('login.loadUsersFailed'));
+      } catch (e: unknown) {
+        if (!cancelled) {
+          const message = lanLoginUserMessage(e, t);
+          toast.error(message, { timeoutMs: 5_000 });
+          captureRendererException(e, { source: 'reservations.listUsers' });
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -114,14 +123,17 @@ export default function ReservationsLoginPage() {
     [staff],
   );
 
+  const showLoginMessage = (message: string) => {
+    toast.error(message, { timeoutMs: 5_000 });
+  };
+
   async function submit() {
-    setError(null);
     if (!selectedId) {
-      setError(t('reservations.chooseNameFirst'));
+      showLoginMessage(t('reservations.chooseNameFirst'));
       return;
     }
     if (pin.length < 4) {
-      setError(t('login.pinTooShort'));
+      showLoginMessage(t('login.pinTooShort'));
       return;
     }
     // Dismiss the soft keyboard before the async login + navigation so the
@@ -153,9 +165,14 @@ export default function ReservationsLoginPage() {
         selectedId,
         effectivePairingCode,
       );
+      if (!user) {
+        showLoginMessage(t('login.invalidPin'));
+        setPin('');
+        return;
+      }
       const role = String((user as any)?.role || '').toUpperCase();
-      if (!user || (role !== 'HOST' && role !== 'ADMIN')) {
-        setError(t('reservations.onlyHostAdmin'));
+      if (role !== 'HOST' && role !== 'ADMIN') {
+        showLoginMessage(t('reservations.onlyHostAdmin'));
         setPin('');
         return;
       }
@@ -172,12 +189,9 @@ export default function ReservationsLoginPage() {
       }
       setUser(user as any);
       navigate('/reservations/app', { replace: true });
-    } catch (e: any) {
-      const msg = String(e?.message || e || '');
-      // The server rejected the pairing code (or none was sent). Drop the
-      // stale value so the input is empty + ready for the manager to type
-      // the fresh code from Admin → Settings → LAN / Tablets.
-      if (msg.toLowerCase().includes('pairing code')) {
+    } catch (e: unknown) {
+      const kind = classifyLanLoginError(e);
+      if (kind === 'pairing') {
         try {
           localStorage.removeItem(PAIRING_STORAGE_KEY);
         } catch {
@@ -185,12 +199,12 @@ export default function ReservationsLoginPage() {
         }
         setPairingCode('');
         if (pairingCodeRef.current) pairingCodeRef.current.value = '';
-        setError(t('login.pairingRequired'));
-        setPin('');
-      } else {
-        setError(msg || t('login.loginFailed'));
-        setPin('');
       }
+      showLoginMessage(lanLoginUserMessage(e, t));
+      if (kind === 'host' || kind === 'other') {
+        captureRendererException(e, { source: 'reservations.login' });
+      }
+      setPin('');
     } finally {
       setSubmitting(false);
     }
@@ -289,7 +303,6 @@ export default function ReservationsLoginPage() {
                 autoComplete="one-time-code"
                 value={pin}
                 onChange={(e) => {
-                  setError(null);
                   setPin(e.target.value.replace(/\D+/g, '').slice(0, 6));
                 }}
                 onKeyDown={(e) => {
@@ -331,9 +344,6 @@ export default function ReservationsLoginPage() {
                   ? t('reservations.signingIn')
                   : t('reservations.signIn')}
               </button>
-              {error && (
-                <div className="mt-2 text-sm text-rose-300">{error}</div>
-              )}
             </div>
           </div>
         )}

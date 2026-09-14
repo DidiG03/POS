@@ -1,0 +1,78 @@
+# electron-builder config for the standalone "OneTap Admin" installer.
+#
+#     pnpm dist:admin       # full installer (mac dmg / win nsis / linux AppImage)
+#     pnpm dist:admin:dir   # unpackaged "dir" build for quick smoke testing
+#
+# Notes:
+# - The Admin bundle does NOT carry Prisma, the seed database, the POS
+#   main process, or printer drivers — it's a thin LAN-client that
+#   talks HTTP to a POS host. Same shape as KDS.
+# - The renderer is shared with the POS build (`dist/renderer`). The
+#   Admin app navigates to `#/admin` or `#/admin-setup`.
+# - `extraMetadata.main` overrides `package.json#main` so the packaged
+#   app launches `dist/admin/main/index.js` instead of the POS main.
+# - Auto-update uses its own GitHub release channel (`admin`) so a
+#   POS update never reboots a running admin workstation.
+
+appId: com.codeorbit.admin
+productName: OneTap Admin
+
+npmRebuild: false
+
+directories:
+  buildResources: build-resources
+  output: dist-installers/admin
+
+extraMetadata:
+  name: code-orbit-admin
+  main: dist/admin/main/index.js
+  productName: OneTap Admin
+
+files:
+  - dist/admin/**
+  - dist/renderer/**
+  - package.json
+  - '!dist/main/**'
+  - '!dist/preload/**'
+  - '!**/node_modules/.prisma/**'
+  - '!**/node_modules/@prisma/**'
+  - '!**/node_modules/prisma/**'
+  - '!**/node_modules/serialport/**'
+  - '!**/node_modules/@serialport/**'
+  - '!**/node_modules/@sentry/**'
+  - node_modules/electron-updater/**
+
+mac:
+  target:
+    - dmg
+    - zip
+  artifactName: OneTap-Admin-${version}-${arch}.${ext}
+  category: public.app-category.business
+  icon: build-resources/icon.icns
+
+win:
+  target:
+    - nsis
+  artifactName: OneTap-Admin-Setup-${version}.${ext}
+  icon: build-resources/icon.ico
+
+linux:
+  target:
+    - AppImage
+  artifactName: OneTap-Admin-${version}.${ext}
+  category: Utility
+  icon: build-resources/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: build-resources/icon.ico
+  uninstallerIcon: build-resources/icon.ico
+  shortcutName: OneTap Admin
+
+publish:
+  provider: github
+  owner: DidiG03
+  repo: POS
+  channel: admin

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { isLanHttpClient } from '../utils/backendHost';
 import { openPosServerScan } from '../utils/posServerScanEvent';
 
-const ICON_HOLD_MS = 2000;
+const ICON_HOLD_MS = 5000;
 
 type BrandSize = 'sm' | 'md' | 'lg';
 
@@ -75,7 +75,7 @@ export function BrandMark({
   wordmark?: boolean;
   subtitle?: string;
   className?: string;
-  /** LAN waiter/KDS: hold the icon ~2s to reopen Scan. */
+  /** LAN waiter/KDS/Admin: hold the logo 5s to reopen Scan. */
   holdToScan?: boolean;
 }) {
   const { t } = useTranslation();
@@ -119,6 +119,7 @@ export function BrandMark({
       <span
         className={`pos-brand-mark shrink-0 ${canChangeServer ? 'pos-brand-mark--hold' : ''}`}
         aria-label={canChangeServer ? t('boot.holdIconToScan') : undefined}
+        title={canChangeServer ? t('boot.holdIconToScan') : undefined}
         {...iconHold}
       >
         <BrandOrbitIcon

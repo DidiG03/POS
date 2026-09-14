@@ -1,10 +1,13 @@
 import type { DiscoveredPosHost } from '@shared/posHostDiscovery';
+import { cn } from '../../components/ui';
 
 export function PosHostPicker({
   hosts,
   scanning,
   scanned,
   busyHost,
+  currentHost,
+  currentPort,
   onSelect,
   onScan,
   labels,
@@ -13,6 +16,8 @@ export function PosHostPicker({
   scanning: boolean;
   scanned: boolean;
   busyHost?: string | null;
+  currentHost?: string | null;
+  currentPort?: number | string | null;
   onSelect: (host: DiscoveredPosHost) => void;
   onScan: () => void;
   labels: {
@@ -21,6 +26,8 @@ export function PosHostPicker({
     empty: string;
   };
 }) {
+  const currentPortNum = Number(currentPort) || 3333;
+
   return (
     <div className="w-full space-y-3">
       <button
@@ -32,34 +39,47 @@ export function PosHostPicker({
         {scanning ? labels.scanning : labels.scan}
       </button>
       {hosts.length > 0 ? (
-        <div className="overflow-hidden rounded-xl border border-white/10 divide-y divide-white/8">
+        <div className="space-y-1.5">
           {hosts.map((h) => {
+            const port = Number(h.httpPort) || 3333;
             const busy = busyHost === h.host;
+            const current =
+              Boolean(currentHost) &&
+              h.host === currentHost &&
+              port === currentPortNum;
             return (
               <button
-                key={`${h.host}:${h.httpPort || 3333}`}
+                key={`${h.host}:${port}`}
                 type="button"
                 disabled={scanning || Boolean(busyHost)}
                 onClick={() => onSelect(h)}
-                className="w-full px-4 py-3 text-left hover:bg-white/6 disabled:opacity-60"
+                className={cn(
+                  'pos-staff-tile',
+                  current && 'pos-staff-tile--active',
+                )}
               >
-                <div className="truncate text-[15px] font-medium text-gray-100">
-                  {h.name}
-                </div>
-                <div className="font-mono text-[13px] text-gray-400">
-                  {h.host}
-                </div>
-                {busy ? (
-                  <div className="mt-1 text-[12px] text-gray-500">
-                    {labels.scanning}
-                  </div>
-                ) : null}
+                <span className="min-w-0">
+                  <span className="block truncate text-[15px] font-medium text-[color:var(--pos-fg)]">
+                    {h.name}
+                  </span>
+                  <span className="mt-0.5 block font-mono text-[12px] text-[color:var(--pos-fg-muted)]">
+                    {h.host}
+                    {port !== 3333 ? `:${port}` : ''}
+                  </span>
+                  {busy ? (
+                    <span className="mt-0.5 block text-[12px] text-[color:var(--pos-fg-muted)]">
+                      {labels.scanning}
+                    </span>
+                  ) : null}
+                </span>
               </button>
             );
           })}
         </div>
       ) : scanned && !scanning ? (
-        <div className="text-center text-sm text-gray-500">{labels.empty}</div>
+        <div className="rounded-md border border-dashed border-[var(--pos-border-strong)] bg-[var(--pos-surface-2)] px-3 py-6 text-center text-sm text-[color:var(--pos-fg-muted)]">
+          {labels.empty}
+        </div>
       ) : null}
     </div>
   );

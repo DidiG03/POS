@@ -1,21 +1,23 @@
-name: Release POS
+name: Release Admin
 
 # Trigger:
-#   - Push a version tag like `v0.2.0` to publish POS installers.
-#   - Manual run from Actions → "Run workflow" (optional publish=false for a dry run).
+#   - Push `v*` (same tag as POS) so Admin Mac Intel/ARM land on that release.
+#   - Push `admin-v*` for an Admin-only rebuild.
+#   - Manual run from Actions → "Run workflow".
 on:
   push:
     tags:
       - 'v*'
+      - 'admin-v*'
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish to GitHub Releases (POS channel: latest)'
+        description: 'Publish to GitHub Releases (channel: admin)'
         required: true
         default: 'true'
 
 concurrency:
-  group: release-pos-${{ github.ref }}
+  group: release-admin-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -23,23 +25,24 @@ permissions:
 
 jobs:
   build:
-    name: Build POS (${{ matrix.label }})
+    name: Build Admin (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Native runners so Prisma + serialport match the installer arch.
-          # macos-latest is Apple Silicon; macos-15-intel is the Intel image
-          # (available until August 2027). Windows POS + KDS + Admin are published by
-          # release-windows-client.yml onto the same tag.
+          # macos-latest is Apple Silicon; macos-15-intel is x86_64.
+          # Windows Admin is also published by release-windows-client.yml.
           - os: macos-latest
             target: --mac --arm64
             label: mac-arm64
           - os: macos-15-intel
             target: --mac --x64
             label: mac-x64
+          - os: windows-latest
+            target: --win
+            label: win
           - os: ubuntu-latest
             target: --linux
             label: linux
@@ -66,17 +69,8 @@ jobs:
       - name: Typecheck (full tree)
         run: pnpm typecheck
 
-      - name: Prepare Prisma runtime files for Electron packaging
-        run: pnpm prisma:prepare-electron
-
-      - name: Build empty migrated seed DB
-        run: pnpm db:seedfile
-
-      - name: Rebuild native modules for Electron (serialport)
-        run: pnpm serial:rebuild
-
-      - name: Build renderer/main bundles
-        run: pnpm build
+      - name: Build Admin bundle
+        run: pnpm build:admin
 
       - name: Build installer
         shell: bash
@@ -91,6 +85,15 @@ jobs:
           WIN_CSC_KEY_PASSWORD_SECRET: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          CONFIG="${GITHUB_WORKSPACE}/electron-builder.admin.yml"
+          if [[ ! -f "$CONFIG" ]]; then
+            echo "::error::Missing electron-builder config: $CONFIG"
+            exit 1
+          fi
+          if [[ ! -f dist/admin/main/index.js ]]; then
+            echo "::error::Missing Admin main bundle (run build:admin first): dist/admin/main/index.js"
+            exit 1
+          fi
           if [[ -n "${MAC_CSC_LINK:-}" ]]; then
             export CSC_LINK="$MAC_CSC_LINK"
             export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-}"
@@ -109,10 +112,8 @@ jobs:
             unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD || true
             echo "Windows code signing: disabled (no WIN_CSC_LINK secret)"
           fi
-          # Upload via the publish job (gh release upload) so Silicon + Intel
-          # land on the same published release. electron-builder --publish
-          # drafts were racing the Windows workflow and dropping Mac assets.
           pnpm exec -- electron-builder \
+            --config "$CONFIG" \
             ${{ matrix.target }} \
             --publish never
 
@@ -120,14 +121,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pos-${{ matrix.label }}
+          name: admin-${{ matrix.label }}
           path: |
-            dist/*.dmg
-            dist/*.exe
-            dist/*.AppImage
-            dist/*.zip
-            dist/*.blockmap
-            dist/latest*.yml
+            dist-installers/admin/**/*.dmg
+            dist-installers/admin/**/*.exe
+            dist-installers/admin/**/*.AppImage
+            dist-installers/admin/**/*.zip
+            dist-installers/admin/**/*.blockmap
+            dist-installers/admin/**/*.yml
           if-no-files-found: warn
           retention-days: 14
 
@@ -147,7 +148,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: pos-*
+          pattern: admin-*
           path: artifacts
 
       - name: Publish installers to GitHub Releases
@@ -156,17 +157,13 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            TAG="${{ github.ref_name }}"
-          else
-            TAG="v${VERSION}"
-          fi
+          TAG="v${VERSION}"
           TITLE="${TAG#v}"
 
           mkdir -p dist
           find artifacts -type f \( \
             -name '*.dmg' -o -name '*.blockmap' -o -name '*.AppImage' \
-            -o -name '*.zip' -o -name 'latest*.yml' \
+            -o -name '*.zip' -o -name '*.exe' -o -name '*.yml' \
           \) -exec cp -v {} dist/ \;
 
           ARM_DMG=$(ls dist/*-arm64.dmg 2>/dev/null | head -1 || true)
@@ -183,8 +180,6 @@ jobs:
             ls -la dist artifacts/* 2>/dev/null || true
             exit 1
           fi
-          # electron-updater on macOS will not install from a .dmg ("ZIP file
-          # not provided"). Both arch zips must be in latest-mac.yml.
           if [[ ! -f "${ARM_ZIP:-}" ]]; then
             echo "::error::Missing macOS Apple Silicon update zip (*-arm64.zip)"
             ls -la dist artifacts/* 2>/dev/null || true
@@ -197,49 +192,31 @@ jobs:
           fi
 
           node scripts/writeMacUpdateYml.mjs \
-            "$VERSION" dist/latest-mac.yml \
+            "$VERSION" dist/admin-mac.yml \
             "$ARM_ZIP" "$INTEL_ZIP" "$ARM_DMG" "$INTEL_DMG"
 
-          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
-          {
-            echo "## OneTap POS ${VERSION}"
-            echo
-            echo "### Downloads"
-            echo
-            echo "**POS**"
-            echo "- macOS Apple Silicon: \`OneTap-POS-${VERSION}-arm64.dmg\`"
-            echo "- macOS Intel: \`OneTap-POS-${VERSION}-x64.dmg\`"
-            echo "- Windows: \`OneTap-POS-Setup-${VERSION}.exe\`"
-            echo "- Linux: AppImage attached to this release"
-            echo
-            echo "**Admin**"
-            echo "- macOS Apple Silicon: \`OneTap-Admin-${VERSION}-arm64.dmg\`"
-            echo "- macOS Intel: \`OneTap-Admin-${VERSION}-x64.dmg\`"
-            echo "- Windows: \`OneTap-Admin-Setup-${VERSION}.exe\`"
-            echo
-            echo "**KDS**"
-            echo "- macOS Apple Silicon: \`OneTap-KDS-${VERSION}-arm64.dmg\`"
-            echo "- macOS Intel: \`OneTap-KDS-${VERSION}-x64.dmg\`"
-            echo "- Windows: \`OneTap-KDS-Setup-${VERSION}.exe\`"
-            echo
-            echo "Windows POS, KDS, and Admin installers are published onto this same tag."
-            echo
-            echo "### Changes since v0.2.29"
-            echo "- Standalone OneTap Admin app (separate from the till), with LAN staff/menu management"
-            echo "- Hold the logo 5 seconds to switch POS host; Admin window title says Admin"
-            echo "- POS no longer opens or hosts the admin panel"
-          } > "$NOTES_FILE"
+          # Do not clobber POS updater feeds (latest.yml / latest-mac.yml).
+          rm -f dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml \
+            dist/kds.yml dist/kds-mac.yml dist/latest-kds.yml || true
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Updating existing release $TAG"
-            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
           else
-            gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
+            gh release create "$TAG" --title "$TITLE" \
+              --notes "OneTap Admin ${VERSION} (macOS Intel/ARM, Windows, Linux)."
           fi
 
           UPLOAD=()
           shopt -s nullglob
-          UPLOAD+=( dist/*.dmg dist/*.blockmap dist/*.AppImage dist/*.zip dist/latest*.yml )
+          UPLOAD+=(
+            dist/OneTap-Admin*.dmg
+            dist/OneTap-Admin*.zip
+            dist/OneTap-Admin*.exe
+            dist/OneTap-Admin*.AppImage
+            dist/OneTap-Admin*.blockmap
+            dist/admin-mac.yml
+            dist/admin.yml
+          )
           shopt -u nullglob
           if [[ ${#UPLOAD[@]} -eq 0 ]]; then
             echo "::error::No installer files found to upload"
@@ -247,6 +224,4 @@ jobs:
           fi
 
           gh release upload "$TAG" "${UPLOAD[@]}" --clobber
-          gh release edit "$TAG" --draft=false --latest
-
-          echo "Published to https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          echo "Published Admin to https://github.com/${{ github.repository }}/releases/tag/${TAG}"

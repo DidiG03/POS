@@ -2106,7 +2106,7 @@ export default function OrderPage() {
 
   const columnMenu = menuLayout === 'column';
   const catShape = columnMenu
-    ? 'w-full rounded-lg py-4 px-2 text-left text-[13px] leading-snug'
+    ? 'w-full min-w-0 max-w-full rounded-lg py-4 px-2 text-left text-[13px] leading-snug'
     : 'py-5 sm:py-8 px-2 rounded-xl';
 
   return (
@@ -2210,7 +2210,7 @@ export default function OrderPage() {
           <div
             className={
               columnMenu
-                ? 'w-[6.75rem] min-h-0 shrink-0 space-y-1.5 overflow-y-auto overscroll-contain rounded-xl border border-white/12 p-1.5 sm:w-[8.75rem] md:w-[10.5rem]'
+                ? 'w-[6.75rem] min-h-0 min-w-0 max-w-full shrink-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-x-none overscroll-y-contain touch-pan-y rounded-xl border border-white/12 p-1.5 sm:w-[8.75rem] md:w-[10.5rem]'
                 : 'mb-3 grid grid-cols-2 gap-2 rounded-xl border border-white/12 p-1.5 sm:grid-cols-3'
             }
           >
@@ -2218,11 +2218,11 @@ export default function OrderPage() {
             <button
               key={FAVOURITES_CAT_ID}
               onClick={() => setSelectedCatId(FAVOURITES_CAT_ID)}
-              className={`${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900/70'}`}
+              className={`${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer overflow-hidden ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900/70'}`}
             >
-              <span className="inline-flex min-w-0 items-center gap-2">
+              <span className="flex w-full min-w-0 items-center gap-2">
                 <IconHeart className="size-3.5 shrink-0 text-pink-400" />
-                <span className={columnMenu ? 'truncate' : undefined}>
+                <span className={columnMenu ? 'min-w-0 truncate' : undefined}>
                   {t('order.favourites')}
                 </span>
               </span>
@@ -2243,13 +2243,13 @@ export default function OrderPage() {
                       : `inset 0 -2px 0 0 ${COMMENT_TILE_BG}80`,
                 }}
               >
-                <span className="inline-flex min-w-0 items-center gap-2">
+                <span className="flex w-full min-w-0 items-center gap-2">
                   <span
                     className="inline-block w-2.5 h-2.5 shrink-0 rounded-full"
                     style={{ backgroundColor: COMMENT_TILE_BG }}
                     aria-hidden
                   />
-                  <span className={columnMenu ? 'truncate' : undefined}>
+                  <span className={columnMenu ? 'min-w-0 truncate' : undefined}>
                     {t('order.comments')}
                   </span>
                 </span>
@@ -2279,7 +2279,7 @@ export default function OrderPage() {
                       : undefined
                   }
                 >
-                  <span className="inline-flex min-w-0 items-center gap-2">
+                  <span className="flex w-full min-w-0 items-center gap-2">
                     {tabColor ? (
                       <span
                         className="inline-block w-2.5 h-2.5 shrink-0 rounded-full"
@@ -2287,7 +2287,9 @@ export default function OrderPage() {
                         aria-hidden
                       />
                     ) : null}
-                    <span className={columnMenu ? 'truncate' : undefined}>
+                    <span
+                      className={columnMenu ? 'min-w-0 truncate' : undefined}
+                    >
                       {c.name}
                     </span>
                   </span>
@@ -2298,7 +2300,7 @@ export default function OrderPage() {
           <div
             className={
               columnMenu
-                ? 'grid min-h-0 min-w-0 flex-1 grid-cols-1 content-start gap-2 overflow-auto overscroll-contain auto-rows-[5.75rem] min-[380px]:grid-cols-2 sm:grid-cols-3'
+                ? 'grid min-h-0 min-w-0 flex-1 grid-cols-1 content-start gap-2 overflow-x-hidden overflow-y-auto overscroll-x-none overscroll-y-contain touch-pan-y auto-rows-[5.75rem] min-[380px]:grid-cols-2 sm:grid-cols-3'
                 : 'grid grid-cols-2 content-start gap-2 auto-rows-[5.75rem] sm:grid-cols-3'
             }
           >

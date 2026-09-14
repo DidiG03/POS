@@ -44,6 +44,7 @@ import {
   broadcastReservationsChanged,
   broadcastTicketsChanged,
   broadcastLayoutChanged,
+  broadcastSettingsChanged,
 } from './services/realtime';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import {
@@ -71,6 +72,7 @@ import {
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { settingsChangeFromHost } from '@shared/settingsChange';
 import { FISCAL_TRANSMIT_WINDOW_MS } from '@shared/fiscalDefer';
 import {
   activateKey,
@@ -304,7 +306,6 @@ const APP_ICON_PATH = (() => {
 })();
 
 let mainWindow: BrowserWindow | null = null;
-let adminWindow: BrowserWindow | null = null;
 let kdsWindow: BrowserWindow | null = null;
 let reservationWindow: BrowserWindow | null = null;
 
@@ -762,45 +763,6 @@ configureHostRuntime({
   },
   getIconPath: () => APP_ICON_PATH,
 });
-
-function createAdminWindow() {
-  if (adminWindow) {
-    adminWindow.focus();
-    return;
-  }
-  adminWindow = new BrowserWindow({
-    width: 1100,
-    height: 700,
-    backgroundColor: '#0b1220',
-    title: 'Admin - OneTap POS',
-    ...(APP_ICON_PATH ? { icon: APP_ICON_PATH } : {}),
-    webPreferences: {
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-      preload: PRELOAD_PATH,
-    },
-  });
-  const url = process.env.ELECTRON_RENDERER_URL;
-  if (url) adminWindow.loadURL(url + '#/admin');
-  else
-    adminWindow.loadFile(RENDERER_INDEX_HTML, {
-      hash: '/admin',
-    });
-  attachWindowRecovery(adminWindow);
-  // SECURITY/MEM: rate limits are keyed by webContents.id (event.sender.id),
-  // not BrowserWindow.id. Capture it now before the window is gone.
-  const adminWcId = adminWindow.webContents.id;
-  registerWindowKind(adminWcId, 'admin');
-  adminWindow.on('closed', () => {
-    cleanupSenderRateLimits(adminWcId);
-    unbindSender(adminWcId);
-    adminWindow = null;
-  });
-
-  // Register for update notifications
-  registerUpdateListener(adminWindow);
-}
 
 function createKdsWindow() {
   if (storePlanBlocksKds()) return;
@@ -2038,9 +2000,6 @@ ipcHandle('auth:createUser', async (_e, payload) => {
   // First-run setup is the one case that cannot require an admin session,
   // because there is no admin yet — so we allow exactly one bootstrap user and
   // only if it is an ADMIN. Every later create needs a real ADMIN session.
-  // (This used to check that the call came from the admin *window*, which both
-  // let any authenticated role through in that window and locked out admins
-  // working in the main window's embedded /app/admin route.)
   const userCount = await prisma.user.count().catch(() => 0);
   if (userCount === 0) {
     if (String(input.role || '').toUpperCase() !== 'ADMIN') {
@@ -2516,7 +2475,13 @@ ipcHandle('settings:update', async (_e, input) => {
       data: { active: false },
     });
   }
-  return await readSettings();
+  const latest = await readSettings();
+  try {
+    broadcastSettingsChanged(settingsChangeFromHost(latest));
+  } catch {
+    // tablets still pick this up on the next catchup
+  }
+  return latest;
 });
 
 ipcHandle('network:getIps', async () => {
@@ -3934,11 +3899,6 @@ ipcHandle('admin:getOverview', async (_e) => {
         }
       : null,
   };
-});
-
-ipcHandle('admin:openWindow', async () => {
-  createAdminWindow();
-  return true;
 });
 
 ipcHandle('kds:openWindow', async () => {

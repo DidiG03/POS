@@ -52,7 +52,6 @@ describe('IPC policy shape', () => {
     // Locking this list down means adding a new public channel requires
     // editing the test too, which is exactly the friction we want.
     const expectedPublic = [
-      'admin:openWindow',
       'auth:createUser',
       'auth:endSession',
       'auth:listUsers',
