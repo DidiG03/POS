@@ -44,7 +44,7 @@ describe('ticketDraft', () => {
       {
         ...emptyTicketDraft(),
         boundKey: 'A:1',
-        drafts: {},
+        drafts: {} as Record<string, TicketDraft>,
         lines: [{ name: 'Soup', qty: 1, unitPrice: 5, staged: true }],
         orderNote: '',
       },
@@ -63,7 +63,7 @@ describe('ticketDraft', () => {
       {
         ...emptyTicketDraft(),
         boundKey: 'A:1',
-        drafts: {},
+        drafts: {} as Record<string, TicketDraft>,
         lines: [{ name: 'Cezar', qty: 1, unitPrice: 600, staged: false }],
         orderNote: '',
       },
@@ -84,7 +84,7 @@ describe('ticketDraft', () => {
       {
         ...emptyTicketDraft(),
         boundKey: 'Salla:T7',
-        drafts: {},
+        drafts: {} as Record<string, TicketDraft>,
         lines: [{ name: 'Cezar', qty: 1, unitPrice: 600, staged: false }],
         orderNote: '',
       },
@@ -107,7 +107,7 @@ describe('ticketDraft', () => {
       {
         ...emptyTicketDraft(),
         boundKey: 'Salla:T8',
-        drafts: {},
+        drafts: {} as Record<string, TicketDraft>,
         lines: [{ name: 'Ravioli', qty: 1, unitPrice: 700, staged: false }],
         orderNote: '',
       },
@@ -188,7 +188,7 @@ describe('ticketDraft', () => {
         ...emptyTicketDraft(),
         lines: [{ name: 'Soup', qty: 1, unitPrice: 5, staged: true }],
         savedAt: 45_000,
-        drafts: {},
+        drafts: {} as Record<string, TicketDraft>,
       },
       50_000,
     );
@@ -216,11 +216,10 @@ describe('ticketDraft', () => {
   });
 
   it('keeps a local draft when the server log is empty', () => {
-    expect(
-      shouldKeepLocalDraftOnEmptyLog([
-        { name: 'Cola', qty: 1, unitPrice: 2, staged: true },
-      ]),
-    ).toBe(true);
+    const local: TicketDraftLine[] = [
+      { name: 'Cola', qty: 1, unitPrice: 2, staged: true },
+    ];
+    expect(shouldKeepLocalDraftOnEmptyLog(local)).toBe(true);
     expect(shouldKeepLocalDraftOnEmptyLog([])).toBe(false);
   });
 

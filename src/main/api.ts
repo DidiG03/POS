@@ -74,6 +74,12 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { settingsChangeFromHost } from '@shared/settingsChange';
 import { authorizeLanRoute } from './services/lanPolicy';
+import {
+  checkHostAndClients,
+  downloadHostAndClients,
+  getHostUpdateStatus,
+  installHostAndClients,
+} from './services/appUpdates';
 import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
 import {
   logSecurityEvent,
@@ -3394,8 +3400,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           orderBy: { id: 'desc' },
           take: 20,
         });
-        const row = recent.find((r) =>
-          rowIsInOpenSession(r.createdAt, sessionStart.getTime()),
+        const row = recent.find(
+          (r: { createdAt: Date; covers?: number | null }) =>
+            rowIsInOpenSession(r.createdAt, sessionStart.getTime()),
         );
         return send(res, 200, row?.covers ?? null, corsOrigin);
       }
@@ -3510,6 +3517,21 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             corsOrigin,
           );
         }
+      }
+      if (req.method === 'GET' && pathname === '/admin/updates/status') {
+        return send(res, 200, getHostUpdateStatus(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/admin/updates/check') {
+        const result = await checkHostAndClients();
+        return send(res, 200, result, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/admin/updates/download') {
+        const result = await downloadHostAndClients();
+        return send(res, 200, result, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/admin/updates/install') {
+        const result = await installHostAndClients();
+        return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/auth/create-user') {
         try {

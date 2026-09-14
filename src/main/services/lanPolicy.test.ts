@@ -49,6 +49,8 @@ describe('LAN policy shape', () => {
     for (const route of [
       'GET /admin/overview',
       'GET /admin/sales-trends',
+      'GET /admin/updates/status',
+      'POST /admin/updates/install',
       'POST /settings/update',
       'POST /print/test',
     ]) {

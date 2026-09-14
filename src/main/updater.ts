@@ -90,6 +90,7 @@ export const updaterHandlers = {
         : null,
       downloaded: updateDownloaded,
       checking: false,
+      currentVersion: app.getVersion(),
     };
   },
   checkForUpdates: async () => {

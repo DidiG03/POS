@@ -863,6 +863,8 @@ export interface Api {
   requests: ApiRequests;
   network: ApiNetwork;
   updater: ApiUpdater;
+  /** Present on the Admin LAN client so Settings → Updates can push POS/KDS. */
+  hostUpdates?: ApiHostUpdates;
   reservations: ApiReservations;
 }
 
@@ -1843,6 +1845,7 @@ export interface UpdateStatusDTO {
   } | null;
   downloaded: boolean;
   checking: boolean;
+  currentVersion?: string;
 }
 
 export interface ApiUpdater {
@@ -1852,4 +1855,12 @@ export interface ApiUpdater {
   installUpdate(): Promise<{ success?: boolean; error?: string }>;
   /** Cancel a pending automatic install (kiosk countdown). KDS only. */
   deferInstall?(): Promise<{ success?: boolean; error?: string }>;
+}
+
+/** Admin companion: drive POS + KDS updates over LAN. */
+export interface ApiHostUpdates {
+  getStatus(): Promise<UpdateStatusDTO & { app?: string }>;
+  check(): Promise<{ success?: boolean; error?: string }>;
+  download(): Promise<{ success?: boolean; error?: string }>;
+  install(): Promise<{ success?: boolean; error?: string }>;
 }

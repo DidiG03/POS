@@ -268,7 +268,7 @@ export function mergeLocalStagedOntoHydrated<T extends TicketDraftLine>(
 }
 
 export function shouldKeepLocalDraftOnEmptyLog(
-  localLines: TicketDraftLine[],
+  localLines: Array<{ voided?: boolean }>,
 ): boolean {
   return localLines.some((l) => l.voided !== true);
 }

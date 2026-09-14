@@ -266,7 +266,7 @@ export async function persistReceiptAudit(input: {
       });
       if (isPaymentPayload(input.payload) && storePlanBlocksTables()) {
         await consumeMenuStockForTicketLines(
-          tx,
+          tx as Parameters<typeof consumeMenuStockForTicketLines>[0],
           stockLinesFromTicketItems(input.payload?.items),
           'onHand',
         );

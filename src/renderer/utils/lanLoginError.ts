@@ -76,7 +76,7 @@ export function humanLoginDetail(error: unknown): string {
   return withStatus.slice(0, 180);
 }
 
-type LoginCopy = (key: string, opts?: object) => string;
+type LoginCopy = (key: string, opts?: { detail?: string }) => string;
 
 /** User-facing login copy. Known cases get a fixed sentence; anything else
  *  still shows the underlying reason so the error banner is never empty. */

@@ -161,7 +161,7 @@ describe('buildEscposTicket language', () => {
       method: 'CASH',
       totalAfter: 2400,
       serviceChargeAmount: 240,
-      serviceChargeMode: 'PERCENT',
+      serviceChargeMode: 'PERCENT' as const,
       serviceChargeValue: 10,
     },
   };

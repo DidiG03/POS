@@ -1,6 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import type { UpdateStatusDTO } from '@shared/ipc';
 import { SpinnerGlyph } from './SpinnerGlyph';
+import {
+  downloadFleetUpdates,
+  installFleetUpdates,
+  isAdminCompanion,
+} from '../utils/fleetUpdate';
 
 interface UpdateEvent {
   event: string;
@@ -109,7 +114,9 @@ export function UpdateNotification() {
   const handleDownload = async () => {
     setError(null);
     try {
-      const result = await window.api.updater.downloadUpdate();
+      const result = isAdminCompanion()
+        ? await downloadFleetUpdates()
+        : await window.api.updater.downloadUpdate();
       if (result.error) {
         setError(result.error);
       }
@@ -123,6 +130,11 @@ export function UpdateNotification() {
       return;
     }
     try {
+      if (isAdminCompanion()) {
+        const result = await installFleetUpdates();
+        if (result.error) setError(result.error);
+        return;
+      }
       await window.api.updater.installUpdate();
     } catch (e: any) {
       setError(e?.message || 'Failed to install update');

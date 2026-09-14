@@ -117,6 +117,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /admin/review': { allow: ADMIN },
   'POST /admin/billing/create-checkout': { allow: ADMIN },
   'POST /admin/billing/create-portal': { allow: ADMIN },
+  'GET /admin/updates/status': { allow: ADMIN },
+  'POST /admin/updates/check': { allow: ADMIN },
+  'POST /admin/updates/download': { allow: ADMIN },
+  'POST /admin/updates/install': { allow: ADMIN },
 
   // -------------------------------------------------------------- settings
   'POST /settings/update': { allow: ADMIN },

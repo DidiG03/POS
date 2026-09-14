@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createHashRouter } from 'react-router-dom';
 import { routes } from './routes';
@@ -48,6 +48,7 @@ import {
   emitPosSyncCatchupSoon,
 } from './utils/posReadCache';
 import { installPosRealtimeSync } from './utils/posRealtimeSync';
+import { installRemoteAppUpdateListener } from './utils/remoteAppUpdate';
 import { installWakeUiRecovery } from './utils/wakeUiRecovery';
 import { installUnhandledErrorToasts } from './utils/reportAppError';
 import { initRendererSentry } from './utils/sentryBrowser';
@@ -453,6 +454,14 @@ if (!(window as any).api) {
         } catch (e) {
           void e;
           emitPosSyncCatchupSoon();
+        }
+      });
+      es.addEventListener('apps-update', (ev: any) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          handleSseEvent('pos:appsUpdate', data);
+        } catch (e) {
+          void e;
         }
       });
       es.addEventListener('catchup', () => {
@@ -1128,6 +1137,12 @@ if (!(window as any).api) {
         return [];
       },
     },
+    hostUpdates: {
+      getStatus: () => goLan('/admin/updates/status'),
+      check: () => goLan('/admin/updates/check', { method: 'POST' }),
+      download: () => goLan('/admin/updates/download', { method: 'POST' }),
+      install: () => goLan('/admin/updates/install', { method: 'POST' }),
+    },
     admin: {
       async getOverview() {
         return await goLan('/admin/overview');
@@ -1461,6 +1476,7 @@ if (!(window as any).api) {
 
 installPosReadCache();
 installPosRealtimeSync();
+installRemoteAppUpdateListener();
 
 // Standalone KDS / Admin: bridge auto-updater IPC exposed by preload.
 {

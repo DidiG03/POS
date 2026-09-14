@@ -40,9 +40,6 @@ jobs:
           - os: macos-15-intel
             target: --mac --x64
             label: mac-x64
-          - os: ubuntu-latest
-            target: --linux
-            label: linux
 
     steps:
       - name: Checkout
@@ -124,7 +121,6 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.exe
-            dist/*.AppImage
             dist/*.zip
             dist/*.blockmap
             dist/latest*.yml
@@ -165,7 +161,7 @@ jobs:
 
           mkdir -p dist
           find artifacts -type f \( \
-            -name '*.dmg' -o -name '*.blockmap' -o -name '*.AppImage' \
+            -name '*.dmg' -o -name '*.blockmap' \
             -o -name '*.zip' -o -name 'latest*.yml' \
           \) -exec cp -v {} dist/ \;
 
@@ -210,7 +206,6 @@ jobs:
             echo "- macOS Apple Silicon: \`OneTap-POS-${VERSION}-arm64.dmg\`"
             echo "- macOS Intel: \`OneTap-POS-${VERSION}-x64.dmg\`"
             echo "- Windows: \`OneTap-POS-Setup-${VERSION}.exe\`"
-            echo "- Linux: AppImage attached to this release"
             echo
             echo "**Admin**"
             echo "- macOS Apple Silicon: \`OneTap-Admin-${VERSION}-arm64.dmg\`"
@@ -224,10 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes since v0.2.29"
-            echo "- Standalone OneTap Admin app (separate from the till), with LAN staff/menu management"
-            echo "- Hold the logo 5 seconds to switch POS host; Admin window title says Admin"
-            echo "- POS no longer opens or hosts the admin panel"
+            echo "### Changes since v0.2.30"
+            echo "- Mac and Windows installers only (Linux AppImage builds removed)"
+            echo "- Admin can check, download, and install POS and KDS updates over LAN"
+            echo "- Typecheck fixes so release jobs can publish"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -239,7 +234,7 @@ jobs:
 
           UPLOAD=()
           shopt -s nullglob
-          UPLOAD+=( dist/*.dmg dist/*.blockmap dist/*.AppImage dist/*.zip dist/latest*.yml )
+          UPLOAD+=( dist/*.dmg dist/*.blockmap dist/*.zip dist/latest*.yml )
           shopt -u nullglob
           if [[ ${#UPLOAD[@]} -eq 0 ]]; then
             echo "::error::No installer files found to upload"

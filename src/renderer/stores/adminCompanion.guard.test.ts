@@ -51,6 +51,16 @@ describe('standalone Admin companion', () => {
     const main = read('src/renderer/main.tsx');
     expect(main).toContain('#/admin-setup');
     expect(main).toContain('adminApp?.updater');
+    expect(main).toContain("goLan('/admin/updates/status'");
+    expect(main).toContain("goLan('/admin/updates/install'");
+    expect(main).toContain('apps-update');
+    expect(read('src/main/api.ts')).toContain('/admin/updates/check');
+    expect(read('src/main/services/appUpdates.ts')).toContain(
+      'broadcastAppsUpdate',
+    );
+    expect(read('src/renderer/utils/fleetUpdate.ts')).toContain(
+      'installFleetUpdates',
+    );
     expect(main).not.toContain('admin:openWindow');
     const login = read('src/renderer/app/pages/LoginPage.tsx');
     expect(login).toContain('isAdminApp');

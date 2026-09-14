@@ -31,9 +31,11 @@ describe('applyPosRealtimeEvent', () => {
 
     expect(useTableStatus.getState().isOpen('Salla', 'T7')).toBe(false);
     expect(peek(POS_CACHE.ticket('Salla', 'T7'))).toBeUndefined();
-    expect(peek(POS_CACHE.ticket('Salla', 'T8'))?.items?.[0]?.name).toBe(
-      'keep',
-    );
+    expect(
+      peek<{ items?: Array<{ name?: string }> }>(
+        POS_CACHE.ticket('Salla', 'T8'),
+      )?.items?.[0]?.name,
+    ).toBe('keep');
     expect(peek(POS_CACHE.openTables)).toBeUndefined();
   });
 
@@ -65,8 +67,10 @@ describe('applyPosRealtimeEvent', () => {
       tableLabel: 'T7',
     });
     expect(peek(POS_CACHE.ticket('Salla', 'T7'))).toBeUndefined();
-    expect(peek(POS_CACHE.ticket('Salla', 'T8'))?.items?.[0]?.name).toBe(
-      'keep',
-    );
+    expect(
+      peek<{ items?: Array<{ name?: string }> }>(
+        POS_CACHE.ticket('Salla', 'T8'),
+      )?.items?.[0]?.name,
+    ).toBe('keep');
   });
 });

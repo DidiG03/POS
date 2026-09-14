@@ -70,7 +70,9 @@ export async function findLatestTicketLogSince(
   if (!since) return recent[0] ?? null;
   const startMs = since.getTime();
   return (
-    recent.find((row) => rowIsInOpenSession(row.createdAt, startMs)) ?? null
+    recent.find((row: { createdAt: Date }) =>
+      rowIsInOpenSession(row.createdAt, startMs),
+    ) ?? null
   );
 }
 

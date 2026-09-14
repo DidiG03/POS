@@ -5389,7 +5389,9 @@ ipcHandle('covers:getLast', async (_e, { area, label }) => {
     take: 20,
   });
   const startMs = sessionStart.getTime();
-  const row = recent.find((r) => rowIsInOpenSession(r.createdAt, startMs));
+  const row = recent.find((r: { createdAt: Date; covers?: number | null }) =>
+    rowIsInOpenSession(r.createdAt, startMs),
+  );
   return row?.covers ?? null;
 });
 

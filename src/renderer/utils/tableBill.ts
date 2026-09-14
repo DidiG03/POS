@@ -44,7 +44,7 @@ export function peekTableBill(
   if (snap && Array.isArray(snap.tables) && !snapRow) {
     return null;
   }
-  if (cachedTicketHasLines(snapRow)) {
+  if (snapRow && cachedTicketHasLines(snapRow)) {
     return {
       items: asTicketLogItems(snapRow.items) as TicketReadItems,
       note: noteOf(snapRow),

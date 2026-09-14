@@ -82,7 +82,7 @@ export async function getTableTooltip(
     }),
   ]);
   const coversRow = since
-    ? coverRows.find((row) =>
+    ? coverRows.find((row: { createdAt: Date; covers?: number | null }) =>
         rowIsInOpenSession(row.createdAt, since.getTime()),
       )
     : coverRows[0];

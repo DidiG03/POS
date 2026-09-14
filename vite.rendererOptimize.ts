@@ -246,10 +246,11 @@ function gzipHtmlDocument(): Plugin {
           }
           origWriteHead(planned.statusCode);
           if (planned.body.length) {
-            if (typeof cb === 'function') return origEnd(planned.body, cb);
+            if (typeof cb === 'function')
+              return origEnd(planned.body, cb as () => void);
             return origEnd(planned.body);
           }
-          if (typeof cb === 'function') return origEnd(cb);
+          if (typeof cb === 'function') return origEnd(cb as () => void);
           return origEnd();
         }) as typeof res.end;
 

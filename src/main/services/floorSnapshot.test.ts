@@ -13,7 +13,7 @@ import {
   tableSessionKey,
   ticketRunningTotal,
 } from './floorSnapshot';
-import { listOccupiedTables } from './tableOccupancy';
+import { listOccupiedTables, type OccupiedTable } from './tableOccupancy';
 
 describe('ticketRunningTotal', () => {
   it('sums non-voided lines', () => {
@@ -32,10 +32,10 @@ describe('ticketRunningTotal', () => {
 });
 
 describe('pickLatestPerTable', () => {
-  const t = (
+  const t = <E extends Record<string, unknown>>(
     label: string,
     ms: number,
-    extra: Record<string, unknown> = {},
+    extra: E = {} as E,
   ) => ({
     area: 'Sallon',
     tableLabel: label,
@@ -150,10 +150,10 @@ describe('getFloorSnapshot cache', () => {
   });
 
   it('does not let a new caller join a load that started before invalidate', async () => {
-    const resolvers: Array<(value: unknown) => void> = [];
+    const resolvers: Array<(value: OccupiedTable[]) => void> = [];
     vi.mocked(listOccupiedTables).mockImplementation(
       () =>
-        new Promise((resolve) => {
+        new Promise<OccupiedTable[]>((resolve) => {
           resolvers.push(resolve);
         }),
     );

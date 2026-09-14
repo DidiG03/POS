@@ -245,3 +245,13 @@ export function broadcastSettingsChanged(payload: {
   broadcastIpc('settings:changed', payload);
   broadcastSse('settings', payload);
 }
+
+export type AppsUpdatePayload = {
+  action: 'check' | 'download' | 'install';
+};
+
+/** Tell connected kitchen displays to check / download / install themselves. */
+export function broadcastAppsUpdate(payload: AppsUpdatePayload): void {
+  broadcastIpc('apps:update', payload);
+  broadcastSse('apps-update', payload);
+}

@@ -48,6 +48,12 @@ import { useAdminSessionStore } from '../../stores/adminSession';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { applyPosUiTheme } from '../../theme';
 import { normalizePosUiTheme, type PosUiTheme } from '@shared/uiTheme';
+import {
+  checkFleetUpdates,
+  downloadFleetUpdates,
+  installFleetUpdates,
+  loadFleetStatus,
+} from '../../utils/fleetUpdate';
 
 type SectionKey =
   | 'printer'
@@ -254,17 +260,19 @@ export default function AdminSettingsPage() {
 
 function SystemUpdatesSettings() {
   const { t } = useTranslation();
-  const hasTables = useLicenseCapabilities((s) => s.hasTables);
-  const [status, setStatus] = useState<UpdateStatusDTO | null>(null);
+  const [adminStatus, setAdminStatus] = useState<UpdateStatusDTO | null>(null);
+  const [posStatus, setPosStatus] = useState<UpdateStatusDTO | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [checking, setChecking] = useState(false);
+  const [kdsSentAt, setKdsSentAt] = useState<number | null>(null);
   const setError = useStatusToast('error');
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
 
   async function loadStatus() {
     try {
-      const s = await window.api.updater.getUpdateStatus();
-      setStatus(s);
+      const { admin, pos } = await loadFleetStatus();
+      setAdminStatus(admin);
+      setPosStatus(pos);
     } catch {
       // ignore (updater may be unavailable)
     }
@@ -307,8 +315,9 @@ function SystemUpdatesSettings() {
     setError(null);
     setLastCheckedAt(Date.now());
     try {
-      const r = await window.api.updater.checkForUpdates();
+      const r = await checkFleetUpdates();
       if (r?.error) setError(String(r.error));
+      else setKdsSentAt(Date.now());
     } catch (e: any) {
       setError(String(e?.message || t('settingsUpdates.errorCheck')));
     } finally {
@@ -320,41 +329,75 @@ function SystemUpdatesSettings() {
   async function download() {
     setError(null);
     try {
-      const r = await window.api.updater.downloadUpdate();
+      const r = await downloadFleetUpdates();
       if (r?.error) setError(String(r.error));
+      else setKdsSentAt(Date.now());
     } catch (e: any) {
       setError(String(e?.message || t('settingsUpdates.errorDownload')));
+    } finally {
+      void loadStatus();
     }
   }
 
   async function install() {
     if (!confirm(t('settingsUpdates.installConfirm'))) return;
     try {
-      await window.api.updater.installUpdate();
+      const r = await installFleetUpdates();
+      if (r?.error) setError(String(r.error));
     } catch (e: any) {
       setError(String(e?.message || t('settingsUpdates.errorInstall')));
     }
   }
 
-  const hasUpdate = Boolean(status?.hasUpdate && status?.updateInfo?.version);
+  const hasUpdate = Boolean(
+    (adminStatus?.hasUpdate && adminStatus?.updateInfo?.version) ||
+      (posStatus?.hasUpdate && posStatus?.updateInfo?.version),
+  );
+  const downloaded = Boolean(adminStatus?.downloaded || posStatus?.downloaded);
+
+  function appRow(label: string, status: UpdateStatusDTO | null) {
+    const version = status?.updateInfo?.version;
+    let detail = t('settingsUpdates.upToDate');
+    if (!status) detail = t('settingsUpdates.unreachable');
+    else if (status.downloaded && version) {
+      detail = t('settingsUpdates.downloaded', { version });
+    } else if (status.hasUpdate && version) {
+      detail = t('settingsUpdates.updateAvailable', { version });
+    }
+    return (
+      <div className="flex items-start justify-between gap-3 border-b border-[var(--pos-border)] py-3 last:border-b-0">
+        <div className="min-w-0">
+          <div className="text-[13px] font-medium text-[color:var(--pos-fg)]">
+            {label}
+          </div>
+          <div className="mt-0.5 text-[12px] text-[color:var(--pos-fg-muted)]">
+            {status?.currentVersion
+              ? t('settingsUpdates.current', { version: status.currentVersion })
+              : null}
+          </div>
+        </div>
+        <div className="shrink-0 text-right text-[12px] text-[color:var(--pos-fg-muted)]">
+          {detail}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <SettingsHeader
         title={t('settingsUpdates.title')}
-        description={t(
-          hasTables ? 'settingsUpdates.help' : 'settingsUpdates.helpStore',
-        )}
+        description={t('settingsUpdates.help')}
         actions={
           <>
-            {hasUpdate && !status?.downloaded ? (
+            {hasUpdate && !downloaded ? (
               <Button variant="primary" onClick={() => void download()}>
-                {t('settingsUpdates.download')}
+                {t('settingsUpdates.downloadAll')}
               </Button>
             ) : null}
-            {hasUpdate && status?.downloaded ? (
+            {downloaded ? (
               <Button variant="primary" onClick={() => void install()}>
-                {t('settingsUpdates.installRestart')}
+                {t('settingsUpdates.installAll')}
               </Button>
             ) : null}
             <KebabMenu
@@ -375,32 +418,23 @@ function SystemUpdatesSettings() {
       />
 
       <SettingsCard>
-        {hasUpdate ? (
-          <>
-            <div className="font-semibold text-gray-50">
-              {t('settingsUpdates.available')}
+        {appRow(t('settingsUpdates.appAdmin'), adminStatus)}
+        {appRow(t('settingsUpdates.appPos'), posStatus)}
+        <div className="flex items-start justify-between gap-3 py-3">
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-[color:var(--pos-fg)]">
+              {t('settingsUpdates.appKds')}
             </div>
-            <div className="mt-1 text-[13px] text-gray-400">
-              {t('settingsUpdates.version', {
-                version: status?.updateInfo?.version,
-              })}
+            <div className="mt-0.5 text-[12px] text-[color:var(--pos-fg-muted)]">
+              {t('settingsUpdates.kdsHint')}
             </div>
-            {status?.updateInfo?.releaseNotes && (
-              <details className="mt-3 text-[12px] text-gray-400">
-                <summary className="cursor-pointer">
-                  {t('settingsUpdates.releaseNotes')}
-                </summary>
-                <div className="mt-2 whitespace-pre-wrap">
-                  {String(status.updateInfo.releaseNotes)}
-                </div>
-              </details>
-            )}
-          </>
-        ) : (
-          <div className="text-[13px] text-gray-400">
-            {t('settingsUpdates.none')}
           </div>
-        )}
+          <div className="shrink-0 text-right text-[12px] text-[color:var(--pos-fg-muted)]">
+            {kdsSentAt
+              ? t('settingsUpdates.kdsSent')
+              : t('settingsUpdates.kdsIdle')}
+          </div>
+        </div>
 
         {downloadProgress !== null && (
           <div className="mt-4">

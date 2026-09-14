@@ -342,8 +342,7 @@ describe('applySaleCorrection — corrective', () => {
       kind: 'complete',
       docId: 'corr-ok',
       identifiers: { fic: 'NIVF-CORR' },
-    });
-
+    } as never);
     const result = await applySaleCorrection({
       orderId: 1,
       kind: 'CORRECTIVE',
@@ -358,9 +357,19 @@ describe('applySaleCorrection — corrective', () => {
     });
     expect(flagged).toHaveLength(0);
     expect(registerCorrectiveInvoice).toHaveBeenCalledTimes(1);
-    const sent = registerCorrectiveInvoice.mock.calls[0][1];
+    const calls = registerCorrectiveInvoice.mock.calls as unknown as Array<
+      [
+        unknown,
+        {
+          original: { iic: string };
+          articles: Array<{ name: string }>;
+          payment: Array<{ amount: number }>;
+        },
+      ]
+    >;
+    const sent = calls[0][1];
     expect(sent.original.iic).toBe('IIC-1');
-    expect(sent.articles.map((a: any) => a.name)).toEqual(['Tavë kosi']);
+    expect(sent.articles.map((a) => a.name)).toEqual(['Tavë kosi']);
     expect(sent.payment[0].amount).toBe(1000);
   });
 });
