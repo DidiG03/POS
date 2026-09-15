@@ -1610,6 +1610,14 @@ app.whenReady().then(async () => {
     console.warn('[startup] ensureLocalDbColumns failed:', e),
   );
   try {
+    const users = await prisma.user.count();
+    console.log(
+      `[startup] SQLite ${process.env.DATABASE_URL || ''} users=${users}`,
+    );
+  } catch (e) {
+    console.warn('[startup] user count failed:', e);
+  }
+  try {
     await backfillTableOccupancyFromSyncState();
   } catch (e) {
     console.warn('[startup] occupancy backfill failed:', e);

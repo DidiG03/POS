@@ -311,7 +311,7 @@
     "admins": "Admins",
     "notClockedIn": "Not clocked in",
     "clockedIn": "Clocked in",
-    "noStaffSync": "No staff yet. On the host: Admin → Users to add staff.",
+    "noStaffSync": "No waiters or cashiers yet. Sign in with OneTap Admin, then add staff there.",
     "loadingStaff": "Loading staff…",
     "noAdminUsersShort": "No admin users",
     "loginSubmit": "Log in",

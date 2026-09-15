@@ -2,6 +2,10 @@ import { app } from 'electron';
 import path from 'node:path';
 import Module from 'node:module';
 import fs from 'node:fs';
+import {
+  copySqliteGroup,
+  resolvePackagedSqliteSource,
+} from './services/packagedSqlite';
 
 app.setName('OneTap POS');
 process.title = 'OneTap POS';
@@ -70,9 +74,27 @@ function ensureSqliteDbFile() {
     const dbDir = path.join(userData, 'db');
     fs.mkdirSync(dbDir, { recursive: true });
     const targetFile = path.join(dbDir, 'pos.db');
+    const appData = app.getPath('appData');
+    const legacyFiles = [
+      'code-orbit-pos',
+      'Code Orbit POS',
+      'codeorbit-pos',
+    ].map((folder) => path.join(appData, folder, 'db', 'pos.db'));
+    const seedFile = path.join(process.resourcesPath, 'seed.db');
+    const source = resolvePackagedSqliteSource(targetFile, legacyFiles, {
+      seedFile,
+    });
+
+    if (source.adopted) {
+      try {
+        copySqliteGroup(source.file, targetFile);
+        console.log(`[db] Adopted leftover SQLite from ${source.file}`);
+      } catch (e) {
+        console.warn('[db] Failed to adopt leftover SQLite:', e);
+      }
+    }
 
     if (!fs.existsSync(targetFile)) {
-      const seedFile = path.join(process.resourcesPath, 'seed.db');
       if (fs.existsSync(seedFile)) {
         try {
           fs.copyFileSync(seedFile, targetFile);
@@ -87,6 +109,7 @@ function ensureSqliteDbFile() {
 
     // Prisma prefers forward slashes in file URLs (esp. on Windows).
     process.env.DATABASE_URL = `file:${targetFile.split(path.sep).join('/')}`;
+    console.log(`[db] ${process.env.DATABASE_URL}`);
   } catch {
     // ignore (best-effort)
   }

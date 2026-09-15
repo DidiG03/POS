@@ -39,6 +39,7 @@ import { captureRendererException } from '../../utils/sentryBrowser';
 import { applyHostPosUiTheme } from '../../theme';
 import { POS_CACHE, peekSettings } from '../../utils/posReadCache';
 import { invalidateCache } from '../../utils/swrCache';
+import { loginDirectoryState } from '../../utils/loginDirectory';
 
 function staffInitials(name: string): string {
   const parts = String(name || '')
@@ -309,9 +310,7 @@ export default function LoginPage() {
         .get()
         .then((live) => ({ live: true as const, s: live }))
         .catch(() => ({ live: false as const, s: cached ?? null }));
-      const usersP = window.api.auth.listUsers({
-        includeAdmins: isAdminContext,
-      });
+      const usersP = window.api.auth.listUsers({ includeAdmins: true });
 
       const got = await settingsP;
       if (cancelled) return;
@@ -333,7 +332,8 @@ export default function LoginPage() {
         if (!cancelled) setStaffLoading(false);
         return;
       }
-      if (Array.isArray(users) && users.length === 0) {
+      const directory = loginDirectoryState(users, isAdminContext);
+      if (directory.directoryEmpty) {
         setNotice(t('login.noAdminUsersLocal'));
         setDirectoryEmpty(true);
         setStaff([]);
@@ -342,18 +342,8 @@ export default function LoginPage() {
         if (!cancelled) setStaffLoading(false);
         return;
       }
-      const list = isAdminContext
-        ? users.filter((u) => u.role === 'ADMIN' && u.active)
-        : // Hosts only ever sign in through the Reservations window; never
-          // expose them on the waiter/cashier POS login screen.
-          users.filter(
-            (u) =>
-              u.active &&
-              u.role !== 'ADMIN' &&
-              String(u.role || '').toUpperCase() !== 'HOST',
-          );
       if (cancelled) return;
-      setStaff(list);
+      setStaff(directory.staff);
       setStaffLoading(false);
       if (!isAdminContext && got.live && isClockCaptureEnabled(s)) {
         try {
@@ -614,6 +604,9 @@ export default function LoginPage() {
                         ? t('login.loadingStaff')
                         : t('login.noStaffSync')
                     }
+                    description={
+                      staffLoading ? undefined : t('login.useAdminApp')
+                    }
                   />
                 )}
               </div>
@@ -630,6 +623,7 @@ export default function LoginPage() {
                       compact
                       icon={<IconUsers />}
                       title={t('login.noStaffSync')}
+                      description={t('login.useAdminApp')}
                     />
                   ) : offShift.length === 0 ? (
                     <ColumnPlaceholder />

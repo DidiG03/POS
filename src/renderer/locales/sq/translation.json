@@ -311,7 +311,7 @@
     "admins": "Administratorët",
     "notClockedIn": "Nuk je në turn",
     "clockedIn": "Në turn",
-    "noStaffSync": "Ende nuk ka staf. Në host: Admin → Përdoruesit për të shtuar staf.",
+    "noStaffSync": "Ende nuk ka kamarierë ose kasierë. Hyr me OneTap Admin, pastaj shto stafin atje.",
     "loadingStaff": "Duke ngarkuar stafin…",
     "noAdminUsersShort": "Nuk ka administratorë",
     "loginSubmit": "Hyr",
