@@ -1,4 +1,8 @@
 import type { UpdateStatusDTO } from '@shared/ipc';
+import {
+  isMissingUpdateFeedError,
+  userFacingUpdaterError,
+} from '@shared/updateFeedError';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,10 +43,16 @@ export async function loadFleetStatus(): Promise<{
 }
 
 function resultError(value: unknown): string | null {
-  const msg =
+  const raw =
     value && typeof value === 'object' && 'error' in value
-      ? String((value as { error?: string }).error || '')
-      : '';
+      ? (value as { error?: unknown }).error
+      : value;
+  if (isMissingUpdateFeedError(raw)) return null;
+  const msg = String(
+    (value && typeof value === 'object' && 'error' in value
+      ? (value as { error?: string }).error
+      : '') || '',
+  );
   if (!msg) return null;
   if (
     /disabled in development|auto-updates are disabled|no update available/i.test(
@@ -51,7 +61,7 @@ function resultError(value: unknown): string | null {
   ) {
     return null;
   }
-  return msg;
+  return userFacingUpdaterError(msg);
 }
 
 function collectErrors(

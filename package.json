@@ -112,6 +112,7 @@
       "target": [
         "nsis"
       ],
+      "artifactName": "OneTap-POS-Setup-${version}.${ext}",
       "icon": "build-resources/icon.ico"
     },
     "linux": {

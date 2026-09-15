@@ -16,6 +16,10 @@ import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
 import { allowNextQuit } from './services/hostRuntime';
+import {
+  isMissingUpdateFeedError,
+  userFacingUpdaterError,
+} from '@shared/updateFeedError';
 
 // Dev detection MUST use `app.isPackaged`, not NODE_ENV: the bundler does not
 // inline `process.env.NODE_ENV`, so in a packaged (double-clicked) app it's
@@ -105,11 +109,14 @@ export const updaterHandlers = {
       await autoUpdater.checkForUpdates();
       return { success: true };
     } catch (error: any) {
+      if (isMissingUpdateFeedError(error)) {
+        return { error: 'No update available' };
+      }
       captureException(
         error instanceof Error ? error : new Error(String(error)),
         { context: 'updater:checkForUpdates' },
       );
-      return { error: error?.message || 'Failed to check for updates' };
+      return { error: userFacingUpdaterError(error) };
     }
   },
   downloadUpdate: async () => {
@@ -267,9 +274,14 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
     });
 
     autoUpdater.on('error', (error: Error) => {
+      if (isMissingUpdateFeedError(error)) {
+        console.log('[AutoUpdater] No update feed on this release');
+        notifyListeners('update-not-available');
+        return;
+      }
       console.error('[AutoUpdater] Error:', error);
       captureException(error, { context: 'updater:error' });
-      notifyListeners('error', { message: error.message });
+      notifyListeners('error', { message: userFacingUpdaterError(error) });
     });
 
     autoUpdater.on('download-progress', (progress) => {

@@ -112,9 +112,18 @@ jobs:
           CANONICAL_POS="dist/${CANONICAL_POS_NAME}"
           CANONICAL_KDS="dist-installers/kds/${CANONICAL_KDS_NAME}"
           CANONICAL_ADMIN="dist-installers/admin/${CANONICAL_ADMIN_NAME}"
-          cp "$POS_EXE" "$CANONICAL_POS"
-          cp "$KDS_EXE" "$CANONICAL_KDS"
-          cp "$ADMIN_EXE" "$CANONICAL_ADMIN"
+          copy_canonical() {
+            local src="$1"
+            local dest="$2"
+            if [[ "$src" -ef "$dest" || "$src" == "$dest" ]]; then
+              echo "Already canonical: $dest"
+              return 0
+            fi
+            cp "$src" "$dest"
+          }
+          copy_canonical "$POS_EXE" "$CANONICAL_POS"
+          copy_canonical "$KDS_EXE" "$CANONICAL_KDS"
+          copy_canonical "$ADMIN_EXE" "$CANONICAL_ADMIN"
 
           # electron-builder emits `latest.yml` for POS but not `latest-kds.yml`
           # when building with `--publish never` and a custom KDS channel.
