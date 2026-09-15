@@ -27,7 +27,13 @@ function errorText(error: unknown): string {
 }
 
 export function shouldIgnoreAppError(error: unknown): boolean {
-  const anyE = error as { name?: unknown; message?: unknown } | null;
+  const anyE = error as {
+    name?: unknown;
+    message?: unknown;
+    status?: unknown;
+  } | null;
+  // 401 is handled by force-logout → PIN screen; do not also toast it.
+  if (Number(anyE?.status) === 401) return true;
   const parts = [
     errorText(error),
     typeof error === 'string' ? error : '',

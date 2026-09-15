@@ -6,7 +6,23 @@
  *     over LAN (tablets still cannot open Admin)
  *   - `window.__POS_HOST__` so the HTTP polyfill targets the saved till
  */
+import os from 'node:os';
 import { contextBridge, ipcRenderer } from 'electron';
+import { httpHostForLocalPos } from '@shared/localPosHost';
+
+function localInterfaceAddresses(): string[] {
+  const out: string[] = [];
+  try {
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const ni of list || []) {
+        if (ni?.address) out.push(ni.address);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return out;
+}
 
 type AdminConfig = {
   host: string;
@@ -69,6 +85,7 @@ try {
   if (cfg && cfg.host) {
     contextBridge.exposeInMainWorld('__POS_HOST__', {
       host: cfg.host,
+      connectHost: httpHostForLocalPos(cfg.host, localInterfaceAddresses()),
       httpPort: cfg.httpPort,
       httpsPort: cfg.httpsPort || null,
     });

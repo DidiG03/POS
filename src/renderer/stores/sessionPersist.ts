@@ -26,6 +26,15 @@ export function sessionShellFromHash(hash: string): SessionShell {
   return 'pos';
 }
 
+/** Prefer the companion flag so Admin logout is not lost if the hash is `#/`. */
+export function sessionShellFromWindow(
+  hash: string,
+  flags?: { adminApp?: boolean },
+): SessionShell {
+  if (flags?.adminApp) return 'admin';
+  return sessionShellFromHash(hash);
+}
+
 export function isPersistedSessionExpired(input: {
   user: unknown;
   expiresAtMs: number | null | undefined;

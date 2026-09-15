@@ -39,6 +39,9 @@ describe('reportAppError', () => {
     expect(
       shouldIgnoreAppError(new Error('Could not load this floor plan.')),
     ).toBe(false);
+    expect(shouldIgnoreAppError({ status: 401, message: 'unauthorized' })).toBe(
+      true,
+    );
   });
 
   it('toasts unexpected errors and dedupes the same key', () => {

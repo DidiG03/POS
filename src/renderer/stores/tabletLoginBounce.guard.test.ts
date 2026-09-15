@@ -25,8 +25,14 @@ describe('tablet login bounce guards', () => {
     expect(loginFn).toContain("goLan('/auth/login'");
     expect(loginFn).not.toContain("goLan('/pairing/verify'");
     expect(src).toContain("clearInflight('lan:')");
-    expect(src).toContain('SHIFT_GUARD_GRACE_MS');
-    expect(src).toContain('sessionShellFromHash');
+    const boot = read('src/renderer/app/BootRoot.tsx');
+    expect(boot).toContain('SHIFT_GUARD_GRACE_MS');
+    expect(boot).toContain('sessionShellFromWindow');
+    expect(src).toContain("forceLogout('unauthorized')");
+    expect(src).toContain("goLan('/notifications?limit=1')");
+    expect(read('src/main/services/ipcGuard.ts')).toContain(
+      "event.sender.send('auth:forceLogout', { reason: 'unauthorized' })",
+    );
   });
 
   it('session persist prefers a live PIN login over empty storage', () => {
@@ -88,13 +94,14 @@ describe('tablet login bounce guards', () => {
 
   it('tablets catch up after a host update and a dropped SSE socket', () => {
     const main = read('src/renderer/main.tsx');
+    const boot = read('src/renderer/app/BootRoot.tsx');
     expect(main).toContain('emitPosSyncCatchup');
     expect(main).toContain('syncTabletToHostVersion');
     expect(main).toContain('installPosRealtimeSync');
     expect(main).toContain('installWakeUiRecovery');
     expect(main).toContain('installUnhandledErrorToasts');
     expect(main).toContain('initRendererSentry');
-    expect(main).toContain('hideMobileSplash');
+    expect(boot).toContain('hideMobileSplash');
     expect(main).toContain('POS_BACKEND_HOST_CHANGED');
     expect(main).toContain("addEventListener('catchup'");
     expect(main).toContain("addEventListener('settings'");

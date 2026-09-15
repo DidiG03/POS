@@ -157,6 +157,21 @@ export function mergeDiscoveredPosHosts(
   });
 }
 
+/** 127.0.0.1 and this Mac's Wi-Fi IP are the same till during local Admin/KDS. */
+export function dropLoopbackIfLanSelfPresent(
+  hosts: DiscoveredPosHost[],
+  localIps: string[],
+): DiscoveredPosHost[] {
+  const lan = new Set(
+    (localIps || []).map((ip) => String(ip || '').trim()).filter(isPrivateIpv4),
+  );
+  if (!hosts.some((h) => lan.has(String(h.host || '').trim()))) return hosts;
+  return hosts.filter((h) => {
+    const host = String(h.host || '').trim();
+    return host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
+  });
+}
+
 export async function mapPool<T, R>(
   items: T[],
   limit: number,

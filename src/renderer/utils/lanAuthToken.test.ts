@@ -57,7 +57,20 @@ describe('lanAuthToken', () => {
     expect(shouldForceLogoutOn401(401, 'new-jwt', 'new-jwt')).toBe(true);
     expect(shouldForceLogoutOn401(401, 'gone', null)).toBe(true);
     expect(shouldForceLogoutOn401(403, 'jwt', 'jwt')).toBe(false);
-    expect(shouldForceLogoutOn401(401, null, 'jwt')).toBe(false);
+    expect(shouldForceLogoutOn401(401, null, 'jwt')).toBe(true);
+    expect(shouldForceLogoutOn401(401, null, null)).toBe(true);
+    expect(
+      shouldForceLogoutOn401(401, null, null, undefined, '/auth/login'),
+    ).toBe(false);
+    expect(
+      shouldForceLogoutOn401(401, null, null, undefined, '/pairing/verify'),
+    ).toBe(false);
+    expect(
+      shouldForceLogoutOn401(401, null, null, undefined, '/auth/users'),
+    ).toBe(false);
+    expect(
+      shouldForceLogoutOn401(401, 'jwt', 'jwt', undefined, '/notifications'),
+    ).toBe(true);
   });
 
   it('does not logout when the auth generation advanced mid-request', () => {

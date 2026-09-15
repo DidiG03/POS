@@ -113,6 +113,8 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /admin/sales-trends': { allow: ADMIN },
   'GET /admin/users': { allow: ADMIN },
   'GET /admin/shifts': { allow: ADMIN },
+  'GET /admin/ticket-counts': { allow: ADMIN },
+  'GET /admin/tickets-by-user': { allow: ADMIN },
   'GET /admin/top-selling-today': { allow: ADMIN },
   'POST /admin/review': { allow: ADMIN },
   'POST /admin/billing/create-checkout': { allow: ADMIN },
@@ -127,7 +129,25 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
 
   // ----------------------------------------------------------------- print
   'POST /print/test': { allow: ADMIN },
+  'POST /print/test-profile': { allow: ADMIN },
+  'POST /print/scan-network': { allow: ADMIN },
+  'GET /print/list': { allow: ADMIN },
+  'GET /print/serial-ports': { allow: ADMIN },
   'POST /print/ticket': { allow: POS },
+
+  'GET /network/ips': { allow: ADMIN },
+  'GET /backups': { allow: ADMIN },
+  'POST /backups/create': { allow: ADMIN },
+  'POST /backups/restore': { allow: ADMIN },
+  'GET /settings/fiscal-token-hint': { allow: ADMIN },
+  'POST /settings/fiscal-test': { allow: ADMIN },
+  'POST /settings/fiscal-test-minimal': { allow: ADMIN },
+  'GET /settings/fiscal-reviews': { allow: ADMIN },
+  'POST /settings/fiscal-reviews': { allow: ADMIN },
+  'POST /settings/google-calendar/sync': { allow: ADMIN },
+  'POST /settings/google-calendar/connect': { allow: ADMIN },
+  'POST /settings/google-calendar/disconnect': { allow: ADMIN },
+  'GET /settings/google-calendar/calendars': { allow: ADMIN },
 
   // ---------------------------------------------------------------- layout
   'GET /layout/get': { allow: 'session' },

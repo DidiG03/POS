@@ -1,32 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { RouterProvider, createHashRouter } from 'react-router-dom';
-import { routes } from './routes';
 import './styles/index.css';
-import { offlineQueue } from './utils/offlineQueue';
-import { useSessionStore } from './stores/session';
-import { useAdminSessionStore } from './stores/adminSession';
-import { useReservationSessionStore } from './stores/reservationSession';
-import { ErrorBoundary } from './components/ErrorBoundary';
-import {
-  PosServerScanHost,
-  PosServerScanPanel,
-} from './app/components/PosServerScan';
-import { initMobileShell, hideMobileSplash } from './utils/mobileShell';
-import { resumeMainProcessSession } from './utils/resumeSession';
+import { initMobileShell } from './utils/mobileShell';
 import './i18n/config';
-import { I18nextProvider, useTranslation } from 'react-i18next';
-import i18n from './i18n/config';
-import { LocaleSync } from './i18n/LocaleSync';
-import { ThemeSync } from './i18n/ThemeSync';
 import { bootPosUiTheme } from './theme';
-import { PageSpinner } from './components/PageSpinner';
-import { useLicenseCapabilities } from './stores/licenseCapabilities';
-import { readStoredFlag, writeStoredFlag } from './utils/storedFlag';
+import { BootRoot } from './app/BootRoot';
 import {
   getHttpBase,
   getHttpsBase,
-  hasConfiguredBackendHost,
   resolveBackendHost,
 } from './utils/backendHost';
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
@@ -43,7 +24,6 @@ import {
 } from './utils/netQuality';
 import {
   installPosReadCache,
-  peekSettings,
   emitPosSyncCatchup,
   emitPosSyncCatchupSoon,
 } from './utils/posReadCache';
@@ -62,50 +42,7 @@ import {
   writeLanToken,
 } from './utils/lanAuthToken';
 import { isPairingRejectedError } from './utils/lanLoginError';
-import {
-  SHIFT_GUARD_GRACE_MS,
-  isPersistedSessionExpired,
-  sessionShellFromHash,
-} from './stores/sessionPersist';
-import {
-  HOST_VERSION_STORAGE_KEY,
-  isHostRendererHref,
-  planHostVersionSync,
-} from './utils/hostVersionSync';
-
-async function syncTabletToHostVersion(): Promise<void> {
-  const ping = (window as any).api?.health?.ping;
-  if (typeof ping !== 'function') return;
-  try {
-    const h = await ping();
-    const next = String(h?.appVersion || '').trim();
-    if (!next) return;
-    let previous: string | null = null;
-    try {
-      previous = localStorage.getItem(HOST_VERSION_STORAGE_KEY);
-    } catch {
-      previous = null;
-    }
-    const plan = planHostVersionSync({
-      previous,
-      next,
-      servedFromHostRenderer: isHostRendererHref(
-        String(window.location.href || ''),
-      ),
-    });
-    if (plan.persist) {
-      try {
-        localStorage.setItem(HOST_VERSION_STORAGE_KEY, next);
-      } catch {
-        // ignore
-      }
-    }
-    if (plan.invalidate) emitPosSyncCatchup();
-    if (plan.reload) window.location.reload();
-  } catch {
-    // host unreachable — next visibility / SSE open retries
-  }
-}
+import { syncTabletToHostVersion } from './utils/syncTabletToHostVersion';
 // PWA registration disabled for desktop build
 
 void initMobileShell();
@@ -370,12 +307,17 @@ if (!(window as any).api) {
 
       es.addEventListener('error', () => {
         markSseOpen(false);
-        // The browser's built-in retry is opaque and inconsistent across
-        // platforms (especially Android WebView). Drop the socket and
-        // reschedule with our own backoff so we always recover.
         const state = es?.readyState;
         if (state === 2 /* CLOSED */ || !es) {
           stopSse();
+          // EventSource does not expose the HTTP status. A dead JWT closes
+          // the socket and would otherwise reconnect forever while the PIN
+          // session stays on screen. Probe a session route so 401 logs out.
+          if (getToken()) {
+            window.setTimeout(() => {
+              void goLan('/notifications?limit=1').catch(() => undefined);
+            }, 0);
+          }
           scheduleSseReconnect();
           return;
         }
@@ -654,14 +596,21 @@ if (!(window as any).api) {
     status: number,
     token: string | null,
     requestGeneration: number,
+    path: string,
   ) {
     if (
-      shouldForceLogoutOn401(status, token, getToken(), {
-        request: requestGeneration,
-        current: lanAuthGeneration(),
-      })
+      shouldForceLogoutOn401(
+        status,
+        token,
+        getToken(),
+        {
+          request: requestGeneration,
+          current: lanAuthGeneration(),
+        },
+        path,
+      )
     ) {
-      forceLogout('Session expired');
+      forceLogout('unauthorized');
     }
   }
 
@@ -700,7 +649,13 @@ if (!(window as any).api) {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(IS_NATIVE_SHELL ? { 'X-POS-Client': 'native' } : {}),
+      ...(IS_NATIVE_SHELL
+        ? { 'X-POS-Client': 'native' }
+        : (window as any).__ADMIN_APP__
+          ? { 'X-POS-Client': 'admin' }
+          : (window as any).__KDS_APP__
+            ? { 'X-POS-Client': 'kds' }
+            : {}),
       ...(((opts?.headers as any) || {}) as any),
     };
     const timeoutMs = lanRequestTimeoutMs(path, method);
@@ -715,7 +670,7 @@ if (!(window as any).api) {
         timeoutMs,
       );
       if (!r.ok) {
-        maybeForceLogout(r.status, token, requestGeneration);
+        maybeForceLogout(r.status, token, requestGeneration, path);
         const { message, code, permanent } = await readErrorMessage(r);
         throw new HttpError(r.status, message, code, permanent);
       }
@@ -901,14 +856,69 @@ if (!(window as any).api) {
         }
         return ok;
       },
+      async testPrintProfile(profile: any) {
+        return await goLan('/print/test-profile', {
+          method: 'POST',
+          body: JSON.stringify({ profile }),
+        });
+      },
+      async scanNetworkPrinters() {
+        const rows = await goLan('/print/scan-network', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        return Array.isArray(rows) ? rows : [];
+      },
       async setPrinter() {
         throw new Error('not supported in browser');
       },
       async listPrinters() {
-        return [];
+        const rows = await goLan('/print/list');
+        return Array.isArray(rows) ? rows : [];
       },
       async listSerialPorts() {
-        return [];
+        const rows = await goLan('/print/serial-ports');
+        return Array.isArray(rows) ? rows : [];
+      },
+      async getFiscalTokenHint() {
+        return await goLan('/settings/fiscal-token-hint');
+      },
+      async testFiscalConnection() {
+        return await goLan('/settings/fiscal-test', { method: 'POST' });
+      },
+      async testFiscalMinimalInvoice() {
+        return await goLan('/settings/fiscal-test-minimal', { method: 'POST' });
+      },
+      async listFiscalReviews() {
+        const rows = await goLan('/settings/fiscal-reviews');
+        return Array.isArray(rows) ? rows : [];
+      },
+      async resolveFiscalReview(input: any) {
+        return await goLan('/settings/fiscal-reviews', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
+      },
+      async connectGoogleCalendar() {
+        return await goLan('/settings/google-calendar/connect', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      },
+      async disconnectGoogleCalendar() {
+        return await goLan('/settings/google-calendar/disconnect', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      },
+      async syncGoogleCalendar() {
+        return await goLan('/settings/google-calendar/sync', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      },
+      async listGoogleCalendars() {
+        return await goLan('/settings/google-calendar/calendars');
       },
     },
     license: {
@@ -1134,7 +1144,26 @@ if (!(window as any).api) {
     },
     network: {
       async getIps() {
-        return [];
+        const rows = await goLan('/network/ips');
+        return Array.isArray(rows) ? rows : [];
+      },
+    },
+    backups: {
+      async list() {
+        const rows = await goLan('/backups');
+        return Array.isArray(rows) ? rows : [];
+      },
+      async create() {
+        return await goLan('/backups/create', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      },
+      async restore(input: { name: string }) {
+        return await goLan('/backups/restore', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
     },
     hostUpdates: {
@@ -1154,11 +1183,24 @@ if (!(window as any).api) {
         const suffix = q.toString() ? `?${q.toString()}` : '';
         return await goLan('/admin/shifts' + suffix);
       },
-      async listTicketCounts() {
-        throw new Error('not supported in browser');
+      async listTicketCounts(input?: { startIso?: string; endIso?: string }) {
+        const q = new URLSearchParams();
+        if (input?.startIso) q.set('startIso', String(input.startIso));
+        if (input?.endIso) q.set('endIso', String(input.endIso));
+        const suffix = q.toString() ? `?${q.toString()}` : '';
+        const rows = await goLan('/admin/ticket-counts' + suffix);
+        return Array.isArray(rows) ? rows : [];
       },
-      async listTicketsByUser() {
-        throw new Error('not supported in browser');
+      async listTicketsByUser(
+        userId: number,
+        range?: { startIso?: string; endIso?: string },
+      ) {
+        const q = new URLSearchParams();
+        q.set('userId', String(userId));
+        if (range?.startIso) q.set('startIso', String(range.startIso));
+        if (range?.endIso) q.set('endIso', String(range.endIso));
+        const rows = await goLan(`/admin/tickets-by-user?${q.toString()}`);
+        return Array.isArray(rows) ? rows : [];
       },
       async listNotifications(input?: any) {
         const q = new URLSearchParams();
@@ -1491,364 +1533,6 @@ installRemoteAppUpdateListener();
   }
 }
 
-const router = createHashRouter(routes);
-
-const LicenseGate = React.lazy(() => import('./app/components/LicenseGate'));
-const UpdateNotification = React.lazy(() =>
-  import('./components/UpdateNotification').then((m) => ({
-    default: m.UpdateNotification,
-  })),
-);
-const Toaster = React.lazy(() =>
-  import('./components/Toaster').then((m) => ({ default: m.Toaster })),
-);
-
-const LICENSE_OK_KEY = 'pos-license-ok';
-
-function isElectronLicenseHost(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    Boolean((window as any).api?.license) &&
-    !(window as any).__BROWSER_CLIENT__ &&
-    !(window as any).__KDS_APP__ &&
-    !(window as any).__ADMIN_APP__
-  );
-}
-
-function MaybeLicenseGate({ children }: { children: React.ReactNode }) {
-  const { t } = useTranslation();
-  const host = isElectronLicenseHost();
-  const [blocked, setBlocked] = useState(
-    () => host && !readStoredFlag(LICENSE_OK_KEY, true),
-  );
-
-  useEffect(() => {
-    if (!host) return;
-    let cancelled = false;
-    void window.api.license
-      .getStatus()
-      .then((s) => {
-        if (cancelled) return;
-        const ok = !s?.required || Boolean(s?.licensed);
-        writeStoredFlag(LICENSE_OK_KEY, ok);
-        useLicenseCapabilities.getState().setEdition(s?.edition);
-        setBlocked(!ok);
-      })
-      .catch(() => {
-        if (!cancelled) useLicenseCapabilities.getState().setEdition(undefined);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [host]);
-
-  if (!host || !blocked) return <>{children}</>;
-  return (
-    <React.Suspense fallback={<PageSpinner message={t('common.loading')} />}>
-      <LicenseGate>{children}</LicenseGate>
-    </React.Suspense>
-  );
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function BootScreen({
-  message,
-  detail,
-  showScan,
-}: {
-  message: string;
-  detail?: string;
-  showScan?: boolean;
-}) {
-  return (
-    <PageSpinner
-      message={message}
-      detail={showScan ? undefined : detail}
-      spinner={!showScan}
-    >
-      {showScan ? <PosServerScanPanel autoScan /> : null}
-    </PageSpinner>
-  );
-}
-
-function Root() {
-  const { t } = useTranslation();
-  const [ready, setReady] = useState(false);
-  const [msg, setMsg] = useState(() => t('boot.starting'));
-  const [detail, setDetail] = useState<string | undefined>(undefined);
-  const [backendUnreachable, setBackendUnreachable] = useState(false);
-  const [hostEpoch, setHostEpoch] = useState(0);
-
-  useEffect(() => {
-    const onHost = () => setHostEpoch((n) => n + 1);
-    window.addEventListener(POS_BACKEND_HOST_CHANGED, onHost);
-    return () => window.removeEventListener(POS_BACKEND_HOST_CHANGED, onHost);
-  }, []);
-
-  useEffect(() => {
-    if (ready || backendUnreachable) void hideMobileSplash();
-  }, [ready, backendUnreachable]);
-
-  useEffect(() => {
-    const onForce = (ev: any) => {
-      const reason = ev?.detail?.reason
-        ? String(ev.detail.reason)
-        : t('boot.sessionExpired');
-      const shell = sessionShellFromHash(window?.location?.hash || '');
-      // Clear only the session store that belongs to this window. POS, Admin,
-      // and Reservations share one origin / localStorage; wiping all three
-      // here is what kicked an admin PIN login back to the login screen
-      // whenever a leftover waiter session expired.
-      try {
-        if (shell === 'admin') {
-          useAdminSessionStore.getState().setUser(null as any);
-        } else if (shell === 'reservations') {
-          useReservationSessionStore.getState().setUser(null as any);
-        } else {
-          useSessionStore.getState().setUser(null);
-        }
-      } catch {
-        // ignore
-      }
-      try {
-        window.location.hash =
-          shell === 'admin'
-            ? '#/admin'
-            : shell === 'reservations'
-              ? '#/reservations'
-              : '#/';
-      } catch {
-        // ignore
-      }
-      // Optional: show a short hint on boot screen (if it appears)
-      setMsg(t('boot.loginAgain'));
-      setDetail(reason);
-    };
-    window.addEventListener('pos:forceLogout', onForce as any);
-    return () => window.removeEventListener('pos:forceLogout', onForce as any);
-  }, [t]);
-
-  useEffect(() => {
-    // Session expiry for Electron (persisted zustand sessions).
-    // Browser clients already rely on API token expiry; they will trigger pos:forceLogout on 401.
-    const tick = () => {
-      if (!useSessionStore.getState().hasHydrated) return;
-      const shell = sessionShellFromHash(window?.location?.hash || '');
-      const now = Date.now();
-      const staff = useSessionStore.getState() as any;
-      const admin = useAdminSessionStore.getState() as any;
-      const reservations = useReservationSessionStore.getState() as any;
-      const staffGraceUntil =
-        typeof staff?.authenticatedAt === 'number' && staff.authenticatedAt > 0
-          ? staff.authenticatedAt + SHIFT_GUARD_GRACE_MS
-          : undefined;
-      const expired =
-        shell === 'admin'
-          ? isPersistedSessionExpired({
-              user: admin?.user,
-              expiresAtMs: admin?.expiresAtMs,
-              now,
-            })
-          : shell === 'reservations'
-            ? isPersistedSessionExpired({
-                user: reservations?.user,
-                expiresAtMs: reservations?.expiresAtMs,
-                now,
-              })
-            : isPersistedSessionExpired({
-                user: staff?.user,
-                expiresAtMs: staff?.expiresAtMs,
-                now,
-                graceUntilMs: staffGraceUntil,
-              });
-      if (!expired) return;
-      try {
-        window.dispatchEvent(
-          new CustomEvent('pos:forceLogout', {
-            detail: { reason: t('boot.sessionExpired') },
-          }),
-        );
-      } catch {
-        // ignore
-      }
-    };
-    tick();
-    const intervalId = window.setInterval(tick, 60 * 1000);
-    return () => window.clearInterval(intervalId);
-  }, [t]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const isKdsApp = Boolean((window as any).__KDS_APP__);
-      const isAdminApp = Boolean((window as any).__ADMIN_APP__);
-      const isCompanionApp = isKdsApp || isAdminApp;
-      const hash = String(window.location.hash || '');
-      const onCompanionSetup =
-        (isKdsApp && hash.startsWith('#/kds-setup')) ||
-        (isAdminApp && hash.startsWith('#/admin-setup'));
-      if (onCompanionSetup) {
-        setReady(true);
-        return;
-      }
-
-      setReady(false);
-      setBackendUnreachable(false);
-      setMsg(t('boot.connecting'));
-      setDetail(undefined);
-      if (!isCompanionApp && !hasConfiguredBackendHost()) {
-        setBackendUnreachable(true);
-        setMsg(t('boot.cannotReach'));
-        setDetail(t('boot.cannotReachDetail'));
-        return;
-      }
-      const cachedSettings = !isCompanionApp ? peekSettings() : undefined;
-      if (cachedSettings) {
-        await resumeMainProcessSession().catch(() => {});
-        if (cancelled) return;
-        setReady(true);
-        setBackendUnreachable(false);
-        setMsg(t('boot.starting'));
-        setDetail(undefined);
-        void Promise.all([
-          (window as any).api.settings.get().catch(() => null),
-          (window as any).api.auth.listUsers().catch(() => null),
-        ]).then(() => {
-          if (!cancelled) offlineQueue.sync().catch(() => {});
-        });
-        void syncTabletToHostVersion();
-        return;
-      }
-      const maxAttempts = 2;
-      // One extra attempt, then stop so the user can Scan. No retry button.
-      for (let attempt = 0; attempt < maxAttempts && !cancelled; attempt++) {
-        try {
-          // Android tablets (Samsung especially) often report navigator.onLine
-          // false until the OS "validates" internet access — LAN-only setups
-          // never satisfy that check, which blocks POS before fetch() runs.
-          const capacitor =
-            typeof window !== 'undefined' ? (window as any).Capacitor : null;
-          const isNativeCaps =
-            Boolean(capacitor?.isNativePlatform?.()) ||
-            Boolean(
-              capacitor?.getPlatform?.() && capacitor.getPlatform() !== 'web',
-            );
-          if (
-            !isNativeCaps &&
-            typeof navigator !== 'undefined' &&
-            navigator.onLine === false
-          ) {
-            setMsg(t('boot.offline'));
-            setDetail(t('boot.offlineDetail'));
-            await sleep(750);
-            continue;
-          }
-          // Minimal "backend is ready" checks. Companions probe the host;
-          // the till needs settings. The staff directory loads on the login screen.
-          if (isCompanionApp) {
-            const companion = ((window as any).adminApp ||
-              (window as any).kdsApp) as
-              | {
-                  testConnection?: (input: {
-                    host: string;
-                    httpPort: number;
-                  }) => Promise<{ ok: boolean; error?: string }>;
-                }
-              | undefined;
-            const backend = resolveBackendHost();
-            if (companion?.testConnection) {
-              const r = await companion.testConnection({
-                host: backend.host,
-                httpPort: Number(backend.httpPort) || 3333,
-              });
-              if (!r.ok) throw new Error(r.error || 'POS host unreachable');
-            } else if (isKdsApp) {
-              await (window as any).api.kds.debug();
-            } else {
-              await (window as any).api.health.ping();
-            }
-          } else {
-            await (window as any).api.settings.get();
-            void (window as any).api.auth.listUsers().catch(() => null);
-            void syncTabletToHostVersion();
-          }
-          if (cancelled) return;
-          // Hand the main process the token from our last login so it can
-          // recognise the persisted session as one it issued. Without this the
-          // privileged IPC channels stay closed after an app restart.
-          await resumeMainProcessSession().catch(() => {});
-          if (cancelled) return;
-          setReady(true);
-          setBackendUnreachable(false);
-          setMsg(t('boot.starting'));
-          setDetail(undefined);
-          // After backend is confirmed, run offline sync (safe for Electron + browser)
-          offlineQueue.sync().catch(() => {});
-          return;
-        } catch (e: any) {
-          void e;
-          if (attempt + 1 < maxAttempts && !cancelled) {
-            await sleep(400);
-          }
-        }
-      }
-      if (!cancelled) {
-        const isKdsApp = Boolean((window as any).__KDS_APP__);
-        const isAdminApp = Boolean((window as any).__ADMIN_APP__);
-        if (isKdsApp || isAdminApp) {
-          try {
-            window.location.hash = isAdminApp ? '#/admin-setup' : '#/kds-setup';
-          } catch {
-            // ignore
-          }
-          setReady(true);
-          return;
-        }
-        setBackendUnreachable(true);
-        setMsg(t('boot.cannotReach'));
-        setDetail(t('boot.cannotReachDetail'));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [t, hostEpoch]);
-
-  useEffect(() => {
-    if (!ready) return;
-    void import('./app/AppLayout');
-    void import('./app/pages/TablesPage');
-  }, [ready]);
-
-  if (!ready) {
-    const lanClient =
-      Boolean((window as any).__BROWSER_CLIENT__) ||
-      Boolean((window as any).__KDS_APP__) ||
-      Boolean((window as any).__ADMIN_APP__);
-    const showScan = backendUnreachable && lanClient;
-    return (
-      <BootScreen
-        message={msg}
-        detail={showScan ? undefined : detail}
-        showScan={showScan}
-      />
-    );
-  }
-  return (
-    <>
-      <RouterProvider router={router} />
-      {(window as any).__KDS_APP__ || (window as any).__ADMIN_APP__ ? (
-        <React.Suspense fallback={null}>
-          <UpdateNotification />
-        </React.Suspense>
-      ) : null}
-    </>
-  );
-}
-
 if (typeof window !== 'undefined') {
   initRendererSentry();
   installWakeUiRecovery();
@@ -1857,20 +1541,6 @@ if (typeof window !== 'undefined') {
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <I18nextProvider i18n={i18n}>
-      <LocaleSync>
-        <ThemeSync>
-          <ErrorBoundary>
-            <MaybeLicenseGate>
-              <Root />
-            </MaybeLicenseGate>
-            <PosServerScanHost />
-            <React.Suspense fallback={null}>
-              <Toaster />
-            </React.Suspense>
-          </ErrorBoundary>
-        </ThemeSync>
-      </LocaleSync>
-    </I18nextProvider>
+    <BootRoot />
   </React.StrictMode>,
 );

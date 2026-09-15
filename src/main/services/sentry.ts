@@ -2,9 +2,12 @@ import * as Sentry from '@sentry/electron';
 import { app } from 'electron';
 import os from 'node:os';
 import { POS_SENTRY_DSN } from '@shared/sentryDsn';
+import { isUnpackagedElectron } from './electronDev';
 
-const IS_DEV =
-  process.env.NODE_ENV !== 'production' || process.env.ELECTRON_IS_DEV === '1';
+const IS_DEV = isUnpackagedElectron(
+  app.isPackaged,
+  process.env.ELECTRON_IS_DEV,
+);
 
 let enabled = false;
 

@@ -60,20 +60,41 @@ export function clearLanTokenMemory(): void {
   generation += 1;
 }
 
+/** PIN / pairing / staff-list calls can 401 without meaning the session died. */
+export function isLanAuthBootstrapPath(path?: string | null): boolean {
+  const pathname = String(path || '').split('?')[0];
+  return (
+    pathname === '/auth/login' ||
+    pathname === '/pairing/verify' ||
+    pathname === '/auth/users' ||
+    pathname === '/health'
+  );
+}
+
+export function isUnauthorizedStatus(status: number): boolean {
+  return status === 401;
+}
+
 /**
  * A 401 for a token we no longer use (superseded by a fresh PIN login)
  * must not wipe the new session. In-flight GETs from the login screen
  * often finish after setToken(newJwt).
+ *
+ * A 401 with no bearer still logs out: Admin/waiter can have a persisted
+ * PIN session after the LAN JWT is gone, and every host call then returns
+ * `{ error: 'unauthorized' }` while the UI stays inside the app.
  */
 export function shouldForceLogoutOn401(
   status: number,
   tokenUsed: string | null | undefined,
   currentToken: string | null | undefined,
   gens?: { request: number; current: number },
+  path?: string | null,
 ): boolean {
-  if (status !== 401 || !tokenUsed) return false;
+  if (!isUnauthorizedStatus(status)) return false;
+  if (isLanAuthBootstrapPath(path)) return false;
   if (gens && gens.request !== gens.current) return false;
-  if (currentToken && currentToken !== tokenUsed) return false;
+  if (currentToken && tokenUsed && currentToken !== tokenUsed) return false;
   return true;
 }
 

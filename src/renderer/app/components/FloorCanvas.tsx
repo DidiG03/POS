@@ -91,10 +91,10 @@ export type FloorAreaNode = {
 
 export type FloorNode = FloorTableNode | FloorAreaNode;
 
-export function isFloorAreaNode(n: FloorNode): n is FloorAreaNode {
+function isFloorAreaNode(n: FloorNode): n is FloorAreaNode {
   return (n as any)?.kind === 'AREA';
 }
-export function isFloorTableNode(n: FloorNode): n is FloorTableNode {
+function isFloorTableNode(n: FloorNode): n is FloorTableNode {
   return !isFloorAreaNode(n);
 }
 

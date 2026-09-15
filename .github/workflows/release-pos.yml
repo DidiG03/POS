@@ -219,10 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes since v0.2.30"
-            echo "- Mac and Windows installers only (Linux AppImage builds removed)"
-            echo "- Admin can check, download, and install POS and KDS updates over LAN"
-            echo "- Typecheck fixes so release jobs can publish"
+            echo "### Changes since v0.2.31"
+            echo "- Unauthorized host responses sign Admin and waiters out to the PIN screen"
+            echo "- Admin LAN saves persist (table areas, menu/stock, backups, printers, fiscal, calendar)"
+            echo "- One-admin tills no longer look like a fresh install after upgrade"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

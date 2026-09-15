@@ -111,6 +111,10 @@ export default function LoginPage() {
     Boolean((window as any).__BROWSER_CLIENT__);
   const isAdminApp =
     typeof window !== 'undefined' && Boolean((window as any).__ADMIN_APP__);
+  // Pairing is issued by Admin for tablets / KDS. The Admin app talking HTTP
+  // to the till is still a "browser client", but it must not ask for its own
+  // invite code.
+  const needsPairingCode = isBrowserClient && !isAdminApp;
   // Admin login exists only in the OneTap Admin companion, never on POS.
   const adminPath = (location?.pathname || '').replace(/\/+$/, '') || '/';
   const isAdminContext =
@@ -177,7 +181,7 @@ export default function LoginPage() {
           ?.trim()
           .replace(/[^0-9A-Za-z]/g, '')
           .slice(0, 12) || '';
-      const effectivePairingCode = isBrowserClient
+      const effectivePairingCode = needsPairingCode
         ? codeFromInput || pairingCode || undefined
         : undefined;
       // Tablet always sends to host
@@ -187,7 +191,7 @@ export default function LoginPage() {
         effectivePairingCode,
       );
       // Pairing succeeded — persist the code so the user doesn't need to re-enter it
-      if (isBrowserClient && effectivePairingCode) {
+      if (needsPairingCode && effectivePairingCode) {
         try {
           localStorage.setItem(PAIRING_STORAGE_KEY, effectivePairingCode);
           setPairingCode(effectivePairingCode);
@@ -692,7 +696,7 @@ export default function LoginPage() {
                 style={{ fontSize: '20px' }}
                 onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
               />
-              {isBrowserClient && (
+              {needsPairingCode ? (
                 <input
                   ref={pairingCodeRef}
                   type="text"
@@ -703,7 +707,7 @@ export default function LoginPage() {
                   className="pos-input text-center tabular"
                   onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
                 />
-              )}
+              ) : null}
               <Button
                 variant="primary"
                 size="lg"

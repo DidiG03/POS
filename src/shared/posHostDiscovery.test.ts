@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   collectLanScanHosts,
+  dropLoopbackIfLanSelfPresent,
   hostFromDebugBody,
   hostsInSlash24,
   isPosDebugBody,
@@ -70,6 +71,19 @@ describe('mergeDiscoveredPosHosts', () => {
     ]);
     expect(merged).toHaveLength(2);
     expect(merged.map((h) => h.host)).toEqual(['192.168.1.10', '192.168.1.20']);
+  });
+});
+
+describe('dropLoopbackIfLanSelfPresent', () => {
+  it('drops loopback when this machine is already listed on LAN', () => {
+    const dropped = dropLoopbackIfLanSelfPresent(
+      [
+        { name: 'Ullishtja', host: '127.0.0.1', httpPort: 3333 },
+        { name: 'Ullishtja', host: '192.168.33.7', httpPort: 3333 },
+      ],
+      ['192.168.33.7'],
+    );
+    expect(dropped.map((h) => h.host)).toEqual(['192.168.33.7']);
   });
 });
 

@@ -110,6 +110,13 @@ export function ipcHandle<T>(channel: string, listener: GuardedListener<T>) {
         role: ctx.session?.role ?? null,
         userId: ctx.session?.userId ?? null,
       });
+      if (verdict.error.code === 'unauthenticated') {
+        try {
+          event.sender.send('auth:forceLogout', { reason: 'unauthorized' });
+        } catch {
+          // ignore
+        }
+      }
       throw verdict.error;
     }
 

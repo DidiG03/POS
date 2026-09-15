@@ -20,7 +20,6 @@ import {
 } from './services/hostRuntime';
 import { join, dirname, resolve as resolvePath, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import os from 'node:os';
 import fs from 'node:fs';
 import dotenv from 'dotenv';
 // Initialize Sentry early (before other imports that might throw)
@@ -32,6 +31,26 @@ import {
 } from './services/sentry';
 initSentry();
 import { coreServices, withTableLock } from './services/core';
+import { syncTableAreasToDb } from './services/tableAreasSync';
+import { presentSettingsForClient } from './services/settingsPresent';
+import {
+  createMenuItemFromInput,
+  listMenuCategoriesForClient,
+  updateMenuItemFromInput,
+} from './services/menuAdmin';
+import {
+  listHostSystemPrinters,
+  listLanIpv4Addresses,
+} from './services/lanHost';
+import {
+  createDbBackupNow,
+  listDbBackups,
+  restoreDbBackup,
+} from './services/dbBackups';
+import {
+  listFiscalReviewsForAdmin,
+  resolveFiscalReviewForAdmin,
+} from './services/fiscalReviews';
 import * as reservationsService from './services/reservations';
 import { syncGoogleCalendarReservations } from './services/googleCalendarSync';
 import {
@@ -66,14 +85,11 @@ import {
   SetPrinterInputSchema,
   CreateMenuCategoryInputSchema,
   UpdateMenuCategoryInputSchema,
-  CreateMenuItemInputSchema,
-  UpdateMenuItemInputSchema,
   TransferTableInputSchema,
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { settingsChangeFromHost } from '@shared/settingsChange';
-import { FISCAL_TRANSMIT_WINDOW_MS } from '@shared/fiscalDefer';
 import {
   activateKey,
   activateSession,
@@ -130,16 +146,8 @@ import type { Prisma } from '@prisma/client';
 import {
   expireStaleMenuStock,
   consumeMenuStockForTicketLines,
-  localCalendarDateKey,
-  applyDailyStockPatch,
-  applyOnHandStockPatch,
   stockLinesFromTicketItems,
 } from './services/menuStock';
-import {
-  costWritePayload,
-  emptyCostLine,
-  parseCostBreakdown,
-} from '@shared/itemCost';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import type * as http from 'node:http';
@@ -157,9 +165,6 @@ import {
 import {
   fiscalizePaymentOnce,
   flagVoidAfterFiscalization,
-  listFiscalClaimsNeedingReview,
-  listFiscalClaimsDeferred,
-  resolveFiscalClaim,
   testFiscalConnection,
   getFiscalTokenHint,
   testMinimalCloudInvoice,
@@ -182,6 +187,10 @@ import {
   listOccupiedTables,
 } from './services/tableOccupancy';
 import { compactTicketLogSession } from './services/ticketLogCompact';
+import {
+  listAdminTicketCounts,
+  listAdminTicketsByUser,
+} from './services/adminTickets';
 import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
@@ -272,7 +281,6 @@ import {
   ticketCreatedAtIso,
 } from '@shared/ticketLogItems';
 import { splitTableKey } from '@shared/utils/tableKey';
-import { normalizeProductCode } from '@shared/barcodeScan';
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -395,158 +403,6 @@ function broadcastPrinterEvent(payload: any) {
     }
   } catch {
     // ignore
-  }
-}
-
-async function getSqliteDbFilePath(): Promise<string | null> {
-  try {
-    const rows = (await (prisma as any).$queryRawUnsafe(
-      'PRAGMA database_list;',
-    )) as any[];
-    const main = Array.isArray(rows)
-      ? rows.find((r) => String(r?.name || r?.[1] || '') === 'main')
-      : null;
-    const file = String(main?.file ?? main?.[2] ?? '');
-    if (!file) return null;
-    return resolvePath(file);
-  } catch {
-    // Fallback: attempt to parse DATABASE_URL
-    try {
-      const u = String(process.env.DATABASE_URL || '').trim();
-      if (u.startsWith('file:')) {
-        const p = u.replace(/^file:/, '');
-        return resolvePath(p);
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  }
-}
-
-function getBackupsDir(): string {
-  return join(app.getPath('userData'), 'backups');
-}
-
-function ensureDir(p: string) {
-  try {
-    fs.mkdirSync(p, { recursive: true });
-  } catch {
-    // ignore
-  }
-}
-
-function backupFileName(now = new Date()) {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mm = String(now.getMinutes()).padStart(2, '0');
-  const ss = String(now.getSeconds()).padStart(2, '0');
-  return `pos-backup-${y}${m}${d}-${hh}${mm}${ss}.db`;
-}
-
-async function createDbBackupNow(): Promise<{
-  ok: boolean;
-  file?: string;
-  error?: string;
-}> {
-  const dbPath = await getSqliteDbFilePath();
-  if (!dbPath) return { ok: false, error: 'Could not locate database file' };
-  const dir = getBackupsDir();
-  ensureDir(dir);
-  const dest = join(dir, backupFileName());
-
-  try {
-    // Best effort to checkpoint WAL into the main db file.
-    try {
-      await (prisma as any).$executeRawUnsafe(
-        'PRAGMA wal_checkpoint(TRUNCATE);',
-      );
-    } catch {
-      // ignore
-    }
-
-    // Prefer a consistent backup (SQLite 3.27+)
-    try {
-      await (prisma as any).$executeRawUnsafe(
-        `VACUUM INTO '${dest.replace(/'/g, "''")}';`,
-      );
-      return { ok: true, file: dest };
-    } catch {
-      // fallback to file copy
-    }
-
-    fs.copyFileSync(dbPath, dest);
-    return { ok: true, file: dest };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e || 'Backup failed') };
-  }
-}
-
-function listDbBackups(): Array<{
-  file: string;
-  name: string;
-  bytes: number;
-  createdAt: string;
-}> {
-  const dir = getBackupsDir();
-  ensureDir(dir);
-  const out: Array<{
-    file: string;
-    name: string;
-    bytes: number;
-    createdAt: string;
-  }> = [];
-  for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.db'))) {
-    const file = join(dir, name);
-    try {
-      const st = fs.statSync(file);
-      out.push({
-        file,
-        name,
-        bytes: st.size,
-        createdAt: st.mtime.toISOString(),
-      });
-    } catch {
-      // ignore
-    }
-  }
-  // newest first
-  out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return out;
-}
-
-async function restoreDbBackup(
-  name: string,
-): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }> {
-  const dir = getBackupsDir();
-  ensureDir(dir);
-  const safeName = String(name || '').replace(/[^0-9A-Za-z._-]/g, '');
-  if (!safeName.endsWith('.db'))
-    return { ok: false, error: 'Invalid backup file' };
-  const src = join(dir, safeName);
-  if (!fs.existsSync(src)) return { ok: false, error: 'Backup not found' };
-  const dbPath = await getSqliteDbFilePath();
-  if (!dbPath) return { ok: false, error: 'Could not locate database file' };
-
-  try {
-    // Safety backup before restore
-    await createDbBackupNow().catch(() => null);
-    await prisma.$disconnect().catch(() => null);
-    fs.copyFileSync(src, dbPath);
-    // Relaunch so Prisma and all in-memory state reload cleanly.
-    // In dev (`npm run dev`), electron-vite won't auto-relaunch the app, so we return a hint.
-    if (app.isPackaged) {
-      app.relaunch();
-      app.exit(0);
-      return { ok: true };
-    }
-    // Give IPC a moment to respond so UI can show a message, then exit.
-    setTimeout(() => app.exit(0), 250);
-    return { ok: true, devRestartRequired: true };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e || 'Restore failed') };
   }
 }
 
@@ -2391,47 +2247,9 @@ ipcHandle('auth:syncStaffFromApi', async (_e, raw) => {
 
 async function readSettings() {
   const base = await coreServices.readSettings();
-  const dbAreas = await prisma.area
-    .findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } })
-    .catch(() => []);
-  const tableAreas = (dbAreas as any[]).length
-    ? (dbAreas as any[]).map((a) => ({ name: a.name, count: a.defaultCount }))
-    : (base.tableAreas ?? []);
-  const result: any = { ...base, tableAreas };
-  // Never expose API secret to renderer
-  if (result?.security && typeof result.security === 'object') {
-    result.security = { ...result.security };
-    delete result.security.apiSecret;
-  }
-  if (result?.fiscal && typeof result.fiscal === 'object') {
-    result.fiscal = { ...result.fiscal };
-    if (result.fiscal.authToken) {
-      result.fiscal.authTokenConfigured = true;
-      delete result.fiscal.authToken;
-    }
-  }
-  if (result?.googleCalendar && typeof result.googleCalendar === 'object') {
-    result.googleCalendar = { ...result.googleCalendar };
-    if (result.googleCalendar.icalUrl) {
-      result.googleCalendar.icalUrlConfigured = true;
-      delete result.googleCalendar.icalUrl;
-    }
-    if (
-      result.googleCalendar.oauth &&
-      typeof result.googleCalendar.oauth === 'object'
-    ) {
-      result.googleCalendar.oauth = { ...result.googleCalendar.oauth };
-      if (result.googleCalendar.oauth.refreshToken) {
-        result.googleCalendar.oauthConnected = true;
-        delete result.googleCalendar.oauth.refreshToken;
-        delete result.googleCalendar.oauth.accessToken;
-        delete result.googleCalendar.oauth.accessTokenExpiresAt;
-      }
-    }
-  }
-  result.googleCalendarOAuthConfigured =
-    getGoogleOAuthClientConfig().configured;
-  return result;
+  return presentSettingsForClient(base as Record<string, any>, {
+    includePairingCode: true,
+  });
 }
 
 ipcHandle('settings:get', async (_e) => {
@@ -2464,24 +2282,7 @@ ipcHandle('settings:update', async (_e, input) => {
   }
   // Also reflect table areas into Area table if provided
   if (Array.isArray((input as any).tableAreas)) {
-    const areas = (input as any).tableAreas as {
-      name: string;
-      count: number;
-    }[];
-    for (let i = 0; i < areas.length; i++) {
-      const a = areas[i];
-      await prisma.area.upsert({
-        where: { name: a.name },
-        create: { name: a.name, defaultCount: a.count, sortOrder: i },
-        update: { defaultCount: a.count, sortOrder: i, active: true },
-      });
-    }
-    // Deactivate others not in list
-    const names = areas.map((a) => a.name);
-    await prisma.area.updateMany({
-      where: { name: { notIn: names } },
-      data: { active: false },
-    });
+    await syncTableAreasToDb((input as any).tableAreas);
   }
   const latest = await readSettings();
   try {
@@ -2493,19 +2294,7 @@ ipcHandle('settings:update', async (_e, input) => {
 });
 
 ipcHandle('network:getIps', async () => {
-  const nets = os.networkInterfaces();
-  const ips: string[] = [];
-  for (const name of Object.keys(nets)) {
-    const list = nets[name] || [];
-    for (const ni of list) {
-      if (!ni) continue;
-      if (ni.family !== 'IPv4') continue;
-      if (ni.internal) continue;
-      ips.push(ni.address);
-    }
-  }
-  // Prefer stable ordering
-  return Array.from(new Set(ips)).sort((a, b) => a.localeCompare(b));
+  return listLanIpv4Addresses();
 });
 
 ipcHandle('settings:syncGoogleCalendar', async () => {
@@ -2627,83 +2416,20 @@ ipcHandle('settings:testFiscalMinimalInvoice', async () => {
  * of the retry loop until an admin has checked easyPos.
  */
 ipcHandle('settings:listFiscalReviews', async () => {
-  const [review, deferred] = await Promise.all([
-    listFiscalClaimsNeedingReview(),
-    listFiscalClaimsDeferred(),
-  ]);
-  const mappedReview = review.map(({ idempotencyKey, record }) => ({
-    idempotencyKey,
-    kind:
-      record.state === 'CORRECTION_REQUIRED'
-        ? ('correction-required' as const)
-        : ('unknown-outcome' as const),
-    area: record.context?.area ?? null,
-    tableLabel: record.context?.tableLabel ?? null,
-    total: record.context?.total ?? null,
-    attempts: record.attempts,
-    lastError: record.lastError ?? null,
-    nslf: record.result?.nslf ?? null,
-    nivf: record.result?.nivf ?? null,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    deadlineAt: null as string | null,
-  }));
-  const mappedDeferred = deferred.map(({ idempotencyKey, record }) => ({
-    idempotencyKey,
-    kind: 'deferred' as const,
-    area: record.context?.area ?? null,
-    tableLabel: record.context?.tableLabel ?? null,
-    total: record.context?.total ?? null,
-    attempts: record.attempts,
-    lastError: record.lastError ?? null,
-    nslf: record.result?.nslf ?? null,
-    nivf: record.result?.nivf ?? null,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    deadlineAt: new Date(
-      Date.parse(record.createdAt) + FISCAL_TRANSMIT_WINDOW_MS,
-    ).toISOString(),
-  }));
-  return [...mappedDeferred, ...mappedReview];
+  return listFiscalReviewsForAdmin();
 });
 
 ipcHandle('settings:resolveFiscalReview', async (_e, payload) => {
-  const idempotencyKey = String((payload as any)?.idempotencyKey || '').trim();
-  const requested = String((payload as any)?.resolution || '');
-  const resolution: 'registered' | 'retry' | 'corrected' =
-    requested === 'registered'
-      ? 'registered'
-      : requested === 'corrected'
-        ? 'corrected'
-        : 'retry';
-  if (!idempotencyKey) return { ok: false, error: 'missing idempotencyKey' };
-
-  // `registered` records the invoice easyPos already holds so the sale is
-  // never sent again; `retry` releases it for a fresh attempt; `corrected`
-  // closes out a void whose corrective invoice has been filed. Getting
-  // this wrong in either direction is a real tax error, so log who chose.
-  const nslf = String((payload as any)?.nslf || '').trim();
-  const nivf = String((payload as any)?.nivf || '').trim();
-  const ok = await resolveFiscalClaim(
-    idempotencyKey,
-    resolution,
-    resolution === 'registered'
-      ? {
-          nslf: nslf || undefined,
-          nivf: nivf || undefined,
-          status: 'accepted',
-        }
-      : undefined,
-  );
-  if (!ok) return { ok: false, error: 'claim not found' };
-
-  logSecurityEvent('fiscal_review_resolved', {
-    senderId: _e.sender.id,
-    userId: getSession(_e.sender.id)?.userId,
-    idempotencyKey,
-    resolution,
-  });
-  return { ok: true };
+  const result = await resolveFiscalReviewForAdmin(payload as any);
+  if (result.ok) {
+    logSecurityEvent('fiscal_review_resolved', {
+      senderId: _e.sender.id,
+      userId: getSession(_e.sender.id)?.userId,
+      idempotencyKey: String((payload as any)?.idempotencyKey || ''),
+      resolution: String((payload as any)?.resolution || ''),
+    });
+  }
+  return result;
 });
 
 ipcHandle('settings:setPrinter', async (_e, payload) => {
@@ -2786,14 +2512,8 @@ ipcHandle('settings:testPrintVerbose', async () => {
   }
 });
 
-ipcHandle('printer:list', async (e) => {
-  const list = await e.sender.getPrintersAsync();
-  return (list || []).map((p: any) => ({
-    name: p.name,
-    isDefault: Boolean(p.isDefault),
-    status: typeof p.status === 'number' ? p.status : undefined,
-    description: p.description ? String(p.description) : undefined,
-  }));
+ipcHandle('printer:list', async () => {
+  return listHostSystemPrinters();
 });
 
 ipcHandle('printer:scanNetwork', async () => {
@@ -3370,76 +3090,8 @@ ipcHandle('tables:transfer', async (_e, payload) => {
 
 // Menu syncing from remote URL removed: business admins manage menu directly.
 
-function normalizeMenuStockLevel(raw: unknown): 'OK' | 'LOW' | 'OUT' {
-  const s = String(raw ?? 'OK').toUpperCase();
-  if (s === 'LOW') return 'LOW';
-  if (s === 'OUT') return 'OUT';
-  return 'OK';
-}
-
-function menuItemCostDto(i: { costPrice?: unknown; costBreakdown?: unknown }): {
-  costPrice: number | null;
-  costBreakdown: { id: string; label: string; amount: number }[] | null;
-} {
-  const costBreakdown = parseCostBreakdown(i.costBreakdown);
-  const fromPrice =
-    i.costPrice != null && Number.isFinite(Number(i.costPrice))
-      ? Number(i.costPrice)
-      : null;
-  return {
-    costPrice: fromPrice,
-    costBreakdown: costBreakdown.length ? costBreakdown : null,
-  };
-}
-
-function menuItemCostWrite(input: {
-  costPrice?: number | null;
-  costBreakdown?: { id: string; label: string; amount: number }[] | null;
-}): { costPrice: number | null; costBreakdown: unknown } | null {
-  if (input.costBreakdown !== undefined) {
-    return costWritePayload(input.costBreakdown ?? []);
-  }
-  if (input.costPrice === undefined) return null;
-  if (input.costPrice == null) {
-    return { costPrice: null, costBreakdown: null };
-  }
-  return costWritePayload([emptyCostLine(Number(input.costPrice))]);
-}
-
-// Local-first: always use local DB for menu
 ipcHandle('menu:listCategoriesWithItems', async (_e) => {
-  await expireStaleMenuStock(prisma);
-  const cats = await prisma.category.findMany({
-    where: { active: true },
-    orderBy: { sortOrder: 'asc' },
-    // Include inactive items too so admins can re-enable, and waiters can see disabled items greyed out.
-    include: { items: { orderBy: { name: 'asc' } } },
-  });
-  return cats.map((c: any) => ({
-    id: c.id,
-    name: c.name,
-    sortOrder: c.sortOrder,
-    active: c.active,
-    color: (c as any)?.color ?? null,
-    kdsStation: (c as any)?.kdsStation ?? null,
-    items: c.items.map((i: any) => ({
-      id: i.id,
-      name: i.name,
-      sku: i.sku,
-      price: Number(i.price),
-      vatRate: Number(i.vatRate),
-      active: i.active,
-      categoryId: i.categoryId,
-      isKg: Boolean((i as any)?.isKg),
-      station: String((i as any)?.station || 'KITCHEN'),
-      stockLevel: normalizeMenuStockLevel((i as any)?.stockLevel),
-      stockRemaining:
-        i.stockRemaining != null && Number.isFinite(Number(i.stockRemaining))
-          ? Number(i.stockRemaining)
-          : null,
-      ...menuItemCostDto(i),
-    })),
-  }));
+  return listMenuCategoriesForClient();
 });
 
 ipcHandle('menu:createCategory', async (_e, payload) => {
@@ -3496,186 +3148,12 @@ ipcHandle('menu:deleteCategory', async (_e, payload) => {
   return true;
 });
 
-function slugifySku(name: string): string {
-  const base = String(name || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '') // drop diacritics (ç, ë, …)
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-  return base || 'ITEM';
-}
-
-// SKU is unique. Build a candidate from an explicit sku (or the name) and
-// resolve collisions by appending a counter, so bulk imports with duplicate
-// or pre-existing names never crash on the unique constraint.
-async function nextAvailableSku(preferred: string): Promise<string> {
-  const base = slugifySku(preferred);
-  for (let i = 0; i < 200; i++) {
-    const candidate = i === 0 ? base : `${base}-${i + 1}`;
-    const clash = await prisma.menuItem.findUnique({
-      where: { sku: candidate },
-      select: { id: true },
-    });
-    if (!clash) return candidate;
-  }
-  return `${base}-${Date.now().toString(36).toUpperCase()}`;
-}
-
 ipcHandle('menu:createItem', async (_e, payload) => {
-  const input = CreateMenuItemInputSchema.parse(payload);
-  const category = await prisma.category.findUnique({
-    where: { id: Number(input.categoryId) },
-    select: { kdsStation: true },
-  });
-  const inheritedStation =
-    (category as any)?.kdsStation ??
-    (typeof (input as any).station === 'string'
-      ? String((input as any).station).toUpperCase()
-      : 'KITCHEN');
-  const data = {
-    name: input.name.trim(),
-    categoryId: Number(input.categoryId),
-    price: Number(input.price),
-    vatRate: Number(
-      (input as any).vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2,
-    ),
-    active: (input as any).active ?? true,
-    isKg: (input as any).isKg ?? false,
-    station: inheritedStation,
-    ...(typeof input.stockLevel === 'string'
-      ? { stockLevel: normalizeMenuStockLevel(input.stockLevel) }
-      : {}),
-    ...(menuItemCostWrite(input) ?? {}),
-  };
-  // Retry a couple of times in case a concurrent create grabbed the SKU
-  // between the availability check and the insert.
-  const explicitSku = normalizeProductCode(String(input.sku || ''));
-  if (explicitSku) {
-    const clash = await prisma.menuItem.findUnique({
-      where: { sku: explicitSku },
-      select: { id: true },
-    });
-    if (clash) {
-      throw new Error('This barcode is already used by another product.');
-    }
-    const created = await prisma.menuItem.create({
-      data: { ...data, sku: explicitSku } as any,
-    });
-    return { id: created.id, sku: created.sku };
-  }
-
-  let lastErr: unknown = null;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const sku = await nextAvailableSku(String(input.name).trim());
-    try {
-      const created = await prisma.menuItem.create({
-        data: { ...data, sku } as any,
-      });
-      return { id: created.id, sku: created.sku };
-    } catch (e: any) {
-      // P2002 = unique constraint violation; retry with a fresh SKU.
-      if (e?.code === 'P2002') {
-        lastErr = e;
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw lastErr ?? new Error('Failed to create menu item');
+  return createMenuItemFromInput(payload);
 });
 
 ipcHandle('menu:updateItem', async (_e, payload) => {
-  const input = UpdateMenuItemInputSchema.parse(payload);
-  await expireStaleMenuStock(prisma);
-
-  const existing = await prisma.menuItem.findUnique({
-    where: { id: input.id },
-  });
-  if (!existing) throw new Error('Menu item not found');
-
-  const today = localCalendarDateKey();
-  const curLevel = normalizeMenuStockLevel((existing as any)?.stockLevel);
-
-  const data: Record<string, unknown> = {
-    ...(typeof input.name === 'string' ? { name: input.name.trim() } : {}),
-    ...(typeof input.price === 'number' ? { price: input.price } : {}),
-    ...(typeof (input as any).vatRate === 'number'
-      ? { vatRate: (input as any).vatRate }
-      : {}),
-    ...(typeof input.active === 'boolean' ? { active: input.active } : {}),
-    ...(typeof (input as any).isKg === 'boolean'
-      ? { isKg: (input as any).isKg }
-      : {}),
-    ...(typeof input.categoryId === 'number'
-      ? { categoryId: input.categoryId }
-      : {}),
-    ...(typeof (input as any).station === 'string'
-      ? { station: String((input as any).station).toUpperCase() }
-      : {}),
-    ...(menuItemCostWrite(input) ?? {}),
-  };
-
-  if (typeof input.sku === 'string') {
-    const nextSku = normalizeProductCode(input.sku);
-    if (nextSku && nextSku !== String(existing.sku || '')) {
-      const clash = await prisma.menuItem.findUnique({
-        where: { sku: nextSku },
-        select: { id: true },
-      });
-      if (clash && clash.id !== existing.id) {
-        throw new Error('This barcode is already used by another product.');
-      }
-      data.sku = nextSku;
-    }
-  }
-
-  const stockRemainingIn = (input as any).stockRemaining as
-    | number
-    | null
-    | undefined;
-  const stockLevelIn =
-    typeof input.stockLevel === 'string'
-      ? normalizeMenuStockLevel(input.stockLevel)
-      : undefined;
-
-  const onHandInventory = storePlanBlocksTables();
-  const touchesQtyOnly =
-    stockLevelIn === undefined && stockRemainingIn !== undefined;
-  const restaurantQtyOnly = touchesQtyOnly && curLevel === 'LOW';
-
-  if (onHandInventory && (stockLevelIn !== undefined || touchesQtyOnly)) {
-    Object.assign(
-      data,
-      applyOnHandStockPatch({
-        stockLevelIn,
-        stockRemainingIn,
-        existingRemaining:
-          existing.stockRemaining != null &&
-          Number.isFinite(Number(existing.stockRemaining))
-            ? Number(existing.stockRemaining)
-            : null,
-      }),
-    );
-  } else if (stockLevelIn !== undefined || restaurantQtyOnly) {
-    const nextLevel = stockLevelIn ?? curLevel;
-    Object.assign(
-      data,
-      applyDailyStockPatch({
-        nextLevel,
-        stockRemainingIn,
-        existingRemaining: existing.stockRemaining,
-        today,
-      }),
-    );
-  }
-
-  await prisma.menuItem.update({
-    where: { id: input.id },
-    data: data as any,
-  });
-  return true;
+  return updateMenuItemFromInput(payload);
 });
 
 ipcHandle('menu:deleteItem', async (_e, payload) => {
@@ -4880,202 +4358,9 @@ ipcHandle('admin:correctSale', async (_e, input, ctx) => {
 });
 
 ipcHandle('admin:listTicketsByUser', async (_e, input) => {
-  const userId = Number(input?.userId);
-  if (!userId) return [];
-  const settings = await readSettings().catch(() => ({}));
-  const defaultVatEnabled = isVatEnabledFromSettings(settings);
-  const fiscalTin = String((settings as any)?.fiscal?.nipt || '').trim();
-  const where: any = { userId };
-  if (input?.startIso || input?.endIso) {
-    where.createdAt = {};
-    if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
-    if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
-  }
-  const limit = Math.min(2000, Math.max(1, Number(input?.limit || 500)));
-  const rows = await prisma.ticketLog.findMany({
-    where,
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-  });
-
-  // Admin ticket list: hide source-session rows superseded by a table
-  // move. Those rows still exist for audit/reports but would show as a
-  // duplicate card next to the destination row (same items, two cards).
-  // Intermediate snapshots of one sitting are hidden for the same reason —
-  // the newest row already carries every line the waiter sent.
-  const visibleRows = latestRowPerSession(
-    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
-
-  // Status resolution per ticket-log row:
-  //   VOIDED  -> note explicitly contains "VOIDED" OR every item on the row is voided
-  //   ACTIVE  -> the (area, tableLabel) is currently in the `tables:open` map
-  //              AND no payment receipt has been printed for it at/after this row's time
-  //   PAID    -> otherwise (closed table without a void marker = it was paid out)
-  //
-  // We resolve PAID from Order rows written at settlement.
-  // To avoid N+1, fetch once for the unique tables on screen and bucket the
-  // earliest payment timestamp per table, then compare per row.
-  const uniqueTables = Array.from(
-    new Set(
-      (visibleRows as any[]).map((r: any) => `${r.area}|${r.tableLabel}`),
-    ),
-  );
-  const openMap: Record<string, boolean> = {};
-  for (const t of await coreServices.listOpenTables().catch(() => [])) {
-    openMap[`${t.area}:${t.label}`] = true;
-  }
-
-  const paymentsByTable = new Map<
-    string,
-    {
-      atMs: number;
-      vatEnabled: boolean;
-      sale: ReturnType<typeof mapOrderToFiscalSaleRow>;
-    }[]
-  >();
-  if (uniqueTables.length) {
-    const tableFilters = uniqueTables
-      .map((k) => {
-        const [area, tableLabel] = String(k).split('|');
-        if (!area || !tableLabel) return null;
-        return { area, tableLabel };
-      })
-      .filter(Boolean) as { area: string; tableLabel: string }[];
-    const earliestClosedFrom = (visibleRows as any[]).reduce(
-      (min: number, r: any) => {
-        const ms = new Date(r.createdAt).getTime();
-        return Number.isFinite(ms) && ms < min ? ms : min;
-      },
-      Number.POSITIVE_INFINITY,
-    );
-    const sales = tableFilters.length
-      ? await prisma.order
-          .findMany({
-            where: {
-              status: { in: ['PAID', 'VOID'] } as any,
-              OR: tableFilters,
-              ...(Number.isFinite(earliestClosedFrom)
-                ? { closedAt: { gte: new Date(earliestClosedFrom) } }
-                : {}),
-            } as any,
-            include: {
-              items: { orderBy: { sortOrder: 'asc' } },
-              payments: { orderBy: { createdAt: 'desc' }, take: 1 },
-              corrections: { orderBy: { createdAt: 'desc' } },
-            } as any,
-          })
-          .catch(() => [])
-      : [];
-    for (const sale of sales as any[]) {
-      const k = `${String(sale.area || '')}|${String(sale.tableLabel || '')}`;
-      if (!uniqueTables.includes(k)) continue;
-      const at = sale.closedAt ? new Date(sale.closedAt as any).getTime() : NaN;
-      if (!Number.isFinite(at)) continue;
-      const arr = paymentsByTable.get(k) || [];
-      arr.push({
-        atMs: at,
-        vatEnabled: Boolean(sale.vatEnabled),
-        sale: mapOrderToFiscalSaleRow(sale, { tin: fiscalTin }),
-      });
-      paymentsByTable.set(k, arr);
-    }
-    for (const [, arr] of paymentsByTable) arr.sort((a, b) => a.atMs - b.atMs);
-  }
-
-  // Oldest ticket first takes the earliest unused covering sale, so two
-  // sittings on the same table do not both bind to the first payment.
-  const usedOrderIds = new Set<number>();
-  const saleByLogId = new Map<
-    number,
-    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
-  >();
-  const chronological = [...(visibleRows as any[])].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-  );
-  for (const r of chronological) {
-    const tKey = `${r.area}|${r.tableLabel}`;
-    const rowMs = new Date(r.createdAt).getTime();
-    const covering = (paymentsByTable.get(tKey) || []).find(
-      (p) => p.atMs >= rowMs && !usedOrderIds.has(p.sale.orderId),
-    );
-    if (!covering) continue;
-    usedOrderIds.add(covering.sale.orderId);
-    saleByLogId.set(Number(r.id), covering);
-  }
-
-  return visibleRows.map((r: any) => {
-    const items = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
-    const liveItems = items.filter((it: any) => !it?.voided);
-    const noteStr = String(r.note || '').toUpperCase();
-    const allVoided =
-      items.length > 0 && items.every((it: any) => it?.voided === true);
-    const covering = saleByLogId.get(Number(r.id));
-    const saleVoided =
-      String(covering?.sale.status || '').toUpperCase() === 'VOID';
-    const isVoided = allVoided || /\bVOIDED\b/.test(noteStr) || saleVoided;
-    // A row whose note carries the moved-out marker is a snapshot of a
-    // session that ended by being transferred elsewhere; the
-    // destination row in the same period already represents the
-    // payment. Marking it `TRANSFERRED` keeps the audit trail visible
-    // without double-counting it as PAID.
-    const isTransferredOut = isTransferredOutNote(r.note);
-
-    const isPaid = Boolean(covering);
-    const rowVatEnabled = covering ? covering.vatEnabled : defaultVatEnabled;
-    const isOpen = Boolean(openMap[`${r.area}:${r.tableLabel}`]);
-
-    const status: 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED' = isVoided
-      ? 'VOIDED'
-      : isTransferredOut
-        ? 'TRANSFERRED'
-        : isPaid
-          ? 'PAID'
-          : isOpen
-            ? 'ACTIVE'
-            : 'PAID';
-
-    // Surface the structured transfer tag so the admin UI can show a
-    // "Transferred from X" badge without re-parsing strings on the renderer.
-    const parsedTransfer = parseTransferTag(r.note);
-    const transfer = parsedTransfer
-      ? {
-          kind: parsedTransfer.kind,
-          fromUserId: parsedTransfer.fromUserId,
-          fromUserName: parsedTransfer.fromUserName,
-          fromArea: parsedTransfer.fromArea ?? null,
-          fromLabel: parsedTransfer.fromLabel ?? null,
-          toUserId: parsedTransfer.toUserId ?? null,
-          toUserName: parsedTransfer.toUserName ?? null,
-          byUserId: parsedTransfer.byUserId,
-          byUserName: parsedTransfer.byUserName,
-        }
-      : null;
-
-    return {
-      id: r.id,
-      area: r.area,
-      tableLabel: r.tableLabel,
-      covers: r.covers,
-      createdAt: r.createdAt.toISOString(),
-      items,
-      note: r.note,
-      status,
-      transfer,
-      sale: covering?.sale ?? null,
-      ...(() => {
-        const { net, vat } = sumTicketLinesNetVat(
-          liveItems,
-          rowVatEnabled,
-          Number((settings as any)?.defaultVatRate || 0),
-        );
-        return { subtotal: net, vat };
-      })(),
-    };
-  });
+  return listAdminTicketsByUser(input);
 });
 
-// Notifications IPC
 ipcHandle('notifications:list', async (_e, input, ctx) => {
   const onlyUnread = Boolean(input?.onlyUnread);
   const userId = resolveActorUserId(ctx, input?.userId);
@@ -5106,99 +4391,7 @@ ipcHandle('notifications:markAllRead', async (_e, input, ctx) => {
 });
 
 ipcHandle('admin:listTicketCounts', async (_e, input) => {
-  const where: any = {};
-  if (input?.startIso || input?.endIso) {
-    where.createdAt = {};
-    if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
-    if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
-  }
-  // Per-user ticket counts: only the rows that still represent live
-  // revenue. Rows whose session was moved to another table carry the
-  // `[TRANSFER moved-out ...]` tag and would otherwise inflate the
-  // count by 2x (source + destination).
-  const liveTicketsWhere = {
-    ...where,
-    NOT: { note: { contains: '[TRANSFER moved-out' } },
-  } as any;
-  const logs = await prisma.ticketLog
-    .groupBy({
-      where: liveTicketsWhere,
-      by: ['userId'],
-      _count: { userId: true },
-    } as any)
-    .catch(() => []);
-  const users = await prisma.user.findMany({
-    where: { role: { not: 'ADMIN' } } as any,
-  });
-
-  // Only staff who clocked in during the filtered period (shift overlaps range).
-  let clockedInDuringPeriod: Set<number> | null = null;
-  if (input?.startIso || input?.endIso) {
-    const rangeStart = input?.startIso ? new Date(input.startIso) : new Date(0);
-    const rangeEnd = input?.endIso ? new Date(input.endIso) : new Date();
-    const periodShifts = await prisma.dayShift
-      .findMany({
-        where: {
-          OR: [
-            { closedAt: null, openedAt: { lte: rangeEnd } },
-            {
-              openedAt: { lte: rangeEnd },
-              closedAt: { gte: rangeStart },
-            },
-          ],
-        },
-        select: { openedById: true },
-      } as any)
-      .catch(() => [] as { openedById: number }[]);
-    clockedInDuringPeriod = new Set(
-      (periodShifts as { openedById: number }[]).map((s) =>
-        Number(s.openedById),
-      ),
-    );
-  }
-
-  const openShifts = await prisma.dayShift.findMany({
-    where: { closedAt: null },
-  });
-  const openIds = new Set(openShifts.map((s: any) => s.openedById));
-  const counts: Record<number, number> = {};
-  for (const r of logs as any[]) counts[r.userId] = r._count.userId;
-
-  // Count transferred-IN tickets per user. We filter in-memory so we
-  // can require BOTH "[TRANSFER" (some variant of the tag) AND the
-  // absence of the moved-out marker — those are source rows for a
-  // transfer that happened ELSEWHERE, not tickets this waiter received.
-  const transfersIn: Record<number, number> = {};
-  try {
-    const transferRows = await prisma.ticketLog
-      .findMany({
-        where: { ...where, note: { contains: '[TRANSFER' } },
-        select: { userId: true, note: true },
-      } as any)
-      .catch(() => [] as { userId: number; note: string | null }[]);
-    for (const row of transferRows as {
-      userId: number;
-      note: string | null;
-    }[]) {
-      if (isTransferredOutNote(row.note)) continue;
-      transfersIn[row.userId] = (transfersIn[row.userId] ?? 0) + 1;
-    }
-  } catch {
-    // Best-effort metric — never block the list on it.
-  }
-
-  const visibleUsers =
-    clockedInDuringPeriod == null
-      ? users
-      : users.filter((u: any) => clockedInDuringPeriod!.has(u.id));
-
-  return visibleUsers.map((u: any) => ({
-    id: u.id,
-    name: u.displayName,
-    active: openIds.has(u.id),
-    tickets: counts[u.id] ?? 0,
-    transfersIn: transfersIn[u.id] ?? 0,
-  }));
+  return listAdminTicketCounts(input);
 });
 
 ipcHandle('admin:listShifts', async (_e, input) => {

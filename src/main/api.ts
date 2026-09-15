@@ -9,11 +9,9 @@ import { prisma } from '@db/client';
 import bcrypt from 'bcryptjs';
 import {
   CreateMenuCategoryInputSchema,
-  CreateMenuItemInputSchema,
   CreateUserInputSchema,
   DeleteUserInputSchema,
   UpdateMenuCategoryInputSchema,
-  UpdateMenuItemInputSchema,
   UpdateUserInputSchema,
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
@@ -28,12 +26,16 @@ import {
 import {
   fiscalizePaymentOnce,
   flagVoidAfterFiscalization,
+  getFiscalTokenHint,
+  testFiscalConnection,
+  testMinimalCloudInvoice,
 } from './services/fiscal';
 import { reportAuditWriteFailure } from './services/adminAlerts';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
   assertDiningFloorEnabled,
+  assertReservationsEnabled,
   assertStaffRoleAllowed,
   assertStoreCounterAllowed,
   storePlanBlocksKds,
@@ -74,6 +76,40 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { settingsChangeFromHost } from '@shared/settingsChange';
 import { authorizeLanRoute } from './services/lanPolicy';
+import { syncTableAreasToDb } from './services/tableAreasSync';
+import { presentSettingsForClient } from './services/settingsPresent';
+import {
+  createMenuItemFromInput,
+  listMenuCategoriesForClient,
+  updateMenuItemFromInput,
+} from './services/menuAdmin';
+import {
+  listHostSystemPrinters,
+  listLanIpv4Addresses,
+} from './services/lanHost';
+import {
+  createDbBackupNow,
+  listDbBackups,
+  restoreDbBackup,
+} from './services/dbBackups';
+import {
+  listFiscalReviewsForAdmin,
+  resolveFiscalReviewForAdmin,
+} from './services/fiscalReviews';
+import {
+  connectGoogleCalendarAccount,
+  getGoogleOAuthClientConfig,
+  getValidGoogleAccessToken,
+  listGoogleCalendars,
+} from './services/googleCalendarOAuth';
+import { syncGoogleCalendarReservations } from './services/googleCalendarSync';
+import { lanLoginRequiresPairingCode } from './services/lanLoginPairing';
+import {
+  listAdminTicketCounts,
+  listAdminTicketsByUser,
+} from './services/adminTickets';
+import { isThisMachineAddress } from '@shared/localPosHost';
+import os from 'node:os';
 import {
   checkHostAndClients,
   downloadHostAndClients,
@@ -467,13 +503,24 @@ function pairingCodesMatch(provided: unknown, expected: string): boolean {
   }
 }
 
+function hostInterfaceAddresses(): string[] {
+  const out: string[] = [];
+  try {
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const ni of list || []) {
+        if (ni?.address) out.push(ni.address);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return out;
+}
+
 function isLoopback(remoteAddress: string | undefined) {
-  const ip = String(remoteAddress || '');
-  if (!ip) return false;
-  if (ip === '127.0.0.1' || ip === '::1') return true;
-  // IPv4 mapped IPv6
-  if (ip.startsWith('::ffff:127.')) return true;
-  return false;
+  // Same-machine Admin often hits http://192.168.x.x:3333, which is not
+  // 127.0.0.1 — still this till, so pairing must not apply.
+  return isThisMachineAddress(remoteAddress, hostInterfaceAddresses());
 }
 
 /**
@@ -1081,44 +1128,29 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // Login is intentionally not rate-limited. Waiter tablets retype PINs
         // throughout a shift and a 429 mid-service is worse than the
         // brute-force risk, which is already mitigated by the LAN pairing
-        // code requirement (see /auth/pairing-check below).
+        // code requirement for staff devices.
         const { pin, userId, pairingCode } = await parseJson(req);
-        // If this is a LAN client (not loopback) and pairing is required, enforce it.
+        const remoteIp = (req.socket as any)?.remoteAddress;
+        let requirePairing = false;
+        // If this is a LAN client (not loopback), gate web access first.
+        // Pairing is checked after the PIN so Admin — the issuer of the
+        // code — can sign in without typing its own invite.
         try {
           const s = await coreServices.readSettings();
-          const requirePairing = Boolean(
-            (s as any)?.security?.requirePairingCode,
-          );
+          requirePairing = Boolean((s as any)?.security?.requirePairingCode);
           const lanEnabled =
             Boolean((s as any)?.security?.allowLan) ||
             process.env.POS_ALLOW_LAN === 'true';
           // Native app bypasses the browser-only "Allow Web access" gate,
-          // but the pairing-code check below still applies to it when
+          // but the pairing-code check below still applies to staff when
           // pairing is required.
           const gateForBrowsers = lanEnabled || isNativeClient(req, parsed);
-          if (
-            !gateForBrowsers &&
-            !isLoopback((req.socket as any)?.remoteAddress)
-          ) {
+          if (!gateForBrowsers && !isLoopback(remoteIp)) {
             return send(res, 403, { error: 'web access disabled' }, corsOrigin);
-          }
-          if (
-            requirePairing &&
-            !isLoopback((req.socket as any)?.remoteAddress)
-          ) {
-            const code = await getOrCreatePairingCode();
-            if (!pairingCodesMatch(pairingCode, code)) {
-              return send(
-                res,
-                403,
-                { error: 'pairing code required' },
-                corsOrigin,
-              );
-            }
           }
         } catch {
           // fail closed for LAN clients if we can't read settings
-          if (!isLoopback((req.socket as any)?.remoteAddress)) {
+          if (!isLoopback(remoteIp)) {
             return send(
               res,
               403,
@@ -1145,6 +1177,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             })
             .catch(() => {});
           return send(res, 200, null, corsOrigin);
+        }
+        if (
+          lanLoginRequiresPairingCode({
+            requirePairing,
+            loopback: isLoopback(remoteIp),
+            role: user.role,
+          })
+        ) {
+          const code = await getOrCreatePairingCode();
+          if (!pairingCodesMatch(pairingCode, code)) {
+            return send(
+              res,
+              403,
+              { error: 'pairing code required' },
+              corsOrigin,
+            );
+          }
         }
         const token = await issueToken(secret, {
           userId: user.id,
@@ -1215,6 +1264,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (!auth) {
           return send(res, 401, { error: 'unauthorized' }, corsOrigin);
         }
+      } else if (pathname === '/settings') {
+        // Public locale/currency read, but an admin bearer may also fetch
+        // credentials such as the pairing code — same rule as IPC settings:get.
+        const token = pickBearerToken(req, parsed);
+        if (token) auth = await verifyToken(secret, token);
       }
 
       // Positive authorization gate. Until this existed, a route was only as
@@ -1384,50 +1438,22 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Menu
       if (req.method === 'GET' && pathname === '/menu/categories') {
-        res.setHeader(
-          'Cache-Control',
-          'private, max-age=5, stale-while-revalidate=60',
-        );
-        const cats = await prisma.category.findMany({
-          where: { active: true },
-          orderBy: { sortOrder: 'asc' },
-          // Include inactive items too so admin can re-enable; waiters will render disabled items greyed out.
-          include: { items: { orderBy: { name: 'asc' } } },
-        });
-        return send(
-          res,
-          200,
-          cats.map((c: any) => ({
-            id: c.id,
-            name: c.name,
-            sortOrder: c.sortOrder,
-            active: c.active,
-            color: (c as any)?.color ?? null,
-            kdsStation: (c as any)?.kdsStation ?? null,
-            items: c.items.map((i: any) => ({
-              id: i.id,
-              name: i.name,
-              sku: i.sku,
-              price: Number(i.price),
-              vatRate: Number(i.vatRate),
-              active: i.active,
-              categoryId: i.categoryId,
-              // Required by the renderer for kg-priced items (opens the
-              // weight keypad) and for kitchen routing. Without these the
-              // mobile / tablet client falls back to a flat add and to the
-              // default station, which silently breaks both flows.
-              isKg: Boolean(i.isKg),
-              station: i.station || 'KITCHEN',
-              stockLevel: String(i.stockLevel || 'OK').toUpperCase(),
-              stockRemaining:
-                i.stockRemaining != null &&
-                Number.isFinite(Number(i.stockRemaining))
-                  ? Number(i.stockRemaining)
-                  : null,
-            })),
-          })),
-          corsOrigin,
-        );
+        res.setHeader('Cache-Control', 'private, no-cache');
+        try {
+          return send(
+            res,
+            200,
+            await listMenuCategoriesForClient(),
+            corsOrigin,
+          );
+        } catch (e: any) {
+          return send(
+            res,
+            500,
+            { error: String(e?.message || e || 'menu failed') },
+            corsOrigin,
+          );
+        }
       }
 
       if (req.method === 'POST' && pathname === '/menu/create-category') {
@@ -1509,58 +1535,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'POST' && pathname === '/menu/create-item') {
         try {
-          const input = CreateMenuItemInputSchema.parse(await parseJson(req));
-          const category = await prisma.category.findUnique({
-            where: { id: Number(input.categoryId) },
-            select: { kdsStation: true },
-          });
-          const inheritedStation =
-            (category as any)?.kdsStation ??
-            (typeof (input as any).station === 'string'
-              ? String((input as any).station).toUpperCase()
-              : 'KITCHEN');
-          const skuBase =
-            String(input.sku || input.name || 'ITEM')
-              .trim()
-              .toUpperCase()
-              .replace(/[^A-Z0-9]+/g, '-')
-              .replace(/^-+|-+$/g, '')
-              .slice(0, 40) || 'ITEM';
-          let sku = skuBase;
-          for (let i = 0; i < 30; i++) {
-            sku = i === 0 ? skuBase : `${skuBase}-${i + 1}`;
-            const clash = await prisma.menuItem.findUnique({
-              where: { sku },
-              select: { id: true },
-            });
-            if (!clash) break;
-          }
-          const created = await prisma.menuItem.create({
-            data: {
-              name: input.name.trim(),
-              categoryId: Number(input.categoryId),
-              price: Number(input.price),
-              vatRate: Number(
-                (input as any).vatRate ?? process.env.VAT_RATE_DEFAULT ?? 0.2,
-              ),
-              active: (input as any).active ?? true,
-              isKg: (input as any).isKg ?? false,
-              station: inheritedStation,
-              sku,
-              ...(typeof input.stockLevel === 'string'
-                ? { stockLevel: String(input.stockLevel).toUpperCase() }
-                : {}),
-              ...(input.stockRemaining !== undefined
-                ? { stockRemaining: input.stockRemaining }
-                : {}),
-            } as any,
-          });
-          return send(
-            res,
-            200,
-            { id: created.id, sku: created.sku },
-            corsOrigin,
-          );
+          const created = await createMenuItemFromInput(await parseJson(req));
+          return send(res, 200, created, corsOrigin);
         } catch (e: any) {
           return send(
             res,
@@ -1572,41 +1548,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'POST' && pathname === '/menu/update-item') {
         try {
-          const input = UpdateMenuItemInputSchema.parse(await parseJson(req));
-          const data: Record<string, unknown> = {
-            ...(typeof input.name === 'string'
-              ? { name: input.name.trim() }
-              : {}),
-            ...(typeof input.price === 'number' ? { price: input.price } : {}),
-            ...(typeof (input as any).vatRate === 'number'
-              ? { vatRate: (input as any).vatRate }
-              : {}),
-            ...(typeof input.active === 'boolean'
-              ? { active: input.active }
-              : {}),
-            ...(typeof (input as any).isKg === 'boolean'
-              ? { isKg: (input as any).isKg }
-              : {}),
-            ...(typeof input.categoryId === 'number'
-              ? { categoryId: input.categoryId }
-              : {}),
-            ...(typeof (input as any).station === 'string'
-              ? { station: String((input as any).station).toUpperCase() }
-              : {}),
-            ...(typeof input.stockLevel === 'string'
-              ? { stockLevel: String(input.stockLevel).toUpperCase() }
-              : {}),
-            ...(input.stockRemaining !== undefined
-              ? { stockRemaining: input.stockRemaining }
-              : {}),
-          };
-          if (typeof input.sku === 'string' && input.sku.trim()) {
-            data.sku = input.sku.trim();
-          }
-          await prisma.menuItem.update({
-            where: { id: input.id },
-            data: data as any,
-          });
+          await updateMenuItemFromInput(await parseJson(req));
           return send(res, 200, true, corsOrigin);
         } catch (e: any) {
           return send(
@@ -2178,6 +2120,274 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           { ok: r.ok, error: r.error },
           corsOrigin,
         );
+      }
+      if (req.method === 'POST' && pathname === '/print/test-profile') {
+        const body = await parseJson(req);
+        const profile = (body as any)?.profile ?? body;
+        if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+          return send(
+            res,
+            400,
+            { ok: false, error: 'Missing printer profile.' },
+            corsOrigin,
+          );
+        }
+        const settings = await coreServices.readSettings();
+        const r = await testPrintWithProfile(profile as any, settings as any);
+        return send(
+          res,
+          r.ok ? 200 : 500,
+          { ok: r.ok, error: r.error },
+          corsOrigin,
+        );
+      }
+      if (req.method === 'POST' && pathname === '/print/scan-network') {
+        try {
+          const { scanNetworkPrinters } = await import(
+            './services/networkPrinterScan'
+          );
+          const rows = await scanNetworkPrinters();
+          return send(res, 200, Array.isArray(rows) ? rows : [], corsOrigin);
+        } catch (e: any) {
+          console.warn('[lan] printer scan failed:', e?.message || e);
+          return send(res, 200, [], corsOrigin);
+        }
+      }
+      if (req.method === 'GET' && pathname === '/print/list') {
+        return send(res, 200, await listHostSystemPrinters(), corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/print/serial-ports') {
+        try {
+          const { listSerialPorts } = await import('./serial');
+          return send(res, 200, await listSerialPorts(), corsOrigin);
+        } catch (e: any) {
+          console.warn('[lan] listSerialPorts failed:', e?.message || e);
+          return send(res, 200, [], corsOrigin);
+        }
+      }
+      if (req.method === 'GET' && pathname === '/network/ips') {
+        return send(res, 200, listLanIpv4Addresses(), corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/backups') {
+        return send(res, 200, listDbBackups(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/backups/create') {
+        return send(res, 200, await createDbBackupNow(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/backups/restore') {
+        const body = await parseJson(req);
+        return send(
+          res,
+          200,
+          await restoreDbBackup(String(body?.name || '')),
+          corsOrigin,
+        );
+      }
+      if (req.method === 'GET' && pathname === '/settings/fiscal-token-hint') {
+        const settings = await coreServices.readSettings();
+        return send(res, 200, getFiscalTokenHint(settings as any), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/settings/fiscal-test') {
+        const settings = await coreServices.readSettings();
+        return send(
+          res,
+          200,
+          await testFiscalConnection(settings as any),
+          corsOrigin,
+        );
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/settings/fiscal-test-minimal'
+      ) {
+        const settings = await coreServices.readSettings();
+        return send(
+          res,
+          200,
+          await testMinimalCloudInvoice(settings as any),
+          corsOrigin,
+        );
+      }
+      if (req.method === 'GET' && pathname === '/settings/fiscal-reviews') {
+        return send(res, 200, await listFiscalReviewsForAdmin(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/settings/fiscal-reviews') {
+        const body = await parseJson(req);
+        const result = await resolveFiscalReviewForAdmin(body);
+        if (result.ok) {
+          logSecurityEvent('fiscal_review_resolved', {
+            userId: auth?.userId,
+            idempotencyKey: String(body?.idempotencyKey || ''),
+            resolution: String(body?.resolution || ''),
+          });
+        }
+        return send(res, 200, result, corsOrigin);
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/settings/google-calendar/sync'
+      ) {
+        try {
+          assertReservationsEnabled();
+        } catch (e: any) {
+          return send(
+            res,
+            403,
+            { ok: false, error: String(e?.message || e) },
+            corsOrigin,
+          );
+        }
+        const settings = await coreServices
+          .readSettings()
+          .catch(() => null as any);
+        const cfg = (settings as any)?.googleCalendar || {};
+        if (!cfg?.enabled) {
+          return send(
+            res,
+            200,
+            {
+              ok: false,
+              imported: 0,
+              updated: 0,
+              cancelled: 0,
+              skipped: 0,
+              error: 'Google Calendar sync is disabled',
+            },
+            corsOrigin,
+          );
+        }
+        const result = await syncGoogleCalendarReservations({
+          enabled: true,
+          authMode: cfg?.authMode,
+          icalUrl: cfg?.icalUrl,
+          calendarId: cfg?.calendarId,
+          oauth: cfg?.oauth,
+          defaultArea: cfg?.defaultArea,
+          defaultDurationMin: cfg?.defaultDurationMin,
+          onOAuthUpdated: async (oauth) => {
+            await coreServices.updateSettings({ googleCalendar: { oauth } });
+          },
+        });
+        const count =
+          Number(result.imported || 0) +
+          Number(result.updated || 0) +
+          Number(result.cancelled || 0);
+        await coreServices.updateSettings({
+          googleCalendar: {
+            lastSyncAt: new Date().toISOString(),
+            lastSyncCount: count,
+            lastSyncMessage: result.ok ? result.message : undefined,
+            lastSyncError: result.ok ? undefined : result.error,
+          },
+        });
+        return send(res, 200, result, corsOrigin);
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/settings/google-calendar/connect'
+      ) {
+        try {
+          assertReservationsEnabled();
+          const connected = await connectGoogleCalendarAccount();
+          await coreServices.updateSettings({
+            googleCalendar: {
+              enabled: true,
+              authMode: 'oauth',
+              oauthConnected: true,
+              accountEmail: connected.accountEmail,
+              calendarId: connected.calendarId,
+              calendarSummary: connected.calendarSummary,
+              oauth: {
+                refreshToken: connected.refreshToken,
+                accessToken: connected.accessToken,
+                accessTokenExpiresAt: connected.accessTokenExpiresAt,
+              },
+              lastSyncError: connected.warning,
+            },
+          });
+          return send(
+            res,
+            200,
+            {
+              ok: true,
+              accountEmail: connected.accountEmail,
+              calendarId: connected.calendarId,
+              calendarSummary: connected.calendarSummary,
+              calendars: connected.calendars,
+              warning: connected.warning,
+            },
+            corsOrigin,
+          );
+        } catch (e: any) {
+          return send(
+            res,
+            200,
+            {
+              ok: false,
+              error: String(
+                e?.message || e || 'Google Calendar connection failed',
+              ),
+            },
+            corsOrigin,
+          );
+        }
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/settings/google-calendar/disconnect'
+      ) {
+        await coreServices.updateSettings({
+          googleCalendar: {
+            authMode: undefined,
+            oauthConnected: false,
+            accountEmail: undefined,
+            calendarId: undefined,
+            calendarSummary: undefined,
+            oauth: null,
+          },
+        });
+        return send(res, 200, { ok: true }, corsOrigin);
+      }
+      if (
+        req.method === 'GET' &&
+        pathname === '/settings/google-calendar/calendars'
+      ) {
+        const settings = await coreServices.readSettings();
+        const gc = (settings as any)?.googleCalendar || {};
+        const { clientId, clientSecret, configured } =
+          getGoogleOAuthClientConfig();
+        if (!configured || !gc?.oauth?.refreshToken) {
+          return send(
+            res,
+            200,
+            {
+              ok: false,
+              calendars: [],
+              error: 'Google Calendar is not connected',
+            },
+            corsOrigin,
+          );
+        }
+        try {
+          const { accessToken } = await getValidGoogleAccessToken({
+            oauth: gc.oauth,
+            clientId,
+            clientSecret,
+          });
+          const calendars = await listGoogleCalendars(accessToken);
+          return send(res, 200, { ok: true, calendars }, corsOrigin);
+        } catch (e: any) {
+          return send(
+            res,
+            200,
+            {
+              ok: false,
+              calendars: [],
+              error: String(e?.message || e || 'Could not list calendars'),
+            },
+            corsOrigin,
+          );
+        }
       }
       if (req.method === 'POST' && pathname === '/print/ticket') {
         const body = await parseJson(req);
@@ -3284,46 +3494,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Settings: get and update (for browser clients)
       if (req.method === 'GET' && pathname === '/settings') {
-        res.setHeader(
-          'Cache-Control',
-          'private, max-age=5, stale-while-revalidate=30',
-        );
+        res.setHeader('Cache-Control', 'private, no-cache');
         const base = await coreServices.readSettings();
-        // Enrich with table areas from DB so mobile/browser clients see the
-        // same areas as the Electron app (which augments via main/index.ts).
-        const dbAreas = await prisma.area
-          .findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } })
-          .catch(() => [] as any[]);
-        const tableAreas = (dbAreas as any[]).length
-          ? (dbAreas as any[]).map((a) => ({
-              name: a.name,
-              count: a.defaultCount,
-            }))
-          : ((base as any).tableAreas ?? []);
+        const presented = await presentSettingsForClient(
+          base as Record<string, any>,
+          { includePairingCode: auth?.role === 'ADMIN' },
+        );
         const result = withLicenseEdition({
-          ...base,
-          tableAreas,
-          printer: {
-            ip: base.printer?.ip || null,
-            port: Number(base.printer?.port || 9100),
-          },
+          ...presented,
         } as Record<string, unknown>) as any;
-        if (result?.security && typeof result.security === 'object') {
-          result.security = { ...result.security };
-          delete result.security.apiSecret;
-          // The pairing code is the gate that decides which LAN devices may
-          // log in at all, and this route is reachable without a token — so
-          // returning it here handed the key to anyone who could reach the
-          // port. Clients only need to know *whether* a code is required.
-          delete result.security.pairingCode;
-        }
-        if (result?.fiscal && typeof result.fiscal === 'object') {
-          result.fiscal = { ...result.fiscal };
-          if (result.fiscal.authToken) {
-            result.fiscal.authTokenConfigured = true;
-            delete result.fiscal.authToken;
-          }
-        }
         return send(res, 200, result, corsOrigin);
       }
       // Offline outbox status (for tablets / browser clients)
@@ -3339,20 +3518,22 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         try {
           const input = await parseJson(req);
           const merged = await coreServices.updateSettings(input);
+          if (Array.isArray(input?.tableAreas)) {
+            await syncTableAreasToDb(input.tableAreas);
+          }
           if (
             input?.host &&
             Object.prototype.hasOwnProperty.call(input.host, 'openAtLogin')
           ) {
             applyOpenAtLogin(isOpenAtLoginEnabled(merged));
           }
-          const result = { ...(merged as any) };
-          if (result?.fiscal && typeof result.fiscal === 'object') {
-            result.fiscal = { ...result.fiscal };
-            if (result.fiscal.authToken) {
-              result.fiscal.authTokenConfigured = true;
-              delete result.fiscal.authToken;
-            }
-          }
+          const presented = await presentSettingsForClient(
+            merged as Record<string, any>,
+            { includePairingCode: auth?.role === 'ADMIN' },
+          );
+          const result = withLicenseEdition({
+            ...presented,
+          } as Record<string, unknown>) as any;
           try {
             broadcastSettingsChanged(settingsChangeFromHost(merged));
           } catch {
@@ -3497,6 +3678,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }),
           corsOrigin,
         );
+      }
+      if (req.method === 'GET' && pathname === '/admin/ticket-counts') {
+        const rows = await listAdminTicketCounts({
+          startIso: parsed.query.startIso
+            ? String(parsed.query.startIso)
+            : undefined,
+          endIso: parsed.query.endIso ? String(parsed.query.endIso) : undefined,
+        });
+        return send(res, 200, rows, corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/admin/tickets-by-user') {
+        const rows = await listAdminTicketsByUser({
+          userId: Number(parsed.query.userId),
+          startIso: parsed.query.startIso
+            ? String(parsed.query.startIso)
+            : undefined,
+          endIso: parsed.query.endIso ? String(parsed.query.endIso) : undefined,
+        });
+        return send(res, 200, rows, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/admin/top-selling-today') {
         const start = new Date(new Date().setHours(0, 0, 0, 0));

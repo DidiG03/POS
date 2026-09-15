@@ -6,6 +6,7 @@ import {
   shouldDeferShiftGuard,
   SHIFT_GUARD_GRACE_MS,
   sessionShellFromHash,
+  sessionShellFromWindow,
   isPersistedSessionExpired,
 } from './sessionPersist';
 
@@ -87,6 +88,16 @@ describe('sessionShellFromHash', () => {
     expect(sessionShellFromHash('#/reservations/app')).toBe('reservations');
     expect(sessionShellFromHash('#/tables')).toBe('pos');
     expect(sessionShellFromHash('')).toBe('pos');
+  });
+});
+
+describe('sessionShellFromWindow', () => {
+  it('keeps the Admin companion on the admin login even when the hash is POS', () => {
+    expect(sessionShellFromWindow('#/', { adminApp: true })).toBe('admin');
+    expect(sessionShellFromWindow('#/admin/settings', { adminApp: true })).toBe(
+      'admin',
+    );
+    expect(sessionShellFromWindow('#/tables', { adminApp: false })).toBe('pos');
   });
 });
 

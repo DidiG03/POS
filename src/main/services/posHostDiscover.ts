@@ -9,6 +9,7 @@
 import os from 'node:os';
 import { buildLanHttpUrl, pickBestLanAddress } from '@shared/lanHost';
 import {
+  dropLoopbackIfLanSelfPresent,
   hostFromDebugBody,
   hostsInSlash24,
   mapPool,
@@ -127,5 +128,8 @@ export async function discoverPosHostsOnLan(): Promise<DiscoveredPosHost[]> {
     discoverViaMdns(MDNS_WAIT_MS),
     discoverViaHttpScan(),
   ]);
-  return mergeDiscoveredPosHosts([...mdns, ...http]);
+  return dropLoopbackIfLanSelfPresent(
+    mergeDiscoveredPosHosts([...mdns, ...http]),
+    localIpv4s(),
+  );
 }

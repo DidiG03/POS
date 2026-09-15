@@ -4,6 +4,8 @@ import { invalidateHostScopedCaches } from './posReadCache';
 
 export type BackendHost = {
   host: string;
+  /** HTTP target; loopback when Admin/KDS is on the same machine as the till. */
+  connectHost?: string;
   httpPort: string;
   httpsPort: string;
 };
@@ -27,13 +29,17 @@ export function resolveBackendHost(): BackendHost {
   const injected = (window as any).__POS_HOST__ as
     | {
         host?: string;
+        connectHost?: string;
         httpPort?: number | string;
         httpsPort?: number | string | null;
       }
     | undefined;
   if (injected && typeof injected.host === 'string' && injected.host.trim()) {
+    const host = injected.host.trim();
+    const connectHost = String(injected.connectHost || host).trim();
     return {
-      host: injected.host.trim(),
+      host,
+      connectHost,
       httpPort: String(injected.httpPort || 3333),
       httpsPort: String(injected.httpsPort || 3443),
     };
@@ -87,13 +93,13 @@ export function hasConfiguredBackendHost(): boolean {
 }
 
 export function getHttpBase(): string {
-  const { host, httpPort } = resolveBackendHost();
-  return buildLanHttpUrl(host, httpPort);
+  const { connectHost, host, httpPort } = resolveBackendHost();
+  return buildLanHttpUrl(connectHost || host, httpPort);
 }
 
 export function getHttpsBase(): string {
-  const { host, httpsPort } = resolveBackendHost();
-  return buildLanHttpsUrl(host, httpsPort);
+  const { connectHost, host, httpsPort } = resolveBackendHost();
+  return buildLanHttpsUrl(connectHost || host, httpsPort);
 }
 
 export function syncBackendHostToLocalStorage(input: {

@@ -16,17 +16,16 @@ import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
 import { allowNextQuit } from './services/hostRuntime';
+import { isUnpackagedElectron } from './services/electronDev';
 import {
   isMissingUpdateFeedError,
   userFacingUpdaterError,
 } from '@shared/updateFeedError';
 
-// Dev detection MUST use `app.isPackaged`, not NODE_ENV: the bundler does not
-// inline `process.env.NODE_ENV`, so in a packaged (double-clicked) app it's
-// undefined and the old `NODE_ENV !== 'production'` check wrongly reported DEV,
-// silently disabling auto-updates. `app.isPackaged` is the canonical signal
-// (it's exactly what electron-updater itself uses internally).
-const IS_DEV = !app.isPackaged || process.env.ELECTRON_IS_DEV === '1';
+const IS_DEV = isUnpackagedElectron(
+  app.isPackaged,
+  process.env.ELECTRON_IS_DEV,
+);
 const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED !== 'false';
 
 let updateCheckInterval: NodeJS.Timeout | null = null;

@@ -181,12 +181,19 @@ export default function AdminLayout() {
         : t('adminLayout.connLatencyTooltip', { ms: latencyMs ?? 0 });
 
   const signOut = async () => {
-    // Clear persisted admin session so reopening /admin requires a PIN again.
-    setMe(null as any);
+    try {
+      window.dispatchEvent(
+        new CustomEvent('pos:forceLogout', {
+          detail: { reason: t('common.loggedOut') },
+        }),
+      );
+    } catch {
+      setMe(null as any);
+      navigate('/admin');
+    }
     await window.api.auth.logoutAdmin().catch(() => {});
     setShowNotifications(false);
     setUnreadCount(0);
-    navigate('/admin');
   };
 
   return (

@@ -6,6 +6,7 @@ import {
   mapPool,
   mergeDiscoveredPosHosts,
   POS_LAN_HTTP_PORT,
+  dropLoopbackIfLanSelfPresent,
   type DiscoveredPosHost,
 } from '@shared/posHostDiscovery';
 
@@ -124,5 +125,6 @@ export async function discoverPosHostsInBrowser(opts?: {
     Boolean(h),
   );
   const mdns = await nativePromise;
-  return mergeDiscoveredPosHosts([...mdns, ...http]);
+  const merged = mergeDiscoveredPosHosts([...mdns, ...http]);
+  return dropLoopbackIfLanSelfPresent(merged, localIps);
 }
