@@ -64,6 +64,7 @@ import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
   broadcastSettingsChanged,
+  broadcastUsersChanged,
 } from './services/realtime';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import {
@@ -1895,6 +1896,7 @@ ipcHandle('auth:createUser', async (_e, payload) => {
       salaryPeriod: salary.salaryPeriod,
     },
   });
+  broadcastUsersChanged({ kind: 'created', id: created.id });
   return userDtoFromRow(created);
 });
 
@@ -1982,6 +1984,7 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
   ) {
     await revokeSessionsForUser(input.id);
   }
+  broadcastUsersChanged({ kind: 'updated', id: updated.id });
   return userDtoFromRow(updated);
 });
 
@@ -1996,6 +1999,7 @@ ipcHandle('auth:deleteUser', async (_e, payload) => {
     // A deactivated account must lose its privileges now, not whenever its
     // window happens to reload.
     await revokeSessionsForUser(id);
+    broadcastUsersChanged({ kind: 'updated', id });
     return true;
   }
 
@@ -2042,6 +2046,7 @@ ipcHandle('auth:deleteUser', async (_e, payload) => {
 
   await prisma.user.delete({ where: { id } });
   await revokeSessionsForUser(id);
+  broadcastUsersChanged({ kind: 'deleted', id });
   return true;
 });
 

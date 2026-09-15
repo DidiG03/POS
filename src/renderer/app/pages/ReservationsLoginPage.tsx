@@ -111,6 +111,44 @@ export default function ReservationsLoginPage() {
     };
   }, [t]);
 
+  useEffect(() => {
+    if (!isBrowserClient) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const users = await window.api.auth.listUsers({ includeAdmins: true });
+        if (cancelled) return;
+        const filtered = (users || [])
+          .filter((u: any) => u && u.active !== false)
+          .filter((u: any) => {
+            const r = String(u.role || '').toUpperCase();
+            return r === 'HOST' || r === 'ADMIN';
+          })
+          .map((u: any) => ({
+            id: Number(u.id),
+            displayName: String(u.displayName || ''),
+            role: String(u.role || ''),
+            active: u.active !== false,
+          }));
+        setStaff(filtered as any);
+      } catch {
+        // Keep the current picker; the next event retries.
+      }
+    };
+    const onUsers = () => {
+      void refresh();
+    };
+    window.addEventListener('pos:usersChanged', onUsers);
+    const pollId = window.setInterval(() => {
+      void refresh();
+    }, 5_000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pos:usersChanged', onUsers);
+      window.clearInterval(pollId);
+    };
+  }, [isBrowserClient]);
+
   const sortedStaff = useMemo(
     () =>
       [...staff].sort((a, b) => {

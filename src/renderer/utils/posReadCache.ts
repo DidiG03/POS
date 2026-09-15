@@ -328,6 +328,7 @@ export function emitPosSyncCatchup(): void {
   lastCatchupAt = Date.now();
   invalidateFloorCache();
   invalidateCache(POS_CACHE.settings);
+  invalidateCache(POS_CACHE.users);
   try {
     window.dispatchEvent(new CustomEvent('pos:syncCatchup'));
   } catch {

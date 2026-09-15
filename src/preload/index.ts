@@ -427,3 +427,13 @@ ipcRenderer.on('settings:changed', (_e, payload) => {
     // ignore
   }
 });
+
+ipcRenderer.on('users:changed', (_e, payload) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('pos:usersChanged', { detail: payload }),
+    );
+  } catch {
+    // ignore
+  }
+});

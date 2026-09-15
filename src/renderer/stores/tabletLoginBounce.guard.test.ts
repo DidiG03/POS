@@ -65,6 +65,11 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain('classifyLanLoginError');
     expect(src).toContain('lanLoginUserMessage');
     expect(src).toContain('peekSettings');
+    expect(src).toContain('needsFirstAdmin');
+    expect(src).toContain('invalidateCache(POS_CACHE.users)');
+    expect(src).toContain('pos:usersChanged');
+    expect(src).toContain('__BROWSER_CLIENT__');
+    expect(src).not.toContain('directoryEmpty');
     const loginFn = src.slice(
       src.indexOf('const onSubmit'),
       src.indexOf('const [staff,'),
@@ -105,6 +110,8 @@ describe('tablet login bounce guards', () => {
     expect(main).toContain('POS_BACKEND_HOST_CHANGED');
     expect(main).toContain("addEventListener('catchup'");
     expect(main).toContain("addEventListener('settings'");
+    expect(main).toContain("addEventListener('users'");
+    expect(main).toContain('/events/login');
     expect(main).toContain('isSseHealthy()');
     expect(read('src/renderer/utils/posReadCache.ts')).toContain(
       'CATCHUP_DEBOUNCE_MS',
@@ -126,6 +133,9 @@ describe('tablet login bounce guards', () => {
     );
     expect(read('src/renderer/utils/posRealtimeSync.ts')).toContain(
       'invalidateFloorSnapshots()',
+    );
+    expect(read('src/renderer/utils/posRealtimeSync.ts')).toContain(
+      'pos:usersChanged',
     );
     expect(read('src/renderer/utils/posRealtimeSync.ts')).not.toContain(
       'invalidateFloorCache()',

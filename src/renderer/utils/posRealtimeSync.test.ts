@@ -59,6 +59,12 @@ describe('applyPosRealtimeEvent', () => {
     expect(peek(POS_CACHE.settings)).toBeUndefined();
   });
 
+  it('drops the staff directory cache when Admin creates or edits a user', () => {
+    writeCache(POS_CACHE.users, [{ id: 1, displayName: 'Ana' }]);
+    applyPosRealtimeEvent('pos:usersChanged', { kind: 'created', id: 2 });
+    expect(peek(POS_CACHE.users)).toBeUndefined();
+  });
+
   it('invalidates one ticket when another waiter sends to it', () => {
     writeCache(POS_CACHE.ticket('Salla', 'T7'), { items: [] });
     writeCache(POS_CACHE.ticket('Salla', 'T8'), { items: [{ name: 'keep' }] });

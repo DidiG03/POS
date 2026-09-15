@@ -283,13 +283,13 @@ export default function LoginPage() {
   const [firstAdminName, setFirstAdminName] = useState('');
   const [firstAdminPin, setFirstAdminPin] = useState('');
   const [creatingFirstAdmin, setCreatingFirstAdmin] = useState(false);
-  const [directoryEmpty, setDirectoryEmpty] = useState(false);
+  const [needsFirstAdmin, setNeedsFirstAdmin] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setOpenShiftKnown(false);
-      setDirectoryEmpty(false);
+      setNeedsFirstAdmin(false);
       const applyChrome = (s: any) => {
         if (!s) return;
         setDevEditionSwitch(Boolean(s.devEditionSwitch));
@@ -304,6 +304,7 @@ export default function LoginPage() {
 
       const cached = peekSettings<any>();
       invalidateCache(POS_CACHE.settings);
+      invalidateCache(POS_CACHE.users);
       // Cached chrome (edition, theme) can paint immediately. Clock columns
       // must wait for a live host read — a stale tablet cache defaults the
       // shift feature ON and ignores Admin turning it off.
@@ -337,9 +338,9 @@ export default function LoginPage() {
         return;
       }
       const directory = loginDirectoryState(users, isAdminContext);
-      if (directory.directoryEmpty) {
+      if (directory.needsFirstAdmin) {
         setNotice(t('login.noAdminUsersLocal'));
-        setDirectoryEmpty(true);
+        setNeedsFirstAdmin(true);
         setStaff([]);
         setOpenIds([]);
         setOpenShiftKnown(true);
@@ -347,6 +348,7 @@ export default function LoginPage() {
         return;
       }
       if (cancelled) return;
+      setNeedsFirstAdmin(false);
       setStaff(directory.staff);
       setStaffLoading(false);
       if (!isAdminContext && got.live && isClockCaptureEnabled(s)) {
@@ -369,6 +371,46 @@ export default function LoginPage() {
       cancelled = true;
     };
   }, [reloadNonce, isAdminContext, i18n.language, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshStaff = async () => {
+      invalidateCache(POS_CACHE.users);
+      try {
+        const users = await window.api.auth.listUsers({ includeAdmins: true });
+        if (cancelled) return;
+        const directory = loginDirectoryState(users, isAdminContext);
+        if (directory.needsFirstAdmin) {
+          setNeedsFirstAdmin(true);
+          setStaff([]);
+          return;
+        }
+        setNeedsFirstAdmin(false);
+        setStaff(directory.staff);
+      } catch {
+        // Keep the Select Staff screen; the live event will retry.
+      }
+    };
+    const onUsers = () => {
+      void refreshStaff();
+    };
+    window.addEventListener('pos:usersChanged', onUsers);
+    window.addEventListener('pos:syncCatchup', onUsers);
+    const isBrowser =
+      typeof window !== 'undefined' &&
+      Boolean((window as any).__BROWSER_CLIENT__);
+    const pollId = isBrowser
+      ? window.setInterval(() => {
+          void refreshStaff();
+        }, 5_000)
+      : null;
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pos:usersChanged', onUsers);
+      window.removeEventListener('pos:syncCatchup', onUsers);
+      if (pollId != null) window.clearInterval(pollId);
+    };
+  }, [isAdminContext]);
 
   useEffect(() => {
     const onSettings = (ev: Event) => {
@@ -489,7 +531,7 @@ export default function LoginPage() {
               {notice}
             </div>
           )}
-          {!showPin && !staffLoading && directoryEmpty && (
+          {!showPin && !staffLoading && needsFirstAdmin && (
             <div className="shrink-0 rounded-lg border border-white/7 bg-gray-900 p-3.5">
               <div className="text-[13px] font-semibold text-gray-100">
                 {t('login.firstAdminTitle')}

@@ -69,6 +69,9 @@ describe('lanAuthToken', () => {
       shouldForceLogoutOn401(401, null, null, undefined, '/auth/users'),
     ).toBe(false);
     expect(
+      shouldForceLogoutOn401(401, null, null, undefined, '/events/login'),
+    ).toBe(false);
+    expect(
       shouldForceLogoutOn401(401, 'jwt', 'jwt', undefined, '/notifications'),
     ).toBe(true);
   });

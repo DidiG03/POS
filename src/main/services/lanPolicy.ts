@@ -50,6 +50,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
     allow: 'session',
     note: 'SSE stream; verifies its own token',
   },
+  'GET /events/login': {
+    allow: 'public',
+    note: 'staff-picker live updates before PIN; only users + ping',
+  },
 
   // -------------------------------------------------------- boot-time reads
   'GET /settings': {

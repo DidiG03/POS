@@ -130,6 +130,7 @@ if (!(window as any).api) {
       pathname === '/auth/login' ||
       pathname === '/pairing/verify' ||
       pathname === '/auth/users' ||
+      pathname === '/events/login' ||
       pathname === '/health'
     ) {
       return null;
@@ -272,12 +273,6 @@ if (!(window as any).api) {
     try {
       // Keep this callable so boot / login can restart SSE without crashing.
       const token = getToken();
-      if (!token) {
-        // No session yet — close any zombie connection and wait for login
-        // to call us again.
-        stopSse();
-        return;
-      }
       // Tear down the previous EventSource before opening a new one. We do
       // this unconditionally so a `startSse()` triggered by a visibility
       // change reliably replaces a half-open socket.
@@ -289,9 +284,13 @@ if (!(window as any).api) {
         }
         es = null;
       }
-      const url =
-        `${getHttpBase()}/events?token=${encodeURIComponent(token)}` +
-        (IS_NATIVE_SHELL ? '&client=native' : '');
+      const nativeQ = IS_NATIVE_SHELL ? 'client=native' : '';
+      // PIN screen has no JWT. `/events/login` only emits staff-directory
+      // changes so iOS/Android see new waiters without a refresh.
+      const url = token
+        ? `${getHttpBase()}/events?token=${encodeURIComponent(token)}` +
+          (nativeQ ? `&${nativeQ}` : '')
+        : `${getHttpBase()}/events/login${nativeQ ? `?${nativeQ}` : ''}`;
       es = new EventSource(url);
       lastSseEventAt = Date.now();
 
@@ -398,6 +397,15 @@ if (!(window as any).api) {
           emitPosSyncCatchupSoon();
         }
       });
+      es.addEventListener('users', (ev: any) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          handleSseEvent('pos:usersChanged', data);
+        } catch (e) {
+          void e;
+          emitPosSyncCatchupSoon();
+        }
+      });
       es.addEventListener('apps-update', (ev: any) => {
         try {
           const data = JSON.parse(ev.data || '{}');
@@ -438,8 +446,6 @@ if (!(window as any).api) {
     // Called from foreground / online / pageshow listeners. If the socket
     // is missing or not OPEN, restart it with a fresh backoff so we don't
     // wait the full timeout the user just slept through.
-    const token = getToken();
-    if (!token) return;
     if (!es) {
       sseBackoffMs = 1000;
       if (sseReconnectTimer != null) {
@@ -467,6 +473,7 @@ if (!(window as any).api) {
         // ignore
       }
       stopSse();
+      startSse();
     });
     window.addEventListener('pagehide', stopSse);
     // Foreground / connectivity recovery: the three signals that reliably

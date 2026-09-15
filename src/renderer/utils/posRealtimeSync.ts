@@ -20,7 +20,8 @@ export type PosRealtimeEventName =
   | 'pos:ticketsChanged'
   | 'pos:layoutChanged'
   | 'pos:tableMergesChanged'
-  | 'pos:settingsChanged';
+  | 'pos:settingsChanged'
+  | 'pos:usersChanged';
 
 type RealtimePayload = {
   area?: string;
@@ -72,6 +73,11 @@ export function applyPosRealtimeEvent(
     // a hydrated document and turn clock back on.
     invalidateCache(POS_CACHE.settings);
     applyHostPosUiTheme(themeFromChange(payload));
+    return;
+  }
+
+  if (eventName === 'pos:usersChanged') {
+    invalidateCache(POS_CACHE.users);
   }
 }
 
@@ -97,6 +103,7 @@ export function installPosRealtimeSync(): void {
     'pos:settingsChanged',
     onEvent('pos:settingsChanged'),
   );
+  window.addEventListener('pos:usersChanged', onEvent('pos:usersChanged'));
   // Visibility catchup lives in main.tsx (gated on a dead SSE socket).
   // Electron still pings this after OS sleep.
   window.addEventListener('pos:os-resume', () => emitPosSyncCatchupSoon());

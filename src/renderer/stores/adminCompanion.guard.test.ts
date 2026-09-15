@@ -79,7 +79,17 @@ describe('standalone Admin companion', () => {
     );
     expect(main).not.toContain('admin:openWindow');
     const login = read('src/renderer/app/pages/LoginPage.tsx');
-    expect(login).toContain('isAdminApp');
+    expect(login).toContain('needsFirstAdmin');
+    expect(login).toContain('pos:usersChanged');
+    expect(read('src/main/services/realtime.ts')).toContain(
+      'broadcastUsersChanged',
+    );
+    expect(read('src/preload/index.ts')).toContain('users:changed');
+    expect(main).toContain('/events/login');
+    expect(read('src/main/api.ts')).toContain("pathname === '/events/login'");
+    expect(read('src/renderer/utils/loginDirectory.ts')).toContain(
+      'needsFirstAdmin: isAdminContext && all.length === 0',
+    );
     expect(login).toContain('needsPairingCode');
     expect(login).toContain('isBrowserClient && !isAdminApp');
     expect(login).toContain("t('adminLayout.panelTitle')");

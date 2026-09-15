@@ -6,15 +6,15 @@ export type LoginDirectoryUser = {
 };
 
 /**
- * POS login hides admins (they sign in via OneTap Admin). An install that
- * only has that first admin must not be treated as "no users yet" or the
- * till asks to create a second bootstrap admin against a live database.
+ * POS login hides admins (they sign in via OneTap Admin). After a license
+ * key, the till must land on Select Staff and wait — never the bootstrap
+ * admin form. Only the Admin companion may create the first user.
  */
 export function loginDirectoryState(
   users: LoginDirectoryUser[] | null | undefined,
   isAdminContext: boolean,
 ): {
-  directoryEmpty: boolean;
+  needsFirstAdmin: boolean;
   staff: LoginDirectoryUser[];
 } {
   const all = Array.isArray(users) ? users : [];
@@ -24,5 +24,8 @@ export function loginDirectoryState(
         const role = String(u.role || '').toUpperCase();
         return u.active !== false && role !== 'ADMIN' && role !== 'HOST';
       });
-  return { directoryEmpty: all.length === 0, staff };
+  return {
+    needsFirstAdmin: isAdminContext && all.length === 0,
+    staff,
+  };
 }

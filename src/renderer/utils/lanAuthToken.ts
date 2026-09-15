@@ -67,6 +67,7 @@ export function isLanAuthBootstrapPath(path?: string | null): boolean {
     pathname === '/auth/login' ||
     pathname === '/pairing/verify' ||
     pathname === '/auth/users' ||
+    pathname === '/events/login' ||
     pathname === '/health'
   );
 }

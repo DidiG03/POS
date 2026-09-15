@@ -61,6 +61,7 @@ export function ensureSseKeepAlive(): void {
   if (sseKeepAliveTimer) return;
   sseKeepAliveTimer = setInterval(() => {
     broadcastSse('ping', { t: Date.now() });
+    broadcastLoginSse('ping', { t: Date.now() });
   }, 15_000);
   try {
     sseKeepAliveTimer.unref?.();
@@ -116,6 +117,17 @@ function broadcastSse(eventName: string, payload: unknown): void {
     writeSseToClients(clients, formatSseEvent(eventName, payload, sseEventId));
   } catch {
     // ignore — no global SSE registry yet (server not started)
+  }
+}
+
+/** PIN-screen tablets have no JWT, so they cannot join `/events`. */
+function broadcastLoginSse(eventName: string, payload: unknown): void {
+  try {
+    const clients: Set<SseClient> =
+      (globalThis as any).__SSE_LOGIN_CLIENTS__ || new Set();
+    writeSseToClients(clients, formatSseEvent(eventName, payload));
+  } catch {
+    // ignore
   }
 }
 
@@ -244,6 +256,18 @@ export function broadcastSettingsChanged(payload: {
 }): void {
   broadcastIpc('settings:changed', payload);
   broadcastSse('settings', payload);
+}
+
+export type UsersChangePayload = {
+  kind: 'created' | 'updated' | 'deleted';
+  id: number;
+};
+
+/** Staff directory on the till login screen, without a refresh. */
+export function broadcastUsersChanged(payload: UsersChangePayload): void {
+  broadcastIpc('users:changed', payload);
+  broadcastSse('users', payload);
+  broadcastLoginSse('users', payload);
 }
 
 export type AppsUpdatePayload = {

@@ -47,6 +47,7 @@ import {
   broadcastTicketsChanged,
   broadcastLayoutChanged,
   broadcastSettingsChanged,
+  broadcastUsersChanged,
   ensureSseKeepAlive,
   sseCatchupIfMissed,
 } from './services/realtime';
@@ -1064,6 +1065,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return;
       }
 
+      // PIN screen on iOS/Android has no JWT yet. Same staff names as
+      // GET /auth/users, live, without exposing tables/tickets.
+      if (req.method === 'GET' && pathname === '/events/login') {
+        setSecurityHeaders(res, corsOrigin || null);
+        res.setHeader(
+          'Content-Security-Policy',
+          "default-src 'self'; connect-src 'self'",
+        );
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.writeHead(200);
+        res.write('retry: 2000\n\n');
+        const client = { res } as any;
+        (globalThis as any).__SSE_LOGIN_CLIENTS__ =
+          (globalThis as any).__SSE_LOGIN_CLIENTS__ || new Set();
+        const loginClients: Set<any> = (globalThis as any)
+          .__SSE_LOGIN_CLIENTS__;
+        loginClients.add(client);
+        ensureSseKeepAlive();
+        req.on('close', () => loginClients.delete(client));
+        return;
+      }
+
       if (req.method === 'GET' && pathname === '/health') {
         res.setHeader('Cache-Control', 'no-store');
         return send(
@@ -1239,6 +1264,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/pairing/verify',
         '/auth/login',
         '/auth/users',
+        '/events/login',
         '/menu/categories',
         // KDS should be usable on dedicated kitchen devices without login.
         '/kds/tickets',
@@ -3772,6 +3798,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               salaryPeriod: salary.salaryPeriod,
             },
           });
+          broadcastUsersChanged({ kind: 'created', id: created.id });
           return send(res, 200, lanStaffDto(created), corsOrigin);
         } catch (e: any) {
           const status = Number(e?.statusCode) === 403 ? 403 : 400;
@@ -3847,6 +3874,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           ) {
             await revokeSessionsForUser(input.id);
           }
+          broadcastUsersChanged({ kind: 'updated', id: updated.id });
           return send(res, 200, lanStaffDto(updated), corsOrigin);
         } catch (e: any) {
           const status = Number(e?.statusCode) === 403 ? 403 : 400;
@@ -3871,6 +3899,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               data: { active: false },
             });
             await revokeSessionsForUser(id);
+            broadcastUsersChanged({ kind: 'updated', id });
             return send(res, 200, true, corsOrigin);
           }
           const user = await prisma.user.findUnique({ where: { id } });
@@ -3927,6 +3956,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
           await prisma.user.delete({ where: { id } });
           await revokeSessionsForUser(id);
+          broadcastUsersChanged({ kind: 'deleted', id });
           return send(res, 200, true, corsOrigin);
         } catch (e: any) {
           return send(
