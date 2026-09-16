@@ -31,10 +31,34 @@ export type WrappedKey = {
   ct: string;
 };
 
+/**
+ * Same secret the owner typed, even if macOS/Albanian IME stored ë as
+ * combining marks, or the password field kept a trailing space.
+ */
+export function normalizePassphrase(passphrase: string): string {
+  return String(passphrase || '')
+    .normalize('NFC')
+    .trim();
+}
+
+export function passphraseCandidates(secret: string): string[] {
+  const raw = String(secret || '');
+  const out: string[] = [];
+  const add = (value: string) => {
+    if (value && !out.includes(value)) out.push(value);
+  };
+  add(normalizePassphrase(raw));
+  add(raw);
+  add(raw.trim());
+  add(raw.normalize('NFD').trim());
+  add(raw.normalize('NFC'));
+  return out;
+}
+
 export function validatePassphrase(
   passphrase: string,
 ): { ok: true } | { ok: false; error: string } {
-  const value = String(passphrase || '');
+  const value = normalizePassphrase(passphrase);
   if (value.length < MIN_PASSPHRASE_LENGTH) {
     return { ok: false, error: 'too_short' };
   }
@@ -45,6 +69,17 @@ export function validatePassphrase(
     return { ok: false, error: 'digits_only' };
   }
   return { ok: true };
+}
+
+export async function unwrapPassphrase(
+  secret: string,
+  wrapped: WrappedKey,
+): Promise<Buffer | null> {
+  for (const candidate of passphraseCandidates(secret)) {
+    const dek = await unwrapKey(candidate, wrapped);
+    if (dek) return dek;
+  }
+  return null;
 }
 
 export function generateDek(): Buffer {

@@ -23,6 +23,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<VaultState | null>(
     host ? null : 'disabled',
   );
+  const [hasPassphrase, setHasPassphrase] = useState(true);
   const [passphrase, setPassphrase] = useState('');
   const [confirm, setConfirm] = useState('');
   const [secret, setSecret] = useState('');
@@ -40,7 +41,11 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
       .then((s) => {
         if (!cancelled) {
           setState(s?.state || 'disabled');
+          setHasPassphrase(s?.hasPassphrase !== false);
           if (s?.recoveryKey) setRecoveryKey(s.recoveryKey);
+          if (s?.state === 'locked' && s?.hasPassphrase === false) {
+            setUseRecovery(true);
+          }
         }
       })
       .catch(() => {
@@ -89,12 +94,17 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
     try {
       const r = await window.api.vault!.unlock({ secret });
       if (!r.ok) {
-        setError(r.error || 'generic');
+        setError(
+          !hasPassphrase && !useRecovery
+            ? 'no_passphrase'
+            : r.error || 'generic',
+        );
         return;
       }
       setState('open');
-    } catch {
-      setError('generic');
+    } catch (e) {
+      const msg = String((e as { message?: string })?.message || e || '');
+      setError(msg.includes('rate_limited') ? 'rate_limited' : 'generic');
     } finally {
       setBusy(false);
     }
@@ -129,7 +139,10 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                 <Input
                   type="password"
                   autoFocus
-                  autoComplete="new-password"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   value={passphrase}
                   onChange={(e) => setPassphrase(e.target.value)}
                   onKeyDown={(e) => {
@@ -140,7 +153,10 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
               <Field label={t('vault.confirm')}>
                 <Input
                   type="password"
-                  autoComplete="new-password"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   onKeyDown={(e) => {
@@ -204,18 +220,25 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                 {t('vault.unlockTitle')}
               </h1>
               <p className="text-[13px] text-gray-400">
-                {t('vault.unlockBody')}
+                {useRecovery || !hasPassphrase
+                  ? t('vault.unlockRecoveryBody')
+                  : t('vault.unlockBody')}
               </p>
               <Field
                 label={
-                  useRecovery ? t('vault.recoveryKey') : t('vault.passphrase')
+                  useRecovery || !hasPassphrase
+                    ? t('vault.recoveryKey')
+                    : t('vault.passphrase')
                 }
                 error={errorText}
               >
                 <Input
-                  type={useRecovery ? 'text' : 'password'}
+                  type={useRecovery || !hasPassphrase ? 'text' : 'password'}
                   autoFocus
-                  autoComplete={useRecovery ? 'off' : 'current-password'}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   value={secret}
                   onChange={(e) => setSecret(e.target.value)}
                   onKeyDown={(e) => {
@@ -223,19 +246,21 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                   }}
                 />
               </Field>
-              <button
-                type="button"
-                className="text-[12px] text-gray-400 hover:text-gray-100"
-                onClick={() => {
-                  setUseRecovery((v) => !v);
-                  setSecret('');
-                  setError(null);
-                }}
-              >
-                {useRecovery
-                  ? t('vault.usePassphrase')
-                  : t('vault.useRecovery')}
-              </button>
+              {hasPassphrase ? (
+                <button
+                  type="button"
+                  className="text-[12px] text-gray-400 hover:text-gray-100"
+                  onClick={() => {
+                    setUseRecovery((v) => !v);
+                    setSecret('');
+                    setError(null);
+                  }}
+                >
+                  {useRecovery
+                    ? t('vault.usePassphrase')
+                    : t('vault.useRecovery')}
+                </button>
+              ) : null}
               <Button
                 variant="primary"
                 block

@@ -12,6 +12,7 @@ import {
   setupVaultWithOs,
   tryUnlockWithOs,
   unlockVault,
+  bootstrapVault,
 } from './lifecycle';
 import { setOsVaultCryptoForTests, type OsVaultCrypto } from './osUnlock';
 import { looksLikeSqliteCiphertext } from './sqliteCipher';
@@ -176,6 +177,40 @@ describe('setupVault / unlockVault', () => {
         openPrisma: false,
       }),
     ).toEqual({ ok: true });
+  });
+
+  it('opens a passphrase wrapped with trailing spaces or combining marks', async () => {
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    const nfd = 'fjalëkalimi1'.normalize('NFD');
+    const setup = await setupVault(`  ${nfd}  `, {
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(true);
+    lockVaultForTests();
+    expect(
+      await unlockVault('fjalëkalimi1'.normalize('NFC'), {
+        userData: dir,
+        dbFile,
+        openPrisma: false,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it('does not auto-create an OS-only vault before the owner sets a passphrase', async () => {
+    setOsVaultCryptoForTests(memoryOsVault());
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    await bootstrapVault({
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(fs.existsSync(path.join(dir, 'vault.json'))).toBe(false);
   });
 });
 

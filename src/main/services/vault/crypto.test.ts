@@ -3,9 +3,12 @@ import {
   dekToEncryptionKey,
   generateDek,
   generateRecoveryKey,
+  normalizePassphrase,
   normalizeRecoveryKey,
+  passphraseCandidates,
   recoveryKeyToBytes,
   unwrapKey,
+  unwrapPassphrase,
   validatePassphrase,
   wrapKey,
 } from './crypto';
@@ -22,8 +25,25 @@ describe('validatePassphrase', () => {
       ok: false,
       error: 'digits_only',
     });
+    expect(validatePassphrase('  123456789012  ')).toEqual({
+      ok: false,
+      error: 'digits_only',
+    });
     expect(validatePassphrase('a'.repeat(201)).ok).toBe(false);
     expect(validatePassphrase('kitchen-pass-1').ok).toBe(true);
+  });
+});
+
+describe('passphrase normalization', () => {
+  it('trims spaces and composes Albanian ë the same way', () => {
+    const nfd = 'fjalëkalimi1'.normalize('NFD');
+    expect(nfd).not.toBe('fjalëkalimi1');
+    expect(normalizePassphrase(`  ${nfd}  `)).toBe(
+      'fjalëkalimi1'.normalize('NFC'),
+    );
+    expect(passphraseCandidates(`  ${nfd}  `)).toContain(
+      'fjalëkalimi1'.normalize('NFC'),
+    );
   });
 });
 
@@ -34,6 +54,14 @@ describe('wrapKey / unwrapKey', () => {
     const ok = await unwrapKey('kitchen-pass-1', wrapped);
     expect(ok?.equals(dek)).toBe(true);
     expect(await unwrapKey('wrong-pass-phrase', wrapped)).toBeNull();
+  });
+
+  it('unlocks a composed passphrase that was wrapped with combining marks', async () => {
+    const dek = generateDek();
+    const nfd = 'fjalëkalimi1'.normalize('NFD');
+    const wrapped = await wrapKey(nfd, dek, FAST);
+    const ok = await unwrapPassphrase('fjalëkalimi1'.normalize('NFC'), wrapped);
+    expect(ok?.equals(dek)).toBe(true);
   });
 });
 

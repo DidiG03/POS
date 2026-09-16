@@ -6,8 +6,10 @@ import {
   dekToEncryptionKey,
   generateDek,
   generateRecoveryKey,
+  normalizePassphrase,
   recoveryKeyToBytes,
   unwrapKey,
+  unwrapPassphrase,
   validatePassphrase,
   wrapKey,
   type Argon2Params,
@@ -163,7 +165,8 @@ export async function setupVault(
     openPrisma?: boolean;
   },
 ): Promise<VaultActionResult> {
-  const check = validatePassphrase(passphrase);
+  const secret = normalizePassphrase(passphrase);
+  const check = validatePassphrase(secret);
   if (!check.ok) return { ok: false, error: check.error };
   const userData = opts?.userData ?? vaultUserData();
   const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
@@ -176,7 +179,7 @@ export async function setupVault(
   const kdf = opts?.kdf ?? DEFAULT_KDF;
   const vault: VaultFile = {
     version: 2,
-    passphrase: await wrapKey(passphrase, dek, kdf),
+    passphrase: await wrapKey(secret, dek, kdf),
     recovery: await wrapKey(recoveryBytes, dek, kdf),
     unlockMode: isOsUnlockAvailable() ? 'os' : 'passphrase',
   };
@@ -266,10 +269,8 @@ export async function bootstrapVault(opts?: {
   if (!isVaultRequired()) return;
   if (unlockedDek) return;
   if (await tryUnlockWithOs(opts)) return;
-  const userData = opts?.userData ?? vaultUserData();
-  if (readVaultFile(userData)) return;
-  if (!isOsUnlockAvailable()) return;
-  await setupVaultWithOs(opts);
+  // A missing vault must stay on the setup screen. Auto-creating an OS-only
+  // wrap (no passphrase) made "Unlock this till" reject every typed secret.
 }
 
 export async function unlockVault(
@@ -282,7 +283,7 @@ export async function unlockVault(
   if (!vault) return { ok: false, error: 'missing_vault' };
 
   const passphraseDek = vault.passphrase
-    ? await unwrapKey(secret, vault.passphrase)
+    ? await unwrapPassphrase(secret, vault.passphrase)
     : null;
   const recoveryBytes = recoveryKeyToBytes(secret);
   const recoveryDek = recoveryBytes
@@ -320,26 +321,20 @@ export async function setVaultUnlockMode(
   }
   let next: VaultFile = vault;
   if (!vault.passphrase) {
-    const check = validatePassphrase(String(input.passphrase || ''));
+    const secret = normalizePassphrase(String(input.passphrase || ''));
+    const check = validatePassphrase(secret);
     if (!check.ok) return { ok: false, error: check.error };
     next = {
       ...vault,
-      passphrase: await wrapKey(
-        String(input.passphrase),
-        unlockedDek,
-        opts?.kdf ?? DEFAULT_KDF,
-      ),
+      passphrase: await wrapKey(secret, unlockedDek, opts?.kdf ?? DEFAULT_KDF),
     };
   } else if (input.passphrase) {
-    const check = validatePassphrase(input.passphrase);
+    const secret = normalizePassphrase(input.passphrase);
+    const check = validatePassphrase(secret);
     if (!check.ok) return { ok: false, error: check.error };
     next = {
       ...vault,
-      passphrase: await wrapKey(
-        input.passphrase,
-        unlockedDek,
-        opts?.kdf ?? DEFAULT_KDF,
-      ),
+      passphrase: await wrapKey(secret, unlockedDek, opts?.kdf ?? DEFAULT_KDF),
     };
   }
   persistVault(userData, next, unlockedDek, 'passphrase');
