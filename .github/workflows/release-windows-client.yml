@@ -174,7 +174,12 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Updating existing release $TAG"
           else
-            gh release create "$TAG" --title "$TITLE" --notes "$NOTES"
+            # Sibling tag workflows may create the release first (HTTP 422).
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || true
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              echo "::error::Could not create or find release $TAG"
+              exit 1
+            fi
           fi
 
           UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" "$CANONICAL_ADMIN" )

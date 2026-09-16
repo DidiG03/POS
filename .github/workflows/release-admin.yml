@@ -198,8 +198,13 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Updating existing release $TAG"
           else
+            # Sibling tag workflows may create the release first (HTTP 422).
             gh release create "$TAG" --title "$TITLE" \
-              --notes "OneTap Admin ${VERSION} (macOS Intel/ARM, Windows)."
+              --notes "OneTap Admin ${VERSION} (macOS Intel/ARM, Windows)." || true
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              echo "::error::Could not create or find release $TAG"
+              exit 1
+            fi
           fi
 
           UPLOAD=()
