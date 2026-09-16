@@ -121,6 +121,7 @@ export function menuTileStyle(
   color: string;
   boxShadow: string;
   border?: string;
+  borderRadius: string;
 } {
   const rgb = parseHexRgb(hex);
   const raw = rgb ? String(hex) : fallback;
@@ -132,11 +133,13 @@ export function menuTileStyle(
       color: '#0f172a',
       boxShadow,
       border: '1px solid rgba(15, 23, 42, 0.10)',
+      borderRadius: '0.4rem',
     };
   }
   return {
     backgroundColor: '#1b2433',
     color: '#ffffff',
     boxShadow,
+    borderRadius: '0.4rem',
   };
 }

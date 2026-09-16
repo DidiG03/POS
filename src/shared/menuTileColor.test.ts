@@ -39,6 +39,7 @@ describe('menuTileStyle', () => {
     expect(style.backgroundColor).not.toBe('#2563eb');
     expect(style.boxShadow).toContain('#2563eb');
     expect(style.color).toBe('#ffffff');
+    expect(style.borderRadius).toBe('0.4rem');
   });
 
   it('keeps a light body in light mode with the vivid strip', () => {

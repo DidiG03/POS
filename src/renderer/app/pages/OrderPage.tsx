@@ -267,7 +267,14 @@ function loadCustomCommentButtons(): Record<string, string[]> {
 }
 
 const MENU_LAYOUT_KEY = 'pos.order.menuLayout';
+const MENU_CAT_GRID_WIDE = '(min-width: 640px)';
 type MenuLayout = 'grid' | 'column';
+
+function catGridPadCount(tileCount: number, cols: number): number {
+  if (cols < 2 || tileCount < 1) return 0;
+  const rem = tileCount % cols;
+  return rem === 0 ? 0 : cols - rem;
+}
 
 function readMenuLayout(): MenuLayout {
   try {
@@ -298,6 +305,18 @@ export default function OrderPage() {
   );
   const [query, setQuery] = useState('');
   const [menuLayout, setMenuLayout] = useState<MenuLayout>(readMenuLayout);
+  const [catGridWide, setCatGridWide] = useState(() =>
+    typeof window !== 'undefined'
+      ? window.matchMedia(MENU_CAT_GRID_WIDE).matches
+      : true,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(MENU_CAT_GRID_WIDE);
+    const apply = () => setCatGridWide(mq.matches);
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
   const {
     lines,
     addItem,
@@ -2132,6 +2151,10 @@ export default function OrderPage() {
 
   const columnMenu = menuLayout === 'column';
   const catClass = columnMenu ? 'pos-menu-cat--rail' : 'pos-menu-cat--grid';
+  const catTileCount = 1 + (hasTables ? 1 : 0) + categories.length;
+  const catPad = columnMenu
+    ? 0
+    : catGridPadCount(catTileCount, catGridWide ? 3 : 2);
 
   return (
     <div className="h-full min-h-0 min-w-0 w-full flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3 relative">
@@ -2256,12 +2279,6 @@ export default function OrderPage() {
                 className={`relative pos-menu-cat ${catClass} ${
                   selected?.id === COMMENTS_CAT_ID ? 'pos-menu-cat--active' : ''
                 }`}
-                style={{
-                  boxShadow:
-                    selected?.id === COMMENTS_CAT_ID
-                      ? `inset 0 -3px 0 0 ${COMMENT_TILE_BG}`
-                      : `inset 0 -2px 0 0 ${COMMENT_TILE_BG}80`,
-                }}
               >
                 <span className="flex w-full min-w-0 items-center gap-2">
                   <span
@@ -2280,10 +2297,6 @@ export default function OrderPage() {
             {categories.map((c) => {
               const tabColor = c.color || null;
               const isActive = selected?.id === c.id;
-              // Tabs stay dark even when active so the category color
-              // doesn't dominate the chrome — instead we render a small
-              // dot + a thin coloured stripe along the bottom edge as a
-              // legend. Item tiles use the same strip, not a full fill.
               return (
                 <button
                   key={c.id}
@@ -2291,15 +2304,6 @@ export default function OrderPage() {
                   className={`relative pos-menu-cat ${catClass} ${
                     isActive ? 'pos-menu-cat--active' : ''
                   }`}
-                  style={
-                    tabColor
-                      ? {
-                          boxShadow: isActive
-                            ? `inset 0 -3px 0 0 ${tabColor}`
-                            : `inset 0 -2px 0 0 ${tabColor}80`,
-                        }
-                      : undefined
-                  }
                 >
                   <span className="flex w-full min-w-0 items-center gap-2">
                     {tabColor ? (
@@ -2320,6 +2324,13 @@ export default function OrderPage() {
                 </button>
               );
             })}
+            {Array.from({ length: catPad }, (_, i) => (
+              <div
+                key={`cat-pad-${i}`}
+                className="pos-menu-cat pos-menu-cat--grid pos-menu-cat--pad"
+                aria-hidden
+              />
+            ))}
           </div>
           <div
             className={
