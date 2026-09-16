@@ -11,7 +11,10 @@ import path from 'node:path';
 import { LAN_ROUTE_POLICIES, authorizeLanRoute } from './lanPolicy';
 
 const API_SOURCE = path.resolve(__dirname, '..', 'api.ts');
-const RENDERER_MAIN = path.resolve(__dirname, '../../renderer/main.tsx');
+const RENDERER_LAN = [
+  path.resolve(__dirname, '../../renderer/main.tsx'),
+  path.resolve(__dirname, '../../renderer/browserLanApi.ts'),
+];
 
 /** Pull `req.method === 'X' && pathname === '/y'` pairs out of the dispatcher. */
 function routesFromSource(): string[] {
@@ -180,7 +183,9 @@ function publicPathsFromApi(): string[] {
 }
 
 function clientLanRoutes(): { method: string; path: string }[] {
-  const collapsed = fs.readFileSync(RENDERER_MAIN, 'utf8').replace(/\s+/g, ' ');
+  const collapsed = RENDERER_LAN.map((file) => fs.readFileSync(file, 'utf8'))
+    .join('\n')
+    .replace(/\s+/g, ' ');
   const found: { method: string; path: string }[] = [];
   const re = /goLan\(\s*(?:'([^']+)'|"([^"]+)"|`([^`]+)`)/g;
   let m: RegExpExecArray | null;
