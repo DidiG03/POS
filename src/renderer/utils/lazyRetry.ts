@@ -14,13 +14,13 @@ export function isChunkLoadError(err: unknown): boolean {
 
 export async function retryLazyImport<T>(
   importer: () => Promise<T>,
-  retries = 1,
+  retries = 2,
 ): Promise<T> {
   try {
     return await importer();
   } catch (err) {
     if (!isChunkLoadError(err) || retries < 1) throw err;
-    await new Promise((r) => setTimeout(r, 280));
+    await new Promise((r) => setTimeout(r, 400));
     return retryLazyImport(importer, retries - 1);
   }
 }

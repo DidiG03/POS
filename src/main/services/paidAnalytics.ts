@@ -120,24 +120,57 @@ export async function countVoidedTickets(
   to: Date,
 ): Promise<number> {
   const safe = safeFetchRange(from, to);
-  const rows = await prisma.ticketLog
+  const range = { gte: safe.from, lte: safe.to };
+  const keyedHeads = await prisma.ticketLog
     .findMany({
-      where: { createdAt: { gte: safe.from, lte: safe.to } },
+      where: {
+        createdAt: range,
+        NOT: { OR: [{ sessionKey: null }, { sessionKey: '' }] },
+      },
       select: {
-        itemsJson: true,
+        id: true,
+        sessionKey: true,
         note: true,
         area: true,
         tableLabel: true,
-        sessionKey: true,
         createdAt: true,
+      },
+    })
+    .catch(() => []);
+  const unkeyed = await prisma.ticketLog
+    .findMany({
+      where: {
+        createdAt: range,
+        OR: [{ sessionKey: null }, { sessionKey: '' }],
+      },
+      select: {
+        id: true,
+        sessionKey: true,
+        note: true,
+        area: true,
+        tableLabel: true,
+        createdAt: true,
+        itemsJson: true,
       } as any,
     })
     .catch(() => []);
-  const sessions = latestRowPerSession(
-    (rows as any[]).filter((r) => !isTransferredOutNote(r?.note)),
+  const latest = latestRowPerSession(
+    [...(keyedHeads as any[]), ...(unkeyed as any[])].filter(
+      (r) => !isTransferredOutNote(r?.note),
+    ),
   );
+  const ids = latest
+    .map((r) => Number(r.id))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  if (ids.length === 0) return 0;
+  const bodies = await prisma.ticketLog
+    .findMany({
+      where: { id: { in: ids } },
+      select: { itemsJson: true },
+    })
+    .catch(() => []);
   let n = 0;
-  for (const r of sessions) {
+  for (const r of bodies as any[]) {
     const items = Array.isArray(r.itemsJson) ? r.itemsJson : [];
     if (items.length > 0 && items.every((it: any) => it?.voided === true))
       n += 1;

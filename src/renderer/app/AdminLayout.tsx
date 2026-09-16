@@ -25,6 +25,8 @@ import {
   IconSettings,
   IconTicket,
 } from '../components/icons';
+import { loadPosRealtimeSync } from '../utils/loadPosRealtimeSync';
+import { initRendererSentry } from '../utils/sentryBrowser';
 
 type AdminNavItem = {
   to: string;
@@ -50,6 +52,11 @@ export default function AdminLayout() {
   const [backendOk, setBackendOk] = useState(true);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [checkedAt, setCheckedAt] = useState<number>(0);
+
+  useEffect(() => {
+    void loadPosRealtimeSync();
+    initRendererSentry();
+  }, []);
 
   useEffect(() => {
     const update = () => {

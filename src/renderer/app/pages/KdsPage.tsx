@@ -7,6 +7,8 @@ import {
   type MouseEvent,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { loadPosRealtimeSync } from '../../utils/loadPosRealtimeSync';
+import { initRendererSentry } from '../../utils/sentryBrowser';
 import { BrandMark } from '../../components/BrandMark';
 import { PageSpinner } from '../../components/PageSpinner';
 import {
@@ -200,6 +202,10 @@ type KdsDevBumpMenu = {
 
 export default function KdsPage() {
   const navigate = useNavigate();
+  useEffect(() => {
+    void loadPosRealtimeSync();
+    initRendererSentry();
+  }, []);
   const initialStation = loadKdsDisplayStation();
   const [station, setStationState] = useState<Station>(initialStation);
   const [theme, setThemeState] = useState<KdsTheme>(() => loadKdsTheme());

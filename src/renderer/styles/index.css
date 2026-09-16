@@ -442,6 +442,24 @@ html[data-shell='capacitor'] {
     background-color: var(--pos-canvas);
   }
 
+  /* PIN step: sit where the soft keyboard will leave the form, instead of
+     centering in the full screen and jumping up when the viewport shrinks. */
+  .pos-app--auth-pin {
+    justify-content: flex-start;
+    overflow: hidden;
+    overscroll-behavior: none;
+    padding-top: max(5rem, env(safe-area-inset-top, 0px));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  }
+  @media (min-width: 640px) and (hover: hover) and (pointer: fine) {
+    .pos-app--auth-pin {
+      justify-content: center;
+      overflow-y: auto;
+      padding-top: max(1.5rem, env(safe-area-inset-top, 0px));
+      padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 0px));
+    }
+  }
+
   .pos-header {
     background: var(--pos-canvas);
     min-height: var(--pos-header-h);
@@ -516,7 +534,7 @@ html[data-shell='capacitor'] {
   }
 
   .pos-segmented {
-    @apply inline-flex items-center gap-0.5 rounded-md p-0.5;
+    @apply inline-flex items-center gap-0.5 rounded-[0.7rem] p-0.5;
     border: 1px solid var(--pos-border);
     background: var(--pos-surface-2);
   }
@@ -588,13 +606,15 @@ html[data-shell='capacitor'] {
   }
 
   .pos-card {
-    @apply rounded-lg p-4;
+    @apply p-4;
+    border-radius: 0.75rem;
     border: 1px solid var(--pos-border);
     background: var(--pos-surface);
   }
 
   .pos-stat {
     @apply rounded-lg p-3.5 min-w-0 overflow-hidden;
+    border-radius: 0.75rem;
     border: 1px solid var(--pos-border);
     background: var(--pos-surface);
   }
@@ -659,9 +679,327 @@ html[data-shell='capacitor'] {
   .ticket-line-btn--danger:hover:not(:disabled) {
     background: #991b1b;
   }
+  @media (any-pointer: coarse) {
+    .ticket-line-btn {
+      width: 2.75rem;
+      height: 2.75rem;
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+      font-size: 0.9375rem;
+    }
+    .pos-ticket-iconbtn {
+      width: 3rem;
+      height: 3rem;
+      min-width: 3rem;
+      min-height: 3rem;
+      padding: 0.65rem;
+    }
+    .pos-ticket-pairbtn {
+      width: 3.6rem;
+      min-width: 3.6rem;
+      height: 3rem;
+      min-height: 3rem;
+    }
+    .pos-input.pos-menu-search {
+      height: 3rem;
+      min-height: 3rem;
+    }
+    .pos-menu-cat--rail {
+      min-height: 3rem;
+    }
+    .pos-menu-fav {
+      width: 2.4rem;
+      height: 2.4rem;
+      min-width: 2.4rem;
+      min-height: 2.4rem;
+    }
+  }
+  .pos-ticket-pane {
+    background: transparent;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+  }
+  @media (min-width: 768px) {
+    .pos-ticket-pane {
+      background: var(--pos-surface);
+      padding: 0.75rem;
+      border: 1px solid var(--pos-border);
+      border-radius: 0.75rem;
+    }
+  }
+  .pos-ticket-pay {
+    display: inline-flex;
+    width: 100%;
+    min-height: 3.15rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.8rem;
+    background: var(--pos-accent-strong);
+    color: #fff;
+    font-size: 1.02rem;
+    font-weight: 750;
+    border: 1px solid transparent;
+  }
+  .pos-ticket-pay:hover {
+    background: #1d4ed8;
+  }
+  .pos-ticket-pay:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  .pos-ticket-tool {
+    display: inline-flex;
+    min-height: 2.85rem;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    padding: 0 0.75rem;
+    border-radius: 0.7rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface-2);
+    font-size: 0.8125rem;
+    font-weight: 650;
+    color: var(--pos-fg);
+  }
+  .pos-ticket-tool:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  .pos-ticket-tool--danger {
+    color: #b91c1c;
+  }
+  .pos-ticket-tool--accent {
+    background: var(--pos-accent-strong);
+    color: #fff;
+    border-color: transparent;
+  }
+  .pos-ticket-tool--accent:hover {
+    background: #1d4ed8;
+  }
+  .pos-ticket-iconbtn {
+    display: inline-flex;
+    width: 2.85rem;
+    height: 2.85rem;
+    min-width: 2.85rem;
+    min-height: 2.85rem;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0.55rem;
+    border-radius: 0.7rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface-2);
+    color: var(--pos-fg);
+  }
+  .pos-ticket-iconbtn:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  .pos-ticket-iconbtn--danger {
+    color: #b91c1c;
+  }
+  .pos-ticket-pairbtn {
+    width: 3.6rem;
+    min-width: 3.6rem;
+    gap: 0.15rem;
+  }
+  .pos-ticket-pay--danger {
+    background: #b91c1c;
+  }
+  .pos-ticket-pay--danger:hover {
+    background: #991b1b;
+  }
+  .pos-keypad-key {
+    display: inline-flex;
+    min-height: 2.85rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.7rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface-2);
+    font-size: 1.05rem;
+    font-weight: 650;
+    color: var(--pos-fg);
+  }
+  .pos-keypad-key--active {
+    background: color-mix(in srgb, var(--pos-accent) 18%, var(--pos-surface));
+    border-color: color-mix(
+      in srgb,
+      var(--pos-accent) 38%,
+      var(--pos-border-strong)
+    );
+  }
+  .pos-order-card {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    padding: 0.85rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--pos-border);
+    background: var(--pos-surface);
+  }
+  .pos-order-note {
+    margin-bottom: 0.5rem;
+    border-radius: 0.6rem;
+    border: 1px solid var(--pos-border);
+    background: var(--pos-surface-2);
+    padding: 0.5rem 0.65rem;
+    font-size: 0.8125rem;
+  }
+  .pos-order-line {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border-radius: 0.6rem;
+    border: 1px solid var(--pos-border);
+    background: var(--pos-surface-2);
+    padding: 0.45rem 0.65rem;
+    font-size: 0.8125rem;
+    line-height: 1.35;
+  }
+  .pos-order-line--ready {
+    border-color: color-mix(in srgb, #10b981 50%, var(--pos-border));
+    background: color-mix(in srgb, #10b981 12%, var(--pos-surface));
+  }
+  .pos-alert {
+    border-radius: 0.7rem;
+    border: 1px solid color-mix(in srgb, #e11d48 40%, var(--pos-border));
+    background: color-mix(in srgb, #e11d48 10%, var(--pos-surface));
+    color: var(--pos-fg);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+  }
+  .pos-input.pos-menu-search {
+    height: 2.85rem;
+    min-height: 2.85rem;
+    border-radius: 0.7rem;
+    padding-left: 2.4rem;
+    font-size: 0.9375rem;
+  }
+  .pos-menu-rail {
+    display: flex;
+    width: 7.85rem;
+    min-height: 0;
+    min-width: 0;
+    max-width: 100%;
+    flex-shrink: 0;
+    flex-direction: column;
+    gap: 0.4rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-x: none;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    padding: 0.4rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--pos-border);
+    background: var(--pos-surface);
+  }
+  @media (min-width: 640px) {
+    .pos-menu-rail {
+      width: 9.25rem;
+    }
+  }
+  @media (min-width: 768px) {
+    .pos-menu-rail {
+      width: 11rem;
+    }
+  }
+  .pos-menu-cats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.4rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--pos-border);
+    background: var(--pos-surface);
+  }
+  @media (min-width: 640px) {
+    .pos-menu-cats-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+  .pos-menu-cat {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    align-items: center;
+    overflow: hidden;
+    border-radius: 0.7rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface-2);
+    color: var(--pos-fg);
+    font-size: 0.8125rem;
+    font-weight: 650;
+    line-height: 1.25;
+    cursor: pointer;
+  }
+  .pos-menu-cat--rail {
+    min-height: 2.85rem;
+    justify-content: flex-start;
+    padding: 0.55rem 0.65rem;
+    text-align: left;
+  }
+  .pos-menu-cat--grid {
+    min-height: 4.5rem;
+    justify-content: center;
+    padding: 0.85rem 0.7rem;
+    text-align: center;
+  }
+  .pos-menu-cat--active {
+    background: color-mix(in srgb, var(--pos-accent) 18%, var(--pos-surface));
+    border-color: color-mix(
+      in srgb,
+      var(--pos-accent) 38%,
+      var(--pos-border-strong)
+    );
+  }
+  .pos-menu-tile {
+    display: flex;
+    height: 100%;
+    width: 100%;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 0.7rem;
+    padding: 0.75rem 0.8rem 0.85rem;
+    text-align: left;
+    transition: opacity 0.12s;
+  }
+  .pos-menu-tile:not(:disabled):hover {
+    opacity: 0.92;
+  }
+  .pos-menu-tile--disabled {
+    cursor: not-allowed;
+    border: 1px solid var(--pos-border);
+    background: var(--pos-surface-2);
+    color: var(--pos-fg-muted);
+  }
+  .pos-menu-fav {
+    display: inline-flex;
+    width: 2.15rem;
+    height: 2.15rem;
+    min-width: 2.15rem;
+    min-height: 2.15rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: 0.6rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface);
+    color: var(--pos-fg-muted);
+    cursor: pointer;
+  }
+  .pos-menu-fav--on {
+    color: #db2777;
+  }
 
   .pos-btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3 text-[13px] font-medium transition-colors duration-100;
     @apply text-gray-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
@@ -674,7 +1012,7 @@ html[data-shell='capacitor'] {
   }
 
   .pos-btn-primary {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
@@ -686,7 +1024,7 @@ html[data-shell='capacitor'] {
   }
 
   .pos-btn-ghost {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3 text-[13px] font-medium transition-colors duration-100;
     color: var(--pos-fg-muted);
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
@@ -700,7 +1038,7 @@ html[data-shell='capacitor'] {
   }
 
   .pos-danger-btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
@@ -712,7 +1050,7 @@ html[data-shell='capacitor'] {
   }
 
   .pos-signout-btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3 text-[13px] font-medium transition-colors duration-100;
     @apply text-gray-400 hover:text-rose-200;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40;
     min-height: var(--pos-control-h);
@@ -725,7 +1063,7 @@ html[data-shell='capacitor'] {
   }
 
   .pos-input {
-    @apply w-full rounded-md px-3 text-[13px] placeholder:text-gray-500 transition-colors duration-100;
+    @apply w-full rounded-[0.7rem] px-3 text-[13px] placeholder:text-gray-500 transition-colors duration-100;
     color: var(--pos-fg);
     min-height: var(--pos-control-h);
     border: 1px solid var(--pos-border-strong);
@@ -828,7 +1166,8 @@ html[data-shell='capacitor'] {
   }
 
   .pos-staff-tile {
-    @apply w-full rounded-md px-3 py-2.5 flex items-center justify-between gap-3 text-left transition-colors duration-100 cursor-pointer;
+    @apply w-full px-3 py-2.5 flex items-center justify-between gap-3 text-left transition-colors duration-100 cursor-pointer;
+    border-radius: 0.7rem;
     min-height: var(--pos-control-h-lg);
     border: 1px solid var(--pos-border);
     background: var(--pos-surface-2);
@@ -900,6 +1239,290 @@ html[data-shell='capacitor'] {
     border-top: 1px solid var(--pos-border-strong);
     background: var(--pos-surface);
     box-shadow: var(--shadow-2xl);
+  }
+
+  .pos-pay-page {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    flex-direction: column;
+    background: var(--pos-canvas);
+    color: var(--pos-fg);
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+  }
+  .pos-pay-busy {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.7rem;
+    padding: 1.5rem;
+    text-align: center;
+    background: color-mix(in srgb, var(--pos-canvas) 82%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .pos-pay-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
+    min-height: 3.25rem;
+    padding: max(0.7rem, env(safe-area-inset-top)) 1rem 0.7rem;
+    border-bottom: 1px solid var(--pos-border);
+    background: var(--pos-canvas);
+  }
+  .pos-pay-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    min-height: 2.75rem;
+    padding: 0 0.5rem 0 0.15rem;
+    margin-left: -0.15rem;
+    border-radius: 0.5rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--pos-fg);
+  }
+  .pos-pay-back:disabled {
+    opacity: 0.45;
+  }
+  .pos-pay-title {
+    font-size: 1.0625rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+  .pos-pay-kicker {
+    margin-top: 0.1rem;
+    font-size: 0.75rem;
+    color: var(--pos-fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pos-pay-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0.9rem 1rem 1.25rem;
+  }
+  .pos-pay-inner {
+    width: 100%;
+    max-width: 28rem;
+    margin-inline: auto;
+  }
+  @media (min-width: 640px) {
+    .pos-pay-inner {
+      max-width: 36rem;
+    }
+  }
+  .pos-pay-footer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--pos-border);
+    background: color-mix(in srgb, var(--pos-canvas) 88%, transparent);
+    backdrop-filter: blur(16px);
+    padding: 0.75rem 1rem max(0.85rem, env(safe-area-inset-bottom));
+    box-shadow: 0 -8px 24px -12px rgba(15, 23, 42, 0.18);
+  }
+  .pos-pay-hero {
+    padding: 1rem 1.1rem 0.95rem;
+    border-radius: 1rem;
+    background: var(--pos-surface);
+    border: 1px solid var(--pos-border);
+  }
+  .pos-pay-hero-amount {
+    font-size: 2.35rem;
+    font-weight: 750;
+    letter-spacing: -0.04em;
+    line-height: 1.05;
+    margin: 0.15rem 0 0.2rem;
+  }
+  .pos-pay-hero-breakdown {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.85rem;
+    margin-top: 0.55rem;
+    font-size: 0.75rem;
+    color: var(--pos-fg-muted);
+  }
+  .pos-pay-label {
+    font-size: 0.75rem;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--pos-fg-muted);
+    margin-bottom: 0.45rem;
+  }
+  .pos-pay-card {
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.9rem;
+    background: var(--pos-surface);
+    border: 1px solid var(--pos-border);
+  }
+  .pos-pay-summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.8125rem;
+    font-weight: 650;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .pos-pay-summary::-webkit-details-marker {
+    display: none;
+  }
+  .pos-pay-summary::after {
+    content: '';
+    width: 0.45rem;
+    height: 0.45rem;
+    flex-shrink: 0;
+    border-right: 2px solid var(--pos-fg-muted);
+    border-bottom: 2px solid var(--pos-fg-muted);
+    transform: rotate(45deg);
+    margin-top: -0.2rem;
+  }
+  details[open] > .pos-pay-summary::after {
+    transform: rotate(225deg);
+    margin-top: 0.2rem;
+  }
+  .pos-pay-method {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    min-height: 4.5rem;
+    border-radius: 0.9rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface);
+    font-size: 0.9375rem;
+  }
+  .pos-pay-method--active {
+    border-color: var(--pos-accent);
+    background: var(--pos-accent);
+    color: #fff;
+    box-shadow: 0 0 0 3px var(--pos-accent-soft);
+  }
+  .pos-pay-chip {
+    min-height: 2.85rem;
+    border-radius: 0.7rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface-2);
+    font-size: 0.875rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+  .pos-pay-chip--active {
+    border-color: var(--pos-accent);
+    background: var(--pos-accent);
+    color: #fff;
+  }
+  .pos-pay-input {
+    width: 100%;
+    min-height: 2.85rem;
+    border-radius: 0.7rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-control-bg);
+    color: var(--pos-fg);
+    padding: 0.55rem 0.75rem;
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .pos-pay-stepper {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 0.7rem;
+    background: var(--pos-surface-3);
+    font-size: 1.25rem;
+    line-height: 1;
+    font-weight: 650;
+  }
+  .pos-pay-stepper:disabled {
+    opacity: 0.4;
+  }
+  .pos-pay-seat {
+    min-height: 3.15rem;
+    min-width: 7rem;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 0.45rem 0.7rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--pos-border-strong);
+    background: var(--pos-surface);
+    text-align: left;
+  }
+  .pos-pay-seat--active {
+    border-color: var(--pos-accent);
+    background: var(--pos-accent-soft);
+  }
+  .pos-pay-switch {
+    position: relative;
+    height: 2rem;
+    width: 3.25rem;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--pos-surface-3);
+  }
+  .pos-pay-switch--on {
+    background: var(--pos-accent);
+  }
+  .pos-pay-switch-knob {
+    position: absolute;
+    top: 50%;
+    left: 5px;
+    width: 1.375rem;
+    height: 1.375rem;
+    border-radius: 999px;
+    background: #fff;
+    transform: translateY(-50%);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+    transition: left 0.18s ease-out;
+  }
+  .pos-pay-switch--on .pos-pay-switch-knob {
+    left: calc(100% - 1.375rem - 5px);
+  }
+  .pos-pay-confirm {
+    display: inline-flex;
+    width: 100%;
+    min-height: 3.35rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 0.9rem;
+    border: 1px solid transparent;
+    background: var(--pos-accent-strong);
+    color: #fff;
+    font-size: 1.05rem;
+    font-weight: 750;
+  }
+  .pos-pay-confirm:hover {
+    background: #1d4ed8;
+  }
+  .pos-pay-confirm:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  .pos-pay-fx {
+    color: #059669;
+  }
+  .pos-pay-warn {
+    color: #b45309;
+  }
+  html:not([data-theme='light']) .pos-pay-fx {
+    color: #6ee7b7;
+  }
+  html:not([data-theme='light']) .pos-pay-warn {
+    color: #fde68a;
   }
 
   .pos-brand-mark {

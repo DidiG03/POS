@@ -21,7 +21,9 @@ import {
 } from '../../utils/posReadCache';
 import { peekTableBill } from '../../utils/tableBill';
 import { applyHostOpenTables } from '../../utils/openTablesSync';
+import { bootTrace } from '@shared/bootTrace';
 import { reportAppError } from '../../utils/reportAppError';
+import { retryLazyImport } from '../../utils/lazyRetry';
 import {
   IconClock,
   IconCovers,
@@ -297,7 +299,6 @@ export default function TablesPage() {
     }
     void load();
     void prefetchHotReads();
-    void import('./OrderPage');
     const onVisible = () => {
       if (document.visibilityState === 'visible') void load();
     };
@@ -344,6 +345,7 @@ export default function TablesPage() {
           if (Array.isArray(open)) applyHostOpenTables(open);
         }
         setOpenLoaded(true);
+        bootTrace('floor:snapshot');
         setOpenLoadError(null);
       } catch {
         if (!cancelled && gen === pollGenRef.current) {
@@ -498,6 +500,7 @@ export default function TablesPage() {
 
   const handleTableClick = useCallback(
     (label: string, members?: string[]) => {
+      void retryLazyImport(() => import('./OrderPage'));
       const labels = (members?.length ? members : [label]).filter(Boolean);
       const openLabel =
         labels.find((l) => isOpenFn(area, l)) || labels[0] || label;

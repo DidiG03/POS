@@ -98,7 +98,8 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'auth:logoutAdmin': { allow: 'public' },
   // The token *is* the credential, so this is necessarily reachable before a
   // session exists. Rate-limited because it is the one channel where guessing
-  // a token would be worth an attacker's time.
+  // a token would be worth an attacker's time. Already-bound senders skip the
+  // limiter in ipcGuard so Vite HMR remounts do not lock the till.
   'auth:resumeSession': {
     allow: 'public',
     rateLimit: { maxAttempts: 20, windowMs: 60 * 1000 },
@@ -292,6 +293,21 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'updater:downloadUpdate': { allow: 'session', windows: KDS_WINDOWS },
   'updater:getStatus': { allow: 'public' },
   'updater:installUpdate': { allow: 'session', windows: KDS_WINDOWS },
+
+  // ----------------------------------------------------------------- vault
+  // Cold-start gate. The database is still closed; these cannot leak receipts.
+  'vault:getStatus': { allow: 'public' },
+  'vault:setup': {
+    allow: 'public',
+    rateLimit: { maxAttempts: 8, windowMs: 60 * 60 * 1000 },
+  },
+  'vault:unlock': {
+    allow: 'public',
+    rateLimit: { maxAttempts: 8, windowMs: 15 * 60 * 1000 },
+  },
+  'vault:ackRecovery': { allow: 'public' },
+  'vault:getPrefs': { allow: ADMIN },
+  'vault:setUnlockMode': { allow: ADMIN, rateLimit: { maxAttempts: 20 } },
 };
 
 export function policyFor(channel: string): IpcPolicy | undefined {

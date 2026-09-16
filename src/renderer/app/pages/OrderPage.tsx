@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   useTicketStore,
   toTicketLogLine,
@@ -31,12 +39,12 @@ import { logTicket, printTicket } from '../../api';
 import { tryOrQueue } from '../../utils/offlineQueue';
 import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
-import { formatEur, makeFormatAmount } from '../../utils/format';
+import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { reportAppError } from '../../utils/reportAppError';
 import { PageSpinner } from '../../components/PageSpinner';
-import { SpinnerGlyph } from '../../components/SpinnerGlyph';
-import { TicketCourseBoard } from '../components/TicketCourseBoard';
+import { PaymentCheckout } from '../components/PaymentCheckout';
+import { retryLazyImport } from '../../utils/lazyRetry';
 import {
   courseNumber,
   kitchenSlipNeedsCourseBanner,
@@ -52,8 +60,6 @@ import {
 import { saneTableAreas } from '@shared/tableAreas';
 import {
   IconAlert,
-  IconCard,
-  IconCash,
   IconChevronLeft,
   IconClose,
   IconCovers,
@@ -65,8 +71,9 @@ import {
   IconOrderDefault,
   IconOrderSeat,
   IconPrinter,
-  IconReceipt,
   IconSearch,
+  IconTrash,
+  IconMoveRight,
 } from '../../components/icons';
 import { pollIntervalMs } from '../../utils/netQuality';
 import { usePosUiTheme } from '../../theme';
@@ -80,10 +87,16 @@ import { readTicketForTable } from '../../utils/ticketRead';
 import { decideHostBill, peekTableBill } from '../../utils/tableBill';
 import { applyHostOpenTables } from '../../utils/openTablesSync';
 import { hasLocalCovers } from '../../utils/tableSessionKeepOpen';
-import {
-  createHidBarcodeBuffer,
-  findItemByProductCode,
-} from '@shared/barcodeScan';
+
+function loadTicketCourseBoard() {
+  return retryLazyImport(() =>
+    import('../components/TicketCourseBoard').then((m) => ({
+      default: m.TicketCourseBoard,
+    })),
+  );
+}
+
+const TicketCourseBoard = lazy(loadTicketCourseBoard);
 
 type MenuItemDTO = {
   id: number;
@@ -1393,44 +1406,57 @@ export default function OrderPage() {
   // Store tills only: a USB scanner types the barcode then Enter.
   useEffect(() => {
     if (hasTables) return;
-    const buffer = createHidBarcodeBuffer();
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (
-        showPayment ||
-        showCovers ||
-        showTransfer ||
-        weightModal ||
-        customCommentOpen
-      ) {
-        return;
-      }
-      if (ticketSyncing || busyAction != null) return;
-      const target = e.target as HTMLElement | null;
-      const tag = String(target?.tagName || '').toUpperCase();
-      if (tag === 'TEXTAREA' || target?.isContentEditable) return;
+    let cancelled = false;
+    let onKeyDown: ((e: KeyboardEvent) => void) | undefined;
+    void import('@shared/barcodeScan').then(
+      ({ createHidBarcodeBuffer, findItemByProductCode }) => {
+        if (cancelled) return;
+        const buffer = createHidBarcodeBuffer();
+        onKeyDown = (e: KeyboardEvent) => {
+          if (e.ctrlKey || e.metaKey || e.altKey) return;
+          if (
+            showPayment ||
+            showCovers ||
+            showTransfer ||
+            weightModal ||
+            customCommentOpen
+          ) {
+            return;
+          }
+          if (ticketSyncing || busyAction != null) return;
+          const target = e.target as HTMLElement | null;
+          const tag = String(target?.tagName || '').toUpperCase();
+          if (tag === 'TEXTAREA' || target?.isContentEditable) return;
 
-      const result = buffer.push(e.key, performance.now());
-      if (result.swallow) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-      if (!result.commit) return;
-      setQuery('');
-      const items = categories.flatMap((c) => c.items || []);
-      const item = findItemByProductCode(items, result.commit);
-      if (!item) {
-        toast.error(t('order.barcodeUnknown'));
-        return;
-      }
-      if (menuItemUnavailable(item)) {
-        toast.error(t('order.barcodeUnavailable', { name: item.name }));
-        return;
-      }
-      addMenuItemToSale(item);
+          const result = buffer.push(e.key, performance.now());
+          if (result.swallow) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+          if (!result.commit) return;
+          setQuery('');
+          const items = categories.flatMap((c) => c.items || []);
+          const item = findItemByProductCode(items, result.commit);
+          if (!item) {
+            toast.error(t('order.barcodeUnknown'));
+            return;
+          }
+          if (menuItemUnavailable(item)) {
+            toast.error(t('order.barcodeUnavailable', { name: item.name }));
+            return;
+          }
+          addMenuItemToSale(item);
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        if (cancelled) {
+          window.removeEventListener('keydown', onKeyDown, true);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (onKeyDown) window.removeEventListener('keydown', onKeyDown, true);
     };
-    window.addEventListener('keydown', onKeyDown, true);
-    return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [
     addMenuItemToSale,
     busyAction,
@@ -2105,9 +2131,7 @@ export default function OrderPage() {
   }
 
   const columnMenu = menuLayout === 'column';
-  const catShape = columnMenu
-    ? 'w-full min-w-0 max-w-full rounded-lg py-4 px-2 text-left text-[13px] leading-snug'
-    : 'py-5 sm:py-8 px-2 rounded-xl';
+  const catClass = columnMenu ? 'pos-menu-cat--rail' : 'pos-menu-cat--grid';
 
   return (
     <div className="h-full min-h-0 min-w-0 w-full flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3 relative">
@@ -2128,10 +2152,10 @@ export default function OrderPage() {
         />
       ) : null}
       {/* Mobile: switch between Menu and Ticket to avoid cramped 3-column layout */}
-      <div className="md:hidden pos-surface-panel p-1.5 flex items-center gap-1.5">
+      <div className="md:hidden pos-surface-panel flex items-center gap-1.5 rounded-[0.85rem] p-1.5">
         {hasTables ? (
           <button
-            className="pos-icon-btn shrink-0 cursor-pointer text-gray-100"
+            className="pos-ticket-iconbtn"
             onClick={() => navigate('/app/tables')}
             type="button"
             aria-label={t('order.backToTables')}
@@ -2140,7 +2164,7 @@ export default function OrderPage() {
             <IconChevronLeft />
           </button>
         ) : null}
-        <div className="pos-segmented flex-1">
+        <div className="pos-segmented flex-1 !rounded-[0.7rem] p-1">
           <button
             className={`pos-segment flex-1 ${mobilePane === 'menu' ? 'pos-segment--active' : ''}`}
             onClick={() => setMobilePane('menu')}
@@ -2171,21 +2195,21 @@ export default function OrderPage() {
       >
         <div className="mb-3 flex shrink-0 gap-2">
           <div className="relative min-w-0 flex-1">
-            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--pos-fg-muted)]">
               <IconSearch />
             </span>
             <input
               placeholder={t(
                 hasTables ? 'order.searchMenu' : 'order.searchProductsScan',
               )}
-              className="pos-input w-full pl-9"
+              className="pos-input pos-menu-search w-full"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
           <button
             type="button"
-            className="pos-icon-btn shrink-0"
+            className="pos-ticket-iconbtn"
             onClick={() => {
               const next = menuLayout === 'grid' ? 'column' : 'grid';
               writeMenuLayout(next);
@@ -2207,22 +2231,20 @@ export default function OrderPage() {
             columnMenu ? 'flex min-h-0 min-w-0 flex-1 gap-2' : 'contents'
           }
         >
-          <div
-            className={
-              columnMenu
-                ? 'w-[6.75rem] min-h-0 min-w-0 max-w-full shrink-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-x-none overscroll-y-contain touch-pan-y rounded-xl border border-white/12 p-1.5 sm:w-[8.75rem] md:w-[10.5rem]'
-                : 'mb-3 grid grid-cols-2 gap-2 rounded-xl border border-white/12 p-1.5 sm:grid-cols-3'
-            }
-          >
+          <div className={columnMenu ? 'pos-menu-rail' : 'pos-menu-cats-grid'}>
             {/* Favourites tab */}
             <button
               key={FAVOURITES_CAT_ID}
               onClick={() => setSelectedCatId(FAVOURITES_CAT_ID)}
-              className={`${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer overflow-hidden ${selected?.id === FAVOURITES_CAT_ID ? 'bg-gray-800' : 'bg-gray-900/70'}`}
+              className={`pos-menu-cat ${catClass} ${
+                selected?.id === FAVOURITES_CAT_ID ? 'pos-menu-cat--active' : ''
+              }`}
             >
               <span className="flex w-full min-w-0 items-center gap-2">
                 <IconHeart className="size-3.5 shrink-0 text-pink-400" />
-                <span className={columnMenu ? 'min-w-0 truncate' : undefined}>
+                <span
+                  className={columnMenu ? 'min-w-0 line-clamp-2' : undefined}
+                >
                   {t('order.favourites')}
                 </span>
               </span>
@@ -2231,10 +2253,8 @@ export default function OrderPage() {
               <button
                 key={COMMENTS_CAT_ID}
                 onClick={() => setSelectedCatId(COMMENTS_CAT_ID)}
-                className={`relative ${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer overflow-hidden ${
-                  selected?.id === COMMENTS_CAT_ID
-                    ? 'bg-gray-800'
-                    : 'bg-gray-900/70'
+                className={`relative pos-menu-cat ${catClass} ${
+                  selected?.id === COMMENTS_CAT_ID ? 'pos-menu-cat--active' : ''
                 }`}
                 style={{
                   boxShadow:
@@ -2249,7 +2269,9 @@ export default function OrderPage() {
                     style={{ backgroundColor: COMMENT_TILE_BG }}
                     aria-hidden
                   />
-                  <span className={columnMenu ? 'min-w-0 truncate' : undefined}>
+                  <span
+                    className={columnMenu ? 'min-w-0 line-clamp-2' : undefined}
+                  >
                     {t('order.comments')}
                   </span>
                 </span>
@@ -2266,8 +2288,8 @@ export default function OrderPage() {
                 <button
                   key={c.id}
                   onClick={() => setSelectedCatId(c.id)}
-                  className={`relative ${catShape} border border-white/8 hover:bg-gray-800 cursor-pointer overflow-hidden ${
-                    isActive ? 'bg-gray-800' : 'bg-gray-900/70'
+                  className={`relative pos-menu-cat ${catClass} ${
+                    isActive ? 'pos-menu-cat--active' : ''
                   }`}
                   style={
                     tabColor
@@ -2288,7 +2310,9 @@ export default function OrderPage() {
                       />
                     ) : null}
                     <span
-                      className={columnMenu ? 'min-w-0 truncate' : undefined}
+                      className={
+                        columnMenu ? 'min-w-0 line-clamp-2' : undefined
+                      }
                     >
                       {c.name}
                     </span>
@@ -2300,8 +2324,8 @@ export default function OrderPage() {
           <div
             className={
               columnMenu
-                ? 'grid min-h-0 min-w-0 flex-1 grid-cols-1 content-start gap-2 overflow-x-hidden overflow-y-auto overscroll-x-none overscroll-y-contain touch-pan-y auto-rows-[5.75rem] min-[380px]:grid-cols-2 sm:grid-cols-3'
-                : 'grid grid-cols-2 content-start gap-2 auto-rows-[5.75rem] sm:grid-cols-3'
+                ? 'grid min-h-0 min-w-0 flex-1 grid-cols-1 content-start gap-2 overflow-x-hidden overflow-y-auto overscroll-x-none overscroll-y-contain touch-pan-y auto-rows-[6.25rem] min-[380px]:grid-cols-2 sm:grid-cols-3'
+                : 'grid grid-cols-2 content-start gap-2 auto-rows-[6.25rem] sm:grid-cols-3'
             }
           >
             {!query.trim() && hasTables && selectedCatId === COMMENTS_CAT_ID ? (
@@ -2310,7 +2334,7 @@ export default function OrderPage() {
                   <button
                     key={phrase}
                     type="button"
-                    className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center overflow-hidden"
+                    className="pos-menu-tile cursor-pointer"
                     style={menuTileStyle(COMMENT_TILE_BG, uiTheme)}
                     disabled={ticketSyncing || busyAction != null}
                     onClick={() => appendOrderComment(phrase)}
@@ -2320,7 +2344,7 @@ export default function OrderPage() {
                 ))}
                 <button
                   type="button"
-                  className="py-4 rounded text-left px-3 w-full cursor-pointer hover:opacity-90 min-h-[72px] flex items-center font-medium leading-snug"
+                  className="pos-menu-tile cursor-pointer font-medium leading-snug"
                   style={{
                     backgroundColor: COMMENT_CUSTOM_BTN_BG,
                     color: '#ffffff',
@@ -2372,10 +2396,8 @@ export default function OrderPage() {
                   ) : null}
                   <button
                     type="button"
-                    className={`h-full py-2.5 rounded text-left px-3 w-full flex flex-col overflow-hidden transition-opacity ${
-                      isDisabled
-                        ? 'bg-gray-800/60 border border-gray-700 text-gray-400 cursor-not-allowed'
-                        : 'cursor-pointer hover:opacity-90'
+                    className={`pos-menu-tile ${
+                      isDisabled ? 'pos-menu-tile--disabled' : 'cursor-pointer'
                     }`}
                     style={isDisabled ? undefined : tileStyle}
                     disabled={isDisabled || ticketSyncing || busyAction != null}
@@ -2404,7 +2426,7 @@ export default function OrderPage() {
                     }}
                   >
                     <div
-                      className={`font-medium pr-6 leading-snug line-clamp-3 ${isDisabled ? 'line-through' : ''}`}
+                      className={`font-medium pr-9 leading-snug line-clamp-3 ${isDisabled ? 'line-through' : ''}`}
                     >
                       {i.name}
                     </div>
@@ -2424,14 +2446,9 @@ export default function OrderPage() {
                     </div>
                   </button>
                   <button
-                    // Translucent black backdrop so the heart stays
-                    // legible on top of any category colour (used to be
-                    // hard-coded pink/emerald and looked awful on a red
-                    // drinks tile).
-                    className={`absolute top-1 right-1 text-xs px-2 py-1 rounded cursor-pointer backdrop-blur-sm ${
-                      uiTheme === 'light'
-                        ? `bg-black/8 hover:bg-black/14 ${isFav ? 'text-pink-600' : 'text-slate-600'}`
-                        : `bg-black/30 hover:bg-black/50 ${isFav ? 'text-pink-300' : 'text-white/90'}`
+                    type="button"
+                    className={`pos-menu-fav absolute top-1.5 right-1.5 z-10 ${
+                      isFav ? 'pos-menu-fav--on' : ''
                     }`}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -2442,8 +2459,16 @@ export default function OrderPage() {
                         ? t('order.favouriteRemoveTitle')
                         : t('order.favouriteAddTitle')
                     }
+                    aria-label={
+                      isFav
+                        ? t('order.favouriteRemoveTitle')
+                        : t('order.favouriteAddTitle')
+                    }
+                    aria-pressed={isFav}
                   >
-                    {isFav ? '♥' : '♡'}
+                    <IconHeart
+                      className={`size-3.5 ${isFav ? 'fill-current' : ''}`}
+                    />
                   </button>
                 </div>
               );
@@ -2453,93 +2478,89 @@ export default function OrderPage() {
       </div>
 
       <div
-        className={`bg-[var(--pos-surface)] p-3 rounded-xl border border-[var(--pos-border)] flex flex-col min-h-0 min-w-0 overflow-hidden h-full ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
+        className={`pos-ticket-pane flex h-full min-h-0 min-w-0 flex-col overflow-hidden ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
       >
-        <div className="flex flex-wrap items-center gap-2 mb-2">
-          <div className="font-semibold flex items-center gap-2 min-w-0">
-            <span className="truncate">
-              {selectedTable
-                ? t(hasTables ? 'order.ticketHeader' : 'order.saleHeader', {
-                    label: selectedTable.label,
-                  })
-                : t(hasTables ? 'order.ticket' : 'order.cart')}
-            </span>
-            {hasTables &&
+        <div className="mb-2 shrink-0 space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[15px] font-semibold leading-tight">
+                {selectedTable
+                  ? t(hasTables ? 'order.ticketHeader' : 'order.saleHeader', {
+                      label: selectedTable.label,
+                    })
+                  : t(hasTables ? 'order.ticket' : 'order.cart')}
+              </div>
+              {hasTables &&
               selectedTable &&
               isOpen(selectedTable.area, selectedTable.label) &&
-              openedAtMs && (
-                <span className="text-xs font-mono px-2 py-1 rounded bg-gray-700/60 border border-gray-600 shrink-0">
+              openedAtMs ? (
+                <div className="mt-0.5 font-mono text-[12px] tabular-nums text-[color:var(--pos-fg-muted)]">
                   {formatElapsed(nowMs - openedAtMs)}
-                </span>
-              )}
+                </div>
+              ) : null}
+            </div>
           </div>
           {hasTables ? (
-            <div
-              role="tablist"
-              aria-label={t('order.addModeLabel')}
-              aria-disabled={isTableOpen}
-              className={`inline-flex items-stretch rounded-md border border-white/8 overflow-hidden shrink-0 ${
-                isTableOpen ? 'opacity-50' : ''
-              }`}
-            >
-              {ORDER_ADD_MODES.map((mode, i) => {
-                const active = addMode === mode;
-                const label = t(`order.addMode.${mode}`);
-                const title = isTableOpen
-                  ? t('order.addModeLockedSent')
-                  : label;
-                return (
-                  <span key={mode} className="flex items-stretch">
-                    {i > 0 ? (
-                      <span
-                        className="w-px shrink-0 self-stretch bg-[var(--pos-hairline)]"
-                        aria-hidden
-                      />
-                    ) : null}
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      title={title}
-                      aria-label={label}
-                      disabled={isTableOpen}
-                      onClick={() => setAddMode(mode)}
-                      className={`pos-icon-btn rounded-none disabled:pointer-events-none disabled:cursor-not-allowed ${
-                        active
-                          ? 'text-[var(--pos-accent)] bg-[var(--pos-accent-soft)]'
-                          : ''
-                      }`}
-                    >
-                      {mode === 'default' ? (
-                        <IconOrderDefault className="pos-icon size-5" />
-                      ) : mode === 'course' ? (
-                        <IconOrderCourse className="pos-icon size-5" />
-                      ) : (
-                        <IconOrderSeat className="pos-icon size-5" />
-                      )}
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-2 ml-auto">
-            {hasTables && canTransfer && (
-              <button
-                type="button"
-                className="bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1.5 rounded border border-indigo-500 text-sm font-medium text-white whitespace-nowrap"
-                onClick={() => setShowTransfer(true)}
-                title={t('order.transferTitle')}
+            <div className="flex items-center gap-2">
+              <div
+                role="tablist"
+                aria-label={t('order.addModeLabel')}
+                aria-disabled={isTableOpen}
+                className={`inline-flex min-h-11 flex-1 items-stretch overflow-hidden rounded-lg border border-[var(--pos-border-strong)] ${
+                  isTableOpen ? 'opacity-50' : ''
+                }`}
               >
-                {t('order.transfer')}
-              </button>
-            )}
-            {hasTables &&
+                {ORDER_ADD_MODES.map((mode, i) => {
+                  const active = addMode === mode;
+                  const label = t(`order.addMode.${mode}`);
+                  const title = isTableOpen
+                    ? t('order.addModeLockedSent')
+                    : label;
+                  return (
+                    <span key={mode} className="flex min-w-0 flex-1">
+                      {i > 0 ? (
+                        <span
+                          className="w-px shrink-0 self-stretch bg-[var(--pos-hairline)]"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        title={title}
+                        aria-label={label}
+                        disabled={isTableOpen}
+                        onPointerEnter={() => {
+                          if (mode === 'course' || mode === 'seat') {
+                            void loadTicketCourseBoard();
+                          }
+                        }}
+                        onClick={() => setAddMode(mode)}
+                        className={`flex min-h-11 min-w-0 flex-1 items-center justify-center disabled:pointer-events-none disabled:cursor-not-allowed ${
+                          active
+                            ? 'bg-[var(--pos-accent-soft)] text-[var(--pos-accent)]'
+                            : 'text-[color:var(--pos-fg-muted)]'
+                        }`}
+                      >
+                        {mode === 'default' ? (
+                          <IconOrderDefault className="pos-icon size-5" />
+                        ) : mode === 'course' ? (
+                          <IconOrderCourse className="pos-icon size-5" />
+                        ) : (
+                          <IconOrderSeat className="pos-icon size-5" />
+                        )}
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+              {hasTables &&
               selectedTable &&
-              isOpen(selectedTable.area, selectedTable.label) && (
+              isOpen(selectedTable.area, selectedTable.label) ? (
                 <button
                   type="button"
-                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-gray-700"
+                  className="pos-ticket-iconbtn pos-ticket-pairbtn"
                   onClick={() => {
                     if (!canEditCovers) return;
                     setCoversMode('editOnly');
@@ -2562,23 +2583,32 @@ export default function OrderPage() {
                       : t('order.editCoversAriaBlocked')
                   }
                 >
-                  <IconCovers className="size-4" />
-                  <span className="text-sm font-semibold">
+                  <IconCovers className="size-3.5 shrink-0" />
+                  <span className="tabular-nums text-[13px] font-semibold leading-none">
                     {typeof coversKnown === 'number' ? coversKnown : '—'}
                   </span>
                 </button>
-              )}
-          </div>
+              ) : null}
+              {canTransfer ? (
+                <button
+                  type="button"
+                  className="pos-ticket-iconbtn pos-ticket-pairbtn"
+                  onClick={() => setShowTransfer(true)}
+                  title={t('order.transferTitle')}
+                  aria-label={t('order.transfer')}
+                >
+                  <IconMoveRight className="size-4" />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div
           className={`flex-1 min-h-0 relative ${lockOrderScroll ? 'overflow-hidden' : 'overflow-auto'}`}
         >
           <div className="flex min-h-full flex-col space-y-2">
             {billUnknown ? (
-              <div
-                role="alert"
-                className="rounded-xl border border-red-500/60 bg-red-500/10 p-3"
-              >
+              <div role="alert" className="pos-alert p-3">
                 <div className="text-sm font-semibold text-red-200">
                   {t('order.billUnreadable')}
                 </div>
@@ -2626,7 +2656,7 @@ export default function OrderPage() {
                     key={l.id}
                     role="button"
                     tabIndex={canSelect ? 0 : -1}
-                    className={`ticket-line px-2 py-2 transition-shadow ${
+                    className={`ticket-line px-3 py-2.5 transition-shadow ${
                       isVoided ? 'opacity-60' : ''
                     } ${
                       isSelected
@@ -2651,10 +2681,10 @@ export default function OrderPage() {
                       }
                     }}
                   >
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                      <div className="min-w-0 flex-1 basis-[7rem]">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
                         <div
-                          className={`${dimmed ? 'ticket-line-muted' : ''} font-medium truncate ${isVoided ? 'line-through decoration-2' : ''}`}
+                          className={`${dimmed ? 'ticket-line-muted' : ''} font-medium leading-snug ${isVoided ? 'line-through decoration-2' : ''}`}
                         >
                           {l.name}
                           {isPaid ? (
@@ -2665,11 +2695,13 @@ export default function OrderPage() {
                         </div>
                       </div>
                       <div
-                        className={`min-w-[2.75rem] shrink-0 text-right tabular-nums ${dimmed ? 'ticket-line-muted' : ''} ${isVoided ? 'line-through decoration-2' : ''}`}
+                        className={`shrink-0 text-[15px] font-semibold tabular-nums ${dimmed ? 'ticket-line-muted' : ''} ${isVoided ? 'line-through decoration-2' : ''}`}
                       >
-                        {l.unitPrice * l.qty}
+                        {formatAmount(l.unitPrice * l.qty)}
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <div className="flex min-h-11 items-center gap-1.5">
                         {selectedTable &&
                         isOpen(selectedTable.area, selectedTable.label) &&
                         !showRequestOnly &&
@@ -2687,7 +2719,9 @@ export default function OrderPage() {
                             >
                               -
                             </button>
-                            <div className="w-6 text-center">{l.qty}</div>
+                            <div className="min-w-7 text-center text-[15px] font-semibold tabular-nums">
+                              {l.qty}
+                            </div>
                             <button
                               type="button"
                               className="ticket-line-btn"
@@ -2702,11 +2736,13 @@ export default function OrderPage() {
                           </>
                         ) : (
                           <div
-                            className={`whitespace-nowrap tabular-nums ticket-line-muted ${isVoided ? 'line-through decoration-2' : ''}`}
+                            className={`text-[13px] tabular-nums ticket-line-muted ${isVoided ? 'line-through decoration-2' : ''}`}
                           >
-                            {t('common.qty')}:{l.qty}
+                            ×{l.qty}
                           </div>
                         )}
+                      </div>
+                      <div className="flex items-center gap-1.5">
                         {canEditNote ? (
                           <button
                             type="button"
@@ -2721,13 +2757,12 @@ export default function OrderPage() {
                               );
                             }}
                           >
-                            <IconEdit className="size-3.5" />
+                            <IconEdit className="size-4" />
                           </button>
                         ) : null}
-                        {/* When table is open (sent), owner can void already-sent lines; staged (unsent) lines can be removed */}
                         {selectedTable && isTableOpen && !showRequestOnly ? (
                           isVoided ? (
-                            <div className="w-7" aria-hidden />
+                            <div className="w-11" aria-hidden />
                           ) : l.staged ? (
                             <button
                               type="button"
@@ -2736,8 +2771,9 @@ export default function OrderPage() {
                                 e.stopPropagation();
                                 removeLine(l.id);
                               }}
+                              aria-label={t('common.remove')}
                             >
-                              X
+                              <IconClose className="size-4" />
                             </button>
                           ) : (
                             <button
@@ -2761,12 +2797,12 @@ export default function OrderPage() {
                                   ? t('order.voidBlockedPaid')
                                   : t('order.voidTitle')
                               }
+                              aria-label={t('order.voidTitle')}
                             >
-                              A
+                              <IconTrash className="size-4" />
                             </button>
                           )
                         ) : (
-                          // For non-owners or not-open tables: allow removing; if in request-only mode, only staged lines are allowed
                           <button
                             type="button"
                             className="ticket-line-btn"
@@ -2777,8 +2813,9 @@ export default function OrderPage() {
                               e.stopPropagation();
                               removeLine(l.id);
                             }}
+                            aria-label={t('common.remove')}
                           >
-                            X
+                            <IconClose className="size-4" />
                           </button>
                         )}
                       </div>
@@ -2801,71 +2838,73 @@ export default function OrderPage() {
               };
               if ((addMode === 'course' || addMode === 'seat') && hasTables) {
                 return (
-                  <TicketCourseBoard
-                    mode={addMode === 'seat' ? 'seat' : 'course'}
-                    canEdit={!isTableOpen}
-                    canAddCourse={isTableOpen}
-                    fireDisabled={
-                      busyAction != null || !connectionOk || ticketSyncing
-                    }
-                    printDisabled={
-                      busyAction != null || !connectionOk || ticketSyncing
-                    }
-                    onPrintSeat={
-                      addMode === 'seat' && isTableOpen
-                        ? (seatId) => {
-                            void printSeatBill(seatId);
-                          }
-                        : undefined
-                    }
-                    onFireCourse={
-                      isTableOpen
-                        ? (courseId) => {
-                            if (
-                              busyAction != null ||
-                              ticketSyncing ||
-                              !connectionOk ||
-                              !selectedTable
-                            ) {
-                              return;
+                  <Suspense fallback={null}>
+                    <TicketCourseBoard
+                      mode={addMode === 'seat' ? 'seat' : 'course'}
+                      canEdit={!isTableOpen}
+                      canAddCourse={isTableOpen}
+                      fireDisabled={
+                        busyAction != null || !connectionOk || ticketSyncing
+                      }
+                      printDisabled={
+                        busyAction != null || !connectionOk || ticketSyncing
+                      }
+                      onPrintSeat={
+                        addMode === 'seat' && isTableOpen
+                          ? (seatId) => {
+                              void printSeatBill(seatId);
                             }
-                            void (async () => {
-                              lastSendAtRef.current = Date.now();
-                              lastSendTableRef.current = {
-                                area: selectedTable.area,
-                                label: selectedTable.label,
-                              };
-                              setBusyAction('send');
-                              try {
-                                const lastCovers =
-                                  await window.api.covers.getLast(
-                                    selectedTable.area,
-                                    selectedTable.label,
-                                  );
-                                await runKitchenFire({
-                                  covers: lastCovers ?? null,
-                                  courseId,
-                                  firstSend: false,
-                                  printKitchen: true,
-                                });
-                              } catch (e: unknown) {
-                                const raw = String(
-                                  (e as { message?: string })?.message ||
-                                    e ||
-                                    '',
-                                ).trim();
-                                toast.error(raw || t('order.toastTryAgain'), {
-                                  title: t('order.toastSendFailed'),
-                                });
-                              } finally {
-                                setBusyAction(null);
+                          : undefined
+                      }
+                      onFireCourse={
+                        isTableOpen
+                          ? (courseId) => {
+                              if (
+                                busyAction != null ||
+                                ticketSyncing ||
+                                !connectionOk ||
+                                !selectedTable
+                              ) {
+                                return;
                               }
-                            })();
-                          }
-                        : undefined
-                    }
-                    renderLine={renderLine}
-                  />
+                              void (async () => {
+                                lastSendAtRef.current = Date.now();
+                                lastSendTableRef.current = {
+                                  area: selectedTable.area,
+                                  label: selectedTable.label,
+                                };
+                                setBusyAction('send');
+                                try {
+                                  const lastCovers =
+                                    await window.api.covers.getLast(
+                                      selectedTable.area,
+                                      selectedTable.label,
+                                    );
+                                  await runKitchenFire({
+                                    covers: lastCovers ?? null,
+                                    courseId,
+                                    firstSend: false,
+                                    printKitchen: true,
+                                  });
+                                } catch (e: unknown) {
+                                  const raw = String(
+                                    (e as { message?: string })?.message ||
+                                      e ||
+                                      '',
+                                  ).trim();
+                                  toast.error(raw || t('order.toastTryAgain'), {
+                                    title: t('order.toastSendFailed'),
+                                  });
+                                } finally {
+                                  setBusyAction(null);
+                                }
+                              })();
+                            }
+                          : undefined
+                      }
+                      renderLine={renderLine}
+                    />
+                  </Suspense>
                 );
               }
               if (lines.length === 0) {
@@ -2883,7 +2922,7 @@ export default function OrderPage() {
         {/* Footer pinned at the bottom of the ticket panel as a flex child.
             Was previously `absolute bottom-0` with `pb-80` on the items list,
             which overlapped the last item on narrow viewports. */}
-        <div className="shrink-0 mt-3 bg-[var(--pos-surface)] border-t border-[var(--pos-hairline)] -mx-3 -mb-3 p-3 rounded-b">
+        <div className="mt-2 shrink-0 border-t border-[var(--pos-hairline)] pt-3 md:-mx-3 md:-mb-3 md:rounded-b md:bg-[var(--pos-surface)] md:p-3">
           <div className="space-y-3 text-sm">
             {hasTables &&
             (showOrderNote || Boolean(String(orderNote || '').trim())) ? (
@@ -2928,7 +2967,7 @@ export default function OrderPage() {
               serviceChargeAmount={serviceChargeAmount}
             />
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2">
               {(() => {
                 const showRequestOnly = Boolean(
                   selectedTable &&
@@ -2941,7 +2980,7 @@ export default function OrderPage() {
                   const stagedCount = lines.filter((l) => l.staged).length;
                   return (
                     <button
-                      className="pos-btn flex-1 min-h-10 min-w-[8rem] px-2 py-2 text-sm leading-snug cursor-pointer disabled:cursor-not-allowed"
+                      className="pos-ticket-pay"
                       disabled={
                         stagedCount === 0 ||
                         requestLocked ||
@@ -3004,240 +3043,248 @@ export default function OrderPage() {
                       : t('order.clear');
                 return (
                   <>
-                    <button
-                      className="grid size-10 shrink-0 place-items-center rounded-md border-0 bg-transparent p-0 text-sm font-semibold leading-none text-red-600 hover:bg-[var(--pos-hover)] hover:text-red-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
-                      disabled={
-                        activeLines.length === 0 ||
-                        busyAction != null ||
-                        !connectionOk ||
-                        ticketSyncing ||
-                        (isTableOpen && ticketFullySettled)
-                      }
-                      title={
-                        isTableOpen && ticketFullySettled
-                          ? t('order.voidBlockedPaid')
-                          : clearBtnLabel
-                      }
-                      onClick={async () => {
-                        if (busyAction != null || ticketSyncing) return;
-                        if (isTableOpen && ticketFullySettled) return;
-                        if (!connectionOk) {
-                          toast.warn(t('order.networkSlow'));
-                          return;
-                        }
-                        setBusyAction('void');
-                        try {
-                          if (
-                            selectedTable &&
-                            isOpen(selectedTable.area, selectedTable.label)
-                          ) {
-                            if (!user?.id) return;
-                            let approvedByAdmin: {
-                              userId: number;
-                              userName: string;
-                              approvalToken?: string;
-                            } | null = null;
-                            if (approvalsCfg.requireManagerPinForVoid) {
-                              const approved = await requestAdminApproval(
-                                t('order.approvalVoidTicket'),
-                              );
-                              if (!approved) return;
-                              approvedByAdmin = approved;
-                            }
-                            // Optimistic UI: immediately clear and mark table as free locally.
-                            setOpen(
-                              selectedTable.area,
-                              selectedTable.label,
-                              false,
-                            );
-                            clear();
-                            setOrderNote('');
-
-                            // PR 4a: voidTicket + the table-close
-                            // sidecar both go through the queue.
-                            // Without this, voiding a ticket on a
-                            // flaky network meant the table stayed
-                            // "open" forever and the void was lost.
-                            await tryOrQueue('tickets.voidTicket', {
-                              userId: user.id,
-                              area: selectedTable.area,
-                              tableLabel: selectedTable.label,
-                              reason: orderNote || undefined,
-                              actorRole: user.role,
-                              ...(approvedByAdmin
-                                ? {
-                                    approvedByAdminId: approvedByAdmin.userId,
-                                    approvedByAdminName:
-                                      approvedByAdmin.userName,
-                                    approvedByAdminToken:
-                                      approvedByAdmin.approvalToken,
-                                  }
-                                : {}),
-                            });
-                            // Persist free table server-side too
-                            // (otherwise TablesPage refresh will
-                            // re-mark it open). Dedupe so a chain of
-                            // void/close clicks coalesces to one
-                            // eventual write.
-                            await tryOrQueue(
-                              'tables.setOpen',
-                              {
-                                area: selectedTable.area,
-                                label: selectedTable.label,
-                                open: false,
-                              },
-                              {
-                                dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                              },
-                            ).catch((e: unknown) => {
-                              reportAppError(e, {
-                                fallback: t('order.toastTryAgain'),
-                                key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                              });
-                            });
-                          }
-                          // When table isn't open, void button acts as "clear"
-                          if (
-                            !selectedTable ||
-                            !isOpen(selectedTable.area, selectedTable.label)
-                          ) {
-                            clear();
-                            setOrderNote('');
-                          }
-                        } catch {
-                          toast.error(t('order.voidClearFailed'));
-                        } finally {
-                          setBusyAction(null);
-                        }
-                      }}
-                      type="button"
-                      aria-label={clearBtnLabel}
-                    >
-                      {clearBtnLabel.trim().charAt(0)}
-                    </button>
-                    {hasTables ? (
+                    <div className="flex gap-2">
                       <button
-                        type="button"
-                        className="grid size-10 shrink-0 place-items-center rounded-md border-0 bg-transparent p-0 text-[var(--pos-accent)] hover:bg-[var(--pos-hover)] hover:text-[var(--pos-accent-strong)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50"
-                        title={t('order.addOrderNote')}
-                        aria-label={t('order.addOrderNote')}
-                        aria-pressed={showOrderNote}
-                        disabled={
-                          (Boolean(isTableOpen) || showRequestOnly) &&
-                          !String(orderNote || '').trim()
-                        }
-                        onClick={() => setShowOrderNote((v) => !v)}
-                      >
-                        <IconEdit className="size-4" />
-                      </button>
-                    ) : null}
-                    {hasTables ? (
-                      <button
-                        className="pos-btn flex-1 min-h-10 min-w-[8rem] px-2 py-2 text-sm leading-snug cursor-pointer disabled:cursor-not-allowed"
+                        className="pos-ticket-iconbtn pos-ticket-iconbtn--danger"
                         disabled={
                           activeLines.length === 0 ||
                           busyAction != null ||
                           !connectionOk ||
                           ticketSyncing ||
-                          billUnknown
+                          (isTableOpen && ticketFullySettled)
+                        }
+                        title={
+                          isTableOpen && ticketFullySettled
+                            ? t('order.voidBlockedPaid')
+                            : clearBtnLabel
                         }
                         onClick={async () => {
                           if (busyAction != null || ticketSyncing) return;
-                          if (billUnknown) return;
-                          if (!selectedTable) {
-                            setPendingAction('send');
-                            navigate('/app/tables');
-                            return;
-                          }
-                          // Ask for covers only if table is not marked as open (green)
-                          if (
-                            !isOpen(selectedTable.area, selectedTable.label)
-                          ) {
-                            setCoversMode('openAndSend');
-                            setCoversValue('');
-                            setPrintStationTickets(true);
-                            setShowCovers(true);
-                            return;
-                          }
+                          if (isTableOpen && ticketFullySettled) return;
                           if (!connectionOk) {
                             toast.warn(t('order.networkSlow'));
                             return;
                           }
-                          // Enrich log with details (table, order lines, notes, covers)
-                          lastSendAtRef.current = Date.now();
-                          lastSendTableRef.current = {
-                            area: selectedTable.area,
-                            label: selectedTable.label,
-                          };
-                          setBusyAction('send');
+                          setBusyAction('void');
                           try {
-                            const lastCovers = await window.api.covers.getLast(
-                              selectedTable.area,
-                              selectedTable.label,
-                            );
-                            if (!user?.id) return;
-                            const fired = await runKitchenFire({
-                              covers: lastCovers ?? null,
-                              firstSend: false,
-                              printKitchen: true,
-                            });
-                            if (!fired.ok) return;
-                            // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
-                            setOpen(
-                              selectedTable.area,
-                              selectedTable.label,
-                              true,
-                            );
-                            await window.api.tables
-                              .setOpen(
+                            if (
+                              selectedTable &&
+                              isOpen(selectedTable.area, selectedTable.label)
+                            ) {
+                              if (!user?.id) return;
+                              let approvedByAdmin: {
+                                userId: number;
+                                userName: string;
+                                approvalToken?: string;
+                              } | null = null;
+                              if (approvalsCfg.requireManagerPinForVoid) {
+                                const approved = await requestAdminApproval(
+                                  t('order.approvalVoidTicket'),
+                                );
+                                if (!approved) return;
+                                approvedByAdmin = approved;
+                              }
+                              // Optimistic UI: immediately clear and mark table as free locally.
+                              setOpen(
                                 selectedTable.area,
                                 selectedTable.label,
-                                true,
-                              )
-                              .catch((e: unknown) => {
+                                false,
+                              );
+                              clear();
+                              setOrderNote('');
+
+                              // PR 4a: voidTicket + the table-close
+                              // sidecar both go through the queue.
+                              // Without this, voiding a ticket on a
+                              // flaky network meant the table stayed
+                              // "open" forever and the void was lost.
+                              await tryOrQueue('tickets.voidTicket', {
+                                userId: user.id,
+                                area: selectedTable.area,
+                                tableLabel: selectedTable.label,
+                                reason: orderNote || undefined,
+                                actorRole: user.role,
+                                ...(approvedByAdmin
+                                  ? {
+                                      approvedByAdminId: approvedByAdmin.userId,
+                                      approvedByAdminName:
+                                        approvedByAdmin.userName,
+                                      approvedByAdminToken:
+                                        approvedByAdmin.approvalToken,
+                                    }
+                                  : {}),
+                              });
+                              // Persist free table server-side too
+                              // (otherwise TablesPage refresh will
+                              // re-mark it open). Dedupe so a chain of
+                              // void/close clicks coalesces to one
+                              // eventual write.
+                              await tryOrQueue(
+                                'tables.setOpen',
+                                {
+                                  area: selectedTable.area,
+                                  label: selectedTable.label,
+                                  open: false,
+                                },
+                                {
+                                  dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                                },
+                              ).catch((e: unknown) => {
                                 reportAppError(e, {
                                   fallback: t('order.toastTryAgain'),
                                   key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
                                 });
                               });
-                          } catch (e: any) {
-                            const raw = String(e?.message || e || '').trim();
-                            const m = raw.match(
-                              /Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s,
-                            );
-                            const detail = (m ? m[1] : raw).trim();
-                            const status = Number(e?.status || 0);
-                            const isAuth = status === 401;
-                            const isAbort =
-                              String(e?.name || '') === 'AbortError';
-                            const isType = e instanceof TypeError;
-                            const title = isAuth
-                              ? t('order.toastSendBlockedSignedOut')
-                              : isAbort
-                                ? t('order.toastSendTimedOut')
-                                : isType
-                                  ? t('order.toastCantReachHost')
-                                  : t('order.toastSendFailed');
-                            toast.error(detail || t('order.toastTryAgain'), {
-                              title,
-                            });
-                            if (typeof console !== 'undefined')
-                              console.warn('[print/ticket] failed:', e);
+                            }
+                            // When table isn't open, void button acts as "clear"
+                            if (
+                              !selectedTable ||
+                              !isOpen(selectedTable.area, selectedTable.label)
+                            ) {
+                              clear();
+                              setOrderNote('');
+                            }
+                          } catch {
+                            toast.error(t('order.voidClearFailed'));
                           } finally {
                             setBusyAction(null);
                           }
                         }}
                         type="button"
+                        aria-label={clearBtnLabel}
                       >
-                        {busyAction === 'send'
-                          ? t('order.sendingOrder')
-                          : lines.some((l) => l.staged)
-                            ? t('order.sendOrder')
-                            : t('order.printTicket')}
+                        <IconTrash className="size-4" />
                       </button>
-                    ) : null}
+                      {hasTables ? (
+                        <button
+                          type="button"
+                          className="pos-ticket-iconbtn"
+                          title={t('order.addOrderNote')}
+                          aria-label={t('order.addOrderNote')}
+                          aria-pressed={showOrderNote}
+                          disabled={
+                            (Boolean(isTableOpen) || showRequestOnly) &&
+                            !String(orderNote || '').trim()
+                          }
+                          onClick={() => setShowOrderNote((v) => !v)}
+                        >
+                          <IconEdit className="size-4" />
+                        </button>
+                      ) : null}
+                      {hasTables ? (
+                        <button
+                          className={
+                            canPay && isTableOpen && !hasUnsentItems
+                              ? 'pos-ticket-tool'
+                              : 'pos-ticket-tool pos-ticket-tool--accent'
+                          }
+                          disabled={
+                            activeLines.length === 0 ||
+                            busyAction != null ||
+                            !connectionOk ||
+                            ticketSyncing ||
+                            billUnknown
+                          }
+                          onClick={async () => {
+                            if (busyAction != null || ticketSyncing) return;
+                            if (billUnknown) return;
+                            if (!selectedTable) {
+                              setPendingAction('send');
+                              navigate('/app/tables');
+                              return;
+                            }
+                            // Ask for covers only if table is not marked as open (green)
+                            if (
+                              !isOpen(selectedTable.area, selectedTable.label)
+                            ) {
+                              setCoversMode('openAndSend');
+                              setCoversValue('');
+                              setPrintStationTickets(true);
+                              setShowCovers(true);
+                              return;
+                            }
+                            if (!connectionOk) {
+                              toast.warn(t('order.networkSlow'));
+                              return;
+                            }
+                            // Enrich log with details (table, order lines, notes, covers)
+                            lastSendAtRef.current = Date.now();
+                            lastSendTableRef.current = {
+                              area: selectedTable.area,
+                              label: selectedTable.label,
+                            };
+                            setBusyAction('send');
+                            try {
+                              const lastCovers =
+                                await window.api.covers.getLast(
+                                  selectedTable.area,
+                                  selectedTable.label,
+                                );
+                              if (!user?.id) return;
+                              const fired = await runKitchenFire({
+                                covers: lastCovers ?? null,
+                                firstSend: false,
+                                printKitchen: true,
+                              });
+                              if (!fired.ok) return;
+                              // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
+                              setOpen(
+                                selectedTable.area,
+                                selectedTable.label,
+                                true,
+                              );
+                              await window.api.tables
+                                .setOpen(
+                                  selectedTable.area,
+                                  selectedTable.label,
+                                  true,
+                                )
+                                .catch((e: unknown) => {
+                                  reportAppError(e, {
+                                    fallback: t('order.toastTryAgain'),
+                                    key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                                  });
+                                });
+                            } catch (e: any) {
+                              const raw = String(e?.message || e || '').trim();
+                              const m = raw.match(
+                                /Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s,
+                              );
+                              const detail = (m ? m[1] : raw).trim();
+                              const status = Number(e?.status || 0);
+                              const isAuth = status === 401;
+                              const isAbort =
+                                String(e?.name || '') === 'AbortError';
+                              const isType = e instanceof TypeError;
+                              const title = isAuth
+                                ? t('order.toastSendBlockedSignedOut')
+                                : isAbort
+                                  ? t('order.toastSendTimedOut')
+                                  : isType
+                                    ? t('order.toastCantReachHost')
+                                    : t('order.toastSendFailed');
+                              toast.error(detail || t('order.toastTryAgain'), {
+                                title,
+                              });
+                              if (typeof console !== 'undefined')
+                                console.warn('[print/ticket] failed:', e);
+                            } finally {
+                              setBusyAction(null);
+                            }
+                          }}
+                          type="button"
+                        >
+                          <IconPrinter className="size-4" />
+                          {busyAction === 'send'
+                            ? t('order.sendingOrder')
+                            : lines.some((l) => l.staged)
+                              ? t('order.sendOrder')
+                              : t('order.printTicket')}
+                        </button>
+                      ) : null}
+                    </div>
                     <button
-                      className="pos-btn flex-1 min-h-10 min-w-[8rem] px-2 py-2 text-sm leading-snug cursor-pointer disabled:cursor-not-allowed"
+                      className="pos-ticket-pay"
                       disabled={
                         !canPay ||
                         busyAction != null ||
@@ -3336,793 +3383,350 @@ export default function OrderPage() {
       </div>
 
       {showPayment && selectedTable && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 overflow-hidden p-3 sm:p-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl w-full sm:w-[92vw] max-w-6xl p-4 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] relative">
-            <div className="flex items-center justify-between mb-3 shrink-0">
-              <div>
-                <div className="text-lg font-semibold">
-                  {t('order.payment')}
-                </div>
-                {addMode === 'seat' ? (
-                  <div className="text-sm text-[var(--pos-accent)]">
-                    {payingSeatName
-                      ? t('order.payingSeat', { label: payingSeatName })
-                      : t('order.paymentBySeat')}
-                  </div>
-                ) : null}
-              </div>
-              <button
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={busyAction === 'pay'}
-                onClick={() => setShowPayment(false)}
-              >
-                <IconClose />
-                {t('common.close')}
-              </button>
-            </div>
-            {busyAction === 'pay' ? (
-              <PageSpinner
-                variant="overlay"
-                message={
-                  vatEnabled
-                    ? t('order.registeringFiscal')
-                    : t('order.processingPaymentOverlay')
+        <PaymentCheckout
+          open
+          busy={busyAction === 'pay'}
+          busyMessage={
+            vatEnabled
+              ? t('order.registeringFiscal')
+              : t('order.processingPaymentOverlay')
+          }
+          busyDetail={
+            vatEnabled
+              ? t('order.recordingPaymentFiscal')
+              : t('order.recordingPayment')
+          }
+          hasTables={hasTables}
+          tableLabel={selectedTable.label}
+          saleLabel={t('order.saleHeader', { label: selectedTable.label })}
+          coversKnown={coversKnown}
+          addMode={addMode}
+          payingSeatName={payingSeatName}
+          seatPayRows={seatPayRows}
+          paySeatId={paySeatId}
+          remainingSeats={unpaidSeatIds(seats, lines).length}
+          payLines={payLines}
+          totals={totals}
+          serviceChargeCfg={serviceChargeCfg}
+          serviceChargeAmount={serviceChargeAmount}
+          applyServiceCharge={applyServiceCharge}
+          discountAmount={discountAmount}
+          discountType={discountType}
+          discountValue={discountValue}
+          discountReason={discountReason}
+          totalDue={totalDue}
+          eurDue={eurDue}
+          eurExchangeRate={eurExchangeRate}
+          splitGuestCount={splitGuestCount}
+          split={split}
+          eurPerPerson={eurPerPerson}
+          paymentMethod={paymentMethod}
+          cashSuggestions={cashSuggestions}
+          cashTendered={cashTendered}
+          cashTenderedNum={cashTenderedNum}
+          cashChange={cashChange}
+          formatAmount={formatAmount}
+          posCurrency={posCurrency}
+          printReceipt={printReceipt}
+          managerPinHint={
+            (approvalsCfg.requireManagerPinForDiscount && discountAmount > 0) ||
+            (approvalsCfg.requireManagerPinForServiceChargeRemoval &&
+              serviceChargeCfg.enabled &&
+              serviceChargeConfiguredAmount > 0 &&
+              !applyServiceCharge)
+          }
+          confirmDisabled={
+            busyAction != null || !connectionOk || payLines.length === 0
+          }
+          confirmLabel={
+            addMode === 'seat' && payingSeatName
+              ? t('order.paySeatWithTotal', {
+                  label: payingSeatName,
+                  amount: formatAmount(totalDue),
+                })
+              : t('order.payWithTotal', {
+                  amount: formatAmount(totalDue),
+                })
+          }
+          confirmEur={eurDue}
+          onClose={() => setShowPayment(false)}
+          onPaySeat={(id) => {
+            setPaySeatId(id);
+            setCashTendered('');
+            setDiscountType('NONE');
+            setDiscountValue('');
+          }}
+          onApplyServiceCharge={setApplyServiceCharge}
+          onDiscountType={setDiscountType}
+          onDiscountValue={setDiscountValue}
+          onDiscountReason={setDiscountReason}
+          onSplitGuestCount={setSplitGuestCount}
+          onPaymentMethod={(next) => setPaymentMethod(next)}
+          onCashTendered={setCashTendered}
+          onTogglePrint={() => setPrintReceipt((v) => !v)}
+          onConfirm={async () => {
+            if (busyAction != null) return;
+            if (!connectionOk) return;
+            setBusyAction('pay');
+            await ensureStoreTillOpen();
+            // Close the table only after the host accepted the
+            // payment. Fiscal refusals and "could not reach till"
+            // keep the sitting open. The host also closes the
+            // table as part of a successful PAYMENT so two
+            // waiters cannot fiscalize the same sitting.
+            let paymentAccepted = false;
+            let closeTableAfterPay = true;
+            let paidLineIds: string[] = [];
+            let paidSeatLabel: string | undefined;
+            try {
+              const needsDiscountApproval =
+                approvalsCfg.requireManagerPinForDiscount && discountAmount > 0;
+              const needsServiceRemovalApproval =
+                approvalsCfg.requireManagerPinForServiceChargeRemoval &&
+                serviceChargeCfg.enabled &&
+                serviceChargeConfiguredAmount > 0 &&
+                !applyServiceCharge;
+              let managerApprovedBy: {
+                userId: number;
+                userName: string;
+              } | null = null;
+              if (needsDiscountApproval || needsServiceRemovalApproval) {
+                managerApprovedBy = await requestManagerApproval(
+                  needsDiscountApproval && needsServiceRemovalApproval
+                    ? t('order.approveDiscountAndSc')
+                    : needsDiscountApproval
+                      ? t('order.approveDiscount')
+                      : t('order.approveScRemoval'),
+                );
+                if (!managerApprovedBy) return;
+              }
+              // Payment receipt snapshot (printed or record-only for reports/history)
+              const lastCovers = await window.api.covers
+                .getLast(selectedTable.area, selectedTable.label)
+                .catch(() => null);
+              const items = payLines.map((l) => ({
+                sku: l.sku,
+                name: l.name,
+                qty: l.qty,
+                unitPrice: l.unitPrice,
+                vatRate: l.vatRate,
+                note: l.note,
+                station: (l as any).station,
+                categoryId: (l as any).categoryId,
+                categoryName: (l as any).categoryName,
+                courseId: (l as any).courseId || null,
+                seatId: (l as any).seatId || null,
+              }));
+              const payingIds = payLines.map((l) => l.id);
+              const closeTable =
+                addMode !== 'seat' ||
+                shouldCloseTableAfterSeatPay(lines, payingIds);
+              closeTableAfterPay = closeTable;
+              paidLineIds = payingIds;
+              const payingSeatLabel =
+                addMode === 'seat' && paySeatId
+                  ? seatLabel(
+                      seats,
+                      paySeatId,
+                      t('order.seatN', {
+                        n: seatNumber(seats, paySeatId) || 1,
+                      }),
+                    )
+                  : undefined;
+              paidSeatLabel = payingSeatLabel;
+              const paymentIdempotencyKey = newIdempotencyKey();
+              // Process the payment + receipt synchronously so
+              // the user sees a real "Processing…" state. The
+              // IPC handler `tickets:print` is bounded:
+              //   - On success it returns once the printer
+              //     ACKs (sub-second).
+              //   - On a transient failure (printer offline,
+              //     ECONNREFUSED, EHOSTDOWN, …) it persists
+              //     the receipt into the PR-3 retry queue and
+              //     returns within the connect timeout
+              //     (PRINTER_TIMEOUT_MS, default 5 s). The
+              //     printer-station loop keeps trying for
+              //     ~4 min after that.
+              // Fiscal refusals throw. After the host records
+              // the sale, a down printer returns `{ ok: true,
+              // printed: false }` and we still close the table.
+              try {
+                const payResult = await tryOrQueue('payments.record', {
+                  area: selectedTable.area,
+                  tableLabel: selectedTable.label,
+                  covers: lastCovers ?? null,
+                  items,
+                  note: hasTables ? orderNote || null : null,
+                  userName: user?.displayName || undefined,
+                  recordOnly: !printReceipt,
+                  idempotencyKey: paymentIdempotencyKey,
+                  meta: {
+                    kind: 'PAYMENT',
+                    userId: user?.id ?? null,
+                    method: paymentMethod,
+                    paidAt: new Date().toISOString(),
+                    amountPaid: Number(amountPaid),
+                    vatEnabled,
+                    baseTotal: totals.total,
+                    serviceChargeEnabled: serviceChargeCfg.enabled,
+                    serviceChargeApplied: serviceChargeCfg.enabled
+                      ? applyServiceCharge
+                      : false,
+                    serviceChargeMode: serviceChargeCfg.mode,
+                    serviceChargeValue: serviceChargeCfg.value,
+                    serviceChargeAmount,
+                    totalBefore: totalBeforeDiscount,
+                    discountType,
+                    discountValue:
+                      discountType === 'NONE'
+                        ? null
+                        : Number(String(discountValue || '').replace(',', '.')),
+                    discountAmount,
+                    discountReason: (discountReason || '').trim() || null,
+                    totalAfter: totalDue,
+                    managerApprovedById: managerApprovedBy?.userId ?? null,
+                    managerApprovedByName: managerApprovedBy?.userName ?? null,
+                    closeTable,
+                    seatLabel: payingSeatLabel,
+                    seatId: paySeatId || undefined,
+                  },
+                });
+                if (payResult.queued) {
+                  // Host never confirmed the sale. With fiskalizimi
+                  // on, closing now would free the table before an
+                  // invoice exists.
+                  toast.error(t('order.paymentNeedsTill'), {
+                    title: t('order.paymentBlocked'),
+                  });
+                } else {
+                  paymentAccepted = true;
+                  const printed = (payResult.result as any)?.printed;
+                  if ((payResult.result as any)?.fiscalPending) {
+                    toast.warn(t('order.paymentRecordedFiscalQueued'));
+                  } else if (printed === false) {
+                    toast.warn(t('order.paymentRecordedPrintQueued'));
+                  }
                 }
-                detail={
-                  vatEnabled
-                    ? t('order.recordingPaymentFiscal')
-                    : t('order.recordingPayment')
+              } catch (e: any) {
+                if (String(e?.code || '') === 'TABLE_ALREADY_PAID') {
+                  toast.info(t('order.alreadyPaid'));
+                  paymentAccepted = true;
+                } else {
+                  const detail = String(e?.message || '').trim();
+                  toast.error(detail || t('order.paymentNotRecorded'), {
+                    title: t('order.paymentBlocked'),
+                  });
                 }
-              />
-            ) : null}
-
-            {addMode === 'seat' ? (
-              <div className="shrink-0 mb-3">
-                <div className="text-sm font-medium mb-1.5">
-                  {t('order.selectGuestsPayment')}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {seatPayRows.map((row) => {
-                    const active = paySeatId === row.id;
-                    return (
-                      <button
-                        key={row.id}
-                        type="button"
-                        disabled={row.paid || busyAction === 'pay'}
-                        onClick={() => {
-                          setPaySeatId(row.id);
-                          setCashTendered('');
-                          setDiscountType('NONE');
-                          setDiscountValue('');
-                        }}
-                        className={`min-h-11 min-w-[7.5rem] flex-1 sm:flex-none px-3 py-2 rounded-lg border text-left ${
-                          row.paid
-                            ? 'opacity-40 cursor-not-allowed border-gray-700 bg-gray-800'
-                            : active
-                              ? 'border-[var(--pos-accent)] bg-[var(--pos-accent-soft)]'
-                              : 'border-gray-600 bg-gray-700 hover:bg-gray-600'
-                        }`}
-                      >
-                        <div className="text-sm font-semibold truncate">
-                          {row.label}
-                        </div>
-                        <div className="text-xs tabular-nums opacity-80">
-                          {row.paid
-                            ? t('order.seatPaid')
-                            : formatAmount(row.gross)}
-                        </div>
-                      </button>
+              }
+            } finally {
+              // Close only when the host accepted the sale (or
+              // another waiter already settled this sitting).
+              if (paymentAccepted) {
+                if (paidLineIds.length) {
+                  markLinesAsPaid(paidLineIds);
+                }
+                if (user?.id && addMode === 'seat') {
+                  const snapshot = useTicketStore
+                    .getState()
+                    .lines.map((l) => toTicketLogLine(l));
+                  await logTicket({
+                    userId: user.id,
+                    area: selectedTable.area,
+                    tableLabel: selectedTable.label,
+                    covers:
+                      typeof coversKnown === 'number' ? coversKnown : null,
+                    items: snapshot,
+                    note: orderNote || undefined,
+                    stockConsumeLines: [],
+                    kdsFireItems: [],
+                  }).catch((e: unknown) => {
+                    reportAppError(e, {
+                      fallback: t('order.toastTryAgain'),
+                      key: `tickets.log:${selectedTable.area}:${selectedTable.label}`,
+                    });
+                  });
+                }
+                if (closeTableAfterPay) {
+                  setOpen(selectedTable.area, selectedTable.label, false);
+                  invalidateFloorCache();
+                  try {
+                    await tryOrQueue(
+                      'tables.setOpen',
+                      {
+                        area: selectedTable.area,
+                        label: selectedTable.label,
+                        open: false,
+                      },
+                      {
+                        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                      },
                     );
-                  })}
-                </div>
-                {unpaidSeatIds(seats, lines).length > 1 ? (
-                  <div className="text-xs opacity-70 mt-1.5">
-                    {t('order.remainingSeats', {
-                      count: unpaidSeatIds(seats, lines).length,
-                    })}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
-              {/* Order summary */}
-              <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div>
-                    <div className="text-sm opacity-80">
-                      {addMode === 'seat' && payingSeatName
-                        ? t('order.orderSummarySeat', {
-                            label: payingSeatName,
-                          })
-                        : t('order.orderSummary')}
-                    </div>
-                    {hasTables ? (
-                      <>
-                        <div className="text-sm font-medium">
-                          {t('common.table')} {selectedTable.label}
-                        </div>
-                        <div className="text-xs opacity-70">
-                          {t('common.coversWithVal', {
-                            val:
-                              typeof coversKnown === 'number'
-                                ? coversKnown
-                                : '—',
-                          })}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="text-sm font-medium">
-                        {t('order.saleHeader', {
-                          label: selectedTable.label,
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="flex-1 overflow-auto space-y-1.5 min-h-0">
-                  {payLines.length === 0 ? (
-                    <div className="text-xs opacity-60">
-                      {t('common.noItems')}
-                    </div>
-                  ) : (
-                    payLines.map((l) => (
-                      <div
-                        key={l.id}
-                        className="flex items-start justify-between gap-2 text-sm"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate">
-                            {l.qty}× {l.name}
-                          </div>
-                          {l.note ? (
-                            <div className="text-[11px] opacity-60 truncate">
-                              {l.note}
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="tabular-nums shrink-0 font-medium">
-                          {formatAmount(l.qty * l.unitPrice)}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-                <div className="mt-3 pt-3 border-t border-gray-700 space-y-1 text-sm">
-                  <div className="flex justify-between opacity-80">
-                    <span>{t('common.subtotal')}</span>
-                    <span className="tabular-nums">
-                      {formatAmount(totals.total)}
-                    </span>
-                  </div>
-                  {serviceChargeCfg.enabled && serviceChargeAmount > 0 ? (
-                    <div className="flex justify-between opacity-80">
-                      <span>{t('common.serviceCharge')}</span>
-                      <span className="tabular-nums">
-                        + {formatAmount(serviceChargeAmount)}
-                      </span>
-                    </div>
-                  ) : null}
-                  {discountAmount > 0 ? (
-                    <div className="flex justify-between opacity-80">
-                      <span>{t('common.discount')}</span>
-                      <span className="tabular-nums">
-                        − {formatAmount(discountAmount)}
-                      </span>
-                    </div>
-                  ) : null}
-                  <div className="flex justify-between font-semibold pt-1">
-                    <span>{t('common.total')}</span>
-                    <span className="tabular-nums">
-                      {formatAmount(totalDue)}
-                    </span>
-                  </div>
-                  <PaymentFxHint
-                    eurAmount={eurDue}
-                    eurExchangeRate={eurExchangeRate}
-                    showRate
-                  />
-                </div>
-                {addMode !== 'seat' ? (
-                  <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-medium">
-                        {t('order.splitBill')}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
-                          disabled={splitGuestCount <= 1}
-                          onClick={() =>
-                            setSplitGuestCount((n) => Math.max(1, n - 1))
-                          }
-                          aria-label="−"
-                        >
-                          −
-                        </button>
-                        <div className="min-w-[2rem] text-center font-semibold tabular-nums">
-                          {splitGuestCount}
-                        </div>
-                        <button
-                          type="button"
-                          className="h-11 w-11 rounded bg-gray-700 hover:bg-gray-600 text-lg leading-none disabled:opacity-40"
-                          disabled={splitGuestCount >= 30}
-                          onClick={() =>
-                            setSplitGuestCount((n) => Math.min(30, n + 1))
-                          }
-                          aria-label="+"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
-                    {split ? (
-                      <div>
-                        <div className="text-sm font-semibold tabular-nums">
-                          {split.guests > 1 &&
-                          Math.abs(split.lastPerson - split.perPerson) > 0.001
-                            ? t('order.perPersonLast', {
-                                amount: formatAmount(split.perPerson),
-                                last: formatAmount(split.lastPerson),
-                              })
-                            : t('order.perPerson', {
-                                amount: formatAmount(split.perPerson),
-                              })}
-                        </div>
-                        <PaymentFxHint
-                          eurAmount={eurPerPerson}
-                          eurExchangeRate={eurExchangeRate}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-
-              {/* Payment methods */}
-              <div className="bg-gray-800 rounded-lg p-3 min-h-[280px]">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-sm opacity-80">
-                    {t('order.paymentMethods')}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <PayMethodButton
-                    active={paymentMethod === 'CASH'}
-                    onClick={() => setPaymentMethod('CASH')}
-                    label={t('order.cash')}
-                  >
-                    <IconCash />
-                  </PayMethodButton>
-                  <div className="text-xs opacity-60 mt-3">
-                    {t('order.cards')}
-                  </div>
-                  <PayMethodButton
-                    active={paymentMethod === 'CARD'}
-                    onClick={() => setPaymentMethod('CARD')}
-                    label={t('order.card')}
-                  >
-                    <IconCard />
-                  </PayMethodButton>
-                  {/* <div className="text-xs opacity-60 mt-3">Other</div>
-                  <PayMethodButton active={paymentMethod === 'GIFT_CARD'} onClick={() => setPaymentMethod('GIFT_CARD')} label="Gift Card">
-                    <IconGift />
-                  </PayMethodButton> */}
-                </div>
-              </div>
-
-              {/* Amount & confirm */}
-              <div className="bg-gray-800 rounded-lg p-3 min-h-[280px] flex flex-col">
-                <div className="flex items-start justify-between mb-3 gap-2">
-                  <div className="text-sm opacity-80 flex items-center gap-2">
-                    <IconReceipt />
-                    {t('order.paymentAmount')}
-                  </div>
-                  <div className="text-right">
-                    <div className="text-lg font-semibold tabular-nums leading-tight">
-                      {formatAmount(totalDue)}
-                    </div>
-                    <PaymentFxHint
-                      eurAmount={eurDue}
-                      eurExchangeRate={eurExchangeRate}
-                    />
-                  </div>
-                </div>
-                {paymentMethod === 'CASH' && (
-                  <div className="mb-3 p-3 rounded bg-gray-900/40 border border-gray-700">
-                    <div className="text-sm font-medium mb-2">
-                      {t('order.cashReceived')}
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {cashSuggestions.map((amt) => (
-                        <button
-                          key={amt}
-                          type="button"
-                          className={`min-h-11 px-3 py-2 rounded text-sm tabular-nums ${
-                            Number.isFinite(cashTenderedNum) &&
-                            Math.abs(cashTenderedNum - amt) < 1e-9
-                              ? 'bg-blue-600'
-                              : 'bg-gray-700 hover:bg-gray-600'
-                          }`}
-                          onClick={() => setCashTendered(String(amt))}
-                        >
-                          {Math.abs(amt - totalDue) < 1e-9
-                            ? t('order.exactAmount')
-                            : formatAmount(amt)}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      className="w-full bg-gray-700 rounded px-3 py-3 text-base tabular-nums"
-                      inputMode="decimal"
-                      placeholder={t('order.cashReceivedPlaceholder')}
-                      value={cashTendered}
-                      onChange={(e) => setCashTendered(e.target.value)}
-                    />
-                    <div className="mt-2 flex justify-between text-sm">
-                      <span className="opacity-70">{t('order.changeDue')}</span>
-                      <span className="font-semibold tabular-nums">
-                        {formatAmount(cashChange)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-                {serviceChargeCfg.enabled && (
-                  <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-medium">
-                        {t('common.serviceCharge')}
-                      </div>
-                      <div className="text-xs opacity-70">
-                        {applyServiceCharge && serviceChargeAmount > 0
-                          ? `+ ${formatAmount(serviceChargeAmount)}`
-                          : '—'}
-                      </div>
-                    </div>
-                    <label className="flex items-center justify-between gap-3">
-                      <div className="text-sm opacity-80">
-                        {t('order.applyServiceCharge')}
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={applyServiceCharge}
-                        onChange={(e) =>
-                          setApplyServiceCharge(e.target.checked)
-                        }
-                      />
-                    </label>
-                    <div className="text-xs opacity-70 mt-2">
-                      {t('order.config')}:{' '}
-                      {serviceChargeCfg.mode === 'PERCENT'
-                        ? `${serviceChargeCfg.value}%`
-                        : `${serviceChargeCfg.value}`}
-                    </div>
-                  </div>
-                )}
-                <div className="mt-3 p-3 rounded bg-gray-900/40 border border-gray-700">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm font-medium">
-                      {t('common.discount')}
-                    </div>
-                    <div className="text-xs opacity-70">
-                      {discountAmount > 0
-                        ? `- ${formatAmount(discountAmount)}`
-                        : '—'}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <button
-                      type="button"
-                      className={`px-3 py-2 rounded text-sm ${discountType === 'PERCENT' ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                      onClick={() => setDiscountType('PERCENT')}
-                    >
-                      %
-                    </button>
-                    <button
-                      type="button"
-                      className={`px-3 py-2 rounded text-sm ${discountType === 'AMOUNT' ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                      onClick={() => setDiscountType('AMOUNT')}
-                    >
-                      €
-                    </button>
-                    {/* <button
-                      type="button"
-                      className={`px-3 py-2 rounded text-sm ${discountType === 'NONE' ? 'bg-gray-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                      onClick={() => { setDiscountType('NONE'); setDiscountValue(''); }}
-                    >
-                      C
-                    </button> */}
-                    <input
-                      className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm"
-                      placeholder={
-                        discountType === 'PERCENT'
-                          ? t('order.discountPlaceholderPercent')
-                          : discountType === 'AMOUNT'
-                            ? t('order.discountPlaceholderAmount')
-                            : t('order.discountPlaceholderType')
-                      }
-                      value={discountValue}
-                      disabled={discountType === 'NONE'}
-                      onChange={(e) => setDiscountValue(e.target.value)}
-                    />
-                  </div>
-                  <input
-                    className="w-full bg-gray-700 rounded px-2 py-2 text-sm"
-                    placeholder={t('order.discountReason')}
-                    value={discountReason}
-                    onChange={(e) => setDiscountReason(e.target.value)}
-                  />
-                  {discountAmount > 0 && (
-                    <div className="text-xs opacity-70 mt-2 flex items-center justify-between">
-                      <span>{t('order.totalAfterDiscount')}</span>
-                      <span className="font-semibold">
-                        {formatAmount(totalDue)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-                <div className="mt-auto pt-3">
-                  {(() => {
-                    const needsDiscountApproval =
-                      approvalsCfg.requireManagerPinForDiscount &&
-                      discountAmount > 0;
-                    const needsServiceRemovalApproval =
-                      approvalsCfg.requireManagerPinForServiceChargeRemoval &&
-                      serviceChargeCfg.enabled &&
-                      serviceChargeConfiguredAmount > 0 &&
-                      !applyServiceCharge;
-                    if (!needsDiscountApproval && !needsServiceRemovalApproval)
-                      return null;
-                    return (
-                      <div className="mb-2 text-xs text-amber-200 opacity-90">
-                        {t('order.managerPinPayment')}
-                      </div>
-                    );
-                  })()}
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <IconPrinter />
-                      <span className="text-sm">{t('order.printReceipt')}</span>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={printReceipt}
-                      className={`relative h-8 w-14 shrink-0 rounded-full transition-colors duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 ${
-                        printReceipt ? 'bg-blue-600' : 'bg-gray-700'
-                      }`}
-                      onClick={() => setPrintReceipt((v) => !v)}
-                      aria-label={t('order.togglePrintReceipt')}
-                    >
-                      <span
-                        aria-hidden
-                        className={`pointer-events-none absolute top-1/2 size-[1.375rem] -translate-y-1/2 rounded-full bg-white shadow-md ring-1 ring-black/15 transition-[left] duration-200 ease-out ${
-                          printReceipt
-                            ? 'left-[calc(100%-1.375rem-5px)]'
-                            : 'left-[5px]'
-                        }`}
-                      />
-                    </button>
-                  </div>
-                  <button
-                    className="pos-btn-primary w-full py-4 text-[15px] disabled:cursor-not-allowed"
-                    disabled={
-                      busyAction != null ||
-                      !connectionOk ||
-                      payLines.length === 0
-                    }
-                    onClick={async () => {
-                      if (busyAction != null) return;
-                      if (!connectionOk) return;
-                      setBusyAction('pay');
-                      await ensureStoreTillOpen();
-                      // Close the table only after the host accepted the
-                      // payment. Fiscal refusals and "could not reach till"
-                      // keep the sitting open. The host also closes the
-                      // table as part of a successful PAYMENT so two
-                      // waiters cannot fiscalize the same sitting.
-                      let paymentAccepted = false;
-                      let closeTableAfterPay = true;
-                      let paidLineIds: string[] = [];
-                      let paidSeatLabel: string | undefined;
-                      try {
-                        const needsDiscountApproval =
-                          approvalsCfg.requireManagerPinForDiscount &&
-                          discountAmount > 0;
-                        const needsServiceRemovalApproval =
-                          approvalsCfg.requireManagerPinForServiceChargeRemoval &&
-                          serviceChargeCfg.enabled &&
-                          serviceChargeConfiguredAmount > 0 &&
-                          !applyServiceCharge;
-                        let managerApprovedBy: {
-                          userId: number;
-                          userName: string;
-                        } | null = null;
-                        if (
-                          needsDiscountApproval ||
-                          needsServiceRemovalApproval
-                        ) {
-                          managerApprovedBy = await requestManagerApproval(
-                            needsDiscountApproval && needsServiceRemovalApproval
-                              ? t('order.approveDiscountAndSc')
-                              : needsDiscountApproval
-                                ? t('order.approveDiscount')
-                                : t('order.approveScRemoval'),
-                          );
-                          if (!managerApprovedBy) return;
-                        }
-                        // Payment receipt snapshot (printed or record-only for reports/history)
-                        const lastCovers = await window.api.covers
-                          .getLast(selectedTable.area, selectedTable.label)
-                          .catch(() => null);
-                        const items = payLines.map((l) => ({
-                          sku: l.sku,
-                          name: l.name,
-                          qty: l.qty,
-                          unitPrice: l.unitPrice,
-                          vatRate: l.vatRate,
-                          note: l.note,
-                          station: (l as any).station,
-                          categoryId: (l as any).categoryId,
-                          categoryName: (l as any).categoryName,
-                          courseId: (l as any).courseId || null,
-                          seatId: (l as any).seatId || null,
-                        }));
-                        const payingIds = payLines.map((l) => l.id);
-                        const closeTable =
-                          addMode !== 'seat' ||
-                          shouldCloseTableAfterSeatPay(lines, payingIds);
-                        closeTableAfterPay = closeTable;
-                        paidLineIds = payingIds;
-                        const payingSeatLabel =
-                          addMode === 'seat' && paySeatId
-                            ? seatLabel(
-                                seats,
-                                paySeatId,
-                                t('order.seatN', {
-                                  n: seatNumber(seats, paySeatId) || 1,
-                                }),
-                              )
-                            : undefined;
-                        paidSeatLabel = payingSeatLabel;
-                        const paymentIdempotencyKey = newIdempotencyKey();
-                        // Process the payment + receipt synchronously so
-                        // the user sees a real "Processing…" state. The
-                        // IPC handler `tickets:print` is bounded:
-                        //   - On success it returns once the printer
-                        //     ACKs (sub-second).
-                        //   - On a transient failure (printer offline,
-                        //     ECONNREFUSED, EHOSTDOWN, …) it persists
-                        //     the receipt into the PR-3 retry queue and
-                        //     returns within the connect timeout
-                        //     (PRINTER_TIMEOUT_MS, default 5 s). The
-                        //     printer-station loop keeps trying for
-                        //     ~4 min after that.
-                        // Fiscal refusals throw. After the host records
-                        // the sale, a down printer returns `{ ok: true,
-                        // printed: false }` and we still close the table.
-                        try {
-                          const payResult = await tryOrQueue(
-                            'payments.record',
-                            {
-                              area: selectedTable.area,
-                              tableLabel: selectedTable.label,
-                              covers: lastCovers ?? null,
-                              items,
-                              note: hasTables ? orderNote || null : null,
-                              userName: user?.displayName || undefined,
-                              recordOnly: !printReceipt,
-                              idempotencyKey: paymentIdempotencyKey,
-                              meta: {
-                                kind: 'PAYMENT',
-                                userId: user?.id ?? null,
-                                method: paymentMethod,
-                                paidAt: new Date().toISOString(),
-                                amountPaid: Number(amountPaid),
-                                vatEnabled,
-                                baseTotal: totals.total,
-                                serviceChargeEnabled: serviceChargeCfg.enabled,
-                                serviceChargeApplied: serviceChargeCfg.enabled
-                                  ? applyServiceCharge
-                                  : false,
-                                serviceChargeMode: serviceChargeCfg.mode,
-                                serviceChargeValue: serviceChargeCfg.value,
-                                serviceChargeAmount,
-                                totalBefore: totalBeforeDiscount,
-                                discountType,
-                                discountValue:
-                                  discountType === 'NONE'
-                                    ? null
-                                    : Number(
-                                        String(discountValue || '').replace(
-                                          ',',
-                                          '.',
-                                        ),
-                                      ),
-                                discountAmount,
-                                discountReason:
-                                  (discountReason || '').trim() || null,
-                                totalAfter: totalDue,
-                                managerApprovedById:
-                                  managerApprovedBy?.userId ?? null,
-                                managerApprovedByName:
-                                  managerApprovedBy?.userName ?? null,
-                                closeTable,
-                                seatLabel: payingSeatLabel,
-                                seatId: paySeatId || undefined,
-                              },
-                            },
-                          );
-                          if (payResult.queued) {
-                            // Host never confirmed the sale. With fiskalizimi
-                            // on, closing now would free the table before an
-                            // invoice exists.
-                            toast.error(t('order.paymentNeedsTill'), {
-                              title: t('order.paymentBlocked'),
-                            });
-                          } else {
-                            paymentAccepted = true;
-                            const printed = (payResult.result as any)?.printed;
-                            if ((payResult.result as any)?.fiscalPending) {
-                              toast.warn(
-                                t('order.paymentRecordedFiscalQueued'),
-                              );
-                            } else if (printed === false) {
-                              toast.warn(t('order.paymentRecordedPrintQueued'));
-                            }
-                          }
-                        } catch (e: any) {
-                          if (String(e?.code || '') === 'TABLE_ALREADY_PAID') {
-                            toast.info(t('order.alreadyPaid'));
-                            paymentAccepted = true;
-                          } else {
-                            const detail = String(e?.message || '').trim();
-                            toast.error(
-                              detail || t('order.paymentNotRecorded'),
-                              {
-                                title: t('order.paymentBlocked'),
-                              },
-                            );
-                          }
-                        }
-                      } finally {
-                        // Close only when the host accepted the sale (or
-                        // another waiter already settled this sitting).
-                        if (paymentAccepted) {
-                          if (paidLineIds.length) {
-                            markLinesAsPaid(paidLineIds);
-                          }
-                          if (user?.id && addMode === 'seat') {
-                            const snapshot = useTicketStore
-                              .getState()
-                              .lines.map((l) => toTicketLogLine(l));
-                            await logTicket({
-                              userId: user.id,
-                              area: selectedTable.area,
-                              tableLabel: selectedTable.label,
-                              covers:
-                                typeof coversKnown === 'number'
-                                  ? coversKnown
-                                  : null,
-                              items: snapshot,
-                              note: orderNote || undefined,
-                              stockConsumeLines: [],
-                              kdsFireItems: [],
-                            }).catch((e: unknown) => {
-                              reportAppError(e, {
-                                fallback: t('order.toastTryAgain'),
-                                key: `tickets.log:${selectedTable.area}:${selectedTable.label}`,
-                              });
-                            });
-                          }
-                          if (closeTableAfterPay) {
-                            setOpen(
-                              selectedTable.area,
-                              selectedTable.label,
-                              false,
-                            );
-                            invalidateFloorCache();
-                            try {
-                              await tryOrQueue(
-                                'tables.setOpen',
-                                {
-                                  area: selectedTable.area,
-                                  label: selectedTable.label,
-                                  open: false,
-                                },
-                                {
-                                  dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                                },
-                              );
-                            } catch {
-                              // queued or transient — loop will replay
-                            }
-                            clear();
-                            setOrderNote('');
-                            setShowPayment(false);
-                          } else {
-                            const nextIds = unpaidSeatIds(
-                              useTicketStore.getState().seats,
-                              useTicketStore.getState().lines,
-                            );
-                            setPaySeatId(nextIds[0] ?? null);
-                            setCashTendered('');
-                            setDiscountType('NONE');
-                            setDiscountValue('');
-                            toast.success(
-                              t('order.seatPaidToast', {
-                                label: paidSeatLabel || t('order.addMode.seat'),
-                              }),
-                            );
-                          }
-                        }
-                        setBusyAction(null);
-                      }
-                    }}
-                  >
-                    {busyAction === 'pay' ? (
-                      <>
-                        <SpinnerGlyph className="size-4" />
-                        <span>
-                          {vatEnabled
-                            ? t('order.registeringFiscal')
-                            : t('order.processingPaymentOverlay')}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="flex flex-col items-center leading-tight">
-                        <span>
-                          {addMode === 'seat' && payingSeatName
-                            ? t('order.paySeatWithTotal', {
-                                label: payingSeatName,
-                                amount: formatAmount(totalDue),
-                              })
-                            : t('order.payWithTotal', {
-                                amount: formatAmount(totalDue),
-                              })}
-                        </span>
-                        {eurDue != null ? (
-                          <span className="text-xs font-medium opacity-90">
-                            {formatEur(eurDue)}
-                          </span>
-                        ) : null}
-                      </span>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+                  } catch {
+                    // queued or transient — loop will replay
+                  }
+                  clear();
+                  setOrderNote('');
+                  setShowPayment(false);
+                } else {
+                  const nextIds = unpaidSeatIds(
+                    useTicketStore.getState().seats,
+                    useTicketStore.getState().lines,
+                  );
+                  setPaySeatId(nextIds[0] ?? null);
+                  setCashTendered('');
+                  setDiscountType('NONE');
+                  setDiscountValue('');
+                  toast.success(
+                    t('order.seatPaidToast', {
+                      label: paidSeatLabel || t('order.addMode.seat'),
+                    }),
+                  );
+                }
+              }
+              setBusyAction(null);
+            }
+          }}
+        />
       )}
 
       {showTransfer && selectedTable && user?.id && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-lg p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-lg font-semibold">
-                {t('order.transferTable')}
-              </div>
+        <div
+          className="pos-overlay"
+          onClick={() => {
+            if (transferBusy) return;
+            setShowTransfer(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="pos-dialog w-full max-w-lg p-5 sm:rounded-[0.85rem]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="pos-dialog-title">{t('order.transferTable')}</div>
               <button
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-gray-700 hover:bg-gray-600"
+                type="button"
+                className="pos-ticket-iconbtn"
                 onClick={() => setShowTransfer(false)}
+                aria-label={t('common.close')}
               >
                 <IconClose />
-                {t('common.close')}
               </button>
             </div>
 
-            <div className="text-sm opacity-80 mb-3">
+            <div className="mb-3 text-sm text-[color:var(--pos-fg-muted)]">
               {t('order.from')}:{' '}
-              <b>
+              <b className="text-[color:var(--pos-fg)]">
                 {selectedTable.area} {selectedTable.label}
               </b>
             </div>
 
-            <div className="flex gap-2 mb-4">
+            <div className="pos-segmented mb-4 w-full">
               <button
-                className={`flex-1 py-2 rounded ${transferMode === 'WAITER' ? 'bg-indigo-700 text-white' : 'bg-gray-800 hover:bg-gray-700'}`}
+                className={`pos-segment flex-1 ${
+                  transferMode === 'WAITER' ? 'pos-segment--active' : ''
+                }`}
                 onClick={() => {
                   setTransferMode('WAITER');
                   setTransferError(null);
@@ -4132,7 +3736,9 @@ export default function OrderPage() {
                 {t('order.toWaiter')}
               </button>
               <button
-                className={`flex-1 py-2 rounded ${transferMode === 'TABLE' ? 'bg-indigo-700 text-white' : 'bg-gray-800 hover:bg-gray-700'}`}
+                className={`pos-segment flex-1 ${
+                  transferMode === 'TABLE' ? 'pos-segment--active' : ''
+                }`}
                 onClick={() => {
                   setTransferMode('TABLE');
                   setTransferError(null);
@@ -4153,11 +3759,11 @@ export default function OrderPage() {
                   .filter((u) => onShiftUserIds.has(Number(u.id)));
                 return (
                   <div className="space-y-2">
-                    <div className="text-sm opacity-80">
+                    <div className="text-sm text-[color:var(--pos-fg-muted)]">
                       {t('order.selectWaiter')}
                     </div>
                     <select
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
+                      className="pos-input disabled:opacity-60"
                       value={transferToUserId ?? ''}
                       onChange={(e) =>
                         setTransferToUserId(
@@ -4185,12 +3791,12 @@ export default function OrderPage() {
               })()
             ) : (
               <div className="space-y-2">
-                <div className="text-sm opacity-80">
+                <div className="text-sm text-[color:var(--pos-fg-muted)]">
                   {t('order.destination')}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <select
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
+                    className="pos-input disabled:opacity-60"
                     aria-label={t('order.destinationAriaSection')}
                     value={
                       transferSectionNames.includes(transferToArea)
@@ -4215,7 +3821,7 @@ export default function OrderPage() {
                     ))}
                   </select>
                   <select
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 disabled:opacity-60"
+                    className="pos-input disabled:opacity-60"
                     aria-label={t('order.destinationAriaTable')}
                     value={
                       transferDestTableOptions.includes(transferToLabel)
@@ -4246,21 +3852,21 @@ export default function OrderPage() {
             )}
 
             {transferError && (
-              <div className="mt-3 text-sm bg-rose-900/30 border border-rose-800 rounded p-2">
-                {transferError}
-              </div>
+              <div className="pos-alert mt-3">{transferError}</div>
             )}
 
             <div className="mt-4 flex gap-2">
               <button
-                className="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded"
+                type="button"
+                className="pos-ticket-tool"
                 onClick={() => setShowTransfer(false)}
                 disabled={transferBusy}
               >
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 pos-btn-primary py-2"
+                type="button"
+                className="pos-ticket-pay !w-auto flex-1"
                 disabled={
                   transferBusy ||
                   !canTransfer ||
@@ -4411,59 +4017,105 @@ export default function OrderPage() {
       )}
 
       {showCovers && selectedTable && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
-          <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
-            <h3 className="text-center mb-2">
+        <div
+          className="pos-overlay"
+          onClick={() => {
+            if (busyAction != null) return;
+            setShowCovers(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pos-covers-title"
+            className="pos-dialog w-full max-w-sm p-5 sm:rounded-[0.85rem]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3
+              id="pos-covers-title"
+              className="pos-dialog-title mb-4 text-center"
+            >
               {coversMode === 'editOnly'
                 ? `${t('order.coversEditTitle')} ${selectedTable.label}`
                 : `${t('order.coversOpenTitle')} ${selectedTable.label}`}
             </h3>
-            <input
-              autoFocus
-              type="number"
-              min={1}
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={coversValue}
-              onChange={(e) => setCoversValue(e.target.value)}
-            />
+            <div className="flex items-center justify-center gap-2">
+              <button
+                type="button"
+                className="pos-pay-stepper inline-flex items-center justify-center"
+                disabled={Math.floor(Number(coversValue) || 0) <= 1}
+                onClick={() =>
+                  setCoversValue(
+                    String(
+                      Math.max(1, Math.floor(Number(coversValue) || 1) - 1),
+                    ),
+                  )
+                }
+                aria-label="−"
+              >
+                −
+              </button>
+              <input
+                autoFocus
+                inputMode="numeric"
+                pattern="[0-9]*"
+                className="pos-input h-[2.75rem] w-[4.5rem] text-center text-lg font-semibold tabular-nums"
+                value={coversValue}
+                onChange={(e) =>
+                  setCoversValue(e.target.value.replace(/[^\d]/g, ''))
+                }
+                aria-label={t('order.editCovers')}
+              />
+              <button
+                type="button"
+                className="pos-pay-stepper inline-flex items-center justify-center"
+                disabled={Math.floor(Number(coversValue) || 0) >= 99}
+                onClick={() =>
+                  setCoversValue(
+                    String(
+                      Math.min(
+                        99,
+                        Math.max(1, Math.floor(Number(coversValue) || 0) + 1),
+                      ),
+                    ),
+                  )
+                }
+                aria-label="+"
+              >
+                +
+              </button>
+            </div>
             {coversMode === 'openAndSend' ? (
-              <div className="flex items-center justify-between mt-4">
-                <div className="flex items-center gap-2">
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-[13px]">
                   <IconPrinter />
-                  <span className="text-sm">
-                    {t('order.printStationTickets')}
-                  </span>
+                  <span>{t('order.printStationTickets')}</span>
                 </div>
                 <button
                   type="button"
                   role="switch"
                   aria-checked={printStationTickets}
-                  className={`relative h-8 w-14 shrink-0 rounded-full transition-colors duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 ${
-                    printStationTickets ? 'bg-blue-600' : 'bg-gray-700'
+                  className={`pos-pay-switch ${
+                    printStationTickets ? 'pos-pay-switch--on' : ''
                   }`}
                   onClick={() => setPrintStationTickets((v) => !v)}
                   aria-label={t('order.togglePrintStationTickets')}
                 >
-                  <span
-                    aria-hidden
-                    className={`pointer-events-none absolute top-1/2 size-[1.375rem] -translate-y-1/2 rounded-full bg-white shadow-md ring-1 ring-black/15 transition-[left] duration-200 ease-out ${
-                      printStationTickets
-                        ? 'left-[calc(100%-1.375rem-5px)]'
-                        : 'left-[5px]'
-                    }`}
-                  />
+                  <span aria-hidden className="pos-pay-switch-knob" />
                 </button>
               </div>
             ) : null}
-            <div className="flex gap-2 mt-4">
+            <div className="mt-4 flex gap-2">
               <button
-                className="flex-1 bg-gray-600 py-2 rounded"
+                type="button"
+                className="pos-ticket-tool"
                 onClick={() => setShowCovers(false)}
               >
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 pos-btn-primary py-2 disabled:cursor-not-allowed"
+                type="button"
+                className="pos-ticket-pay !w-auto flex-1"
                 disabled={busyAction != null}
                 onClick={async () => {
                   if (busyAction != null) return;
@@ -4593,10 +4245,23 @@ export default function OrderPage() {
       )}
 
       {voidTarget && selectedTable && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
-          <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
-            <h3 className="text-center mb-2">{t('order.voidItemTitle')}</h3>
-            <p className="text-sm opacity-80 text-center mb-4">
+        <div
+          className="pos-overlay"
+          onClick={() => {
+            if (ticketSyncing) return;
+            setVoidTarget(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="pos-dialog w-full max-w-sm p-5 sm:rounded-[0.85rem]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="pos-dialog-title mb-2 text-center">
+              {t('order.voidItemTitle')}
+            </h3>
+            <p className="mb-4 text-center text-sm text-[color:var(--pos-fg-muted)]">
               {t('order.voidItemBody', {
                 name: voidTarget.name,
                 qty: voidTarget.qty,
@@ -4604,15 +4269,17 @@ export default function OrderPage() {
                 label: selectedTable.label,
               })}
             </p>
-            <div className="flex gap-2 mt-2">
+            <div className="mt-2 flex gap-2">
               <button
-                className="flex-1 bg-gray-600 py-2 rounded"
+                type="button"
+                className="pos-ticket-tool"
                 onClick={() => setVoidTarget(null)}
               >
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded disabled:opacity-60"
+                type="button"
+                className="pos-ticket-pay pos-ticket-pay--danger !w-auto flex-1"
                 disabled={ticketSyncing}
                 onClick={async () => {
                   if (!user?.id) return;
@@ -4700,19 +4367,21 @@ export default function OrderPage() {
 
       {customCommentOpen && (
         <div
-          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          className="pos-overlay"
           onClick={() => setCustomCommentOpen(false)}
         >
           <div
-            className="bg-gray-800 p-5 rounded w-full max-w-sm border border-gray-700"
+            role="dialog"
+            aria-modal="true"
+            className="pos-dialog w-full max-w-sm p-5 sm:rounded-[0.85rem]"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-center mb-3 font-semibold">
+            <h3 className="pos-dialog-title mb-3 text-center">
               {t('order.writeComment')}
             </h3>
             <textarea
               ref={customCommentInputRef}
-              className="w-full bg-gray-700 rounded px-3 py-2 text-sm mb-3 min-h-[80px] resize-y placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-600/50"
+              className="pos-input mb-3 min-h-[80px] resize-y"
               placeholder={t('order.writeCommentPlaceholder')}
               value={customCommentInput}
               autoFocus
@@ -4731,15 +4400,14 @@ export default function OrderPage() {
             <div className="flex gap-2">
               <button
                 type="button"
-                className="flex-1 inline-flex items-center justify-center gap-1.5 bg-gray-600 hover:bg-gray-500 py-2 rounded"
+                className="pos-ticket-tool"
                 onClick={() => setCustomCommentOpen(false)}
               >
-                <IconClose />
                 {t('common.close')}
               </button>
               <button
                 type="button"
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded font-medium"
+                className="pos-ticket-pay !w-auto flex-1"
                 onClick={() => {
                   const text = customCommentInput.trim();
                   if (!text) return;
@@ -4756,30 +4424,47 @@ export default function OrderPage() {
       )}
 
       {weightModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
-          <div className="bg-gray-800 p-5 rounded w-full max-w-sm">
-            <h3 className="text-center mb-2">{t('order.weightTitle')}</h3>
-            <div className="mb-2 text-center opacity-80">
+        <div
+          className="pos-overlay"
+          onClick={() => {
+            setWeightModal(null);
+            setWeightInput('');
+            setWeightUnit('kg');
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="pos-dialog w-full max-w-sm p-5 sm:rounded-[0.85rem]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="pos-dialog-title mb-2 text-center">
+              {t('order.weightTitle')}
+            </h3>
+            <div className="mb-3 text-center text-sm text-[color:var(--pos-fg-muted)]">
               {weightModal.name}
             </div>
-            <div className="grid grid-cols-3 gap-2 mb-3">
+            <div className="mb-3 grid grid-cols-3 gap-2">
               {[...'123456789'].map((d) => (
                 <button
                   key={d}
-                  className="bg-gray-700 py-2 rounded"
+                  type="button"
+                  className="pos-keypad-key"
                   onClick={() => setWeightInput((v) => v + d)}
                 >
                   {d}
                 </button>
               ))}
               <button
-                className="bg-gray-700 py-2 rounded"
+                type="button"
+                className="pos-keypad-key"
                 onClick={() => setWeightInput((v) => v + '0')}
               >
                 0
               </button>
               <button
-                className="bg-gray-700 py-2 rounded"
+                type="button"
+                className="pos-keypad-key"
                 onClick={() =>
                   setWeightInput((v) => (v.includes('.') ? v : v + '.'))
                 }
@@ -4787,28 +4472,27 @@ export default function OrderPage() {
                 .
               </button>
               <button
-                className="bg-gray-700 py-2 rounded"
+                type="button"
+                className="pos-keypad-key"
                 onClick={() => setWeightInput('')}
               >
                 {t('order.clear')}
               </button>
             </div>
-            <div className="flex gap-2 mb-3">
+            <div className="pos-segmented mb-3 w-full">
               <button
-                className={`flex-1 py-2 rounded ${
-                  weightUnit === 'kg'
-                    ? 'bg-emerald-600'
-                    : 'bg-gray-700 hover:bg-gray-600'
+                type="button"
+                className={`pos-segment flex-1 ${
+                  weightUnit === 'kg' ? 'pos-segment--active' : ''
                 }`}
                 onClick={() => setWeightUnit('kg')}
               >
                 kg
               </button>
               <button
-                className={`flex-1 py-2 rounded ${
-                  weightUnit === 'g'
-                    ? 'bg-emerald-600'
-                    : 'bg-gray-700 hover:bg-gray-600'
+                type="button"
+                className={`pos-segment flex-1 ${
+                  weightUnit === 'g' ? 'pos-segment--active' : ''
                 }`}
                 onClick={() => setWeightUnit('g')}
               >
@@ -4816,7 +4500,7 @@ export default function OrderPage() {
               </button>
             </div>
             <input
-              className="w-full bg-gray-700 rounded px-2 py-2 text-center mb-3"
+              className="pos-input mb-3 text-center text-lg font-semibold tabular-nums"
               placeholder={t('order.weightPlaceholder')}
               inputMode="decimal"
               value={weightInput ? `${weightInput} ${weightUnit}` : ''}
@@ -4830,7 +4514,8 @@ export default function OrderPage() {
             />
             <div className="flex gap-2">
               <button
-                className="flex-1 bg-gray-600 py-2 rounded"
+                type="button"
+                className="pos-ticket-tool"
                 onClick={() => {
                   setWeightModal(null);
                   setWeightInput('');
@@ -4840,7 +4525,8 @@ export default function OrderPage() {
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2 rounded"
+                type="button"
+                className="pos-ticket-pay !w-auto flex-1"
                 onClick={() => {
                   if (!weightModal) return;
                   const amount = Number(weightInput.trim());
@@ -4876,21 +4562,25 @@ export default function OrderPage() {
       )}
 
       {approvalModal.open && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl w-[92vw] max-w-sm p-5">
-            <div className="text-lg font-semibold mb-1">
+        <div className="pos-overlay">
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="pos-dialog w-full max-w-sm p-5 sm:rounded-[0.85rem]"
+          >
+            <div className="pos-dialog-title mb-1">
               {approvalModal.kind === 'ADMIN'
                 ? t('order.adminApproval')
                 : t('order.managerApproval')}
             </div>
-            <div className="text-sm opacity-70 mb-3">
+            <div className="mb-3 text-sm text-[color:var(--pos-fg-muted)]">
               {approvalModal.action}
             </div>
             <input
               autoFocus
               type="password"
               inputMode="numeric"
-              className="w-full bg-gray-700 rounded px-3 py-2"
+              className="pos-input py-3 text-center tracking-[0.45em] tabular-nums"
               placeholder={
                 approvalModal.kind === 'ADMIN'
                   ? t('order.enterAdminPin')
@@ -4949,13 +4639,12 @@ export default function OrderPage() {
               }}
             />
             {approvalModal.error && (
-              <div className="text-sm text-rose-300 mt-2">
-                {approvalModal.error}
-              </div>
+              <div className="pos-alert mt-2">{approvalModal.error}</div>
             )}
-            <div className="flex gap-2 mt-4">
+            <div className="mt-4 flex gap-2">
               <button
-                className="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded"
+                type="button"
+                className="pos-ticket-tool"
                 onClick={() => {
                   setApprovalModal({
                     open: false,
@@ -4971,7 +4660,8 @@ export default function OrderPage() {
                 {t('common.cancel')}
               </button>
               <button
-                className="flex-1 bg-emerald-700 hover:bg-emerald-800 py-2 rounded"
+                type="button"
+                className="pos-ticket-pay !w-auto flex-1"
                 onClick={async () => {
                   const pin = approvalModal.pin;
                   try {
@@ -5024,59 +4714,6 @@ export default function OrderPage() {
     </div>
   );
 }
-function PaymentFxHint({
-  eurAmount,
-  eurExchangeRate,
-  showRate = false,
-}: {
-  eurAmount: number | null;
-  eurExchangeRate: number | null;
-  showRate?: boolean;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="space-y-0.5">
-      {eurAmount != null ? (
-        <div className="text-sm font-medium text-emerald-300 tabular-nums">
-          {t('order.inEur', { amount: formatEur(eurAmount) })}
-        </div>
-      ) : showRate ? (
-        <div className="text-[11px] opacity-50">
-          {t('order.eurRateMissing')}
-        </div>
-      ) : null}
-      {showRate && eurExchangeRate != null ? (
-        <div className="text-[11px] opacity-50">
-          {t('order.eurRateHint', { rate: String(eurExchangeRate) })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function PayMethodButton({
-  active,
-  onClick,
-  label,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  children: any;
-}) {
-  return (
-    <button
-      type="button"
-      className={`w-full flex items-center gap-3 px-3 py-4 rounded border ${active ? 'bg-blue-600 border-blue-500' : 'bg-gray-900/40 border-gray-700 hover:bg-gray-700/40'}`}
-      onClick={onClick}
-    >
-      <span className="opacity-90">{children}</span>
-      <span className="font-semibold">{label}</span>
-    </button>
-  );
-}
-
 function TicketTotals({
   totals,
   vatEnabled,
@@ -5102,9 +4739,13 @@ function TicketTotals({
   );
   return (
     <>
-      <div className="flex justify-between font-semibold">
-        <span>{t('common.total')}</span>
-        <span> {formatAmount(totalWithService)}</span>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[13px] text-[color:var(--pos-fg-muted)]">
+          {t('common.total')}
+        </span>
+        <span className="text-[1.65rem] font-bold leading-none tabular-nums">
+          {formatAmount(totalWithService)}
+        </span>
       </div>
       {vatEnabled ? (
         <div className="flex justify-between text-[11px] leading-snug opacity-70">

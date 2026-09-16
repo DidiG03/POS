@@ -17,7 +17,7 @@ import type { IpcMainInvokeEvent } from 'electron';
 import { checkRateLimit, logSecurityEvent } from './security';
 import { policyFor } from './ipcPolicy';
 import type { IpcPolicy } from './ipcPolicy';
-import { getSession, windowKindFor } from './ipcSession';
+import { getSession, senderHoldsToken, windowKindFor } from './ipcSession';
 import type { IpcSession } from './ipcSession';
 
 export class IpcAuthorizationError extends Error {
@@ -72,6 +72,27 @@ export function decideAccess(
 }
 
 /**
+ * A till that is already bound to this token is re-presenting it (boot, HMR,
+ * Strict Mode), not guessing. Counting those against the resume limiter is
+ * what locked the floor after a burst of Vite remounts.
+ */
+export function skipResumeRateLimit(
+  channel: string,
+  payload: unknown,
+  senderId: number,
+): boolean {
+  if (channel !== 'auth:resumeSession') return false;
+  const token =
+    payload &&
+    typeof payload === 'object' &&
+    'token' in payload &&
+    typeof (payload as { token?: unknown }).token === 'string'
+      ? (payload as { token: string }).token
+      : '';
+  return senderHoldsToken(senderId, token);
+}
+
+/**
  * Register an IPC handler behind its policy.
  *
  * Throws at startup if the channel has no policy — that is deliberate. A
@@ -90,7 +111,11 @@ export function ipcHandle<T>(channel: string, listener: GuardedListener<T>) {
     const senderId = Number(event?.sender?.id || 0);
     const windowKind = windowKindFor(senderId);
 
-    if (policy.rateLimit && !checkRateLimit(event, channel, policy.rateLimit)) {
+    if (
+      policy.rateLimit &&
+      !skipResumeRateLimit(channel, payload, senderId) &&
+      !checkRateLimit(event, channel, policy.rateLimit)
+    ) {
       throw new IpcAuthorizationError('rate_limited');
     }
 
@@ -120,6 +145,12 @@ export function ipcHandle<T>(channel: string, listener: GuardedListener<T>) {
       throw verdict.error;
     }
 
-    return listener(event, payload, ctx);
+    const t0 = Date.now();
+    try {
+      return await listener(event, payload, ctx);
+    } finally {
+      const ms = Date.now() - t0;
+      if (ms >= 50) console.log(`[boot] ipc ${channel} ${ms}ms`);
+    }
   });
 }

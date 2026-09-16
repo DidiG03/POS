@@ -40,6 +40,9 @@ import { applyHostPosUiTheme } from '../../theme';
 import { POS_CACHE, peekSettings } from '../../utils/posReadCache';
 import { invalidateCache } from '../../utils/swrCache';
 import { loginDirectoryState } from '../../utils/loginDirectory';
+import { bootTrace } from '@shared/bootTrace';
+import { retryLazyImport } from '../../utils/lazyRetry';
+import { loadPosRealtimeSync } from '../../utils/loadPosRealtimeSync';
 
 function staffInitials(name: string): string {
   const parts = String(name || '')
@@ -86,7 +89,7 @@ function StaffTile({
  * the column heading above already says what belongs here. */
 function ColumnPlaceholder() {
   return (
-    <div className="h-[52px] rounded-lg border border-dashed border-white/8" />
+    <div className="h-[52px] rounded-[0.7rem] border border-dashed border-[var(--pos-border)]" />
   );
 }
 
@@ -94,6 +97,7 @@ export default function LoginPage() {
   const { t, i18n } = useTranslation();
   const PAIRING_STORAGE_KEY = 'pos_pairing_code';
   const pairingCodeRef = useRef<HTMLInputElement>(null);
+  const pinRef = useRef<HTMLInputElement>(null);
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [pairingCode, setPairingCode] = useState<string>(() => {
@@ -286,6 +290,13 @@ export default function LoginPage() {
   const [needsFirstAdmin, setNeedsFirstAdmin] = useState(false);
 
   useEffect(() => {
+    if (selectedId == null) return;
+    void retryLazyImport(() => import('../AppLayout'));
+    void retryLazyImport(() => import('./TablesPage'));
+    void loadPosRealtimeSync();
+  }, [selectedId]);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       setOpenShiftKnown(false);
@@ -351,6 +362,7 @@ export default function LoginPage() {
       setNeedsFirstAdmin(false);
       setStaff(directory.staff);
       setStaffLoading(false);
+      bootTrace('login:staff');
       if (!isAdminContext && got.live && isClockCaptureEnabled(s)) {
         try {
           const ids = await window.api.shifts.listOpen();
@@ -421,6 +433,34 @@ export default function LoginPage() {
     return () => window.removeEventListener('pos:settingsChanged', onSettings);
   }, []);
 
+  useEffect(() => {
+    if (!showPin) return;
+    const el = pinRef.current;
+    const focusId = window.requestAnimationFrame(() => {
+      try {
+        el?.focus({ preventScroll: true });
+      } catch {
+        el?.focus();
+      }
+    });
+    const lockScroll = () => {
+      try {
+        window.scrollTo(0, 0);
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('scroll', lockScroll, { passive: true });
+    window.visualViewport?.addEventListener('scroll', lockScroll);
+    return () => {
+      window.cancelAnimationFrame(focusId);
+      window.removeEventListener('scroll', lockScroll);
+      window.visualViewport?.removeEventListener('scroll', lockScroll);
+    };
+  }, [showPin]);
+
   const [devEditionSwitch, setDevEditionSwitch] = useState(false);
   const adminHostLabel = isAdminApp
     ? (() => {
@@ -439,14 +479,19 @@ export default function LoginPage() {
       // but keep `bg-gray-900` so the WebView still paints those zones
       // (no black bars). `max(...)` keeps the original p-3/sm:p-6 spacing
       // on devices without a safe area.
-      className="h-dvh flex flex-col items-center justify-center pos-app pos-app--auth overflow-y-auto px-3 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+      className={cn(
+        'h-dvh flex flex-col items-center pos-app pos-app--auth px-3 sm:px-6',
+        showPin
+          ? 'pos-app--auth-pin'
+          : 'justify-center overflow-y-auto pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]',
+      )}
     >
       <DocumentMeta
         title={
           isAdminContext ? t('adminLayout.panelTitle') : t('login.selectStaff')
         }
       />
-      <div className="mb-6 shrink-0 space-y-3">
+      <div className={cn('shrink-0 space-y-3', showPin ? 'mb-4' : 'mb-6')}>
         <BrandMark size="lg" subtitle={t('brand.tagline')} />
         {adminHostLabel ? (
           <div className="text-center text-[12px] text-gray-400">
@@ -478,7 +523,7 @@ export default function LoginPage() {
                   setShowPin(false);
                   setPin('');
                 }}
-                className="pos-icon-btn -ml-2 shrink-0"
+                className="pos-ticket-iconbtn -ml-1 shrink-0"
               >
                 <IconArrowLeft />
               </button>
@@ -527,12 +572,12 @@ export default function LoginPage() {
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
           {notice && (
-            <div className="shrink-0 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[13px] text-amber-200">
+            <div className="pos-alert shrink-0 !border-amber-500/30 !bg-amber-500/10 p-3 text-[13px] text-amber-200">
               {notice}
             </div>
           )}
           {!showPin && !staffLoading && needsFirstAdmin && (
-            <div className="shrink-0 rounded-lg border border-white/7 bg-gray-900 p-3.5">
+            <div className="pos-order-card shrink-0">
               <div className="text-[13px] font-semibold text-gray-100">
                 {t('login.firstAdminTitle')}
               </div>
@@ -723,7 +768,7 @@ export default function LoginPage() {
               {/* Mask PIN (dots/bullets). `inputMode="numeric"` + `pattern` keep a
                   digits-friendly keyboard on mobile. 20px font avoids Safari zoom. */}
               <input
-                autoFocus
+                ref={pinRef}
                 type="password"
                 inputMode="numeric"
                 pattern="[0-9]*"

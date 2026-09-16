@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { decideAccess } from './ipcGuard';
+import { decideAccess, skipResumeRateLimit } from './ipcGuard';
 import type { IpcCallContext } from './ipcGuard';
 import type { IpcSession } from './ipcSession';
 
@@ -116,5 +116,19 @@ describe('decideAccess', () => {
       ctx({ session: session('ADMIN') }),
     );
     expect(verdict.ok).toBe(false);
+  });
+});
+
+describe('skipResumeRateLimit', () => {
+  it('never skips the limiter on a different channel', () => {
+    expect(skipResumeRateLimit('auth:loginWithPin', { token: 'abc' }, 1)).toBe(
+      false,
+    );
+  });
+
+  it('does not skip when this window has no session for the token', () => {
+    expect(skipResumeRateLimit('auth:resumeSession', { token: 'abc' }, 1)).toBe(
+      false,
+    );
   });
 });

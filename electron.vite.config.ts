@@ -22,7 +22,15 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/main/entry.ts'),
         },
-        external: ['@prisma/client', '.prisma/client', /\.prisma\/client/],
+        external: [
+          '@prisma/client',
+          '.prisma/client',
+          /\.prisma\/client/,
+          '@libsql/client',
+          '@prisma/adapter-libsql',
+          /^@libsql\//,
+          'libsql',
+        ],
       },
     },
   },
@@ -75,8 +83,7 @@ export default defineConfig({
         clientFiles: [
           resolve(__dirname, 'src/renderer/main.tsx'),
           resolve(__dirname, 'src/renderer/routes.tsx'),
-          resolve(__dirname, 'src/renderer/app/AppLayout.tsx'),
-          resolve(__dirname, 'src/renderer/app/pages/TablesPage.tsx'),
+          resolve(__dirname, 'src/renderer/app/pages/LoginPage.tsx'),
         ],
       },
     },

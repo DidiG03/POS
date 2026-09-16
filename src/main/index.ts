@@ -142,7 +142,18 @@ import {
   unbindSender,
 } from './services/ipcSession';
 import { classifyPrinterError } from './print';
-import { configureSqlite, prisma } from '@db/client';
+import { configureSqlite, isSqliteLocked, prisma } from '@db/client';
+import { bootStep, bootTrace } from '@shared/bootTrace';
+import {
+  ackPendingRecoveryKey,
+  bootstrapVault,
+  getVaultPrefs,
+  getVaultStatus,
+  isVaultRequired,
+  setVaultUnlockMode,
+  setupVault,
+  unlockVault,
+} from './services/vault/lifecycle';
 import type { Prisma } from '@prisma/client';
 import {
   expireStaleMenuStock,
@@ -187,7 +198,14 @@ import {
   backfillTableOccupancyFromSyncState,
   listOccupiedTables,
 } from './services/tableOccupancy';
-import { compactTicketLogSession } from './services/ticketLogCompact';
+import {
+  compactTicketLogSession,
+  backfillAndCompactTicketLogs,
+} from './services/ticketLogCompact';
+import {
+  compactCoversForTable,
+  compactOversizedCovers,
+} from './services/coversCompact';
 import {
   listAdminTicketCounts,
   listAdminTicketsByUser,
@@ -216,6 +234,10 @@ import {
   startNotificationRetentionLoop,
   stopNotificationRetentionLoop,
 } from './services/notificationRetention';
+import {
+  startPrintJobRetentionLoop,
+  stopPrintJobRetentionLoop,
+} from './services/printJobRetention';
 import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
@@ -540,6 +562,58 @@ async function ensureLocalDbColumns(): Promise<void> {
   try {
     await (prisma as any).$executeRawUnsafe(
       `CREATE INDEX IF NOT EXISTS "TicketLog_sessionKey_idx" ON "TicketLog"("sessionKey");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "TicketLog_userId_createdAt_idx" ON "TicketLog"("userId", "createdAt");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "TicketLog_createdAt_idx" ON "TicketLog"("createdAt");`,
+    );
+  } catch {
+    // ignore
+  }
+  try {
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "Notification_userId_readAt_createdAt_idx" ON "Notification"("userId", "readAt", "createdAt");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "Notification_createdAt_idx" ON "Notification"("createdAt");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "DayShift_closedAt_openedById_idx" ON "DayShift"("closedAt", "openedById");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "TicketRequest_ownerId_status_idx" ON "TicketRequest"("ownerId", "status");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "Covers_createdAt_idx" ON "Covers"("createdAt");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "MenuItem_categoryId_idx" ON "MenuItem"("categoryId");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "Modifier_groupId_idx" ON "Modifier"("groupId");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "RecipeComponent_menuItemId_idx" ON "RecipeComponent"("menuItemId");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "RecipeComponent_inventoryItemId_idx" ON "RecipeComponent"("inventoryItemId");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "OrderItem_menuItemId_idx" ON "OrderItem"("menuItemId");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "OrderItemModifier_orderItemId_idx" ON "OrderItemModifier"("orderItemId");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "OrderItemModifier_modifierId_idx" ON "OrderItemModifier"("modifierId");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "Order_status_closedAt_idx" ON "Order"("status", "closedAt");`,
+    );
+    await (prisma as any).$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "TicketRequest_requesterId_idx" ON "TicketRequest"("requesterId");`,
     );
   } catch {
     // ignore
@@ -1404,13 +1478,156 @@ function licenseToBillingDto(st: Awaited<ReturnType<typeof getLicenseStatus>>) {
   };
 }
 
-app.whenReady().then(async () => {
-  if (!isPrimaryInstance) return;
+let hostDatabaseStarted = false;
+
+async function startHostDatabaseAndServices(): Promise<void> {
+  if (hostDatabaseStarted) return;
+  hostDatabaseStarted = true;
+  bootTrace('host:db start');
   try {
-    await configureSqlite();
+    await bootStep('host:configureSqlite', () => configureSqlite());
   } catch (e) {
     console.warn('[startup] configureSqlite failed:', e);
   }
+  // Bring the database up to date BEFORE the window (and its IPC
+  // queries) load, so an upgraded install missing recent columns
+  // doesn't crash the first menu/category query.
+  //
+  // The real migration files are the source of truth. A backup is taken
+  // first, but only when something is actually pending.
+  try {
+    const migrationsDir = resolveMigrationsDir();
+    await bootStep('host:migrations', async () => {
+      const outcome = await runPendingMigrations(migrationsDir, {
+        onBeforeApply: async () => {
+          const backup = await createDbBackupNow().catch((e) => {
+            console.warn('[startup] pre-migration backup failed:', e);
+            return null;
+          });
+          if (backup?.file) {
+            console.log(`[startup] Pre-migration backup at ${backup.file}`);
+          }
+        },
+      });
+      if (outcome.failed) {
+        console.error(
+          `[startup] Migration ${outcome.failed.name} failed: ${outcome.failed.error}`,
+        );
+        captureException(
+          new Error(`Migration failed: ${outcome.failed.error}`),
+          {
+            type: 'migration',
+            migration: outcome.failed.name,
+          },
+        );
+      }
+    });
+  } catch (e) {
+    console.warn('[startup] runPendingMigrations failed:', e);
+  }
+  await bootStep('host:ensureColumns', () =>
+    ensureLocalDbColumns().catch((e) =>
+      console.warn('[startup] ensureLocalDbColumns failed:', e),
+    ),
+  );
+  try {
+    const users = await prisma.user.count();
+    console.log(
+      `[startup] SQLite ${process.env.DATABASE_URL || ''} users=${users}`,
+    );
+  } catch (e) {
+    console.warn('[startup] user count failed:', e);
+  }
+  await bootStep('host:occupancyBackfill', () =>
+    backfillTableOccupancyFromSyncState().catch((e) =>
+      console.warn('[startup] occupancy backfill failed:', e),
+    ),
+  );
+  await bootStep('host:salesLedgerBackfill', async () => {
+    try {
+      const backfill = await backfillSalesLedgerFromPrintJobs();
+      if (backfill.written > 0) {
+        console.log(
+          `[startup] Sales ledger backfill: ${backfill.written} payment(s) from ${backfill.scanned} print job(s)`,
+        );
+      }
+    } catch (e) {
+      console.warn('[startup] sales ledger backfill failed:', e);
+    }
+  });
+  await bootStep('host:ticketLogCompact', async () => {
+    try {
+      const r = await backfillAndCompactTicketLogs();
+      if (r.keyed > 0 || r.compacted > 0) {
+        console.log(
+          `[startup] TicketLog compact: keyed ${r.keyed} snapshot(s), dropped ${r.compacted} old fire(s)`,
+        );
+      }
+    } catch (e) {
+      console.warn('[startup] TicketLog compact failed:', e);
+    }
+  });
+  await bootStep('host:coversCompact', async () => {
+    try {
+      const n = await compactOversizedCovers();
+      if (n > 0) {
+        console.log(
+          `[startup] Covers compact: dropped ${n} old headcount write(s)`,
+        );
+      }
+    } catch (e) {
+      console.warn('[startup] Covers compact failed:', e);
+    }
+  });
+  await bootStep('host:pruneSessions', () =>
+    pruneExpiredSessions().catch((e) =>
+      console.warn('[startup] pruneExpiredSessions failed:', e),
+    ),
+  );
+  const hostSettings = await coreServices
+    .readSettings()
+    .catch(() => ({}) as any);
+  applyOpenAtLogin(isOpenAtLoginEnabled(hostSettings));
+  await bootStep('host:lanApi', () => ensureLanApiStarted());
+  if (pendingLicenseUrl) {
+    const queued = pendingLicenseUrl;
+    pendingLicenseUrl = null;
+    await handleLicenseProtocolUrl(queued);
+  }
+  // Local printer retry queue (LAN API is independent).
+  startPrinterStationLoop();
+  startFiscalDeferLoop();
+  // Notifications: automatically delete notifications older than 1 week (DB retention).
+  startNotificationRetentionLoop(prisma, { days: 7 });
+  startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
+  // PrintJob: SENT/FAILED slips older than a week. After sales-ledger
+  // backfill so a PAYMENT receipt without an Order is not deleted.
+  startPrintJobRetentionLoop(prisma, { days: 7 });
+  // KDS: auto-bump stale tickets after 12 hours.
+  startKdsAutoBumpLoop();
+  // Tickets: auto-void stale open tables after 12 hours + notify.
+  startAutoVoidStaleTicketsLoop();
+  // Shifts: optional auto-close idle waiter shifts (12h / 24h) when no open tickets.
+  startAutoCloseShiftsLoop();
+  // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
+  startAutoNoShowReservationsLoop();
+  // Reservations: import confirmed bookings from Google Calendar iCal feed.
+  startGoogleCalendarSyncLoop();
+  bootTrace('host:db ready');
+}
+
+function vaultBlocksDatabase(): boolean {
+  if (!isVaultRequired()) return false;
+  const state = getVaultStatus().state;
+  return state === 'setup' || state === 'locked' || state === 'broken';
+}
+
+async function completeVaultAndBoot(): Promise<void> {
+  await startHostDatabaseAndServices();
+}
+
+app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return;
   installOsResumeRecovery();
   configureHostRuntime({
     getMainWindow: () => mainWindow,
@@ -1429,108 +1646,46 @@ app.whenReady().then(async () => {
       // ignore — dock icon stays default
     }
   }
-  // Bring the database up to date BEFORE the window (and its IPC
-  // queries) load, so an upgraded install missing recent columns
-  // doesn't crash the first menu/category query.
-  //
-  // The real migration files are the source of truth. A backup is taken
-  // first, but only when something is actually pending.
+
+  app.on('activate', () => {
+    showMainWindow();
+  });
+
+  bootTrace('host:whenReady');
   try {
-    const migrationsDir = resolveMigrationsDir();
-    const outcome = await runPendingMigrations(migrationsDir, {
-      onBeforeApply: async () => {
-        const backup = await createDbBackupNow().catch((e) => {
-          console.warn('[startup] pre-migration backup failed:', e);
-          return null;
-        });
-        if (backup?.file) {
-          console.log(`[startup] Pre-migration backup at ${backup.file}`);
-        }
-      },
-    });
-    if (outcome.failed) {
-      console.error(
-        `[startup] Migration ${outcome.failed.name} failed: ${outcome.failed.error}`,
-      );
-      captureException(new Error(`Migration failed: ${outcome.failed.error}`), {
-        type: 'migration',
-        migration: outcome.failed.name,
-      });
-    }
+    await bootStep('host:bootstrapVault', () => bootstrapVault());
   } catch (e) {
-    console.warn('[startup] runPendingMigrations failed:', e);
+    console.error('[startup] bootstrapVault failed:', e);
   }
-  // Belt and braces: older databases may carry columns that were added
-  // by hand before the migrator existed, leaving `_prisma_migrations`
-  // out of step. This converges those without touching a healthy DB.
-  await ensureLocalDbColumns().catch((e) =>
-    console.warn('[startup] ensureLocalDbColumns failed:', e),
-  );
+
+  if (vaultBlocksDatabase()) {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+    bootTrace('host:window (vault blocked)');
+    try {
+      mainWindow?.show();
+    } catch {
+      // ignore
+    }
+    setupHostTray();
+    setupAutoUpdater();
+    return;
+  }
+
   try {
-    const users = await prisma.user.count();
-    console.log(
-      `[startup] SQLite ${process.env.DATABASE_URL || ''} users=${users}`,
+    await bootStep('host:databaseAndServices', () =>
+      startHostDatabaseAndServices(),
     );
   } catch (e) {
-    console.warn('[startup] user count failed:', e);
+    console.error('[startup] host database failed:', e);
   }
-  try {
-    await backfillTableOccupancyFromSyncState();
-  } catch (e) {
-    console.warn('[startup] occupancy backfill failed:', e);
-  }
-  try {
-    const backfill = await backfillSalesLedgerFromPrintJobs();
-    if (backfill.written > 0) {
-      console.log(
-        `[startup] Sales ledger backfill: ${backfill.written} payment(s) from ${backfill.scanned} print job(s)`,
-      );
-    }
-  } catch (e) {
-    console.warn('[startup] sales ledger backfill failed:', e);
-  }
-  // Drop IPC sessions that aged out while the app was closed, so a machine
-  // that sat idle over a long weekend doesn't come back with resumable ones.
-  await pruneExpiredSessions().catch((e) =>
-    console.warn('[startup] pruneExpiredSessions failed:', e),
-  );
   // Startup is asynchronous (migrations run first), and a second launch or a
   // tray activation during that window already opens the till through
   // `createMainWindow`. Creating one unconditionally here would orphan it and
   // leave two POS windows fighting over the same tables.
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  bootTrace('host:window');
   setupHostTray();
   setupAutoUpdater();
-  const hostSettings = await coreServices
-    .readSettings()
-    .catch(() => ({}) as any);
-  applyOpenAtLogin(isOpenAtLoginEnabled(hostSettings));
-  await ensureLanApiStarted();
-  if (pendingLicenseUrl) {
-    const queued = pendingLicenseUrl;
-    pendingLicenseUrl = null;
-    await handleLicenseProtocolUrl(queued);
-  }
-  // Local printer retry queue (LAN API is independent).
-  startPrinterStationLoop();
-  startFiscalDeferLoop();
-  // Notifications: automatically delete notifications older than 1 week (DB retention).
-  startNotificationRetentionLoop(prisma, { days: 7 });
-  startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
-  // KDS: auto-bump stale tickets after 12 hours.
-  startKdsAutoBumpLoop();
-  // Tickets: auto-void stale open tables after 12 hours + notify.
-  startAutoVoidStaleTicketsLoop();
-  // Shifts: optional auto-close idle waiter shifts (12h / 24h) when no open tickets.
-  startAutoCloseShiftsLoop();
-  // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
-  startAutoNoShowReservationsLoop();
-  // Reservations: import confirmed bookings from Google Calendar iCal feed.
-  startGoogleCalendarSyncLoop();
-
-  app.on('activate', () => {
-    showMainWindow();
-  });
 });
 
 app.on('window-all-closed', () => {
@@ -1562,6 +1717,7 @@ app.on('before-quit', (event) => {
   // Always synchronously cancel timers/listeners that don't need to await anything.
   cleanupUpdater();
   stopNotificationRetentionLoop();
+  stopPrintJobRetentionLoop();
   stopKdsAutoBumpLoop();
   stopAutoVoidStaleTicketsLoop();
   stopAutoCloseShiftsLoop();
@@ -1612,6 +1768,39 @@ app.on('before-quit', (event) => {
       app.exit(0);
     }
   })();
+});
+
+ipcHandle('vault:getStatus', async () => getVaultStatus());
+
+ipcHandle('vault:getPrefs', async () => getVaultPrefs());
+
+ipcHandle('vault:ackRecovery', async () => {
+  ackPendingRecoveryKey();
+  return { ok: true };
+});
+
+ipcHandle('vault:setup', async (_e, payload) => {
+  const passphrase = String(payload?.passphrase || '');
+  const result = await setupVault(passphrase);
+  if (result.ok) await completeVaultAndBoot();
+  return result;
+});
+
+ipcHandle('vault:unlock', async (_e, payload) => {
+  const secret = String(payload?.secret || payload?.passphrase || '');
+  const result = await unlockVault(secret);
+  if (result.ok) await completeVaultAndBoot();
+  return result;
+});
+
+ipcHandle('vault:setUnlockMode', async (_e, payload) => {
+  const unlockMode = payload?.unlockMode === 'passphrase' ? 'passphrase' : 'os';
+  const result = await setVaultUnlockMode({
+    unlockMode,
+    passphrase: payload?.passphrase ? String(payload.passphrase) : undefined,
+  });
+  if (!result.ok) return result;
+  return { ok: true, ...getVaultPrefs() };
 });
 
 // Updater IPC handlers
@@ -1901,6 +2090,7 @@ ipcHandle('auth:createUser', async (_e, payload) => {
 });
 
 ipcHandle('auth:listUsers', async (_e, payload) => {
+  if (isSqliteLocked()) return [];
   // Local-first: use local DB for users
   const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
   const includeAdmins = (payload as any)?.includeAdmins !== false;
@@ -2258,6 +2448,7 @@ async function readSettings() {
 }
 
 ipcHandle('settings:get', async (_e) => {
+  if (isSqliteLocked()) return withLicenseEdition({});
   const settings = withLicenseEdition({
     ...((await readSettings()) as Record<string, unknown>),
   }) as any;
@@ -4575,6 +4766,7 @@ ipcHandle('covers:save', async (_e, { area, label, covers }) => {
   if (!area || !label || !Number.isFinite(num) || num <= 0) return false;
   assertStoreCounterAllowed(area);
   await prisma.covers.create({ data: { area, label, covers: num } });
+  await compactCoversForTable(area, label);
   return true;
 });
 

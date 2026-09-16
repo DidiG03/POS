@@ -307,6 +307,14 @@ const api: Api = {
     setStatus: (input) => ipcRenderer.invoke('reservations:setStatus', input),
     listCounts: (input) => ipcRenderer.invoke('reservations:listCounts', input),
   },
+  vault: {
+    getStatus: () => ipcRenderer.invoke('vault:getStatus'),
+    getPrefs: () => ipcRenderer.invoke('vault:getPrefs'),
+    setup: (input) => ipcRenderer.invoke('vault:setup', input),
+    unlock: (input) => ipcRenderer.invoke('vault:unlock', input),
+    ackRecovery: () => ipcRenderer.invoke('vault:ackRecovery'),
+    setUnlockMode: (input) => ipcRenderer.invoke('vault:setUnlockMode', input),
+  },
 };
 
 declare global {

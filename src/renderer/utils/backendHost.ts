@@ -139,6 +139,7 @@ export async function persistCompanionBackendHost(input: {
     const injected = (window as any).__POS_HOST__;
     if (injected && typeof injected === 'object') {
       injected.host = trimmedHost;
+      injected.connectHost = trimmedHost;
       injected.httpPort = httpPort;
     }
   } catch {

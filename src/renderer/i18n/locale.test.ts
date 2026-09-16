@@ -1,4 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   normalizeLng,
   readStoredPosUiLang,
@@ -46,5 +48,11 @@ describe('locale storage', () => {
       (globalThis as { document: { documentElement: { lang: string } } })
         .document.documentElement.lang,
     ).toBe('sq');
+  });
+
+  it('loads Albanian strings only when that language is needed', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'config.ts'), 'utf8');
+    expect(src).not.toMatch(/import sq from/);
+    expect(src).toContain("import('../locales/sq/translation.json')");
   });
 });

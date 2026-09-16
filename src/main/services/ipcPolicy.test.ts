@@ -72,6 +72,10 @@ describe('IPC policy shape', () => {
       'settings:get',
       'shifts:listOpen',
       'updater:getStatus',
+      'vault:ackRecovery',
+      'vault:getStatus',
+      'vault:setup',
+      'vault:unlock',
     ];
     const actualPublic = Object.entries(IPC_POLICIES)
       .filter(([, p]) => p.allow === 'public')

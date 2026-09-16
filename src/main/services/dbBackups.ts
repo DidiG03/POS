@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import fs from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
-import { prisma } from '@db/client';
+import { getOpenSqliteMode, prisma } from '@db/client';
 
 export async function getSqliteDbFilePath(): Promise<string | null> {
   try {
@@ -70,13 +70,16 @@ export async function createDbBackupNow(): Promise<{
       // ignore
     }
 
-    try {
-      await (prisma as any).$executeRawUnsafe(
-        `VACUUM INTO '${dest.replace(/'/g, "''")}';`,
-      );
-      return { ok: true, file: dest };
-    } catch {
-      // fallback to file copy
+    // VACUUM INTO on an encrypted connection can emit a plaintext clone.
+    if (getOpenSqliteMode() !== 'encrypted') {
+      try {
+        await (prisma as any).$executeRawUnsafe(
+          `VACUUM INTO '${dest.replace(/'/g, "''")}';`,
+        );
+        return { ok: true, file: dest };
+      } catch {
+        // fallback to file copy
+      }
     }
 
     fs.copyFileSync(dbPath, dest);

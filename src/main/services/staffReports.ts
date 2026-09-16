@@ -11,6 +11,7 @@ import { prisma } from '@db/client';
 import { coreServices } from './core';
 import { isTransferredOutNote } from './tableTransfer';
 import { listOccupiedTables } from './tableOccupancy';
+import { ticketCreatedAtIso } from '@shared/ticketLogItems';
 import {
   effectiveVatRate,
   latestRowPerSession,
@@ -197,12 +198,17 @@ export async function listMyVoidedTickets(
   const limit = Math.min(200, Math.max(1, Number(limitRaw || 40)));
   if (!userId) return [];
 
-  const rows = await prisma.ticketLog
-    .findMany({
-      orderBy: { createdAt: 'desc' },
-      take: 500,
-    })
-    .catch(() => []);
+  const take = Math.min(500, Math.max(limit * 6, 120));
+  const [rows, u] = await Promise.all([
+    prisma.ticketLog
+      .findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take,
+      })
+      .catch(() => []),
+    prisma.user.findUnique({ where: { id: userId } }).catch(() => null),
+  ]);
 
   const voidSettings = await coreServices.readSettings().catch(() => ({}));
   const voidVatEnabled = isVatEnabledFromSettings(voidSettings);
@@ -220,9 +226,6 @@ export async function listMyVoidedTickets(
 
     const note = String(r.note || '');
     const isFullVoid = itemsAll.every((it: any) => it?.voided === true);
-    const u = await prisma.user
-      .findUnique({ where: { id: r.userId } })
-      .catch(() => null);
 
     const grossSubtotal = voidedItems.reduce(
       (s: number, it: any) =>
@@ -242,7 +245,7 @@ export async function listMyVoidedTickets(
       kind: isFullVoid ? 'VOIDED_TICKET' : 'VOIDED_ITEMS',
       area: r.area,
       tableLabel: r.tableLabel,
-      createdAt: r.createdAt.toISOString(),
+      createdAt: ticketCreatedAtIso(r.createdAt),
       note,
       userName: u?.displayName ?? null,
       covers: r.covers ?? null,

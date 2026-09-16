@@ -7,10 +7,6 @@ import { useSessionStore } from '../stores/session';
 import { useAdminSessionStore } from '../stores/adminSession';
 import { useReservationSessionStore } from '../stores/reservationSession';
 import { ErrorBoundary } from '../components/ErrorBoundary';
-import {
-  PosServerScanHost,
-  PosServerScanPanel,
-} from './components/PosServerScan';
 import { hideMobileSplash } from '../utils/mobileShell';
 import { resumeMainProcessSession } from '../utils/resumeSession';
 import i18n from '../i18n/config';
@@ -19,18 +15,23 @@ import { ThemeSync } from '../i18n/ThemeSync';
 import { PageSpinner } from '../components/PageSpinner';
 import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { readStoredFlag, writeStoredFlag } from '../utils/storedFlag';
+import { VaultGate } from './components/VaultGate';
 import {
   hasConfiguredBackendHost,
   resolveBackendHost,
 } from '../utils/backendHost';
 import { peekSettings } from '../utils/posReadCache';
-import { POS_BACKEND_HOST_CHANGED } from '../utils/posServerScanEvent';
+import {
+  POS_BACKEND_HOST_CHANGED,
+  POS_OPEN_SERVER_SCAN,
+} from '../utils/posServerScanEvent';
 import {
   SHIFT_GUARD_GRACE_MS,
   isPersistedSessionExpired,
   sessionShellFromWindow,
 } from '../stores/sessionPersist';
 import { syncTabletToHostVersion } from '../utils/syncTabletToHostVersion';
+import { bootTrace } from '@shared/bootTrace';
 
 const router = createHashRouter(routes);
 
@@ -42,6 +43,16 @@ const UpdateNotification = React.lazy(() =>
 );
 const Toaster = React.lazy(() =>
   import('../components/Toaster').then((m) => ({ default: m.Toaster })),
+);
+const PosServerScanPanel = React.lazy(() =>
+  import('./components/PosServerScan').then((m) => ({
+    default: m.PosServerScanPanel,
+  })),
+);
+const PosServerScanOverlay = React.lazy(() =>
+  import('./components/PosServerScan').then((m) => ({
+    default: m.PosServerScanOverlay,
+  })),
 );
 
 const LICENSE_OK_KEY = 'pos-license-ok';
@@ -110,7 +121,11 @@ function BootScreen({
       detail={showScan ? undefined : detail}
       spinner={!showScan}
     >
-      {showScan ? <PosServerScanPanel autoScan /> : null}
+      {showScan ? (
+        <React.Suspense fallback={null}>
+          <PosServerScanPanel autoScan />
+        </React.Suspense>
+      ) : null}
     </PageSpinner>
   );
 }
@@ -244,6 +259,7 @@ function Root() {
       setBackendUnreachable(false);
       setMsg(t('boot.connecting'));
       setDetail(undefined);
+      bootTrace('boot:connecting');
       if (!isCompanionApp && !hasConfiguredBackendHost()) {
         setBackendUnreachable(true);
         setMsg(t('boot.cannotReach'));
@@ -255,6 +271,7 @@ function Root() {
         await resumeMainProcessSession().catch(() => {});
         if (cancelled) return;
         setReady(true);
+        bootTrace('boot:ready (cached settings)');
         setBackendUnreachable(false);
         setMsg(t('boot.starting'));
         setDetail(undefined);
@@ -327,6 +344,7 @@ function Root() {
           await resumeMainProcessSession().catch(() => {});
           if (cancelled) return;
           setReady(true);
+          bootTrace('boot:ready');
           setBackendUnreachable(false);
           setMsg(t('boot.starting'));
           setDetail(undefined);
@@ -362,12 +380,6 @@ function Root() {
     };
   }, [t, hostEpoch]);
 
-  useEffect(() => {
-    if (!ready) return;
-    void import('./AppLayout');
-    void import('./pages/TablesPage');
-  }, [ready]);
-
   if (!ready) {
     const lanClient =
       Boolean((window as any).__BROWSER_CLIENT__) ||
@@ -394,22 +406,39 @@ function Root() {
   );
 }
 
+function PosServerScanHostGate() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener(POS_OPEN_SERVER_SCAN, onOpen);
+    return () => window.removeEventListener(POS_OPEN_SERVER_SCAN, onOpen);
+  }, []);
+  if (!open) return null;
+  return (
+    <React.Suspense fallback={null}>
+      <PosServerScanOverlay onClose={() => setOpen(false)} />
+    </React.Suspense>
+  );
+}
+
 export function BootRoot() {
   return (
     <I18nextProvider i18n={i18n}>
-      <LocaleSync>
-        <ThemeSync>
-          <ErrorBoundary>
-            <MaybeLicenseGate>
-              <Root />
-            </MaybeLicenseGate>
-            <PosServerScanHost />
-            <React.Suspense fallback={null}>
-              <Toaster />
-            </React.Suspense>
-          </ErrorBoundary>
-        </ThemeSync>
-      </LocaleSync>
+      <ErrorBoundary>
+        <VaultGate>
+          <LocaleSync>
+            <ThemeSync>
+              <MaybeLicenseGate>
+                <Root />
+              </MaybeLicenseGate>
+              <PosServerScanHostGate />
+              <React.Suspense fallback={null}>
+                <Toaster />
+              </React.Suspense>
+            </ThemeSync>
+          </LocaleSync>
+        </VaultGate>
+      </ErrorBoundary>
     </I18nextProvider>
   );
 }

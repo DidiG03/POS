@@ -22,13 +22,18 @@ import { formatNotificationTime } from '@shared/notificationDisplay';
 import { useKdsOrdersAccess } from './useKdsOrdersAccess';
 import { toast } from '../stores/toasts';
 import { reportAppError } from '../utils/reportAppError';
-import { getOfflineQueueCount } from '../utils/offlineQueue';
+import {
+  getFailedSyncItems,
+  getOfflineQueueCount,
+} from '../utils/offlineQueue';
 import { isHostUnreachable } from '../utils/netQuality';
 import { Button } from '../components/ui/Button';
 import { ConfirmDialog, Modal } from '../components/ui/Modal';
 import { EmptyState } from '../components/ui/Surface';
 import { StatusChip } from '../components/ui/Badge';
 import { cn } from '../components/ui/cn';
+import { loadPosRealtimeSync } from '../utils/loadPosRealtimeSync';
+import { initRendererSentry } from '../utils/sentryBrowser';
 import {
   IconBell,
   IconClock,
@@ -75,6 +80,8 @@ export default function AppLayout() {
   const [backendOk, setBackendOk] = useState(true);
   const [queued, setQueued] = useState<number>(0);
   const [syncOk, setSyncOk] = useState<boolean>(true);
+  const [loadUpdater, setLoadUpdater] = useState(false);
+  const [showFailedSync, setShowFailedSync] = useState(false);
   const [billing, setBilling] = useState<{
     billingEnabled?: boolean;
     status?: string;
@@ -108,6 +115,35 @@ export default function AppLayout() {
 
   const handleNotifCount = useCallback((n: number) => {
     setUnreadCount(n);
+  }, []);
+
+  useEffect(() => {
+    void loadPosRealtimeSync();
+    initRendererSentry();
+  }, []);
+
+  useEffect(() => {
+    const arm = () => setLoadUpdater(true);
+    window.addEventListener('updater:event', arm);
+    const id = window.setTimeout(arm, 2500);
+    return () => {
+      window.removeEventListener('updater:event', arm);
+      window.clearTimeout(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      const items = await getFailedSyncItems().catch(() => []);
+      if (!cancelled && items.length > 0) setShowFailedSync(true);
+    };
+    void check();
+    window.addEventListener('offline-queue:failed-changed', check);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('offline-queue:failed-changed', check);
+    };
   }, []);
 
   useEffect(() => {
@@ -553,7 +589,7 @@ export default function AppLayout() {
             }}
           >
             <button
-              className="pos-icon-btn"
+              className="pos-ticket-iconbtn"
               aria-label={t('common.notifications')}
               aria-expanded={showNotifications}
               aria-haspopup="dialog"
@@ -617,7 +653,7 @@ export default function AppLayout() {
 
           {user && (
             <button
-              className="pos-icon-btn hover:!bg-rose-500/12 hover:!text-rose-300"
+              className="pos-ticket-iconbtn hover:!text-rose-400"
               onClick={() => {
                 forceLogout(t('common.loggedOut'));
               }}
@@ -718,9 +754,9 @@ export default function AppLayout() {
       )}
 
       <Suspense fallback={null}>
-        <UpdateNotification />
+        {loadUpdater ? <UpdateNotification /> : null}
         <PrinterNotification />
-        <FailedSyncPanel />
+        {showFailedSync ? <FailedSyncPanel /> : null}
       </Suspense>
     </div>
   );
@@ -803,32 +839,31 @@ function OwnerRequests({ userId }: { userId: number }) {
   }, [userId]);
   if (!rows.length) return null;
   return (
-    <div className="mt-2 border-t border-white/7 pt-2">
+    <div className="mt-2 border-t border-[var(--pos-border)] pt-2">
       <div className="pos-section-label mb-1.5 px-1">
         {t('layout.orderRequests')}
       </div>
       <ul className="space-y-1.5">
         {rows.map((r) => (
-          <li
-            key={r.id}
-            className="rounded-lg border border-white/7 bg-white/3 px-2.5 py-2"
-          >
+          <li key={r.id} className="pos-order-card !p-2.5">
             <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0 truncate text-[13px] font-medium text-gray-100">
+              <div className="min-w-0 truncate text-[13px] font-medium">
                 {t('layout.requestNumber', {
                   area: r.area,
                   table: r.tableLabel,
                   id: r.id,
                 })}
               </div>
-              <span className="shrink-0 text-[11px] text-gray-500 tabular">
+              <span className="shrink-0 text-[11px] tabular-nums text-[color:var(--pos-fg-muted)]">
                 {formatNotificationTime(r.createdAt, t)}
               </span>
             </div>
             {r.note && (
-              <div className="mt-0.5 text-[12px] text-gray-400">{r.note}</div>
+              <div className="mt-0.5 text-[12px] text-[color:var(--pos-fg-muted)]">
+                {r.note}
+              </div>
             )}
-            <div className="mt-1.5 text-[12px] text-gray-300">
+            <div className="mt-1.5 text-[12px]">
               {Array.isArray(r.items) && r.items.length ? (
                 <ul className="space-y-0.5">
                   {r.items.map((it: any, idx: number) => (
@@ -836,14 +871,16 @@ function OwnerRequests({ userId }: { userId: number }) {
                       <span className="truncate">
                         {String(it.name || t('common.item'))}
                       </span>
-                      <span className="shrink-0 text-gray-500 tabular">
+                      <span className="shrink-0 tabular-nums text-[color:var(--pos-fg-muted)]">
                         ×{Number(it.qty || 1)}
                       </span>
                     </li>
                   ))}
                 </ul>
               ) : (
-                <div className="text-gray-500">{t('common.noItems')}</div>
+                <div className="text-[color:var(--pos-fg-muted)]">
+                  {t('common.noItems')}
+                </div>
               )}
             </div>
             <div className="mt-2 flex gap-2">

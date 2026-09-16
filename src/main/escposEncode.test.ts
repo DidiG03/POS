@@ -122,7 +122,7 @@ describe('buildEscposTicket width', () => {
     expect(text).not.toContain('Covers:');
   });
 
-  it('prints a compact kitchen ORDER slip with waiter and time at the foot', () => {
+  it('prints a compact kitchen ORDER slip with waiter/table then items then time', () => {
     const kitchen = buildEscposTicket(
       {
         area: 'Salla Brenda',
@@ -135,16 +135,43 @@ describe('buildEscposTicket width', () => {
       { restaurantName: 'Test Bistro', currency: 'EUR' } as any,
     );
     const text = kitchen.toString('latin1');
-    expect(text).toContain('Salla Brenda - T1');
-    expect(text).toContain('1 x Steak');
-    expect(text).toContain('Waiter: Sefrid');
-    expect(text.indexOf('1 x Steak')).toBeLessThan(
-      text.indexOf('Waiter: Sefrid'),
+    expect(text).toContain('Steak');
+    expect(text).toMatch(/Steak\s+1/);
+    expect(text).not.toContain('1 x Steak');
+    expect(text).toContain('Sefrid - Salla Brenda - T1');
+    expect(text.indexOf('Sefrid - Salla Brenda - T1')).toBeLessThan(
+      text.indexOf('Steak'),
     );
+    expect(text.indexOf('Steak')).toBeLessThan(
+      text.search(/\d{2}\/\d{2}\/\d{4}/),
+    );
+    expect(text).not.toContain('Waiter:');
     expect(text).not.toContain('COURSE 2');
     expect(text).not.toContain('ORDER');
     expect(text).not.toContain('Covers:');
     expect(text).not.toContain('Test Bistro');
+    const html = buildHtmlReceipt(
+      {
+        area: 'Salla Brenda',
+        tableLabel: 'T1',
+        covers: 4,
+        userName: 'Sefrid',
+        items: [{ name: 'Steak', qty: 1, unitPrice: 0, station: 'KITCHEN' }],
+        meta: { kind: 'ORDER' as const },
+      },
+      { restaurantName: 'Test Bistro', currency: 'EUR' } as any,
+    );
+    expect(html).toContain('>Steak</div>');
+    expect(html).toContain('>1</div>');
+    expect(html).toContain('Sefrid - Salla Brenda - T1');
+    expect(html.indexOf('Sefrid - Salla Brenda - T1')).toBeLessThan(
+      html.indexOf('>Steak</div>'),
+    );
+    expect(html.indexOf('>Steak</div>')).toBeLessThan(
+      html.search(/\d{2}\/\d{2}\/\d{4}/),
+    );
+    expect(html).not.toContain('1 x Steak');
+    expect(html).not.toContain('Waiter:');
   });
 });
 

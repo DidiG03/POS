@@ -27,6 +27,7 @@ import {
   setupAutoUpdater,
   updaterHandlers,
 } from '../updater';
+import { registerCompanionLanIpc } from '../services/companionLanProxy';
 
 app.setName('OneTap Admin');
 initSentry();
@@ -249,6 +250,16 @@ ipcMain.handle('adminApp:discover', async () => {
       console.warn('[admin] discover failed:', e);
     return [];
   }
+});
+
+registerCompanionLanIpc({
+  ipcMain,
+  fetchChannel: 'adminApp:lanFetch',
+  sseStartChannel: 'adminApp:lanSseStart',
+  sseStopChannel: 'adminApp:lanSseStop',
+  sseEventChannel: 'adminApp:lanSse',
+  sseStatusChannel: 'adminApp:lanSseStatus',
+  client: 'admin',
 });
 
 app.whenReady().then(() => {

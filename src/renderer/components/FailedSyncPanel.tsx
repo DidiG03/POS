@@ -156,23 +156,18 @@ export function FailedSyncPanel() {
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
-            onClick={() => setOpen(false)}
-            aria-label={t('common.close')}
-          />
+        <div className="pos-overlay" onClick={() => setOpen(false)}>
           <div
             role="dialog"
             aria-modal="true"
-            className="relative w-full max-w-lg rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            className="pos-dialog relative flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden sm:rounded-[0.85rem]"
+            onClick={(e) => e.stopPropagation()}
           >
-            <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
-              <div className="font-semibold">{t('failedSync.title')}</div>
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--pos-border)] px-4 py-3">
+              <div className="pos-dialog-title">{t('failedSync.title')}</div>
               <button
                 type="button"
-                className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
+                className="pos-ticket-iconbtn"
                 onClick={() => setOpen(false)}
                 aria-label={t('common.close')}
               >
@@ -180,12 +175,9 @@ export function FailedSyncPanel() {
               </button>
             </div>
 
-            <ul className="flex-1 overflow-auto p-3 space-y-2">
+            <ul className="flex-1 space-y-2 overflow-auto p-3">
               {items.map((it) => (
-                <li
-                  key={it.id}
-                  className="rounded-lg border border-gray-700 bg-gray-800/60 p-3"
-                >
+                <li key={it.id} className="pos-order-card !p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium text-sm">
                       {t(
@@ -196,18 +188,18 @@ export function FailedSyncPanel() {
                             : OP_LABEL_KEY[it.op] || 'failedSync.opUnknown',
                       )}
                       {describeTarget(it, hasTables) && (
-                        <span className="ml-2 text-gray-400 font-normal">
+                        <span className="ml-2 font-normal text-[color:var(--pos-fg-muted)]">
                           {describeTarget(it, hasTables)}
                         </span>
                       )}
                     </div>
-                    <span className="text-[11px] text-gray-500 whitespace-nowrap">
+                    <span className="whitespace-nowrap text-[11px] text-[color:var(--pos-fg-muted)]">
                       {t('failedSync.failedAt', {
                         time: new Date(it.failedAt).toLocaleTimeString(),
                       })}
                     </span>
                   </div>
-                  <div className="mt-1 text-xs text-rose-300">
+                  <div className="pos-alert mt-2">
                     {it.reason === 'rejected'
                       ? t('failedSync.reasonRejected')
                       : t('failedSync.reasonExhausted')}
@@ -216,7 +208,7 @@ export function FailedSyncPanel() {
                   <div className="mt-2 flex gap-2">
                     <button
                       type="button"
-                      className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-xs disabled:opacity-60"
+                      className="pos-ticket-pay !w-auto flex-1 !min-h-11 !text-[13px]"
                       disabled={busyId === it.id}
                       onClick={() => void handleRetry(it.id)}
                     >
@@ -224,7 +216,7 @@ export function FailedSyncPanel() {
                     </button>
                     <button
                       type="button"
-                      className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-60"
+                      className="pos-ticket-tool !flex-1"
                       disabled={busyId === it.id}
                       onClick={() => void handleDismiss(it.id)}
                     >
@@ -235,17 +227,17 @@ export function FailedSyncPanel() {
               ))}
             </ul>
 
-            <div className="px-3 py-3 border-t border-gray-700 flex flex-wrap gap-2 justify-end">
+            <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--pos-border)] px-3 py-3">
               <button
                 type="button"
-                className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 text-sm"
+                className="pos-ticket-pay !w-auto !px-4"
                 onClick={() => void handleRetryAll()}
               >
                 {t('failedSync.retryAll')}
               </button>
               <button
                 type="button"
-                className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                className="pos-ticket-tool !flex-none"
                 onClick={() => void handleDismissAll()}
               >
                 {t('failedSync.dismissAll')}

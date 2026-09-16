@@ -27,7 +27,13 @@ export function lucideReactAlias(): { find: RegExp; replacement: string } {
  */
 export function rendererOptimize(): Pick<
   UserConfig,
-  'esbuild' | 'css' | 'build' | 'optimizeDeps' | 'plugins' | 'server' | 'resolve'
+  | 'esbuild'
+  | 'css'
+  | 'build'
+  | 'optimizeDeps'
+  | 'plugins'
+  | 'server'
+  | 'resolve'
 > {
   return {
     esbuild: {
@@ -48,6 +54,7 @@ export function rendererOptimize(): Pick<
         'zustand',
         'lucide-react',
       ],
+      exclude: ['@sentry/browser'],
       esbuildOptions: {
         minify: true,
         sourcemap: false,
@@ -63,9 +70,7 @@ export function rendererOptimize(): Pick<
         clientFiles: [
           './main.tsx',
           './routes.tsx',
-          './app/AppLayout.tsx',
           './app/pages/LoginPage.tsx',
-          './app/pages/TablesPage.tsx',
         ],
       },
     },
@@ -203,7 +208,9 @@ function gzipHtmlDocument(): Plugin {
           const headerBag =
             rest[0] && typeof rest[0] === 'object' && !Array.isArray(rest[0])
               ? rest[0]
-              : rest[1] && typeof rest[1] === 'object' && !Array.isArray(rest[1])
+              : rest[1] &&
+                  typeof rest[1] === 'object' &&
+                  !Array.isArray(rest[1])
                 ? rest[1]
                 : null;
           if (headerBag) {

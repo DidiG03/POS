@@ -126,6 +126,38 @@
     "holdIconToScan": "Hold the logo for 5 seconds to change POS server",
     "reloadChunk": "Couldn’t load this screen. Retrying…"
   },
+  "vault": {
+    "setupTitle": "Protect this till",
+    "setupBody": "Set a device passphrase. Receipts on this PC stay encrypted until someone types it after a shutdown. Staff PINs are not this password.",
+    "setupHint": "Use at least 12 characters. Do not use only numbers.",
+    "passphrase": "Device passphrase",
+    "confirm": "Confirm passphrase",
+    "create": "Encrypt this till",
+    "recoveryTitle": "Save this recovery key",
+    "recoveryBody": "If this PC is replaced or the Windows/Mac login is reset, this key is the only way to open receipts. Keep it off this PC — a phone photo or a paper in a safe.",
+    "wroteItDown": "I stored this recovery key somewhere that is not this computer",
+    "continue": "Continue",
+    "unlockTitle": "Unlock this till",
+    "unlockBody": "Enter the device passphrase to open receipts. The till stays locked until this succeeds.",
+    "unlock": "Unlock",
+    "recoveryKey": "Recovery key",
+    "useRecovery": "I have the recovery key",
+    "usePassphrase": "Use the passphrase instead",
+    "brokenTitle": "This till cannot be unlocked",
+    "brokenBody": "The encrypted database is here but the vault file is missing. Restore vault.json from a backup, or this copy of the receipts cannot be opened.",
+    "errors": {
+      "too_short": "Use at least 12 characters.",
+      "too_long": "That passphrase is too long.",
+      "digits_only": "Do not use only numbers. Staff PINs cannot protect the till.",
+      "mismatch": "The two passphrases do not match.",
+      "already_setup": "This till is already encrypted.",
+      "wrong_secret": "That passphrase or recovery key is not correct.",
+      "missing_vault": "The vault file is missing.",
+      "os_unavailable": "This computer cannot store the till key in Windows or Mac.",
+      "locked": "Unlock the till before changing this setting.",
+      "generic": "Could not open the till. Try again."
+    }
+  },
   "server": {
     "title": "POS server",
     "wifiHint": "Make sure your phone is on the same Wi-Fi as the POS computer. On the POS computer, run {{macCmd}} (Mac) or {{winCmd}} (Windows) to find its IP. iPhone also needs Settings → Privacy & Security → Local Network → OneTap Waiter turned on.",
@@ -473,7 +505,8 @@
     "updates": "Updates",
     "billing": "Billing",
     "lan": "LAN / Tablets",
-    "about": "Business Info"
+    "about": "Business Info",
+    "diskProtection": "Disk protection"
   },
   "settingsUpdates": {
     "title": "System Updates",
@@ -539,6 +572,25 @@
     "restoreFailed": "Restore failed",
     "restoring": "Restoring…",
     "restoredDev": "Restored. App will close now (dev mode). Please run \"npm run dev\" again."
+  },
+  "settingsVault": {
+    "title": "Till disk protection",
+    "help": "Receipts on the restaurant PC stay encrypted on disk. Staff still log in with their PIN. Choose whether OneTap can open by itself after Windows or Mac login, or must ask for a passphrase after every restart.",
+    "autoTitle": "Unlock this till automatically",
+    "autoHelp": "Uses this computer’s Windows or Mac login. OneTap will not ask for a passphrase when it starts. Someone who copies the disk still cannot read receipts.",
+    "passphraseTitle": "Ask for a passphrase when OneTap starts",
+    "passphraseHelp": "Use this only if you want the till locked even after Windows is logged in. You will type a device passphrase each time the app starts.",
+    "passphrase": "Device passphrase",
+    "confirm": "Confirm passphrase",
+    "savePassphrase": "Require passphrase at start",
+    "statusOff": "Disk protection is off on this till (development builds stay plaintext unless POS_VAULT=1).",
+    "statusLocked": "The till is locked. Unlock it on the restaurant PC first.",
+    "statusBroken": "This till cannot be unlocked. Restore vault.json from a backup.",
+    "statusOs": "Receipts are encrypted. The till opens with this PC’s Windows or Mac login.",
+    "statusPassphrase": "Receipts are encrypted. OneTap asks for the device passphrase after a restart.",
+    "osUnavailable": "This computer cannot store the till key in Windows or Mac. Set a passphrase instead.",
+    "saved": "Till unlock setting saved.",
+    "failed": "Could not save the till unlock setting."
   },
   "settingsAbout": {
     "title": "Business Info",
@@ -1000,6 +1052,8 @@
     "printStationTickets": "Print to stations",
     "togglePrintStationTickets": "Toggle print to kitchen stations",
     "payWithTotal": "Pay • {{amount}}",
+    "billItems_one": "{{count}} item",
+    "billItems_other": "{{count}} items",
     "approveDiscountAndSc": "Approve discount & service charge removal",
     "approveDiscount": "Approve discount",
     "approveScRemoval": "Approve service charge removal",

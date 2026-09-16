@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   effectiveVatRate,
   latestRowPerSession,
+  proposedSessionKeys,
   splitGrossVat,
   sumTicketLinesNetVat,
 } from './ticketRevenue';
@@ -170,6 +171,108 @@ describe('latestRowPerSession', () => {
       0,
     );
     expect(total).toBe(15);
+  });
+});
+
+describe('proposedSessionKeys', () => {
+  const buildKey = (area: string, label: string, iso: string) =>
+    `${area}|${label}|${iso}`;
+
+  it('keys unkeyed fires that extend the same sitting', () => {
+    const keys = proposedSessionKeys(
+      [
+        {
+          id: 1,
+          area: 'A',
+          tableLabel: '1',
+          createdAt: new Date('2026-09-01T10:00:00.000Z'),
+          itemsJson: [line('Pizza', 10)],
+        },
+        {
+          id: 2,
+          area: 'A',
+          tableLabel: '1',
+          createdAt: new Date('2026-09-01T10:05:00.000Z'),
+          itemsJson: [line('Pizza', 10), line('Coke', 3)],
+        },
+      ],
+      buildKey,
+    );
+    expect(keys.get(1)).toBe(keys.get(2));
+    expect(keys.get(1)).toContain('A|1|');
+    expect(keys.size).toBe(2);
+  });
+
+  it('starts a new key when the table is re-seated', () => {
+    const keys = proposedSessionKeys(
+      [
+        {
+          id: 1,
+          area: 'A',
+          tableLabel: '1',
+          createdAt: new Date(1_000),
+          itemsJson: [line('Pizza', 10), line('Coke', 3)],
+        },
+        {
+          id: 2,
+          area: 'A',
+          tableLabel: '1',
+          createdAt: new Date(9_000),
+          itemsJson: [line('Steak', 20)],
+        },
+      ],
+      buildKey,
+    );
+    expect(keys.get(1)).not.toBe(keys.get(2));
+    expect(keys.size).toBe(2);
+  });
+
+  it('attaches an unkeyed prefix to a later official sessionKey', () => {
+    const keys = proposedSessionKeys(
+      [
+        {
+          id: 1,
+          area: 'A',
+          tableLabel: '1',
+          createdAt: new Date(1_000),
+          itemsJson: [line('Pizza', 10)],
+        },
+        {
+          id: 2,
+          area: 'A',
+          tableLabel: '1',
+          sessionKey: 'official',
+          createdAt: new Date(2_000),
+          itemsJson: [line('Pizza', 10), line('Coke', 3)],
+        },
+      ],
+      buildKey,
+    );
+    expect(keys.get(1)).toBe('official');
+    expect(keys.has(2)).toBe(false);
+  });
+
+  it('does not merge snapshots from different tables', () => {
+    const keys = proposedSessionKeys(
+      [
+        {
+          id: 1,
+          area: 'A',
+          tableLabel: '1',
+          createdAt: new Date(1_000),
+          itemsJson: [line('Pizza', 10)],
+        },
+        {
+          id: 2,
+          area: 'A',
+          tableLabel: '2',
+          createdAt: new Date(2_000),
+          itemsJson: [line('Pizza', 10), line('Coke', 3)],
+        },
+      ],
+      buildKey,
+    );
+    expect(keys.get(1)).not.toBe(keys.get(2));
   });
 });
 

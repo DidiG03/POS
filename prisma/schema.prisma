@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
@@ -101,6 +102,8 @@ model MenuItem {
   costBreakdown  Json?
   recipe     RecipeComponent[]
   orderItems OrderItem[]
+
+  @@index([categoryId])
 }
 
 model ModifierGroup {
@@ -121,6 +124,8 @@ model Modifier {
   sku        String
   active     Boolean        @default(true)
   orderItemModifiers OrderItemModifier[]
+
+  @@index([groupId])
 }
 
 model Table {
@@ -180,6 +185,7 @@ model Order {
   @@index([userId, closedAt])
   @@index([area, tableLabel, closedAt])
   @@index([closedAt])
+  @@index([status, closedAt])
 }
 
 enum OrderType {
@@ -218,6 +224,7 @@ model OrderItem {
 
   @@index([orderId])
   @@index([sku])
+  @@index([menuItemId])
 }
 
 /**
@@ -275,6 +282,9 @@ model OrderItemModifier {
   modifier   Modifier  @relation(fields: [modifierId], references: [id])
   modifierId Int
   priceDelta Decimal
+
+  @@index([orderItemId])
+  @@index([modifierId])
 }
 
 model Payment {
@@ -322,6 +332,9 @@ model RecipeComponent {
   inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
   inventoryItemId Int
   qtyPerUnit      Decimal
+
+  @@index([menuItemId])
+  @@index([inventoryItemId])
 }
 
 model DayShift {
@@ -333,6 +346,8 @@ model DayShift {
   closedBy    User?     @relation("ShiftClosedBy", fields: [closedById], references: [id])
   closedById  Int?
   totalsJson  Json
+
+  @@index([closedAt, openedById])
 }
 
 model PrintJob {
@@ -396,6 +411,9 @@ model TicketRequest {
   status      RequestStatus  @default(PENDING)
   createdAt   DateTime       @default(now())
   decidedAt   DateTime?
+
+  @@index([ownerId, status])
+  @@index([requesterId])
 }
 
 
@@ -436,6 +454,7 @@ model Covers {
   createdAt DateTime @default(now())
 
   @@index([area, label, createdAt])
+  @@index([createdAt])
 }
 
 model TicketLog {
@@ -456,6 +475,8 @@ model TicketLog {
 
   @@index([area, tableLabel, createdAt])
   @@index([sessionKey])
+  @@index([userId, createdAt])
+  @@index([createdAt])
 }
 
 model KdsDayCounter {
@@ -520,6 +541,9 @@ model Notification {
   message    String
   readAt     DateTime?
   createdAt  DateTime          @default(now())
+
+  @@index([userId, readAt, createdAt])
+  @@index([createdAt])
 }
 
 enum ReservationStatus {

@@ -122,12 +122,12 @@ function NotificationCard({
   return (
     <li
       className={cn(
-        'rounded-lg border px-2.5 py-2 text-left',
+        'rounded-[0.7rem] border px-2.5 py-2 text-left',
         unread
-          ? 'border-white/12 bg-white/[0.05]'
-          : 'border-transparent bg-white/3',
+          ? 'border-[var(--pos-border-strong)] bg-[var(--pos-surface-2)]'
+          : 'border-transparent bg-[var(--pos-hover)]',
         href &&
-          'cursor-pointer transition-colors hover:border-white/18 hover:bg-white/[0.07]',
+          'cursor-pointer transition-colors hover:border-[var(--pos-border-strong)] hover:bg-[var(--pos-surface-3)]',
       )}
     >
       <button

@@ -69,6 +69,34 @@ const kdsApp = {
     host: string;
     httpPort: number;
   }): Promise<TestResult> => ipcRenderer.invoke('kdsApp:testConnection', input),
+  lanFetch: (input: {
+    host: string;
+    httpPort: number;
+    path: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+  }) => ipcRenderer.invoke('kdsApp:lanFetch', input),
+  lanSseStart: (input: { host: string; httpPort: number; path: string }) =>
+    ipcRenderer.invoke('kdsApp:lanSseStart', input),
+  lanSseStop: () => ipcRenderer.invoke('kdsApp:lanSseStop'),
+  onLanSse: (cb: (payload: { event?: string; data?: string }) => void) => {
+    const handler = (_e: unknown, payload: { event?: string; data?: string }) =>
+      cb(payload);
+    ipcRenderer.on('kdsApp:lanSse', handler);
+    return () => ipcRenderer.removeListener('kdsApp:lanSse', handler);
+  },
+  onLanSseStatus: (
+    cb: (payload: { status?: string; error?: string }) => void,
+  ) => {
+    const handler = (
+      _e: unknown,
+      payload: { status?: string; error?: string },
+    ) => cb(payload);
+    ipcRenderer.on('kdsApp:lanSseStatus', handler);
+    return () => ipcRenderer.removeListener('kdsApp:lanSseStatus', handler);
+  },
   onBumpBarAction: (cb: (action: KdsBumpBarAction) => void) => {
     const handler = (_e: unknown, action: KdsBumpBarAction) => cb(action);
     ipcRenderer.on('kds:bumpBarAction', handler);

@@ -8,6 +8,10 @@ function read(rel: string): string {
   return fs.readFileSync(path.join(root, rel), 'utf8');
 }
 
+function rendererLan(): string {
+  return `${read('src/renderer/main.tsx')}\n${read('src/renderer/browserLanApi.ts')}`;
+}
+
 describe('standalone Admin companion', () => {
   it('ships a separate Electron entry, builder, and GitHub release workflow', () => {
     expect(read('src/main/admin/entry.ts')).toContain(
@@ -50,7 +54,7 @@ describe('standalone Admin companion', () => {
       'if (!isAdminApp) return <Navigate to="/" replace />',
     );
     expect(routes).not.toContain("path: 'admin'");
-    const main = read('src/renderer/main.tsx');
+    const main = rendererLan();
     const boot = read('src/renderer/app/BootRoot.tsx');
     expect(boot).toContain('#/admin-setup');
     expect(main).toContain('adminApp?.updater');
@@ -67,6 +71,7 @@ describe('standalone Admin companion', () => {
     expect(main).toContain("goLan('/print/serial-ports'");
     expect(main).toContain("goLan('/network/ips'");
     expect(main).toContain("goLan('/backups'");
+    expect(main).toContain("goLan('/vault/prefs'");
     expect(main).toContain("goLan('/settings/fiscal-reviews'");
     expect(main).toContain("goLan('/settings/google-calendar/connect'");
     expect(main).toContain('apps-update');
@@ -84,7 +89,13 @@ describe('standalone Admin companion', () => {
     expect(read('src/main/services/realtime.ts')).toContain(
       'broadcastUsersChanged',
     );
-    expect(read('src/preload/index.ts')).toContain('users:changed');
+    expect(read('src/preload/admin.ts')).toContain('lanFetch');
+    expect(read('src/preload/admin.ts')).toContain('lanSseStart');
+    expect(read('src/main/admin/entry.ts')).toContain(
+      'registerCompanionLanIpc',
+    );
+    expect(main).toContain('companion.lanFetch');
+    expect(main).toContain('backend.connectHost || backend.host');
     expect(main).toContain('/events/login');
     expect(read('src/main/api.ts')).toContain("pathname === '/events/login'");
     expect(read('src/renderer/utils/loginDirectory.ts')).toContain(

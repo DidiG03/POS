@@ -126,6 +126,38 @@
     "holdIconToScan": "Mbaje logon 5 sekonda për të ndryshuar serverin POS",
     "reloadChunk": "Ekrani nuk u ngarkua. Duke riprovuar…"
   },
+  "vault": {
+    "setupTitle": "Mbro këtë arkë",
+    "setupBody": "Vendos një fjalëkalim pajisjeje. Faturat në këtë kompjuter mbeten të enkriptuara derisa dikush ta shkruajë pas fikjes. PIN-et e stafit nuk janë ky fjalëkalim.",
+    "setupHint": "Përdor të paktën 12 karaktere. Mos përdor vetëm numra.",
+    "passphrase": "Fjalëkalimi i pajisjes",
+    "confirm": "Konfirmo fjalëkalimin",
+    "create": "Enkripto këtë arkë",
+    "recoveryTitle": "Ruaje këtë çelës rikuperimi",
+    "recoveryBody": "Nëse ndërrohet ky PC ose rivendoset hyrja e Windows/Mac, ky çelës është mënyra e vetme për të hapur faturat. Mbaje jashtë këtij kompjuteri — foto në telefon ose letër në një kasafortë.",
+    "wroteItDown": "E ruajta këtë çelës rikuperimi diku që nuk është ky kompjuter",
+    "continue": "Vazhdo",
+    "unlockTitle": "Hape këtë arkë",
+    "unlockBody": "Shkruaj fjalëkalimin e pajisjes për të hapur faturat. Arka mbetet e kyçur derisa kjo të funksionojë.",
+    "unlock": "Hape",
+    "recoveryKey": "Çelësi i rikuperimit",
+    "useRecovery": "Kam çelësin e rikuperimit",
+    "usePassphrase": "Përdor fjalëkalimin",
+    "brokenTitle": "Kjo arkë nuk mund të hapet",
+    "brokenBody": "Baza e të dhënave e enkriptuar është këtu, por mungon skedari i kasafortës. Rikthe vault.json nga një kopje rezervë, përndryshe kjo kopje e faturave nuk hapet.",
+    "errors": {
+      "too_short": "Përdor të paktën 12 karaktere.",
+      "too_long": "Ky fjalëkalim është shumë i gjatë.",
+      "digits_only": "Mos përdor vetëm numra. PIN-et e stafit nuk e mbrojnë arkën.",
+      "mismatch": "Dy fjalëkalimet nuk përputhen.",
+      "already_setup": "Kjo arkë është tashmë e enkriptuar.",
+      "wrong_secret": "Fjalëkalimi ose çelësi i rikuperimit nuk është i saktë.",
+      "missing_vault": "Mungon skedari i kasafortës.",
+      "os_unavailable": "Ky kompjuter nuk mund ta ruajë çelësin e arkës në Windows ose Mac.",
+      "locked": "Hape arkën para se ta ndryshosh këtë cilësim.",
+      "generic": "Arka nuk u hap. Provo sërish."
+    }
+  },
   "server": {
     "title": "Serveri POS",
     "wifiHint": "Sigurohu që telefoni është në të njëjtin Wi-Fi si kompjuteri POS. Në POS përdor {{macCmd}} (Mac) ose {{winCmd}} (Windows) për të gjetur IP-në. Në iPhone ndize Settings → Privacy & Security → Local Network → OneTap Waiter.",
@@ -473,7 +505,8 @@
     "updates": "Përditësimet",
     "billing": "Faturimi",
     "lan": "LAN / Tabletat",
-    "about": "Të dhënat e biznesit"
+    "about": "Të dhënat e biznesit",
+    "diskProtection": "Mbrojtja e diskut"
   },
   "settingsUpdates": {
     "title": "Përditësimet e sistemit",
@@ -539,6 +572,25 @@
     "restoreFailed": "Rikthimi dështoi",
     "restoring": "Duke rikthyer…",
     "restoredDev": "U rikthye. Aplikacioni do të mbyllet tani (dev). Ekzekuto sërish \"npm run dev\"."
+  },
+  "settingsVault": {
+    "title": "Mbrojtja e diskut të arkës",
+    "help": "Faturat në kompjuterin e restorantit mbeten të enkriptuara në disk. Stafi hyn me PIN. Zgjidh nëse OneTap hapet vetë pas hyrjes në Windows ose Mac, apo duhet të kërkojë fjalëkalim pas çdo rindezjeje.",
+    "autoTitle": "Hape këtë arkë automatikisht",
+    "autoHelp": "Përdor hyrjen e Windows ose Mac në këtë kompjuter. OneTap nuk kërkon fjalëkalim kur niset. Dikush që kopjon disku prapë nuk i lexon faturat.",
+    "passphraseTitle": "Kërko fjalëkalim kur niset OneTap",
+    "passphraseHelp": "Përdore vetëm nëse do që arka të mbetet e kyçur edhe pasi Windows është hapur. Do të shkruash një fjalëkalim pajisjeje çdo herë që niset aplikacioni.",
+    "passphrase": "Fjalëkalimi i pajisjes",
+    "confirm": "Konfirmo fjalëkalimin",
+    "savePassphrase": "Kërko fjalëkalim në nisje",
+    "statusOff": "Mbrojtja e diskut është e fikur në këtë arkë (ndërtimet e zhvillimit mbeten tekst i hapur nëse nuk vendos POS_VAULT=1).",
+    "statusLocked": "Arka është e kyçur. Hape fillimisht në kompjuterin e restorantit.",
+    "statusBroken": "Kjo arkë nuk mund të hapet. Rikthe vault.json nga një kopje rezervë.",
+    "statusOs": "Faturat janë të enkriptuara. Arka hapet me hyrjen e Windows ose Mac të këtij PC-je.",
+    "statusPassphrase": "Faturat janë të enkriptuara. OneTap kërkon fjalëkalimin e pajisjes pas rindezjes.",
+    "osUnavailable": "Ky kompjuter nuk mund ta ruajë çelësin e arkës në Windows ose Mac. Vendos një fjalëkalim.",
+    "saved": "Cilësimi i hapjes së arkës u ruajt.",
+    "failed": "Cilësimi i hapjes së arkës nuk u ruajt."
   },
   "settingsAbout": {
     "title": "Të dhënat e biznesit",
@@ -1000,6 +1052,8 @@
     "printStationTickets": "Printo te stacionet",
     "togglePrintStationTickets": "Ndrysho printimin te stacionet e kuzhinës",
     "payWithTotal": "Paguaj • {{amount}}",
+    "billItems_one": "{{count}} artikull",
+    "billItems_other": "{{count}} artikuj",
     "approveDiscountAndSc": "Mirato zbritjen dhe heqjen e shërbimit",
     "approveDiscount": "Mirato zbritjen",
     "approveScRemoval": "Mirato heqjen e shërbimit",

@@ -36,7 +36,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
-  const [ticketLoading, setTicketLoading] = useState<boolean>(false);
+  const [, setTicketLoading] = useState<boolean>(false);
   const [activeTickets, setActiveTickets] = useState<any[]>([]);
   const [activeTicketsError, setActiveTicketsError] = useState<string | null>(
     null,
@@ -264,7 +264,7 @@ export default function ReportsPage() {
                   </div>
                 </div>
                 {activeTicketsError && (
-                  <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
+                  <div className="pos-alert mb-2 shrink-0 text-xs">
                     {t('reports.activeTicketsError')}{' '}
                     <span className="font-semibold">{activeTicketsError}</span>
                   </div>
@@ -300,7 +300,7 @@ export default function ReportsPage() {
                 <div className="text-xs opacity-70">{paidTickets.length}</div>
               </div>
               {paidTicketsError && (
-                <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
+                <div className="pos-alert mb-2 shrink-0 text-xs">
                   {t(
                     hasTables
                       ? 'reports.paidTicketsError'
@@ -367,7 +367,7 @@ export default function ReportsPage() {
                 <div className="text-xs opacity-70">{voidedTickets.length}</div>
               </div>
               {voidedTicketsError && (
-                <div className="mb-2 shrink-0 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
+                <div className="pos-alert mb-2 shrink-0 text-xs">
                   {voidedTicketsError}
                 </div>
               )}
@@ -474,26 +474,26 @@ function ReceiptCard({
   })();
 
   return (
-    <div className="rounded border border-gray-700 bg-white text-black overflow-hidden">
+    <div className="ticket-line overflow-hidden">
       <button
-        className="w-full text-left px-3 py-2 border-b border-gray-200 flex items-start justify-between gap-3"
+        className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-2.5 text-left"
         onClick={() => setOpen((v) => !v)}
       >
         <div>
-          <div className="font-semibold text-sm">
+          <div className="text-sm font-semibold">
             {receiptLocationTitle(t, hasTables, ticket)}
-            <span className="ml-2 text-xs font-normal text-gray-600">
+            <span className="ml-2 text-xs font-normal text-[color:var(--pos-fg-muted)]">
               {ticket?.kind === 'PAID' ? t('common.paid') : t('common.active')}
             </span>
           </div>
-          <div className="text-xs text-gray-600">
+          <div className="text-xs text-[color:var(--pos-fg-muted)]">
             {receiptStaffLine(t, hasTables, ticket?.userName)}
             {hasTables && ticket?.covers != null
               ? ` • ${t('common.covers')}: ${ticket.covers}`
               : ''}
           </div>
         </div>
-        <div className="text-xs text-gray-600 whitespace-nowrap">
+        <div className="whitespace-nowrap text-xs text-[color:var(--pos-fg-muted)]">
           {headerRight}
         </div>
       </button>
@@ -504,9 +504,11 @@ function ReceiptCard({
             <TicketNoteLines note={String(ticket.note)} hasTables={hasTables} />
           ) : null}
 
-          <div className="border-t border-gray-200 pt-2">
+          <div className="border-t border-[var(--pos-border)] pt-2">
             {items.length === 0 ? (
-              <div className="text-xs text-gray-600">{t('common.noItems')}</div>
+              <div className="text-xs text-[color:var(--pos-fg-muted)]">
+                {t('common.noItems')}
+              </div>
             ) : (
               <div className="space-y-1">
                 {items.map((it: any, idx: number) => {
@@ -524,7 +526,7 @@ function ReceiptCard({
                           <div className="font-semibold">{qty}x</div>
                           <div className="break-words">{name}</div>
                         </div>
-                        <div className="text-[11px] text-gray-600">
+                        <div className="text-[11px] text-[color:var(--pos-fg-muted)]">
                           {fmtCurrency.format(unit)} {t('common.each')}
                         </div>
                       </div>
@@ -538,21 +540,27 @@ function ReceiptCard({
             )}
           </div>
 
-          <div className="border-t border-gray-200 mt-2 pt-2 text-xs space-y-1">
+          <div className="mt-2 space-y-1 border-t border-[var(--pos-border)] pt-2 text-xs">
             <div className="flex justify-between">
-              <span className="text-gray-700">{t('common.subtotal')}</span>
+              <span className="text-[color:var(--pos-fg-muted)]">
+                {t('common.subtotal')}
+              </span>
               <span className="font-semibold">
                 {fmtCurrency.format(Number(ticket?.subtotal || 0))}
               </span>
             </div>
             {ticket?.vatEnabled === false ? (
               <div className="flex justify-between">
-                <span className="text-gray-700">{t('common.vat')}</span>
+                <span className="text-[color:var(--pos-fg-muted)]">
+                  {t('common.vat')}
+                </span>
                 <span className="opacity-70">{t('common.vatDisabled')}</span>
               </div>
             ) : (
               <div className="flex justify-between">
-                <span className="text-gray-700">{t('common.vat')}</span>
+                <span className="text-[color:var(--pos-fg-muted)]">
+                  {t('common.vat')}
+                </span>
                 <span className="font-semibold">
                   {fmtCurrency.format(Number(ticket?.vat || 0))}
                 </span>
@@ -560,7 +568,7 @@ function ReceiptCard({
             )}
             {hasServiceCharge && (
               <div className="flex justify-between">
-                <span className="text-gray-700">
+                <span className="text-[color:var(--pos-fg-muted)]">
                   {t('common.serviceCharge')}
                   {serviceLabel ? ` (${serviceLabel})` : ''}
                 </span>
@@ -571,7 +579,7 @@ function ReceiptCard({
             )}
             {hasDiscount && (
               <div className="flex justify-between">
-                <span className="text-gray-700">
+                <span className="text-[color:var(--pos-fg-muted)]">
                   {t('common.discount')}
                   {discountLabel ? ` (${discountLabel})` : ''}
                 </span>
@@ -614,16 +622,16 @@ function VoidedReceiptCard({
   const isFullVoid = ticket?.kind === 'VOIDED_TICKET';
 
   return (
-    <div className="rounded border border-rose-800/60 bg-rose-950/30 text-gray-100 overflow-hidden">
+    <div className="pos-alert overflow-hidden !p-0">
       <button
-        className="w-full text-left px-3 py-2 border-b border-rose-800/40 flex items-start justify-between gap-3"
+        className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-2.5 text-left"
         onClick={() => setOpen((v) => !v)}
       >
         <div>
-          <div className="font-semibold text-sm flex items-center gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold">
             {receiptLocationTitle(t, hasTables, ticket)}
             <span
-              className={`text-xs font-normal px-2 py-0.5 rounded ${isFullVoid ? 'bg-rose-700/60 text-rose-100' : 'bg-amber-700/60 text-amber-100'}`}
+              className={`rounded-md px-2 py-0.5 text-xs font-medium ${isFullVoid ? 'bg-rose-600/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'}`}
             >
               {isFullVoid
                 ? t('common.fullyVoided')
@@ -632,14 +640,14 @@ function VoidedReceiptCard({
                   : t('reports.voidedManyItems', { count: voidCount })}
             </span>
           </div>
-          <div className="text-xs text-gray-400">
+          <div className="text-xs text-[color:var(--pos-fg-muted)]">
             {receiptStaffLine(t, hasTables, ticket?.userName)}
             {hasTables && ticket?.covers != null
               ? ` • ${t('common.covers')}: ${ticket.covers}`
               : ''}
           </div>
         </div>
-        <div className="text-xs text-gray-400 whitespace-nowrap">
+        <div className="whitespace-nowrap text-xs text-[color:var(--pos-fg-muted)]">
           {when ? when.toLocaleString() : ''}
         </div>
       </button>
@@ -650,9 +658,11 @@ function VoidedReceiptCard({
             <TicketNoteLines note={String(ticket.note)} hasTables={hasTables} />
           ) : null}
 
-          <div className="border-t border-rose-800/40 pt-2">
+          <div className="border-t border-[var(--pos-border)] pt-2">
             {items.length === 0 ? (
-              <div className="text-xs text-gray-400">{t('common.noItems')}</div>
+              <div className="text-xs text-[color:var(--pos-fg-muted)]">
+                {t('common.noItems')}
+              </div>
             ) : (
               <div className="space-y-1">
                 {items.map((it: any, idx: number) => {
@@ -674,7 +684,7 @@ function VoidedReceiptCard({
                             {name}
                           </div>
                         </div>
-                        <div className="text-[11px] text-gray-500">
+                        <div className="text-[11px] text-[color:var(--pos-fg-muted)]">
                           {fmtCurrency.format(unit)} {t('common.each')}
                         </div>
                       </div>
@@ -688,9 +698,11 @@ function VoidedReceiptCard({
             )}
           </div>
 
-          <div className="border-t border-rose-800/40 mt-2 pt-2 text-xs">
+          <div className="mt-2 border-t border-[var(--pos-border)] pt-2 text-xs">
             <div className="flex justify-between">
-              <span className="text-gray-400">{t('common.voidedTotal')}</span>
+              <span className="text-[color:var(--pos-fg-muted)]">
+                {t('common.voidedTotal')}
+              </span>
               <span className="font-semibold text-rose-300">
                 {fmtCurrency.format(Number(ticket?.subtotal || 0))}
               </span>

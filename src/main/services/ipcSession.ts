@@ -204,6 +204,25 @@ export function getSession(senderId: number): IpcSession | null {
   return session;
 }
 
+/**
+ * True when this window is already bound to `token`. Vite HMR remounts call
+ * `auth:resumeSession` again with the same credential; the rate limiter must
+ * not treat that as a guessing attack.
+ */
+export function senderHoldsToken(senderId: number, token: string): boolean {
+  const session = getSession(senderId);
+  const candidate = String(token || '').trim();
+  if (!session || !candidate) return false;
+  try {
+    const known = Buffer.from(session.tokenHash, 'hex');
+    const got = Buffer.from(hashToken(candidate), 'hex');
+    if (known.length !== got.length) return false;
+    return timingSafeEqual(known, got);
+  } catch {
+    return false;
+  }
+}
+
 /** Log out: drop the session entirely so its token can never be resumed. */
 export async function revokeSession(senderId: number): Promise<void> {
   const tokenHash = tokenHashBySender.get(senderId);

@@ -32,6 +32,7 @@ import {
   setupAutoUpdater,
   updaterHandlers,
 } from '../updater';
+import { registerCompanionLanIpc } from '../services/companionLanProxy';
 
 app.setName('OneTap KDS');
 initSentry();
@@ -369,6 +370,16 @@ ipcMain.handle('kdsApp:discover', async () => {
       console.warn('[kds] discover failed:', e);
     return [];
   }
+});
+
+registerCompanionLanIpc({
+  ipcMain,
+  fetchChannel: 'kdsApp:lanFetch',
+  sseStartChannel: 'kdsApp:lanSseStart',
+  sseStopChannel: 'kdsApp:lanSseStop',
+  sseEventChannel: 'kdsApp:lanSse',
+  sseStatusChannel: 'kdsApp:lanSseStatus',
+  client: 'kds',
 });
 
 // --- Lifecycle ---------------------------------------------------------------

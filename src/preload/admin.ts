@@ -64,6 +64,34 @@ const adminApp = {
     httpPort: number;
   }): Promise<TestResult> =>
     ipcRenderer.invoke('adminApp:testConnection', input),
+  lanFetch: (input: {
+    host: string;
+    httpPort: number;
+    path: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+  }) => ipcRenderer.invoke('adminApp:lanFetch', input),
+  lanSseStart: (input: { host: string; httpPort: number; path: string }) =>
+    ipcRenderer.invoke('adminApp:lanSseStart', input),
+  lanSseStop: () => ipcRenderer.invoke('adminApp:lanSseStop'),
+  onLanSse: (cb: (payload: { event?: string; data?: string }) => void) => {
+    const handler = (_e: unknown, payload: { event?: string; data?: string }) =>
+      cb(payload);
+    ipcRenderer.on('adminApp:lanSse', handler);
+    return () => ipcRenderer.removeListener('adminApp:lanSse', handler);
+  },
+  onLanSseStatus: (
+    cb: (payload: { status?: string; error?: string }) => void,
+  ) => {
+    const handler = (
+      _e: unknown,
+      payload: { status?: string; error?: string },
+    ) => cb(payload);
+    ipcRenderer.on('adminApp:lanSseStatus', handler);
+    return () => ipcRenderer.removeListener('adminApp:lanSseStatus', handler);
+  },
   updater,
 };
 

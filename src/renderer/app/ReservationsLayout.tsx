@@ -21,6 +21,8 @@ import {
 } from '@shared/reservationDuration';
 import { ReservationTimeUpDialog } from './components/ReservationTimeUpDialog';
 import { BrandMark } from '../components/BrandMark';
+import { loadPosRealtimeSync } from '../utils/loadPosRealtimeSync';
+import { initRendererSentry } from '../utils/sentryBrowser';
 import { Button, Select, cn } from '../components/ui';
 import {
   IconChevronLeft,
@@ -132,6 +134,10 @@ function toDateInputValue(d: Date): string {
 
 export default function ReservationsLayout() {
   const { t } = useTranslation();
+  useEffect(() => {
+    void loadPosRealtimeSync();
+    initRendererSentry();
+  }, []);
   const navigate = useNavigate();
   const location = useLocation();
   const isListView = /\/list\/?$/.test(location.pathname);

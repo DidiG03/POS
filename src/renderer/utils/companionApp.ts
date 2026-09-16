@@ -15,7 +15,10 @@ export function isCompanionApp(): boolean {
 }
 
 export function companionDiscover():
-  | { discover?: () => Promise<unknown[]> }
+  | {
+      discover?: () => Promise<unknown[]>;
+      lanFetch?: (input: unknown) => Promise<unknown>;
+    }
   | undefined {
   if (typeof window === 'undefined') return undefined;
   return (window as any).adminApp || (window as any).kdsApp;

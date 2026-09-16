@@ -138,7 +138,7 @@ function SortableGroup({
         className={`flex flex-wrap items-center gap-1 rounded-md border px-1.5 py-1 ${
           active
             ? 'border-[var(--pos-accent)] bg-[var(--pos-accent-soft)]'
-            : 'border-white/8 bg-gray-900/40'
+            : 'border-[var(--pos-border)] bg-[var(--pos-surface-2)]'
         }`}
         onPointerDown={(e) => {
           if (renaming) return;
@@ -160,7 +160,7 @@ function SortableGroup({
         {renaming ? (
           <input
             autoFocus
-            className="min-w-[6.5rem] flex-1 bg-gray-900/80 border border-white/15 rounded px-2 py-1 text-sm font-semibold"
+            className="pos-input min-w-[6.5rem] flex-1 text-sm font-semibold"
             value={draftName}
             maxLength={24}
             placeholder={renamePlaceholder}
@@ -468,7 +468,7 @@ export function TicketCourseBoard({
     <div className="space-y-3">
       {drinks.length ? (
         <div className="space-y-1.5">
-          <div className="rounded-md border border-white/8 bg-gray-900/40 px-1.5 py-1">
+          <div className="rounded-lg border border-[var(--pos-border)] bg-[var(--pos-surface-2)] px-1.5 py-1">
             <div className="text-sm font-semibold py-1 px-1">
               {t('order.drinksSection')}
             </div>
@@ -551,7 +551,7 @@ export function TicketCourseBoard({
                     </SortableLine>
                   ))
                 ) : (
-                  <div className="text-xs opacity-50 px-2 py-3 border border-dashed border-white/10 rounded-md">
+                  <div className="rounded-lg border border-dashed border-[var(--pos-border-strong)] px-2 py-3 text-xs text-[color:var(--pos-fg-muted)]">
                     {t('order.courseDropHere')}
                   </div>
                 )}
@@ -563,7 +563,7 @@ export function TicketCourseBoard({
       {canEdit || canAddCourse ? (
         <button
           type="button"
-          className="w-full text-sm py-2 rounded-md border border-dashed border-white/15 hover:bg-gray-800"
+          className="w-full rounded-lg border border-dashed border-[var(--pos-border-strong)] py-2 text-sm text-[color:var(--pos-fg)] hover:bg-[var(--pos-hover)]"
           onClick={() => (seatMode ? addSeat() : addCourse())}
         >
           {t(seatMode ? 'order.addSeat' : 'order.addCourse')}

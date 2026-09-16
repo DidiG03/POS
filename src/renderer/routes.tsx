@@ -19,7 +19,7 @@ import { shouldDeferShiftGuard } from './stores/sessionPersist';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
 import { resumeMainProcessSession } from './utils/resumeSession';
-import { Button } from './components/ui';
+import { Button } from './components/ui/Button';
 import { isChunkLoadError, retryLazyImport } from './utils/lazyRetry';
 
 function lazyPage<T extends { default: React.ComponentType<any> }>(

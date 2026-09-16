@@ -52,6 +52,7 @@ import {
   createSession,
   getSession,
   pruneExpiredSessions,
+  senderHoldsToken,
   registerWindowKind,
   resumeSession,
   revokeSession,
@@ -105,6 +106,21 @@ describe('createSession', () => {
     await createSession(20, WAITER);
     expect(getSession(10)?.role).toBe('ADMIN');
     expect(getSession(20)?.role).toBe('WAITER');
+  });
+});
+
+describe('senderHoldsToken', () => {
+  it('is true only for the window bound to that token', async () => {
+    const token = await createSession(10, ADMIN);
+    expect(senderHoldsToken(10, token)).toBe(true);
+    expect(senderHoldsToken(10, 'not-the-token')).toBe(false);
+    expect(senderHoldsToken(99, token)).toBe(false);
+  });
+
+  it('is false after logout', async () => {
+    const token = await createSession(10, ADMIN);
+    await revokeSession(10);
+    expect(senderHoldsToken(10, token)).toBe(false);
   });
 });
 

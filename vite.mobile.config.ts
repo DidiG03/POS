@@ -12,9 +12,9 @@ const renderer = rendererOptimize();
 //   - dist/mobile/index.html
 //   - dist/mobile/assets/*
 //
-// This config does NOT involve Electron. The renderer's existing
-// browser-mode polyfill in src/renderer/main.tsx will speak HTTP
-// to the LAN/cloud backend instead of Electron IPC.
+// This config does NOT involve Electron. Tablets load
+// src/renderer/browserLanApi.ts and speak HTTP to the till
+// instead of Electron IPC.
 export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
   publicDir: resolve(__dirname, 'public'),

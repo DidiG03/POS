@@ -9,9 +9,13 @@ function read(rel: string): string {
   return fs.readFileSync(path.join(root, rel), 'utf8');
 }
 
+function rendererLan(): string {
+  return `${read('src/renderer/main.tsx')}\n${read('src/renderer/browserLanApi.ts')}`;
+}
+
 describe('tablet login bounce guards', () => {
   it('browser shim ignores stale 401s and does not reuse GETs across tokens', () => {
-    const src = read('src/renderer/main.tsx');
+    const src = rendererLan();
     expect(src).toContain('shouldForceLogoutOn401');
     expect(src).toContain('lanDedupeKey');
     expect(src).toContain('lanAuthGeneration');
@@ -32,6 +36,12 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain("goLan('/notifications?limit=1')");
     expect(read('src/main/services/ipcGuard.ts')).toContain(
       "event.sender.send('auth:forceLogout', { reason: 'unauthorized' })",
+    );
+    expect(read('src/main/services/ipcGuard.ts')).toContain(
+      'skipResumeRateLimit',
+    );
+    expect(read('src/renderer/utils/resumeSession.ts')).toContain(
+      'boundToken === sessionToken',
     );
   });
 
@@ -66,6 +76,8 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain('lanLoginUserMessage');
     expect(src).toContain('peekSettings');
     expect(src).toContain('needsFirstAdmin');
+    expect(src).toContain('pos-app--auth-pin');
+    expect(src).toContain('preventScroll');
     expect(src).toContain('invalidateCache(POS_CACHE.users)');
     expect(src).toContain('pos:usersChanged');
     expect(src).toContain('__BROWSER_CLIENT__');
@@ -76,6 +88,38 @@ describe('tablet login bounce guards', () => {
     );
     expect(loginFn).not.toContain('window.api.settings.get()');
     expect(loginFn).toContain('openIds.includes');
+  });
+
+  it('Tables floor does not prefetch the order ticket UI on mount', () => {
+    const src = read('src/renderer/app/pages/TablesPage.tsx');
+    expect(src).toMatch(
+      /void load\(\);\s*void prefetchHotReads\(\);\s*const onVisible/,
+    );
+    expect(src).not.toMatch(
+      /void prefetchHotReads\(\);\s*void import\(\s*['"]\.\/OrderPage['"]\s*\)/,
+    );
+    expect(src).toContain("retryLazyImport(() => import('./OrderPage'))");
+    expect(read('src/renderer/app/pages/LoginPage.tsx')).toContain(
+      "import('./TablesPage')",
+    );
+  });
+
+  it('Order ticket defers course-board dnd and USB barcode until needed', () => {
+    const src = read('src/renderer/app/pages/OrderPage.tsx');
+    expect(src).not.toMatch(/from ['"]\.\.\/components\/TicketCourseBoard['"]/);
+    expect(src).not.toMatch(/from ['"]@shared\/barcodeScan['"]/);
+    expect(src).toContain("import('../components/TicketCourseBoard')");
+    expect(src).toContain("import('@shared/barcodeScan')");
+    expect(src).toContain('PaymentCheckout');
+    expect(read('src/renderer/app/components/PaymentCheckout.tsx')).toContain(
+      'pos-pay-page',
+    );
+    expect(read('src/renderer/routes.tsx')).not.toMatch(
+      /from ['"]\.\/components\/ui['"]/,
+    );
+    expect(read('src/renderer/app/components/VaultGate.tsx')).not.toMatch(
+      /from ['"]\.\.\/\.\.\/components\/ui['"]/,
+    );
   });
 
   it('Android Capacitor serves the app over http and never bakes in a live-reload URL', () => {
@@ -98,14 +142,31 @@ describe('tablet login bounce guards', () => {
   });
 
   it('tablets catch up after a host update and a dropped SSE socket', () => {
-    const main = read('src/renderer/main.tsx');
+    const main = rendererLan();
+    expect(main).not.toContain("from './browserLanApi'");
+    expect(main).toContain("import('./browserLanApi')");
+    expect(main).not.toContain("from './utils/posRealtimeSync'");
+    expect(main).not.toContain("from '@sentry/browser'");
     const boot = read('src/renderer/app/BootRoot.tsx');
     expect(main).toContain('emitPosSyncCatchup');
     expect(main).toContain('syncTabletToHostVersion');
-    expect(main).toContain('installPosRealtimeSync');
     expect(main).toContain('installWakeUiRecovery');
     expect(main).toContain('installUnhandledErrorToasts');
-    expect(main).toContain('initRendererSentry');
+    expect(read('src/renderer/utils/loadPosRealtimeSync.ts')).toContain(
+      'installPosRealtimeSync',
+    );
+    expect(read('src/renderer/app/AppLayout.tsx')).toContain(
+      'loadPosRealtimeSync',
+    );
+    expect(read('src/renderer/app/pages/LoginPage.tsx')).toContain(
+      'loadPosRealtimeSync',
+    );
+    expect(read('src/renderer/utils/sentryBrowser.ts')).toContain(
+      "import('@sentry/browser')",
+    );
+    expect(read('src/renderer/app/AppLayout.tsx')).toContain(
+      'initRendererSentry',
+    );
     expect(boot).toContain('hideMobileSplash');
     expect(main).toContain('POS_BACKEND_HOST_CHANGED');
     expect(main).toContain("addEventListener('catchup'");
@@ -154,7 +215,10 @@ describe('tablet login bounce guards', () => {
     expect(CAPACITOR_WEBVIEW_ORIGINS).toContain('http://localhost');
     expect(CAPACITOR_WEBVIEW_ORIGINS).toContain('http://localhost:8080');
     const api = read('src/main/api.ts');
-    expect(api).toContain('CAPACITOR_WEBVIEW_ORIGINS');
+    expect(api).toContain('allowLanCorsOrigin');
+    expect(read('src/main/services/lanCors.ts')).toContain(
+      'CAPACITOR_WEBVIEW_ORIGINS',
+    );
   });
 
   it('Waiter store listing keeps local-network and privacy extras', () => {

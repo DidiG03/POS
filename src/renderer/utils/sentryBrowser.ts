@@ -1,5 +1,10 @@
-import * as Sentry from '@sentry/browser';
 import { POS_SENTRY_DSN } from '@shared/sentryDsn';
+
+type SentryMod = typeof import('@sentry/browser');
+
+let sentry: SentryMod | null = null;
+let loading: Promise<SentryMod | null> | null = null;
+const queued: Array<{ error: unknown; extra?: Record<string, unknown> }> = [];
 
 function rendererDsn(): string {
   const fromEnv = String(
@@ -11,6 +16,21 @@ function rendererDsn(): string {
 
 function isDevBuild(): boolean {
   return Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+}
+
+function wantsLiteNetwork(): boolean {
+  try {
+    const c = (
+      navigator as Navigator & {
+        connection?: { saveData?: boolean; effectiveType?: string };
+      }
+    ).connection;
+    if (!c) return false;
+    if (c.saveData) return true;
+    return c.effectiveType === 'slow-2g' || c.effectiveType === '2g';
+  } catch {
+    return false;
+  }
 }
 
 function shellTag(): string {
@@ -33,58 +53,88 @@ function toError(error: unknown): Error {
   return new Error(msg || 'Unknown error');
 }
 
+function flushQueued(mod: SentryMod) {
+  while (queued.length) {
+    const item = queued.shift();
+    if (!item) break;
+    try {
+      mod.captureException(
+        toError(item.error),
+        item.extra ? { extra: item.extra } : undefined,
+      );
+    } catch {
+      // ignore
+    }
+  }
+}
+
 /**
  * Capacitor / browser Waiter + Electron renderer JS errors.
- * Packaged / production builds send; Vite `npm run dev` does not (avoids noise).
+ * Packaged / production builds send. Vite `npm run dev` never downloads
+ * `@sentry/browser` (~2MB) onto the PIN screen. Slow / Save-Data links skip it.
  */
 export function initRendererSentry(): void {
   const dsn = rendererDsn();
   if (!dsn) return;
-  const w = window as Window & {
-    __posSentryInit?: boolean;
-    __sentry__?: typeof Sentry;
-  };
+  if (isDevBuild() || wantsLiteNetwork()) return;
+  const w = window as Window & { __posSentryInit?: boolean };
   if (w.__posSentryInit) return;
   w.__posSentryInit = true;
 
-  const dev = isDevBuild();
-  try {
-    Sentry.init({
-      dsn,
-      environment: dev ? 'development' : 'production',
-      beforeSend(event) {
-        if (dev) return null;
-        return event;
-      },
-      ignoreErrors: [
-        'NetworkError',
-        'Failed to fetch',
-        'Network request failed',
-        'User cancelled',
-        'User canceled',
-        /Extension context invalidated/,
-        /ResizeObserver loop/,
-        /^AbortError\b/,
-        /The operation was aborted/,
-      ],
-      initialScope: {
-        tags: {
-          shell: shellTag(),
-        },
-      },
+  loading = import('@sentry/browser')
+    .then((Sentry) => {
+      try {
+        Sentry.init({
+          dsn,
+          environment: 'production',
+          ignoreErrors: [
+            'NetworkError',
+            'Failed to fetch',
+            'Network request failed',
+            'User cancelled',
+            'User canceled',
+            /Extension context invalidated/,
+            /ResizeObserver loop/,
+            /^AbortError\b/,
+            /The operation was aborted/,
+          ],
+          initialScope: {
+            tags: {
+              shell: shellTag(),
+            },
+          },
+        });
+        sentry = Sentry;
+        (window as Window & { __sentry__?: SentryMod }).__sentry__ = Sentry;
+        flushQueued(Sentry);
+        return Sentry;
+      } catch (e) {
+        console.error('[Sentry] Renderer init failed', e);
+        return null;
+      }
+    })
+    .catch((e) => {
+      console.error('[Sentry] Renderer load failed', e);
+      return null;
     });
-    w.__sentry__ = Sentry;
-  } catch (e) {
-    console.error('[Sentry] Renderer init failed', e);
-  }
 }
 
 export function captureRendererException(
   error: unknown,
   extra?: Record<string, unknown>,
 ): void {
+  if (isDevBuild()) return;
   try {
-    Sentry.captureException(toError(error), extra ? { extra } : undefined);
+    if (sentry) {
+      sentry.captureException(toError(error), extra ? { extra } : undefined);
+      return;
+    }
+    if (queued.length < 20) queued.push({ error, extra });
+    if (loading) {
+      void loading.then((mod) => {
+        if (mod && queued.length) flushQueued(mod);
+      });
+    }
   } catch {
     // ignore
   }

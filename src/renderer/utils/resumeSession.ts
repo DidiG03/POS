@@ -16,15 +16,16 @@ import { useSessionStore } from '../stores/session';
 import { useAdminSessionStore } from '../stores/adminSession';
 import { useReservationSessionStore } from '../stores/reservationSession';
 
-type SessionStore = {
+export type SessionStore = {
   getState: () => {
     user: unknown;
     sessionToken: string | null;
     setUser: (u: null) => void;
+    hasHydrated?: boolean;
   };
   persist?: {
     hasHydrated?: () => boolean;
-    onFinishHydration?: (fn: () => void) => () => void;
+    onFinishHydration?: (fn: (state?: unknown) => void) => () => void;
   };
 };
 
@@ -36,14 +37,23 @@ function storeForCurrentShell(): SessionStore {
   return useSessionStore as SessionStore;
 }
 
-/** Long enough for localStorage rehydration; short enough that a wedged persist cannot block boot. */
-export const PERSIST_HYDRATION_WAIT_MS = 4_000;
+/**
+ * localStorage rehydrate is a microtask. 4s used to block "Connecting to POS
+ * backend…" whenever `onFinishHydration` was missed (already-hydrated race).
+ */
+export const PERSIST_HYDRATION_WAIT_MS = 400;
 
-function waitForPersistHydration(
+export function persistHasHydrated(store: SessionStore): boolean {
+  if (store.persist?.hasHydrated?.()) return true;
+  return store.getState()?.hasHydrated === true;
+}
+
+export function waitForPersistHydration(
   store: SessionStore,
   ms = PERSIST_HYDRATION_WAIT_MS,
 ): Promise<void> {
-  if (store.persist?.hasHydrated?.()) return Promise.resolve();
+  if (persistHasHydrated(store)) return Promise.resolve();
+  if (!store.persist?.onFinishHydration) return Promise.resolve();
   return new Promise((resolve) => {
     let settled = false;
     const finish = () => {
@@ -52,11 +62,32 @@ function waitForPersistHydration(
       resolve();
     };
     const unsub = store.persist?.onFinishHydration?.(finish);
-    window.setTimeout(() => {
+    // Hydration can finish between the first check and the subscribe.
+    if (persistHasHydrated(store)) {
+      if (typeof unsub === 'function') unsub();
+      finish();
+      return;
+    }
+    setTimeout(() => {
       if (typeof unsub === 'function') unsub();
       finish();
     }, ms);
   });
+}
+
+let inFlight: Promise<boolean> | null = null;
+let boundToken: string | null = null;
+
+/** Test seam: drop in-flight / already-bound state between cases. */
+export function resetResumeBindStateForTests(): void {
+  inFlight = null;
+  boundToken = null;
+}
+
+function isResumeRateLimited(err: unknown): boolean {
+  const any = err as { code?: unknown; message?: unknown };
+  const code = String(any?.code || any?.message || err || '');
+  return code.includes('rate_limited');
 }
 
 /**
@@ -67,7 +98,9 @@ function waitForPersistHydration(
  * bind did not complete and the caller should wait rather than hit those
  * channels — that is what produced `ipc_denied` / unauthenticated floods.
  */
-export async function resumeMainProcessSession(): Promise<boolean> {
+export async function resumeMainProcessSession(
+  store: SessionStore = storeForCurrentShell(),
+): Promise<boolean> {
   // Browser and Capacitor clients talk to the host over HTTP, which carries
   // its own bearer token; there is no main-process binding to restore, and
   // their `window.api` shim has no real session to report on.
@@ -77,24 +110,46 @@ export async function resumeMainProcessSession(): Promise<boolean> {
   const api = (window as any)?.api;
   if (typeof api?.auth?.resumeSession !== 'function') return true;
 
-  const store = storeForCurrentShell();
+  if (inFlight) return inFlight;
+  inFlight = bindMainProcessSession(store, api).finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+async function bindMainProcessSession(
+  store: SessionStore,
+  api: { auth: { resumeSession: (token: string) => Promise<unknown> } },
+): Promise<boolean> {
   await waitForPersistHydration(store);
   const { user, sessionToken, setUser } = store.getState();
   if (!sessionToken) {
+    boundToken = null;
     // A persisted user with no token predates this mechanism (or was revoked).
     // It cannot be proven, so it cannot be trusted.
     if (user) setUser(null);
     return true;
   }
 
+  if (boundToken === sessionToken) return true;
+
   try {
     const resumed = await api.auth.resumeSession(sessionToken);
     if (!resumed) {
+      boundToken = null;
       setUser(null);
       return true;
     }
+    boundToken = sessionToken;
     return true;
-  } catch {
+  } catch (err) {
+    if (isResumeRateLimited(err) && user && sessionToken) {
+      // Main already counted this window out. Retrying is what flooded
+      // `rate_limit_exceeded` during HMR; the local session is still the one
+      // issued at PIN login, so let the gate proceed.
+      boundToken = sessionToken;
+      return true;
+    }
     // Transport failure is not proof of an invalid session. Leave the stored
     // session alone and tell the gate to wait — calling notifications/floor
     // now would only log ipc_denied.

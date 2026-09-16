@@ -841,6 +841,38 @@ export interface ApiSystem {
   openExternal(url: string): Promise<boolean>;
 }
 
+export interface ApiVault {
+  getStatus(): Promise<{
+    state: 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
+    unlockMode?: 'os' | 'passphrase' | 'disabled';
+    osAvailable?: boolean;
+    hasPassphrase?: boolean;
+    recoveryKey?: string;
+  }>;
+  getPrefs?(): Promise<{
+    state: 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
+    unlockMode: 'os' | 'passphrase' | 'disabled';
+    osAvailable: boolean;
+    hasPassphrase: boolean;
+  }>;
+  setup(input: {
+    passphrase: string;
+  }): Promise<{ ok: boolean; recoveryKey?: string; error?: string }>;
+  unlock(input: { secret: string }): Promise<{ ok: boolean; error?: string }>;
+  ackRecovery?(): Promise<{ ok: boolean }>;
+  setUnlockMode?(input: {
+    unlockMode: 'os' | 'passphrase';
+    passphrase?: string;
+  }): Promise<{
+    ok: boolean;
+    error?: string;
+    state?: 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
+    unlockMode?: 'os' | 'passphrase' | 'disabled';
+    osAvailable?: boolean;
+    hasPassphrase?: boolean;
+  }>;
+}
+
 export interface Api {
   auth: ApiAuth;
   settings: ApiSettings;
@@ -866,6 +898,8 @@ export interface Api {
   /** Present on the Admin LAN client so Settings → Updates can push POS/KDS. */
   hostUpdates?: ApiHostUpdates;
   reservations: ApiReservations;
+  /** POS host vault. Admin Settings can read/set unlock mode over LAN. */
+  vault?: ApiVault;
 }
 
 export type ReservationStatus =

@@ -56,6 +56,47 @@ function receiptStaffLabel(
   return printStaffLabel(lang, diningFloor);
 }
 
+function kitchenOrderIdentity(payload: TicketPrintPayload): string {
+  const loc = formatSaleLocation({
+    diningFloor: receiptDiningFloor(payload.area),
+    area: payload.area,
+    tableLabel: payload.tableLabel,
+    emptyLabel: '',
+  });
+  const name = String(payload.userName || '').trim();
+  return [name, loc].filter(Boolean).join(' - ');
+}
+
+function kitchenOrderIdentityLines(
+  payload: TicketPrintPayload,
+  width: number,
+): string[] {
+  const loc = formatSaleLocation({
+    diningFloor: receiptDiningFloor(payload.area),
+    area: payload.area,
+    tableLabel: payload.tableLabel,
+    emptyLabel: '',
+  });
+  const name = String(payload.userName || '').trim();
+  const one = [name, loc].filter(Boolean).join(' - ');
+  if (!one) return [];
+  if (one.length <= width) return [one];
+  if (name && loc) return [name, loc];
+  return wrapEscposText(one, width);
+}
+
+function kitchenItemLayout(layout: ReceiptLayout): ReceiptLayout {
+  const cols = layout.doubleWidthCols;
+  const priceCols = 3;
+  return {
+    ...layout,
+    cols,
+    priceCols,
+    nameCols: Math.max(8, cols - priceCols),
+    sep: '-'.repeat(cols),
+  };
+}
+
 function twoCol(left: string, right: string, layout: ReceiptLayout): Buffer[] {
   return formatTwoCol(left, right, layout)
     .split('\n')
@@ -240,7 +281,7 @@ export function buildEscposTicket(
     : aggregateTicketItems(payload.items || []);
 
   // Header (restaurant-style). Kitchen ORDER slips skip the brand block —
-  // table + items + waiter/time at the foot is all the pass needs.
+  // waiter/table, items, then time is all the pass needs.
   if (kind !== 'ORDER') {
     lines.push(cmdAlign('center'));
     lines.push(cmdBold(true));
@@ -272,16 +313,16 @@ export function buildEscposTicket(
     tableLabel: payload.tableLabel,
     emptyLabel: copy.sale,
   });
-  lines.push(escposText(`${tableInfo}\n`));
-  if (kind !== 'ORDER' && diningFloor && payload.covers)
-    lines.push(escposText(`${copy.covers}: ${payload.covers}\n`));
-  const seatLabel = String(meta?.seatLabel || '').trim();
-  if (kind !== 'ORDER' && seatLabel) {
-    lines.push(cmdBold(true));
-    lines.push(escposText(`${seatLabel.toUpperCase()}\n`));
-    lines.push(cmdBold(false));
-  }
   if (kind !== 'ORDER') {
+    lines.push(escposText(`${tableInfo}\n`));
+    if (diningFloor && payload.covers)
+      lines.push(escposText(`${copy.covers}: ${payload.covers}\n`));
+    const seatLabel = String(meta?.seatLabel || '').trim();
+    if (seatLabel) {
+      lines.push(cmdBold(true));
+      lines.push(escposText(`${seatLabel.toUpperCase()}\n`));
+      lines.push(cmdBold(false));
+    }
     if (payload.userName)
       lines.push(
         escposText(
@@ -289,8 +330,20 @@ export function buildEscposTicket(
         ),
       );
     lines.push(escposText(`${nowStr}\n`));
+    lines.push(escposText(`${layout.sep}\n`));
+  } else {
+    const identityLines = kitchenOrderIdentityLines(payload, layout.cols);
+    if (identityLines.length) {
+      lines.push(cmdBold(true));
+      lines.push(cmdTextSize('md'));
+      for (const ln of identityLines) {
+        lines.push(escposText(`${ln}\n`));
+      }
+      lines.push(cmdTextSize('normal'));
+      lines.push(cmdBold(false));
+    }
+    lines.push(escposText(`${layout.sep}\n`));
   }
-  lines.push(escposText(`${layout.sep}\n`));
 
   // Items. Prices are VAT-inclusive (Albanian fiscalization): the gross
   // line already contains the tax, so VAT is extracted, never added on top.
@@ -299,9 +352,10 @@ export function buildEscposTicket(
   const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   if (kind === 'ORDER') {
-    lines.push(cmdTextSize('md'));
+    lines.push(cmdTextSize('lg'));
     lines.push(cmdBold(true));
   }
+  const orderLayout = kitchenItemLayout(layout);
   for (const it of itemsToPrint) {
     const qty = Number(it.qty || 1);
     const linePrice = Number(it.unitPrice || 0) * qty;
@@ -311,18 +365,17 @@ export function buildEscposTicket(
       vat += splitGrossVat(linePrice, rate).vat;
     }
     if (kind === 'ORDER') {
-      const itemLine = `${qty} x ${String(it.name || '')}`;
-      for (const ln of wrapEscposText(itemLine, layout.cols)) {
-        lines.push(escposText(`${ln}\n`));
-      }
+      lines.push(...twoCol(String(it.name || ''), String(qty), orderLayout));
       if (it.note) {
         lines.push(cmdBold(false));
+        lines.push(cmdTextSize('normal'));
         for (const ln of wrapEscposText(
           `  - ${String(it.note)}`,
           layout.cols,
         )) {
           lines.push(escposText(`${ln}\n`));
         }
+        lines.push(cmdTextSize('lg'));
         lines.push(cmdBold(true));
       }
     } else {
@@ -483,12 +536,6 @@ export function buildEscposTicket(
     lines.push(cmdBold(false));
     lines.push(cmdTextSize('normal'));
     lines.push(escposText(`${layout.sep}\n`));
-    if (payload.userName)
-      lines.push(
-        escposText(
-          `${receiptStaffLabel(diningFloor, lang)}: ${payload.userName}\n`,
-        ),
-      );
     lines.push(escposText(`${nowStr}\n`));
   }
 
@@ -533,6 +580,7 @@ export function buildHtmlReceipt(
   const kind = String(meta?.kind || '').toUpperCase();
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
   const seatLabel = String(meta?.seatLabel || '').trim();
+  const orderIdentity = kind === 'ORDER' ? kitchenOrderIdentity(payload) : '';
 
   const safe = (s: any) =>
     String(s ?? '')
@@ -577,9 +625,16 @@ export function buildHtmlReceipt(
       const qty = Number(it.qty || 1);
       const line = Number(it.unitPrice || 0) * qty;
       const note = it.note ? `<div class="note">- ${safe(it.note)}</div>` : '';
-      const right = hidePrices ? '' : safe(formatMoney(line, currency));
+      const right =
+        kind === 'ORDER'
+          ? safe(String(qty))
+          : hidePrices
+            ? ''
+            : safe(formatMoney(line, currency));
+      const left =
+        kind === 'ORDER' ? safe(it.name) : safe(`${qty} x ${it.name}`);
       const rowClass = kind === 'ORDER' ? 'row orderItem' : 'row';
-      return `<div class="${rowClass}"><div class="left">${safe(`${qty} x ${it.name}`)}</div><div class="right">${right}</div></div>${note}`;
+      return `<div class="${rowClass}"><div class="left">${left}</div><div class="right">${right}</div></div>${note}`;
     })
     .join('\n');
 
@@ -661,7 +716,8 @@ export function buildHtmlReceipt(
       .left { flex: 1; word-break: break-word; }
       .right { min-width: 70px; text-align: right; white-space: nowrap; }
       .note { margin-left: 8px; font-size: 11px; }
-      .orderItem { font-size: 18px; font-weight: 700; line-height: 1.25; margin: 2px 0; }
+      .orderItem { font-size: 22px; font-weight: 800; line-height: 1.2; margin: 3px 0; }
+      .orderFoot { font-size: 22px; font-weight: 800; line-height: 1.2; margin: 4px 0 2px; }
       .footer { text-align: center; margin-top: 10px; }
       .paid { text-align: center; font-weight: 800; font-size: 14px; margin: 2px 0; }
     </style>
@@ -669,16 +725,17 @@ export function buildHtmlReceipt(
   <body>
     ${
       kind === 'ORDER'
-        ? ''
+        ? `${orderIdentity ? `<div class="orderFoot">${safe(orderIdentity)}</div>` : ''}
+    <div class="sep"></div>`
         : `<div class="title">${safe(restaurant)}</div>
-    ${subtitleHtml}`
+    ${subtitleHtml}
+    <div class="small">${safe(formatSaleLocation({ diningFloor: receiptDiningFloor(payload.area), area: payload.area, tableLabel: payload.tableLabel, emptyLabel: copy.sale }))}</div>
+    ${receiptDiningFloor(payload.area) && payload.covers ? `<div class="small">${safe(copy.covers)}: ${safe(payload.covers)}</div>` : ''}
+    ${seatLabel ? `<div class="paid">${safe(seatLabel.toUpperCase())}</div>` : ''}
+    ${payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area), lang))}: ${safe(payload.userName)}</div>` : ''}
+    <div class="small">${safe(nowStr)}</div>
+    <div class="sep"></div>`
     }
-    <div class="${kind === 'ORDER' ? '' : 'small'}">${safe(formatSaleLocation({ diningFloor: receiptDiningFloor(payload.area), area: payload.area, tableLabel: payload.tableLabel, emptyLabel: copy.sale }))}</div>
-    ${kind !== 'ORDER' && receiptDiningFloor(payload.area) && payload.covers ? `<div class="small">${safe(copy.covers)}: ${safe(payload.covers)}</div>` : ''}
-    ${kind !== 'ORDER' && seatLabel ? `<div class="paid">${safe(seatLabel.toUpperCase())}</div>` : ''}
-    ${kind !== 'ORDER' && payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area), lang))}: ${safe(payload.userName)}</div>` : ''}
-    ${kind !== 'ORDER' ? `<div class="small">${safe(nowStr)}</div>` : ''}
-    <div class="sep"></div>
     ${rows}
     ${
       hidePrices
@@ -695,7 +752,6 @@ export function buildHtmlReceipt(
     ${
       kind === 'ORDER'
         ? `<div class="sep"></div>
-    ${payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area), lang))}: ${safe(payload.userName)}</div>` : ''}
     <div class="small">${safe(nowStr)}</div>`
         : `<div class="footer small">${safe(copy.thankYou)}</div>
     ${contactHtml}

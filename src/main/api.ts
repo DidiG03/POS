@@ -79,6 +79,7 @@ import { settingsChangeFromHost } from '@shared/settingsChange';
 import { authorizeLanRoute } from './services/lanPolicy';
 import { syncTableAreasToDb } from './services/tableAreasSync';
 import { presentSettingsForClient } from './services/settingsPresent';
+import { getVaultPrefs, setVaultUnlockMode } from './services/vault/lifecycle';
 import {
   createMenuItemFromInput,
   listMenuCategoriesForClient,
@@ -117,12 +118,12 @@ import {
   getHostUpdateStatus,
   installHostAndClients,
 } from './services/appUpdates';
-import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
 import {
   logSecurityEvent,
   sanitizeString,
   validatePin,
 } from './services/security';
+import { allowLanCorsOrigin, isTrustedLanClient } from './services/lanCors';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
   gzipHtmlIfAccepted,
@@ -166,6 +167,7 @@ import {
   getTableSessionStartedAt,
 } from './services/tableSession';
 import { compactTicketLogSession } from './services/ticketLogCompact';
+import { compactCoversForTable } from './services/coversCompact';
 import { finalizeShiftAfterClockOut } from './services/shiftSummary';
 import {
   listMyActiveTickets,
@@ -534,16 +536,28 @@ function isLoopback(remoteAddress: string | undefined) {
  * The marker is a *hint*, not authentication — pairing-code and PIN login
  * are still required for the native app to actually do anything.
  */
-function isNativeClient(
+function pickBearerToken(
   req: http.IncomingMessage,
-  parsed?: url.UrlWithParsedQuery,
-) {
-  const headerVal = req.headers['x-pos-client'];
-  const header = Array.isArray(headerVal) ? headerVal[0] : headerVal;
-  if (String(header || '').toLowerCase() === 'native') return true;
-  const query = parsed?.query?.client;
-  const q = Array.isArray(query) ? query[0] : query;
-  return String(q || '').toLowerCase() === 'native';
+  parsedUrl: url.UrlWithParsedQuery,
+): string | null {
+  const auth = String(req.headers.authorization || '');
+  if (auth.toLowerCase().startsWith('bearer '))
+    return auth.slice(7).trim() || null;
+  const q = (parsedUrl.query as any) || {};
+  const t = typeof q.token === 'string' ? q.token : null;
+  return t || null;
+}
+
+function createCorsPolicy(): CorsPolicy {
+  const extra = (process.env.POS_CORS_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return {
+    allowOrigin(origin: string | undefined, hostHeader: string | undefined) {
+      return allowLanCorsOrigin(origin, hostHeader, extra);
+    },
+  };
 }
 
 async function issueToken(
@@ -644,60 +658,6 @@ async function verifyToken(
   };
 }
 
-function pickBearerToken(
-  req: http.IncomingMessage,
-  parsedUrl: url.UrlWithParsedQuery,
-): string | null {
-  const auth = String(req.headers.authorization || '');
-  if (auth.toLowerCase().startsWith('bearer '))
-    return auth.slice(7).trim() || null;
-  const q = (parsedUrl.query as any) || {};
-  const t = typeof q.token === 'string' ? q.token : null;
-  return t || null;
-}
-
-function createCorsPolicy(isDev: boolean): CorsPolicy {
-  const extra = (process.env.POS_CORS_ORIGINS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const dev = isDev
-    ? [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-        // Vite mobile dev server (vite.mobile.config.ts uses :5174 with host:true).
-        'http://localhost:5174',
-        'http://127.0.0.1:5174',
-      ]
-    : [];
-  // Well-known Capacitor WebView origins. The waiter mobile app talks to the
-  // POS LAN API from these origins; without them the WebView preflight fails
-  // and every fetch silently errors out.
-  //   iOS         → capacitor://localhost
-  //   Android     → http://localhost (default) or https://localhost (when
-  //                 androidScheme:'https' is set in capacitor.config.ts)
-  //   Older Ionic → ionic://localhost
-  const capacitorOrigins = [...CAPACITOR_WEBVIEW_ORIGINS];
-  const allowList = new Set<string>([...extra, ...dev, ...capacitorOrigins]);
-
-  return {
-    allowOrigin(origin: string | undefined, hostHeader: string | undefined) {
-      if (!origin) return null; // non-browser / no CORS needed
-      // Always allow same-host origins (e.g., renderer served from the API server itself)
-      try {
-        const o = new URL(origin);
-        const host = (hostHeader || '').split(',')[0]?.trim() || '';
-        const hostNoPort = host.includes(':') ? host.split(':')[0] : host;
-        if (o.hostname === hostNoPort) return origin;
-      } catch {
-        // ignore
-      }
-      if (allowList.has(origin)) return origin;
-      return null;
-    },
-  };
-}
-
 /**
  * Set security headers on HTTP responses
  */
@@ -739,6 +699,10 @@ function setSecurityHeaders(
       'Content-Type, Authorization, Idempotency-Key, X-POS-Client',
     );
     res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+    // Admin/KDS Vite (localhost) fetching a private LAN IP is a Chromium
+    // Private Network Access request. Without this the preflight fails as
+    // "Failed to fetch" even though Scan (main process) already found the till.
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
   }
 
   // HSTS (HTTP Strict Transport Security) - only for HTTPS
@@ -796,7 +760,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
   // access" is off — that toggle only gates browsers.
   const bindHost = process.env.POS_BIND_HOST || '0.0.0.0';
   const secret = await getOrCreateApiSecret();
-  const cors = createCorsPolicy(Boolean(process.env.ELECTRON_RENDERER_URL));
+  const cors = createCorsPolicy();
 
   function getContentType(pathname: string) {
     if (pathname.endsWith('.html')) return 'text/html; charset=utf-8';
@@ -853,7 +817,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // pairing / auth remain authoritative for who actually gets in.
       try {
         const remoteIp = String((req.socket as any)?.remoteAddress || '');
-        if (!isLoopback(remoteIp) && !isNativeClient(req, parsed)) {
+        if (!isLoopback(remoteIp) && !isTrustedLanClient(req, parsed, origin)) {
           const liveSettings = await coreServices.readSettings();
           const lanEnabledLive =
             Boolean((liveSettings as any)?.security?.allowLan) ||
@@ -1119,7 +1083,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             Boolean((s as any)?.security?.allowLan) ||
             process.env.POS_ALLOW_LAN === 'true';
           // Native app bypasses the browser-only "Allow Web access" gate.
-          if (!lanEnabled && !isNativeClient(req, parsed))
+          if (!lanEnabled && !isTrustedLanClient(req, parsed, origin))
             return send(
               res,
               403,
@@ -1169,7 +1133,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // Native app bypasses the browser-only "Allow Web access" gate,
           // but the pairing-code check below still applies to staff when
           // pairing is required.
-          const gateForBrowsers = lanEnabled || isNativeClient(req, parsed);
+          const gateForBrowsers =
+            lanEnabled || isTrustedLanClient(req, parsed, origin);
           if (!gateForBrowsers && !isLoopback(remoteIp)) {
             return send(res, 403, { error: 'web access disabled' }, corsOrigin);
           }
@@ -2208,6 +2173,22 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           await restoreDbBackup(String(body?.name || '')),
           corsOrigin,
         );
+      }
+      if (req.method === 'GET' && pathname === '/vault/prefs') {
+        return send(res, 200, getVaultPrefs(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/vault/prefs') {
+        const body = await parseJson(req);
+        const unlockMode =
+          body?.unlockMode === 'passphrase' ? 'passphrase' : 'os';
+        const result = await setVaultUnlockMode({
+          unlockMode,
+          passphrase: body?.passphrase ? String(body.passphrase) : undefined,
+        });
+        if (!result.ok) {
+          return send(res, 200, result, corsOrigin);
+        }
+        return send(res, 200, { ok: true, ...getVaultPrefs() }, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/settings/fiscal-token-hint') {
         const settings = await coreServices.readSettings();
@@ -3587,6 +3568,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         await prisma.covers.create({
           data: { area: String(area), label: String(label), covers: num },
         });
+        await compactCoversForTable(String(area), String(label));
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/covers/last') {

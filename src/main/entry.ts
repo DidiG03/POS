@@ -146,6 +146,18 @@ function ensurePackagedDefaults() {
 ensurePackagedDefaults();
 ensureSqliteDbFile();
 ensurePrismaModulePath();
+if (app.isPackaged && String(process.env.POS_VAULT || '').trim() !== '0') {
+  if (!String(process.env.POS_VAULT || '').trim()) {
+    process.env.POS_VAULT = '1';
+  }
+  process.env.POS_VAULT_LOCK = '1';
+}
+try {
+  process.env.POS_USER_DATA = app.getPath('userData');
+  process.env.POS_APP_DATA = app.getPath('appData');
+} catch {
+  // ignore
+}
 
 // Load the actual app after path fix.
 await import('./index');

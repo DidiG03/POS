@@ -73,7 +73,7 @@ function OrderCard({
   return (
     <div
       className={cn(
-        'relative w-full min-w-0 rounded border-2 border-gray-500 bg-gray-900 p-3',
+        'pos-order-card',
         urgency ? kdsTimerUrgencyCardAccent(urgency) : '',
       )}
     >
@@ -98,11 +98,7 @@ function OrderCard({
           </span>
         ) : null}
       </div>
-      {order.note ? (
-        <div className="mb-2 rounded border border-gray-600 bg-gray-950 p-2 text-[13px]">
-          {order.note}
-        </div>
-      ) : null}
+      {order.note ? <div className="pos-order-note">{order.note}</div> : null}
       <div className="space-y-1">
         {order.items.map((item) => {
           const idx = Number(item._idx);
@@ -110,16 +106,14 @@ function OrderCard({
           return (
             <div
               key={`${order.ticketId}:${idx}:${item.name}`}
-              className={cn(
-                'flex items-start justify-between gap-2 rounded border border-gray-600 px-2 py-1 text-[13px] leading-snug',
-                ready &&
-                  'border-emerald-500 bg-emerald-900/25 ring-1 ring-emerald-500/70',
-              )}
+              className={cn('pos-order-line', ready && 'pos-order-line--ready')}
             >
               <div
                 className={cn(
                   'min-w-0 break-words font-semibold',
-                  ready ? 'text-emerald-300' : 'italic text-gray-400',
+                  ready
+                    ? 'text-emerald-300'
+                    : 'italic text-[color:var(--pos-fg-muted)]',
                 )}
               >
                 <span>
@@ -131,7 +125,7 @@ function OrderCard({
                   {item.name}
                 </span>
                 {item.note ? (
-                  <div className="mt-0.5 flex items-start gap-1.5 pl-4 text-[12px] font-normal not-italic text-gray-300">
+                  <div className="mt-0.5 flex items-start gap-1.5 pl-4 text-[12px] font-normal not-italic text-[color:var(--pos-fg-muted)]">
                     <span
                       className="font-bold leading-none text-amber-400"
                       aria-hidden

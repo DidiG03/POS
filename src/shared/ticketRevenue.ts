@@ -4,6 +4,8 @@
  * everywhere we treat a row as revenue (same rule as admin analytics).
  */
 
+import { ticketCreatedAtIso, ticketLogCreatedAtMs } from './ticketLogItems';
+
 export function liveTicketLines(itemsJson: unknown): any[] {
   const arr = Array.isArray(itemsJson) ? itemsJson : [];
   return arr.filter((it: any) => !it?.voided);
@@ -111,6 +113,106 @@ export function latestRowPerSession<T extends TicketSnapshotRow>(
   }
 
   return slots.sort((a, b) => a.index - b.index).map((slot) => slot.row);
+}
+
+/** TicketLog row that still needs a `sessionKey` written back. */
+export type SessionKeyRow = TicketSnapshotRow & { id: number };
+
+function tableSessionGroupKey(row: TicketSnapshotRow): string {
+  return `${String(row?.area ?? '')}\u0000${String(row?.tableLabel ?? '')}`;
+}
+
+/**
+ * Keys to write onto unkeyed TicketLog rows so compact can drop old snapshots.
+ *
+ * Walks each table in time order. Unkeyed fires that still look like the same
+ * sitting as a later keyed row inherit that official key; otherwise they get
+ * a synthetic key from the first fire of the sitting.
+ */
+export function proposedSessionKeys(
+  rows: readonly SessionKeyRow[],
+  buildKey: (area: string, label: string, startedAtIso: string) => string,
+): Map<number, string> {
+  const out = new Map<number, string>();
+  if (!Array.isArray(rows) || rows.length === 0) return out;
+
+  const groups = new Map<string, SessionKeyRow[]>();
+  const ordered = [...rows].sort((a, b) => {
+    const ta = ticketLogCreatedAtMs(a.createdAt);
+    const tb = ticketLogCreatedAtMs(b.createdAt);
+    const sa = Number.isFinite(ta) ? ta : 0;
+    const sb = Number.isFinite(tb) ? tb : 0;
+    return sa - sb || Number(a.id) - Number(b.id);
+  });
+  for (const row of ordered) {
+    const key = tableSessionGroupKey(row);
+    const list = groups.get(key);
+    if (list) list.push(row);
+    else groups.set(key, [row]);
+  }
+
+  type Slot = {
+    key: string;
+    official: boolean;
+    lastItems: unknown;
+    unkeyedIds: number[];
+  };
+
+  for (const group of groups.values()) {
+    let slot: Slot | null = null;
+    const flush = () => {
+      if (!slot) return;
+      for (const id of slot.unkeyedIds) out.set(id, slot!.key);
+      slot = null;
+    };
+
+    for (const row of group) {
+      const official = String(row.sessionKey ?? '').trim();
+      const id = Number(row.id);
+      if (official) {
+        if (slot && slot.key === official) {
+          slot.lastItems = row.itemsJson;
+        } else if (
+          slot &&
+          !slot.official &&
+          extendsSnapshot(slot.lastItems, row.itemsJson)
+        ) {
+          slot.key = official;
+          slot.official = true;
+          slot.lastItems = row.itemsJson;
+        } else {
+          flush();
+          slot = {
+            key: official,
+            official: true,
+            lastItems: row.itemsJson,
+            unkeyedIds: [],
+          };
+        }
+        continue;
+      }
+
+      if (slot && extendsSnapshot(slot.lastItems, row.itemsJson)) {
+        slot.lastItems = row.itemsJson;
+        if (Number.isInteger(id) && id > 0) slot.unkeyedIds.push(id);
+        continue;
+      }
+      flush();
+      slot = {
+        key: buildKey(
+          String(row.area ?? ''),
+          String(row.tableLabel ?? ''),
+          ticketCreatedAtIso(row.createdAt),
+        ),
+        official: false,
+        lastItems: row.itemsJson,
+        unkeyedIds: Number.isInteger(id) && id > 0 ? [id] : [],
+      };
+    }
+    flush();
+  }
+
+  return out;
 }
 
 /**
