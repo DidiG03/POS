@@ -10,8 +10,8 @@ import {
   type DiscoveredPosHost,
 } from '@shared/posHostDiscovery';
 
-const HTTP_TIMEOUT_MS = 500;
-const HTTP_CONCURRENCY = 24;
+const HTTP_TIMEOUT_MS = 350;
+const HTTP_CONCURRENCY = 40;
 const SEED_TIMEOUT_MS = 2500;
 
 function parseIpv4FromCandidate(line: string): string | null {
@@ -64,6 +64,26 @@ export async function guessLocalIpv4s(timeoutMs = 1200): Promise<string[]> {
   return [...found];
 }
 
+function posScanHeaders(): HeadersInit {
+  try {
+    const Cap = (
+      window as unknown as {
+        Capacitor?: { isNativePlatform?: () => boolean };
+      }
+    ).Capacitor;
+    if (Cap?.isNativePlatform?.()) return { 'X-POS-Client': 'native' };
+  } catch {
+    // ignore
+  }
+  if ((window as unknown as { __ADMIN_APP__?: boolean }).__ADMIN_APP__) {
+    return { 'X-POS-Client': 'admin' };
+  }
+  if ((window as unknown as { __KDS_APP__?: boolean }).__KDS_APP__) {
+    return { 'X-POS-Client': 'kds' };
+  }
+  return {};
+}
+
 export async function probePosHttp(
   host: string,
   httpPort: number,
@@ -73,7 +93,10 @@ export async function probePosHttp(
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const r = await fetch(url, { signal: controller.signal });
+    const r = await fetch(url, {
+      signal: controller.signal,
+      headers: posScanHeaders(),
+    });
     if (!r.ok) return null;
     const body = await r.json().catch(() => null);
     return hostFromDebugBody(host, httpPort, body, 'http');

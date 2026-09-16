@@ -4180,6 +4180,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
   });
   server.listen(httpPort, bindHost, () => {
     console.log(`HTTP API listening on http://${bindHost}:${httpPort}`);
+    try {
+      const lan = listLanIpv4Addresses().filter(
+        (ip) => !ip.startsWith('169.254.'),
+      );
+      if (lan.length) {
+        console.log(
+          `Waiter tablets: same Wi-Fi, then scan or type ${lan
+            .map((ip) => `${ip}:${httpPort}`)
+            .join(', ')}`,
+        );
+      }
+    } catch {
+      // ignore
+    }
   });
 
   let httpsServer: https.Server | null = null;

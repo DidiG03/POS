@@ -122,7 +122,11 @@
     "backendLabel": "Backend: ",
     "scan": "Scan",
     "scanning": "Scanning…",
-    "noneFound": "No POS found on this Wi-Fi.",
+    "noneFound": "No POS found on this Wi-Fi. Type the till IP from the POS computer if Scan misses it.",
+    "manualHost": "POS IP address",
+    "connectHost": "Connect to this IP",
+    "invalidHost": "Enter a Wi-Fi address like 192.168.10.16",
+    "cannotReachHost": "This phone cannot reach {{host}}:{{port}}. Stay on the same Wi-Fi as the Mac.",
     "holdIconToScan": "Hold the logo for 5 seconds to change POS server",
     "reloadChunk": "Couldn’t load this screen. Retrying…"
   },

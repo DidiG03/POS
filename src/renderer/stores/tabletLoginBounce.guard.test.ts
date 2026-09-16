@@ -224,6 +224,8 @@ describe('tablet login bounce guards', () => {
   it('Waiter store listing keeps local-network and privacy extras', () => {
     const plist = read('ios/App/App/Info.plist');
     expect(plist).toContain('NSLocalNetworkUsageDescription');
+    expect(plist).toContain('NSBonjourServices');
+    expect(plist).toContain('_codeorbit-pos._tcp');
     expect(plist).toContain('NSAllowsLocalNetworking');
     expect(plist).not.toContain('NSAllowsArbitraryLoads');
     expect(plist).toContain('ITSAppUsesNonExemptEncryption');

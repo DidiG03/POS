@@ -101,4 +101,11 @@ describe('collectLanScanHosts', () => {
     expect(hosts).toContain('192.168.33.1');
     expect(hosts).not.toContain('192.168.1.1');
   });
+
+  it('scans common restaurant subnets when the phone has no local IP', () => {
+    const hosts = collectLanScanHosts([]);
+    expect(hosts).toContain('192.168.1.1');
+    expect(hosts).toContain('192.168.10.16');
+    expect(hosts).toContain('10.0.0.1');
+  });
 });

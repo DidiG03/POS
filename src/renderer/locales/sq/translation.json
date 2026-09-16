@@ -122,7 +122,11 @@
     "backendLabel": "Backend: ",
     "scan": "Kërko",
     "scanning": "Duke kërkuar…",
-    "noneFound": "Nuk u gjet asnjë POS në këtë Wi-Fi.",
+    "noneFound": "Nuk u gjet asnjë POS në këtë Wi-Fi. Shkruaj IP-në e arkës nga kompjuteri POS nëse kërkimi nuk e gjen.",
+    "manualHost": "Adresa IP e POS",
+    "connectHost": "Lidhu me këtë IP",
+    "invalidHost": "Shkruaj një adresë Wi-Fi si 192.168.10.16",
+    "cannotReachHost": "Ky telefon nuk arrin {{host}}:{{port}}. Qëndro në të njëjtin Wi-Fi me Mac-un.",
     "holdIconToScan": "Mbaje logon 5 sekonda për të ndryshuar serverin POS",
     "reloadChunk": "Ekrani nuk u ngarkua. Duke riprovuar…"
   },

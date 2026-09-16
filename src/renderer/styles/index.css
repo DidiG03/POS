@@ -483,6 +483,7 @@ html[data-shell='capacitor'] {
   .pos-nav-link--active {
     background: color-mix(in srgb, var(--pos-accent) 18%, var(--pos-surface-3));
     color: var(--pos-fg);
+    border-radius: 0.75rem;
   }
   .pos-nav-link--idle {
     color: var(--pos-fg-muted);
@@ -490,6 +491,7 @@ html[data-shell='capacitor'] {
   .pos-nav-link--idle:hover {
     background: var(--pos-hover);
     color: var(--pos-fg);
+    border-radius: 0.75rem;
   }
 
   .pos-mobile-tabbar {
@@ -535,9 +537,8 @@ html[data-shell='capacitor'] {
   }
 
   .pos-segmented {
-    @apply inline-flex items-center gap-0.5 rounded-[0.7rem] p-0.5;
-    border: 1px solid var(--pos-border);
-    background: var(--pos-surface-2);
+    @apply inline-flex items-center gap-0.5 rounded-[0.7rem] p-1.5;
+    background: var(--pos-surface);
   }
   .pos-segment {
     @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
@@ -758,7 +759,6 @@ html[data-shell='capacitor'] {
     gap: 0.35rem;
     padding: 0 0.75rem;
     border-radius: 0.7rem;
-    border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface-2);
     font-size: 0.8125rem;
     font-weight: 650;
@@ -790,9 +790,10 @@ html[data-shell='capacitor'] {
     justify-content: center;
     padding: 0.55rem;
     border-radius: 0.7rem;
-    border: 1px solid var(--pos-border-strong);
-    background: var(--pos-surface-2);
     color: var(--pos-fg);
+  }
+  .pos-ticket-iconbtn:hover {
+    background: var(--pos-surface-3);
   }
   .pos-ticket-iconbtn:disabled {
     opacity: 0.45;
@@ -897,7 +898,6 @@ html[data-shell='capacitor'] {
     padding: 0 0.75rem 0 0;
     border: none;
     border-right: 1px solid var(--pos-border-strong);
-    background: transparent;
   }
   @media (min-width: 640px) {
     .pos-menu-rail {
@@ -936,7 +936,7 @@ html[data-shell='capacitor'] {
     background: var(--pos-canvas);
     color: var(--pos-fg);
     font-size: 0.8125rem;
-    font-weight: 650;
+    font-weight: 500;
     line-height: 1.25;
     cursor: pointer;
     box-shadow: none;
@@ -989,15 +989,14 @@ html[data-shell='capacitor'] {
   }
   .pos-menu-fav {
     display: inline-flex;
-    width: 2.15rem;
-    height: 2.15rem;
-    min-width: 2.15rem;
-    min-height: 2.15rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    min-width: 1.5rem;
+    min-height: 1.5rem;
     align-items: center;
     justify-content: center;
     padding: 0;
-    border-radius: 0.6rem;
-    border: 1px solid var(--pos-border-strong);
+    border-radius: 0.3rem;
     background: var(--pos-surface);
     color: var(--pos-fg-muted);
     cursor: pointer;
@@ -1196,8 +1195,10 @@ html[data-shell='capacitor'] {
   }
 
   .pos-overlay {
-    @apply fixed inset-0 z-[9999] flex items-end justify-center p-0 sm:items-center sm:p-4;
+    @apply fixed inset-0 z-[9999] flex items-center justify-center p-4;
     background: var(--pos-overlay);
+    padding-top: max(1rem, env(safe-area-inset-top, 0px));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
   }
 
   .pos-modal {
@@ -1211,16 +1212,11 @@ html[data-shell='capacitor'] {
 
   .pos-dialog {
     @apply w-full overflow-hidden;
-    max-height: 92dvh;
-    border-radius: 0.625rem 0.625rem 0 0;
+    max-height: min(92dvh, calc(100dvh - 2rem));
+    border-radius: var(--pos-radius);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface);
     box-shadow: var(--shadow-2xl);
-  }
-  @media (min-width: 640px) {
-    .pos-dialog {
-      border-radius: var(--pos-radius);
-    }
   }
   .pos-dialog-header {
     @apply flex items-center justify-between gap-3 px-4 py-3;
@@ -1237,7 +1233,6 @@ html[data-shell='capacitor'] {
     @apply flex flex-wrap items-center justify-end gap-2 px-4 py-3;
     border-top: 1px solid var(--pos-border);
     background: var(--pos-surface-2);
-    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
 
   .pos-sheet {

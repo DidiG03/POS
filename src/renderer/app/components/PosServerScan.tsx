@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { DiscoveredPosHost } from '@shared/posHostDiscovery';
+import {
+  isPrivateIpv4,
+  type DiscoveredPosHost,
+} from '@shared/posHostDiscovery';
+import { Button, Field, Input } from '../../components/ui';
 import {
   persistCompanionBackendHost,
   resolveBackendHost,
   syncBackendHostToLocalStorage,
 } from '../../utils/backendHost';
-import { discoverPosHostsInBrowser } from '../../utils/discoverPosHosts';
+import {
+  discoverPosHostsInBrowser,
+  probePosHttp,
+} from '../../utils/discoverPosHosts';
 import {
   POS_OPEN_SERVER_SCAN,
   notifyBackendHostChanged,
@@ -27,6 +34,8 @@ export function PosServerScanPanel({
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [busyHost, setBusyHost] = useState<string | null>(null);
+  const [manualHost, setManualHost] = useState('');
+  const [manualError, setManualError] = useState<string | null>(null);
   const backend = resolveBackendHost();
 
   const scan = useCallback(async () => {
@@ -84,22 +93,71 @@ export function PosServerScanPanel({
     [onConnected],
   );
 
+  const connectManual = useCallback(async () => {
+    const host = manualHost.trim();
+    setManualError(null);
+    if (!isPrivateIpv4(host)) {
+      setManualError(t('boot.invalidHost'));
+      return;
+    }
+    const port = Number(resolveBackendHost().httpPort) || 3333;
+    setBusyHost(host);
+    try {
+      const hit = await probePosHttp(host, port, 2500);
+      if (!hit) {
+        setManualError(t('boot.cannotReachHost', { host, port }));
+        return;
+      }
+      await connectTo(hit);
+    } finally {
+      setBusyHost(null);
+    }
+  }, [connectTo, manualHost, t]);
+
   return (
-    <PosHostPicker
-      hosts={hosts}
-      scanning={scanning}
-      scanned={scanned}
-      busyHost={busyHost}
-      currentHost={backend.host}
-      currentPort={backend.httpPort}
-      onScan={() => void scan()}
-      onSelect={(h) => void connectTo(h)}
-      labels={{
-        scan: t('boot.scan'),
-        scanning: t('boot.scanning'),
-        empty: t('boot.noneFound'),
-      }}
-    />
+    <div className="w-full space-y-4">
+      <PosHostPicker
+        hosts={hosts}
+        scanning={scanning}
+        scanned={scanned}
+        busyHost={busyHost}
+        currentHost={backend.host}
+        currentPort={backend.httpPort}
+        onScan={() => void scan()}
+        onSelect={(h) => void connectTo(h)}
+        labels={{
+          scan: t('boot.scan'),
+          scanning: t('boot.scanning'),
+          empty: t('boot.noneFound'),
+        }}
+      />
+      <Field label={t('boot.manualHost')} error={manualError || undefined}>
+        <Input
+          inputMode="decimal"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          placeholder="192.168.10.16"
+          value={manualHost}
+          disabled={scanning || Boolean(busyHost)}
+          onChange={(e) => {
+            setManualHost(e.target.value);
+            setManualError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void connectManual();
+          }}
+        />
+      </Field>
+      <Button
+        variant="secondary"
+        block
+        disabled={scanning || Boolean(busyHost) || !manualHost.trim()}
+        onClick={() => void connectManual()}
+      >
+        {t('boot.connectHost')}
+      </Button>
+    </div>
   );
 }
 

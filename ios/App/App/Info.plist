@@ -74,6 +74,10 @@
 	<false/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>This app needs to connect to the POS computer on your local Wi-Fi network to take orders.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_codeorbit-pos._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- LAN POS hosts have no public TLS cert. Local networking covers

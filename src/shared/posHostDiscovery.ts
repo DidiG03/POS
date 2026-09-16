@@ -3,7 +3,14 @@ import { isIpv4Address, isLinkLocalOrLoopbackAddress } from './lanHost';
 export const POS_LAN_HTTP_PORT = 3333;
 export const POS_APP_ID = 'code-orbit-pos';
 /** Used only when the phone cannot learn its own LAN IP (common on iOS). */
-export const POS_SCAN_FALLBACK_SEEDS = ['192.168.1.1', '192.168.0.1'];
+export const POS_SCAN_FALLBACK_SEEDS = [
+  '192.168.1.1',
+  '192.168.0.1',
+  '192.168.10.1',
+  '192.168.2.1',
+  '192.168.68.1',
+  '10.0.0.1',
+];
 
 export type DiscoveredPosHost = {
   name: string;

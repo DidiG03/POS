@@ -2492,24 +2492,22 @@ export default function OrderPage() {
         className={`pos-ticket-pane flex h-full min-h-0 min-w-0 flex-col overflow-hidden ${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex`}
       >
         <div className="mb-2 shrink-0 space-y-2">
-          <div className="flex items-center gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[15px] font-semibold leading-tight">
-                {selectedTable
-                  ? t(hasTables ? 'order.ticketHeader' : 'order.saleHeader', {
-                      label: selectedTable.label,
-                    })
-                  : t(hasTables ? 'order.ticket' : 'order.cart')}
-              </div>
-              {hasTables &&
-              selectedTable &&
-              isOpen(selectedTable.area, selectedTable.label) &&
-              openedAtMs ? (
-                <div className="mt-0.5 font-mono text-[12px] tabular-nums text-[color:var(--pos-fg-muted)]">
-                  {formatElapsed(nowMs - openedAtMs)}
-                </div>
-              ) : null}
+          <div className="flex items-baseline justify-between gap-3 px-3">
+            <div className="min-w-0 truncate text-[15px] font-semibold leading-tight">
+              {selectedTable
+                ? t(hasTables ? 'order.ticketHeader' : 'order.saleHeader', {
+                    label: selectedTable.label,
+                  })
+                : t(hasTables ? 'order.ticket' : 'order.cart')}
             </div>
+            {hasTables &&
+            selectedTable &&
+            isOpen(selectedTable.area, selectedTable.label) &&
+            openedAtMs ? (
+              <div className="shrink-0 font-mono text-[12px] tabular-nums text-[color:var(--pos-fg-muted)]">
+                {formatElapsed(nowMs - openedAtMs)}
+              </div>
+            ) : null}
           </div>
           {hasTables ? (
             <div className="flex items-center gap-2">
@@ -3184,11 +3182,7 @@ export default function OrderPage() {
                       ) : null}
                       {hasTables ? (
                         <button
-                          className={
-                            canPay && isTableOpen && !hasUnsentItems
-                              ? 'pos-ticket-tool'
-                              : 'pos-ticket-tool pos-ticket-tool--accent'
-                          }
+                          className="pos-ticket-tool"
                           disabled={
                             activeLines.length === 0 ||
                             busyAction != null ||

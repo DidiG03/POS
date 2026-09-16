@@ -20,6 +20,7 @@ import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
 import { formatNotificationTime } from '@shared/notificationDisplay';
 import { useKdsOrdersAccess } from './useKdsOrdersAccess';
+import { isSaleNavActive } from './saleNavActive';
 import { toast } from '../stores/toasts';
 import { reportAppError } from '../utils/reportAppError';
 import {
@@ -346,9 +347,7 @@ export default function AppLayout() {
     );
 
   const saleTo = hasTables ? '/app/tables' : '/app/order';
-  const saleActive =
-    location.pathname.startsWith(saleTo) ||
-    (hasTables && location.pathname.startsWith('/app/order'));
+  const saleActive = isSaleNavActive(location.pathname, hasTables);
   const navItems = useMemo(() => {
     const items: Array<{
       to: string;
