@@ -24,7 +24,7 @@ export function ticketLogIdsToDrop(
 
 type CompactClient = {
   ticketLog: {
-    findMany: (args: unknown) => Promise<Array<{ id: number }>>;
+    findMany: (args: unknown) => Promise<any[]>;
     deleteMany: (args: unknown) => Promise<{ count: number }>;
   };
 };
@@ -32,9 +32,7 @@ type CompactClient = {
 type BackfillClient = CompactClient & {
   ticketLog: CompactClient['ticketLog'] & {
     updateMany: (args: unknown) => Promise<{ count: number }>;
-    groupBy?: (
-      args: unknown,
-    ) => Promise<
+    groupBy?: (args: unknown) => Promise<
       Array<{
         sessionKey: string | null;
         _count: { _all?: number; id?: number };
