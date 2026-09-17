@@ -129,7 +129,7 @@ export function menuTileStyle(
   const boxShadow = `inset 0 -4px 0 0 ${strip}`;
   if (theme === 'light') {
     return {
-      backgroundColor: 'white',
+      backgroundColor: '#ffffff',
       color: '#0f172a',
       boxShadow,
       borderRadius: '0.4rem',

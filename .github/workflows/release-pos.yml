@@ -219,9 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.43"
-            echo "- Fix CI/release typecheck failure in printer routing tests (v0.2.42 builds did not publish)"
-            echo "- Same feature set as v0.2.42: multi-category printer routes, Google Calendar removal, admin login, light theme, haptics, waiter polish"
+            echo "### Changes in v0.2.44"
+            echo "- Fix CI failures that blocked v0.2.42 and v0.2.43 releases (typecheck + menu tile test)"
+            echo "- Same feature set: multi-category printer routes, Google Calendar removal, admin login, light theme, haptics, waiter polish"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
