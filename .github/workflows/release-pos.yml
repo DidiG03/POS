@@ -219,9 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.39"
-            echo "- OneTap Admin can create the first admin on a new till (no more Unauthorised)"
-            echo "- After unlocking with the passphrase, the till waits for that admin instead of looking like a broken login"
+            echo "### Changes in v0.2.40"
+            echo "- Store license keys keep Sales Admin on the store UI (barcode, inventory) instead of restaurant tables"
+            echo "- OneTap Admin reads the till plan on boot, including after a persisted admin login"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
