@@ -67,6 +67,57 @@ describe('swrCache', () => {
     expect(value).toBe('stale');
   });
 
+  // A background refresh has no caller awaiting it, so its rejection used to
+  // reach `window.onunhandledrejection` — and the global handler there toasts.
+  // On a tablet that turned one slow LAN read into a red "Something went
+  // wrong", five deep, covering the Pay button.
+  it('does not leak an unhandled rejection when a background refresh fails', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      writeCache('k', 'stale');
+      const value = await swr(
+        'k',
+        async () => {
+          throw new TypeError('Failed to fetch');
+        },
+        { maxAgeMs: 0 },
+      );
+      expect(value).toBe('stale');
+      // Let the microtask queue drain so a missing catch would have surfaced.
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('does not leak one from the soft-revalidate path either', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      writeCache('k', 'cached');
+      // Older than half of maxAgeMs but still fresh: served from cache, with a
+      // refresh kicked off in the background. This is the path every 4s poll
+      // of `tables.listOpen` takes.
+      await new Promise((r) => setTimeout(r, 15));
+      const value = await swr(
+        'k',
+        async () => {
+          throw new TypeError('Failed to fetch');
+        },
+        { maxAgeMs: 20 },
+      );
+      expect(value).toBe('cached');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('dedupes concurrent fetchers', async () => {
     let calls = 0;
     const fetcher = async () => {

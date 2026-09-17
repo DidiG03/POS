@@ -1,9 +1,19 @@
 import { POS_SENTRY_DSN } from '@shared/sentryDsn';
 
-type SentryMod = typeof import('@sentry/browser');
+/**
+ * Only the two calls we make. Holding the whole `@sentry/browser` namespace
+ * (or leaking it onto `window`) keeps Replay, Feedback and Replay-Canvas
+ * reachable, which is ~240 kB of the chunk we never use.
+ */
+type SentryApi = {
+  captureException: (
+    error: Error,
+    hint?: { extra?: Record<string, unknown> },
+  ) => void;
+};
 
-let sentry: SentryMod | null = null;
-let loading: Promise<SentryMod | null> | null = null;
+let sentry: SentryApi | null = null;
+let loading: Promise<SentryApi | null> | null = null;
 const queued: Array<{ error: unknown; extra?: Record<string, unknown> }> = [];
 
 function rendererDsn(): string {
@@ -53,12 +63,12 @@ function toError(error: unknown): Error {
   return new Error(msg || 'Unknown error');
 }
 
-function flushQueued(mod: SentryMod) {
+function flushQueued(api: SentryApi) {
   while (queued.length) {
     const item = queued.shift();
     if (!item) break;
     try {
-      mod.captureException(
+      api.captureException(
         toError(item.error),
         item.extra ? { extra: item.extra } : undefined,
       );
@@ -82,9 +92,9 @@ export function initRendererSentry(): void {
   w.__posSentryInit = true;
 
   loading = import('@sentry/browser')
-    .then((Sentry) => {
+    .then(({ init, captureException }) => {
       try {
-        Sentry.init({
+        init({
           dsn,
           environment: 'production',
           ignoreErrors: [
@@ -104,10 +114,10 @@ export function initRendererSentry(): void {
             },
           },
         });
-        sentry = Sentry;
-        (window as Window & { __sentry__?: SentryMod }).__sentry__ = Sentry;
-        flushQueued(Sentry);
-        return Sentry;
+        const api: SentryApi = { captureException };
+        sentry = api;
+        flushQueued(api);
+        return api;
       } catch (e) {
         console.error('[Sentry] Renderer init failed', e);
         return null;

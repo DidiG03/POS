@@ -120,8 +120,16 @@ export async function swr<T>(
     return p;
   };
 
+  // Nobody is waiting on a background refresh, so its rejection would reach
+  // `window.onunhandledrejection` and the global handler would toast it. On a
+  // tablet that turns one slow LAN read into a red "Something went wrong" —
+  // for data the caller already served from cache.
+  const revalidateInBackground = (): void => {
+    revalidate().catch(() => undefined);
+  };
+
   if (hit && age < maxAgeMs) {
-    if (age > maxAgeMs / 2 && !existing) void revalidate();
+    if (age > maxAgeMs / 2 && !existing) revalidateInBackground();
     return hit.value as T;
   }
   if (hit) {
@@ -132,7 +140,7 @@ export async function swr<T>(
         return hit.value as T;
       }
     }
-    void revalidate();
+    revalidateInBackground();
     return hit.value as T;
   }
   return revalidate();

@@ -1681,7 +1681,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         );
 
         if (!result.ok) {
-          return send(res, 409, result, corsOrigin);
+          // `permanent` tells the client's offline queue that a retry cannot
+          // change this outcome. Without it a LAN client treated a closed or
+          // re-owned table as a transport blip and replayed the order forever.
+          return send(res, 409, { ...result, permanent: true }, corsOrigin);
         }
 
         // Best-effort: append to the open KDS ticket (same logic as IPC).

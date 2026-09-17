@@ -155,9 +155,18 @@ export function installBrowserLanApi(): void {
     return resolveBackendHost();
   };
   pickBackend();
-  /** Tablets on LAN Wi‑Fi often need more than 5s; desktops stay snappy. */
-  const CLIENT_TIMEOUT_MS = IS_NATIVE_SHELL ? 8_000 : 4_000;
-  const CLIENT_GET_TIMEOUT_MS = IS_NATIVE_SHELL ? 5_000 : 3_000;
+  /**
+   * Tablets on LAN Wi‑Fi often need more than 5s; desktops stay snappy.
+   *
+   * Budget phones are the real constraint, not the link: a mid-range Android
+   * can spend a second or more just parsing a floor snapshot while four polls
+   * are in flight, and a 5s ceiling aborted reads the host had already
+   * answered. Every one of those aborts feeds `recordFailure()`, which trips
+   * `isLinkDegraded()` and stretches all polling to 12s — so a phone that was
+   * merely busy ended up looking offline and serving stale tables.
+   */
+  const CLIENT_TIMEOUT_MS = IS_NATIVE_SHELL ? 15_000 : 4_000;
+  const CLIENT_GET_TIMEOUT_MS = IS_NATIVE_SHELL ? 10_000 : 3_000;
   /**
    * `/print/*` hits the host, then fiskalizimi, then TCP to the printer.
    *

@@ -75,7 +75,7 @@ import {
   IconTrash,
   IconMoveRight,
 } from '../../components/icons';
-import { pollIntervalMs } from '../../utils/netQuality';
+import { isSseHealthy, pollIntervalMs } from '../../utils/netQuality';
 import { usePosUiTheme } from '../../theme';
 import { FALLBACK_MENU_TILE_BG, menuTileStyle } from '@shared/menuTileColor';
 import {
@@ -269,6 +269,29 @@ function loadCustomCommentButtons(): Record<string, string[]> {
 const MENU_LAYOUT_KEY = 'pos.order.menuLayout';
 const MENU_CAT_GRID_WIDE = '(min-width: 640px)';
 type MenuLayout = 'grid' | 'column';
+
+function documentHidden(): boolean {
+  return (
+    typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  );
+}
+
+/**
+ * How long until the next background refresh.
+ *
+ * This screen runs several independent loops (occupancy, table owner, approved
+ * requests) and they all used a flat 4s. On a phone that is roughly one
+ * request per second on top of SSE, which is enough to push reads past their
+ * timeout — and a timeout is what flips `isLinkDegraded()` and makes
+ * everything slower still. SSE already delivers these changes, so when the
+ * socket is healthy the polls exist only as a safety net and can be rare.
+ * Mirrors what `TablesPage` already does for the floor snapshot.
+ */
+function backgroundPollMs(baseMs = 4000): number {
+  const hidden = documentHidden();
+  if (isSseHealthy() && !hidden) return 20_000;
+  return pollIntervalMs(baseMs, hidden);
+}
 
 function catGridPadCount(tileCount: number, cols: number): number {
   if (cols < 2 || tileCount < 1) return 0;
@@ -661,15 +684,11 @@ export default function OrderPage() {
         key: 'covers.save',
       });
     });
+    // No second "ensure open" write here. It used to call the API directly as
+    // belt-and-braces, which predates the durable queue: the `tryOrQueue`
+    // above already guarantees delivery, so repeating it immediately only cost
+    // another round trip on the slowest part of the flow.
     setOpen(selectedTable.area, selectedTable.label, true);
-    await window.api.tables
-      .setOpen(selectedTable.area, selectedTable.label, true)
-      .catch((e: unknown) => {
-        reportAppError(e, {
-          fallback: t('order.toastTryAgain'),
-          key: 'tables.setOpen',
-        });
-      });
   }, [hasTables, selectedTable, isOpen, setOpen, t]);
 
   function formatElapsed(ms: number) {
@@ -690,11 +709,8 @@ export default function OrderPage() {
     let timer: any;
     let cancelled = false;
     const fetchOnce = async () => {
-      const hidden =
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'hidden';
       try {
-        if (hidden) {
+        if (documentHidden()) {
           if (!cancelled && gen === orderPollGenRef.current)
             setOpenLoaded(true);
           return;
@@ -713,11 +729,8 @@ export default function OrderPage() {
       }
     };
     const poll = async () => {
-      const hidden =
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'hidden';
       try {
-        if (hidden) return;
+        if (documentHidden()) return;
         const open = await window.api.tables.listOpen();
         if (cancelled || gen !== orderPollGenRef.current) return;
         if (Array.isArray(open)) applyHostOpenTables(open);
@@ -725,13 +738,13 @@ export default function OrderPage() {
         // ignore poll errors
       } finally {
         if (!cancelled && gen === orderPollGenRef.current) {
-          timer = setTimeout(poll, pollIntervalMs(4000, hidden));
+          timer = setTimeout(poll, backgroundPollMs());
         }
       }
     };
     fetchOnce().then(() => {
       if (!cancelled && gen === orderPollGenRef.current) {
-        timer = setTimeout(poll, pollIntervalMs(4000, false));
+        timer = setTimeout(poll, backgroundPollMs());
       }
     });
     return () => {
@@ -778,11 +791,21 @@ export default function OrderPage() {
   const coversKnownRef = useRef(coversKnown);
   coversKnownRef.current = coversKnown;
 
+  // Freeing a table MUST go through the queue, even though this path is only
+  // ever reached for a table we already believe is empty. `tables.setOpen` is
+  // a durable op that retries until it lands, and the only thing that retires
+  // a superseded write is `tryOrQueue`'s dedupe key. Calling the API directly
+  // here left the `{ open: true }` from the covers dialog on the queue, so
+  // minutes after the sitting was freed the replay re-occupied the table.
   const closeOccupiedTable = useCallback(
     (area: string, label: string) => {
       invalidateTicketCache(area, label);
       setOpen(area, label, false);
-      window.api.tables.setOpen(area, label, false).catch((e: unknown) => {
+      void tryOrQueue(
+        'tables.setOpen',
+        { area, label, open: false },
+        { dedupeKey: `tables.setOpen:${area}:${label}` },
+      ).catch((e: unknown) => {
         reportAppError(e, {
           fallback: t('order.toastTryAgain'),
           key: `tables.setOpen:${area}:${label}`,
@@ -1747,13 +1770,10 @@ export default function OrderPage() {
     const label = selectedTable.label;
     const tick = () => {
       if (cancelled) return;
-      const hidden =
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'hidden';
-      if (!hidden) void refreshTableOwner(area, label);
-      timer = setTimeout(tick, pollIntervalMs(4000, hidden));
+      if (!documentHidden()) void refreshTableOwner(area, label);
+      timer = setTimeout(tick, backgroundPollMs());
     };
-    timer = setTimeout(tick, pollIntervalMs(4000, false));
+    timer = setTimeout(tick, backgroundPollMs());
     const onVis = () => {
       if (document.visibilityState === 'visible') {
         void refreshTableOwner(area, label);
@@ -1816,6 +1836,10 @@ export default function OrderPage() {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
       try {
+        // A backgrounded WebView cannot show the waiter anything, and this
+        // loop was the one poll that kept firing anyway — two requests every
+        // four seconds (poll plus acknowledgement) from a phone in a pocket.
+        if (documentHidden()) return;
         const rows = await window.api.requests.pollApprovedForTable(
           user.id,
           selectedTable.area,
@@ -1871,13 +1895,29 @@ export default function OrderPage() {
             });
         }
       } finally {
-        if (alive) timer = setTimeout(tick, pollIntervalMs(4000, false));
+        // Approved requests have no SSE event, so this poll is their only
+        // delivery path — it stays at the base rate while the waiter is
+        // looking, and only backs off when the screen is hidden.
+        if (alive)
+          timer = setTimeout(tick, pollIntervalMs(4000, documentHidden()));
       }
     };
     tick();
+    // Skipping while hidden means a resumed screen would otherwise wait out
+    // the backed-off timer before picking up a colleague's approved request.
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
+      // Clear first: `tick` always schedules the next run, so waking without
+      // this would leave two chains polling in parallel.
+      if (timer) clearTimeout(timer);
+      timer = null;
+      void tick();
+    };
+    document.addEventListener('visibilitychange', onVis);
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVis);
     };
   }, [
     hasTables,
@@ -3244,18 +3284,22 @@ export default function OrderPage() {
                                 selectedTable.label,
                                 true,
                               );
-                              await window.api.tables
-                                .setOpen(
-                                  selectedTable.area,
-                                  selectedTable.label,
-                                  true,
-                                )
-                                .catch((e: unknown) => {
-                                  reportAppError(e, {
-                                    fallback: t('order.toastTryAgain'),
-                                    key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                                  });
+                              await tryOrQueue(
+                                'tables.setOpen',
+                                {
+                                  area: selectedTable.area,
+                                  label: selectedTable.label,
+                                  open: true,
+                                },
+                                {
+                                  dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                                },
+                              ).catch((e: unknown) => {
+                                reportAppError(e, {
+                                  fallback: t('order.toastTryAgain'),
+                                  key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
                                 });
+                              });
                             } catch (e: any) {
                               const raw = String(e?.message || e || '').trim();
                               const m = raw.match(
@@ -4233,15 +4277,26 @@ export default function OrderPage() {
                       printKitchen: printStationTickets,
                     });
                     if (!fired.ok) return;
-                    // Keep this as a best-effort "ensure open" after printing.
-                    await window.api.tables
-                      .setOpen(selectedTable.area, selectedTable.label, true)
-                      .catch((e: unknown) => {
-                        reportAppError(e, {
-                          fallback: t('order.toastTryAgain'),
-                          key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                        });
+                    // Best-effort "ensure open" after printing. Shares the
+                    // dedupe key above so landing here retires the queued
+                    // copy instead of letting it replay once the table is
+                    // paid and freed.
+                    await tryOrQueue(
+                      'tables.setOpen',
+                      {
+                        area: selectedTable.area,
+                        label: selectedTable.label,
+                        open: true,
+                      },
+                      {
+                        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                      },
+                    ).catch((e: unknown) => {
+                      reportAppError(e, {
+                        fallback: t('order.toastTryAgain'),
+                        key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
                       });
+                    });
                   } finally {
                     setBusyAction(null);
                     suppressFreeOnEmptyRef.current = false;
@@ -4351,16 +4406,26 @@ export default function OrderPage() {
                       note: latest?.note || '',
                     });
                     if (activeTicketItems(allItems).length === 0) {
-                      // All items voided → free the table
+                      // All items voided → free the table. Queued so a stale
+                      // `{ open: true }` for this table is retired instead of
+                      // replaying later and re-occupying the sitting.
                       setOpen(selectedTable.area, selectedTable.label, false);
-                      window.api.tables
-                        .setOpen(selectedTable.area, selectedTable.label, false)
-                        .catch((e: unknown) => {
-                          reportAppError(e, {
-                            fallback: t('order.toastTryAgain'),
-                            key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                          });
+                      void tryOrQueue(
+                        'tables.setOpen',
+                        {
+                          area: selectedTable.area,
+                          label: selectedTable.label,
+                          open: false,
+                        },
+                        {
+                          dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                        },
+                      ).catch((e: unknown) => {
+                        reportAppError(e, {
+                          fallback: t('order.toastTryAgain'),
+                          key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
                         });
+                      });
                     }
                   } catch {
                     toast.error(t('order.voidItemFailed'));

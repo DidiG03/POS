@@ -7,17 +7,26 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.webkit.JavascriptInterface;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 /**
  * Direct WebView bridge so a tap can buzz without waiting on the Capacitor
  * plugin hop. Samsung tablets often ignore {@code VibrationEffect} waveforms
  * used by {@code Haptics.impact()}; a short one-shot with USAGE_TOUCH is
  * what actually spins the Tab A9 motor.
+ *
+ * {@code tap()} is called from a capture-phase {@code pointerdown} handler, so
+ * it runs on the WebView's JS thread and everything it does delays the visual
+ * response to the touch. {@code Vibrator#vibrate} is a binder call into
+ * system_server, which on a budget phone is slow enough to feel — so the work
+ * is handed to a background thread and the JS thread returns immediately.
  */
 public final class NativeTapHaptics {
 
     private static final int TAP_MS = 40;
     private final Vibrator vibrator;
+    private final Executor executor = Executors.newSingleThreadExecutor();
 
     NativeTapHaptics(Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -32,6 +41,10 @@ public final class NativeTapHaptics {
     @JavascriptInterface
     public void tap() {
         if (vibrator == null || !vibrator.hasVibrator()) return;
+        executor.execute(this::buzz);
+    }
+
+    private void buzz() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 VibrationEffect effect =

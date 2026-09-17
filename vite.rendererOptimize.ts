@@ -84,6 +84,7 @@ export function rendererOptimize(): Pick<
     },
     plugins: [
       aliasLucideSubset(),
+      mangleBuildIdentifiers(),
       gzipHtmlDocument(),
       preloadCriticalModules(),
     ],
@@ -156,6 +157,22 @@ function aliasLucideSubset(): Plugin {
           alias: [{ find: /^lucide-react$/, replacement: lucideSubsetEntry }],
         },
       };
+    },
+  };
+}
+
+/**
+ * Shorten identifiers in packaged bundles only — that is ~35% of the eager
+ * entry, which is parse time on low-end Android WebViews. `keepNames` keeps
+ * `Function.prototype.name`, so Sentry stack frames stay readable even though
+ * we ship no source maps. `vite serve` keeps real identifiers for debugging.
+ */
+function mangleBuildIdentifiers(): Plugin {
+  return {
+    name: 'mangle-build-identifiers',
+    apply: 'build',
+    config() {
+      return { esbuild: { keepNames: true, minifyIdentifiers: true } };
     },
   };
 }

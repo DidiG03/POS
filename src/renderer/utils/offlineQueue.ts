@@ -342,54 +342,134 @@ export function nextOfflineWakeDelayMs(
 }
 
 /**
+ * What the queue knows about the attempt it is making. `attempt` is 0 for the
+ * live call a waiter just triggered and 1+ for a background replay, which is
+ * the difference between "self-heal for the person standing here" and
+ * "silently change the floor minutes later".
+ */
+export interface DispatchContext {
+  attempt: number;
+}
+
+const FIRST_ATTEMPT: DispatchContext = { attempt: 0 };
+
+/** True when the host says this table is not in a state that accepts the write. */
+function isTableClosedRejection(e: any): boolean {
+  return String(e?.code || '') === 'TABLE_CLOSED';
+}
+
+/**
+ * Normalise a ticket rejection across both transports.
+ *
+ * Electron IPC *returns* `{ ok: false, code }`. The LAN route answers HTTP 409
+ * and `goLan` turns that into a thrown `HttpError` carrying the same code — so
+ * the two paths used to behave completely differently for the same rejection.
+ * On mobile a `TABLE_CLOSED` never looked permanent, which made it an
+ * infinitely-retried money op that re-opened the table on every pass.
+ */
+export function ticketRejection(input: {
+  result?: any;
+  thrown?: any;
+}): any | null {
+  const { result, thrown } = input;
+  if (thrown) {
+    const code = String(thrown?.code || '');
+    const status = Number(thrown?.status || 0);
+    if (!code || status !== 409) return null;
+    thrown.permanent = true;
+    return thrown;
+  }
+  if (!result || typeof result !== 'object' || result.ok !== false) return null;
+  const err: any = new Error(
+    String(result.error || 'Ticket rejected by server'),
+  );
+  err.code = String(result.code || 'TICKET_REJECTED');
+  err.permanent = true;
+  return err;
+}
+
+/**
+ * Send an order to the host.
+ *
+ * The host returns a richer `{ ok, error?, code? }` object over IPC and the
+ * equivalent HTTP 409 over LAN; {@link ticketRejection} flattens both. Old
+ * callers (legacy queue items) might have hit the boolean version, so any
+ * other shape counts as success.
+ *
+ * This used to open the table FIRST, unconditionally, so `openAt` existed
+ * before the ticket write. That made every replay resurrect a table: the host
+ * dedupes the ticket on `idempotencyKey` and answers ok, but the `setOpen`
+ * ahead of it had already re-occupied a sitting that was paid and closed in
+ * the meantime — a table going red on the floor with an empty bill and nobody
+ * near it.
+ *
+ * So the ticket goes first, and the table is only opened to recover a
+ * rejection on the *live* attempt, where a waiter is holding the device and
+ * the sitting is genuinely mid-open. A background replay that finds the table
+ * closed surfaces instead: `TABLE_CLOSED` is permanent, so it lands on the
+ * failed-sync panel for a human to decide about. Replays of a legitimate
+ * offline open-and-send still work, because the paired `tables.setOpen` was
+ * queued ahead of the order and drains first.
+ */
+export async function dispatchTicketLog(
+  a: any,
+  ctx: DispatchContext,
+): Promise<void> {
+  // Resolves to a rejection error, or null when the host accepted. A transport
+  // failure (Wi-Fi drop) still throws — that must reach the queue so the order
+  // is replayed, not parked.
+  const send = async (): Promise<any | null> => {
+    try {
+      return ticketRejection({ result: await window.api.tickets.log(a) });
+    } catch (e: any) {
+      const rejected = ticketRejection({ thrown: e });
+      if (rejected) return rejected;
+      throw e;
+    }
+  };
+  let rejection = await send();
+  if (
+    rejection &&
+    isTableClosedRejection(rejection) &&
+    ctx.attempt === 0 &&
+    a?.area &&
+    a?.tableLabel
+  ) {
+    try {
+      await window.api.tables.setOpen(
+        String(a.area),
+        String(a.tableLabel),
+        true,
+      );
+      rejection = await send();
+    } catch {
+      // Could not reach the host to open the table — keep the original
+      // rejection so the caller/queue decides, rather than masking it.
+    }
+  }
+  if (rejection) throw rejection;
+  if (a?.area && a?.tableLabel) {
+    const c = Number(a?.covers);
+    if (Number.isFinite(c) && c > 0) {
+      try {
+        await window.api.covers.save(String(a.area), String(a.tableLabel), c);
+      } catch {
+        // ignore — secondary, the ticket is the money
+      }
+    }
+  }
+}
+
+/**
  * Per-op dispatchers. These are the SAME calls the renderer would make
  * when online — kept thin so the queue never "knows" anything special
  * about each op.
  */
-const dispatchers: Record<OfflineOp, (args: any) => Promise<unknown>> = {
-  // The legacy composite: open the table FIRST so `openAt` exists
-  // before the ticket / covers writes. Nested catches make the
-  // sidecars best-effort — if covers.save fails we still consider the
-  // ticket logged successfully (covers are advisory, the ticket is
-  // money).
-  'tickets.log': async (a) => {
-    if (a?.area && a?.tableLabel) {
-      try {
-        await window.api.tables.setOpen(
-          String(a.area),
-          String(a.tableLabel),
-          true,
-        );
-      } catch {
-        // ignore — the ticket itself is the source of truth
-      }
-    }
-    // Server now returns a richer `{ ok, error?, code? }` object. Old
-    // callers (legacy queue items) might have hit the boolean version
-    // — treat both shapes as success unless the new `ok: false` signal
-    // arrives, in which case throw a tagged error so callers can react
-    // (and so the queue can drop permanently-rejected items instead of
-    // retrying them forever).
-    const result: any = await window.api.tickets.log(a);
-    if (result && typeof result === 'object' && result.ok === false) {
-      const err: any = new Error(
-        String(result.error || 'Ticket rejected by server'),
-      );
-      err.code = String(result.code || 'TICKET_REJECTED');
-      err.permanent = true;
-      throw err;
-    }
-    if (a?.area && a?.tableLabel) {
-      const c = Number(a?.covers);
-      if (Number.isFinite(c) && c > 0) {
-        try {
-          await window.api.covers.save(String(a.area), String(a.tableLabel), c);
-        } catch {
-          // ignore — secondary
-        }
-      }
-    }
-  },
+const dispatchers: Record<
+  OfflineOp,
+  (args: any, ctx: DispatchContext) => Promise<unknown>
+> = {
+  'tickets.log': dispatchTicketLog,
 
   'tickets.voidItem': async (a) => {
     await window.api.tickets.voidItem(a);
@@ -706,7 +786,7 @@ class OfflineQueue {
               ? it.args.idempotencyKey
               : it.id,
           };
-          await dispatcher(args);
+          await dispatcher(args, { attempt: (it.attempts || 0) + 1 });
           removedIds.add(it.id);
           sent += 1;
           touched = true;
@@ -1091,7 +1171,7 @@ export async function tryOrQueue<T = unknown>(
     return { queued: true };
   }
   try {
-    const result = (await dispatcher(args)) as T;
+    const result = (await dispatcher(args, FIRST_ATTEMPT)) as T;
     // This write reached the host, so any queued write for the same target is
     // stale by definition. Without this, a close that failed earlier keeps
     // retrying and eventually frees a table that has since been reopened for

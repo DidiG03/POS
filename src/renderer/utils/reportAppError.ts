@@ -16,6 +16,35 @@ const IGNORE = [
   /safari-extension:\/\//i,
 ];
 
+/**
+ * Transport failures against the till. Deliberately NOT in {@link IGNORE}:
+ * when a waiter taps Send and the LAN is down they must see it, so an explicit
+ * `reportAppError` still toasts. But an *unhandled* rejection is by definition
+ * nobody's foreground action — a poll, an SWR background refresh, a prefetch —
+ * and on restaurant Wi-Fi those fail constantly. Toasting them buried the Pay
+ * button under five red cards while the offline banner was already saying the
+ * same thing. Sentry's `ignoreErrors` drops these for the same reason.
+ */
+const TRANSIENT_NETWORK = [
+  /\bFailed to fetch\b/i,
+  /\bNetworkError\b/i,
+  /\bNetwork request failed\b/i,
+  /\bLoad failed\b/i,
+];
+
+export function isTransientNetworkError(error: unknown): boolean {
+  const anyE = error as { message?: unknown; name?: unknown } | null;
+  const parts = [
+    typeof error === 'string' ? error : '',
+    String(anyE?.name || ''),
+    String(anyE?.message || ''),
+  ];
+  return parts.some(
+    (text) =>
+      Boolean(text.trim()) && TRANSIENT_NETWORK.some((re) => re.test(text)),
+  );
+}
+
 function errorText(error: unknown): string {
   if (error == null) return '';
   if (typeof error === 'string') return error.trim();
@@ -92,13 +121,16 @@ export function installUnhandledErrorToasts(): () => void {
   w.__posUnhandledErrorToasts = true;
 
   const onRejection = (ev: PromiseRejectionEvent) => {
+    if (isTransientNetworkError(ev.reason)) return;
     reportAppError(ev.reason);
   };
   const onError = (ev: ErrorEvent) => {
     if (ev.defaultPrevented) return;
     const target = ev.target;
     if (target && target !== window) return;
-    reportAppError(ev.error || ev.message);
+    const error = ev.error || ev.message;
+    if (isTransientNetworkError(error)) return;
+    reportAppError(error);
   };
 
   window.addEventListener('unhandledrejection', onRejection);
