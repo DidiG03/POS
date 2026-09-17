@@ -163,7 +163,6 @@ export default function AdminSettingsPage() {
   const [navCollapsed, setNavCollapsed] = useStoredFlag(
     SETTINGS_NAV_COLLAPSED_KEY,
   );
-  const hasReservations = useLicenseCapabilities((s) => s.hasReservations);
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const navGroups = NAV_GROUPS.map((group) => ({
     ...group,

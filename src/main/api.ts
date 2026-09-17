@@ -35,7 +35,6 @@ import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
   assertDiningFloorEnabled,
-  assertReservationsEnabled,
   assertStaffRoleAllowed,
   assertStoreCounterAllowed,
   storePlanBlocksKds,

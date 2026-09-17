@@ -566,13 +566,12 @@ describe('dispatchTicket', () => {
     );
     expect(r.ok).toBe(true);
     expect(sendNetwork).toHaveBeenCalledTimes(2);
-    const barPayload = buildEscpos.mock.calls
-      .map((c) => c[0] as any)
-      .find((payload) =>
-        payload?.items?.some((it: any) => it.name === 'beer'),
-      );
+    type EscposCall = [{ items?: Array<{ name: string }> }];
+    const barPayload = (buildEscpos.mock.calls as unknown as EscposCall[])
+      .map(([payload]) => payload)
+      .find((payload) => payload.items?.some((it) => it.name === 'beer'));
     expect(barPayload?.items).toHaveLength(2);
-    expect(barPayload.items.map((it: any) => it.name).sort()).toEqual([
+    expect(barPayload!.items!.map((it) => it.name).sort()).toEqual([
       'beer',
       'coffee',
     ]);
