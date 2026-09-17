@@ -10,6 +10,7 @@ import { themeFromChange } from '@shared/settingsChange';
 import {
   emitPosSyncCatchupSoon,
   invalidateFloorSnapshots,
+  invalidateLayoutCache,
   invalidateTicketCache,
   POS_CACHE,
 } from './posReadCache';
@@ -64,6 +65,7 @@ export function applyPosRealtimeEvent(
     eventName === 'pos:tableMergesChanged'
   ) {
     invalidateFloorSnapshots();
+    if (eventName === 'pos:layoutChanged') invalidateLayoutCache(area);
     return;
   }
 

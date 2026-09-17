@@ -15,6 +15,11 @@ import {
 } from '../../utils/floorLayoutState';
 import { reportAppError } from '../../utils/reportAppError';
 import {
+  peekLayout,
+  readLayout,
+  invalidateLayoutCache,
+} from '../../utils/posReadCache';
+import {
   DEFAULT_TABLE_COLOR,
   TABLE_COLOR_PALETTE,
   resolveTableFillColor,
@@ -287,6 +292,13 @@ function isAreaVariant(v: any): v is AreaVariant {
   );
 }
 
+function nodesFromCachedLayout(area: string): FloorNode[] | null {
+  if (!area) return [];
+  const saved = peekLayout(area);
+  if (saved === undefined) return null;
+  return saved.length ? normaliseSavedNodes(saved) : [];
+}
+
 function nextTableLabel(cur: FloorNode[] | null): string {
   const used = new Set<number>();
   for (const n of cur || []) {
@@ -489,7 +501,9 @@ export default function FloorCanvas({
   onMergeBlocked,
 }: FloorCanvasProps) {
   const { t } = useTranslation();
-  const [nodes, setNodes] = useState<FloorNode[] | null>(null);
+  const [nodes, setNodes] = useState<FloorNode[] | null>(() =>
+    nodesFromCachedLayout(area),
+  );
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const outerRef = useRef<HTMLDivElement | null>(null);
   const [saving, setSaving] = useState(false);
@@ -516,9 +530,20 @@ export default function FloorCanvas({
   // only where an admin placed them in Settings → Table Areas → Edit layout.
   useEffect(() => {
     let cancelled = false;
-    setNodes(null);
     setLayoutFailed(false);
     setSaveError(null);
+    const cached = nodesFromCachedLayout(area);
+    if (cached) {
+      setNodes(cached);
+      setDirty(false);
+      setLayoutVersion((v) => v + 1);
+      onLayoutReadyRef.current?.({
+        area,
+        tableCount: cached.filter((n) => !isFloorAreaNode(n)).length,
+      });
+    } else {
+      setNodes(null);
+    }
     (async () => {
       if (!area) {
         setNodes([]);
@@ -526,27 +551,18 @@ export default function FloorCanvas({
         onLayoutReadyRef.current?.({ area, tableCount: 0 });
         return;
       }
-      let loadFailed = false;
-      const saved = await (window as any).api.layout
-        .get(userId, area, scope)
-        .catch((e: unknown) => {
-          loadFailed = true;
-          reportAppError(e, {
-            fallback: t('tables.layoutLoadFailed'),
-            key: `layout.get:${userId}:${area}:${scope}`,
-          });
-          return null;
-        });
+      const saved = await readLayout(area, { userId, scope });
       if (cancelled) return;
-      if (loadFailed) {
-        setLayoutFailed(true);
-        setNodes([]);
-        setDirty(false);
-        onLayoutReadyRef.current?.({ area, tableCount: 0 });
+      if (saved == null) {
+        if (!cached) {
+          setLayoutFailed(true);
+          setNodes([]);
+          setDirty(false);
+          onLayoutReadyRef.current?.({ area, tableCount: 0 });
+        }
         return;
       }
-      const next =
-        Array.isArray(saved) && saved.length ? normaliseSavedNodes(saved) : [];
+      const next = saved.length ? normaliseSavedNodes(saved) : [];
       setLayoutFailed(false);
       setNodes(next);
       setDirty(false);
@@ -1208,17 +1224,18 @@ export default function FloorCanvas({
         // (`dirty === true`), respect the local draft and let the admin
         // save explicitly. Read-only views always pick up the change.
         if (editable && dirty) return;
+        invalidateLayoutCache(area);
         (async () => {
           try {
-            const saved = await (window as any).api.layout
-              .get(userId, area, scope)
-              .catch((e: unknown) => {
+            const saved = await readLayout(area, { userId, scope }).catch(
+              (e: unknown) => {
                 reportAppError(e, {
                   fallback: t('tables.layoutLoadFailed'),
                   key: `layout.get:${userId}:${area}:${scope}`,
                 });
                 return null;
-              });
+              },
+            );
             if (cancelled) return;
             if (!Array.isArray(saved)) return;
             setNodes(normaliseSavedNodes(saved));

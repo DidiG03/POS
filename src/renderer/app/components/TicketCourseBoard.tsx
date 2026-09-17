@@ -1,14 +1,14 @@
-import { type ReactNode, useMemo, useState } from 'react';
+import { memo, type ReactNode, useMemo, useState } from 'react';
 import {
   DndContext,
-  DragOverlay,
+  MeasuringStrategy,
   PointerSensor,
-  closestCorners,
+  closestCenter,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
-  type DragStartEvent,
+  type Modifier,
   type UniqueIdentifier,
 } from '@dnd-kit/core';
 import {
@@ -38,6 +38,19 @@ import { useTicketStore, type TicketLine } from '../../stores/ticket';
 
 const GROUP_PREFIX = 'group:';
 
+const DND_MEASURING = {
+  droppable: { strategy: MeasuringStrategy.BeforeDragging },
+};
+
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
+
+const VERTICAL_MODIFIERS = [restrictToVerticalAxis];
+
+const DND_AUTO_SCROLL = { layoutShiftCompensation: false };
+
 function groupSortableId(groupId: string): string {
   return `${GROUP_PREFIX}${groupId}`;
 }
@@ -45,6 +58,20 @@ function groupSortableId(groupId: string): string {
 function parseGroupSortableId(id: UniqueIdentifier): string | null {
   const s = String(id);
   return s.startsWith(GROUP_PREFIX) ? s.slice(GROUP_PREFIX.length) : null;
+}
+
+function sortableStyle(
+  transform: { x: number; y: number; scaleX: number; scaleY: number } | null,
+  transition: string | undefined,
+  isDragging: boolean,
+  draggingOpacity: number,
+) {
+  return {
+    transform: CSS.Transform.toString(transform),
+    transition: isDragging ? undefined : transition,
+    opacity: isDragging ? draggingOpacity : 1,
+    willChange: transform ? ('transform' as const) : undefined,
+  };
 }
 
 function SortableGroup({
@@ -127,11 +154,7 @@ function SortableGroup({
   return (
     <div
       ref={setNodeRef}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-        opacity: isDragging ? 0.55 : 1,
-      }}
+      style={sortableStyle(transform, transition, isDragging, 0.55)}
       className="space-y-1.5"
     >
       <div
@@ -149,7 +172,7 @@ function SortableGroup({
         {canEdit ? (
           <button
             type="button"
-            className="pos-icon-btn !w-8 !h-8 cursor-grab active:cursor-grabbing shrink-0"
+            className="pos-icon-btn !w-8 !h-8 cursor-grab touch-none active:cursor-grabbing shrink-0"
             aria-label={reorderLabel}
             {...attributes}
             {...listeners}
@@ -301,17 +324,13 @@ function SortableLine({
   return (
     <div
       ref={setNodeRef}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-        opacity: isDragging ? 0.45 : 1,
-      }}
+      style={sortableStyle(transform, transition, isDragging, 0.45)}
       className="flex items-stretch gap-1"
     >
       {canEdit ? (
         <button
           type="button"
-          className="pos-icon-btn !w-8 shrink-0 self-start mt-2 cursor-grab active:cursor-grabbing"
+          className="pos-icon-btn !w-8 shrink-0 self-start mt-2 cursor-grab touch-none active:cursor-grabbing"
           aria-label={t('order.reorderItem')}
           {...attributes}
           {...listeners}
@@ -324,7 +343,7 @@ function SortableLine({
   );
 }
 
-export function TicketCourseBoard({
+export const TicketCourseBoard = memo(function TicketCourseBoard({
   mode = 'course',
   canEdit,
   canAddCourse,
@@ -382,38 +401,18 @@ export function TicketCourseBoard({
     };
   }, [seatMode, seats, courses, lines]);
 
-  const [dragging, setDragging] = useState<{
-    type: 'group' | 'line';
-    label: string;
-  } | null>(null);
-
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
 
-  const groupIds = groups.map((g) => groupSortableId(g.id));
+  const groupIds = useMemo(
+    () => groups.map((g) => groupSortableId(g.id)),
+    [groups],
+  );
   const groupList = seatMode ? seats : courses;
   const activeId = seatMode ? activeSeatId : activeCourseId;
 
-  function onDragStart(event: DragStartEvent) {
-    const type = event.active.data.current?.type;
-    if (type === 'group') {
-      const id = parseGroupSortableId(event.active.id);
-      const n = groupList.findIndex((g) => g.id === id);
-      setDragging({
-        type: 'group',
-        label: seatMode
-          ? seatLabel(seats, id, t('order.seatN', { n: n + 1 }))
-          : t('order.courseN', { n: n + 1 }),
-      });
-      return;
-    }
-    const line = lines.find((l) => l.id === event.active.id);
-    setDragging({ type: 'line', label: line?.name || '' });
-  }
-
   function onDragEnd(event: DragEndEvent) {
-    setDragging(null);
     const { active, over } = event;
     if (!over) return;
     const activeType = active.data.current?.type;
@@ -464,130 +463,127 @@ export function TicketCourseBoard({
     else moveLineToCourse(lineId, toGroupId, toIndex);
   }
 
-  const board = (
-    <div className="space-y-3">
-      {drinks.length ? (
-        <div className="space-y-1.5">
-          <div className="rounded-lg border border-[var(--pos-border)] bg-[var(--pos-surface-2)] px-1.5 py-1">
-            <div className="text-sm font-semibold py-1 px-1">
-              {t('order.drinksSection')}
-            </div>
-            <div className="text-[11px] font-normal text-gray-400 px-1 pb-1">
-              {t('order.drinksSectionHint')}
-            </div>
-          </div>
-          <div className="space-y-2">
-            {drinks.map((line) => (
-              <div key={line.id}>{renderLine(line)}</div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      <SortableContext items={groupIds} strategy={verticalListSortingStrategy}>
-        {groups.map((g, i) => {
-          const billable = g.lines.filter(
-            (l) => isBillableLine(l) && l.staged !== true,
-          );
-          const fallback = t(seatMode ? 'order.seatN' : 'order.courseN', {
-            n: i + 1,
-          });
-          return (
-            <SortableGroup
-              key={g.id}
-              groupId={g.id}
-              title={seatMode ? seatLabel(seats, g.id, fallback) : fallback}
-              activeHint={t(
-                seatMode ? 'order.seatActiveHint' : 'order.courseActiveHint',
-              )}
-              active={activeId === g.id}
-              canEdit={canEdit}
-              canDrop={canEdit || lines.some((l) => l.staged === true)}
-              canRemove={canEdit && groupList.length > 1}
-              canRename={seatMode}
-              renameLabel={t('order.renameSeat')}
-              renamePlaceholder={t('order.renameSeatPlaceholder')}
-              onRename={seatMode ? (name) => renameSeat(g.id, name) : undefined}
-              canFire={
-                !seatMode &&
-                Boolean(onFireCourse) &&
-                linesForCourseFire(lines, g.id).length > 0
-              }
-              fireDisabled={fireDisabled}
-              onFire={onFireCourse ? () => onFireCourse(g.id) : undefined}
-              fireLabel={t('order.fireCourse')}
-              canPrint={seatMode && Boolean(onPrintSeat) && billable.length > 0}
-              printDisabled={printDisabled}
-              onPrint={onPrintSeat ? () => onPrintSeat(g.id) : undefined}
-              printLabel={t('order.printSeatBill')}
-              reorderLabel={t(
-                seatMode ? 'order.reorderSeat' : 'order.reorderCourse',
-              )}
-              removeLabel={t(
-                seatMode ? 'order.removeSeat' : 'order.removeCourse',
-              )}
-              onActivate={() =>
-                seatMode ? setActiveSeatId(g.id) : setActiveCourseId(g.id)
-              }
-              onRemove={() =>
-                seatMode ? removeSeat(g.id) : removeCourse(g.id)
-              }
-            >
-              <SortableContext
-                items={g.lines.map((l) => l.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                {g.lines.length ? (
-                  g.lines.map((line) => (
-                    <SortableLine
-                      key={line.id}
-                      line={line}
-                      canEdit={
-                        line.voided !== true &&
-                        line.paid !== true &&
-                        (canEdit || line.staged === true)
-                      }
-                    >
-                      {renderLine(line)}
-                    </SortableLine>
-                  ))
-                ) : (
-                  <div className="rounded-lg border border-dashed border-[var(--pos-border-strong)] px-2 py-3 text-xs text-[color:var(--pos-fg-muted)]">
-                    {t('order.courseDropHere')}
-                  </div>
-                )}
-              </SortableContext>
-            </SortableGroup>
-          );
-        })}
-      </SortableContext>
-      {canEdit || canAddCourse ? (
-        <button
-          type="button"
-          className="w-full rounded-lg border border-dashed border-[var(--pos-border-strong)] py-2 text-sm text-[color:var(--pos-fg)] hover:bg-[var(--pos-hover)]"
-          onClick={() => (seatMode ? addSeat() : addCourse())}
-        >
-          {t(seatMode ? 'order.addSeat' : 'order.addCourse')}
-        </button>
-      ) : null}
-    </div>
-  );
-
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCorners}
-      onDragStart={onDragStart}
+      collisionDetection={closestCenter}
+      measuring={DND_MEASURING}
+      modifiers={VERTICAL_MODIFIERS}
+      autoScroll={DND_AUTO_SCROLL}
       onDragEnd={onDragEnd}
-      onDragCancel={() => setDragging(null)}
     >
-      {board}
-      <DragOverlay>
-        {dragging ? (
-          <div className="ticket-line px-3 py-2 text-sm shadow-lg">
-            {dragging.label}
+      <div className="space-y-3">
+        {drinks.length ? (
+          <div className="space-y-1.5">
+            <div className="rounded-lg border border-[var(--pos-border)] bg-[var(--pos-surface-2)] px-1.5 py-1">
+              <div className="text-sm font-semibold py-1 px-1">
+                {t('order.drinksSection')}
+              </div>
+              <div className="text-[11px] font-normal text-gray-400 px-1 pb-1">
+                {t('order.drinksSectionHint')}
+              </div>
+            </div>
+            <div className="space-y-2">
+              {drinks.map((line) => (
+                <div key={line.id}>{renderLine(line)}</div>
+              ))}
+            </div>
           </div>
         ) : null}
-      </DragOverlay>
+        <SortableContext
+          items={groupIds}
+          strategy={verticalListSortingStrategy}
+        >
+          {groups.map((g, i) => {
+            const billable = g.lines.filter(
+              (l) => isBillableLine(l) && l.staged !== true,
+            );
+            const fallback = t(seatMode ? 'order.seatN' : 'order.courseN', {
+              n: i + 1,
+            });
+            return (
+              <SortableGroup
+                key={g.id}
+                groupId={g.id}
+                title={seatMode ? seatLabel(seats, g.id, fallback) : fallback}
+                activeHint={t(
+                  seatMode ? 'order.seatActiveHint' : 'order.courseActiveHint',
+                )}
+                active={activeId === g.id}
+                canEdit={canEdit}
+                canDrop={canEdit || lines.some((l) => l.staged === true)}
+                canRemove={canEdit && groupList.length > 1}
+                canRename={seatMode}
+                renameLabel={t('order.renameSeat')}
+                renamePlaceholder={t('order.renameSeatPlaceholder')}
+                onRename={
+                  seatMode ? (name) => renameSeat(g.id, name) : undefined
+                }
+                canFire={
+                  !seatMode &&
+                  Boolean(onFireCourse) &&
+                  linesForCourseFire(lines, g.id).length > 0
+                }
+                fireDisabled={fireDisabled}
+                onFire={onFireCourse ? () => onFireCourse(g.id) : undefined}
+                fireLabel={t('order.fireCourse')}
+                canPrint={
+                  seatMode && Boolean(onPrintSeat) && billable.length > 0
+                }
+                printDisabled={printDisabled}
+                onPrint={onPrintSeat ? () => onPrintSeat(g.id) : undefined}
+                printLabel={t('order.printSeatBill')}
+                reorderLabel={t(
+                  seatMode ? 'order.reorderSeat' : 'order.reorderCourse',
+                )}
+                removeLabel={t(
+                  seatMode ? 'order.removeSeat' : 'order.removeCourse',
+                )}
+                onActivate={() =>
+                  seatMode ? setActiveSeatId(g.id) : setActiveCourseId(g.id)
+                }
+                onRemove={() =>
+                  seatMode ? removeSeat(g.id) : removeCourse(g.id)
+                }
+              >
+                <SortableContext
+                  items={g.lines.map((l) => l.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {g.lines.length ? (
+                    g.lines.map((line) => (
+                      <SortableLine
+                        key={line.id}
+                        line={line}
+                        canEdit={
+                          line.voided !== true &&
+                          line.paid !== true &&
+                          (canEdit || line.staged === true)
+                        }
+                      >
+                        {renderLine(line)}
+                      </SortableLine>
+                    ))
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-[var(--pos-border-strong)] px-2 py-3 text-xs text-[color:var(--pos-fg-muted)]">
+                      {t('order.courseDropHere')}
+                    </div>
+                  )}
+                </SortableContext>
+              </SortableGroup>
+            );
+          })}
+        </SortableContext>
+        {canEdit || canAddCourse ? (
+          <button
+            type="button"
+            className="w-full rounded-lg border border-dashed border-[var(--pos-border-strong)] py-2 text-sm text-[color:var(--pos-fg)] hover:bg-[var(--pos-hover)]"
+            onClick={() => (seatMode ? addSeat() : addCourse())}
+          >
+            {t(seatMode ? 'order.addSeat' : 'order.addCourse')}
+          </button>
+        ) : null}
+      </div>
     </DndContext>
   );
-}
+});

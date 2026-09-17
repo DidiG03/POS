@@ -238,4 +238,14 @@ describe('tablet login bounce guards', () => {
     expect(read('public/legal/privacy.html')).toContain('Privacy Policy');
     expect(read('public/legal/support.html')).toContain('same Wi-Fi');
   });
+
+  it('OrderPage does not keep a hidden ticket pane mounted over the phone menu', () => {
+    const src = read('src/renderer/app/pages/OrderPage.tsx');
+    expect(src).toContain('showTicketPane');
+    expect(src).toContain('showMenuPane');
+    expect(src).toContain('ORDER_TWO_PANE');
+    expect(src).not.toContain(
+      "${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex",
+    );
+  });
 });

@@ -4582,13 +4582,14 @@ async function readSharedLayoutNodes(area: string): Promise<any[] | null> {
   // is `layout:<userId>:<area>` (waiter) or `layout:<scope>:<userId>:<area>`
   // (host etc.) — both end with `:<area>` so a prefix scan + suffix
   // filter is enough.
+  const suffix = `:${area}`;
   const candidates = await prisma.syncState
     .findMany({
-      where: { key: { startsWith: 'layout:' } as any } as any,
+      where: { key: { endsWith: suffix } as any } as any,
       orderBy: { updatedAt: 'desc' } as any,
+      take: 20,
     })
     .catch(() => [] as any[]);
-  const suffix = `:${area}`;
   for (const row of candidates as any[]) {
     if (typeof row?.key !== 'string') continue;
     if (row.key === globalLayoutKey(area)) continue; // already tried

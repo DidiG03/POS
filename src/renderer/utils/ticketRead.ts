@@ -12,6 +12,7 @@ import {
   cacheLatestTicket,
   ingestFloorSnapshot,
   invalidateTicketCache,
+  peekFloorSnapshot,
   readFloorSnapshot,
 } from './posReadCache';
 import { peekTableBill } from './tableBill';
@@ -33,7 +34,11 @@ function defaultDeps(): TicketReadDeps {
     fetch: (area, label) =>
       (window as any).api.tickets.getLatestForTable(area, label),
     invalidate: invalidateTicketCache,
-    fetchFloor: (area) => readFloorSnapshot(area),
+    fetchFloor: async (area) => {
+      const cached = peekFloorSnapshot(String(area || ''));
+      if (cached) return cached;
+      return readFloorSnapshot(area);
+    },
   };
 }
 
@@ -79,14 +84,17 @@ function itemsFromFloorSnapshot(
   snap: unknown,
   area: string,
   label: string,
+  opts?: { ingest?: boolean },
 ): { items: TicketReadItems; note: string } | null {
   if (!snap || typeof snap !== 'object') return null;
   const tables = (snap as FloorSnapshot).tables;
   if (!Array.isArray(tables)) return null;
-  ingestFloorSnapshot(snap as FloorSnapshot, {
-    mergeOpen: Boolean(area),
-    area,
-  });
+  if (opts?.ingest !== false) {
+    ingestFloorSnapshot(snap as FloorSnapshot, {
+      mergeOpen: Boolean(area),
+      area,
+    });
+  }
   const row = tables.find((t) => t && t.area === area && t.label === label);
   const items = asTicketLogItems(row?.items) as TicketReadItems;
   if (!items.length) return null;
@@ -116,6 +124,17 @@ export async function readTicketForTable(
     const confirmedItems = itemsOf(confirmed);
     if (confirmedItems.length > 0) {
       rememberBill(area, label, confirmed, confirmedItems);
+      return { ok: true, items: confirmedItems, note: noteOf(confirmed) };
+    }
+    // The floor we just left already has this sitting. Parsing that whole
+    // snapshot again on a phone (then writing it to localStorage) is what
+    // froze the menu for tens of seconds after tapping a table.
+    const cachedFloor = peekFloorSnapshot(area);
+    if (cachedFloor) {
+      const fromFloor = itemsFromFloorSnapshot(cachedFloor, area, label, {
+        ingest: false,
+      });
+      if (fromFloor) return { ok: true, ...fromFloor };
       return { ok: true, items: confirmedItems, note: noteOf(confirmed) };
     }
     if (typeof deps.fetchFloor === 'function') {

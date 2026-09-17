@@ -167,9 +167,66 @@ function emptySeats(): Pick<TicketState, 'seats' | 'activeSeatId'> {
   return { seats: [], activeSeatId: null };
 }
 
+function appliedCourseLayout(
+  s: Pick<TicketState, 'courses' | 'lines' | 'activeCourseId'>,
+): Pick<
+  TicketState,
+  'courses' | 'lines' | 'activeCourseId' | 'activeSeatId' | 'seats'
+> {
+  let courses = s.courses.length ? s.courses : coursesFromLineIds(s.lines);
+  if (courses.length === 0) courses = [{ id: newTicketCourseId() }];
+  const firstId = courses[0].id;
+  const drinks = s.lines.filter((l) => isImmediateFireStation(l.station));
+  const food = s.lines.filter((l) => !isImmediateFireStation(l.station));
+  const tagged = food.map((l) =>
+    l.courseId ? l : { ...l, courseId: firstId, seatId: null },
+  );
+  const lines = [
+    ...drinks.map((l) => ({ ...l, courseId: null })),
+    ...flattenCourseGroups(groupLinesByCourse(courses, tagged)),
+  ];
+  const active =
+    s.activeCourseId && courses.some((c) => c.id === s.activeCourseId)
+      ? s.activeCourseId
+      : firstId;
+  return {
+    courses,
+    lines,
+    activeCourseId: active,
+    activeSeatId: null,
+    seats: [],
+  };
+}
+
+function appliedSeatLayout(
+  s: Pick<TicketState, 'seats' | 'lines' | 'activeSeatId'>,
+): Pick<
+  TicketState,
+  'seats' | 'lines' | 'activeSeatId' | 'activeCourseId' | 'courses'
+> {
+  let seats = (s.seats || []).length ? s.seats : seatsFromLineIds(s.lines);
+  if (seats.length === 0) seats = [{ id: newTicketSeatId() }];
+  const firstId = seats[0].id;
+  const tagged = s.lines.map((l) =>
+    l.seatId ? l : { ...l, seatId: firstId, courseId: null },
+  );
+  const lines = flattenSeatGroups(groupLinesBySeat(seats, tagged));
+  const active =
+    s.activeSeatId && seats.some((seat) => seat.id === s.activeSeatId)
+      ? s.activeSeatId
+      : firstId;
+  return {
+    seats,
+    lines,
+    activeSeatId: active,
+    activeCourseId: null,
+    courses: [],
+  };
+}
+
 export const useTicketStore = create<TicketState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       lines: [],
       courses: [],
       seats: [],
@@ -184,10 +241,13 @@ export const useTicketStore = create<TicketState>()(
       setHasHydrated: (v) => set({ hasHydrated: v }),
       setAddMode: (mode) => {
         const next = normalizeOrderAddMode(mode);
-        set({ addMode: next });
-        if (next === 'course') get().ensureCourses();
-        else if (next === 'seat') get().ensureSeats();
-        else set({ activeCourseId: null, activeSeatId: null });
+        if (next === 'course') {
+          set((s) => ({ addMode: next, ...appliedCourseLayout(s) }));
+        } else if (next === 'seat') {
+          set((s) => ({ addMode: next, ...appliedSeatLayout(s) }));
+        } else {
+          set({ addMode: next, activeCourseId: null, activeSeatId: null });
+        }
       },
       bindTable: (key, opts) =>
         set((s) => bindTicketTable(s, key, Date.now(), opts)),
@@ -409,38 +469,7 @@ export const useTicketStore = create<TicketState>()(
             ),
           };
         }),
-      ensureCourses: () =>
-        set((s) => {
-          let courses = s.courses.length
-            ? s.courses
-            : coursesFromLineIds(s.lines);
-          if (courses.length === 0) courses = [{ id: newTicketCourseId() }];
-          const firstId = courses[0].id;
-          const drinks = s.lines.filter((l) =>
-            isImmediateFireStation(l.station),
-          );
-          const food = s.lines.filter(
-            (l) => !isImmediateFireStation(l.station),
-          );
-          const tagged = food.map((l) =>
-            l.courseId ? l : { ...l, courseId: firstId, seatId: null },
-          );
-          const lines = [
-            ...drinks.map((l) => ({ ...l, courseId: null })),
-            ...flattenCourseGroups(groupLinesByCourse(courses, tagged)),
-          ];
-          const active =
-            s.activeCourseId && courses.some((c) => c.id === s.activeCourseId)
-              ? s.activeCourseId
-              : firstId;
-          return {
-            courses,
-            lines,
-            activeCourseId: active,
-            activeSeatId: null,
-            seats: [],
-          };
-        }),
+      ensureCourses: () => set((s) => appliedCourseLayout(s)),
       addCourse: () =>
         set((s) => {
           const next = { id: newTicketCourseId() };
@@ -496,29 +525,7 @@ export const useTicketStore = create<TicketState>()(
             ),
           };
         }),
-      ensureSeats: () =>
-        set((s) => {
-          let seats = (s.seats || []).length
-            ? s.seats
-            : seatsFromLineIds(s.lines);
-          if (seats.length === 0) seats = [{ id: newTicketSeatId() }];
-          const firstId = seats[0].id;
-          const tagged = s.lines.map((l) =>
-            l.seatId ? l : { ...l, seatId: firstId, courseId: null },
-          );
-          const lines = flattenSeatGroups(groupLinesBySeat(seats, tagged));
-          const active =
-            s.activeSeatId && seats.some((seat) => seat.id === s.activeSeatId)
-              ? s.activeSeatId
-              : firstId;
-          return {
-            seats,
-            lines,
-            activeSeatId: active,
-            activeCourseId: null,
-            courses: [],
-          };
-        }),
+      ensureSeats: () => set((s) => appliedSeatLayout(s)),
       addSeat: () =>
         set((s) => {
           const next = { id: newTicketSeatId() };

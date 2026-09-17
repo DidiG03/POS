@@ -170,4 +170,39 @@ describe('readTicketForTable', () => {
       note: '',
     });
   });
+
+  it('uses a cached floor snapshot without calling fetchFloor', async () => {
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T7',
+            openedAt: '2026-09-11T13:55:42.708Z',
+            userId: 1,
+            covers: 2,
+            total: 300,
+            items: [{ name: 'Byrek', qty: 2, unitPrice: 150 }],
+            note: 'no onion',
+          },
+        ],
+      },
+      { area: 'Salla' },
+    );
+    let floorCalls = 0;
+    const d: TicketReadDeps & { calls: number; invalidated: number } = {
+      ...deps([{ items: [] }, { items: [] }]),
+      fetchFloor: async () => {
+        floorCalls += 1;
+        return { tables: [] };
+      },
+    };
+
+    await expect(readTicketForTable('Salla', 'T7', d)).resolves.toEqual({
+      ok: true,
+      items: [{ name: 'Byrek', qty: 2, unitPrice: 150 }],
+      note: 'no onion',
+    });
+    expect(floorCalls).toBe(0);
+  });
 });

@@ -1,12 +1,20 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { invalidateCache, invalidateCachePrefix, peek } from './swrCache';
 import {
+  invalidateCache,
+  invalidateCachePrefix,
+  peek,
+  writeCache,
+} from './swrCache';
+import {
+  cacheLatestTicket,
   ingestFloorSnapshot,
   installPosReadCache,
   peekFloorSnapshot,
   peekLatestTicket,
+  peekLayout,
   POS_CACHE,
   readFloorSnapshot,
+  readLayout,
   resetPosReadCacheForTests,
 } from './posReadCache';
 
@@ -92,6 +100,7 @@ describe('installPosReadCache', () => {
 
 describe('ingestFloorSnapshot', () => {
   beforeEach(() => {
+    resetPosReadCacheForTests();
     invalidateCachePrefix('pos:ticket:');
     invalidateCachePrefix('pos:floor:');
     invalidateCache(POS_CACHE.openTables);
@@ -160,6 +169,56 @@ describe('ingestFloorSnapshot', () => {
     ingestFloorSnapshot({ tables: [] }, { mergeOpen: true, area: 'Salla' });
     expect(peek(POS_CACHE.openTables)).toEqual([]);
     expect(peekLatestTicket('Salla', 'T7')).toBeUndefined();
+  });
+
+  it('skips rewriting the same snapshot object (table-tap must not re-parse the floor)', () => {
+    const snap = {
+      tables: [
+        {
+          area: 'Salla',
+          label: 'T7',
+          openedAt: '2026-09-11T13:55:42.708Z',
+          userId: 1,
+          covers: 2,
+          total: 600,
+          items: [{ name: 'Sallatë cezar', qty: 1, unitPrice: 600 }],
+          note: null,
+        },
+      ],
+    };
+    ingestFloorSnapshot(snap, { area: 'Salla' });
+    cacheLatestTicket('Salla', 'T7', {
+      items: [{ name: 'CHANGED', qty: 1, unitPrice: 1 }],
+    });
+    ingestFloorSnapshot(snap, { area: 'Salla' });
+    expect(peekLatestTicket('Salla', 'T7')?.items?.[0]?.name).toBe('CHANGED');
+  });
+});
+
+describe('readLayout', () => {
+  const prevWindow = (globalThis as any).window;
+
+  beforeEach(() => {
+    resetPosReadCacheForTests();
+    invalidateCachePrefix('pos:layout:');
+    (globalThis as any).window = prevWindow ?? {};
+  });
+
+  afterEach(() => {
+    resetPosReadCacheForTests();
+    invalidateCachePrefix('pos:layout:');
+    if (prevWindow === undefined) delete (globalThis as any).window;
+    else (globalThis as any).window = prevWindow;
+  });
+
+  it('returns cached nodes without waiting on a hung host', async () => {
+    writeCache(POS_CACHE.layout('Salla'), [{ id: 1, label: 'T1', x: 0, y: 0 }]);
+    (window as any).api = {
+      layout: { get: () => new Promise(() => {}) },
+    };
+    const nodes = await readLayout('Salla');
+    expect(peekLayout('Salla')?.[0]).toMatchObject({ label: 'T1' });
+    expect(nodes?.[0]).toMatchObject({ label: 'T1' });
   });
 });
 

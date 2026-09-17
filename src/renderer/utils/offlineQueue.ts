@@ -353,6 +353,63 @@ export interface DispatchContext {
 
 const FIRST_ATTEMPT: DispatchContext = { attempt: 0 };
 
+/**
+ * How long a waiter blocks on an idempotent table-state write before we stop
+ * waiting and hand it to the queue.
+ *
+ * These ops are awaited inside UI handlers that hold a full-screen lock, and
+ * the LAN client allows a native shell 15s per attempt plus a retry. A host
+ * that was merely slow therefore froze the whole order screen for ~30s with
+ * no spinner and no way out — tapping a table and then finding that no button
+ * responded for twenty seconds.
+ */
+const LIVE_ATTEMPT_BUDGET_MS = 4_000;
+
+/**
+ * Ops whose live attempt may be abandoned early.
+ *
+ * Strictly the writes that set absolute table state and carry a dedupe key:
+ * replaying one that quietly landed sets the same value again, so handing off
+ * mid-flight cannot corrupt anything. Money, kitchen chits and transfers are
+ * deliberately excluded — the waiter needs a definite live answer for those,
+ * and a second delivery is not free even with an idempotency key.
+ */
+const BUDGETED_OPS = new Set<OfflineOp>(['tables.setOpen', 'covers.save']);
+
+type LiveOutcome = { handedOff: true } | { handedOff: false; result: unknown };
+
+/**
+ * Await `live`, but for {@link BUDGETED_OPS} give up after
+ * {@link LIVE_ATTEMPT_BUDGET_MS} and report a hand-off instead. The abandoned
+ * attempt keeps running — it may still land, which is harmless for these ops —
+ * and its settlement is absorbed here so a late rejection cannot surface as an
+ * unhandled promise rejection.
+ */
+async function raceLiveAttempt(
+  op: OfflineOp,
+  live: Promise<unknown>,
+): Promise<LiveOutcome> {
+  if (!BUDGETED_OPS.has(op)) {
+    return { handedOff: false, result: await live };
+  }
+  const settled = live.then(
+    (result) => ({ ok: true as const, result }),
+    (error) => ({ ok: false as const, error }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<'handoff'>((resolve) => {
+    timer = setTimeout(() => resolve('handoff'), LIVE_ATTEMPT_BUDGET_MS);
+  });
+  try {
+    const winner = await Promise.race([settled, budget]);
+    if (winner === 'handoff') return { handedOff: true };
+    if (!winner.ok) throw winner.error;
+    return { handedOff: false, result: winner.result };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** True when the host says this table is not in a state that accepts the write. */
 function isTableClosedRejection(e: any): boolean {
   return String(e?.code || '') === 'TABLE_CLOSED';
@@ -1171,7 +1228,15 @@ export async function tryOrQueue<T = unknown>(
     return { queued: true };
   }
   try {
-    const result = (await dispatcher(args, FIRST_ATTEMPT)) as T;
+    const outcome = await raceLiveAttempt(op, dispatcher(args, FIRST_ATTEMPT));
+    if (outcome.handedOff) {
+      // Still in flight, but the waiter has waited long enough. The queue owns
+      // delivery from here; the caller's optimistic UI already shows the
+      // intended state.
+      await offlineQueue.enqueue(op, args, options);
+      return { queued: true, error: 'live attempt exceeded budget' };
+    }
+    const result = outcome.result as T;
     // This write reached the host, so any queued write for the same target is
     // stale by definition. Without this, a close that failed earlier keeps
     // retrying and eventually frees a table that has since been reopened for

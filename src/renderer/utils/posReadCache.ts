@@ -11,6 +11,7 @@
  * on wrapping `getFloorSnapshot`.
  */
 import type { FloorSnapshot } from '@shared/ipc';
+import { saneTableAreas } from '@shared/tableAreas';
 import { asTicketLogItems } from '@shared/ticketLogItems';
 import {
   invalidateCache,
@@ -27,6 +28,7 @@ export const POS_CACHE = {
   openTables: 'pos:open-tables',
   floor: (area: string) => `pos:floor:${area || '_all'}`,
   ticket: (area: string, label: string) => `pos:ticket:${area}:${label}`,
+  layout: (area: string) => `pos:layout:${area || '_all'}`,
 };
 
 let installed = false;
@@ -47,6 +49,49 @@ export function peekLatestTicket(area: string, label: string): any | undefined {
   return peek(POS_CACHE.ticket(area, label));
 }
 
+export function peekLayout(area: string): unknown[] | undefined {
+  const saved = peek<unknown>(POS_CACHE.layout(String(area || '')));
+  return Array.isArray(saved) ? saved : undefined;
+}
+
+/**
+ * Floor furniture barely changes. Serve the last saved nodes immediately
+ * and refresh in the background so a waiter is not stuck on a 10s GET
+ * spinner every time Tables mounts.
+ */
+export async function readLayout(
+  area: string,
+  opts?: { userId?: number; scope?: string },
+): Promise<unknown[] | null> {
+  const name = String(area || '').trim();
+  if (!name) return [];
+  if (typeof window === 'undefined') return peekLayout(name) ?? null;
+  const fn = (window as any).api?.layout?.get;
+  if (typeof fn !== 'function') return peekLayout(name) ?? null;
+  try {
+    const nodes = await swr(
+      POS_CACHE.layout(name),
+      async () => {
+        const raw = await fn(opts?.userId ?? 0, name, opts?.scope);
+        return Array.isArray(raw) ? raw : [];
+      },
+      { maxAgeMs: 60_000 },
+    );
+    return Array.isArray(nodes) ? nodes : [];
+  } catch {
+    return peekLayout(name) ?? null;
+  }
+}
+
+export function invalidateLayoutCache(area?: string): void {
+  const name = String(area || '').trim();
+  if (name) {
+    invalidateCache(POS_CACHE.layout(name));
+    return;
+  }
+  invalidateCachePrefix('pos:layout:');
+}
+
 export function cacheLatestTicket(
   area: string,
   label: string,
@@ -55,11 +100,23 @@ export function cacheLatestTicket(
   writeCache(POS_CACHE.ticket(area, label), data);
 }
 
+let lastIngestedSnap: FloorSnapshot | null = null;
+let lastIngestedOpts = '';
+
+function ingestOptsKey(opts?: { mergeOpen?: boolean; area?: string }): string {
+  return `${opts?.mergeOpen ? 1 : 0}:${opts && 'area' in opts ? String(opts.area || '') : '*'}`;
+}
+
 export function ingestFloorSnapshot(
   snap: FloorSnapshot | null | undefined,
   opts?: { mergeOpen?: boolean; area?: string },
 ): void {
   if (!snap || !Array.isArray(snap.tables)) return;
+  if (snap === lastIngestedSnap && ingestOptsKey(opts) === lastIngestedOpts) {
+    return;
+  }
+  lastIngestedSnap = snap;
+  lastIngestedOpts = ingestOptsKey(opts);
   const scopeArea = opts && 'area' in opts ? String(opts.area || '') : '';
   if (opts && 'area' in opts) {
     const prevSnap = peekFloorSnapshot(scopeArea);
@@ -134,6 +191,11 @@ export function prefetchHotReads(): void {
   // Floor already loaded settings + users. Warm the menu for the first
   // ticket without kicking those two reads into another soft-revalidate.
   void api.menu?.listCategoriesWithItems?.().catch(() => undefined);
+  const areas = saneTableAreas(peekSettings<any>()?.tableAreas);
+  for (const row of areas.slice(0, 6)) {
+    const name = String(row?.name || '').trim();
+    if (name) void readLayout(name).catch(() => undefined);
+  }
 }
 
 function isWritable(obj: any, key: string): boolean {
@@ -196,9 +258,21 @@ function applyReadWraps(api: any): void {
   wrapMethod(api.menu, 'listCategoriesWithItems', () => POS_CACHE.menu, 45_000);
   wrapMethod(api.auth, 'listUsers', () => POS_CACHE.users, 60_000);
   wrapMethod(api.tables, 'listOpen', () => POS_CACHE.openTables, 4_000);
+  wrapMethod(
+    api.layout,
+    'get',
+    (_userId: unknown, area: unknown) => POS_CACHE.layout(String(area || '')),
+    60_000,
+  );
 
   wrapAfter(api.settings, 'update', () => {
     invalidateCache(POS_CACHE.settings);
+  });
+
+  wrapAfter(api.layout, 'save', (_r, args) => {
+    const area = String(args[1] || '');
+    const nodes = args[2];
+    if (area && Array.isArray(nodes)) writeCache(POS_CACHE.layout(area), nodes);
   });
 
   wrapAfter(api.tables, 'setOpen', (_r, args) => {
@@ -297,6 +371,8 @@ const CATCHUP_DEBOUNCE_MS = 2_000;
 export function resetPosReadCacheForTests(): void {
   installed = false;
   lastCatchupAt = 0;
+  lastIngestedSnap = null;
+  lastIngestedOpts = '';
   if (catchupSoonTimer != null) {
     clearTimeout(catchupSoonTimer);
     catchupSoonTimer = null;

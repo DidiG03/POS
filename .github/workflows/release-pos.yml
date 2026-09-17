@@ -219,10 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.45"
-            echo "- Fix GitHub Release upload races that dropped Windows installers on v0.2.44"
-            echo "- Center the Android Waiter splash logo and launcher icon"
-            echo "- Same feature set: multi-category printer routes, Google Calendar removal, admin login, light theme, haptics, waiter polish"
+            echo "### Changes in v0.2.46"
+            echo "- Keep Android Waiter tappable after opening a table (no 30s freeze)"
+            echo "- Speed up Courses/Seat switching and drag-reorder on the ticket"
+            echo "- Paint the floor layout from cache instead of waiting on a 10s GET"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

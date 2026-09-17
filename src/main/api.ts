@@ -3057,13 +3057,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // Migration fallback: scan legacy keys ending in `:<area>` and
         // return the most recent one so the new shared view still has
         // tables before the admin saves the first centralised layout.
+        const suffix = `:${area}`;
         const candidates = await prisma.syncState
           .findMany({
-            where: { key: { startsWith: 'layout:' } as any } as any,
+            where: { key: { endsWith: suffix } as any } as any,
             orderBy: { updatedAt: 'desc' } as any,
+            take: 20,
           })
           .catch(() => [] as any[]);
-        const suffix = `:${area}`;
         for (const row of candidates as any[]) {
           if (typeof row?.key !== 'string') continue;
           if (row.key === globalLayoutKey(area)) continue;

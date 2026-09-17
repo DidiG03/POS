@@ -38,7 +38,11 @@ import {
 } from '../../utils/lanLoginError';
 import { captureRendererException } from '../../utils/sentryBrowser';
 import { applyHostPosUiTheme } from '../../theme';
-import { POS_CACHE, peekSettings } from '../../utils/posReadCache';
+import {
+  POS_CACHE,
+  peekSettings,
+  prefetchHotReads,
+} from '../../utils/posReadCache';
 import { invalidateCache } from '../../utils/swrCache';
 import { loginDirectoryState } from '../../utils/loginDirectory';
 import { bootTrace } from '@shared/bootTrace';
@@ -295,6 +299,7 @@ export default function LoginPage() {
     if (selectedId == null) return;
     void retryLazyImport(() => import('../AppLayout'));
     void retryLazyImport(() => import('./TablesPage'));
+    void prefetchHotReads();
     void loadPosRealtimeSync();
   }, [selectedId]);
 
