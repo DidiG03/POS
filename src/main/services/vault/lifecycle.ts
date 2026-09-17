@@ -19,6 +19,7 @@ import { secureDelete, secureDeleteSqliteGroup } from './secureDelete';
 import {
   effectiveUnlockMode,
   readVaultFile,
+  vaultFilePath,
   writeVaultFile,
   type VaultFile,
   type VaultUnlockMode,
@@ -30,6 +31,7 @@ import {
   openLibsql,
   verifyEncryptedSqlite,
 } from './sqliteCipher';
+import { replaceFile } from './replaceFile';
 
 export type VaultState = 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
 
@@ -156,6 +158,21 @@ async function openWithDek(
   unlockedDek = dek;
 }
 
+function vaultOpError(e: unknown): string {
+  const msg = String((e as Error)?.message || e || 'unlock_failed');
+  console.error('[vault]', msg);
+  return 'unlock_failed';
+}
+
+function discardIncompleteVault(userData: string, dbFile: string): void {
+  try {
+    fs.unlinkSync(vaultFilePath(userData));
+  } catch {
+    // ignore
+  }
+  secureDelete(`${dbFile}.encrypted-new`);
+}
+
 export async function setupVault(
   passphrase: string,
   opts?: {
@@ -170,7 +187,28 @@ export async function setupVault(
   if (!check.ok) return { ok: false, error: check.error };
   const userData = opts?.userData ?? vaultUserData();
   const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
-  if (readVaultFile(userData)) return { ok: false, error: 'already_setup' };
+  const existing = readVaultFile(userData);
+  if (existing && looksLikeSqliteCiphertext(dbFile)) {
+    return { ok: false, error: 'already_setup' };
+  }
+  if (existing && !looksLikeSqliteCiphertext(dbFile)) {
+    // First encrypt wrote vault.json then failed to swap the Windows DB.
+    const dek = existing.passphrase
+      ? await unwrapPassphrase(secret, existing.passphrase)
+      : null;
+    if (dek) {
+      try {
+        await openWithDek(dbFile, dek, opts?.openPrisma !== false);
+        persistVault(userData, existing, dek, effectiveUnlockMode(existing));
+        shredPlaintextSidecars(userData, dbFile);
+        return { ok: true };
+      } catch (e) {
+        unlockedDek = null;
+        return { ok: false, error: vaultOpError(e) };
+      }
+    }
+    discardIncompleteVault(userData, dbFile);
+  }
 
   const dek = generateDek();
   const recoveryKey = generateRecoveryKey();
@@ -183,19 +221,17 @@ export async function setupVault(
     recovery: await wrapKey(recoveryBytes, dek, kdf),
     unlockMode: isOsUnlockAvailable() ? 'os' : 'passphrase',
   };
-  persistVault(userData, vault, dek, vault.unlockMode || 'passphrase');
 
   try {
     await openWithDek(dbFile, dek, opts?.openPrisma !== false);
+    persistVault(userData, vault, dek, vault.unlockMode || 'passphrase');
     shredPlaintextSidecars(userData, dbFile);
     pendingRecoveryKey = recoveryKey;
     return { ok: true, recoveryKey };
   } catch (e) {
     unlockedDek = null;
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e || 'setup_failed'),
-    };
+    discardIncompleteVault(userData, dbFile);
+    return { ok: false, error: vaultOpError(e) };
   }
 }
 
@@ -208,7 +244,12 @@ export async function setupVaultWithOs(opts?: {
   if (!isOsUnlockAvailable()) return { ok: false, error: 'os_unavailable' };
   const userData = opts?.userData ?? vaultUserData();
   const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
-  if (readVaultFile(userData)) return { ok: false, error: 'already_setup' };
+  if (readVaultFile(userData)) {
+    if (looksLikeSqliteCiphertext(dbFile)) {
+      return { ok: false, error: 'already_setup' };
+    }
+    discardIncompleteVault(userData, dbFile);
+  }
 
   const dek = generateDek();
   const recoveryKey = generateRecoveryKey();
@@ -217,24 +258,23 @@ export async function setupVaultWithOs(opts?: {
   const kdf = opts?.kdf ?? DEFAULT_KDF;
   const osBlob = wrapDekForOs(dek);
   if (!osBlob) return { ok: false, error: 'os_unavailable' };
-  writeVaultFile(userData, {
+  const vault: VaultFile = {
     version: 2,
     recovery: await wrapKey(recoveryBytes, dek, kdf),
     unlockMode: 'os',
     os: { provider: 'safeStorage', blob: osBlob },
-  });
+  };
 
   try {
     await openWithDek(dbFile, dek, opts?.openPrisma !== false);
+    writeVaultFile(userData, vault);
     shredPlaintextSidecars(userData, dbFile);
     pendingRecoveryKey = recoveryKey;
     return { ok: true, recoveryKey };
   } catch (e) {
     unlockedDek = null;
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e || 'setup_failed'),
-    };
+    discardIncompleteVault(userData, dbFile);
+    return { ok: false, error: vaultOpError(e) };
   }
 }
 
@@ -298,10 +338,7 @@ export async function unlockVault(
     return { ok: true };
   } catch (e) {
     unlockedDek = null;
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e || 'unlock_failed'),
-    };
+    return { ok: false, error: vaultOpError(e) };
   }
 }
 
@@ -402,10 +439,15 @@ async function materializeEncryptedDb(
     fs.renameSync(dbFile, leftover);
   } catch {
     fs.copyFileSync(dbFile, leftover);
+    try {
+      fs.unlinkSync(dbFile);
+    } catch {
+      // Windows may still hold the plaintext; replaceFile copies over it.
+    }
   }
   secureDelete(`${dbFile}-wal`);
   secureDelete(`${dbFile}-shm`);
-  fs.renameSync(dest, dbFile);
+  replaceFile(dest, dbFile);
   secureDeleteSqliteGroup(leftover);
 }
 

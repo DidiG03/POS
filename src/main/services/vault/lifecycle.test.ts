@@ -200,6 +200,55 @@ describe('setupVault / unlockVault', () => {
     ).toEqual({ ok: true });
   });
 
+  it('does not keep vault.json when the database cannot be encrypted', async () => {
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    fs.writeFileSync(dbFile, 'not-sqlite');
+    const setup = await setupVault('kitchen-pass-1', {
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(false);
+    expect(setup).toMatchObject({ error: 'unlock_failed' });
+    expect(fs.existsSync(path.join(dir, 'vault.json'))).toBe(false);
+  });
+
+  it('finishes encrypting if vault.json was left beside a plaintext ledger', async () => {
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    const src = createClient({ url: `file:${dbFile}` });
+    await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    await src.close();
+    const setup = await setupVault('kitchen-pass-1', {
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(true);
+    lockVaultForTests();
+
+    const vaultPath = path.join(dir, 'vault.json');
+    const vaultJson = fs.readFileSync(vaultPath, 'utf8');
+    const plain = path.join(dir, 'plain.db');
+    const p = createClient({ url: `file:${plain}` });
+    await p.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    await p.close();
+    fs.copyFileSync(plain, dbFile);
+    fs.writeFileSync(vaultPath, vaultJson);
+
+    const again = await setupVault('kitchen-pass-1', {
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(again.ok).toBe(true);
+    expect(looksLikeSqliteCiphertext(dbFile)).toBe(true);
+  });
+
   it('does not auto-create an OS-only vault before the owner sets a passphrase', async () => {
     setOsVaultCryptoForTests(memoryOsVault());
     const dir = tmpDir();

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
 import {
   SQLITE_BUSY_TIMEOUT_MS,
   SQLITE_TX_TIMEOUT_MS,
@@ -6,7 +8,18 @@ import {
   withSqliteRetry,
   withSqliteTransactionOptions,
 } from './sqliteBusy';
-import { sqliteConnectionUrl } from './sqliteUrl';
+import { sqliteConnectionUrl, sqliteFileUrl } from './sqliteUrl';
+
+describe('sqliteFileUrl', () => {
+  it('encodes spaces in packaged userData folders', () => {
+    const url = sqliteFileUrl(
+      path.join(os.tmpdir(), 'OneTap POS', 'db.sqlite'),
+    );
+    expect(url.startsWith('file:')).toBe(true);
+    expect(url).toContain('OneTap%20POS');
+    expect(url).not.toMatch(/OneTap POS/);
+  });
+});
 
 describe('sqliteConnectionUrl', () => {
   it('pins SQLite to a small WAL read pool', () => {

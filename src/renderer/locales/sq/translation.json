@@ -162,6 +162,7 @@
       "missing_vault": "Mungon skedari i kasafortës.",
       "os_unavailable": "Ky kompjuter nuk mund ta ruajë çelësin e arkës në Windows ose Mac.",
       "locked": "Hape arkën para se ta ndryshosh këtë cilësim.",
+      "unlock_failed": "Arka nuk u enkriptua. Mbyll OneTap dhe provo të njëjtin fjalëkalim sërish.",
       "generic": "Arka nuk u hap. Provo sërish."
     }
   },

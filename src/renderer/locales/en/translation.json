@@ -162,6 +162,7 @@
       "missing_vault": "The vault file is missing.",
       "os_unavailable": "This computer cannot store the till key in Windows or Mac.",
       "locked": "Unlock the till before changing this setting.",
+      "unlock_failed": "Could not encrypt this till. Close OneTap and try the same passphrase again.",
       "generic": "Could not open the till. Try again."
     }
   },

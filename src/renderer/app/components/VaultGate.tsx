@@ -77,6 +77,20 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
     try {
       const r = await window.api.vault!.setup({ passphrase });
       if (!r.ok) {
+        if (r.error === 'already_setup') {
+          const unlocked = await window.api.vault!.unlock({
+            secret: passphrase,
+          });
+          if (unlocked.ok) {
+            setState('open');
+            return;
+          }
+          setError(unlocked.error || 'already_setup');
+          setState('locked');
+          setHasPassphrase(true);
+          setSecret(passphrase);
+          return;
+        }
         setError(r.error || 'generic');
         return;
       }

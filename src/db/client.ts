@@ -93,11 +93,19 @@ async function applyPragmas(): Promise<void> {
   if (!client) return;
   await withSqliteRetry(async () => {
     for (const sql of PRAGMAS) {
-      await client.$queryRawUnsafe(sql);
+      try {
+        await client.$queryRawUnsafe(sql);
+      } catch (e) {
+        if (openMode !== 'encrypted') throw e;
+        console.warn('[sqlite] pragma skipped on encrypted ledger:', sql, e);
+      }
     }
-    // Refresh query-planner stats if sqlite_stat1 is stale. SQLite no-ops
-    // when nothing useful can be done, so this is cheap on a quiet boot.
-    await client.$queryRawUnsafe('PRAGMA optimize;');
+    try {
+      await client.$queryRawUnsafe('PRAGMA optimize;');
+    } catch (e) {
+      if (openMode !== 'encrypted') throw e;
+      console.warn('[sqlite] PRAGMA optimize skipped on encrypted ledger:', e);
+    }
   });
 }
 

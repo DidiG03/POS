@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { WrappedKey } from './crypto';
+import { replaceFile } from './replaceFile';
 
 export const VAULT_VERSION = 2 as const;
 
@@ -76,5 +77,5 @@ export function writeVaultFile(userData: string, vault: VaultFile): void {
     encoding: 'utf8',
     mode: 0o600,
   });
-  fs.renameSync(tmp, file);
+  replaceFile(tmp, file);
 }
