@@ -288,6 +288,7 @@ export default function LoginPage() {
   const [firstAdminPin, setFirstAdminPin] = useState('');
   const [creatingFirstAdmin, setCreatingFirstAdmin] = useState(false);
   const [needsFirstAdmin, setNeedsFirstAdmin] = useState(false);
+  const [emptyDatabase, setEmptyDatabase] = useState(false);
 
   useEffect(() => {
     if (selectedId == null) return;
@@ -301,6 +302,7 @@ export default function LoginPage() {
     (async () => {
       setOpenShiftKnown(false);
       setNeedsFirstAdmin(false);
+      setEmptyDatabase(false);
       const applyChrome = (s: any) => {
         if (!s) return;
         setDevEditionSwitch(Boolean(s.devEditionSwitch));
@@ -352,6 +354,7 @@ export default function LoginPage() {
       if (directory.needsFirstAdmin) {
         setNotice(t('login.noAdminUsersLocal'));
         setNeedsFirstAdmin(true);
+        setEmptyDatabase(true);
         setStaff([]);
         setOpenIds([]);
         setOpenShiftKnown(true);
@@ -360,6 +363,7 @@ export default function LoginPage() {
       }
       if (cancelled) return;
       setNeedsFirstAdmin(false);
+      setEmptyDatabase(directory.emptyDatabase);
       setStaff(directory.staff);
       setStaffLoading(false);
       bootTrace('login:staff');
@@ -394,10 +398,12 @@ export default function LoginPage() {
         const directory = loginDirectoryState(users, isAdminContext);
         if (directory.needsFirstAdmin) {
           setNeedsFirstAdmin(true);
+          setEmptyDatabase(true);
           setStaff([]);
           return;
         }
         setNeedsFirstAdmin(false);
+        setEmptyDatabase(directory.emptyDatabase);
         setStaff(directory.staff);
       } catch {
         // Keep the Select Staff screen; the live event will retry.
@@ -693,10 +699,16 @@ export default function LoginPage() {
                     title={
                       staffLoading
                         ? t('login.loadingStaff')
-                        : t('login.noStaffSync')
+                        : emptyDatabase
+                          ? t('login.waitingForAdminSetup')
+                          : t('login.noStaffSync')
                     }
                     description={
-                      staffLoading ? undefined : t('login.useAdminApp')
+                      staffLoading
+                        ? undefined
+                        : emptyDatabase
+                          ? t('login.waitingForAdminSetupHelp')
+                          : t('login.useAdminApp')
                     }
                   />
                 )}
@@ -713,8 +725,16 @@ export default function LoginPage() {
                     <EmptyState
                       compact
                       icon={<IconUsers />}
-                      title={t('login.noStaffSync')}
-                      description={t('login.useAdminApp')}
+                      title={
+                        emptyDatabase
+                          ? t('login.waitingForAdminSetup')
+                          : t('login.noStaffSync')
+                      }
+                      description={
+                        emptyDatabase
+                          ? t('login.waitingForAdminSetupHelp')
+                          : t('login.useAdminApp')
+                      }
                     />
                   ) : offShift.length === 0 ? (
                     <ColumnPlaceholder />

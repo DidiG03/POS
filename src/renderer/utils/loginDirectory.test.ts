@@ -25,7 +25,9 @@ describe('loginDirectoryState', () => {
 
   it('never offers first-admin setup on POS, even with an empty database', () => {
     expect(loginDirectoryState([], false).needsFirstAdmin).toBe(false);
+    expect(loginDirectoryState([], false).emptyDatabase).toBe(true);
     expect(loginDirectoryState([], true).needsFirstAdmin).toBe(true);
+    expect(loginDirectoryState([admin], false).emptyDatabase).toBe(false);
     expect(loginDirectoryState([admin, waiter], false).staff).toEqual([waiter]);
   });
 });

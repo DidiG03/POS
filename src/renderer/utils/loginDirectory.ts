@@ -15,6 +15,7 @@ export function loginDirectoryState(
   isAdminContext: boolean,
 ): {
   needsFirstAdmin: boolean;
+  emptyDatabase: boolean;
   staff: LoginDirectoryUser[];
 } {
   const all = Array.isArray(users) ? users : [];
@@ -26,6 +27,7 @@ export function loginDirectoryState(
       });
   return {
     needsFirstAdmin: isAdminContext && all.length === 0,
+    emptyDatabase: all.length === 0,
     staff,
   };
 }

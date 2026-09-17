@@ -19,6 +19,8 @@
  * own tickets unless you are an admin" — and this gate runs before them.
  */
 
+import { isFirstAdminLanBootstrap } from './createUserAuth';
+
 /** Reachable without a token. Kept in step with `publicPaths` in `api.ts`. */
 export type LanAccess = 'public' | 'session' | readonly string[];
 
@@ -104,6 +106,9 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
 
   // ------------------------------------------------------------------ auth
   'POST /auth/verify-manager-pin': { allow: 'session' },
+  // ADMIN after the first user exists. An empty database is special-cased in
+  // `authorizeLanRoute` / the HTTP token gate so OneTap Admin can create the
+  // bootstrap admin without a token — same rule as IPC `auth:createUser`.
   'POST /auth/create-user': { allow: ADMIN },
   'POST /auth/update-user': { allow: ADMIN },
   'POST /auth/delete-user': { allow: ADMIN },
@@ -231,10 +236,17 @@ export function authorizeLanRoute(
   method: string,
   pathname: string,
   role: string | null | undefined,
+  opts?: { userCount?: number },
 ): LanVerdict {
   const policy = LAN_ROUTE_POLICIES[`${method.toUpperCase()} ${pathname}`];
   if (!policy) return 'unknown';
   if (policy.allow === 'public') return 'allow';
+  if (
+    typeof opts?.userCount === 'number' &&
+    isFirstAdminLanBootstrap(method, pathname, opts.userCount)
+  ) {
+    return 'allow';
+  }
 
   const normalised = String(role || '').toUpperCase();
   if (!normalised) return 'unauthenticated';

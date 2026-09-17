@@ -101,6 +101,15 @@ describe('standalone Admin companion', () => {
     expect(read('src/renderer/utils/loginDirectory.ts')).toContain(
       'needsFirstAdmin: isAdminContext && all.length === 0',
     );
+    expect(read('src/renderer/utils/loginDirectory.ts')).toContain(
+      'emptyDatabase: all.length === 0',
+    );
+    expect(login).toContain('waitingForAdminSetup');
+    expect(read('src/main/api.ts')).toContain('firstAdminBootstrap');
+    expect(read('src/main/api.ts')).toContain('authorizeCreateUser');
+    expect(read('src/main/services/lanPolicy.ts')).toContain(
+      'isFirstAdminLanBootstrap',
+    );
     expect(login).toContain('needsPairingCode');
     expect(login).toContain('isBrowserClient && !isAdminApp');
     expect(login).toContain("t('adminLayout.panelTitle')");

@@ -77,6 +77,10 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { settingsChangeFromHost } from '@shared/settingsChange';
 import { authorizeLanRoute } from './services/lanPolicy';
+import {
+  authorizeCreateUser,
+  isFirstAdminLanBootstrap,
+} from './services/createUserAuth';
 import { syncTableAreasToDb } from './services/tableAreasSync';
 import { presentSettingsForClient } from './services/settingsPresent';
 import { getVaultPrefs, setVaultUnlockMode } from './services/vault/lifecycle';
@@ -1248,11 +1252,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/health',
       ]);
       const isPublic = publicPaths.has(pathname) || isStaticGet;
+      const createUserCount =
+        req.method === 'POST' && pathname === '/auth/create-user'
+          ? await prisma.user.count().catch(() => -1)
+          : undefined;
+      const firstAdminBootstrap = isFirstAdminLanBootstrap(
+        req.method || 'GET',
+        pathname,
+        createUserCount ?? -1,
+      );
       let auth: AuthContext = null;
       if (!isPublic) {
         const token = pickBearerToken(req, parsed);
         auth = token ? await verifyToken(secret, token) : null;
-        if (!auth) {
+        // Empty database: OneTap Admin has no JWT yet. Ignore leftover tokens
+        // from a previous till so clock-only / role checks cannot 401/403 the
+        // bootstrap admin create.
+        if (firstAdminBootstrap) {
+          auth = null;
+        } else if (!auth) {
           return send(res, 401, { error: 'unauthorized' }, corsOrigin);
         }
       } else if (pathname === '/settings') {
@@ -1273,6 +1291,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           req.method || 'GET',
           pathname,
           auth?.role,
+          { userCount: createUserCount },
         );
         if (verdict !== 'allow') {
           console.warn('[lan] denied', {
@@ -3763,6 +3782,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               { error: 'Display name is required' },
               corsOrigin,
             );
+          }
+          const userCount = await prisma.user.count().catch(() => 0);
+          const createAuth = authorizeCreateUser({
+            userCount,
+            sessionRole: auth?.role,
+            requestedRole: input.role,
+          });
+          if (!createAuth.allow) {
+            return send(res, 403, { error: 'forbidden' }, corsOrigin);
           }
           assertStaffRoleAllowed(input.role);
           const pinHash = await bcrypt.hash(input.pin, 10);

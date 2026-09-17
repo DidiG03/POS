@@ -130,6 +130,7 @@ import {
   getSecurityLog,
 } from './services/security';
 import { ipcHandle } from './services/ipcGuard';
+import { authorizeCreateUser } from './services/createUserAuth';
 import { reportAuditWriteFailure } from './services/adminAlerts';
 import {
   createSession,
@@ -2055,16 +2056,19 @@ ipcHandle('auth:createUser', async (_e, payload) => {
   // because there is no admin yet — so we allow exactly one bootstrap user and
   // only if it is an ADMIN. Every later create needs a real ADMIN session.
   const userCount = await prisma.user.count().catch(() => 0);
-  if (userCount === 0) {
-    if (String(input.role || '').toUpperCase() !== 'ADMIN') {
-      throw new Error('forbidden');
+  const createAuth = authorizeCreateUser({
+    userCount,
+    sessionRole: getSession(_e.sender.id)?.role,
+    requestedRole: input.role,
+  });
+  if (!createAuth.allow) {
+    if (createAuth.reason === 'admin_session_required') {
+      logSecurityEvent('ipc_denied', {
+        channel: 'auth:createUser',
+        senderId: _e.sender.id,
+        reason: 'not_admin',
+      });
     }
-  } else if (getSession(_e.sender.id)?.role !== 'ADMIN') {
-    logSecurityEvent('ipc_denied', {
-      channel: 'auth:createUser',
-      senderId: _e.sender.id,
-      reason: 'not_admin',
-    });
     throw new Error('forbidden');
   }
 

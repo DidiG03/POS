@@ -94,6 +94,11 @@ export function shouldForceLogoutOn401(
 ): boolean {
   if (!isUnauthorizedStatus(status)) return false;
   if (isLanAuthBootstrapPath(path)) return false;
+  const pathname = String(path || '').split('?')[0];
+  // First-admin create has no JWT yet. A 401 must stay on the form — not dump
+  // the Admin companion back through setup. After login the bearer is present
+  // and a 401 means the session really expired.
+  if (pathname === '/auth/create-user' && !currentToken) return false;
   if (gens && gens.request !== gens.current) return false;
   if (currentToken && tokenUsed && currentToken !== tokenUsed) return false;
   return true;

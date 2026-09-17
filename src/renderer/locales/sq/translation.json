@@ -352,6 +352,8 @@
     "notClockedIn": "Nuk je në turn",
     "clockedIn": "Në turn",
     "noStaffSync": "Ende nuk ka kamarierë ose kasierë. Hyr me OneTap Admin, pastaj shto stafin atje.",
+    "waitingForAdminSetup": "Kasa u hap. Krijo administratorin e parë tani.",
+    "waitingForAdminSetupHelp": "Hap OneTap Admin në një telefon në këtë Wi-Fi, skano këtë kasë, pastaj krijo admin-in e parë me emër dhe PIN.",
     "loadingStaff": "Duke ngarkuar stafin…",
     "noAdminUsersShort": "Nuk ka administratorë",
     "loginSubmit": "Hyr",

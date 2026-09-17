@@ -352,6 +352,8 @@
     "notClockedIn": "Not clocked in",
     "clockedIn": "Clocked in",
     "noStaffSync": "No waiters or cashiers yet. Sign in with OneTap Admin, then add staff there.",
+    "waitingForAdminSetup": "Till is unlocked. Create the first admin next.",
+    "waitingForAdminSetupHelp": "Open OneTap Admin on a phone on this Wi-Fi, scan for this till, then create the first admin with a name and PIN.",
     "loadingStaff": "Loading staff…",
     "noAdminUsersShort": "No admin users",
     "loginSubmit": "Log in",

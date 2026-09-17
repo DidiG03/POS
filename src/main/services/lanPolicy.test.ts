@@ -109,6 +109,36 @@ describe('authorizeLanRoute', () => {
     );
   });
 
+  it('lets OneTap Admin create the first user with no token', () => {
+    expect(
+      authorizeLanRoute('POST', '/auth/create-user', null, { userCount: 0 }),
+    ).toBe('allow');
+    expect(
+      authorizeLanRoute('POST', '/auth/create-user', 'WAITER', {
+        userCount: 0,
+      }),
+    ).toBe('allow');
+  });
+
+  it('still requires an ADMIN token to create users after bootstrap', () => {
+    expect(authorizeLanRoute('POST', '/auth/create-user', null)).toBe(
+      'unauthenticated',
+    );
+    expect(
+      authorizeLanRoute('POST', '/auth/create-user', null, { userCount: 1 }),
+    ).toBe('unauthenticated');
+    expect(
+      authorizeLanRoute('POST', '/auth/create-user', 'WAITER', {
+        userCount: 1,
+      }),
+    ).toBe('forbidden');
+    expect(
+      authorizeLanRoute('POST', '/auth/create-user', 'ADMIN', {
+        userCount: 1,
+      }),
+    ).toBe('allow');
+  });
+
   it('keeps a cook out of the order flow', () => {
     expect(authorizeLanRoute('POST', '/tickets', 'CHEF')).toBe('forbidden');
   });
