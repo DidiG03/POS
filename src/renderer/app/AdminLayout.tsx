@@ -25,6 +25,8 @@ import {
   IconSettings,
   IconTicket,
 } from '../components/icons';
+import { PageSpinner } from '../components/PageSpinner';
+import { hydrateLicenseEditionFromSettings } from '../utils/hydrateLicenseEdition';
 import { loadPosRealtimeSync } from '../utils/loadPosRealtimeSync';
 import { initRendererSentry } from '../utils/sentryBrowser';
 
@@ -38,6 +40,7 @@ type AdminNavItem = {
 export default function AdminLayout() {
   const { t } = useTranslation();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  const editionHydrated = useLicenseCapabilities((s) => s.hydrated);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [railCollapsed, setRailCollapsed] = useStoredFlag(
@@ -85,7 +88,8 @@ export default function AdminLayout() {
       if (isHidden()) return;
       const t0 = Date.now();
       try {
-        await window.api.settings.get();
+        const s = await window.api.settings.get();
+        hydrateLicenseEditionFromSettings(s);
         const dt = Date.now() - t0;
         if (!cancelled) {
           setBackendOk(true);
@@ -202,6 +206,10 @@ export default function AdminLayout() {
     setShowNotifications(false);
     setUnreadCount(0);
   };
+
+  if (!editionHydrated) {
+    return <PageSpinner message={t('common.loading')} />;
+  }
 
   return (
     <div className="admin-app pos-app flex h-screen min-h-0 text-gray-100">

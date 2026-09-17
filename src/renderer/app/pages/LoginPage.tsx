@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { hydrateLicenseEditionFromSettings } from '../../utils/hydrateLicenseEdition';
 import { useOrderContext } from '@shared/stores/orderContext';
 import {
   ensureStoreCounterSelected,
@@ -307,7 +308,7 @@ export default function LoginPage() {
         if (!s) return;
         setDevEditionSwitch(Boolean(s.devEditionSwitch));
         applyHostPosUiTheme(s?.preferences?.theme);
-        useLicenseCapabilities.getState().setEdition(s.licenseEdition);
+        hydrateLicenseEditionFromSettings(s);
       };
       const applySettings = (s: any) => {
         applyChrome(s);

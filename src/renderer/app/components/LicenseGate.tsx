@@ -13,6 +13,7 @@ import { Button, Field, Input, cn } from '../../components/ui';
 import { IconArrowLeft } from '../../components/icons';
 import { toast } from '../../stores/toasts';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
+import { hydrateLicenseEditionFromSettings } from '../../utils/hydrateLicenseEdition';
 import { writeStoredFlag } from '../../utils/storedFlag';
 import type {
   LicenseEdition,
@@ -240,11 +241,10 @@ export default function LicenseGate({
     void window.api.settings
       .get()
       .then((s) => {
-        if (!cancelled)
-          useLicenseCapabilities.getState().setEdition(s?.licenseEdition);
+        if (!cancelled) hydrateLicenseEditionFromSettings(s);
       })
       .catch(() => {
-        if (!cancelled) useLicenseCapabilities.getState().setEdition(undefined);
+        // Keep the last known edition if settings are unreachable.
       });
     return () => {
       cancelled = true;

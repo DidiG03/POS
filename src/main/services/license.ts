@@ -9,8 +9,10 @@ import type { LicenseEdition } from '@shared/ipc';
 import {
   editionAllowsStaffRole,
   isStoreCounterArea,
+  peekLicenseEditionFromKey,
   resolveActiveLicenseEdition,
 } from '@shared/editionCapabilities';
+import { resolveStoredLicenseRecord } from './licenseEditionPersist';
 import { parseStoredLicenseStatus } from './licenseStatus';
 
 export type LicenseStatus = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
@@ -177,21 +179,31 @@ function parseEdition(raw: unknown): LicenseEdition | undefined {
   return v === 'STORE' || v === 'RESTAURANT' ? v : undefined;
 }
 
-function persistFromRemote(r: {
-  licenseKey?: string;
-  email?: string;
-  status?: string;
-  currentPeriodEnd?: string | null;
-  edition?: string;
-}): StoredLicense {
+function persistFromRemote(
+  r: {
+    licenseKey?: string;
+    email?: string;
+    status?: string;
+    currentPeriodEnd?: string | null;
+    edition?: string;
+  },
+  presentedKey?: string,
+): StoredLicense {
   const prev = readStoredLicense();
+  const resolved = resolveStoredLicenseRecord({
+    remoteEdition: r.edition,
+    storedEdition: prev?.edition,
+    incomingKey: r.licenseKey,
+    previousKey: prev?.key,
+    presentedKey,
+  });
   const stored: StoredLicense = {
-    key: String(r.licenseKey || ''),
+    key: resolved.key,
     email: String(r.email || ''),
     status: parseStoredLicenseStatus(r.status),
     currentPeriodEnd: r.currentPeriodEnd ? String(r.currentPeriodEnd) : null,
     lastValidatedAt: Date.now(),
-    edition: parseEdition(r.edition) || prev?.edition,
+    edition: resolved.edition,
   };
   if (!stored.key)
     throw new Error('Billing server did not return a license key');
@@ -245,15 +257,22 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       edition?: string;
     }>('/license/validate', { key: stored.key });
     const status = parseStoredLicenseStatus(remote.status || 'PAUSED');
+    const resolved = resolveStoredLicenseRecord({
+      remoteEdition: remote.edition,
+      storedEdition: stored.edition,
+      incomingKey: remote.licenseKey || stored.key,
+      previousKey: stored.key,
+      presentedKey: stored.key,
+    });
     const next: StoredLicense = {
-      key: String(remote.licenseKey || stored.key),
+      key: resolved.key,
       email: String(remote.email || stored.email),
       status,
       currentPeriodEnd: remote.currentPeriodEnd
         ? String(remote.currentPeriodEnd)
         : stored.currentPeriodEnd,
       lastValidatedAt: Date.now(),
-      edition: parseEdition(remote.edition) || stored.edition,
+      edition: resolved.edition || stored.edition,
     };
     writeStoredLicense(next);
     const licensed = Boolean(remote.valid) && status === 'ACTIVE';
@@ -408,7 +427,7 @@ export async function activateKey(key: string): Promise<{
     if (!r.valid) {
       return { ok: false, error: 'This key is not active' };
     }
-    persistFromRemote({ ...r, licenseKey: r.licenseKey || key });
+    persistFromRemote({ ...r, licenseKey: r.licenseKey || key }, key);
     return { ok: true };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || 'Could not activate key') };
@@ -469,10 +488,12 @@ export async function createPortalSession(): Promise<{
 }
 
 export function getActiveLicenseEdition(): LicenseEdition | undefined {
+  const stored = readStoredLicense();
   return resolveActiveLicenseEdition({
     unpackaged: isUnpackagedDev(),
     envEdition: process.env.POS_EDITION,
-    storedEdition: readStoredLicense()?.edition,
+    storedEdition: stored?.edition || peekLicenseEditionFromKey(stored?.key),
+    licenseKey: stored?.key,
   });
 }
 

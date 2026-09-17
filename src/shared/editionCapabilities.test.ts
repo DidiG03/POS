@@ -8,6 +8,7 @@ import {
   formatSaleLocation,
   isStoreCounterArea,
   normalizeLicenseEdition,
+  peekLicenseEditionFromKey,
   resolveActiveLicenseEdition,
   staffPosHomePath,
   staffRolesForEdition,
@@ -144,5 +145,25 @@ describe('editionCapabilities', () => {
         storedEdition: undefined,
       }),
     ).toBeUndefined();
+  });
+
+  it('reads store from a signed key when license.json has no edition', () => {
+    const body = Buffer.from(
+      JSON.stringify({ v: 2, cid: 'cus_1', em: 'a@b.com', ed: 'STORE' }),
+      'utf8',
+    )
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+    const key = `POS1.${body}.sig`;
+    expect(peekLicenseEditionFromKey(key)).toBe('STORE');
+    expect(
+      resolveActiveLicenseEdition({
+        unpackaged: false,
+        storedEdition: undefined,
+        licenseKey: key,
+      }),
+    ).toBe('STORE');
   });
 });

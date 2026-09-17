@@ -114,7 +114,13 @@ describe('standalone Admin companion', () => {
     expect(login).toContain('isBrowserClient && !isAdminApp');
     expect(login).toContain("t('adminLayout.panelTitle')");
     expect(read('src/renderer/app/AdminLayout.tsx')).toContain(
-      "t('adminLayout.panelTitle')",
+      'hydrateLicenseEditionFromSettings',
+    );
+    expect(read('src/renderer/app/BootRoot.tsx')).toContain(
+      'LicenseEditionSync',
+    );
+    expect(read('src/renderer/app/BootRoot.tsx')).toContain(
+      'hydrateLicenseEditionFromSettings',
     );
     expect(read('src/renderer/app/AdminLayout.tsx')).toContain(
       'pos:forceLogout',

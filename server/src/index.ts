@@ -22,6 +22,7 @@ import {
   shouldUpdatePaymentInsteadOfCheckout,
   type LicenseSubStatus,
 } from './billingGuards.js';
+import { resolveValidatedLicenseEdition } from './licenseEdition.js';
 
 requireEnv();
 
@@ -86,7 +87,9 @@ function priceIdsFromSubscription(sub: Stripe.Subscription): string[] {
     .filter(Boolean);
 }
 
-function editionFromSubscription(sub: Stripe.Subscription): LicenseEdition {
+function explicitEditionFromSubscription(
+  sub: Stripe.Subscription,
+): LicenseEdition | '' {
   const fromMeta = parseLicenseEdition(sub.metadata?.edition);
   if (fromMeta) return fromMeta;
   const ids = priceIdsFromSubscription(sub);
@@ -94,8 +97,23 @@ function editionFromSubscription(sub: Stripe.Subscription): LicenseEdition {
     const edition = editionFromPriceId(id);
     if (edition) return edition;
   }
-  // Existing single-price subscribers stay on Restaurant.
-  return 'RESTAURANT';
+  return '';
+}
+
+function editionFromSubscription(
+  sub: Stripe.Subscription,
+  keyEdition: LicenseEdition | '' = '',
+): {
+  edition: LicenseEdition;
+  stripeEdition: LicenseEdition | '';
+  mismatch: boolean;
+} {
+  const stripeEdition = explicitEditionFromSubscription(sub);
+  const resolved = resolveValidatedLicenseEdition({
+    keyEdition,
+    stripeEdition,
+  });
+  return { ...resolved, stripeEdition };
 }
 
 function formatStripeAmount(
@@ -174,11 +192,16 @@ async function portalUrlForCustomer(customerId: string): Promise<string | undefi
   }
 }
 
-async function subscriptionForCustomer(customerId: string): Promise<{
+async function subscriptionForCustomer(
+  customerId: string,
+  keyEdition: LicenseEdition | '' = '',
+): Promise<{
   status: string;
   periodEnd: number | null;
   id: string;
   edition: LicenseEdition;
+  stripeEdition: LicenseEdition | '';
+  mismatch: boolean;
 } | null> {
   const list = await stripe.subscriptions.list({
     customer: customerId,
@@ -192,11 +215,14 @@ async function subscriptionForCustomer(customerId: string): Promise<{
     null;
   if (!preferred) return null;
   const periodEnd = Number((preferred as any).current_period_end || 0);
+  const resolved = editionFromSubscription(preferred, keyEdition);
   return {
     status: String(preferred.status || ''),
     periodEnd: periodEnd > 0 ? periodEnd : null,
     id: preferred.id,
-    edition: editionFromSubscription(preferred),
+    edition: resolved.edition,
+    stripeEdition: resolved.stripeEdition,
+    mismatch: resolved.mismatch,
   };
 }
 
@@ -210,10 +236,11 @@ async function findCustomerByEmail(
 async function licenseInfoForCustomer(
   customer: Stripe.Customer,
   emailFallback: string,
-): Promise<(SubInfo & { licenseKey: string }) | null> {
+  keyEdition: LicenseEdition | '' = '',
+): Promise<(SubInfo & { licenseKey: string; mismatch: boolean }) | null> {
   const email = normalizeLicenseEmail(customer.email || emailFallback || '');
   if (!email) return null;
-  const sub = await subscriptionForCustomer(customer.id);
+  const sub = await subscriptionForCustomer(customer.id, keyEdition);
   if (!sub) return null;
   const status = mapSubStatus(sub.status);
   return {
@@ -225,6 +252,7 @@ async function licenseInfoForCustomer(
       : null,
     subscriptionId: sub.id,
     edition: sub.edition,
+    mismatch: sub.mismatch,
     licenseKey: issueLicenseKey(
       customer.id,
       email,
@@ -457,6 +485,7 @@ app.post('/license/validate', async (req, res) => {
     const info = await licenseInfoForCustomer(
       customer as Stripe.Customer,
       parsed.em,
+      parsed.ed || '',
     );
     if (!info) {
       return res.status(200).json({
@@ -465,12 +494,12 @@ app.post('/license/validate', async (req, res) => {
         email: parsed.em,
       });
     }
-    if (parsed.ed && parsed.ed !== info.edition) {
+    if (info.mismatch) {
       return res.status(200).json({
         valid: false,
         status: info.status,
         email: info.email,
-        edition: parsed.ed,
+        edition: info.edition,
       });
     }
     const valid = canIssueLicense(info.status);

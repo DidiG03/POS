@@ -129,15 +129,52 @@ export function staffRolesForEdition(
     : RESTAURANT_STAFF_ROLES;
 }
 
+function decodePos1Payload(key: string): { ed?: unknown } | null {
+  const raw = String(key || '').trim();
+  const parts = raw.split('.');
+  if (parts.length !== 3 || parts[0] !== 'POS1') return null;
+  const body = parts[1] || '';
+  const pad = body.length % 4 === 0 ? '' : '='.repeat(4 - (body.length % 4));
+  const b64 = body.replace(/-/g, '+').replace(/_/g, '/') + pad;
+  try {
+    let json = '';
+    if (typeof Buffer !== 'undefined') {
+      json = Buffer.from(b64, 'base64').toString('utf8');
+    } else if (typeof atob === 'function') {
+      json = atob(b64);
+    } else {
+      return null;
+    }
+    return JSON.parse(json) as { ed?: unknown };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read `ed` from a POS1 payload without checking the HMAC.
+ * Only use on a key the billing server already accepted.
+ */
+export function peekLicenseEditionFromKey(
+  key?: string | null,
+): LicenseEdition | undefined {
+  if (!key) return undefined;
+  return normalizeLicenseEdition(decodePos1Payload(key)?.ed);
+}
+
 /** Packaged builds ignore env overrides so only the paid plan can change the UI. */
 export function resolveActiveLicenseEdition(input: {
   unpackaged: boolean;
   envEdition?: string | null;
   storedEdition?: string | null;
+  licenseKey?: string | null;
 }): LicenseEdition | undefined {
   if (input.unpackaged) {
     const fromEnv = normalizeLicenseEdition(input.envEdition);
     if (fromEnv) return fromEnv;
   }
-  return normalizeLicenseEdition(input.storedEdition);
+  return (
+    normalizeLicenseEdition(input.storedEdition) ||
+    peekLicenseEditionFromKey(input.licenseKey)
+  );
 }

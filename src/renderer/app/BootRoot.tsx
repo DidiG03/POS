@@ -14,6 +14,7 @@ import { LocaleSync } from '../i18n/LocaleSync';
 import { ThemeSync } from '../i18n/ThemeSync';
 import { PageSpinner } from '../components/PageSpinner';
 import { useLicenseCapabilities } from '../stores/licenseCapabilities';
+import { hydrateLicenseEditionFromSettings } from '../utils/hydrateLicenseEdition';
 import { readStoredFlag, writeStoredFlag } from '../utils/storedFlag';
 import { VaultGate } from './components/VaultGate';
 import {
@@ -87,7 +88,8 @@ function MaybeLicenseGate({ children }: { children: React.ReactNode }) {
         setBlocked(!ok);
       })
       .catch(() => {
-        if (!cancelled) useLicenseCapabilities.getState().setEdition(undefined);
+        // Keep the last known edition; a failed status check must not
+        // flip a store till onto restaurant defaults.
       });
     return () => {
       cancelled = true;
@@ -100,6 +102,24 @@ function MaybeLicenseGate({ children }: { children: React.ReactNode }) {
       <LicenseGate>{children}</LicenseGate>
     </React.Suspense>
   );
+}
+
+function LicenseEditionSync() {
+  useEffect(() => {
+    let cancelled = false;
+    void window.api?.settings
+      ?.get?.()
+      .then((s: { licenseEdition?: string | null } | null) => {
+        if (!cancelled) hydrateLicenseEditionFromSettings(s);
+      })
+      .catch(() => {
+        // Leave the current edition in place if the till is unreachable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return null;
 }
 
 function sleep(ms: number) {
@@ -429,6 +449,7 @@ export function BootRoot() {
           <LocaleSync>
             <ThemeSync>
               <MaybeLicenseGate>
+                <LicenseEditionSync />
                 <Root />
               </MaybeLicenseGate>
               <PosServerScanHostGate />
