@@ -82,6 +82,19 @@ describe('decideAccess', () => {
     }
   });
 
+  it('lets the POS till check for updates on the staff picker', () => {
+    const policy = {
+      allow: 'session' as const,
+      windows: ['pos', 'kds'] as const,
+    };
+    expect(
+      decideAccess(policy, ctx({ windowKind: 'pos', session: null })).ok,
+    ).toBe(true);
+    expect(
+      decideAccess(policy, ctx({ windowKind: 'kds', session: null })).ok,
+    ).toBe(true);
+  });
+
   it('grants a listed window even with no session', () => {
     const verdict = decideAccess(
       { allow: ['CHEF'], windows: ['kds'] },

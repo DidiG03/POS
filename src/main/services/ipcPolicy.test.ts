@@ -117,6 +117,26 @@ describe('IPC policy shape', () => {
     }
   });
 
+  it('lets the POS window check for updates before login', () => {
+    expect(IPC_POLICIES['updater:checkForUpdates']?.allow).toBe('session');
+    expect(IPC_POLICIES['updater:checkForUpdates']?.windows).toEqual([
+      'pos',
+      'kds',
+    ]);
+    expect(IPC_POLICIES['updater:checkDownloadAndPrepare']?.windows).toEqual([
+      'pos',
+      'kds',
+    ]);
+    expect(IPC_POLICIES['updater:downloadUpdate']?.windows).toEqual([
+      'pos',
+      'kds',
+    ]);
+    expect(IPC_POLICIES['updater:installUpdate']?.windows).toEqual([
+      'pos',
+      'kds',
+    ]);
+  });
+
   it('lets the reservations window merge tables', () => {
     expect(IPC_POLICIES['layout:setMerges']?.allow).toBe('session');
     expect(IPC_POLICIES['layout:setMerges']?.windows).toEqual(['reservations']);

@@ -80,8 +80,12 @@ describe('standalone Admin companion', () => {
       'broadcastAppsUpdate',
     );
     expect(read('src/renderer/utils/fleetUpdate.ts')).toContain(
-      'installFleetUpdates',
+      'prepareFleetUpdates',
     );
+    expect(read('src/renderer/utils/adminFleetMenu.ts')).toContain(
+      'updater:run-fleet-check',
+    );
+    expect(read('src/preload/admin.ts')).toContain('updater:run-fleet-check');
     expect(main).not.toContain('admin:openWindow');
     const login = read('src/renderer/app/pages/LoginPage.tsx');
     expect(login).toContain('needsFirstAdmin');

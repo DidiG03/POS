@@ -2,7 +2,7 @@
  * Auto-updater for Electron app
  *
  * Supports multiple update servers:
- * - GitHub Releases (recommended for open source)
+ * - GitHub Releases (generic `/releases/latest/download` feed)
  * - Generic update server (custom URL)
  *
  * Configuration:
@@ -17,6 +17,7 @@ import { app, BrowserWindow } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
 import { allowNextQuit } from './services/hostRuntime';
 import { isUnpackagedElectron } from './services/electronDev';
+import { resolveUpdateFeed } from './services/updateFeed';
 import {
   isMissingUpdateFeedError,
   userFacingUpdaterError,
@@ -31,12 +32,34 @@ const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED !== 'false';
 let updateCheckInterval: NodeJS.Timeout | null = null;
 let updateInfo: UpdateInfo | null = null;
 let updateDownloaded = false;
+let checking = false;
+let downloading = false;
+let downloadPercent: number | null = null;
 let updateCheckListeners: Set<BrowserWindow> = new Set();
+let initialized = false;
+let inFlightCheck: Promise<UpdateCheckResult> | null = null;
+let inFlightDownload: Promise<UpdateActionResult> | null = null;
+const statusListeners = new Set<() => void>();
 
 // Hands-off (kiosk) auto-update state. Only enabled for the KDS.
 let autoInstallOnDownloaded = false;
 let autoInstallDelayMs = 60_000;
 let autoInstallTimer: NodeJS.Timeout | null = null;
+
+export type UpdateActionResult = {
+  success?: boolean;
+  error?: string;
+  hasUpdate?: boolean;
+  downloaded?: boolean;
+  currentVersion?: string;
+  updateInfo?: {
+    version: string;
+    releaseDate?: string;
+    releaseNotes?: string | unknown;
+  } | null;
+};
+
+type UpdateCheckResult = UpdateActionResult;
 
 function clearAutoInstallTimer(): void {
   if (autoInstallTimer) {
@@ -79,60 +102,208 @@ function releaseDateIso(releaseDate: unknown): string | undefined {
   }
 }
 
+function snapshotUpdateInfo(info: UpdateInfo | null) {
+  if (!info) return null;
+  return {
+    version: info.version,
+    releaseDate: releaseDateIso((info as any).releaseDate),
+    releaseNotes: info.releaseNotes || '',
+  };
+}
+
+function currentVersion(): string {
+  try {
+    return app.getVersion();
+  } catch {
+    return '';
+  }
+}
+
+function emitStatusChange(): void {
+  for (const listener of statusListeners) {
+    try {
+      listener();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function onUpdaterStatusChange(listener: () => void): () => void {
+  statusListeners.add(listener);
+  return () => {
+    statusListeners.delete(listener);
+  };
+}
+
+function isAlreadyInProgressError(error: unknown): boolean {
+  const msg = String((error as any)?.message || error || '');
+  return /already in progress|checking for update/i.test(msg);
+}
+
+function beginDownload(): Promise<UpdateActionResult> {
+  if (updateDownloaded)
+    return Promise.resolve({ success: true, downloaded: true });
+  if (inFlightDownload) return inFlightDownload;
+  downloading = true;
+  if (downloadPercent == null) downloadPercent = 0;
+  emitStatusChange();
+  inFlightDownload = (async () => {
+    try {
+      addBreadcrumb('Downloading update', 'updater', 'info');
+      await autoUpdater.downloadUpdate();
+      return { success: true, downloaded: true };
+    } catch (error: any) {
+      if (updateDownloaded) return { success: true, downloaded: true };
+      captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: 'updater:downloadUpdate' },
+      );
+      return {
+        error: userFacingUpdaterError(error) || 'Failed to download update',
+      };
+    } finally {
+      downloading = false;
+      inFlightDownload = null;
+    }
+  })();
+  return inFlightDownload;
+}
+
+/**
+ * NSIS on Windows needs a silent installer: a UI installer waits on this
+ * process while the process waits on the installer. macOS replaces the .app
+ * from the zip and relaunches. Always confirm quit so the tray host does
+ * not intercept the restart.
+ */
+function quitAndInstallUpdate(): void {
+  allowNextQuit();
+  try {
+    app.releaseSingleInstanceLock();
+  } catch {
+    // ignore
+  }
+  const silent = process.platform === 'win32';
+  autoUpdater.quitAndInstall(silent, true);
+}
+
+async function performCheck(): Promise<UpdateCheckResult> {
+  const version = currentVersion();
+  if (!AUTO_UPDATE_ENABLED) {
+    return { error: 'Auto-updates are disabled', currentVersion: version };
+  }
+  if (IS_DEV) {
+    return {
+      error: 'Updates are disabled in development mode',
+      currentVersion: version,
+    };
+  }
+  if (!initialized) {
+    return { error: 'Updater is not ready', currentVersion: version };
+  }
+
+  checking = true;
+  emitStatusChange();
+  notifyListeners('checking');
+  addBreadcrumb('Checking for updates', 'updater', 'info');
+  try {
+    await autoUpdater.checkForUpdates();
+    return {
+      success: true,
+      hasUpdate: updateInfo !== null,
+      downloaded: updateDownloaded,
+      currentVersion: version,
+      updateInfo: snapshotUpdateInfo(updateInfo),
+    };
+  } catch (error: any) {
+    if (isMissingUpdateFeedError(error)) {
+      updateInfo = null;
+      updateDownloaded = false;
+      notifyListeners('update-not-available');
+      return { success: true, hasUpdate: false, currentVersion: version };
+    }
+    if (isAlreadyInProgressError(error)) {
+      return {
+        success: true,
+        hasUpdate: updateInfo !== null,
+        downloaded: updateDownloaded,
+        currentVersion: version,
+        updateInfo: snapshotUpdateInfo(updateInfo),
+      };
+    }
+    captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: 'updater:checkForUpdates' },
+    );
+    return { error: userFacingUpdaterError(error), currentVersion: version };
+  } finally {
+    checking = false;
+    emitStatusChange();
+  }
+}
+
 // IPC handlers will be registered in main/index.ts
 export const updaterHandlers = {
   getUpdateStatus: () => {
     return {
       hasUpdate: updateInfo !== null,
-      updateInfo: updateInfo
-        ? {
-            version: updateInfo.version,
-            releaseDate: releaseDateIso((updateInfo as any).releaseDate),
-            releaseNotes: updateInfo.releaseNotes || '',
-          }
-        : null,
+      updateInfo: snapshotUpdateInfo(updateInfo),
       downloaded: updateDownloaded,
-      checking: false,
-      currentVersion: app.getVersion(),
+      checking,
+      downloading: downloading || downloadPercent !== null,
+      downloadPercent,
+      currentVersion: currentVersion(),
     };
   },
   checkForUpdates: async () => {
-    if (!AUTO_UPDATE_ENABLED) {
-      return { error: 'Auto-updates are disabled' };
-    }
-    if (IS_DEV) {
-      return { error: 'Updates are disabled in development mode' };
-    }
-    try {
-      addBreadcrumb('Checking for updates', 'updater', 'info');
-      await autoUpdater.checkForUpdates();
-      return { success: true };
-    } catch (error: any) {
-      if (isMissingUpdateFeedError(error)) {
-        return { error: 'No update available' };
-      }
-      captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { context: 'updater:checkForUpdates' },
-      );
-      return { error: userFacingUpdaterError(error) };
-    }
+    if (inFlightCheck) return inFlightCheck;
+    checking = true;
+    emitStatusChange();
+    inFlightCheck = performCheck().finally(() => {
+      inFlightCheck = null;
+    });
+    return inFlightCheck;
   },
   downloadUpdate: async () => {
-    if (!updateInfo) {
+    if (!updateInfo && !updateDownloaded) {
       return { error: 'No update available' };
     }
-    try {
-      addBreadcrumb('Downloading update', 'updater', 'info');
-      await autoUpdater.downloadUpdate();
-      return { success: true };
-    } catch (error: any) {
-      captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { context: 'updater:downloadUpdate' },
-      );
-      return { error: error?.message || 'Failed to download update' };
+    return beginDownload();
+  },
+  /**
+   * Check, download if needed, and leave the package ready to install.
+   * Used by the native menu so one click does the whole pipeline.
+   */
+  checkDownloadAndPrepare: async (): Promise<UpdateActionResult> => {
+    const version = currentVersion();
+    if (updateDownloaded) {
+      return {
+        success: true,
+        hasUpdate: true,
+        downloaded: true,
+        currentVersion: version,
+        updateInfo: snapshotUpdateInfo(updateInfo),
+      };
     }
+    const checked = await updaterHandlers.checkForUpdates();
+    if (checked.error) return checked;
+    if (!checked.hasUpdate) {
+      return {
+        success: true,
+        hasUpdate: false,
+        downloaded: false,
+        currentVersion: version,
+      };
+    }
+    const downloaded = await beginDownload();
+    if (downloaded.error) return downloaded;
+    return {
+      success: true,
+      hasUpdate: true,
+      downloaded: true,
+      currentVersion: version,
+      updateInfo: snapshotUpdateInfo(updateInfo),
+    };
   },
   installUpdate: () => {
     if (!updateDownloaded) {
@@ -140,8 +311,7 @@ export const updaterHandlers = {
     }
     clearAutoInstallTimer();
     addBreadcrumb('Installing update and restarting', 'updater', 'info');
-    allowNextQuit();
-    autoUpdater.quitAndInstall(false, true);
+    quitAndInstallUpdate();
     return { success: true };
   },
   /**
@@ -158,6 +328,8 @@ export const updaterHandlers = {
 };
 
 export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
+  if (initialized) return;
+
   if (!AUTO_UPDATE_ENABLED) {
     console.log('[AutoUpdater] Disabled (AUTO_UPDATE_ENABLED=false)');
     return;
@@ -179,49 +351,44 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
 
     // The channel always applies (works with an explicit feed OR with the
     // bundled app-update.yml that electron-builder ships from the publish
-    // config). For KDS this is "kds" so it reads kds.yml.
+    // config). For KDS this is "kds" so it reads kds.yml / kds-mac.yml.
     if (options?.channel) {
       autoUpdater.channel = options.channel;
     }
 
-    if (githubOwner && githubRepo) {
-      const feed: {
-        provider: 'github';
-        owner: string;
-        repo: string;
-        channel?: string;
-      } = {
-        provider: 'github',
-        owner: githubOwner,
-        repo: githubRepo,
-      };
-      if (options?.channel) feed.channel = options.channel;
+    const feed = resolveUpdateFeed({
+      githubOwner,
+      githubRepo,
+      updateServerUrl,
+      channel: options?.channel,
+    });
+    if (feed) {
       autoUpdater.setFeedURL(feed);
       console.log(
-        `[AutoUpdater] Configured for GitHub: ${githubOwner}/${githubRepo}` +
-          (options?.channel ? ` (channel: ${options.channel})` : ''),
-      );
-    } else if (updateServerUrl) {
-      // Custom update server
-      autoUpdater.setFeedURL(updateServerUrl);
-      console.log(
-        `[AutoUpdater] Configured for custom server: ${updateServerUrl}`,
+        `[AutoUpdater] Configured generic feed: ${feed.url}` +
+          (feed.channel ? ` (channel: ${feed.channel})` : ''),
       );
     } else {
       // No explicit feed: fall back to the bundled app-update.yml that
       // electron-builder generates from the publish config. Don't bail —
-      // this is the normal packaged path.
+      // this is the normal unpackaged-override path.
       console.log(
         '[AutoUpdater] Using bundled app-update.yml feed' +
           (options?.channel ? ` (channel: ${options.channel})` : ''),
       );
     }
 
+    autoUpdater.logger = console;
     // Configuration
     autoUpdater.autoDownload = Boolean(options?.autoDownload); // KDS: true; POS: false (manual)
     autoUpdater.autoInstallOnAppQuit = true; // Auto-install on quit if downloaded
     autoUpdater.allowDowngrade = false;
     autoUpdater.allowPrerelease = false; // Only stable releases
+    // Windows blockmaps were missing from older GitHub releases; a failed
+    // delta must not abort the whole update. Full NSIS / zip still apply.
+    if (process.platform === 'win32') {
+      (autoUpdater as any).disableDifferentialDownload = true;
+    }
 
     autoInstallOnDownloaded = Boolean(options?.autoInstallOnDownloaded);
     if (
@@ -235,6 +402,8 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
     // Event handlers
     autoUpdater.on('checking-for-update', () => {
       console.log('[AutoUpdater] Checking for update...');
+      checking = true;
+      emitStatusChange();
       notifyListeners('checking');
     });
 
@@ -242,22 +411,21 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
       console.log('[AutoUpdater] Update available:', info.version);
       updateInfo = info;
       updateDownloaded = false;
-      notifyListeners('update-available', {
-        version: info.version,
-        releaseDate: releaseDateIso((info as any).releaseDate),
-        releaseNotes: info.releaseNotes || '',
-      });
+      checking = false;
+      emitStatusChange();
+      notifyListeners('update-available', snapshotUpdateInfo(info));
       addBreadcrumb(`Update available: ${info.version}`, 'updater', 'info');
       // Kiosk path: pull the update down immediately so the only remaining
       // step is the (auto-scheduled) restart. `autoDownload` already does
       // this internally, but calling it explicitly keeps behavior obvious
       // and works even if a future electron-updater changes the default.
       if (autoUpdater.autoDownload) {
-        autoUpdater.downloadUpdate().catch((error) => {
-          captureException(
-            error instanceof Error ? error : new Error(String(error)),
-            { context: 'updater:autoDownload' },
-          );
+        void beginDownload().then((result) => {
+          if (result.error) {
+            captureException(new Error(result.error), {
+              context: 'updater:autoDownload',
+            });
+          }
         });
       }
     });
@@ -269,10 +437,16 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
       );
       updateInfo = null;
       updateDownloaded = false;
+      checking = false;
+      emitStatusChange();
       notifyListeners('update-not-available');
     });
 
     autoUpdater.on('error', (error: Error) => {
+      checking = false;
+      downloading = false;
+      downloadPercent = null;
+      emitStatusChange();
       if (isMissingUpdateFeedError(error)) {
         console.log('[AutoUpdater] No update feed on this release');
         notifyListeners('update-not-available');
@@ -285,6 +459,8 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
 
     autoUpdater.on('download-progress', (progress) => {
       const percent = Math.round(progress.percent || 0);
+      downloadPercent = percent;
+      emitStatusChange();
       console.log(`[AutoUpdater] Download progress: ${percent}%`);
       notifyListeners('download-progress', {
         percent,
@@ -295,12 +471,12 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
 
     autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
       console.log('[AutoUpdater] Update downloaded:', info.version);
+      updateInfo = info;
       updateDownloaded = true;
-      notifyListeners('update-downloaded', {
-        version: info.version,
-        releaseDate: releaseDateIso((info as any).releaseDate),
-        releaseNotes: info.releaseNotes || '',
-      });
+      downloadPercent = null;
+      checking = false;
+      emitStatusChange();
+      notifyListeners('update-downloaded', snapshotUpdateInfo(info));
       addBreadcrumb(`Update downloaded: ${info.version}`, 'updater', 'info');
 
       // Kiosk path: schedule an automatic restart-and-install after a
@@ -323,8 +499,7 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
             'info',
           );
           try {
-            allowNextQuit();
-            autoUpdater.quitAndInstall(true, true);
+            quitAndInstallUpdate();
           } catch (error) {
             captureException(
               error instanceof Error ? error : new Error(String(error)),
@@ -335,15 +510,17 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
       }
     });
 
+    initialized = true;
+
     // Check for updates on startup (after a delay to not block app launch)
     setTimeout(() => {
-      checkForUpdates();
+      void checkForUpdates();
     }, 5000); // 5 seconds after app start
 
     // Check for updates periodically (every 4 hours)
     updateCheckInterval = setInterval(
       () => {
-        checkForUpdates();
+        void checkForUpdates();
       },
       4 * 60 * 60 * 1000,
     ); // 4 hours
@@ -361,7 +538,7 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
 async function checkForUpdates(): Promise<void> {
   if (!AUTO_UPDATE_ENABLED || IS_DEV) return;
   try {
-    await autoUpdater.checkForUpdates();
+    await updaterHandlers.checkForUpdates();
   } catch (error) {
     // Errors are handled by the 'error' event handler
     void error;
@@ -399,4 +576,5 @@ export function cleanup(): void {
   }
   clearAutoInstallTimer();
   updateCheckListeners.clear();
+  statusListeners.clear();
 }

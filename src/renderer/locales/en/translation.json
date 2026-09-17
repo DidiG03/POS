@@ -520,8 +520,8 @@
   },
   "settingsUpdates": {
     "title": "System Updates",
-    "help": "One action updates this Admin app, the POS till it is connected to, and kitchen displays on the same network — only where a newer version is available.",
-    "helpStore": "One action updates this Admin app, the POS till it is connected to, and kitchen displays on the same network — only where a newer version is available.",
+    "help": "One action updates this Admin app, the POS till it is connected to (including a till on another computer), and kitchen displays on the same network — only where a newer version is available.",
+    "helpStore": "One action updates this Admin app, the POS till it is connected to (including a till on another computer), and kitchen displays on the same network — only where a newer version is available.",
     "checking": "Checking…",
     "refresh": "Refresh",
     "available": "Update available",

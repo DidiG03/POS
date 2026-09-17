@@ -24,6 +24,7 @@ type HostRuntimeOpts = {
   getMainWindow: () => BrowserWindow | null;
   createMainWindow: () => void;
   getIconPath: () => string | undefined;
+  onCheckForUpdates?: () => void;
 };
 
 let opts: HostRuntimeOpts | null = null;
@@ -160,24 +161,32 @@ export function setupHostTray(): void {
   const image = loadTrayImage(opts?.getIconPath());
   tray = image ? new Tray(image) : new Tray(nativeImage.createEmpty());
   tray.setToolTip('OneTap POS — tablets stay connected');
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      {
-        label: 'Tablets stay connected while this icon is here',
-        enabled: false,
+  const trayMenu: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Tablets stay connected while this icon is here',
+      enabled: false,
+    },
+    { type: 'separator' },
+    { label: 'Open POS', click: () => showMainWindow() },
+  ];
+  if (opts?.onCheckForUpdates) {
+    const checkForUpdates = opts.onCheckForUpdates;
+    trayMenu.push({
+      label: 'Check for Updates…',
+      click: () => checkForUpdates(),
+    });
+  }
+  trayMenu.push(
+    { type: 'separator' },
+    {
+      label: 'Quit (disconnects tablets)',
+      click: () => {
+        allowNextQuit();
+        app.quit();
       },
-      { type: 'separator' },
-      { label: 'Open POS', click: () => showMainWindow() },
-      { type: 'separator' },
-      {
-        label: 'Quit (disconnects tablets)',
-        click: () => {
-          allowNextQuit();
-          app.quit();
-        },
-      },
-    ]),
+    },
   );
+  tray.setContextMenu(Menu.buildFromTemplate(trayMenu));
   tray.on('click', () => showMainWindow());
   if (image) return;
   void app

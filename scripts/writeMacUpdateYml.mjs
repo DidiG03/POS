@@ -28,10 +28,15 @@ if (missing.length) {
 
 const entries = inputs.map((p) => {
   const data = fs.readFileSync(p);
+  const url = path.basename(p);
+  let arch;
+  if (/\barm64\b/.test(url)) arch = 'arm64';
+  else if (/\bx64\b/.test(url) || /\bintel\b/.test(url)) arch = 'x64';
   return {
-    url: path.basename(p),
+    url,
     sha512: crypto.createHash('sha512').update(data).digest('base64'),
     size: data.length,
+    arch,
   };
 });
 
@@ -52,11 +57,17 @@ const primary =
 const yml = [
   'version: ' + version,
   'files:',
-  ...entries.flatMap((f) => [
-    '  - url: ' + f.url,
-    '    sha512: ' + f.sha512,
-    '    size: ' + f.size,
-  ]),
+  ...entries.flatMap((f) => {
+    const lines = [
+      '  - url: ' + f.url,
+      '    sha512: ' + f.sha512,
+      '    size: ' + f.size,
+    ];
+    // Zip is the in-app payload. Tagging arch lets Intel Macs pick the
+    // x64 zip instead of verifying against the Apple Silicon sha512.
+    if (f.arch && f.url.endsWith('.zip')) lines.push('    arch: ' + f.arch);
+    return lines;
+  }),
   'path: ' + primary.url,
   'sha512: ' + primary.sha512,
   `releaseDate: '${new Date().toISOString()}'`,

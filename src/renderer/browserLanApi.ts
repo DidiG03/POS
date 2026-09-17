@@ -779,6 +779,11 @@ export function installBrowserLanApi(): void {
     if (pathname === '/auth/login' || pathname === '/pairing/verify') {
       return IS_NATIVE_SHELL ? 12_000 : 6_000;
     }
+    if (pathname.startsWith('/admin/updates/')) {
+      // Check/download start work on the till and return; still allow GitHub
+      // a few seconds. Install may drop the socket when POS restarts.
+      return 15_000;
+    }
     if (path.includes('/print')) return LAN_PRINT_TIMEOUT_MS;
     if (method === 'GET' || method === 'HEAD') return CLIENT_GET_TIMEOUT_MS;
     return CLIENT_TIMEOUT_MS;

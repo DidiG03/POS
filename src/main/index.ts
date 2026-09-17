@@ -121,6 +121,7 @@ import {
   registerUpdateListener,
   cleanup as cleanupUpdater,
 } from './updater';
+import { checkForUpdatesFromMenu, setupAppMenu } from './services/appMenu';
 import {
   cleanupSenderRateLimits,
   logSecurityEvent,
@@ -694,6 +695,9 @@ configureHostRuntime({
     if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   },
   getIconPath: () => APP_ICON_PATH,
+  onCheckForUpdates: () => {
+    void checkForUpdatesFromMenu();
+  },
 });
 
 function createKdsWindow() {
@@ -1668,6 +1672,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     setupHostTray();
+    setupAppMenu();
     setupAutoUpdater();
     return;
   }
@@ -1686,6 +1691,7 @@ app.whenReady().then(async () => {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   bootTrace('host:window');
   setupHostTray();
+  setupAppMenu();
   setupAutoUpdater();
 });
 
@@ -1811,6 +1817,10 @@ ipcHandle('updater:getStatus', async () => {
 
 ipcHandle('updater:checkForUpdates', async () => {
   return await updaterHandlers.checkForUpdates();
+});
+
+ipcHandle('updater:checkDownloadAndPrepare', async () => {
+  return await updaterHandlers.checkDownloadAndPrepare();
 });
 
 ipcHandle('updater:downloadUpdate', async () => {

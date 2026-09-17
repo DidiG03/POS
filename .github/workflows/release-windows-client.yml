@@ -184,7 +184,16 @@ jobs:
 
           UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" "$CANONICAL_ADMIN" )
           shopt -s nullglob
-          UPLOAD+=( dist/latest*.yml dist-installers/kds/kds.yml dist-installers/kds/latest*.yml dist-installers/admin/admin.yml dist-installers/admin/latest*.yml )
+          UPLOAD+=(
+            dist/latest*.yml
+            dist/*.blockmap
+            dist-installers/kds/kds.yml
+            dist-installers/kds/latest*.yml
+            dist-installers/kds/*.blockmap
+            dist-installers/admin/admin.yml
+            dist-installers/admin/latest*.yml
+            dist-installers/admin/*.blockmap
+          )
           shopt -u nullglob
 
           gh release upload "$TAG" "${UPLOAD[@]}" --clobber

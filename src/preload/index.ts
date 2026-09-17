@@ -295,6 +295,8 @@ const api: Api = {
   updater: {
     getUpdateStatus: () => ipcRenderer.invoke('updater:getStatus'),
     checkForUpdates: () => ipcRenderer.invoke('updater:checkForUpdates'),
+    checkDownloadAndPrepare: () =>
+      ipcRenderer.invoke('updater:checkDownloadAndPrepare'),
     downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
     installUpdate: () => ipcRenderer.invoke('updater:installUpdate'),
   },

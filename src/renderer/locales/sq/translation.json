@@ -520,8 +520,8 @@
   },
   "settingsUpdates": {
     "title": "Përditësimet e sistemit",
-    "help": "Një veprim përditëson Admin, POS-in e lidhur dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri.",
-    "helpStore": "Një veprim përditëson Admin, POS-in e lidhur dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri.",
+    "help": "Një veprim përditëson këtë Admin, POS-in e lidhur (edhe nëse është në një kompjuter tjetër) dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri.",
+    "helpStore": "Një veprim përditëson këtë Admin, POS-in e lidhur (edhe nëse është në një kompjuter tjetër) dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri.",
     "checking": "Duke kontrolluar…",
     "refresh": "Rifresko",
     "available": "Ka përditësim",

@@ -331,6 +331,7 @@ function SystemUpdatesSettings() {
   }
 
   async function download() {
+    setChecking(true);
     setError(null);
     try {
       const r = await downloadFleetUpdates();
@@ -339,6 +340,7 @@ function SystemUpdatesSettings() {
     } catch (e: any) {
       setError(String(e?.message || t('settingsUpdates.errorDownload')));
     } finally {
+      setChecking(false);
       void loadStatus();
     }
   }
@@ -358,12 +360,29 @@ function SystemUpdatesSettings() {
       (posStatus?.hasUpdate && posStatus?.updateInfo?.version),
   );
   const downloaded = Boolean(adminStatus?.downloaded || posStatus?.downloaded);
+  const posBusy = Boolean(posStatus?.checking || posStatus?.downloading);
+  const progress =
+    downloadProgress ??
+    (typeof posStatus?.downloadPercent === 'number'
+      ? posStatus.downloadPercent
+      : null);
+
+  useEffect(() => {
+    if (!checking && !posBusy) return;
+    const id = window.setInterval(() => void loadStatus(), 1000);
+    return () => window.clearInterval(id);
+  }, [checking, posBusy]);
 
   function appRow(label: string, status: UpdateStatusDTO | null) {
     const version = status?.updateInfo?.version;
     let detail = t('settingsUpdates.upToDate');
     if (!status) detail = t('settingsUpdates.unreachable');
-    else if (status.downloaded && version) {
+    else if (status.checking) detail = t('settingsUpdates.checking');
+    else if (status.downloading) {
+      detail = t('settingsUpdates.downloading', {
+        percent: Math.round(Number(status.downloadPercent) || 0),
+      });
+    } else if (status.downloaded && version) {
       detail = t('settingsUpdates.downloaded', { version });
     } else if (status.hasUpdate && version) {
       detail = t('settingsUpdates.updateAvailable', { version });
@@ -394,29 +413,33 @@ function SystemUpdatesSettings() {
         description={t('settingsUpdates.help')}
         actions={
           <>
+            <Button
+              variant={hasUpdate || downloaded ? 'secondary' : 'primary'}
+              onClick={() => void checkNow()}
+              disabled={checking}
+            >
+              {checking
+                ? t('settingsUpdates.checking')
+                : t('settingsUpdates.refresh')}
+            </Button>
             {hasUpdate && !downloaded ? (
-              <Button variant="primary" onClick={() => void download()}>
+              <Button
+                variant="primary"
+                onClick={() => void download()}
+                disabled={checking}
+              >
                 {t('settingsUpdates.downloadAll')}
               </Button>
             ) : null}
             {downloaded ? (
-              <Button variant="primary" onClick={() => void install()}>
+              <Button
+                variant="primary"
+                onClick={() => void install()}
+                disabled={checking}
+              >
                 {t('settingsUpdates.installAll')}
               </Button>
             ) : null}
-            <KebabMenu
-              label={t('common.moreActions')}
-              disabled={checking}
-              items={[
-                {
-                  label: checking
-                    ? t('settingsUpdates.checking')
-                    : t('settingsUpdates.refresh'),
-                  onSelect: () => void checkNow(),
-                  disabled: checking,
-                },
-              ]}
-            />
           </>
         }
       />
@@ -440,18 +463,18 @@ function SystemUpdatesSettings() {
           </div>
         </div>
 
-        {downloadProgress !== null && (
+        {progress !== null && (
           <div className="mt-4">
             <div className="mb-1 text-[12px] text-gray-500">
               {t('settingsUpdates.downloading', {
-                percent: Math.round(downloadProgress),
+                percent: Math.round(progress),
               })}
             </div>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-700">
               <div
                 className="h-1.5 rounded-full bg-blue-400 transition-all duration-300"
                 style={{
-                  width: `${Math.max(0, Math.min(100, downloadProgress))}%`,
+                  width: `${Math.max(0, Math.min(100, progress))}%`,
                 }}
               />
             </div>

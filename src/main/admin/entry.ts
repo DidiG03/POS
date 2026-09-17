@@ -10,7 +10,7 @@
  *   2. If configured, load `index.html#/admin` (PIN login).
  *   3. Otherwise, load `#/admin-setup` to discover or type a POS host.
  */
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { buildLanHttpUrl } from '@shared/lanHost';
 import { dirname, join, basename, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,7 @@ import {
   setupAutoUpdater,
   updaterHandlers,
 } from '../updater';
+import { setupAppMenu, finishMenuCheck } from '../services/appMenu';
 import { registerCompanionLanIpc } from '../services/companionLanProxy';
 
 app.setName('OneTap Admin');
@@ -169,6 +170,9 @@ ipcMain.handle('updater:getStatus', async () =>
 ipcMain.handle('updater:checkForUpdates', async () =>
   updaterHandlers.checkForUpdates(),
 );
+ipcMain.handle('updater:checkDownloadAndPrepare', async () =>
+  updaterHandlers.checkDownloadAndPrepare(),
+);
 ipcMain.handle('updater:downloadUpdate', async () =>
   updaterHandlers.downloadUpdate(),
 );
@@ -178,6 +182,21 @@ ipcMain.handle('updater:installUpdate', async () =>
 ipcMain.handle('updater:deferInstall', async () =>
   updaterHandlers.deferInstall(),
 );
+ipcMain.handle('updater:fleetMenuFinished', () => {
+  finishMenuCheck();
+  return { ok: true };
+});
+ipcMain.handle('adminApp:showMessageBox', async (_e, opts) => {
+  const boxOpts =
+    opts && typeof opts === 'object' ? opts : { message: String(opts || '') };
+  const parent =
+    mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
+      ? mainWindow
+      : undefined;
+  return parent
+    ? dialog.showMessageBox(parent, boxOpts)
+    : dialog.showMessageBox(boxOpts);
+});
 
 ipcMain.handle('adminApp:getConfig', () => readConfig());
 
@@ -264,6 +283,7 @@ registerCompanionLanIpc({
 
 app.whenReady().then(() => {
   installOsResumeRecovery();
+  setupAppMenu();
   setupAutoUpdater({
     channel: 'admin',
     autoDownload: false,

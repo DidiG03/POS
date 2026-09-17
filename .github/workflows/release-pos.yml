@@ -219,9 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.40"
+            echo "### Changes in v0.2.41"
+            echo "- Check for Updates in the File/Help menus (and Admin tray) actually checks, downloads, and installs"
+            echo "- Admin on a separate PC can update the POS till and kitchen displays over the LAN"
+            echo "- Windows and macOS update feeds no longer stall on GitHub API timeouts or missing blockmaps"
             echo "- Store license keys keep Sales Admin on the store UI (barcode, inventory) instead of restaurant tables"
-            echo "- OneTap Admin reads the till plan on boot, including after a persisted admin login"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

@@ -45,6 +45,8 @@ type TestResult = { ok: true; body?: any } | { ok: false; error: string };
 const updater = {
   getUpdateStatus: () => ipcRenderer.invoke('updater:getStatus'),
   checkForUpdates: () => ipcRenderer.invoke('updater:checkForUpdates'),
+  checkDownloadAndPrepare: () =>
+    ipcRenderer.invoke('updater:checkDownloadAndPrepare'),
   downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('updater:installUpdate'),
   deferInstall: () => ipcRenderer.invoke('updater:deferInstall'),
@@ -93,6 +95,9 @@ const adminApp = {
     return () => ipcRenderer.removeListener('adminApp:lanSseStatus', handler);
   },
   updater,
+  showMessageBox: (opts: Electron.MessageBoxOptions) =>
+    ipcRenderer.invoke('adminApp:showMessageBox', opts),
+  fleetMenuFinished: () => ipcRenderer.invoke('updater:fleetMenuFinished'),
 };
 
 contextBridge.exposeInMainWorld('adminApp', adminApp);
@@ -101,6 +106,14 @@ contextBridge.exposeInMainWorld('__ADMIN_APP__', true);
 ipcRenderer.on('updater:event', (_e, payload) => {
   try {
     window.dispatchEvent(new CustomEvent('updater:event', { detail: payload }));
+  } catch {
+    // ignore
+  }
+});
+
+ipcRenderer.on('updater:run-fleet-check', () => {
+  try {
+    window.dispatchEvent(new CustomEvent('updater:run-fleet-check'));
   } catch {
     // ignore
   }

@@ -64,6 +64,9 @@ async function startRenderer() {
       void import('./utils/remoteAppUpdate').then((m) =>
         m.installRemoteAppUpdateListener(),
       );
+      void import('./utils/adminFleetMenu').then((m) =>
+        m.installAdminFleetMenuListener(),
+      );
     });
   }
 

@@ -1879,12 +1879,27 @@ export interface UpdateStatusDTO {
   } | null;
   downloaded: boolean;
   checking: boolean;
+  downloading?: boolean;
+  downloadPercent?: number | null;
   currentVersion?: string;
 }
 
 export interface ApiUpdater {
   getUpdateStatus(): Promise<UpdateStatusDTO>;
-  checkForUpdates(): Promise<{ success?: boolean; error?: string }>;
+  checkForUpdates(): Promise<{
+    success?: boolean;
+    error?: string;
+    hasUpdate?: boolean;
+    downloaded?: boolean;
+    currentVersion?: string;
+  }>;
+  checkDownloadAndPrepare?(): Promise<{
+    success?: boolean;
+    error?: string;
+    hasUpdate?: boolean;
+    downloaded?: boolean;
+    currentVersion?: string;
+  }>;
   downloadUpdate(): Promise<{ success?: boolean; error?: string }>;
   installUpdate(): Promise<{ success?: boolean; error?: string }>;
   /** Cancel a pending automatic install (kiosk countdown). KDS only. */

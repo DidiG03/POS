@@ -287,12 +287,22 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'tickets:voidTicket': { allow: POS },
 
   // -------------------------------------------------------------- updater
-  // The update banner renders in the staff shell and in the standalone KDS
-  // kiosk, so installing cannot be admin-only without stranding those builds.
-  'updater:checkForUpdates': { allow: 'session', windows: KDS_WINDOWS },
-  'updater:downloadUpdate': { allow: 'session', windows: KDS_WINDOWS },
+  // The update banner and native menu run on the staff picker (no session)
+  // and on the standalone KDS kiosk. Installing cannot be admin-only
+  // without stranding those builds.
+  'updater:checkForUpdates': {
+    allow: 'session',
+    windows: ['pos', 'kds'],
+    rateLimit: { maxAttempts: 8, windowMs: 60 * 1000 },
+  },
+  'updater:checkDownloadAndPrepare': {
+    allow: 'session',
+    windows: ['pos', 'kds'],
+    rateLimit: { maxAttempts: 8, windowMs: 60 * 1000 },
+  },
+  'updater:downloadUpdate': { allow: 'session', windows: ['pos', 'kds'] },
   'updater:getStatus': { allow: 'public' },
-  'updater:installUpdate': { allow: 'session', windows: KDS_WINDOWS },
+  'updater:installUpdate': { allow: 'session', windows: ['pos', 'kds'] },
 
   // ----------------------------------------------------------------- vault
   // Cold-start gate. The database is still closed; these cannot leak receipts.
