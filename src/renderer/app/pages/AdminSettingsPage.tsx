@@ -28,7 +28,6 @@ import {
 } from '../../components/SidebarCollapseToggle';
 import {
   IconBuilding,
-  IconCalendar,
   IconCard,
   IconChevronRight,
   IconClose,
@@ -59,7 +58,6 @@ import {
 type SectionKey =
   | 'printer'
   | 'areas'
-  | 'googleCalendar'
   | 'kds'
   | 'preferences'
   | 'fiscal'
@@ -73,7 +71,7 @@ type SectionKey =
 const NAV_GROUPS: Array<{ labelKey: string; keys: SectionKey[] }> = [
   {
     labelKey: 'settingsNav.groupVenue',
-    keys: ['printer', 'areas', 'kds', 'googleCalendar'],
+    keys: ['printer', 'areas', 'kds'],
   },
   {
     labelKey: 'settingsNav.groupOperations',
@@ -143,7 +141,6 @@ function useStatusToast(defaultTone: StatusTone = 'ok') {
 const SECTION_ICONS: Record<SectionKey, typeof IconPrinter> = {
   printer: IconPrinter,
   areas: IconGrid,
-  googleCalendar: IconCalendar,
   kds: IconMonitor,
   preferences: IconSliders,
   fiscal: IconReceipt,
@@ -171,7 +168,6 @@ export default function AdminSettingsPage() {
   const navGroups = NAV_GROUPS.map((group) => ({
     ...group,
     keys: group.keys.filter((key) => {
-      if (key === 'googleCalendar') return hasReservations;
       if (key === 'areas' || key === 'kds') return hasTables;
       return true;
     }),
@@ -246,7 +242,6 @@ export default function AdminSettingsPage() {
         <div className="mx-auto max-w-3xl">
           {section === 'printer' && <PrinterSettings />}
           {section === 'areas' && <AreasSettings />}
-          {section === 'googleCalendar' && <GoogleCalendarSettings />}
           {section === 'kds' && <KdsSettings />}
           {section === 'preferences' && <PreferencesSettings />}
           {section === 'fiscal' && <FiscalSettings />}
@@ -2271,357 +2266,6 @@ function BackupsSettings() {
   );
 }
 
-function GoogleCalendarSettings() {
-  const { t } = useTranslation();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [enabled, setEnabled] = useState(false);
-  const [oauthConfigured, setOauthConfigured] = useState(false);
-  const [oauthConnected, setOauthConnected] = useState(false);
-  const [accountEmail, setAccountEmail] = useState('');
-  const [calendarId, setCalendarId] = useState('primary');
-  const [calendarSummary, setCalendarSummary] = useState('');
-  const [calendars, setCalendars] = useState<
-    Array<{ id: string; summary: string; primary?: boolean }>
-  >([]);
-  const [syncIntervalMin, setSyncIntervalMin] = useState(5);
-  const [defaultArea, setDefaultArea] = useState('');
-  const [defaultDurationMin, setDefaultDurationMin] = useState(120);
-  const [areas, setAreas] = useState<string[]>([]);
-  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
-  const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
-  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
-
-  const loadSettings = async () => {
-    const s: any = await window.api.settings.get();
-    const gc = s?.googleCalendar || {};
-    setEnabled(Boolean(gc.enabled));
-    setOauthConfigured(Boolean(s?.googleCalendarOAuthConfigured));
-    setOauthConnected(Boolean(gc.oauthConnected));
-    setAccountEmail(String(gc.accountEmail || ''));
-    setCalendarId(String(gc.calendarId || 'primary'));
-    setCalendarSummary(String(gc.calendarSummary || ''));
-    setSyncIntervalMin(Number(gc.syncIntervalMin || 5));
-    setDefaultDurationMin(Number(gc.defaultDurationMin || 120));
-    setLastSyncAt(gc.lastSyncAt ? String(gc.lastSyncAt) : null);
-    setLastSyncMessage(gc.lastSyncMessage ? String(gc.lastSyncMessage) : null);
-    setLastSyncError(gc.lastSyncError ? String(gc.lastSyncError) : null);
-    const tableAreas = Array.isArray(s?.tableAreas)
-      ? s.tableAreas
-          .map((a: any) => String(a?.name || '').trim())
-          .filter(Boolean)
-      : [];
-    setAreas(tableAreas);
-    setDefaultArea((current) => {
-      const saved = String(gc.defaultArea || current || '').trim();
-      if (saved && tableAreas.includes(saved)) return saved;
-      return tableAreas[0] || '';
-    });
-    if (gc.oauthConnected) {
-      const listed = await window.api.settings.listGoogleCalendars?.();
-      if (listed?.ok && Array.isArray(listed.calendars)) {
-        setCalendars(listed.calendars);
-      }
-    }
-  };
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        if (!alive) return;
-        await loadSettings();
-      } catch {
-        /* ignore */
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const selected = calendars.find((c) => c.id === calendarId);
-      const payload: any = {
-        googleCalendar: {
-          enabled,
-          syncIntervalMin,
-          defaultArea: defaultArea.trim() || areas[0] || '',
-          defaultDurationMin,
-          calendarId,
-          calendarSummary: selected?.summary || calendarSummary || undefined,
-        },
-      };
-      await window.api.settings.update(payload);
-      toast.success(t('googleCalendar.saved'));
-    } catch (e: any) {
-      toast.error(String(e?.message || t('googleCalendar.saveFailed')));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const connect = async () => {
-    setConnecting(true);
-    toast.info(t('googleCalendar.connecting'));
-    try {
-      const result = await window.api.settings.connectGoogleCalendar?.();
-      if (!result?.ok) {
-        throw new Error(
-          String(result?.error || t('googleCalendar.connectFailed')),
-        );
-      }
-      setOauthConnected(true);
-      setEnabled(true);
-      setAccountEmail(String(result.accountEmail || ''));
-      setCalendarId(String(result.calendarId || 'primary'));
-      setCalendarSummary(String(result.calendarSummary || ''));
-      if (Array.isArray(result.calendars)) setCalendars(result.calendars);
-      if (result.warning) {
-        setLastSyncError(result.warning);
-        toast.error(result.warning);
-        return;
-      }
-      toast.success(
-        t('googleCalendar.connected', { email: result.accountEmail || '' }),
-      );
-    } catch (e: any) {
-      toast.error(String(e?.message || t('googleCalendar.connectFailed')));
-    } finally {
-      setConnecting(false);
-    }
-  };
-
-  const disconnect = async () => {
-    setConnecting(true);
-    try {
-      await window.api.settings.disconnectGoogleCalendar?.();
-      setOauthConnected(false);
-      setAccountEmail('');
-      setCalendarSummary('');
-      setCalendars([]);
-      toast.success(t('googleCalendar.disconnected'));
-    } catch (e: any) {
-      toast.error(String(e?.message || t('googleCalendar.disconnectFailed')));
-    } finally {
-      setConnecting(false);
-    }
-  };
-
-  const syncNow = async () => {
-    setSyncing(true);
-    try {
-      const result = await window.api.settings.syncGoogleCalendar?.();
-      if (!result) throw new Error(t('googleCalendar.syncUnavailable'));
-      const refreshed: any = await window.api.settings.get();
-      const gc = refreshed?.googleCalendar || {};
-      setLastSyncAt(gc.lastSyncAt ? String(gc.lastSyncAt) : null);
-      setLastSyncMessage(
-        gc.lastSyncMessage ? String(gc.lastSyncMessage) : null,
-      );
-      setLastSyncError(gc.lastSyncError ? String(gc.lastSyncError) : null);
-      if (!result.ok) {
-        toast.error(String(result.error || t('googleCalendar.syncFailed')));
-        return;
-      }
-      toast.success(
-        String(
-          result.message ||
-            t('googleCalendar.syncSuccess', {
-              imported: result.imported,
-              updated: result.updated,
-              cancelled: result.cancelled,
-            }),
-        ),
-      );
-    } catch (e: any) {
-      toast.error(String(e?.message || t('googleCalendar.syncFailed')));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  return (
-    <div>
-      <SettingsHeader
-        title={t('googleCalendar.title')}
-        description={t('googleCalendar.subtitle')}
-        actions={
-          <>
-            <Button
-              variant="primary"
-              onClick={() => void save()}
-              disabled={loading || saving}
-              loading={saving}
-            >
-              {saving ? t('common.saving') : t('common.save')}
-            </Button>
-            <KebabMenu
-              label={t('common.moreActions')}
-              items={[
-                {
-                  label: syncing
-                    ? t('googleCalendar.syncing')
-                    : t('googleCalendar.syncNow'),
-                  onSelect: () => void syncNow(),
-                  disabled: loading || syncing || !enabled || !oauthConnected,
-                },
-                {
-                  label: t('googleCalendar.disconnect'),
-                  onSelect: () => void disconnect(),
-                  hidden: !oauthConnected,
-                  disabled: loading || connecting,
-                  danger: true,
-                },
-              ]}
-            />
-          </>
-        }
-      />
-
-      <div className="space-y-3">
-        <SettingsCard>
-          <p className="whitespace-pre-line text-[12px] leading-relaxed text-gray-500">
-            {t('googleCalendar.flowHelp')}
-          </p>
-        </SettingsCard>
-
-        {!oauthConfigured && (
-          <div className="rounded-lg border border-amber-700/40 bg-amber-950/20 px-4 py-3 text-[13px] text-amber-100">
-            {t('googleCalendar.oauthNotConfigured')}
-          </div>
-        )}
-
-        <SettingsCard title={t('googleCalendar.accountTitle')}>
-          {oauthConnected ? (
-            <div className="space-y-3">
-              <div className="text-[13px]">
-                <span className="text-gray-500">
-                  {t('googleCalendar.connectedAs')}
-                </span>{' '}
-                <span className="font-medium">
-                  {accountEmail || t('googleCalendar.accountTitle')}
-                </span>
-              </div>
-              {calendars.length > 0 && (
-                <Field label={t('googleCalendar.calendarPicker')}>
-                  <Select
-                    value={calendarId}
-                    onChange={(e) => setCalendarId(e.target.value)}
-                    disabled={loading}
-                  >
-                    {calendars.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.summary}
-                        {c.primary ? ` (${t('googleCalendar.primary')})` : ''}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="text-[13px] text-gray-400">
-                {t('googleCalendar.connectHelp')}
-              </div>
-              <Button
-                variant="primary"
-                onClick={() => void connect()}
-                disabled={loading || connecting || !oauthConfigured}
-                loading={connecting}
-              >
-                {connecting
-                  ? t('googleCalendar.connecting')
-                  : t('googleCalendar.connect')}
-              </Button>
-            </div>
-          )}
-        </SettingsCard>
-
-        <SettingsCard>
-          <div className="space-y-4">
-            <SettingsToggleRow
-              title={t('googleCalendar.enableLabel')}
-              checked={enabled}
-              onChange={setEnabled}
-              disabled={loading || !oauthConnected}
-              label={t('googleCalendar.enableLabel')}
-            />
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field label={t('googleCalendar.syncInterval')}>
-                <Input
-                  type="number"
-                  min={5}
-                  max={60}
-                  value={syncIntervalMin}
-                  onChange={(e) => setSyncIntervalMin(Number(e.target.value))}
-                  disabled={loading}
-                />
-              </Field>
-              <Field label={t('googleCalendar.defaultArea')}>
-                <Select
-                  value={defaultArea}
-                  onChange={(e) => setDefaultArea(e.target.value)}
-                  disabled={loading}
-                >
-                  {areas.map((a) => (
-                    <option key={a} value={a}>
-                      {a}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label={t('googleCalendar.defaultDuration')}>
-                <Input
-                  type="number"
-                  min={15}
-                  max={720}
-                  value={defaultDurationMin}
-                  onChange={(e) =>
-                    setDefaultDurationMin(Number(e.target.value))
-                  }
-                  disabled={loading}
-                />
-              </Field>
-            </div>
-          </div>
-        </SettingsCard>
-
-        <SettingsCard title={t('googleCalendar.eventFormatTitle')}>
-          <pre className="whitespace-pre-wrap font-mono text-[12px] text-gray-400">
-            {t('googleCalendar.eventFormatExample')}
-          </pre>
-        </SettingsCard>
-
-        {(lastSyncAt || lastSyncMessage || lastSyncError) && (
-          <SettingsCard title={t('googleCalendar.lastSync')}>
-            <div className="space-y-1 text-[13px]">
-              {lastSyncAt && (
-                <div className="text-gray-400">
-                  {new Date(lastSyncAt).toLocaleString()}
-                </div>
-              )}
-              {lastSyncMessage && (
-                <div className="text-emerald-300">{lastSyncMessage}</div>
-              )}
-              {lastSyncError && (
-                <div className="text-rose-300">{lastSyncError}</div>
-              )}
-            </div>
-          </SettingsCard>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function KdsSettings() {
   const { t } = useTranslation();
   const setStatus = useStatusToast();
@@ -2770,11 +2414,11 @@ function AddRouteModal({
   availableCategories: Array<{ id: number; name: string }>;
   enabledProfiles: Array<{ id: string; name: string; mode?: string }>;
   routingEnabled: boolean;
-  onAdd: (catId: string, printerId: string) => void;
+  onAdd: (catIds: string[], printerId: string) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const [catId, setCatId] = useState('');
+  const [catIds, setCatIds] = useState<string[]>([]);
   const [printerId, setPrinterId] = useState('default');
 
   useEffect(() => {
@@ -2812,24 +2456,47 @@ function AddRouteModal({
           </button>
         </div>
         <div className="p-4 space-y-4">
-          <label className="block text-sm">
+          <div className="block text-sm">
             <div className="opacity-80 mb-1">
-              {t('settingsPrinter.category')}
+              {t('settingsPrinter.categories')}
             </div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={catId}
-              onChange={(e) => setCatId(String(e.target.value || ''))}
-              disabled={!routingEnabled}
-            >
-              <option value="">{t('settingsPrinter.selectCategory')}</option>
-              {availableCategories.map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
+            <p className="mb-2 text-[12px] text-gray-400">
+              {t('settingsPrinter.categoriesHelp')}
+            </p>
+            {availableCategories.length === 0 ? (
+              <div className="rounded-lg border border-gray-700 px-3 py-2 text-[13px] text-gray-400">
+                {t('settingsPrinter.noCategoriesToAdd')}
+              </div>
+            ) : (
+              <div className="max-h-52 space-y-1 overflow-auto rounded-lg border border-gray-700 p-2">
+                {availableCategories.map((c) => {
+                  const id = String(c.id);
+                  const checked = catIds.includes(id);
+                  return (
+                    <label
+                      key={c.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-gray-800"
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-4 shrink-0 accent-blue-500"
+                        checked={checked}
+                        disabled={!routingEnabled}
+                        onChange={() => {
+                          setCatIds((prev) =>
+                            checked
+                              ? prev.filter((x) => x !== id)
+                              : [...prev, id],
+                          );
+                        }}
+                      />
+                      <span className="text-[13px]">{c.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <label className="block text-sm">
             <div className="opacity-80 mb-1">
               {t('settingsPrinter.printer')}
@@ -2853,8 +2520,8 @@ function AddRouteModal({
             <Button
               variant="primary"
               className="flex-1"
-              disabled={!routingEnabled || !catId}
-              onClick={() => onAdd(catId, printerId)}
+              disabled={!routingEnabled || catIds.length === 0}
+              onClick={() => onAdd(catIds, printerId)}
             >
               {t('settingsPrinter.addRouteBtn')}
             </Button>
@@ -3141,13 +2808,19 @@ function PrinterSettings() {
     return m;
   }, [menuCategories]);
 
-  const routedEntries = useMemo(() => {
-    const out: Array<{
-      key: string;
-      categoryId: number | null;
-      label: string;
-      printerId: string;
-    }> = [];
+  const printerLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of enabledProfiles) {
+      m.set(p.id, `${p.name} (${p.mode || 'NETWORK'})`);
+    }
+    return m;
+  }, [enabledProfiles]);
+
+  const routedGroups = useMemo(() => {
+    const byPrinter = new Map<
+      string,
+      Array<{ key: string; categoryId: number | null; label: string }>
+    >();
     for (const [k, v] of Object.entries(categoryRouting || {})) {
       const printerId = String(v || '').trim();
       if (!printerId) continue;
@@ -3157,17 +2830,25 @@ function PrinterSettings() {
           ? categoryNameById.get(categoryId) ||
             t('settingsPrinter.missingCategory', { id: categoryId })
           : t('settingsPrinter.categoryKey', { key: k });
-      out.push({ key: k, categoryId, label, printerId });
+      if (!byPrinter.has(printerId)) byPrinter.set(printerId, []);
+      byPrinter.get(printerId)!.push({ key: k, categoryId, label });
     }
-    // stable order: known categories first, then unknown keys
-    out.sort((a, b) => {
-      const ak = a.categoryId == null ? 9 : 0;
-      const bk = b.categoryId == null ? 9 : 0;
-      if (ak !== bk) return ak - bk;
-      return a.label.localeCompare(b.label);
-    });
-    return out;
-  }, [categoryRouting, categoryNameById, t]);
+    return Array.from(byPrinter.entries())
+      .map(([printerId, categories]) => ({
+        printerId,
+        categories: categories.sort((a, b) => {
+          const ak = a.categoryId == null ? 9 : 0;
+          const bk = b.categoryId == null ? 9 : 0;
+          if (ak !== bk) return ak - bk;
+          return a.label.localeCompare(b.label);
+        }),
+      }))
+      .sort((a, b) => {
+        const al = printerLabelById.get(a.printerId) || a.printerId;
+        const bl = printerLabelById.get(b.printerId) || b.printerId;
+        return al.localeCompare(bl);
+      });
+  }, [categoryRouting, categoryNameById, printerLabelById, t]);
 
   const availableCategoriesToAdd = useMemo(() => {
     const used = new Set<string>();
@@ -3246,73 +2927,113 @@ function PrinterSettings() {
                     </Select>
                   </Field>
                 </div>
-                {routedEntries.length === 0 ? (
+                {routedGroups.length === 0 ? (
                   <div className="text-[12px] text-gray-500">
                     {t('settingsPrinter.noRoutes')}
                   </div>
                 ) : (
                   <div className="divide-y divide-white/7 overflow-hidden rounded-md border border-white/7">
-                    {routedEntries.map((r) => (
-                      <div
-                        key={r.key}
-                        className="flex items-center gap-2 px-3 py-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[13px] font-medium">
-                            {r.label}
-                          </div>
-                          {r.categoryId == null && (
-                            <div className="text-[11px] text-gray-500">
-                              {t('settingsPrinter.unknownKey')}
-                            </div>
-                          )}
-                        </div>
-                        <Select
-                          className="w-[160px]"
-                          value={r.printerId}
-                          disabled={!routingEnabled}
-                          onChange={(e) => {
-                            const value = String(e.target.value || '');
-                            setCategoryRouting((m) => {
-                              const next = {
-                                ...(m || {}),
-                                [r.key]: value,
-                              };
-                              draftRef.current = {
-                                ...draftRef.current,
-                                categoryRouting: next,
-                              };
-                              return next;
-                            });
-                            persistImmediate();
-                          }}
-                        >
-                          {pickOptions(false)}
-                        </Select>
-                        <KebabMenu
-                          label={t('settingsPrinter.removeRouteAria', {
-                            label: r.label,
-                          })}
-                          items={[
-                            {
-                              label: t('common.remove'),
-                              danger: true,
-                              disabled: !routingEnabled,
-                              onSelect: () => {
-                                setCategoryRouting((m) => {
-                                  const next = { ...(m || {}) } as any;
-                                  delete next[r.key];
-                                  draftRef.current = {
-                                    ...draftRef.current,
-                                    categoryRouting: next,
-                                  };
-                                  return next;
-                                });
-                                persistImmediate();
+                    {routedGroups.map((g) => (
+                      <div key={g.printerId} className="space-y-2 px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <Select
+                            className="min-w-0 flex-1"
+                            value={g.printerId}
+                            disabled={!routingEnabled}
+                            onChange={(e) => {
+                              const value = String(e.target.value || '');
+                              setCategoryRouting((m) => {
+                                const next = { ...(m || {}) };
+                                for (const c of g.categories) {
+                                  next[c.key] = value;
+                                }
+                                draftRef.current = {
+                                  ...draftRef.current,
+                                  categoryRouting: next,
+                                };
+                                return next;
+                              });
+                              persistImmediate();
+                            }}
+                          >
+                            {pickOptions(false)}
+                          </Select>
+                          <KebabMenu
+                            label={t('settingsPrinter.removeRouteGroupAria', {
+                              printer:
+                                printerLabelById.get(g.printerId) ||
+                                g.printerId,
+                            })}
+                            items={[
+                              {
+                                label: t('settingsPrinter.removeRouteGroup'),
+                                danger: true,
+                                disabled: !routingEnabled,
+                                onSelect: () => {
+                                  setCategoryRouting((m) => {
+                                    const next = { ...(m || {}) } as Record<
+                                      string,
+                                      string
+                                    >;
+                                    for (const c of g.categories) {
+                                      delete next[c.key];
+                                    }
+                                    draftRef.current = {
+                                      ...draftRef.current,
+                                      categoryRouting: next,
+                                    };
+                                    return next;
+                                  });
+                                  persistImmediate();
+                                },
                               },
-                            },
-                          ]}
-                        />
+                            ]}
+                          />
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {g.categories.map((c) => (
+                            <span
+                              key={c.key}
+                              className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/10 bg-[var(--pos-surface-2)] px-2 py-1 text-[12px]"
+                            >
+                              <span className="truncate">{c.label}</span>
+                              {c.categoryId == null ? (
+                                <span
+                                  className="text-[10px] text-gray-500"
+                                  title={t('settingsPrinter.unknownKey')}
+                                >
+                                  ?
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="rounded p-0.5 text-gray-400 hover:bg-white/10 hover:text-gray-200 disabled:opacity-40"
+                                disabled={!routingEnabled}
+                                aria-label={t(
+                                  'settingsPrinter.removeRouteAria',
+                                  { label: c.label },
+                                )}
+                                onClick={() => {
+                                  setCategoryRouting((m) => {
+                                    const next = { ...(m || {}) } as Record<
+                                      string,
+                                      string
+                                    >;
+                                    delete next[c.key];
+                                    draftRef.current = {
+                                      ...draftRef.current,
+                                      categoryRouting: next,
+                                    };
+                                    return next;
+                                  });
+                                  persistImmediate();
+                                }}
+                              >
+                                <IconClose className="size-3" />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3325,14 +3046,15 @@ function PrinterSettings() {
                 availableCategories={availableCategoriesToAdd}
                 enabledProfiles={enabledProfiles}
                 routingEnabled={routingEnabled}
-                onAdd={(catId, printerId) => {
-                  const cid = String(catId || '').trim();
-                  if (!cid) return;
+                onAdd={(selectedCatIds, printerId) => {
+                  const pid = String(printerId || 'default');
+                  const ids = selectedCatIds
+                    .map((id) => String(id || '').trim())
+                    .filter(Boolean);
+                  if (ids.length === 0) return;
                   setCategoryRouting((m) => {
-                    const next = {
-                      ...(m || {}),
-                      [cid]: String(printerId || 'default'),
-                    };
+                    const next = { ...(m || {}) };
+                    for (const cid of ids) next[cid] = pid;
                     draftRef.current = {
                       ...draftRef.current,
                       categoryRouting: next,

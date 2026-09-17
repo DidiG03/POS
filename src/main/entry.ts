@@ -76,9 +76,9 @@ function ensureSqliteDbFile() {
     const targetFile = path.join(dbDir, 'pos.db');
     const appData = app.getPath('appData');
     const legacyFiles = [
-      'code-orbit-pos',
-      'Code Orbit POS',
-      'codeorbit-pos',
+      'one-tap-pos',
+      'OneTap POS',
+      'one-tap-pos',
     ].map((folder) => path.join(appData, folder, 'db', 'pos.db'));
     const seedFile = path.join(process.resourcesPath, 'seed.db');
     const source = resolvePackagedSqliteSource(targetFile, legacyFiles, {

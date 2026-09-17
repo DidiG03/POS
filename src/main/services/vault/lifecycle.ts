@@ -469,7 +469,7 @@ function shredPlaintextSidecars(userData: string, dbFile: string): void {
   const appData = String(process.env.POS_APP_DATA || '').trim();
   if (!appData) return;
   const current = path.resolve(dbFile);
-  for (const folder of ['code-orbit-pos', 'Code Orbit POS', 'codeorbit-pos']) {
+  for (const folder of ['one-tap-pos', 'OneTap POS', 'one-tap-pos']) {
     const leftover = path.join(appData, folder, 'db', 'pos.db');
     if (path.resolve(leftover) === current) continue;
     if (isPlaintextSqlite(leftover)) secureDeleteSqliteGroup(leftover);

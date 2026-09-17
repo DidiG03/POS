@@ -4,8 +4,8 @@
 #   .\scripts\build-windows-installers.ps1
 #
 # Output:
-#   dist\Code Orbit POS Setup 0.2.0.exe
-#   dist-installers\kds\Code Orbit KDS Setup 0.2.0.exe
+#   dist\OneTap POS Setup 0.2.0.exe
+#   dist-installers\kds\OneTap KDS Setup 0.2.0.exe
 
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)

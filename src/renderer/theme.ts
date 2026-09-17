@@ -10,7 +10,7 @@ export function applyPosUiTheme(theme: PosUiTheme): void {
   root.style.colorScheme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta)
-    meta.setAttribute('content', theme === 'light' ? '#f4f6fa' : '#0b1220');
+    meta.setAttribute('content', theme === 'light' ? '#f2f2f7' : '#0b1220');
   try {
     localStorage.setItem(POS_UI_THEME_STORAGE_KEY, theme);
   } catch {

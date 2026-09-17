@@ -1,5 +1,14 @@
 import { create } from 'zustand';
 
+async function hapticForToast(kind: 'medium' | 'heavy'): Promise<void> {
+  try {
+    const { haptic } = await import('../utils/haptics');
+    haptic(kind);
+  } catch {
+    // Electron / missing plugin
+  }
+}
+
 export type ToastLevel = 'error' | 'warn' | 'info' | 'success';
 
 export type Toast = {
@@ -48,6 +57,10 @@ export const useToastStore = create<ToastState>((set, get) => ({
       typeof t.timeoutMs === 'undefined'
         ? defaultTimeoutMs(t.level)
         : t.timeoutMs;
+
+    if (t.level === 'success') void hapticForToast('medium');
+    else if (t.level === 'warn') void hapticForToast('medium');
+    else if (t.level === 'error') void hapticForToast('heavy');
 
     set((s) => {
       const next: Toast = {

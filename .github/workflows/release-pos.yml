@@ -219,11 +219,13 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.41"
-            echo "- Check for Updates in the File/Help menus (and Admin tray) actually checks, downloads, and installs"
-            echo "- Admin on a separate PC can update the POS till and kitchen displays over the LAN"
-            echo "- Windows and macOS update feeds no longer stall on GitHub API timeouts or missing blockmaps"
-            echo "- Store license keys keep Sales Admin on the store UI (barcode, inventory) instead of restaurant tables"
+            echo "### Changes in v0.2.42"
+            echo "- Printer routing: map multiple menu categories to one printer so they print on a single ORDER slip"
+            echo "- Remove Google Calendar reservation sync (OAuth, iCal, admin settings, and background jobs)"
+            echo "- Simplify first-time Admin login to name + password only"
+            echo "- Light theme page background matches iOS Settings grouped gray (#F2F2F7)"
+            echo "- Reduce phone haptics to important events only (toasts, explicit actions)"
+            echo "- Waiter UI polish: centered modals, ticket header spacing, menu tile styling"
           } > "$NOTES_FILE"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

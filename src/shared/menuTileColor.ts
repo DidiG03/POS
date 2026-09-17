@@ -129,10 +129,9 @@ export function menuTileStyle(
   const boxShadow = `inset 0 -4px 0 0 ${strip}`;
   if (theme === 'light') {
     return {
-      backgroundColor: '#f1f5f9',
+      backgroundColor: 'white',
       color: '#0f172a',
       boxShadow,
-      border: '1px solid rgba(15, 23, 42, 0.10)',
       borderRadius: '0.4rem',
     };
   }

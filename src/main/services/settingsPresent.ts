@@ -1,4 +1,3 @@
-import { getGoogleOAuthClientConfig } from './googleCalendarOAuth';
 import { tableAreasFromDb } from './tableAreasSync';
 
 /** Shape the live settings blob the way every client (IPC and LAN) reads it. */
@@ -22,26 +21,5 @@ export async function presentSettingsForClient(
       delete result.fiscal.authToken;
     }
   }
-  if (result?.googleCalendar && typeof result.googleCalendar === 'object') {
-    result.googleCalendar = { ...result.googleCalendar };
-    if (result.googleCalendar.icalUrl) {
-      result.googleCalendar.icalUrlConfigured = true;
-      delete result.googleCalendar.icalUrl;
-    }
-    if (
-      result.googleCalendar.oauth &&
-      typeof result.googleCalendar.oauth === 'object'
-    ) {
-      result.googleCalendar.oauth = { ...result.googleCalendar.oauth };
-      if (result.googleCalendar.oauth.refreshToken) {
-        result.googleCalendar.oauthConnected = true;
-        delete result.googleCalendar.oauth.refreshToken;
-        delete result.googleCalendar.oauth.accessToken;
-        delete result.googleCalendar.oauth.accessTokenExpiresAt;
-      }
-    }
-  }
-  result.googleCalendarOAuthConfigured =
-    getGoogleOAuthClientConfig().configured;
   return result;
 }

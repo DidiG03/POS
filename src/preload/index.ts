@@ -36,15 +36,6 @@ const api: Api = {
     listFiscalReviews: () => ipcRenderer.invoke('settings:listFiscalReviews'),
     resolveFiscalReview: (input) =>
       ipcRenderer.invoke('settings:resolveFiscalReview', input),
-    syncGoogleCalendar: () => ipcRenderer.invoke('settings:syncGoogleCalendar'),
-    connectGoogleCalendar: () =>
-      ipcRenderer.invoke('settings:connectGoogleCalendar'),
-    disconnectGoogleCalendar: () =>
-      ipcRenderer.invoke('settings:disconnectGoogleCalendar'),
-    getGoogleCalendarStatus: () =>
-      ipcRenderer.invoke('settings:getGoogleCalendarStatus'),
-    listGoogleCalendars: () =>
-      ipcRenderer.invoke('settings:listGoogleCalendars'),
     listPrinters: () => ipcRenderer.invoke('printer:list'),
     scanNetworkPrinters: () => ipcRenderer.invoke('printer:scanNetwork'),
     listSerialPorts: () => ipcRenderer.invoke('printer:listSerialPorts'),

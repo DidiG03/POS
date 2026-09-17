@@ -1,31 +1,22 @@
 // Tablet (Capacitor) haptic feedback. No-ops in Electron and the browser.
 //
+// Only important outcomes buzz (toasts, or an explicit data-haptic). Every
+// button used to fire on pointerdown + touchstart, which felt like the
+// whole phone was vibrating.
+//
 // Android WebView often labels finger presses as pointerType "mouse", and
 // Capacitor's Haptics.impact() waveforms are ignored on several Samsung
 // tablets. We therefore:
-//   1. Treat every primary press as a tap (no mouse filter).
-//   2. Prefer the synchronous PosNativeHaptics Java bridge on Android.
-//   3. Fall back to Haptics.vibrate() / Haptics.impact() for iOS.
+//   1. Prefer the synchronous PosNativeHaptics Java bridge on Android.
+//   2. Fall back to Haptics.vibrate() / Haptics.impact() for iOS.
 
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
 
-type ImpactKind = 'light' | 'medium' | 'heavy';
+export type HapticKind = 'light' | 'medium' | 'heavy';
 
-const HAPTIC_SELECTOR = [
-  'button',
-  '[role="button"]',
-  'a[href]',
-  'input[type="button"]',
-  'input[type="submit"]',
-  'input[type="reset"]',
-  'input[type="checkbox"]',
-  'input[type="radio"]',
-  'select',
-  'summary',
-  '[data-haptic]',
-].join(',');
+const OPT_IN_SELECTOR = '[data-haptic]:not([data-haptic="off"])';
 
-const MIN_GAP_MS = 40;
+const MIN_GAP_MS = 80;
 
 let started = false;
 let lastAt = 0;
@@ -61,9 +52,8 @@ function isNativeShell(): boolean {
 
 export function findHapticTarget(start: EventTarget | null): Element | null {
   if (!(start instanceof Element)) return null;
-  const el = start.closest(HAPTIC_SELECTOR);
+  const el = start.closest(OPT_IN_SELECTOR);
   if (!el) return null;
-  if (el.getAttribute('data-haptic') === 'off') return null;
   if (el.getAttribute('aria-disabled') === 'true') return null;
   if (
     el instanceof HTMLButtonElement ||
@@ -78,13 +68,14 @@ export function findHapticTarget(start: EventTarget | null): Element | null {
   return el;
 }
 
-function kindFor(el: Element): ImpactKind {
-  const raw = (el.getAttribute('data-haptic') || 'light').toLowerCase();
-  if (raw === 'medium' || raw === 'heavy') return raw;
-  return 'light';
+function kindFor(el: Element): HapticKind {
+  const raw = (el.getAttribute('data-haptic') || 'medium').toLowerCase();
+  if (raw === 'light' || raw === 'heavy') return raw;
+  return 'medium';
 }
 
-function fireTap(kind: ImpactKind): void {
+export function haptic(kind: HapticKind = 'medium'): void {
+  if (typeof window === 'undefined' || !isNativeShell()) return;
   const now = Date.now();
   if (now - lastAt < MIN_GAP_MS) return;
   lastAt = now;
@@ -118,13 +109,7 @@ function onPointerDown(ev: PointerEvent): void {
   if (ev.button > 0) return;
   const target = findHapticTarget(ev.target);
   if (!target) return;
-  fireTap(kindFor(target));
-}
-
-function onTouchStart(ev: TouchEvent): void {
-  const target = findHapticTarget(ev.target);
-  if (!target) return;
-  fireTap(kindFor(target));
+  haptic(kindFor(target));
 }
 
 export async function initButtonHaptics(): Promise<void> {
@@ -133,10 +118,6 @@ export async function initButtonHaptics(): Promise<void> {
   started = true;
 
   document.addEventListener('pointerdown', onPointerDown, {
-    capture: true,
-    passive: true,
-  });
-  document.addEventListener('touchstart', onTouchStart, {
     capture: true,
     passive: true,
   });

@@ -353,7 +353,7 @@ export default function LoginPage() {
       }
       const directory = loginDirectoryState(users, isAdminContext);
       if (directory.needsFirstAdmin) {
-        setNotice(t('login.noAdminUsersLocal'));
+        setNotice(null);
         setNeedsFirstAdmin(true);
         setEmptyDatabase(true);
         setStaff([]);
@@ -584,70 +584,62 @@ export default function LoginPage() {
             </div>
           )}
           {!showPin && !staffLoading && needsFirstAdmin && (
-            <div className="pos-order-card shrink-0">
-              <div className="text-[13px] font-semibold text-gray-100">
-                {t('login.firstAdminTitle')}
-              </div>
-              <div className="mt-0.5 text-[12px] text-gray-400">
-                {t('login.firstAdminHelp')}
-              </div>
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                <Input
-                  className="flex-1"
-                  placeholder={t('login.firstAdminNamePlaceholder')}
-                  value={firstAdminName}
-                  onChange={(e) => setFirstAdminName(e.target.value)}
-                  autoComplete="off"
-                />
-                <Input
-                  className="sm:w-36"
-                  placeholder={t('login.firstAdminPinPlaceholder')}
-                  value={firstAdminPin}
-                  onChange={(e) =>
-                    setFirstAdminPin(
-                      e.target.value.replace(/\D/g, '').slice(0, 8),
-                    )
+            <div className="flex min-h-0 flex-1 flex-col gap-3">
+              <Input
+                placeholder={t('login.firstAdminNamePlaceholder')}
+                value={firstAdminName}
+                onChange={(e) => setFirstAdminName(e.target.value)}
+                autoComplete="off"
+              />
+              <Input
+                type="password"
+                placeholder={t('login.firstAdminPinPlaceholder')}
+                value={firstAdminPin}
+                onChange={(e) =>
+                  setFirstAdminPin(
+                    e.target.value.replace(/\D/g, '').slice(0, 8),
+                  )
+                }
+                inputMode="numeric"
+                autoComplete="new-password"
+              />
+              <Button
+                variant="primary"
+                block
+                loading={creatingFirstAdmin}
+                disabled={
+                  firstAdminName.trim().length < 2 || firstAdminPin.length < 4
+                }
+                onClick={async () => {
+                  setCreatingFirstAdmin(true);
+                  try {
+                    await window.api.auth.createUser({
+                      displayName: firstAdminName.trim(),
+                      role: 'ADMIN',
+                      pin: firstAdminPin,
+                      active: true,
+                    } as any);
+                    setNotice(null);
+                    setFirstAdminName('');
+                    setFirstAdminPin('');
+                    setReloadNonce((n) => n + 1);
+                  } catch (e: any) {
+                    showLoginMessage(
+                      e?.message || t('login.firstAdminCreateFailed'),
+                    );
+                  } finally {
+                    setCreatingFirstAdmin(false);
                   }
-                  inputMode="numeric"
-                  autoComplete="off"
-                />
-                <Button
-                  variant="primary"
-                  loading={creatingFirstAdmin}
-                  disabled={
-                    firstAdminName.trim().length < 2 || firstAdminPin.length < 4
-                  }
-                  onClick={async () => {
-                    setCreatingFirstAdmin(true);
-                    try {
-                      await window.api.auth.createUser({
-                        displayName: firstAdminName.trim(),
-                        role: 'ADMIN',
-                        pin: firstAdminPin,
-                        active: true,
-                      } as any);
-                      setNotice(t('login.firstAdminCreated'));
-                      setFirstAdminName('');
-                      setFirstAdminPin('');
-                      setReloadNonce((n) => n + 1);
-                    } catch (e: any) {
-                      showLoginMessage(
-                        e?.message || t('login.firstAdminCreateFailed'),
-                      );
-                    } finally {
-                      setCreatingFirstAdmin(false);
-                    }
-                  }}
-                >
-                  {creatingFirstAdmin
-                    ? t('login.firstAdminCreating')
-                    : t('login.firstAdminCreate')}
-                </Button>
-              </div>
+                }}
+              >
+                {creatingFirstAdmin
+                  ? t('login.firstAdminCreating')
+                  : t('login.firstAdminCreate')}
+              </Button>
             </div>
           )}
 
-          {!showPin && isAdminContext ? (
+          {!showPin && isAdminContext && !needsFirstAdmin ? (
             <div className="flex min-h-0 flex-1 flex-col">
               <SectionLabel className="mb-2 shrink-0">
                 {t('login.admins')}

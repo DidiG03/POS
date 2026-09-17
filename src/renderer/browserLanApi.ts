@@ -1064,27 +1064,6 @@ export function installBrowserLanApi(): void {
           body: JSON.stringify(input ?? {}),
         });
       },
-      async connectGoogleCalendar() {
-        return await goLan('/settings/google-calendar/connect', {
-          method: 'POST',
-          body: JSON.stringify({}),
-        });
-      },
-      async disconnectGoogleCalendar() {
-        return await goLan('/settings/google-calendar/disconnect', {
-          method: 'POST',
-          body: JSON.stringify({}),
-        });
-      },
-      async syncGoogleCalendar() {
-        return await goLan('/settings/google-calendar/sync', {
-          method: 'POST',
-          body: JSON.stringify({}),
-        });
-      },
-      async listGoogleCalendars() {
-        return await goLan('/settings/google-calendar/calendars');
-      },
     },
     license: {
       async getStatus() {

@@ -73,7 +73,6 @@ describe('standalone Admin companion', () => {
     expect(main).toContain("goLan('/backups'");
     expect(main).toContain("goLan('/vault/prefs'");
     expect(main).toContain("goLan('/settings/fiscal-reviews'");
-    expect(main).toContain("goLan('/settings/google-calendar/connect'");
     expect(main).toContain('apps-update');
     expect(read('src/main/api.ts')).toContain('/admin/updates/check');
     expect(read('src/main/services/appUpdates.ts')).toContain(

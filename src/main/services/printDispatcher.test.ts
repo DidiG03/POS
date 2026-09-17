@@ -513,6 +513,71 @@ describe('dispatchTicket', () => {
     expect(r.perPrinter.length).toBe(1);
   });
 
+  it('routing ON + ORDER: merges multiple categories on the same printer', async () => {
+    const r = await dispatchTicket(
+      {
+        area: 'A',
+        tableLabel: 'T1',
+        items: [
+          { name: 'coffee', qty: 1, unitPrice: 1, categoryName: 'hot drinks' },
+          { name: 'beer', qty: 1, unitPrice: 1, categoryName: 'beer' },
+          { name: 'pizza', qty: 1, unitPrice: 1, categoryName: 'food' },
+        ],
+        meta: { kind: 'ORDER' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'kitchen',
+            name: 'Kitchen',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.2',
+            port: 9100,
+          },
+          {
+            id: 'bar',
+            name: 'Bar',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.3',
+            port: 9100,
+          },
+          {
+            id: 'receipt',
+            name: 'Receipt',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.1',
+            port: 9100,
+          },
+        ],
+        printerRouting: {
+          enabled: true,
+          receiptPrinterId: 'receipt',
+          categories: {
+            'hot drinks': 'bar',
+            beer: 'bar',
+            food: 'kitchen',
+          },
+        },
+      } as any,
+      { retries: 0 },
+    );
+    expect(r.ok).toBe(true);
+    expect(sendNetwork).toHaveBeenCalledTimes(2);
+    const barPayload = buildEscpos.mock.calls
+      .map((c) => c[0] as any)
+      .find((payload) =>
+        payload?.items?.some((it: any) => it.name === 'beer'),
+      );
+    expect(barPayload?.items).toHaveLength(2);
+    expect(barPayload.items.map((it: any) => it.name).sort()).toEqual([
+      'beer',
+      'coffee',
+    ]);
+  });
+
   it('routing ON + ORDER: splits items by category to separate printers', async () => {
     // This is the iOS routing fix — used to never trigger from the
     // HTTP path. Now both Electron and HTTP routes go through this.

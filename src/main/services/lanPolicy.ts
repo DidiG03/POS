@@ -155,10 +155,6 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /settings/fiscal-test-minimal': { allow: ADMIN },
   'GET /settings/fiscal-reviews': { allow: ADMIN },
   'POST /settings/fiscal-reviews': { allow: ADMIN },
-  'POST /settings/google-calendar/sync': { allow: ADMIN },
-  'POST /settings/google-calendar/connect': { allow: ADMIN },
-  'POST /settings/google-calendar/disconnect': { allow: ADMIN },
-  'GET /settings/google-calendar/calendars': { allow: ADMIN },
 
   // ---------------------------------------------------------------- layout
   'GET /layout/get': { allow: 'session' },

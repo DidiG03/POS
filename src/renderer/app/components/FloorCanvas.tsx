@@ -2567,7 +2567,6 @@ function Circle({
     // button to overflow past the table edge without being clipped.
     <div
       ref={ref}
-      data-haptic={editable ? 'off' : 'light'}
       role={editable ? undefined : 'button'}
       tabIndex={editable ? undefined : 0}
       aria-label={tableName}

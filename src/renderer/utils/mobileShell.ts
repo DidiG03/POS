@@ -53,7 +53,7 @@ export async function initMobileShell(): Promise<void> {
       // plugin missing — ignore
     }
 
-    // Light tap buzz on buttons / tappable controls.
+    // Haptics for important outcomes (toasts), not every control tap.
     try {
       const { initButtonHaptics } = await import('./haptics');
       await initButtonHaptics();
@@ -87,7 +87,7 @@ export async function syncNativeChrome(theme: 'light' | 'dark'): Promise<void> {
     }
     try {
       await StatusBar.setBackgroundColor({
-        color: light ? '#f4f6fa' : '#0b1220',
+        color: light ? '#f2f2f7' : '#0b1220',
       });
     } catch {
       /* ignore */

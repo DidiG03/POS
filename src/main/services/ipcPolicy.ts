@@ -230,16 +230,11 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'reservations:update': { allow: HOST },
 
   // ------------------------------------------------------------- settings
-  'settings:connectGoogleCalendar': { allow: ADMIN },
-  'settings:disconnectGoogleCalendar': { allow: ADMIN },
   // Read during boot for locale, currency and feature flags. The handler
   // redacts credentials before returning.
   'settings:get': { allow: 'public' },
   'settings:getFiscalTokenHint': { allow: ADMIN },
-  'settings:getGoogleCalendarStatus': { allow: ADMIN },
-  'settings:listGoogleCalendars': { allow: ADMIN },
   'settings:setPrinter': { allow: ADMIN },
-  'settings:syncGoogleCalendar': { allow: ADMIN },
   'settings:testFiscalConnection': { allow: ADMIN },
   'settings:testFiscalMinimalInvoice': { allow: ADMIN },
   'settings:listFiscalReviews': { allow: ADMIN },

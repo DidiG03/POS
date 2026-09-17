@@ -77,7 +77,7 @@ describe('buildEscposTicket width', () => {
 
   it('prints a 48-char rule on 80mm paper', () => {
     const buf = buildEscposTicket(payload, {
-      restaurantName: 'Code Orbit Agroturizem',
+      restaurantName: 'OneTap',
       currency: 'EUR',
       printers: [{ id: 'p1', name: 'Till', paperWidthMm: 80 }],
     } as any);

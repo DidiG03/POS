@@ -36,9 +36,9 @@ describe('hostFromDebugBody', () => {
     const hit = hostFromDebugBody('192.168.1.10', 3333, {
       app: 'code-orbit-pos',
       schemaReady: true,
-      restaurantName: 'Code Orbit Agroturizem',
+      restaurantName: 'OneTap',
     });
-    expect(hit?.name).toBe('Code Orbit Agroturizem');
+    expect(hit?.name).toBe('OneTap');
     expect(hit?.host).toBe('192.168.1.10');
   });
 });
@@ -47,21 +47,21 @@ describe('mergeDiscoveredPosHosts', () => {
   it('dedupes the same IP found by mDNS and HTTP', () => {
     const merged = mergeDiscoveredPosHosts([
       {
-        name: 'Code Orbit POS @ till',
+        name: 'OneTap @ till',
         host: '192.168.1.10',
         httpPort: 3333,
         source: 'mdns',
       },
       {
-        name: 'Code Orbit Agroturizem',
+        name: 'OneTap',
         host: '192.168.1.10',
         httpPort: 3333,
-        restaurantName: 'Code Orbit Agroturizem',
+        restaurantName: 'OneTap',
         source: 'http',
       },
     ]);
     expect(merged).toHaveLength(1);
-    expect(merged[0].restaurantName).toBe('Code Orbit Agroturizem');
+    expect(merged[0].restaurantName).toBe('OneTap');
   });
 
   it('keeps two different tills as separate choices', () => {

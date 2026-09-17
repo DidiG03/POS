@@ -290,10 +290,9 @@ async function buildOrderBuckets(
     });
   }
 
-  const groups = new Map<
-    string,
-    { printerId: string; items: any[]; routeLabel: string }
-  >();
+  // One ORDER slip per destination printer. Multiple categories mapped to
+  // the same printer (e.g. all drink categories → bar) print together.
+  const groups = new Map<string, { printerId: string; items: any[] }>();
   for (const it of items) {
     const sku = String(it?.sku || '');
     const info = sku ? bySku.get(sku) : undefined;
@@ -317,14 +316,10 @@ async function buildOrderBuckets(
     const printerId = String(
       printerByCategory || fallbackPrinterId || '',
     ).trim();
-    const routeLabel = printerByCategory
-      ? categoryNameKey || categoryKey || 'unknown'
-      : 'all';
-    const key = `${printerId}|${routeLabel}`;
-    if (!groups.has(key)) {
-      groups.set(key, { printerId, items: [], routeLabel });
+    if (!groups.has(printerId)) {
+      groups.set(printerId, { printerId, items: [] });
     }
-    groups.get(key)!.items.push({ ...it, station: 'ALL', categoryId });
+    groups.get(printerId)!.items.push({ ...it, station: 'ALL', categoryId });
   }
 
   return Array.from(groups.values()).map((g) => ({
@@ -337,7 +332,7 @@ async function buildOrderBuckets(
         kind: 'ORDER',
         station: 'ALL',
         hidePrices: true,
-        routeLabel: g.routeLabel,
+        routeLabel: g.printerId,
       },
     },
   }));

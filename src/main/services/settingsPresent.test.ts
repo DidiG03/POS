@@ -8,10 +8,6 @@ vi.mock('@db/client', () => ({
   },
 }));
 
-vi.mock('./googleCalendarOAuth', () => ({
-  getGoogleOAuthClientConfig: () => ({ configured: true }),
-}));
-
 import { presentSettingsForClient } from './settingsPresent';
 
 describe('presentSettingsForClient', () => {
@@ -19,21 +15,12 @@ describe('presentSettingsForClient', () => {
     vi.clearAllMocks();
   });
 
-  it('strips secrets and flags configured fiscal / calendar state', async () => {
+  it('strips secrets and flags configured fiscal state', async () => {
     const presented = await presentSettingsForClient(
       {
         tableAreas: [{ name: 'Salla', count: 8 }],
         security: { apiSecret: 'x', pairingCode: '123456' },
         fiscal: { enabled: true, authToken: 'secret-token' },
-        googleCalendar: {
-          enabled: true,
-          icalUrl: 'https://example/cal.ics',
-          oauth: {
-            refreshToken: 'rt',
-            accessToken: 'at',
-            accessTokenExpiresAt: '2099-01-01',
-          },
-        },
       },
       { includePairingCode: false },
     );
@@ -41,11 +28,6 @@ describe('presentSettingsForClient', () => {
     expect(presented.security.pairingCode).toBeUndefined();
     expect(presented.fiscal.authToken).toBeUndefined();
     expect(presented.fiscal.authTokenConfigured).toBe(true);
-    expect(presented.googleCalendar.icalUrl).toBeUndefined();
-    expect(presented.googleCalendar.icalUrlConfigured).toBe(true);
-    expect(presented.googleCalendar.oauth.refreshToken).toBeUndefined();
-    expect(presented.googleCalendar.oauthConnected).toBe(true);
-    expect(presented.googleCalendarOAuthConfigured).toBe(true);
   });
 
   it('returns the pairing code only to admins', async () => {
