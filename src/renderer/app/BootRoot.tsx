@@ -137,6 +137,7 @@ function BootScreen({
 }) {
   return (
     <PageSpinner
+      variant="lock"
       message={message}
       detail={showScan ? undefined : detail}
       spinner={!showScan}

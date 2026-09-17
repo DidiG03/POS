@@ -195,27 +195,19 @@ jobs:
           rm -f dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml \
             dist/kds.yml dist/kds-mac.yml dist/latest-kds.yml || true
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Updating existing release $TAG"
-          else
-            # Sibling tag workflows may create the release first (HTTP 422).
-            gh release create "$TAG" --title "$TITLE" \
-              --notes "OneTap Admin ${VERSION} (macOS Intel/ARM, Windows)." || true
-            if ! gh release view "$TAG" >/dev/null 2>&1; then
-              echo "::error::Could not create or find release $TAG"
-              exit 1
-            fi
-          fi
+          source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
+          gh_ensure_release "$TAG" "$TITLE" \
+            "OneTap Admin ${VERSION} (macOS Intel/ARM)."
 
           UPLOAD=()
           shopt -s nullglob
+          # Windows Admin .exe + admin.yml are published by
+          # release-windows-client.yml. Uploading them here races and 404s.
           UPLOAD+=(
             dist/OneTap-Admin*.dmg
             dist/OneTap-Admin*.zip
-            dist/OneTap-Admin*.exe
             dist/OneTap-Admin*.blockmap
             dist/admin-mac.yml
-            dist/admin.yml
           )
           shopt -u nullglob
           if [[ ${#UPLOAD[@]} -eq 0 ]]; then
@@ -223,5 +215,5 @@ jobs:
             exit 1
           fi
 
-          gh release upload "$TAG" "${UPLOAD[@]}" --clobber
+          gh_upload_with_retry "$TAG" "${UPLOAD[@]}"
           echo "Published Admin to https://github.com/${{ github.repository }}/releases/tag/${TAG}"

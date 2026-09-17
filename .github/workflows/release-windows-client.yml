@@ -171,16 +171,8 @@ jobs:
           cp dist-installers/admin/admin.yml dist-installers/admin/latest-admin.yml
 
           NOTES="Windows client installers for OneTap POS ${VERSION}, OneTap KDS ${VERSION}, and OneTap Admin ${VERSION}."
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Updating existing release $TAG"
-          else
-            # Sibling tag workflows may create the release first (HTTP 422).
-            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || true
-            if ! gh release view "$TAG" >/dev/null 2>&1; then
-              echo "::error::Could not create or find release $TAG"
-              exit 1
-            fi
-          fi
+          source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
+          gh_ensure_release "$TAG" "$TITLE" "$NOTES"
 
           UPLOAD=( "$CANONICAL_POS" "$CANONICAL_KDS" "$CANONICAL_ADMIN" )
           shopt -s nullglob
@@ -196,8 +188,9 @@ jobs:
           )
           shopt -u nullglob
 
-          gh release upload "$TAG" "${UPLOAD[@]}" --clobber
-
-          gh release edit "$TAG" --draft=false --latest
+          # POS / Admin / KDS Mac workflows also publish onto this tag. Do not
+          # `gh release edit --latest` here — that races with sibling uploads
+          # and GitHub returns HTTP 404 for the remaining assets.
+          gh_upload_with_retry "$TAG" "${UPLOAD[@]}"
 
           echo "Published to https://github.com/${{ github.repository }}/releases/tag/${TAG}"

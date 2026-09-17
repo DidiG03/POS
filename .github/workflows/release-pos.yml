@@ -219,23 +219,14 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.44"
-            echo "- Fix CI failures that blocked v0.2.42 and v0.2.43 releases (typecheck + menu tile test)"
+            echo "### Changes in v0.2.45"
+            echo "- Fix GitHub Release upload races that dropped Windows installers on v0.2.44"
+            echo "- Center the Android Waiter splash logo and launcher icon"
             echo "- Same feature set: multi-category printer routes, Google Calendar removal, admin login, light theme, haptics, waiter polish"
           } > "$NOTES_FILE"
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Updating existing release $TAG"
-            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
-          else
-            # Sibling tag workflows may create the release first (HTTP 422).
-            gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE" || true
-            if ! gh release view "$TAG" >/dev/null 2>&1; then
-              echo "::error::Could not create or find release $TAG"
-              exit 1
-            fi
-            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
-          fi
+          source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
+          gh_ensure_release "$TAG" "$TITLE" "$NOTES_FILE"
 
           UPLOAD=()
           shopt -s nullglob
@@ -246,7 +237,9 @@ jobs:
             exit 1
           fi
 
-          gh release upload "$TAG" "${UPLOAD[@]}" --clobber
-          gh release edit "$TAG" --draft=false --latest
+          # Upload first, then edit notes / latest. Editing a release while a
+          # sibling workflow is uploading invalidates GitHub's upload URL (404).
+          gh_upload_with_retry "$TAG" "${UPLOAD[@]}"
+          gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE" --draft=false --latest
 
           echo "Published to https://github.com/${{ github.repository }}/releases/tag/${TAG}"
