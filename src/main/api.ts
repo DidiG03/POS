@@ -467,15 +467,24 @@ function hmacSha256(secret: string, input: string) {
   return crypto.createHmac('sha256', secret).update(input).digest();
 }
 
+let sessionApiSecret: string | null = null;
+
 async function getOrCreateApiSecret(): Promise<string> {
-  const current = await coreServices.readSettings();
-  const existing = (current as any)?.security?.apiSecret;
-  if (typeof existing === 'string' && existing.length >= 32) return existing;
-  const created = base64url(crypto.randomBytes(32));
-  await coreServices.updateSettings({
-    security: { ...(current as any)?.security, apiSecret: created },
-  });
-  return created;
+  try {
+    const current = await coreServices.readSettings();
+    const existing = (current as any)?.security?.apiSecret;
+    if (typeof existing === 'string' && existing.length >= 32) return existing;
+    const created = base64url(crypto.randomBytes(32));
+    await coreServices.updateSettings({
+      security: { ...(current as any)?.security, apiSecret: created },
+    });
+    sessionApiSecret = created;
+    return created;
+  } catch (e) {
+    console.warn('[lan] api secret from DB failed:', e);
+    if (!sessionApiSecret) sessionApiSecret = base64url(crypto.randomBytes(32));
+    return sessionApiSecret;
+  }
 }
 
 async function getOrCreatePairingCode(): Promise<string> {

@@ -97,7 +97,7 @@ async function copyTablePaged(
 export function openLibsql(file: string, encryptionKey?: string): Client {
   return createClient({
     url: sqliteFileUrl(file),
-    ...(encryptionKey ? { encryptionKey } : {}),
+    ...(encryptionKey ? { encryptionKey, concurrency: 1 as const } : {}),
     timeout: SQLITE_BUSY_TIMEOUT_MS,
   });
 }

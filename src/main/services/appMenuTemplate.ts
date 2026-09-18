@@ -13,6 +13,7 @@ export type AppMenuTemplateOpts = {
   downloaded: boolean;
   busy?: boolean;
   onCheckForUpdates: () => void;
+  onShowTillAddress?: () => void;
 };
 
 export function updateMenuLabel(opts: {
@@ -42,6 +43,14 @@ export function buildAppMenuTemplate(
     click: () => opts.onCheckForUpdates(),
   });
 
+  const tillAddressItem = (): MenuItemConstructorOptions | null =>
+    opts.onShowTillAddress
+      ? {
+          label: 'This Till’s Address…',
+          click: () => opts.onShowTillAddress?.(),
+        }
+      : null;
+
   const template: MenuItemConstructorOptions[] = [];
 
   if (opts.platform === 'darwin') {
@@ -51,6 +60,7 @@ export function buildAppMenuTemplate(
         { role: 'about' },
         { type: 'separator' },
         updateItem(),
+        ...(tillAddressItem() ? [tillAddressItem()!] : []),
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -68,7 +78,11 @@ export function buildAppMenuTemplate(
     submenu: [
       ...(opts.platform === 'darwin'
         ? []
-        : [updateItem(), { type: 'separator' as const }]),
+        : [
+            updateItem(),
+            ...(tillAddressItem() ? [tillAddressItem()!] : []),
+            { type: 'separator' as const },
+          ]),
       opts.platform === 'darwin' ? { role: 'close' } : { role: 'quit' },
     ],
   });
@@ -96,6 +110,7 @@ export function buildAppMenuTemplate(
     role: 'help',
     submenu: [
       updateItem(),
+      ...(tillAddressItem() ? [tillAddressItem()!] : []),
       { type: 'separator' },
       {
         label: `Version ${opts.version}`,

@@ -1309,6 +1309,8 @@ async function ensureLanApiStarted(): Promise<void> {
     } catch {
       // discovery is a convenience, not required
     }
+  } catch (e) {
+    console.error('[startup] LAN API failed to bind:', e);
   } finally {
     lanApiStarting = false;
   }

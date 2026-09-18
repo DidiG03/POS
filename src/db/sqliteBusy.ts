@@ -34,12 +34,26 @@ export function isSqliteBusy(err: unknown): boolean {
     return true;
   }
   const message = `${e.message || ''} ${e.meta?.message || ''}`.toLowerCase();
-  return (
+  if (
     message.includes('database is locked') ||
     message.includes('sqlite_busy') ||
     message.includes('sqlite_locked') ||
     message.includes('database is busy')
-  );
+  ) {
+    return true;
+  }
+  // Encrypted libsql on a busy till: SQLITE_IOERR_SHORT_READ (522).
+  if (
+    code === 'SQLITE_IOERR' ||
+    code === '522' ||
+    message.includes('disk i/o') ||
+    message.includes('ioerr') ||
+    message.includes('extended_code: 522') ||
+    message.includes('extended code: 522')
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function sleep(ms: number): Promise<void> {

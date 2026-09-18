@@ -31,6 +31,18 @@ const PRAGMAS = [
   'PRAGMA wal_autocheckpoint=1000;',
 ];
 
+/** Encrypted libsql: mmap + a 20-connection pool caused SQLITE 522 (disk I/O). */
+const ENCRYPTED_PRAGMAS = [
+  'PRAGMA journal_mode=WAL;',
+  `PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS};`,
+  'PRAGMA synchronous=NORMAL;',
+  'PRAGMA foreign_keys=ON;',
+  'PRAGMA temp_store=MEMORY;',
+  `PRAGMA cache_size=-${SQLITE_CACHE_SIZE_KIB};`,
+  'PRAGMA mmap_size=0;',
+  'PRAGMA wal_autocheckpoint=1000;',
+];
+
 const writeMutex = new AsyncMutex();
 const writeDepth = new AsyncLocalStorage<number>();
 
@@ -54,7 +66,9 @@ function createEncryptedClient(file: string, encryptionKey: string) {
   const adapter = new PrismaLibSQL({
     url: sqliteFileUrl(file),
     encryptionKey,
-  });
+    concurrency: 1,
+    timeout: SQLITE_BUSY_TIMEOUT_MS,
+  } as any);
   return new PrismaClient({ adapter });
 }
 
@@ -92,7 +106,7 @@ async function applyPragmas(): Promise<void> {
   const client = raw;
   if (!client) return;
   await withSqliteRetry(async () => {
-    for (const sql of PRAGMAS) {
+    for (const sql of openMode === 'encrypted' ? ENCRYPTED_PRAGMAS : PRAGMAS) {
       try {
         await client.$queryRawUnsafe(sql);
       } catch (e) {

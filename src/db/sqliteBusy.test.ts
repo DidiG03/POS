@@ -44,6 +44,12 @@ describe('isSqliteBusy', () => {
     expect(isSqliteBusy({ code: 'P2024' })).toBe(true);
     expect(isSqliteBusy({ message: 'database is locked' })).toBe(true);
     expect(isSqliteBusy({ code: 'P2002' })).toBe(false);
+    expect(
+      isSqliteBusy({
+        message:
+          'QueryError(SqliteError { extended_code: 522, message: Some("disk I/O error") })',
+      }),
+    ).toBe(true);
   });
 });
 

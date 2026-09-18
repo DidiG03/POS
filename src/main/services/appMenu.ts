@@ -2,9 +2,10 @@
  * Native application menu with a Check for Updates item that actually
  * checks, downloads, and offers to restart-and-install (Windows + macOS).
  */
-import { Menu, app, dialog, BrowserWindow } from 'electron';
+import { Menu, app, dialog, BrowserWindow, clipboard } from 'electron';
 import { onUpdaterStatusChange, updaterHandlers } from '../updater';
 import { buildAppMenuTemplate, type AppMenuPlatform } from './appMenuTemplate';
+import { listLanIpv4Addresses } from './lanHost';
 
 export { buildAppMenuTemplate, updateMenuLabel } from './appMenuTemplate';
 export type { AppMenuPlatform } from './appMenuTemplate';
@@ -158,6 +159,32 @@ export async function checkForUpdatesFromMenu(): Promise<void> {
   }
 }
 
+export async function showTillAddressFromMenu(): Promise<void> {
+  const ips = listLanIpv4Addresses().filter((ip) => !ip.startsWith('169.254.'));
+  const lines = ips.length
+    ? ips.map((ip) => `${ip}:3333`)
+    : [
+        'This computer has no Wi-Fi address yet. Connect it to the store network, then open this again.',
+      ];
+  const detail = `${lines.join('\n')}\n\nIn OneTap Admin, scan for this till or type one of these addresses. Waiter tablets use the same Wi-Fi.`;
+  const confirm = await showBox({
+    type: 'info',
+    buttons: ips.length ? ['Copy Address', 'OK'] : ['OK'],
+    defaultId: ips.length ? 1 : 0,
+    cancelId: ips.length ? 1 : 0,
+    noLink: true,
+    message: 'This till’s address',
+    detail,
+  });
+  if (ips.length && confirm.response === 0) {
+    try {
+      clipboard.writeText(lines[0] || '');
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function refreshAppMenu(): void {
   const status = updaterHandlers.getUpdateStatus();
   const template = buildAppMenuTemplate({
@@ -176,6 +203,11 @@ function refreshAppMenu(): void {
     onCheckForUpdates: () => {
       void checkForUpdatesFromMenu();
     },
+    onShowTillAddress: isAdminShell()
+      ? undefined
+      : () => {
+          void showTillAddressFromMenu();
+        },
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

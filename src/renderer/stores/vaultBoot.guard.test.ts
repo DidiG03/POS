@@ -70,5 +70,8 @@ describe('sqlite boot guards', () => {
     expect(src.indexOf('sqliteConfigured = true')).toBeLessThan(
       src.indexOf('await applyPragmas()'),
     );
+    expect(src).toContain("openMode === 'encrypted' ? ENCRYPTED_PRAGMAS");
+    expect(src).toContain("'PRAGMA mmap_size=0;'");
+    expect(src).toContain('concurrency: 1');
   });
 });

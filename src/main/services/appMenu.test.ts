@@ -92,4 +92,15 @@ describe('buildAppMenuTemplate', () => {
         appSub.some((item) => item.label === 'Check for Updates…'),
     ).toBe(true);
   });
+
+  it('shows this till’s address on POS Help, not Admin', () => {
+    const pos = buildAppMenuTemplate({
+      ...base,
+      platform: 'darwin',
+      onShowTillAddress: () => undefined,
+    });
+    expect(JSON.stringify(pos)).toContain('This Till’s Address…');
+    const admin = buildAppMenuTemplate({ ...base, platform: 'darwin' });
+    expect(JSON.stringify(admin)).not.toContain('This Till’s Address…');
+  });
 });
