@@ -200,6 +200,74 @@ describe('setupVault / unlockVault', () => {
     ).toEqual({ ok: true });
   });
 
+  it('still opens when vault.json cannot be rewritten after a correct passphrase', async () => {
+    const dir = tmpDir();
+    const dataDir = path.join(dir, 'data');
+    const dbDir = path.join(dir, 'db');
+    fs.mkdirSync(dataDir);
+    fs.mkdirSync(dbDir);
+    const dbFile = path.join(dbDir, 'pos.db');
+    const src = createClient({ url: `file:${dbFile}` });
+    await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    await src.close();
+    expect(
+      (
+        await setupVault('kitchen-pass-1', {
+          userData: dataDir,
+          dbFile,
+          kdf: FAST,
+          openPrisma: false,
+        })
+      ).ok,
+    ).toBe(true);
+    lockVaultForTests();
+    fs.chmodSync(dataDir, 0o555);
+    try {
+      expect(
+        await unlockVault('kitchen-pass-1', {
+          userData: dataDir,
+          dbFile,
+          openPrisma: false,
+        }),
+      ).toEqual({ ok: true });
+    } finally {
+      fs.chmodSync(dataDir, 0o755);
+    }
+  });
+
+  it('serializes overlapping unlocks of the same passphrase', async () => {
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    const src = createClient({ url: `file:${dbFile}` });
+    await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    await src.close();
+    expect(
+      (
+        await setupVault('kitchen-pass-1', {
+          userData: dir,
+          dbFile,
+          kdf: FAST,
+          openPrisma: false,
+        })
+      ).ok,
+    ).toBe(true);
+    lockVaultForTests();
+    const [a, b] = await Promise.all([
+      unlockVault('kitchen-pass-1', {
+        userData: dir,
+        dbFile,
+        openPrisma: false,
+      }),
+      unlockVault('kitchen-pass-1', {
+        userData: dir,
+        dbFile,
+        openPrisma: false,
+      }),
+    ]);
+    expect(a).toEqual({ ok: true });
+    expect(b).toEqual({ ok: true });
+  });
+
   it('does not keep vault.json when the database cannot be encrypted', async () => {
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');

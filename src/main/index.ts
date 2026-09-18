@@ -1330,10 +1330,19 @@ function licenseToBillingDto(st: Awaited<ReturnType<typeof getLicenseStatus>>) {
 }
 
 let hostDatabaseStarted = false;
+let hostDatabaseStarting: Promise<void> | null = null;
 
 async function startHostDatabaseAndServices(): Promise<void> {
   if (hostDatabaseStarted) return;
-  hostDatabaseStarted = true;
+  if (hostDatabaseStarting) return hostDatabaseStarting;
+  hostDatabaseStarting = startHostDatabaseAndServicesOp().finally(() => {
+    hostDatabaseStarting = null;
+  });
+  return hostDatabaseStarting;
+}
+
+async function startHostDatabaseAndServicesOp(): Promise<void> {
+  if (hostDatabaseStarted) return;
   bootTrace('host:db start');
   try {
     await bootStep('host:configureSqlite', () => configureSqlite());
@@ -1439,29 +1448,40 @@ async function startHostDatabaseAndServices(): Promise<void> {
     .readSettings()
     .catch(() => ({}) as any);
   applyOpenAtLogin(isOpenAtLoginEnabled(hostSettings));
-  await bootStep('host:lanApi', () => ensureLanApiStarted());
+  await bootStep('host:lanApi', () =>
+    ensureLanApiStarted().catch((e) =>
+      console.warn('[startup] LAN API failed:', e),
+    ),
+  );
   if (pendingLicenseUrl) {
     const queued = pendingLicenseUrl;
     pendingLicenseUrl = null;
-    await handleLicenseProtocolUrl(queued);
+    await handleLicenseProtocolUrl(queued).catch((e) =>
+      console.warn('[startup] license URL after vault failed:', e),
+    );
   }
   // Local printer retry queue (LAN API is independent).
-  startPrinterStationLoop();
-  startFiscalDeferLoop();
-  // Notifications: automatically delete notifications older than 1 week (DB retention).
-  startNotificationRetentionLoop(prisma, { days: 7 });
-  startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
-  // PrintJob: SENT/FAILED slips older than a week. After sales-ledger
-  // backfill so a PAYMENT receipt without an Order is not deleted.
-  startPrintJobRetentionLoop(prisma, { days: 7 });
-  // KDS: auto-bump stale tickets after 12 hours.
-  startKdsAutoBumpLoop();
-  // Tickets: auto-void stale open tables after 12 hours + notify.
-  startAutoVoidStaleTicketsLoop();
-  // Shifts: optional auto-close idle waiter shifts (12h / 24h) when no open tickets.
-  startAutoCloseShiftsLoop();
-  // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
-  startAutoNoShowReservationsLoop();
+  try {
+    startPrinterStationLoop();
+    startFiscalDeferLoop();
+    // Notifications: automatically delete notifications older than 1 week (DB retention).
+    startNotificationRetentionLoop(prisma, { days: 7 });
+    startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
+    // PrintJob: SENT/FAILED slips older than a week. After sales-ledger
+    // backfill so a PAYMENT receipt without an Order is not deleted.
+    startPrintJobRetentionLoop(prisma, { days: 7 });
+    // KDS: auto-bump stale tickets after 12 hours.
+    startKdsAutoBumpLoop();
+    // Tickets: auto-void stale open tables after 12 hours + notify.
+    startAutoVoidStaleTicketsLoop();
+    // Shifts: optional auto-close idle waiter shifts (12h / 24h) when no open tickets.
+    startAutoCloseShiftsLoop();
+    // Reservations: optional auto-mark BOOKED reservations as NO_SHOW after grace.
+    startAutoNoShowReservationsLoop();
+  } catch (e) {
+    console.warn('[startup] background loops failed:', e);
+  }
+  hostDatabaseStarted = true;
   bootTrace('host:db ready');
 }
 
@@ -1472,7 +1492,13 @@ function vaultBlocksDatabase(): boolean {
 }
 
 async function completeVaultAndBoot(): Promise<void> {
-  await startHostDatabaseAndServices();
+  try {
+    await startHostDatabaseAndServices();
+  } catch (e) {
+    // Passphrase already opened the ledger. A LAN/Keychain/boot failure
+    // must not look like the owner typed the wrong secret.
+    console.error('[vault] boot after open failed:', e);
+  }
 }
 
 app.whenReady().then(async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BrandMark } from '../../components/BrandMark';
 import { PageSpinner } from '../../components/PageSpinner';
@@ -32,6 +32,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
   const [wroteItDown, setWroteItDown] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const busyRef = useRef(false);
 
   useEffect(() => {
     if (!host) return;
@@ -68,10 +69,12 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
     t(`vault.errors.${error}`, { defaultValue: t('vault.errors.generic') });
 
   async function onSetup() {
+    if (busyRef.current) return;
     if (passphrase !== confirm) {
       setError('mismatch');
       return;
     }
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -98,11 +101,14 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
     } catch {
       setError('generic');
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   async function onUnlock() {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -120,6 +126,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
       const msg = String((e as { message?: string })?.message || e || '');
       setError(msg.includes('rate_limited') ? 'rate_limited' : 'generic');
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -160,7 +167,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                   value={passphrase}
                   onChange={(e) => setPassphrase(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void onSetup();
+                    if (e.key === 'Enter' && !busy) void onSetup();
                   }}
                 />
               </Field>
@@ -174,7 +181,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void onSetup();
+                    if (e.key === 'Enter' && !busy) void onSetup();
                   }}
                 />
               </Field>
@@ -256,7 +263,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                   value={secret}
                   onChange={(e) => setSecret(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void onUnlock();
+                    if (e.key === 'Enter' && !busy) void onUnlock();
                   }}
                 />
               </Field>

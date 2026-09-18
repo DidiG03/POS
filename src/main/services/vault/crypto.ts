@@ -23,7 +23,7 @@ export const DEFAULT_KDF: Argon2Params = { t: 2, m: 19_456, p: 1 };
 
 const DEK_BYTES = 32;
 const WRAP_IV_BYTES = 12;
-const ARGON_MAXMEM = 64 * 1024 * 1024;
+const ARGON_MAXMEM = 128 * 1024 * 1024;
 
 export type WrappedKey = {
   kdf: Argon2Params & { salt: string };

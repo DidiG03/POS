@@ -219,10 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.46"
-            echo "- Keep Android Waiter tappable after opening a table (no 30s freeze)"
-            echo "- Speed up Courses/Seat switching and drag-reorder on the ticket"
-            echo "- Paint the floor layout from cache instead of waiting on a 10s GET"
+            echo "### Changes in v0.2.47"
+            echo "- Open the till after a correct passphrase even if Mac Keychain or LAN boot hiccups"
+            echo "- Stop a second Enter on slow Intel Macs from racing unlock and showing a false error"
+            echo "- Unpack libsql native binaries so Intel Mac installers can decrypt the ledger"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

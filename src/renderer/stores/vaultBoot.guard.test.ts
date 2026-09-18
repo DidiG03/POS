@@ -27,6 +27,22 @@ describe('vault boot guards', () => {
     );
   });
 
+  it('does not treat a correct passphrase as failed when host boot throws', () => {
+    const gate = read('src/renderer/app/components/VaultGate.tsx');
+    expect(gate).toContain('busyRef');
+    expect(gate).toContain("if (e.key === 'Enter' && !busy) void onUnlock()");
+    expect(gate).toContain('if (busyRef.current) return');
+
+    const main = read('src/main/index.ts');
+    expect(main).toContain('[vault] boot after open failed:');
+    expect(main).toContain('hostDatabaseStarting');
+    expect(main).toContain('ensureLanApiStarted().catch(');
+
+    const life = read('src/main/services/vault/lifecycle.ts');
+    expect(life).toContain('persist after unlock failed');
+    expect(life).toContain('function withVaultOp');
+  });
+
   it('settings:get and auth:listUsers stay quiet while the vault is locked', () => {
     const src = read('src/main/index.ts');
     const settingsGet = between(
