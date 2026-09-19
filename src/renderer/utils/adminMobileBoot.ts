@@ -5,7 +5,7 @@ import {
 
 /** True for the Capacitor Admin web build (`vite.mobile.admin.config.ts`). */
 export function isAdminMobileBuild(): boolean {
-  return Boolean((import.meta as any)?.env?.VITE_ADMIN_MOBILE_TARGET);
+  return Boolean(import.meta.env.VITE_ADMIN_MOBILE_TARGET);
 }
 
 /**
