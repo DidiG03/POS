@@ -176,7 +176,8 @@ describe('standalone Admin companion', () => {
 
     const capAdmin = read('scripts/capAdmin.mjs');
     expect(capAdmin).toContain("process.env.CAP_APP = 'admin'");
-    expect(capAdmin).toContain('@capacitor/cli');
+    expect(capAdmin).toContain("'@capacitor'");
+    expect(capAdmin).toContain("'cli'");
 
     const cap = read('capacitor.config.ts');
     expect(cap).toContain("appId: 'com.codeorbit.waiter'");
