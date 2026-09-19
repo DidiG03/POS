@@ -151,7 +151,8 @@ export function installBrowserLanApi(): void {
       // ignore
     }
     IS_NATIVE_SHELL =
-      Boolean((import.meta as any)?.env?.VITE_MOBILE_TARGET) ||
+      Boolean(import.meta.env.VITE_MOBILE_TARGET) ||
+      Boolean(import.meta.env.VITE_ADMIN_MOBILE_TARGET) ||
       Boolean((window as any).Capacitor);
     return resolveBackendHost();
   };

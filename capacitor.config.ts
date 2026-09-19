@@ -1,4 +1,9 @@
 import type { CapacitorConfig } from '@capacitor/cli';
+import { adminCapacitorConfig } from './capacitor.admin.config';
+
+// Capacitor 8 has no `--config` flag. Waiter stays the default so
+// `pnpm cap:sync` / `cap run ios` keep targeting `ios/` + `android/`.
+// The Admin iOS app is selected with CAP_APP=admin (scripts/capAdmin.mjs).
 
 // Optional dev server. To run with live reload on a real device:
 //   1. pnpm dev:mobile        (starts Vite on :5174, host:true)
@@ -68,4 +73,4 @@ const config: CapacitorConfig = {
   },
 };
 
-export default config;
+export default process.env.CAP_APP === 'admin' ? adminCapacitorConfig : config;

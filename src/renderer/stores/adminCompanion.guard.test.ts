@@ -150,4 +150,98 @@ describe('standalone Admin companion', () => {
       'admin:openWindow',
     );
   });
+
+  it('ships a separate iOS-only Capacitor Admin target without touching Waiter', () => {
+    const pkg = JSON.parse(read('package.json'));
+    expect(pkg.scripts['dev:mobile']).toBe(
+      'vite --config vite.mobile.config.ts',
+    );
+    expect(pkg.scripts['build:mobile']).toBe(
+      'vite build --config vite.mobile.config.ts',
+    );
+    expect(pkg.scripts['cap:sync']).toBe('pnpm build:mobile && cap sync');
+    expect(pkg.scripts['cap:run:ios']).toBe('pnpm cap:sync && cap run ios');
+    expect(pkg.scripts['dev:mobile:admin']).toBe(
+      'vite --config vite.mobile.admin.config.ts',
+    );
+    expect(pkg.scripts['build:mobile:admin']).toBe(
+      'vite build --config vite.mobile.admin.config.ts',
+    );
+    expect(pkg.scripts['cap:admin:sync']).toContain('capAdmin.mjs sync ios');
+    expect(pkg.scripts['cap:admin:open:ios']).toContain(
+      'capAdmin.mjs open ios',
+    );
+    expect(pkg.scripts['cap:admin:run:ios']).toContain('capAdmin.mjs run ios');
+    expect(pkg.scripts['cap:admin:sync']).not.toContain('android');
+
+    const capAdmin = read('scripts/capAdmin.mjs');
+    expect(capAdmin).toContain("process.env.CAP_APP = 'admin'");
+    expect(capAdmin).toContain("'@capacitor'");
+    expect(capAdmin).toContain("'cli'");
+
+    const cap = read('capacitor.config.ts');
+    expect(cap).toContain("appId: 'com.codeorbit.waiter'");
+    expect(cap).toContain("webDir: 'dist/mobile'");
+    expect(cap).toContain('adminCapacitorConfig');
+    expect(cap).toContain("process.env.CAP_APP === 'admin'");
+    expect(cap).not.toContain("path: 'ios-admin'");
+
+    const adminCap = read('capacitor.admin.config.ts');
+    expect(adminCap).toContain("appId: 'com.codeorbit.admin'");
+    expect(adminCap).toContain("appName: 'OneTap Admin'");
+    expect(adminCap).toContain("webDir: 'dist/mobile-admin'");
+    expect(adminCap).toContain("path: 'ios-admin'");
+    expect(adminCap).toContain("path: 'android-admin'");
+
+    const adminVite = read('vite.mobile.admin.config.ts');
+    expect(adminVite).toContain('dist/mobile-admin');
+    expect(adminVite).toContain('VITE_MOBILE_TARGET');
+    expect(adminVite).toContain('VITE_ADMIN_MOBILE_TARGET');
+    expect(read('vite.mobile.config.ts')).not.toContain(
+      'VITE_ADMIN_MOBILE_TARGET',
+    );
+
+    const main = read('src/renderer/main.tsx');
+    expect(main).toContain('VITE_ADMIN_MOBILE_TARGET');
+    expect(main).toContain("import('./utils/adminMobileBoot')");
+    expect(read('src/renderer/utils/adminMobileBoot.ts')).toContain(
+      '__ADMIN_APP__',
+    );
+    expect(read('src/renderer/utils/adminMobileBoot.ts')).toContain(
+      '#/admin-setup',
+    );
+    expect(read('src/renderer/utils/backendHost.ts')).toContain(
+      'hydrateCompanionHostFromNativeStore',
+    );
+    expect(read('src/renderer/utils/backendHost.ts')).toContain(
+      'companionPersistLocationHash',
+    );
+    expect(read('src/renderer/app/components/PosServerScan.tsx')).toContain(
+      'onConnected?.()',
+    );
+
+    const waiterPlist = read('ios/App/App/Info.plist');
+    expect(waiterPlist).toContain('OneTap Waiter');
+    expect(waiterPlist).not.toContain('OneTap Admin');
+    expect(read('ios/App/App.xcodeproj/project.pbxproj')).toContain(
+      'PRODUCT_BUNDLE_IDENTIFIER = com.codeorbit.waiter;',
+    );
+    expect(read('android/app/build.gradle')).toContain('com.codeorbit.waiter');
+
+    const adminPlist = read('ios-admin/App/App/Info.plist');
+    expect(adminPlist).toContain('OneTap Admin');
+    expect(adminPlist).toContain('NSLocalNetworkUsageDescription');
+    expect(adminPlist).toContain('NSBonjourServices');
+    expect(adminPlist).toContain('_codeorbit-pos._tcp');
+    expect(adminPlist).toContain('NSAllowsLocalNetworking');
+    expect(adminPlist).not.toContain('NSAllowsArbitraryLoads');
+    expect(read('ios-admin/App/App.xcodeproj/project.pbxproj')).toContain(
+      'PRODUCT_BUNDLE_IDENTIFIER = com.codeorbit.admin;',
+    );
+    expect(read('ios-admin/App/App.xcodeproj/project.pbxproj')).not.toContain(
+      'com.codeorbit.waiter',
+    );
+
+    expect(fs.existsSync(path.join(root, 'android-admin'))).toBe(false);
+  });
 });

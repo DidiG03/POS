@@ -40,6 +40,8 @@
     "serial:rebuild": "node scripts/rebuildSerialport.mjs",
     "dev:mobile": "vite --config vite.mobile.config.ts",
     "build:mobile": "vite build --config vite.mobile.config.ts",
+    "dev:mobile:admin": "vite --config vite.mobile.admin.config.ts",
+    "build:mobile:admin": "vite build --config vite.mobile.admin.config.ts",
     "cap:sync": "pnpm build:mobile && cap sync",
     "cap:add:ios": "cap add ios",
     "cap:add:android": "cap add android",
@@ -47,6 +49,9 @@
     "cap:open:android": "cap open android",
     "cap:run:ios": "pnpm cap:sync && cap run ios",
     "cap:run:android": "pnpm cap:sync && cap run android",
+    "cap:admin:sync": "pnpm build:mobile:admin && node scripts/capAdmin.mjs sync ios",
+    "cap:admin:open:ios": "node scripts/capAdmin.mjs open ios",
+    "cap:admin:run:ios": "pnpm cap:admin:sync && node scripts/capAdmin.mjs run ios",
     "store:android:bundle": "pnpm cap:sync && ./android/gradlew -p android bundleRelease",
     "store:ios:open": "pnpm cap:sync && cap open ios",
     "prepare": "husky"
