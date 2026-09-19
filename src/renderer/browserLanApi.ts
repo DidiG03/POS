@@ -151,7 +151,8 @@ export function installBrowserLanApi(): void {
       // ignore
     }
     IS_NATIVE_SHELL =
-      Boolean((import.meta as any)?.env?.VITE_MOBILE_TARGET) ||
+      Boolean(import.meta.env.VITE_MOBILE_TARGET) ||
+      Boolean(import.meta.env.VITE_ADMIN_MOBILE_TARGET) ||
       Boolean((window as any).Capacitor);
     return resolveBackendHost();
   };
@@ -524,7 +525,9 @@ export function installBrowserLanApi(): void {
 
         es.addEventListener('open', () => {
           const missedMs =
-            lastSseDataAt === 0 ? Number.POSITIVE_INFINITY : Date.now() - lastSseDataAt;
+            lastSseDataAt === 0
+              ? Number.POSITIVE_INFINITY
+              : Date.now() - lastSseDataAt;
           lastSseEventAt = Date.now();
           sseBackoffMs = 1000;
           markSseOpen(true);

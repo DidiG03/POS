@@ -82,17 +82,17 @@ export function resolveBackendHost(): BackendHost {
   }
 
   const isMobileShell =
-    Boolean((import.meta as any)?.env?.VITE_MOBILE_TARGET) ||
-    Boolean((import.meta as any)?.env?.VITE_ADMIN_MOBILE_TARGET) ||
+    Boolean(import.meta.env.VITE_MOBILE_TARGET) ||
+    Boolean(import.meta.env.VITE_ADMIN_MOBILE_TARGET) ||
     Boolean((window as any).Capacitor);
   const envHost = String(
-    (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HOST || '',
+    import.meta.env.VITE_DEFAULT_BACKEND_HOST || '',
   ).trim();
   const envHttp = String(
-    (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HTTP || '',
+    import.meta.env.VITE_DEFAULT_BACKEND_HTTP || '',
   ).trim();
   const envHttps = String(
-    (import.meta as any)?.env?.VITE_DEFAULT_BACKEND_HTTPS || '',
+    import.meta.env.VITE_DEFAULT_BACKEND_HTTPS || '',
   ).trim();
 
   let host = pickStoredBackendHost({

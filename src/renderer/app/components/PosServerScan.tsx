@@ -75,6 +75,8 @@ export function PosServerScanPanel({
       try {
         if ((window as any).__KDS_APP__ || (window as any).__ADMIN_APP__) {
           await persistCompanionBackendHost({ host: h.host, httpPort: port });
+          onConnected?.();
+          setBusyHost(null);
           return;
         }
         syncBackendHostToLocalStorage({
