@@ -219,10 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.48"
-            echo "- Fix encrypted till writes on Intel Macs (SQLite 522 disk I/O on occupancy/covers)"
-            echo "- Keep LAN up so Admin can find this till, and show the address under Help"
-            echo "- Do not mmap the encrypted ledger; use one libsql connection"
+            echo "### Changes in v0.2.49"
+            echo "- Named print routings: separate ORDER slips per routing even on the same printer"
+            echo "- Sold-by-kg weigh-in works on tablets; modals ignore accidental backdrop taps"
+            echo "- Admin ticket reports: reliable date filters, staff lists, and revenue totals"
+            echo "- Mobile Admin/Waiter boot restores the till host without hanging on splash"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

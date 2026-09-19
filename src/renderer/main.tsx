@@ -10,6 +10,7 @@ import { installPosReadCache } from './utils/posReadCache';
 import { installWakeUiRecovery } from './utils/wakeUiRecovery';
 import { installUnhandledErrorToasts } from './utils/reportAppError';
 import { bootTrace } from '@shared/bootTrace';
+import { bootAdminMobileShell } from './utils/adminMobileBoot';
 // PWA registration disabled for desktop build
 
 void initMobileShell();
@@ -43,40 +44,50 @@ function installCompanionUpdaterBridge() {
 async function startRenderer() {
   // Capacitor Admin must set `__ADMIN_APP__` and `#/admin` / `#/admin-setup`
   // before BootRoot mounts the hash router. Waiter / Electron skip this.
-  // Use a static `import.meta.env.VITE_*` member so Vite `define` replaces
-  // it in both `vite build` and `vite dev` (optional chaining is skipped).
-  if (import.meta.env.VITE_ADMIN_MOBILE_TARGET) {
-    const { bootAdminMobileShell } = await import('./utils/adminMobileBoot');
-    await bootAdminMobileShell();
+  // Static import (not dynamic) so a missing chunk cannot leave the HTML
+  // "OneTap POS" shell up forever. Use a static `import.meta.env.VITE_*`
+  // member so Vite `define` replaces it in build and dev.
+  try {
+    if (import.meta.env.VITE_ADMIN_MOBILE_TARGET) {
+      await bootAdminMobileShell();
+    }
+  } catch (e) {
+    bootTrace('renderer:admin-boot-failed');
+    console.error(e);
   }
 
   // Electron preload already defines window.api. Tablets download the LAN
   // HTTP shim only when that bridge is missing so the PIN screen stays small.
-  if (!(window as any).api) {
-    const { installBrowserLanApi } = await import('./browserLanApi');
-    installBrowserLanApi();
-  }
+  try {
+    if (!(window as any).api) {
+      const { installBrowserLanApi } = await import('./browserLanApi');
+      installBrowserLanApi();
+    }
 
-  const lng = readStoredPosUiLang();
-  await ensureLocaleResources(lng);
-  if (i18n.language !== lng) await i18n.changeLanguage(lng);
-  writeStoredPosUiLang(lng);
+    const lng = readStoredPosUiLang();
+    await ensureLocaleResources(lng);
+    if (i18n.language !== lng) await i18n.changeLanguage(lng);
+    writeStoredPosUiLang(lng);
 
-  installPosReadCache();
-  installCompanionUpdaterBridge();
+    installPosReadCache();
+    installCompanionUpdaterBridge();
 
-  if (typeof window !== 'undefined') {
-    bootTrace('renderer:modules');
-    installWakeUiRecovery();
-    installUnhandledErrorToasts();
-    scheduleIdle(() => {
-      void import('./utils/remoteAppUpdate').then((m) =>
-        m.installRemoteAppUpdateListener(),
-      );
-      void import('./utils/adminFleetMenu').then((m) =>
-        m.installAdminFleetMenuListener(),
-      );
-    });
+    if (typeof window !== 'undefined') {
+      bootTrace('renderer:modules');
+      installWakeUiRecovery();
+      installUnhandledErrorToasts();
+      scheduleIdle(() => {
+        void import('./utils/remoteAppUpdate').then((m) =>
+          m.installRemoteAppUpdateListener(),
+        );
+        void import('./utils/adminFleetMenu').then((m) =>
+          m.installAdminFleetMenuListener(),
+        );
+      });
+    }
+  } catch (e) {
+    bootTrace('renderer:modules-failed');
+    console.error(e);
   }
 
   bootTrace('renderer:mount');

@@ -173,6 +173,36 @@ describe('buildEscposTicket width', () => {
     expect(html).not.toContain('1 x Steak');
     expect(html).not.toContain('Waiter:');
   });
+
+  it('prints the routing name on a kitchen ORDER slip', () => {
+    const kitchen = buildEscposTicket(
+      {
+        area: 'Salla Brenda',
+        tableLabel: 'T1',
+        userName: 'Sefrid',
+        items: [{ name: 'Burger', qty: 1, unitPrice: 0 }],
+        meta: { kind: 'ORDER' as const, routeLabel: 'Grill' },
+      },
+      { restaurantName: 'Test Bistro', currency: 'EUR' } as any,
+    );
+    const text = kitchen.toString('latin1');
+    expect(text).toContain('Grill');
+    expect(text.indexOf('Grill')).toBeLessThan(text.indexOf('Sefrid'));
+    const html = buildHtmlReceipt(
+      {
+        area: 'Salla Brenda',
+        tableLabel: 'T1',
+        userName: 'Sefrid',
+        items: [{ name: 'Burger', qty: 1, unitPrice: 0 }],
+        meta: { kind: 'ORDER' as const, routeLabel: 'Grill' },
+      },
+      { restaurantName: 'Test Bistro', currency: 'EUR' } as any,
+    );
+    expect(html).toContain('>Grill</div>');
+    expect(html.indexOf('>Grill</div>')).toBeLessThan(
+      html.indexOf('Sefrid - Salla Brenda - T1'),
+    );
+  });
 });
 
 describe('buildEscposTicket language', () => {

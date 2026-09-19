@@ -152,7 +152,7 @@ describe('swrCache', () => {
 
   it('does not persist floor occupancy snapshots', () => {
     expect(shouldPersistCacheKey('pos:floor:Salla')).toBe(false);
-    expect(shouldPersistCacheKey('pos:menu')).toBe(true);
+    expect(shouldPersistCacheKey('pos:menu:v2')).toBe(true);
     expect(shouldPersistCacheKey('pos:ticket:Salla:T1')).toBe(true);
   });
 

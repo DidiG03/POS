@@ -54,8 +54,19 @@ export default function AdminTicketsPage() {
       customStart,
       customEnd,
     );
-    const data = await window.api.admin.listTicketCounts({ startIso, endIso });
-    setRows(data);
+    try {
+      const data = await window.api.admin.listTicketCounts({
+        startIso,
+        endIso,
+      });
+      setRows(Array.isArray(data) ? data : []);
+    } catch (e) {
+      reportAppError(e, {
+        fallback: t('common.actionFailed'),
+        key: 'adminTickets.load',
+      });
+      setRows([]);
+    }
   }
 
   useEffect(() => {

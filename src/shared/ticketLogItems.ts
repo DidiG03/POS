@@ -49,6 +49,57 @@ export function ticketCreatedAtIso(value: unknown): string {
     : new Date().toISOString();
 }
 
+/**
+ * Inclusive createdAt window in JS. Use this after a SQLite read — Prisma
+ * `{ createdAt: { gte: Date } }` misses epoch-ms rows.
+ */
+export function ticketLogInRange(
+  createdAt: unknown,
+  startMs?: number,
+  endMs?: number,
+): boolean {
+  const t = ticketLogCreatedAtMs(createdAt);
+  if (!Number.isFinite(t)) return false;
+  if (typeof startMs === 'number' && Number.isFinite(startMs) && t < startMs) {
+    return false;
+  }
+  if (typeof endMs === 'number' && Number.isFinite(endMs) && t > endMs) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * SQLite `TicketLog.createdAt` is TEXT ISO or INTEGER ms/sec. Prisma Date
+ * filters only match one of those, so admin/reports use this CASE instead.
+ */
+export function ticketLogCreatedAtRangeSql(
+  startMs?: number,
+  endMs?: number,
+): { sql: string; params: Array<string | number> } | null {
+  const hasStart = typeof startMs === 'number' && Number.isFinite(startMs);
+  const hasEnd = typeof endMs === 'number' && Number.isFinite(endMs);
+  if (!hasStart && !hasEnd) return null;
+  const start = hasStart ? startMs! : 0;
+  const end = hasEnd ? endMs! : 8.64e15;
+  const startIso = new Date(start).toISOString();
+  const endIso = new Date(end).toISOString();
+  const startSec = Math.floor(start / 1000);
+  const endSec = Math.ceil(end / 1000);
+  return {
+    sql: `(
+      CASE typeof(createdAt)
+        WHEN 'integer' THEN (
+          (createdAt >= ? AND createdAt <= ?)
+          OR (createdAt >= ? AND createdAt <= ?)
+        )
+        ELSE (createdAt >= ? AND createdAt <= ?)
+      END
+    )`,
+    params: [start, end, startSec, endSec, startIso, endIso],
+  };
+}
+
 /** Same 2s slack as `cacheLooksLikeCurrentSession` — clock skew at open. */
 export const SESSION_START_SLACK_MS = 2000;
 

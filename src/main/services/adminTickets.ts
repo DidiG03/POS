@@ -4,35 +4,100 @@ import {
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
+import {
+  asTicketLogItems,
+  ticketCreatedAtIso,
+  ticketLogCreatedAtMs,
+  ticketLogCreatedAtRangeSql,
+  ticketLogInRange,
+} from '@shared/ticketLogItems';
+import { asPositiveId } from './ticketLogLatest';
 import { coreServices } from './core';
 import { mapOrderToFiscalSaleRow } from './saleCorrection';
 import { isTransferredOutNote, parseTransferTag } from './tableTransfer';
+
+function rangeMs(input?: { startIso?: string; endIso?: string }): {
+  startMs?: number;
+  endMs?: number;
+} {
+  const startMs = input?.startIso ? Date.parse(input.startIso) : NaN;
+  const endMs = input?.endIso ? Date.parse(input.endIso) : NaN;
+  return {
+    startMs: Number.isFinite(startMs) ? startMs : undefined,
+    endMs: Number.isFinite(endMs) ? endMs : undefined,
+  };
+}
+
+async function loadTicketLogs(input?: {
+  userId?: number;
+  startIso?: string;
+  endIso?: string;
+  take?: number;
+}) {
+  const take = Math.min(8000, Math.max(1, Number(input?.take || 2000)));
+  const userId = Number(input?.userId) || 0;
+  const { startMs, endMs } = rangeMs(input);
+  const rangeSql = ticketLogCreatedAtRangeSql(startMs, endMs);
+
+  const viaRaw = async (): Promise<number[] | null> => {
+    if (!rangeSql && !userId) return null;
+    const parts = ['1=1'];
+    const params: Array<string | number> = [];
+    if (userId) {
+      parts.push('userId = ?');
+      params.push(userId);
+    }
+    if (rangeSql) {
+      parts.push(rangeSql.sql);
+      params.push(...rangeSql.params);
+    }
+    const sql = `SELECT id FROM TicketLog WHERE ${parts.join(' AND ')} ORDER BY id DESC LIMIT ?`;
+    params.push(take);
+    const rows = await prisma.$queryRawUnsafe(sql, ...params);
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((r: any) => asPositiveId(r?.id))
+      .filter((id): id is number => id != null);
+  };
+
+  try {
+    const ids = await viaRaw();
+    if (ids && ids.length) {
+      const rows = await prisma.ticketLog.findMany({
+        where: { id: { in: ids } },
+      });
+      rows.sort((a: any, b: any) => Number(b.id) - Number(a.id));
+      return rows;
+    }
+  } catch {
+    // Fall through to Prisma + JS filter when raw SQL is unavailable.
+  }
+
+  const where: any = {};
+  if (userId) where.userId = userId;
+  const rows = await prisma.ticketLog.findMany({
+    where,
+    orderBy: { id: 'desc' },
+    take,
+  });
+  if (startMs == null && endMs == null) return rows;
+  return rows.filter((r: any) => ticketLogInRange(r.createdAt, startMs, endMs));
+}
 
 export async function listAdminTicketCounts(input?: {
   startIso?: string;
   endIso?: string;
 }) {
-  const where: any = {};
-  if (input?.startIso || input?.endIso) {
-    where.createdAt = {};
-    if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
-    if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
-  }
-  // Per-user ticket counts: only the rows that still represent live
-  // revenue. Rows whose session was moved to another table carry the
-  // `[TRANSFER moved-out ...]` tag and would otherwise inflate the
-  // count by 2x (source + destination).
-  const liveTicketsWhere = {
-    ...where,
-    NOT: { note: { contains: '[TRANSFER moved-out' } },
-  } as any;
-  const logs = await prisma.ticketLog
-    .groupBy({
-      where: liveTicketsWhere,
-      by: ['userId'],
-      _count: { userId: true },
-    } as any)
-    .catch(() => []);
+  const { startMs, endMs } = rangeMs(input);
+  const logs = await loadTicketLogs({
+    startIso: input?.startIso,
+    endIso: input?.endIso,
+    take: 8000,
+  }).catch(() => []);
+  const live = latestRowPerSession(
+    (logs as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
+  );
+
   const users = await prisma.user.findMany({
     where: { role: { not: 'ADMIN' } } as any,
   });
@@ -67,31 +132,24 @@ export async function listAdminTicketCounts(input?: {
   });
   const openIds = new Set(openShifts.map((s: any) => s.openedById));
   const counts: Record<number, number> = {};
-  for (const r of logs as any[]) counts[r.userId] = r._count.userId;
-
   const transfersIn: Record<number, number> = {};
-  try {
-    const transferRows = await prisma.ticketLog
-      .findMany({
-        where: { ...where, note: { contains: '[TRANSFER' } },
-        select: { userId: true, note: true },
-      } as any)
-      .catch(() => [] as { userId: number; note: string | null }[]);
-    for (const row of transferRows as {
-      userId: number;
-      note: string | null;
-    }[]) {
-      if (isTransferredOutNote(row.note)) continue;
-      transfersIn[row.userId] = (transfersIn[row.userId] ?? 0) + 1;
+  for (const r of live as any[]) {
+    const uid = Number(r.userId);
+    if (!Number.isInteger(uid) || uid <= 0) continue;
+    if (!ticketLogInRange(r.createdAt, startMs, endMs)) continue;
+    counts[uid] = (counts[uid] ?? 0) + 1;
+    if (/\[TRANSFER/i.test(String(r.note || ''))) {
+      transfersIn[uid] = (transfersIn[uid] ?? 0) + 1;
     }
-  } catch {
-    // Best-effort metric — never block the list on it.
   }
 
-  const visibleUsers =
-    clockedInDuringPeriod == null
-      ? users
-      : users.filter((u: any) => clockedInDuringPeriod!.has(u.id));
+  const visibleUsers = users.filter((u: any) => {
+    const id = Number(u.id);
+    if ((counts[id] ?? 0) > 0 || (transfersIn[id] ?? 0) > 0) return true;
+    if (openIds.has(id)) return true;
+    if (clockedInDuringPeriod) return clockedInDuringPeriod.has(id);
+    return true;
+  });
 
   return visibleUsers.map((u: any) => ({
     id: u.id,
@@ -113,22 +171,17 @@ export async function listAdminTicketsByUser(input?: {
   const settings = await coreServices.readSettings().catch(() => ({}));
   const defaultVatEnabled = isVatEnabledFromSettings(settings);
   const fiscalTin = String((settings as any)?.fiscal?.nipt || '').trim();
-  const where: any = { userId };
-  if (input?.startIso || input?.endIso) {
-    where.createdAt = {};
-    if (input?.startIso) where.createdAt.gte = new Date(input.startIso);
-    if (input?.endIso) where.createdAt.lte = new Date(input.endIso);
-  }
   const limit = Math.min(2000, Math.max(1, Number(input?.limit || 500)));
-  const rows = await prisma.ticketLog.findMany({
-    where,
-    orderBy: { createdAt: 'desc' },
-    take: limit,
+  const rows = await loadTicketLogs({
+    userId,
+    startIso: input?.startIso,
+    endIso: input?.endIso,
+    take: Math.min(8000, Math.max(limit * 4, limit)),
   });
 
   const visibleRows = latestRowPerSession(
     (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
+  ).slice(0, limit);
 
   const uniqueTables = Array.from(
     new Set(
@@ -158,7 +211,7 @@ export async function listAdminTicketsByUser(input?: {
       .filter(Boolean) as { area: string; tableLabel: string }[];
     const earliestClosedFrom = (visibleRows as any[]).reduce(
       (min: number, r: any) => {
-        const ms = new Date(r.createdAt).getTime();
+        const ms = ticketLogCreatedAtMs(r.createdAt);
         return Number.isFinite(ms) && ms < min ? ms : min;
       },
       Number.POSITIVE_INFINITY,
@@ -184,7 +237,7 @@ export async function listAdminTicketsByUser(input?: {
     for (const sale of sales as any[]) {
       const k = `${String(sale.area || '')}|${String(sale.tableLabel || '')}`;
       if (!uniqueTables.includes(k)) continue;
-      const at = sale.closedAt ? new Date(sale.closedAt as any).getTime() : NaN;
+      const at = sale.closedAt ? ticketLogCreatedAtMs(sale.closedAt) : NaN;
       if (!Number.isFinite(at)) continue;
       const arr = paymentsByTable.get(k) || [];
       arr.push({
@@ -202,14 +255,19 @@ export async function listAdminTicketsByUser(input?: {
     number,
     { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
   >();
-  const chronological = [...(visibleRows as any[])].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-  );
+  const chronological = [...(visibleRows as any[])].sort((a, b) => {
+    const ta = ticketLogCreatedAtMs(a.createdAt);
+    const tb = ticketLogCreatedAtMs(b.createdAt);
+    return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0);
+  });
   for (const r of chronological) {
     const tKey = `${r.area}|${r.tableLabel}`;
-    const rowMs = new Date(r.createdAt).getTime();
+    const rowMs = ticketLogCreatedAtMs(r.createdAt);
     const covering = (paymentsByTable.get(tKey) || []).find(
-      (p) => p.atMs >= rowMs && !usedOrderIds.has(p.sale.orderId),
+      (p) =>
+        Number.isFinite(rowMs) &&
+        p.atMs >= rowMs &&
+        !usedOrderIds.has(p.sale.orderId),
     );
     if (!covering) continue;
     usedOrderIds.add(covering.sale.orderId);
@@ -217,7 +275,7 @@ export async function listAdminTicketsByUser(input?: {
   }
 
   return visibleRows.map((r: any) => {
-    const items = Array.isArray(r.itemsJson) ? (r.itemsJson as any[]) : [];
+    const items = asTicketLogItems(r.itemsJson) as any[];
     const liveItems = items.filter((it: any) => !it?.voided);
     const noteStr = String(r.note || '').toUpperCase();
     const allVoided =
@@ -262,7 +320,7 @@ export async function listAdminTicketsByUser(input?: {
       area: r.area,
       tableLabel: r.tableLabel,
       covers: r.covers,
-      createdAt: r.createdAt.toISOString(),
+      createdAt: ticketCreatedAtIso(r.createdAt),
       items,
       note: r.note,
       status,

@@ -9,6 +9,7 @@ import {
   emptyCostLine,
   parseCostBreakdown,
 } from '@shared/itemCost';
+import { menuItemSoldByKg } from '@shared/menuItemKg';
 import { storePlanBlocksTables } from './license';
 import {
   applyDailyStockPatch,
@@ -81,7 +82,7 @@ export function mapMenuCategoryForClient(
       vatRate: Number(i.vatRate),
       active: i.active,
       categoryId: i.categoryId,
-      isKg: Boolean(i?.isKg),
+      isKg: menuItemSoldByKg(i),
       station: String(i?.station || 'KITCHEN'),
       stockLevel: normalizeMenuStockLevel(i?.stockLevel),
       stockRemaining:

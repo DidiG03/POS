@@ -515,7 +515,7 @@ describe('dispatchTicket', () => {
     expect(r.perPrinter.length).toBe(1);
   });
 
-  it('routing ON + ORDER: merges multiple categories on the same printer', async () => {
+  it('routing ON + ORDER: legacy category map still merges categories on the same printer', async () => {
     const r = await dispatchTicket(
       {
         area: 'A',
@@ -577,6 +577,134 @@ describe('dispatchTicket', () => {
       'beer',
       'coffee',
     ]);
+  });
+
+  it('routing ON + ORDER: two routings on the same printer print two slips', async () => {
+    const r = await dispatchTicket(
+      {
+        area: 'A',
+        tableLabel: 'T1',
+        items: [
+          { name: 'burger', qty: 1, unitPrice: 1, categoryName: 'steaks' },
+          { name: 'salad', qty: 1, unitPrice: 1, categoryName: 'salads' },
+        ],
+        meta: { kind: 'ORDER' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'kitchen',
+            name: 'Kitchen',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.2',
+            port: 9100,
+          },
+          {
+            id: 'receipt',
+            name: 'Receipt',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.1',
+            port: 9100,
+          },
+        ],
+        printerRouting: {
+          enabled: true,
+          receiptPrinterId: 'receipt',
+          routes: [
+            {
+              id: 'grill',
+              name: 'Grill',
+              printerId: 'kitchen',
+              categoryIds: ['steaks'],
+            },
+            {
+              id: 'cold',
+              name: 'Cold Starters',
+              printerId: 'kitchen',
+              categoryIds: ['salads'],
+            },
+          ],
+        },
+      } as any,
+      { retries: 0 },
+    );
+    expect(r.ok).toBe(true);
+    expect(sendNetwork).toHaveBeenCalledTimes(2);
+    expect(sendNetwork.mock.calls.map((c) => c[0])).toEqual([
+      '10.0.0.2',
+      '10.0.0.2',
+    ]);
+    type EscposCall = [
+      { items?: Array<{ name: string }>; meta?: { routeLabel?: string } },
+    ];
+    const payloads = (buildEscpos.mock.calls as unknown as EscposCall[]).map(
+      ([payload]) => payload,
+    );
+    const grill = payloads.find((p) => p.meta?.routeLabel === 'Grill');
+    const cold = payloads.find((p) => p.meta?.routeLabel === 'Cold Starters');
+    expect(grill?.items?.map((it) => it.name)).toEqual(['burger']);
+    expect(cold?.items?.map((it) => it.name)).toEqual(['salad']);
+    expect(r.perPrinter.map((p) => p.profileId)).toEqual([
+      'kitchen',
+      'kitchen',
+    ]);
+  });
+
+  it('prints two routings on the same printer one after another', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    sendNetwork.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 40));
+      inFlight -= 1;
+      return { ok: true };
+    });
+    await dispatchTicket(
+      {
+        area: 'A',
+        tableLabel: 'T1',
+        items: [
+          { name: 'burger', qty: 1, unitPrice: 1, categoryName: 'steaks' },
+          { name: 'salad', qty: 1, unitPrice: 1, categoryName: 'salads' },
+        ],
+        meta: { kind: 'ORDER' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'kitchen',
+            name: 'Kitchen',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.2',
+            port: 9100,
+          },
+        ],
+        printerRouting: {
+          enabled: true,
+          routes: [
+            {
+              id: 'grill',
+              name: 'Grill',
+              printerId: 'kitchen',
+              categoryIds: ['steaks'],
+            },
+            {
+              id: 'cold',
+              name: 'Cold Starters',
+              printerId: 'kitchen',
+              categoryIds: ['salads'],
+            },
+          ],
+        },
+      } as any,
+      { retries: 0 },
+    );
+    expect(sendNetwork).toHaveBeenCalledTimes(2);
+    expect(maxInFlight).toBe(1);
   });
 
   it('routing ON + ORDER: splits items by category to separate printers', async () => {

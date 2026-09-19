@@ -66,4 +66,16 @@ describe('mapMenuCategoryForClient', () => {
     expect(dto.items[0].costPrice).toBe(3);
     expect(dto.items[0].costBreakdown).toHaveLength(1);
   });
+
+  it('normalizes SQLite 0/1 isKg onto a boolean for LAN clients', () => {
+    const dto = mapMenuCategoryForClient({
+      ...cat,
+      items: [
+        { ...cat.items[0], isKg: 1 },
+        { ...cat.items[0], id: 12, name: 'Bread', sku: 'BREAD', isKg: 0 },
+      ],
+    });
+    expect(dto.items[0].isKg).toBe(true);
+    expect(dto.items[1].isKg).toBe(false);
+  });
 });

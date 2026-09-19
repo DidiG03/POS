@@ -2,10 +2,12 @@ import { z } from 'zod';
 import type { TableMergeGroup } from './tableMerge';
 import type { KdsFloorOrder } from './kdsFloorOrders';
 import { SALARY_PERIODS, type SalaryPeriod } from './staffSalary';
+import type { PrintRouteDTO } from './printRoutes';
 
 export type { SalaryPeriod } from './staffSalary';
 
 export type { TableMergeGroup } from './tableMerge';
+export type { PrintRouteDTO } from './printRoutes';
 
 export type UserRole =
   | 'ADMIN'
@@ -84,10 +86,20 @@ export interface SettingsDTO {
     enabled?: boolean;
     // Which printer prints customer receipts (PAYMENT)
     receiptPrinterId?: string;
+    // ORDER items whose category is not on any routing.
+    fallbackPrinterId?: string;
     // For ORDER slips: route by station (KITCHEN/BAR/DESSERT) and/or a fallback.
     station?: Partial<Record<'KITCHEN' | 'BAR' | 'DESSERT' | 'ALL', string>>;
-    // Optional: route by categoryId (or legacy normalized name). Multiple
-    // categories may map to the same printerId and print on one ORDER slip.
+    /**
+     * Named ticket definitions. Categories belong to a routing, not a
+     * printer. Multiple routings may share a printer and still print as
+     * separate ORDER slips.
+     */
+    routes?: PrintRouteDTO[];
+    /**
+     * @deprecated categoryId | name → printerProfileId. Used only when
+     * `routes` is absent (migrated into one routing per printer).
+     */
     categories?: Record<string, string>;
   };
   printer?: {
@@ -252,7 +264,7 @@ export interface TicketPrintMeta {
   userId?: number;
   // Optional station hint set by the routing splitter ("KITCHEN" | "BAR" | "ALL").
   station?: string;
-  // Human label for routed-order slips ("food", "drinks", etc.).
+  // Human label for routed-order slips (the routing name, e.g. "Grill").
   routeLabel?: string;
   /** Kitchen course banner on ORDER slips ("Course 2"). Omitted on bar-only fires. */
   courseLabel?: string;

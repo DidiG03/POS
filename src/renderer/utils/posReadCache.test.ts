@@ -68,6 +68,41 @@ describe('installPosReadCache', () => {
     expect(calls).toBe(1);
   });
 
+  it('normalizes sold-by-kg flags on the waiter menu list', async () => {
+    invalidateCache(POS_CACHE.menu);
+    let calls = 0;
+    const api = {
+      menu: {
+        listCategoriesWithItems: async () => {
+          calls += 1;
+          return [
+            {
+              id: 1,
+              name: 'Meat',
+              items: [
+                {
+                  id: 54,
+                  name: 'Brinjë Viçi të prushit',
+                  sku: 'BRINJE',
+                  isKg: 1,
+                  price: 2900,
+                },
+              ],
+            },
+          ];
+        },
+      },
+    };
+    (window as any).api = api;
+    installPosReadCache();
+    const rows = await (window as any).api.menu.listCategoriesWithItems();
+    expect(calls).toBe(1);
+    expect(rows[0].items[0].isKg).toBe(true);
+    const again = await (window as any).api.menu.listCategoriesWithItems();
+    expect(calls).toBe(1);
+    expect(again[0].items[0].isKg).toBe(true);
+  });
+
   it('does not wrap getLatestForTable so an empty floor row cannot masquerade as the bill', () => {
     const getLatestForTable = async () => ({ items: [{ name: 'Byrek' }] });
     const api = { tickets: { getLatestForTable }, tables: {} };

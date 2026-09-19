@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type {
   FiscalReviewDTO,
   NetworkPrinterDTO,
+  PrintRouteDTO,
   UpdateStatusDTO,
 } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
@@ -54,6 +55,12 @@ import {
   installFleetUpdates,
   loadFleetStatus,
 } from '../../utils/fleetUpdate';
+import {
+  categoryMapFromRoutes,
+  newPrintRouteId,
+  nextPrintRouteName,
+  normalizePrintRoutes,
+} from '@shared/printRoutes';
 
 type SectionKey =
   | 'printer'
@@ -2403,131 +2410,127 @@ function KdsSettings() {
   );
 }
 
-function AddRouteModal({
+function RoutingCard({
+  route,
+  assignedCategories,
   availableCategories,
   enabledProfiles,
   routingEnabled,
-  onAdd,
-  onClose,
+  onPatch,
+  onAddCategory,
+  onRemoveCategory,
+  onRemove,
 }: {
+  route: PrintRouteDTO;
+  assignedCategories: Array<{ key: string; label: string; missing?: boolean }>;
   availableCategories: Array<{ id: number; name: string }>;
   enabledProfiles: Array<{ id: string; name: string; mode?: string }>;
   routingEnabled: boolean;
-  onAdd: (catIds: string[], printerId: string) => void;
-  onClose: () => void;
+  onPatch: (patch: Partial<PrintRouteDTO>, persistImmediate: boolean) => void;
+  onAddCategory: (categoryId: string) => void;
+  onRemoveCategory: (categoryId: string) => void;
+  onRemove: () => void;
 }) {
   const { t } = useTranslation();
-  const [catIds, setCatIds] = useState<string[]>([]);
-  const [printerId, setPrinterId] = useState('default');
-
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  const title = route.name.trim() || t('settingsPrinter.unnamedRouting');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
-        onClick={onClose}
-        aria-label={t('settingsPrinter.closeModal')}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="relative w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden"
-      >
-        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
-          <div className="font-semibold">
-            {t('settingsPrinter.addRouteTitle')}
-          </div>
-          <button
-            type="button"
-            className="w-9 h-9 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 flex items-center justify-center"
-            onClick={onClose}
-            aria-label={t('common.close')}
-          >
-            <IconClose />
-          </button>
-        </div>
-        <div className="p-4 space-y-4">
-          <div className="block text-sm">
-            <div className="opacity-80 mb-1">
-              {t('settingsPrinter.categories')}
-            </div>
-            <p className="mb-2 text-[12px] text-gray-400">
-              {t('settingsPrinter.categoriesHelp')}
-            </p>
-            {availableCategories.length === 0 ? (
-              <div className="rounded-lg border border-gray-700 px-3 py-2 text-[13px] text-gray-400">
-                {t('settingsPrinter.noCategoriesToAdd')}
-              </div>
-            ) : (
-              <div className="max-h-52 space-y-1 overflow-auto rounded-lg border border-gray-700 p-2">
-                {availableCategories.map((c) => {
-                  const id = String(c.id);
-                  const checked = catIds.includes(id);
-                  return (
-                    <label
-                      key={c.id}
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-gray-800"
-                    >
-                      <input
-                        type="checkbox"
-                        className="size-4 shrink-0 accent-blue-500"
-                        checked={checked}
-                        disabled={!routingEnabled}
-                        onChange={() => {
-                          setCatIds((prev) =>
-                            checked
-                              ? prev.filter((x) => x !== id)
-                              : [...prev, id],
-                          );
-                        }}
-                      />
-                      <span className="text-[13px]">{c.name}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <label className="block text-sm">
-            <div className="opacity-80 mb-1">
-              {t('settingsPrinter.printer')}
-            </div>
-            <select
-              className="w-full bg-gray-700 rounded px-3 py-2"
-              value={printerId}
-              onChange={(e) =>
-                setPrinterId(String(e.target.value || 'default'))
-              }
-              disabled={!routingEnabled}
-            >
-              {enabledProfiles.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.mode || 'NETWORK'})
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="flex gap-2 pt-2">
-            <Button
-              variant="primary"
-              className="flex-1"
-              disabled={!routingEnabled || catIds.length === 0}
-              onClick={() => onAdd(catIds, printerId)}
-            >
-              {t('settingsPrinter.addRouteBtn')}
-            </Button>
-            <Button onClick={onClose}>{t('common.cancel')}</Button>
-          </div>
-        </div>
+    <div className="space-y-2 px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <Input
+          className="min-w-0 flex-1"
+          value={route.name}
+          placeholder={t('settingsPrinter.routingNamePlaceholder')}
+          disabled={!routingEnabled}
+          aria-label={t('settingsPrinter.routingName')}
+          onChange={(e) => onPatch({ name: e.target.value }, false)}
+          onBlur={() => onPatch({}, true)}
+        />
+        <KebabMenu
+          label={t('settingsPrinter.removeRoutingAria', { name: title })}
+          items={[
+            {
+              label: t('settingsPrinter.removeRouting'),
+              danger: true,
+              disabled: !routingEnabled,
+              onSelect: onRemove,
+            },
+          ]}
+        />
       </div>
+      <Select
+        value={route.printerId}
+        disabled={!routingEnabled}
+        aria-label={t('settingsPrinter.printer')}
+        onChange={(e) =>
+          onPatch({ printerId: String(e.target.value || 'default') }, true)
+        }
+      >
+        {enabledProfiles.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name} ({p.mode || 'NETWORK'})
+          </option>
+        ))}
+        {route.printerId &&
+        !enabledProfiles.some((p) => p.id === route.printerId) ? (
+          <option value={route.printerId}>{route.printerId}</option>
+        ) : null}
+      </Select>
+      {assignedCategories.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {assignedCategories.map((c) => (
+            <span
+              key={c.key}
+              className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/10 bg-[var(--pos-surface-2)] px-2 py-1 text-[12px]"
+            >
+              <span className="truncate">{c.label}</span>
+              {c.missing ? (
+                <span
+                  className="text-[10px] text-gray-500"
+                  title={t('settingsPrinter.unknownKey')}
+                >
+                  ?
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="rounded p-0.5 text-gray-400 hover:bg-white/10 hover:text-gray-200 disabled:opacity-40"
+                disabled={!routingEnabled}
+                aria-label={t('settingsPrinter.removeRouteAria', {
+                  label: c.label,
+                })}
+                onClick={() => onRemoveCategory(c.key)}
+              >
+                <IconClose className="size-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="text-[12px] text-gray-500">
+          {t('settingsPrinter.noCategoriesOnRoute')}
+        </div>
+      )}
+      {availableCategories.length > 0 ? (
+        <Select
+          value=""
+          disabled={!routingEnabled}
+          aria-label={t('settingsPrinter.addCategory')}
+          onChange={(e) => {
+            const id = String(e.target.value || '').trim();
+            if (id) onAddCategory(id);
+          }}
+        >
+          <option value="">
+            {t('settingsPrinter.addCategoryPlaceholder')}
+          </option>
+          {availableCategories.map((c) => (
+            <option key={c.id} value={String(c.id)}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      ) : null}
     </div>
   );
 }
@@ -2555,7 +2558,7 @@ function printerSettingsPayload(d: {
   routingEnabled: boolean;
   receiptPrinterId: string;
   fallbackPrinterId: string;
-  categoryRouting: Record<string, string>;
+  routes: PrintRouteDTO[];
 }) {
   return {
     printers: d.profiles,
@@ -2564,7 +2567,8 @@ function printerSettingsPayload(d: {
       receiptPrinterId: d.receiptPrinterId,
       station: { ALL: d.fallbackPrinterId || undefined },
       fallbackPrinterId: d.fallbackPrinterId || undefined,
-      categories: d.categoryRouting,
+      routes: d.routes,
+      categories: categoryMapFromRoutes(d.routes),
     },
   };
 }
@@ -2577,16 +2581,12 @@ function PrinterSettings() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [routingEnabled, setRoutingEnabled] = useState(false);
   const [receiptPrinterId, setReceiptPrinterId] = useState<string>('default');
-  // Single fallback printer for ORDER items that don't match a category route.
+  // ORDER items whose category is not on any named routing.
   const [fallbackPrinterId, setFallbackPrinterId] = useState<string>('default');
-  // Category routing (optional). Key is categoryId string (e.g. "12") for stability.
-  const [categoryRouting, setCategoryRouting] = useState<
-    Record<string, string>
-  >({});
+  const [routes, setRoutes] = useState<PrintRouteDTO[]>([]);
   const [menuCategories, setMenuCategories] = useState<
     Array<{ id: number; name: string }>
   >([]);
-  const [showAddRouteModal, setShowAddRouteModal] = useState(false);
 
   const [printers, setPrinters] = useState<
     { name: string; isDefault?: boolean }[]
@@ -2600,7 +2600,7 @@ function PrinterSettings() {
     routingEnabled: false,
     receiptPrinterId: 'default',
     fallbackPrinterId: 'default',
-    categoryRouting: {} as Record<string, string>,
+    routes: [] as PrintRouteDTO[],
   });
   const readyRef = useRef(false);
   const lastSavedRef = useRef('');
@@ -2729,29 +2729,40 @@ function PrinterSettings() {
       for (const c of cats) {
         if (c.id > 0 && c.name) nameToId.set(norm(c.name), c.id);
       }
-      const rawCatMap: Record<string, string> = (r?.categories || {}) as any;
-      const next: Record<string, string> = {};
-      for (const [k0, v0] of Object.entries(rawCatMap || {})) {
-        const k = String(k0 || '').trim();
-        const v = String(v0 || '').trim();
-        if (!v) continue;
-        // Prefer stable id keys.
-        if (/^\d+$/.test(k)) {
-          next[k] = v;
-          continue;
-        }
-        // Backward compat: name-based keys (normalized) -> map to id.
+      const remapCategoryId = (raw: string): string => {
+        const k = String(raw || '').trim();
+        if (!k) return '';
+        if (/^\d+$/.test(k)) return k;
         const id = nameToId.get(norm(k));
-        if (id) {
-          next[String(id)] = v;
-          continue;
-        }
-        // Unknown key: keep it (but UI will show it as unknown).
-        next[k] = v;
+        return id ? String(id) : k;
+      };
+      const rawCatMap: Record<string, string> = (r?.categories || {}) as any;
+      const remappedCats: Record<string, string> = {};
+      for (const [k0, v0] of Object.entries(rawCatMap || {})) {
+        const v = String(v0 || '').trim();
+        const k = remapCategoryId(k0);
+        if (!k || !v) continue;
+        remappedCats[k] = v;
       }
-      setCategoryRouting(next);
+      const printerNames: Record<string, string> = {};
+      const loadedProfiles = arr.map((p, idx) => {
+        const profile = ensureProfile(p, idx);
+        printerNames[profile.id] = profile.name;
+        return profile;
+      });
+      const loadedRoutes = normalizePrintRoutes(
+        Array.isArray(r?.routes)
+          ? { routes: r.routes }
+          : { categories: remappedCats },
+        { printerNames },
+      ).map((route) => ({
+        ...route,
+        categoryIds: Array.from(
+          new Set(route.categoryIds.map(remapCategoryId).filter(Boolean)),
+        ),
+      }));
+      setRoutes(loadedRoutes);
 
-      const loadedProfiles = arr.map((p, idx) => ensureProfile(p, idx));
       const loadedRouting = Boolean(r?.enabled);
       const loadedReceipt = String(r?.receiptPrinterId || 'default');
       const loadedFallback = String(
@@ -2763,7 +2774,7 @@ function PrinterSettings() {
         routingEnabled: loadedRouting,
         receiptPrinterId: loadedReceipt,
         fallbackPrinterId: loadedFallback,
-        categoryRouting: next,
+        routes: loadedRoutes,
       };
       lastSavedRef.current = JSON.stringify(
         printerSettingsPayload(draftRef.current),
@@ -2807,55 +2818,54 @@ function PrinterSettings() {
     return m;
   }, [menuCategories]);
 
-  const printerLabelById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of enabledProfiles) {
-      m.set(p.id, `${p.name} (${p.mode || 'NETWORK'})`);
+  const usedCategoryIds = useMemo(() => {
+    const used = new Set<string>();
+    for (const route of routes) {
+      for (const id of route.categoryIds) {
+        if (/^\d+$/.test(id)) used.add(id);
+      }
     }
-    return m;
-  }, [enabledProfiles]);
+    return used;
+  }, [routes]);
 
-  const routedGroups = useMemo(() => {
-    const byPrinter = new Map<
-      string,
-      Array<{ key: string; categoryId: number | null; label: string }>
-    >();
-    for (const [k, v] of Object.entries(categoryRouting || {})) {
-      const printerId = String(v || '').trim();
-      if (!printerId) continue;
-      const categoryId = /^\d+$/.test(k) ? Number(k) : null;
+  const availableCategoriesToAdd = useMemo(
+    () =>
+      menuCategories.filter(
+        (c) => c.id > 0 && !usedCategoryIds.has(String(c.id)),
+      ),
+    [menuCategories, usedCategoryIds],
+  );
+
+  const commitRoutes = (next: PrintRouteDTO[], immediate: boolean) => {
+    setRoutes(next);
+    draftRef.current = { ...draftRef.current, routes: next };
+    if (immediate) persistImmediate();
+    else persistDebounced();
+  };
+
+  const patchRoute = (
+    id: string,
+    patch: Partial<PrintRouteDTO>,
+    immediate: boolean,
+  ) => {
+    const next = routes.map((r) => (r.id === id ? { ...r, ...patch } : r));
+    commitRoutes(next, immediate);
+  };
+
+  const assignedCategoriesFor = (route: PrintRouteDTO) =>
+    route.categoryIds.map((key) => {
+      const categoryId = /^\d+$/.test(key) ? Number(key) : null;
       const label =
         categoryId != null
           ? categoryNameById.get(categoryId) ||
             t('settingsPrinter.missingCategory', { id: categoryId })
-          : t('settingsPrinter.categoryKey', { key: k });
-      if (!byPrinter.has(printerId)) byPrinter.set(printerId, []);
-      byPrinter.get(printerId)!.push({ key: k, categoryId, label });
-    }
-    return Array.from(byPrinter.entries())
-      .map(([printerId, categories]) => ({
-        printerId,
-        categories: categories.sort((a, b) => {
-          const ak = a.categoryId == null ? 9 : 0;
-          const bk = b.categoryId == null ? 9 : 0;
-          if (ak !== bk) return ak - bk;
-          return a.label.localeCompare(b.label);
-        }),
-      }))
-      .sort((a, b) => {
-        const al = printerLabelById.get(a.printerId) || a.printerId;
-        const bl = printerLabelById.get(b.printerId) || b.printerId;
-        return al.localeCompare(bl);
-      });
-  }, [categoryRouting, categoryNameById, printerLabelById, t]);
-
-  const availableCategoriesToAdd = useMemo(() => {
-    const used = new Set<string>();
-    for (const k of Object.keys(categoryRouting || {})) {
-      if (/^\d+$/.test(k)) used.add(String(k));
-    }
-    return menuCategories.filter((c) => c.id > 0 && !used.has(String(c.id)));
-  }, [menuCategories, categoryRouting]);
+          : t('settingsPrinter.categoryKey', { key });
+      return {
+        key,
+        label,
+        missing: categoryId == null || !categoryNameById.has(categoryId),
+      };
+    });
 
   return (
     <div>
@@ -2872,7 +2882,22 @@ function PrinterSettings() {
                   label={t('settingsPrinter.addRoute')}
                   icon={<IconPlus />}
                   disabled={!routingEnabled}
-                  onClick={() => setShowAddRouteModal(true)}
+                  onClick={() => {
+                    const printerId =
+                      fallbackPrinterId || enabledProfiles[0]?.id || 'default';
+                    const next: PrintRouteDTO[] = [
+                      ...routes,
+                      {
+                        id: newPrintRouteId(),
+                        name: nextPrintRouteName(routes, (n) =>
+                          t('settingsPrinter.routingN', { n }),
+                        ),
+                        printerId,
+                        categoryIds: [],
+                      },
+                    ];
+                    commitRoutes(next, true);
+                  }}
                 />
               }
             >
@@ -2926,146 +2951,61 @@ function PrinterSettings() {
                     </Select>
                   </Field>
                 </div>
-                {routedGroups.length === 0 ? (
+                {routes.length === 0 ? (
                   <div className="text-[12px] text-gray-500">
                     {t('settingsPrinter.noRoutes')}
                   </div>
                 ) : (
                   <div className="divide-y divide-white/7 overflow-hidden rounded-md border border-white/7">
-                    {routedGroups.map((g) => (
-                      <div key={g.printerId} className="space-y-2 px-3 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <Select
-                            className="min-w-0 flex-1"
-                            value={g.printerId}
-                            disabled={!routingEnabled}
-                            onChange={(e) => {
-                              const value = String(e.target.value || '');
-                              setCategoryRouting((m) => {
-                                const next = { ...(m || {}) };
-                                for (const c of g.categories) {
-                                  next[c.key] = value;
-                                }
-                                draftRef.current = {
-                                  ...draftRef.current,
-                                  categoryRouting: next,
-                                };
-                                return next;
-                              });
-                              persistImmediate();
-                            }}
-                          >
-                            {pickOptions(false)}
-                          </Select>
-                          <KebabMenu
-                            label={t('settingsPrinter.removeRouteGroupAria', {
-                              printer:
-                                printerLabelById.get(g.printerId) ||
-                                g.printerId,
-                            })}
-                            items={[
-                              {
-                                label: t('settingsPrinter.removeRouteGroup'),
-                                danger: true,
-                                disabled: !routingEnabled,
-                                onSelect: () => {
-                                  setCategoryRouting((m) => {
-                                    const next = { ...(m || {}) } as Record<
-                                      string,
-                                      string
-                                    >;
-                                    for (const c of g.categories) {
-                                      delete next[c.key];
-                                    }
-                                    draftRef.current = {
-                                      ...draftRef.current,
-                                      categoryRouting: next,
-                                    };
-                                    return next;
-                                  });
-                                  persistImmediate();
-                                },
-                              },
-                            ]}
-                          />
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {g.categories.map((c) => (
-                            <span
-                              key={c.key}
-                              className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/10 bg-[var(--pos-surface-2)] px-2 py-1 text-[12px]"
-                            >
-                              <span className="truncate">{c.label}</span>
-                              {c.categoryId == null ? (
-                                <span
-                                  className="text-[10px] text-gray-500"
-                                  title={t('settingsPrinter.unknownKey')}
-                                >
-                                  ?
-                                </span>
-                              ) : null}
-                              <button
-                                type="button"
-                                className="rounded p-0.5 text-gray-400 hover:bg-white/10 hover:text-gray-200 disabled:opacity-40"
-                                disabled={!routingEnabled}
-                                aria-label={t(
-                                  'settingsPrinter.removeRouteAria',
-                                  { label: c.label },
-                                )}
-                                onClick={() => {
-                                  setCategoryRouting((m) => {
-                                    const next = { ...(m || {}) } as Record<
-                                      string,
-                                      string
-                                    >;
-                                    delete next[c.key];
-                                    draftRef.current = {
-                                      ...draftRef.current,
-                                      categoryRouting: next,
-                                    };
-                                    return next;
-                                  });
-                                  persistImmediate();
-                                }}
-                              >
-                                <IconClose className="size-3" />
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
+                    {routes.map((route) => (
+                      <RoutingCard
+                        key={route.id}
+                        route={route}
+                        assignedCategories={assignedCategoriesFor(route)}
+                        availableCategories={availableCategoriesToAdd}
+                        enabledProfiles={enabledProfiles}
+                        routingEnabled={routingEnabled}
+                        onPatch={(patch, immediate) =>
+                          patchRoute(route.id, patch, immediate)
+                        }
+                        onAddCategory={(categoryId) => {
+                          const next = routes.map((r) => {
+                            const without = r.categoryIds.filter(
+                              (id) => id !== categoryId,
+                            );
+                            if (r.id !== route.id) {
+                              return { ...r, categoryIds: without };
+                            }
+                            return {
+                              ...r,
+                              categoryIds: [...without, categoryId],
+                            };
+                          });
+                          commitRoutes(next, true);
+                        }}
+                        onRemoveCategory={(categoryId) => {
+                          patchRoute(
+                            route.id,
+                            {
+                              categoryIds: route.categoryIds.filter(
+                                (id) => id !== categoryId,
+                              ),
+                            },
+                            true,
+                          );
+                        }}
+                        onRemove={() =>
+                          commitRoutes(
+                            routes.filter((r) => r.id !== route.id),
+                            true,
+                          )
+                        }
+                      />
                     ))}
                   </div>
                 )}
               </div>
             </SettingsCard>
-
-            {showAddRouteModal && (
-              <AddRouteModal
-                availableCategories={availableCategoriesToAdd}
-                enabledProfiles={enabledProfiles}
-                routingEnabled={routingEnabled}
-                onAdd={(selectedCatIds, printerId) => {
-                  const pid = String(printerId || 'default');
-                  const ids = selectedCatIds
-                    .map((id) => String(id || '').trim())
-                    .filter(Boolean);
-                  if (ids.length === 0) return;
-                  setCategoryRouting((m) => {
-                    const next = { ...(m || {}) };
-                    for (const cid of ids) next[cid] = pid;
-                    draftRef.current = {
-                      ...draftRef.current,
-                      categoryRouting: next,
-                    };
-                    return next;
-                  });
-                  persistImmediate();
-                  setShowAddRouteModal(false);
-                }}
-                onClose={() => setShowAddRouteModal(false)}
-              />
-            )}
           </>
         ) : null}
 

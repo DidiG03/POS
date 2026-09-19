@@ -4,6 +4,8 @@ import {
   rowIsInOpenSession,
   ticketCreatedAtIso,
   ticketLogCreatedAtMs,
+  ticketLogCreatedAtRangeSql,
+  ticketLogInRange,
 } from './ticketLogItems';
 
 describe('asTicketLogItems', () => {
@@ -46,6 +48,43 @@ describe('ticketCreatedAtIso', () => {
     expect(ticketCreatedAtIso(iso)).toBe(iso);
     expect(ticketCreatedAtIso(Date.parse(iso))).toBe(iso);
     expect(ticketCreatedAtIso(new Date(iso))).toBe(iso);
+  });
+});
+
+describe('ticketLogInRange', () => {
+  const iso = '2026-09-19T12:00:00.000Z';
+  const ms = Date.parse(iso);
+
+  it('keeps epoch-ms and ISO rows inside the window', () => {
+    expect(ticketLogInRange(ms, ms - 1000, ms + 1000)).toBe(true);
+    expect(ticketLogInRange(iso, ms - 1000, ms + 1000)).toBe(true);
+    expect(ticketLogInRange(new Date(iso), ms - 1000, ms + 1000)).toBe(true);
+  });
+
+  it('drops rows outside the window', () => {
+    expect(ticketLogInRange(ms, ms + 1, ms + 2000)).toBe(false);
+    expect(ticketLogInRange(ms, ms - 2000, ms - 1)).toBe(false);
+  });
+});
+
+describe('ticketLogCreatedAtRangeSql', () => {
+  it('matches both INTEGER ms and TEXT ISO with bound params', () => {
+    const start = Date.parse('2026-09-19T00:00:00.000Z');
+    const end = Date.parse('2026-09-19T23:59:59.999Z');
+    const q = ticketLogCreatedAtRangeSql(start, end);
+    expect(q?.sql).toContain('typeof(createdAt)');
+    expect(q?.params).toEqual([
+      start,
+      end,
+      Math.floor(start / 1000),
+      Math.ceil(end / 1000),
+      new Date(start).toISOString(),
+      new Date(end).toISOString(),
+    ]);
+  });
+
+  it('is a no-op when no bounds are given', () => {
+    expect(ticketLogCreatedAtRangeSql()).toBeNull();
   });
 });
 

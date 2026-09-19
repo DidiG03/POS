@@ -15,6 +15,10 @@ import { saneTableAreas } from '@shared/tableAreas';
 import { asTicketLogItems } from '@shared/ticketLogItems';
 import { useSessionStore } from '../stores/session';
 import {
+  menuCategoriesMissingKgFlag,
+  withSoldByKgFlags,
+} from '@shared/menuItemKg';
+import {
   invalidateCache,
   invalidateCachePrefix,
   patchCacheValue,
@@ -25,7 +29,8 @@ import {
 
 export const POS_CACHE = {
   settings: 'pos:settings',
-  menu: 'pos:menu',
+  // v2: drop tablets that cached isKg:false before the host flag was set.
+  menu: 'pos:menu:v2',
   users: 'pos:users',
   openTables: 'pos:open-tables',
   floor: (area: string) => `pos:floor:${area || '_all'}`,
@@ -236,6 +241,40 @@ function wrapMethod(
   }
 }
 
+/**
+ * Tablets persist the menu in localStorage. A blob that predates `isKg`,
+ * or that still has `isKg:false` after the host toggled kg items on, makes
+ * OrderPage skip the weigh pad. Electron skips this wrap (frozen bridge)
+ * so the till always sees a live list — phones must wait out a stale hit
+ * and normalize 0/1 flags before the order screen keeps the rows.
+ */
+function wrapMenuList(obj: any): void {
+  if (!obj || typeof obj.listCategoriesWithItems !== 'function') return;
+  if (!isWritable(obj, 'listCategoriesWithItems')) return;
+  const orig = obj.listCategoriesWithItems.bind(obj);
+  try {
+    // Pre-v2 key kept wrong `isKg:false` forever under SWR.
+    invalidateCache('pos:menu');
+    obj.listCategoriesWithItems = async () => {
+      const cached = peek(POS_CACHE.menu);
+      if (menuCategoriesMissingKgFlag(cached)) {
+        invalidateCache(POS_CACHE.menu);
+      }
+      const rows = await swr(
+        POS_CACHE.menu,
+        async () => {
+          const value = await orig();
+          return withSoldByKgFlags(Array.isArray(value) ? value : []);
+        },
+        { maxAgeMs: 45_000, waitIfStale: true },
+      );
+      return withSoldByKgFlags(Array.isArray(rows) ? rows : []);
+    };
+  } catch {
+    // Frozen bridge
+  }
+}
+
 function wrapAfter(
   obj: any,
   method: string,
@@ -259,7 +298,7 @@ function applyReadWraps(api: any): void {
   wrapMethod(api.settings, 'get', () => POS_CACHE.settings, 20_000, {
     waitIfStale: true,
   });
-  wrapMethod(api.menu, 'listCategoriesWithItems', () => POS_CACHE.menu, 45_000);
+  wrapMenuList(api.menu);
   wrapMethod(api.auth, 'listUsers', () => POS_CACHE.users, 60_000);
   wrapMethod(api.tables, 'listOpen', () => POS_CACHE.openTables, 4_000);
   wrapMethod(
@@ -413,12 +452,10 @@ export function invalidateFloorSnapshots(): void {
   invalidateCache(POS_CACHE.openTables);
 }
 
-function patchOpenTables(
-  area: string,
-  label: string,
-  open: boolean,
-): void {
-  const prev = peek<Array<{ area: string; label: string }>>(POS_CACHE.openTables);
+function patchOpenTables(area: string, label: string, open: boolean): void {
+  const prev = peek<Array<{ area: string; label: string }>>(
+    POS_CACHE.openTables,
+  );
   const rows = Array.isArray(prev) ? prev : [];
   const has = rows.some((t) => t.area === area && t.label === label);
   if (open) {

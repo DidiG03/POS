@@ -564,7 +564,9 @@ export default function AdminUserTicketsPage() {
           startIso: start,
           endIso: end,
         });
-        setTickets(data as Ticket[]);
+        setTickets(Array.isArray(data) ? (data as Ticket[]) : []);
+      } catch {
+        setTickets([]);
       } finally {
         if (!opts?.silent) setLoading(false);
       }

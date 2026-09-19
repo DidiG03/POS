@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from './cn';
 import { Button } from './Button';
@@ -30,6 +30,16 @@ export type ModalProps = {
   children?: ReactNode;
 };
 
+/** Ignore the ghost click iOS/Android retargets onto a freshly opened overlay. */
+export const OVERLAY_BACKDROP_GUARD_MS = 400;
+
+export function shouldIgnoreOverlayBackdrop(
+  openedAtMs: number,
+  now = Date.now(),
+): boolean {
+  return openedAtMs > 0 && now - openedAtMs < OVERLAY_BACKDROP_GUARD_MS;
+}
+
 export function Modal({
   open,
   onClose,
@@ -42,8 +52,10 @@ export function Modal({
   className,
   children,
 }: ModalProps) {
+  const openedAtMs = useRef(0);
   useEffect(() => {
     if (!open) return;
+    openedAtMs.current = Date.now();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && dismissable) onClose();
     };
@@ -52,6 +64,11 @@ export function Modal({
   }, [open, onClose, dismissable]);
 
   if (!open) return null;
+
+  const closeFromBackdrop = () => {
+    if (shouldIgnoreOverlayBackdrop(openedAtMs.current)) return;
+    onClose();
+  };
 
   return createPortal(
     <div className="pos-overlay">
@@ -62,7 +79,7 @@ export function Modal({
           tabIndex={-1}
           className="absolute inset-0 cursor-default"
           style={{ minHeight: 0 }}
-          onClick={onClose}
+          onClick={closeFromBackdrop}
         />
       ) : null}
       <div
@@ -122,8 +139,10 @@ export function Sheet({
   className?: string;
   children?: ReactNode;
 }) {
+  const openedAtMs = useRef(0);
   useEffect(() => {
     if (!open) return;
+    openedAtMs.current = Date.now();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
@@ -133,6 +152,11 @@ export function Sheet({
 
   if (!open) return null;
 
+  const closeFromBackdrop = () => {
+    if (shouldIgnoreOverlayBackdrop(openedAtMs.current)) return;
+    onClose();
+  };
+
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex flex-col justify-end">
       <button
@@ -141,7 +165,7 @@ export function Sheet({
         tabIndex={-1}
         className="absolute inset-0 cursor-default bg-[rgba(4,7,12,0.7)]"
         style={{ minHeight: 0 }}
-        onClick={onClose}
+        onClick={closeFromBackdrop}
       />
       <div
         role="dialog"

@@ -203,7 +203,10 @@ describe('standalone Admin companion', () => {
 
     const main = read('src/renderer/main.tsx');
     expect(main).toContain('VITE_ADMIN_MOBILE_TARGET');
-    expect(main).toContain("import('./utils/adminMobileBoot')");
+    expect(main).toContain(
+      "import { bootAdminMobileShell } from './utils/adminMobileBoot'",
+    );
+    expect(main).not.toContain("import('./utils/adminMobileBoot')");
     expect(read('src/renderer/utils/adminMobileBoot.ts')).toContain(
       '__ADMIN_APP__',
     );
@@ -212,6 +215,17 @@ describe('standalone Admin companion', () => {
     );
     expect(read('src/renderer/utils/backendHost.ts')).toContain(
       'hydrateCompanionHostFromNativeStore',
+    );
+    expect(read('src/renderer/utils/backendHost.ts')).toContain(
+      'NATIVE_HYDRATE_BUDGET_MS',
+    );
+    // Cap plugins are thenables; returning Preferences from async unwraps
+    // .then() and throws on iOS. Keep a plain { get, set } wrapper.
+    expect(read('src/renderer/utils/backendHost.ts')).toContain(
+      'get: (opts) => Preferences.get(opts)',
+    );
+    expect(read('src/renderer/utils/backendHost.ts')).not.toMatch(
+      /return Preferences\s*;/,
     );
     expect(read('src/renderer/utils/backendHost.ts')).toContain(
       'companionPersistLocationHash',

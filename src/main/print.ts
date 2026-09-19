@@ -332,6 +332,16 @@ export function buildEscposTicket(
     lines.push(escposText(`${nowStr}\n`));
     lines.push(escposText(`${layout.sep}\n`));
   } else {
+    const routeLabel = String(meta?.routeLabel || '').trim();
+    if (routeLabel) {
+      lines.push(cmdBold(true));
+      lines.push(cmdTextSize('lg'));
+      for (const ln of wrapEscposText(routeLabel, layout.doubleWidthCols)) {
+        lines.push(escposText(`${ln}\n`));
+      }
+      lines.push(cmdTextSize('normal'));
+      lines.push(cmdBold(false));
+    }
     const identityLines = kitchenOrderIdentityLines(payload, layout.cols);
     if (identityLines.length) {
       lines.push(cmdBold(true));
@@ -580,6 +590,7 @@ export function buildHtmlReceipt(
   const kind = String(meta?.kind || '').toUpperCase();
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
   const seatLabel = String(meta?.seatLabel || '').trim();
+  const routeLabel = String(meta?.routeLabel || '').trim();
   const orderIdentity = kind === 'ORDER' ? kitchenOrderIdentity(payload) : '';
 
   const safe = (s: any) =>
@@ -725,7 +736,8 @@ export function buildHtmlReceipt(
   <body>
     ${
       kind === 'ORDER'
-        ? `${orderIdentity ? `<div class="orderFoot">${safe(orderIdentity)}</div>` : ''}
+        ? `${routeLabel ? `<div class="orderFoot">${safe(routeLabel)}</div>` : ''}
+    ${orderIdentity ? `<div class="orderFoot">${safe(orderIdentity)}</div>` : ''}
     <div class="sep"></div>`
         : `<div class="title">${safe(restaurant)}</div>
     ${subtitleHtml}

@@ -4,11 +4,14 @@
  * everywhere we treat a row as revenue (same rule as admin analytics).
  */
 
-import { ticketCreatedAtIso, ticketLogCreatedAtMs } from './ticketLogItems';
+import {
+  asTicketLogItems,
+  ticketCreatedAtIso,
+  ticketLogCreatedAtMs,
+} from './ticketLogItems';
 
 export function liveTicketLines(itemsJson: unknown): any[] {
-  const arr = Array.isArray(itemsJson) ? itemsJson : [];
-  return arr.filter((it: any) => !it?.voided);
+  return asTicketLogItems(itemsJson).filter((it: any) => !it?.voided);
 }
 
 /** Shape of the TicketLog columns the session collapse needs. */
@@ -21,10 +24,7 @@ export interface TicketSnapshotRow {
 }
 
 function rowTimeMs(row: TicketSnapshotRow): number {
-  const raw = row?.createdAt;
-  if (raw == null) return 0;
-  const t =
-    raw instanceof Date ? raw.getTime() : new Date(raw as any).getTime();
+  const t = ticketLogCreatedAtMs(row?.createdAt);
   return Number.isFinite(t) ? t : 0;
 }
 
@@ -46,8 +46,8 @@ function lineIdentity(line: any): string {
  * breaks the moment the table is re-seated with a fresh ticket.
  */
 function extendsSnapshot(prev: unknown, next: unknown): boolean {
-  const a = Array.isArray(prev) ? prev : [];
-  const b = Array.isArray(next) ? next : [];
+  const a = asTicketLogItems(prev);
+  const b = asTicketLogItems(next);
   if (b.length < a.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (lineIdentity(a[i]) !== lineIdentity(b[i])) return false;

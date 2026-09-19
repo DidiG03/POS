@@ -158,11 +158,18 @@ async function nativePreferences(): Promise<{
       | undefined;
     if (!Cap?.isNativePlatform?.()) return null;
     const { Preferences } = await import('@capacitor/preferences');
-    return Preferences;
+    // Never return the Cap plugin from an async function — plugins are
+    // thenables that throw `"Preferences.then() is not implemented on ios"`.
+    return {
+      get: (opts) => Preferences.get(opts),
+      set: (opts) => Preferences.set(opts),
+    };
   } catch {
     return null;
   }
 }
+
+const NATIVE_HYDRATE_BUDGET_MS = 1_500;
 
 /** Restore a saved till from Capacitor Preferences when localStorage is empty. */
 export async function hydrateCompanionHostFromNativeStore(): Promise<void> {
@@ -172,27 +179,36 @@ export async function hydrateCompanionHostFromNativeStore(): Promise<void> {
   } catch {
     // continue — Preferences may still have a host
   }
-  const prefs = await nativePreferences();
-  if (!prefs) return;
-  try {
-    const host = String(
-      (await prefs.get({ key: NATIVE_HOST_KEY })).value || '',
-    ).trim();
-    if (!host) return;
-    const httpPort = String(
-      (await prefs.get({ key: NATIVE_HTTP_KEY })).value || '3333',
-    ).trim();
-    const httpsPort = String(
-      (await prefs.get({ key: NATIVE_HTTPS_KEY })).value || '',
-    ).trim();
-    syncBackendHostToLocalStorage({
-      host,
-      httpPort: httpPort || '3333',
-      httpsPort: httpsPort || undefined,
-    });
-  } catch {
-    // ignore
-  }
+  // Cap Preferences can hang if the bridge is not ready yet. Budget so
+  // Admin/Waiter boot never sticks on the HTML "OneTap POS" shell.
+  await Promise.race([
+    (async () => {
+      const prefs = await nativePreferences();
+      if (!prefs) return;
+      try {
+        const host = String(
+          (await prefs.get({ key: NATIVE_HOST_KEY })).value || '',
+        ).trim();
+        if (!host) return;
+        const httpPort = String(
+          (await prefs.get({ key: NATIVE_HTTP_KEY })).value || '3333',
+        ).trim();
+        const httpsPort = String(
+          (await prefs.get({ key: NATIVE_HTTPS_KEY })).value || '',
+        ).trim();
+        syncBackendHostToLocalStorage({
+          host,
+          httpPort: httpPort || '3333',
+          httpsPort: httpsPort || undefined,
+        });
+      } catch {
+        // ignore
+      }
+    })(),
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, NATIVE_HYDRATE_BUDGET_MS);
+    }),
+  ]);
 }
 
 async function persistNativeCompanionHost(input: {

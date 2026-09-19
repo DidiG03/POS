@@ -21,6 +21,10 @@
 import { prisma } from '@db/client';
 import type { PrinterProfileDTO, SettingsDTO } from '@shared/ipc';
 import {
+  findPrintRouteForCategory,
+  normalizePrintRoutes,
+} from '@shared/printRoutes';
+import {
   ESC_POS_FONT_A,
   ESC_POS_PC850,
   encodeEscposText,
@@ -237,23 +241,28 @@ export async function printWithProfile(
 
 // -------- order routing ----------------------------------------------------
 
-function normKey(s: any): string {
-  return String(s ?? '')
-    .trim()
-    .toLowerCase();
-}
-
 type OrderBucket = {
   printerId: string;
   payload: TicketPrintPayload;
 };
 
+function printerNamesFromSettings(settings: any): Record<string, string> {
+  const names: Record<string, string> = {};
+  const arr = Array.isArray(settings?.printers) ? settings.printers : [];
+  for (const p of arr) {
+    const id = String(p?.id || '').trim();
+    if (!id) continue;
+    names[id] = String(p?.name || '').trim();
+  }
+  return names;
+}
+
 /**
- * For routed ORDER tickets: split the items into per-category groups,
- * with each group destined for the printer mapped to that category in
- * `printerRouting.categories`. Items whose category has no explicit
- * mapping fall through to `printerRouting.fallbackPrinterId` (or
- * `station.ALL` for back-compat).
+ * For routed ORDER tickets: one slip per named routing whose categories
+ * appear on the order. Two routings that share a printer still produce
+ * two tickets. Items whose category is on no routing fall through to
+ * `printerRouting.fallbackPrinterId` (or `station.ALL` for back-compat)
+ * as a single leftover slip.
  *
  * SKUs without `categoryId`/`categoryName` on the line item itself get
  * filled in from a single batched menu lookup so the renderer doesn't
@@ -265,10 +274,12 @@ async function buildOrderBuckets(
 ): Promise<OrderBucket[]> {
   const routing = (settings as any)?.printerRouting || {};
   const stationRouting = (routing?.station || {}) as Record<string, string>;
-  const categoryRouting = (routing?.categories || {}) as Record<string, string>;
   const fallbackPrinterId = String(
     routing?.fallbackPrinterId || stationRouting?.ALL || '',
   ).trim();
+  const routes = normalizePrintRoutes(routing, {
+    printerNames: printerNamesFromSettings(settings),
+  });
 
   const items: any[] = Array.isArray(payload?.items) ? payload.items : [];
   const skus = Array.from(
@@ -290,52 +301,50 @@ async function buildOrderBuckets(
     });
   }
 
-  // One ORDER slip per destination printer. Multiple categories mapped to
-  // the same printer (e.g. all drink categories → bar) print together.
-  const groups = new Map<string, { printerId: string; items: any[] }>();
+  const FALLBACK_KEY = '__fallback__';
+  const groups = new Map<
+    string,
+    { printerId: string; routeLabel: string; items: any[] }
+  >();
   for (const it of items) {
     const sku = String(it?.sku || '');
     const info = sku ? bySku.get(sku) : undefined;
     const categoryId = Number.isFinite(Number(it?.categoryId))
       ? Number(it.categoryId)
       : info?.categoryId;
-    const categoryKey =
-      categoryId != null && Number.isFinite(categoryId)
-        ? String(categoryId)
-        : '';
-    const categoryNameKey = normKey(it?.categoryName);
-    const printerByName =
-      categoryNameKey && categoryRouting[categoryNameKey]
-        ? categoryRouting[categoryNameKey]
-        : '';
-    const printerById =
-      categoryKey && categoryRouting[categoryKey]
-        ? categoryRouting[categoryKey]
-        : '';
-    const printerByCategory = printerByName || printerById;
+    const route = findPrintRouteForCategory(routes, {
+      categoryId,
+      categoryName: it?.categoryName,
+    });
+    const groupKey = route?.id || FALLBACK_KEY;
     const printerId = String(
-      printerByCategory || fallbackPrinterId || '',
+      route?.printerId || fallbackPrinterId || '',
     ).trim();
-    if (!groups.has(printerId)) {
-      groups.set(printerId, { printerId, items: [] });
+    const routeLabel = String(route?.name || '').trim();
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, { printerId, routeLabel, items: [] });
     }
-    groups.get(printerId)!.items.push({ ...it, station: 'ALL', categoryId });
+    groups.get(groupKey)!.items.push({ ...it, station: 'ALL', categoryId });
   }
 
-  return Array.from(groups.values()).map((g) => ({
-    printerId: g.printerId,
-    payload: {
-      ...payload,
-      items: g.items,
-      meta: {
-        ...((payload as any)?.meta || {}),
-        kind: 'ORDER',
-        station: 'ALL',
-        hidePrices: true,
-        routeLabel: g.printerId,
+  return Array.from(groups.values()).map((g) => {
+    const meta = {
+      ...((payload as any)?.meta || {}),
+      kind: 'ORDER',
+      station: 'ALL',
+      hidePrices: true,
+    } as Record<string, unknown>;
+    if (g.routeLabel) meta.routeLabel = g.routeLabel;
+    else delete meta.routeLabel;
+    return {
+      printerId: g.printerId,
+      payload: {
+        ...payload,
+        items: g.items,
+        meta,
       },
-    },
-  }));
+    };
+  });
 }
 
 // -------- printer-offline retry queue (PR 3) -----------------------------
@@ -633,21 +642,37 @@ export async function dispatchTicket(
   }
 
   const buckets = await buildOrderBuckets(payload, settings);
-  const perPrinter = await Promise.all(
-    buckets.map(async (bucket) => {
-      const prof = pickPrinterProfile(settings, bucket.printerId) || fallback;
-      const r = await printWithProfile(bucket.payload, settings, prof, {
-        retries,
-      });
-      if (!r.ok) {
-        // Persist THIS bucket only — a routed order whose food slip went
-        // through but whose drinks slip didn't should only retry the
-        // drinks slip.
-        await maybePersistRetry(bucket.payload, prof.id, r.error);
-      }
-      return { profileId: prof.id, ok: r.ok, error: r.error };
-    }),
-  );
+  // Different printers still fire in parallel. Slips that share a
+  // printer (Grill + Cold Starters on Kitchen) must go out one after
+  // another so ESC/POS jobs do not interleave on the same socket.
+  const byPrinter = new Map<string, typeof buckets>();
+  for (const bucket of buckets) {
+    const key = String(bucket.printerId || '');
+    if (!byPrinter.has(key)) byPrinter.set(key, []);
+    byPrinter.get(key)!.push(bucket);
+  }
+  const perPrinter = (
+    await Promise.all(
+      Array.from(byPrinter.values()).map(async (list) => {
+        const out: DispatchResult['perPrinter'] = [];
+        for (const bucket of list) {
+          const prof =
+            pickPrinterProfile(settings, bucket.printerId) || fallback;
+          const r = await printWithProfile(bucket.payload, settings, prof, {
+            retries,
+          });
+          if (!r.ok) {
+            // Persist THIS bucket only — a routed order whose food slip
+            // went through but whose drinks slip didn't should only retry
+            // the drinks slip.
+            await maybePersistRetry(bucket.payload, prof.id, r.error);
+          }
+          out.push({ profileId: prof.id, ok: r.ok, error: r.error });
+        }
+        return out;
+      }),
+    )
+  ).flat();
   const failures = perPrinter.filter((p) => !p.ok).length;
   const firstError = perPrinter.find((p) => !p.ok)?.error;
   return { ok: failures === 0, failures, firstError, perPrinter };

@@ -37,6 +37,26 @@ describe('latestRowPerSession', () => {
     expect(kept[0].itemsJson).toHaveLength(2);
   });
 
+  it('collapses SQLite JSON-string snapshots of the same sitting', () => {
+    const rows = [
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: 1_000,
+        itemsJson: JSON.stringify([line('Pizza', 10)]),
+      },
+      {
+        area: 'A',
+        tableLabel: '1',
+        createdAt: 2_000,
+        itemsJson: JSON.stringify([line('Pizza', 10), line('Coke', 3)]),
+      },
+    ];
+    const kept = latestRowPerSession(rows);
+    expect(kept).toHaveLength(1);
+    expect(JSON.parse(String(kept[0].itemsJson))).toHaveLength(2);
+  });
+
   it('counts a re-seated table as a separate session', () => {
     const rows = [
       {
@@ -319,6 +339,15 @@ describe('sumTicketLinesNetVat', () => {
   it('returns zeros for empty or invalid itemsJson', () => {
     expect(sumTicketLinesNetVat(null)).toEqual({ net: 0, vat: 0 });
     expect(sumTicketLinesNetVat([])).toEqual({ net: 0, vat: 0 });
+  });
+
+  it('parses a JSON string from SQLite', () => {
+    const { net, vat } = sumTicketLinesNetVat(
+      JSON.stringify([{ name: 'A', qty: 1, unitPrice: 100, vatRate: 0 }]),
+      false,
+    );
+    expect(net).toBe(100);
+    expect(vat).toBe(0);
   });
 
   it('skips VAT when vatEnabled is false (net === gross)', () => {

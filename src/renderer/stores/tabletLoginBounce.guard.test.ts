@@ -81,9 +81,7 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain('invalidateCache(POS_CACHE.users)');
     expect(src).toContain('pos:usersChanged');
     expect(src).toContain('__BROWSER_CLIENT__');
-    expect(src).not.toMatch(
-      /setInterval\(\(\)\s*=>[\s\S]{0,80}refreshStaff/,
-    );
+    expect(src).not.toMatch(/setInterval\(\(\)\s*=>[\s\S]{0,80}refreshStaff/);
     expect(src).not.toContain('directoryEmpty');
     const loginFn = src.slice(
       src.indexOf('const onSubmit'),
@@ -254,5 +252,26 @@ describe('tablet login bounce guards', () => {
     expect(src).not.toContain(
       "${mobilePane === 'ticket' ? 'flex-1' : 'hidden'} md:flex",
     );
+  });
+
+  it('opens the weigh pad from sold-by-kg flags that survive LAN/SQLite', () => {
+    const order = read('src/renderer/app/pages/OrderPage.tsx');
+    expect(order).toContain('menuItemSoldByKg');
+    expect(order).toContain('withSoldByKgFlags');
+    expect(order).toContain("from '../../components/ui/Modal'");
+    expect(order).toContain('open={Boolean(weightModal)}');
+    expect(order).not.toMatch(
+      /Boolean\(\(item as any\)\?\.isKg\) \|\| Boolean\(\(item as any\)\?\.tags\?\.isKg\)/,
+    );
+    expect(order).not.toMatch(
+      /weightModal && \(\s*<div\s+className="pos-overlay"/,
+    );
+    const cache = read('src/renderer/utils/posReadCache.ts');
+    expect(cache).toContain('menuCategoriesMissingKgFlag');
+    expect(cache).toContain('wrapMenuList');
+    expect(cache).toContain('withSoldByKgFlags');
+    expect(cache).toContain("menu: 'pos:menu:v2'");
+    expect(cache).toMatch(/listCategoriesWithItems[\s\S]*waitIfStale:\s*true/);
+    expect(order).toContain('visibilitychange');
   });
 });

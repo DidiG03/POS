@@ -47,8 +47,10 @@ import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { reportAppError } from '../../utils/reportAppError';
 import { PageSpinner } from '../../components/PageSpinner';
+import { Modal } from '../../components/ui/Modal';
 import { PaymentCheckout } from '../components/PaymentCheckout';
 import { retryLazyImport } from '../../utils/lazyRetry';
+import { menuItemSoldByKg, withSoldByKgFlags } from '@shared/menuItemKg';
 import {
   courseNumber,
   kitchenSlipNeedsCourseBanner,
@@ -136,10 +138,7 @@ const COMMENT_TILE_BG = '#3d4d63';
 function CategorySwatch({ color }: { color: string }) {
   return (
     <span className="pos-menu-cat-mark" aria-hidden>
-      <span
-        className="pos-menu-cat-dot"
-        style={{ backgroundColor: color }}
-      />
+      <span className="pos-menu-cat-dot" style={{ backgroundColor: color }} />
     </span>
   );
 }
@@ -223,10 +222,7 @@ const MenuItemTile = memo(function MenuItemTile({
     item.stockRemaining != null && Number.isFinite(Number(item.stockRemaining))
       ? Math.max(0, Math.floor(Number(item.stockRemaining)))
       : null;
-  const tileStyle = menuTileStyle(
-    categoryColor || FALLBACK_TILE_BG,
-    uiTheme,
-  );
+  const tileStyle = menuTileStyle(categoryColor || FALLBACK_TILE_BG, uiTheme);
   const unavailableTitle = !item.active
     ? labels.inactive
     : item.stockLevel === 'OUT'
@@ -390,9 +386,7 @@ function raceWithBudget<T>(work: Promise<T>, ms: number): Promise<T | null> {
  */
 function ownerIdFromFloorCache(area: string, label: string): number | null {
   const snap = peekFloorSnapshot(area);
-  const row = snap?.tables?.find(
-    (t) => t.area === area && t.label === label,
-  );
+  const row = snap?.tables?.find((t) => t.area === area && t.label === label);
   const uid = Number(row?.userId);
   return Number.isFinite(uid) && uid > 0 ? uid : null;
 }
@@ -1613,8 +1607,9 @@ export default function OrderPage() {
 
   const loadMenu = async () => {
     const data = await window.api.menu.listCategoriesWithItems();
-    setCategories(data);
-    if (data.length && !selectedCatId) setSelectedCatId(data[0].id);
+    const cats = withSoldByKgFlags(Array.isArray(data) ? data : []);
+    setCategories(cats);
+    if (cats.length && !selectedCatId) setSelectedCatId(cats[0].id);
   };
 
   const categoryNameById = useMemo(() => {
@@ -1629,9 +1624,7 @@ export default function OrderPage() {
       if (menuItemUnavailable(item) || ticketSyncing || busyAction != null) {
         return;
       }
-      const isKg =
-        Boolean((item as any)?.isKg) || Boolean((item as any)?.tags?.isKg);
-      if (isKg) {
+      if (menuItemSoldByKg(item)) {
         setWeightModal({
           sku: item.sku,
           name: item.name,
@@ -1702,8 +1695,26 @@ export default function OrderPage() {
     [t],
   );
 
+  // Phones keep a SWR menu blob; a background refresh never updates React
+  // state unless we load again. Re-pull when the order screen is shown so
+  // sold-by-kg flags match the host (Electron skips SWR via the frozen bridge).
   useEffect(() => {
-    loadMenu();
+    let cancelled = false;
+    const refresh = () => {
+      void loadMenu().catch(() => undefined);
+    };
+    refresh();
+    const onVisible = () => {
+      if (cancelled) return;
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, []);
 
   // Store tills only: a USB scanner types the barcode then Enter.
@@ -2736,9 +2747,7 @@ export default function OrderPage() {
                     }`}
                   >
                     <span className="pos-menu-cat-label">
-                      <CategorySwatch
-                        color={tabColor || FALLBACK_TILE_BG}
-                      />
+                      <CategorySwatch color={tabColor || FALLBACK_TILE_BG} />
                       <span className="min-w-0 line-clamp-2">{c.name}</span>
                     </span>
                   </button>
@@ -4420,73 +4429,73 @@ export default function OrderPage() {
                     if (!approved) return;
                     approvedByAdmin = approved;
                   }
-                    hydrateGenRef.current += 1;
-                    const vt = voidTarget;
-                    if (!vt) return;
-                    setVoidTarget(null);
-                    markLineVoided(vt.id);
-                    const remaining = useTicketStore
-                      .getState()
-                      .lines.filter((l) => !l.voided && !l.paid);
-                    void tryOrQueue('tickets.voidItem', {
-                      userId: user.id,
-                      area: selectedTable.area,
-                      tableLabel: selectedTable.label,
-                      actorRole: user.role,
-                      item: {
-                        name: vt.name,
-                        qty: vt.qty,
-                        unitPrice: vt.unitPrice,
-                        vatRate: vt.vatRate,
-                        note: vt.note,
-                      },
-                      ...(approvedByAdmin
-                        ? {
-                            approvedByAdminId: approvedByAdmin.userId,
-                            approvedByAdminName: approvedByAdmin.userName,
-                            approvedByAdminToken: approvedByAdmin.approvalToken,
-                          }
-                        : {}),
+                  hydrateGenRef.current += 1;
+                  const vt = voidTarget;
+                  if (!vt) return;
+                  setVoidTarget(null);
+                  markLineVoided(vt.id);
+                  const remaining = useTicketStore
+                    .getState()
+                    .lines.filter((l) => !l.voided && !l.paid);
+                  void tryOrQueue('tickets.voidItem', {
+                    userId: user.id,
+                    area: selectedTable.area,
+                    tableLabel: selectedTable.label,
+                    actorRole: user.role,
+                    item: {
+                      name: vt.name,
+                      qty: vt.qty,
+                      unitPrice: vt.unitPrice,
+                      vatRate: vt.vatRate,
+                      note: vt.note,
+                    },
+                    ...(approvedByAdmin
+                      ? {
+                          approvedByAdminId: approvedByAdmin.userId,
+                          approvedByAdminName: approvedByAdmin.userName,
+                          approvedByAdminToken: approvedByAdmin.approvalToken,
+                        }
+                      : {}),
+                  })
+                    .then(() => {
+                      void raceWithBudget(
+                        window.api.tickets.getLatestForTable(
+                          selectedTable.area,
+                          selectedTable.label,
+                        ),
+                        LIVE_TICKET_BUDGET_MS,
+                      ).then((latest) => {
+                        if (!latest) return;
+                        const allItems = ((latest as any)?.items ||
+                          []) as any[];
+                        useTicketStore.getState().hydrate({
+                          items: allItems as any,
+                          note: (latest as any)?.note || '',
+                        });
+                      });
                     })
-                      .then(() => {
-                        void raceWithBudget(
-                          window.api.tickets.getLatestForTable(
-                            selectedTable.area,
-                            selectedTable.label,
-                          ),
-                          LIVE_TICKET_BUDGET_MS,
-                        ).then((latest) => {
-                          if (!latest) return;
-                          const allItems = ((latest as any)?.items ||
-                            []) as any[];
-                          useTicketStore.getState().hydrate({
-                            items: allItems as any,
-                            note: (latest as any)?.note || '',
-                          });
-                        });
-                      })
-                      .catch(() => {
-                        toast.error(t('order.voidItemFailed'));
+                    .catch(() => {
+                      toast.error(t('order.voidItemFailed'));
+                    });
+                  if (remaining.length === 0) {
+                    setOpen(selectedTable.area, selectedTable.label, false);
+                    void tryOrQueue(
+                      'tables.setOpen',
+                      {
+                        area: selectedTable.area,
+                        label: selectedTable.label,
+                        open: false,
+                      },
+                      {
+                        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                      },
+                    ).catch((e: unknown) => {
+                      reportAppError(e, {
+                        fallback: t('order.toastTryAgain'),
+                        key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
                       });
-                    if (remaining.length === 0) {
-                      setOpen(selectedTable.area, selectedTable.label, false);
-                      void tryOrQueue(
-                        'tables.setOpen',
-                        {
-                          area: selectedTable.area,
-                          label: selectedTable.label,
-                          open: false,
-                        },
-                        {
-                          dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                        },
-                      ).catch((e: unknown) => {
-                        reportAppError(e, {
-                          fallback: t('order.toastTryAgain'),
-                          key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                        });
-                      });
-                    }
+                    });
+                  }
                 }}
               >
                 {t('order.voidConfirm')}
@@ -4554,143 +4563,132 @@ export default function OrderPage() {
         </div>
       )}
 
-      {weightModal && (
-        <div
-          className="pos-overlay"
-          onClick={() => {
-            setWeightModal(null);
-            setWeightInput('');
-            setWeightUnit('kg');
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="pos-dialog w-full max-w-sm p-5 sm:rounded-[0.85rem]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="pos-dialog-title mb-2 text-center">
-              {t('order.weightTitle')}
-            </h3>
-            <div className="mb-3 text-center text-sm text-[color:var(--pos-fg-muted)]">
-              {weightModal.name}
-            </div>
-            <div className="mb-3 grid grid-cols-3 gap-2">
-              {[...'123456789'].map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  className="pos-keypad-key"
-                  onClick={() => setWeightInput((v) => v + d)}
-                >
-                  {d}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="pos-keypad-key"
-                onClick={() => setWeightInput((v) => v + '0')}
-              >
-                0
-              </button>
-              <button
-                type="button"
-                className="pos-keypad-key"
-                onClick={() =>
-                  setWeightInput((v) => (v.includes('.') ? v : v + '.'))
-                }
-              >
-                .
-              </button>
-              <button
-                type="button"
-                className="pos-keypad-key"
-                onClick={() => setWeightInput('')}
-              >
-                {t('order.clear')}
-              </button>
-            </div>
-            <div className="pos-segmented mb-3 w-full">
-              <button
-                type="button"
-                className={`pos-segment flex-1 ${
-                  weightUnit === 'kg' ? 'pos-segment--active' : ''
-                }`}
-                onClick={() => setWeightUnit('kg')}
-              >
-                kg
-              </button>
-              <button
-                type="button"
-                className={`pos-segment flex-1 ${
-                  weightUnit === 'g' ? 'pos-segment--active' : ''
-                }`}
-                onClick={() => setWeightUnit('g')}
-              >
-                g
-              </button>
-            </div>
-            <input
-              className="pos-input mb-3 text-center text-lg font-semibold tabular-nums"
-              placeholder={t('order.weightPlaceholder')}
-              inputMode="decimal"
-              value={weightInput ? `${weightInput} ${weightUnit}` : ''}
-              onChange={(e) => {
-                // Keep only the numeric part; the unit is chosen via kg/g.
-                const digits = e.target.value
-                  .replace(/[^0-9.]/g, '')
-                  .replace(/(\..*)\./g, '$1');
-                setWeightInput(digits);
+      <Modal
+        open={Boolean(weightModal)}
+        onClose={() => {
+          setWeightModal(null);
+          setWeightInput('');
+          setWeightUnit('kg');
+        }}
+        title={t('order.weightTitle')}
+        description={weightModal?.name}
+        size="sm"
+        footer={
+          <>
+            <button
+              type="button"
+              className="pos-ticket-tool"
+              onClick={() => {
+                setWeightModal(null);
+                setWeightInput('');
+                setWeightUnit('kg');
               }}
-            />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="pos-ticket-tool"
-                onClick={() => {
-                  setWeightModal(null);
-                  setWeightInput('');
-                  setWeightUnit('kg');
-                }}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                type="button"
-                className="pos-ticket-pay !w-auto flex-1"
-                onClick={() => {
-                  if (!weightModal) return;
-                  const amount = Number(weightInput.trim());
-                  if (!Number.isFinite(amount) || amount <= 0) return;
-                  const qty = weightUnit === 'g' ? amount / 1000 : amount;
-                  if (!Number.isFinite(qty) || qty <= 0) return;
-                  addItem({
-                    sku: weightModal.sku,
-                    name: weightModal.name,
-                    unitPrice: weightModal.unitPrice,
-                    vatRate: weightModal.vatRate,
-                    qty,
-                    station: (weightModal as any).station,
-                    categoryId: (weightModal as any).categoryId,
-                    categoryName: (weightModal as any).categoryName,
-                    courseId:
-                      addMode === 'course' &&
-                      (weightModal as any).station !== 'BAR'
-                        ? activeCourseId
-                        : null,
-                    seatId: addMode === 'seat' ? activeSeatId : null,
-                  } as any);
-                  setWeightModal(null);
-                  setWeightInput('');
-                  setWeightUnit('kg');
-                }}
-              >
-                {t('order.confirm')}
-              </button>
-            </div>
-          </div>
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              type="button"
+              className="pos-ticket-pay !w-auto flex-1"
+              onClick={() => {
+                if (!weightModal) return;
+                const amount = Number(weightInput.trim());
+                if (!Number.isFinite(amount) || amount <= 0) return;
+                const qty = weightUnit === 'g' ? amount / 1000 : amount;
+                if (!Number.isFinite(qty) || qty <= 0) return;
+                addItem({
+                  sku: weightModal.sku,
+                  name: weightModal.name,
+                  unitPrice: weightModal.unitPrice,
+                  vatRate: weightModal.vatRate,
+                  qty,
+                  station: (weightModal as any).station,
+                  categoryId: (weightModal as any).categoryId,
+                  categoryName: (weightModal as any).categoryName,
+                  courseId:
+                    addMode === 'course' &&
+                    (weightModal as any).station !== 'BAR'
+                      ? activeCourseId
+                      : null,
+                  seatId: addMode === 'seat' ? activeSeatId : null,
+                } as any);
+                setWeightModal(null);
+                setWeightInput('');
+                setWeightUnit('kg');
+              }}
+            >
+              {t('order.confirm')}
+            </button>
+          </>
+        }
+      >
+        <div className="mb-3 grid grid-cols-3 gap-2">
+          {[...'123456789'].map((d) => (
+            <button
+              key={d}
+              type="button"
+              className="pos-keypad-key"
+              onClick={() => setWeightInput((v) => v + d)}
+            >
+              {d}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="pos-keypad-key"
+            onClick={() => setWeightInput((v) => v + '0')}
+          >
+            0
+          </button>
+          <button
+            type="button"
+            className="pos-keypad-key"
+            onClick={() =>
+              setWeightInput((v) => (v.includes('.') ? v : v + '.'))
+            }
+          >
+            .
+          </button>
+          <button
+            type="button"
+            className="pos-keypad-key"
+            onClick={() => setWeightInput('')}
+          >
+            {t('order.clear')}
+          </button>
         </div>
-      )}
+        <div className="pos-segmented mb-3 w-full">
+          <button
+            type="button"
+            className={`pos-segment flex-1 ${
+              weightUnit === 'kg' ? 'pos-segment--active' : ''
+            }`}
+            onClick={() => setWeightUnit('kg')}
+          >
+            kg
+          </button>
+          <button
+            type="button"
+            className={`pos-segment flex-1 ${
+              weightUnit === 'g' ? 'pos-segment--active' : ''
+            }`}
+            onClick={() => setWeightUnit('g')}
+          >
+            g
+          </button>
+        </div>
+        <input
+          className="pos-input text-center text-lg font-semibold tabular-nums"
+          placeholder={t('order.weightPlaceholder')}
+          inputMode="decimal"
+          value={weightInput ? `${weightInput} ${weightUnit}` : ''}
+          onChange={(e) => {
+            const digits = e.target.value
+              .replace(/[^0-9.]/g, '')
+              .replace(/(\..*)\./g, '$1');
+            setWeightInput(digits);
+          }}
+        />
+      </Modal>
 
       {approvalModal.open && (
         <div className="pos-overlay">
