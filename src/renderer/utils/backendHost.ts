@@ -1,6 +1,11 @@
 import { buildLanHttpUrl, buildLanHttpsUrl } from '@shared/lanHost';
 import { clearLanTokenMemory, writeLanToken } from './lanAuthToken';
 import { invalidateHostScopedCaches } from './posReadCache';
+import { notifyBackendHostChanged } from './posServerScanEvent';
+
+const NATIVE_HOST_KEY = 'pos_backend_host';
+const NATIVE_HTTP_KEY = 'pos_backend_http';
+const NATIVE_HTTPS_KEY = 'pos_backend_https';
 
 export type BackendHost = {
   host: string;
@@ -117,6 +122,82 @@ export function syncBackendHostToLocalStorage(input: {
   else localStorage.removeItem('pos_backend_https');
 }
 
+async function nativePreferences(): Promise<{
+  get: (opts: { key: string }) => Promise<{ value: string | null }>;
+  set: (opts: { key: string; value: string }) => Promise<void>;
+} | null> {
+  try {
+    const Cap = (window as any).Capacitor as
+      | { isNativePlatform?: () => boolean }
+      | undefined;
+    if (!Cap?.isNativePlatform?.()) return null;
+    const { Preferences } = await import('@capacitor/preferences');
+    return Preferences;
+  } catch {
+    return null;
+  }
+}
+
+/** Restore a saved till from Capacitor Preferences when localStorage is empty. */
+export async function hydrateCompanionHostFromNativeStore(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    if (localStorage.getItem(NATIVE_HOST_KEY)?.trim()) return;
+  } catch {
+    // continue — Preferences may still have a host
+  }
+  const prefs = await nativePreferences();
+  if (!prefs) return;
+  try {
+    const host = String(
+      (await prefs.get({ key: NATIVE_HOST_KEY })).value || '',
+    ).trim();
+    if (!host) return;
+    const httpPort = String(
+      (await prefs.get({ key: NATIVE_HTTP_KEY })).value || '3333',
+    ).trim();
+    const httpsPort = String(
+      (await prefs.get({ key: NATIVE_HTTPS_KEY })).value || '',
+    ).trim();
+    syncBackendHostToLocalStorage({
+      host,
+      httpPort: httpPort || '3333',
+      httpsPort: httpsPort || undefined,
+    });
+  } catch {
+    // ignore
+  }
+}
+
+async function persistNativeCompanionHost(input: {
+  host: string;
+  httpPort: string;
+}): Promise<void> {
+  const prefs = await nativePreferences();
+  if (!prefs) return;
+  try {
+    await prefs.set({ key: NATIVE_HOST_KEY, value: input.host });
+    await prefs.set({ key: NATIVE_HTTP_KEY, value: input.httpPort });
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Electron Admin/KDS persist via `saveConfig` and reload. Capacitor has no
+ * IPC, so land on the companion shell and notify BootRoot to reconnect.
+ */
+export function companionPersistLocationHash(opts: {
+  hasSaveConfig: boolean;
+  adminApp: boolean;
+  kdsApp: boolean;
+}): string | null {
+  if (opts.hasSaveConfig) return null;
+  if (opts.adminApp) return '#/admin';
+  if (opts.kdsApp) return '#/kds';
+  return null;
+}
+
 export async function persistCompanionBackendHost(input: {
   host: string;
   httpPort: number;
@@ -124,6 +205,10 @@ export async function persistCompanionBackendHost(input: {
   const trimmedHost = input.host.trim();
   const httpPort = Number(input.httpPort) || 3333;
   syncBackendHostToLocalStorage({
+    host: trimmedHost,
+    httpPort: String(httpPort),
+  });
+  await persistNativeCompanionHost({
     host: trimmedHost,
     httpPort: String(httpPort),
   });
@@ -155,6 +240,20 @@ export async function persistCompanionBackendHost(input: {
     | undefined;
   if (companion?.saveConfig) {
     await companion.saveConfig({ host: trimmedHost, httpPort });
+    return;
+  }
+  const nextHash = companionPersistLocationHash({
+    hasSaveConfig: false,
+    adminApp: Boolean((window as any).__ADMIN_APP__),
+    kdsApp: Boolean((window as any).__KDS_APP__),
+  });
+  if (nextHash) {
+    try {
+      window.location.hash = nextHash;
+    } catch {
+      // ignore
+    }
+    notifyBackendHostChanged();
   }
 }
 

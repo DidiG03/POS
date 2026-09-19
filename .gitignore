@@ -21,6 +21,9 @@ prisma/dev.db
 ios/App/Pods
 ios/App/build
 ios/App/DerivedData
+ios-admin/App/Pods
+ios-admin/App/build
+ios-admin/App/DerivedData
 android/.gradle
 android/app/build
 android/build

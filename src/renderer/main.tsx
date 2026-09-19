@@ -41,6 +41,13 @@ function installCompanionUpdaterBridge() {
 }
 
 async function startRenderer() {
+  // Capacitor Admin must set `__ADMIN_APP__` and `#/admin` / `#/admin-setup`
+  // before BootRoot mounts the hash router. Waiter / Electron skip this.
+  if ((import.meta as any)?.env?.VITE_ADMIN_MOBILE_TARGET) {
+    const { bootAdminMobileShell } = await import('./utils/adminMobileBoot');
+    await bootAdminMobileShell();
+  }
+
   // Electron preload already defines window.api. Tablets download the LAN
   // HTTP shim only when that bridge is missing so the PIN screen stays small.
   if (!(window as any).api) {
