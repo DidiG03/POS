@@ -81,6 +81,9 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain('invalidateCache(POS_CACHE.users)');
     expect(src).toContain('pos:usersChanged');
     expect(src).toContain('__BROWSER_CLIENT__');
+    expect(src).not.toMatch(
+      /setInterval\(\(\)\s*=>[\s\S]{0,80}refreshStaff/,
+    );
     expect(src).not.toContain('directoryEmpty');
     const loginFn = src.slice(
       src.indexOf('const onSubmit'),
@@ -101,6 +104,9 @@ describe('tablet login bounce guards', () => {
     expect(src).toContain("retryLazyImport(() => import('./OrderPage'))");
     expect(read('src/renderer/app/pages/LoginPage.tsx')).toContain(
       "import('./TablesPage')",
+    );
+    expect(read('src/renderer/app/pages/LoginPage.tsx')).not.toContain(
+      'prefetchHotReads',
     );
   });
 
@@ -216,6 +222,7 @@ describe('tablet login bounce guards', () => {
     expect(CAPACITOR_WEBVIEW_ORIGINS).toContain('http://localhost:8080');
     const api = read('src/main/api.ts');
     expect(api).toContain('allowLanCorsOrigin');
+    expect(api).toContain('If-None-Match');
     expect(read('src/main/services/lanCors.ts')).toContain(
       'CAPACITOR_WEBVIEW_ORIGINS',
     );

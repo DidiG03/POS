@@ -1753,7 +1753,8 @@ export type FloorTableSnapshot = {
   userId: number | null;
   covers: number | null;
   total: number;
-  items: {
+  /** Occupancy polls leave this empty; bills come from getLatestForTable. */
+  items?: {
     name: string;
     qty: number;
     unitPrice: number;
@@ -1773,7 +1774,8 @@ export interface ApiTables {
   listOpen(): Promise<{ area: string; label: string }[]>;
   /**
    * Occupied tables for one area (or every area) in a single round-trip:
-   * owner, covers, running total, opened-at, and the current ticket lines.
+   * owner, covers, running total, and opened-at. Ticket lines stay off this
+   * payload — phones hydrate the tapped table from getLatestForTable.
    */
   getFloorSnapshot(area?: string): Promise<FloorSnapshot>;
   transfer(input: TransferTableInput): Promise<TransferTableResult>;

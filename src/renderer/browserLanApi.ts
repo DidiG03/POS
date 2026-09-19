@@ -107,6 +107,7 @@ export function installBrowserLanApi(): void {
         writeStoredToken(TOKEN_KEY_HOST, t);
       }
       clearInflight('lan:');
+      clearLanGetEtags();
     } catch (e) {
       void e;
     }
@@ -307,6 +308,7 @@ export function installBrowserLanApi(): void {
   const SSE_HEALTH_INTERVAL_MS = 15_000;
   const SSE_STALL_THRESHOLD_MS = 30_000;
   let lastSseEventAt = 0;
+  let lastSseDataAt = 0;
 
   const stopSse = () => {
     try {
@@ -345,6 +347,7 @@ export function installBrowserLanApi(): void {
 
   const handleSseEvent = (eventName: string, payload: unknown) => {
     lastSseEventAt = Date.now();
+    lastSseDataAt = lastSseEventAt;
     noteSseEvent();
     // Any incoming message proves the socket is healthy — reset backoff
     // so a future drop reconnects fast instead of compounding from the
@@ -360,6 +363,7 @@ export function installBrowserLanApi(): void {
   const applySseNamedEvent = (eventName: string, rawData: string) => {
     if (eventName === 'ping') {
       lastSseEventAt = Date.now();
+      lastSseDataAt = lastSseEventAt;
       noteSseEvent();
       return;
     }
@@ -519,12 +523,14 @@ export function installBrowserLanApi(): void {
         lastSseEventAt = Date.now();
 
         es.addEventListener('open', () => {
+          const missedMs =
+            lastSseDataAt === 0 ? Number.POSITIVE_INFINITY : Date.now() - lastSseDataAt;
           lastSseEventAt = Date.now();
           sseBackoffMs = 1000;
           markSseOpen(true);
-          // Android/iOS drop EventSource while backgrounded; missed voids and
-          // table closes never replay. Refetch as soon as the socket is back.
-          emitPosSyncCatchupSoon();
+          // Brief CONNECTING blips must not wipe every waiter cache. Catch
+          // up only when we actually went dark (background kill, stall).
+          if (missedMs > 8_000) emitPosSyncCatchupSoon();
           void syncTabletToHostVersion();
         });
 
@@ -667,9 +673,14 @@ export function installBrowserLanApi(): void {
     // ignore
   }
 
-  function isRetryableNetworkError(e: any) {
+  function isRetryableNetworkError(e: any, method: string) {
     const name = String(e?.name || '');
-    // fetch() network failures are commonly TypeError; timeouts become AbortError
+    const mutating =
+      method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+    // A client abort means we stopped listening — the host may already have
+    // the write. Retrying POST after AbortError is how a 15s timeout became
+    // a second ticket / void / request.
+    if (mutating && name === 'AbortError') return false;
     return name === 'AbortError' || e instanceof TypeError;
   }
 
@@ -681,6 +692,7 @@ export function installBrowserLanApi(): void {
   ) {
     let lastErr: any = null;
     const tries = Math.max(1, attempts);
+    const method = String(init?.method || 'GET').toUpperCase();
     for (let i = 0; i < tries; i++) {
       try {
         const started = Date.now();
@@ -690,7 +702,7 @@ export function installBrowserLanApi(): void {
       } catch (e: any) {
         lastErr = e;
         recordFailure();
-        if (!isRetryableNetworkError(e) || i === tries - 1) throw e;
+        if (!isRetryableNetworkError(e, method) || i === tries - 1) throw e;
         const delay = Math.min(800, 150 * Math.pow(2, i));
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -815,6 +827,25 @@ export function installBrowserLanApi(): void {
     return all;
   }
 
+  const GET_ETAG_MAX = 24;
+  const lanGetEtags = new Map<string, { etag: string; value: unknown }>();
+
+  function lanGetEtagKey(path: string, token: string | null): string {
+    return `${lanAuthGeneration()}:${path}:${token || ''}`;
+  }
+
+  function rememberLanGet(key: string, etag: string, value: unknown): void {
+    if (lanGetEtags.size >= GET_ETAG_MAX) {
+      const first = lanGetEtags.keys().next().value;
+      if (first) lanGetEtags.delete(first);
+    }
+    lanGetEtags.set(key, { etag, value });
+  }
+
+  function clearLanGetEtags(): void {
+    lanGetEtags.clear();
+  }
+
   // Always call the host LAN API (even when cloud mode is enabled).
   async function goLan(path: string, opts?: RequestInit) {
     const token = tokenForLanPath(path);
@@ -832,17 +863,33 @@ export function installBrowserLanApi(): void {
             : {}),
       ...(((opts?.headers as any) || {}) as any),
     };
+    const etagKey =
+      method === 'GET' || method === 'HEAD' ? lanGetEtagKey(path, token) : '';
+    const cachedGet = etagKey ? lanGetEtags.get(etagKey) : undefined;
+    if (cachedGet?.etag && (method === 'GET' || method === 'HEAD')) {
+      headers['If-None-Match'] = cachedGet.etag;
+    }
     const timeoutMs = lanRequestTimeoutMs(path, method);
     const attempts = lanRequestAttempts(path, method);
     const bases = lanBasesForPath(path);
 
-    const run = async (base: string) => {
+    const parseBody = async (r: Response) => {
+      const ct = r.headers.get('content-type') || '';
+      return ct.includes('application/json') ? r.json() : r.text();
+    };
+
+    const run = async (base: string, allowNotModified: boolean) => {
       const r = await fetchWithRetry(
         base + path,
         { ...opts, headers },
         attempts,
         timeoutMs,
       );
+      if (r.status === 304 && allowNotModified && cachedGet) {
+        if (base.startsWith('https:')) setPreferredScheme('https');
+        else setPreferredScheme('http');
+        return cachedGet.value;
+      }
       if (!r.ok) {
         maybeForceLogout(r.status, token, requestGeneration, path);
         const { message, code, permanent } = await readErrorMessage(r);
@@ -850,18 +897,32 @@ export function installBrowserLanApi(): void {
       }
       if (base.startsWith('https:')) setPreferredScheme('https');
       else setPreferredScheme('http');
-      const ct = r.headers.get('content-type') || '';
-      return ct.includes('application/json') ? r.json() : r.text();
+      const value = await parseBody(r);
+      const etag = r.headers.get('etag');
+      if (etagKey && etag) rememberLanGet(etagKey, etag, value);
+      return value;
     };
 
     const execute = async () => {
       let lastErr: any = null;
       for (let i = 0; i < bases.length; i++) {
         try {
-          return await run(bases[i]);
+          return await run(bases[i], true);
         } catch (e: any) {
           lastErr = e;
-          if (!isRetryableNetworkError(e)) throw e;
+          if (
+            e instanceof HttpError &&
+            e.status === 304 &&
+            headers['If-None-Match']
+          ) {
+            delete headers['If-None-Match'];
+            try {
+              return await run(bases[i], false);
+            } catch (retryErr: any) {
+              lastErr = retryErr;
+            }
+          }
+          if (!isRetryableNetworkError(e, method)) throw e;
           // Once HTTP is known to work, a timeout is congestion — not a
           // reason to wait a second HTTPS handshake on the same slow link.
           if (getPreferredScheme() === 'http') throw e;
@@ -1598,6 +1659,7 @@ export function installBrowserLanApi(): void {
         void userId;
         const q = new URLSearchParams();
         if (onlyUnread) q.set('onlyUnread', '1');
+        q.set('limit', onlyUnread ? '10' : '100');
         return await goLan(`/notifications?${q.toString()}`);
       },
       async markAllRead(userId: number) {

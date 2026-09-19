@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { join, resolve } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import {
+  gzipBodyIfAccepted,
   gzipHtmlIfAccepted,
   resolveStaticFilePath,
   staticAssetCacheControl,
@@ -102,5 +103,25 @@ describe('gzipHtmlIfAccepted', () => {
     const packed = gzipHtmlIfAccepted(js, 'application/javascript', 'gzip');
     expect(packed.contentEncoding).toBeUndefined();
     expect(packed.body).toBe(js);
+  });
+});
+
+describe('gzipBodyIfAccepted', () => {
+  it('gzips JSON large enough to be worth the CPU', () => {
+    const json = Buffer.from(`{"tables":${'[' + '"x",'.repeat(80)}"y"]}`);
+    const packed = gzipBodyIfAccepted(
+      json,
+      'application/json; charset=utf-8',
+      'gzip, deflate',
+    );
+    expect(packed.contentEncoding).toBe('gzip');
+    expect(gunzipSync(packed.body).toString()).toBe(json.toString());
+  });
+
+  it('leaves tiny JSON uncompressed', () => {
+    const json = Buffer.from('{"ok":true}');
+    const packed = gzipBodyIfAccepted(json, 'application/json', 'gzip');
+    expect(packed.contentEncoding).toBeUndefined();
+    expect(packed.body).toBe(json);
   });
 });

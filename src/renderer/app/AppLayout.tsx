@@ -12,13 +12,11 @@ import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../stores/session';
 import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { useTableStatus } from '@renderer/stores/tableStatus';
-import { NotificationsPanel } from '../components/NotificationsPanel';
 import { BrandMark } from '../components/BrandMark';
 import { DocumentMeta } from '../components/DocumentMeta';
 import { isClockOnlyRole, canSeeReportsOnMobile } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
-import { formatNotificationTime } from '@shared/notificationDisplay';
 import { useKdsOrdersAccess } from './useKdsOrdersAccess';
 import { isSaleNavActive } from './saleNavActive';
 import { toast } from '../stores/toasts';
@@ -59,6 +57,11 @@ const PrinterNotification = lazy(() =>
 const FailedSyncPanel = lazy(() =>
   import('../components/FailedSyncPanel').then((m) => ({
     default: m.FailedSyncPanel,
+  })),
+);
+const NotificationsInbox = lazy(() =>
+  import('../components/NotificationsInbox').then((m) => ({
+    default: m.NotificationsInbox,
   })),
 );
 
@@ -116,6 +119,16 @@ export default function AppLayout() {
 
   const handleNotifCount = useCallback((n: number) => {
     setUnreadCount(n);
+  }, []);
+
+  useEffect(() => {
+    const onUnread = (ev: Event) => {
+      const n = Number((ev as CustomEvent).detail?.count);
+      if (Number.isFinite(n) && n >= 0) setUnreadCount(n);
+    };
+    window.addEventListener('pos:notificationsUnread', onUnread);
+    return () =>
+      window.removeEventListener('pos:notificationsUnread', onUnread);
   }, []);
 
   useEffect(() => {
@@ -400,8 +413,25 @@ export default function AppLayout() {
     showReportsTab,
     t,
   ]);
-  const showMobileTabBar = navItems.length > 0;
+  const notificationsActive = location.pathname.startsWith('/app/notifications');
+  const mobileNavItems = useMemo(() => {
+    const items = navItems.map((item) => ({ ...item, badge: 0 }));
+    if (!user) return items;
+    const notif = {
+      to: '/app/notifications',
+      label: t('layout.notifications'),
+      Icon: IconBell,
+      isActive: notificationsActive,
+      badge: unreadCount,
+    };
+    const saleIdx = items.findIndex((item) => item.to === saleTo);
+    if (saleIdx >= 0) items.splice(saleIdx + 1, 0, notif);
+    else items.push(notif);
+    return items;
+  }, [navItems, notificationsActive, saleTo, t, unreadCount, user]);
+  const showMobileTabBar = mobileNavItems.length > 0;
   const pageTitle =
+    mobileNavItems.find((item) => item.isActive)?.label ||
     navItems.find((item) => item.isActive)?.label ||
     (flushTablesFloor ? t('layout.tables') : t('brand.product'));
 
@@ -578,9 +608,10 @@ export default function AppLayout() {
             />
           )}
 
-          {/* Kept OUTSIDE any horizontal scroller so the dropdown isn't clipped. */}
+          {/* Desktop / tablet: inbox stays a header dropdown. Phones use the
+              Notifications tab so Tables does not mount this overlay. */}
           <div
-            className="relative inline-block"
+            className="relative hidden sm:inline-block"
             tabIndex={-1}
             onBlur={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget as Node))
@@ -622,6 +653,11 @@ export default function AppLayout() {
                           .markAllRead(user.id)
                           .catch(() => {});
                         setUnreadCount(0);
+                        window.dispatchEvent(
+                          new CustomEvent('pos:notificationsUnread', {
+                            detail: { count: 0 },
+                          }),
+                        );
                       }}
                       type="button"
                     >
@@ -631,12 +667,18 @@ export default function AppLayout() {
                 </div>
                 <div className="max-h-[70vh] overflow-auto p-2">
                   {user ? (
-                    <NotificationsList
-                      userId={user.id}
-                      onCount={handleNotifCount}
-                      admin={String(user.role || '').toUpperCase() === 'ADMIN'}
-                      onNavigate={() => setShowNotifications(false)}
-                    />
+                    <Suspense fallback={null}>
+                      <NotificationsInbox
+                        userId={user.id}
+                        onCount={handleNotifCount}
+                        admin={
+                          String(user.role || '').toUpperCase() === 'ADMIN'
+                        }
+                        hasTables={hasTables}
+                        compact
+                        onNavigate={() => setShowNotifications(false)}
+                      />
+                    </Suspense>
                   ) : (
                     <EmptyState
                       compact
@@ -644,7 +686,6 @@ export default function AppLayout() {
                       icon={<IconBell />}
                     />
                   )}
-                  {user && hasTables && <OwnerRequests userId={user.id} />}
                 </div>
               </div>
             )}
@@ -688,7 +729,7 @@ export default function AppLayout() {
           className="pos-mobile-tabbar sm:hidden"
           aria-label={t('layout.primaryNav')}
         >
-          {navItems.map((item) => (
+          {mobileNavItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -701,7 +742,14 @@ export default function AppLayout() {
                 )
               }
             >
-              <item.Icon className="pos-icon size-5" />
+              <span className="relative inline-flex">
+                <item.Icon className="pos-icon size-5" />
+                {item.badge > 0 ? (
+                  <span className="absolute -right-2.5 -top-1 flex min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[14px] text-white tabular">
+                    {item.badge > 9 ? '9+' : item.badge}
+                  </span>
+                ) : null}
+              </span>
               <span className="max-w-full truncate">{item.label}</span>
             </NavLink>
           ))}
@@ -757,179 +805,6 @@ export default function AppLayout() {
         <PrinterNotification />
         {showFailedSync ? <FailedSyncPanel /> : null}
       </Suspense>
-    </div>
-  );
-}
-
-function NotificationsList({
-  userId,
-  onCount,
-  admin = false,
-  onNavigate,
-}: {
-  userId: number;
-  onCount: (n: number) => void;
-  admin?: boolean;
-  onNavigate?: () => void;
-}) {
-  const [items, setItems] = useState<
-    {
-      id: number;
-      type: string;
-      message: string;
-      readAt: string | null;
-      createdAt: string;
-    }[]
-  >([]);
-  useEffect(() => {
-    if (!userId) return;
-    let cancelled = false;
-    (async () => {
-      const all = await window.api.notifications.list(userId).catch(() => []);
-      if (cancelled) return;
-      setItems(all);
-      const unreadCount = Array.isArray(all)
-        ? all.filter((n: any) => !n?.readAt).length
-        : 0;
-      onCount(unreadCount);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [userId, onCount]);
-  const filtered = items.filter(
-    (n) => !/requested to add items/i.test(n.message),
-  );
-  return (
-    <NotificationsPanel
-      items={filtered}
-      admin={admin}
-      onNavigate={onNavigate}
-    />
-  );
-}
-
-function OwnerRequests({ userId }: { userId: number }) {
-  const { t } = useTranslation();
-  const [rows, setRows] = useState<
-    Array<{
-      id: number;
-      area: string;
-      tableLabel: string;
-      requesterId: number;
-      items: any[];
-      note?: string | null;
-      createdAt: string;
-    }>
-  >([]);
-  // A tablet on shaky Wi-Fi gets double-tapped. Without this the same request
-  // is decided twice, and the second decision runs against a row the host has
-  // already moved on from.
-  const [deciding, setDeciding] = useState<number | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const r = await window.api.requests.listForOwner(userId).catch(() => []);
-      if (!cancelled) setRows(r);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
-  if (!rows.length) return null;
-  return (
-    <div className="mt-2 border-t border-[var(--pos-border)] pt-2">
-      <div className="pos-section-label mb-1.5 px-1">
-        {t('layout.orderRequests')}
-      </div>
-      <ul className="space-y-1.5">
-        {rows.map((r) => (
-          <li key={r.id} className="pos-order-card !p-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0 truncate text-[13px] font-medium">
-                {t('layout.requestNumber', {
-                  area: r.area,
-                  table: r.tableLabel,
-                  id: r.id,
-                })}
-              </div>
-              <span className="shrink-0 text-[11px] tabular-nums text-[color:var(--pos-fg-muted)]">
-                {formatNotificationTime(r.createdAt, t)}
-              </span>
-            </div>
-            {r.note && (
-              <div className="mt-0.5 text-[12px] text-[color:var(--pos-fg-muted)]">
-                {r.note}
-              </div>
-            )}
-            <div className="mt-1.5 text-[12px]">
-              {Array.isArray(r.items) && r.items.length ? (
-                <ul className="space-y-0.5">
-                  {r.items.map((it: any, idx: number) => (
-                    <li key={idx} className="flex justify-between gap-2">
-                      <span className="truncate">
-                        {String(it.name || t('common.item'))}
-                      </span>
-                      <span className="shrink-0 tabular-nums text-[color:var(--pos-fg-muted)]">
-                        ×{Number(it.qty || 1)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="text-[color:var(--pos-fg-muted)]">
-                  {t('common.noItems')}
-                </div>
-              )}
-            </div>
-            <div className="mt-2 flex gap-2">
-              <Button
-                size="sm"
-                variant="primary"
-                disabled={deciding != null}
-                onClick={async () => {
-                  if (deciding != null) return;
-                  setDeciding(r.id);
-                  try {
-                    await window.api.requests.approve(r.id, userId);
-                    setRows((prev) => prev.filter((x) => x.id !== r.id));
-                  } catch (e) {
-                    reportAppError(e, {
-                      fallback: t('layout.requestDecideFailed'),
-                      key: `requests.approve:${r.id}`,
-                    });
-                  } finally {
-                    setDeciding(null);
-                  }
-                }}
-              >
-                {t('common.approve')}
-              </Button>
-              <Button
-                size="sm"
-                disabled={deciding != null}
-                onClick={async () => {
-                  if (deciding != null) return;
-                  setDeciding(r.id);
-                  try {
-                    await window.api.requests.reject(r.id, userId);
-                    setRows((prev) => prev.filter((x) => x.id !== r.id));
-                  } catch (e) {
-                    reportAppError(e, {
-                      fallback: t('layout.requestDecideFailed'),
-                      key: `requests.reject:${r.id}`,
-                    });
-                  } finally {
-                    setDeciding(null);
-                  }
-                }}
-              >
-                {t('common.reject')}
-              </Button>
-            </div>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

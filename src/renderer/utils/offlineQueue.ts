@@ -61,6 +61,7 @@ const DB_NAME = 'pos-offline';
 const STORE = 'orders';
 /** Items that exceeded MAX_ATTEMPTS or were permanently rejected live here. */
 const FAILED_STORE = 'failed';
+const FAILED_MAX_ITEMS = 80;
 const DB_VERSION = 2;
 const MAX_ITEMS = 500;
 const MAX_ATTEMPTS = 12;
@@ -1084,7 +1085,23 @@ class OfflineQueue {
       const db = await this.dbPromise;
       const tx = db.transaction(FAILED_STORE, 'readwrite');
       const failed: FailedSyncItem = { ...it, failedAt: Date.now(), reason };
-      tx.objectStore(FAILED_STORE).put(failed);
+      const store = tx.objectStore(FAILED_STORE);
+      store.put(failed);
+      const allReq = store.getAll();
+      allReq.onsuccess = () => {
+        const rows = ((allReq.result as any[]) || []).filter(
+          (r) => r && r.id && r.id !== failed.id,
+        );
+        const overflow = rows.length + 1 - FAILED_MAX_ITEMS;
+        if (overflow > 0) {
+          rows
+            .sort(
+              (a, b) => Number(a.failedAt || 0) - Number(b.failedAt || 0),
+            )
+            .slice(0, overflow)
+            .forEach((row) => store.delete(row.id));
+        }
+      };
       await new Promise<void>((resolve, reject) => {
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);

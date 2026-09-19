@@ -150,11 +150,7 @@ import {
   unlockVault,
 } from './services/vault/lifecycle';
 import type { Prisma } from '@prisma/client';
-import {
-  expireStaleMenuStock,
-  consumeMenuStockForTicketLines,
-  stockLinesFromTicketItems,
-} from './services/menuStock';
+import { consumeMenuStockForTicketLines } from './services/menuStock';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import type * as http from 'node:http';
@@ -165,6 +161,8 @@ import {
 } from './services/printerStation';
 import {
   dispatchTicket,
+  fireDispatchTicket,
+  paymentPrintWaitsForPrinters,
   pickActiveReceiptProfile,
   testPrintWithProfile,
   type DispatchResult,
@@ -2924,21 +2922,10 @@ ipcHandle('tickets:print', async (_e, input) => {
     // All the actual ESC/POS dispatch + routing lives in
     // `printDispatcher.ts`. This handler keeps only the side effects:
     // notifications + PrintJob history record.
-    const result: DispatchResult = await dispatchTicket(
-      payload,
-      settings as any,
-      // Persist transient failures into the RETRY queue (PR 3) so the
-      // printer-station loop can keep trying for ~4 min. The waiter
-      // still sees the immediate error toast — the queue is a quiet
-      // safety net for "actually, the kitchen printer came back 12 s
-      // later".
-      { persistRetryOnTransientFailure: true },
-    );
-    const ok = result.ok;
-    const failCount = result.failures;
-    const firstErr = result.firstError ?? null;
-
-    if (!ok) {
+    const reportDispatchFailure = async (result: DispatchResult) => {
+      if (result.ok) return;
+      const failCount = result.failures;
+      const firstErr = result.firstError ?? null;
       const c = classifyPrinterError(firstErr);
       broadcastPrinterEvent({
         // Payment already passed fiscalization — the till must not look
@@ -2953,7 +2940,6 @@ ipcHandle('tickets:print', async (_e, input) => {
         at: Date.now(),
         context: { area, tableLabel, kind, failures: failCount },
       });
-      // Persist as an in-app notification (works for Electron + browser clients)
       try {
         const uid = Number((payload as any)?.meta?.userId || 0);
         if (uid) {
@@ -2968,21 +2954,21 @@ ipcHandle('tickets:print', async (_e, input) => {
       } catch {
         // ignore
       }
-    }
-    // Store a PrintJob record (useful for receipt history). SENT/FAILED
-    // here just tracks the synchronous outcome; the QUEUED status is
-    // reserved for jobs the cloud poller hasn't picked up yet.
-    try {
-      await persistReceiptAudit({
-        payload,
-        idempotencyKey: idempotencyKey || undefined,
-        status: ok ? 'SENT' : 'FAILED',
-        settings,
-      });
-    } catch (e: any) {
-      if (e?.code === 'P2002' && idempotencyKey) {
-        // Concurrent identical payment — treat as success (other call won).
-      } else {
+    };
+
+    const persistAudit = async (status: 'SENT' | 'FAILED') => {
+      try {
+        await persistReceiptAudit({
+          payload,
+          idempotencyKey: idempotencyKey || undefined,
+          status,
+          settings,
+        });
+      } catch (e: any) {
+        if (e?.code === 'P2002' && idempotencyKey) {
+          // Concurrent identical payment — treat as success (other call won).
+          return;
+        }
         // This row is the receipt PrintJob and the Order/Payment ledger.
         // Losing it silently used to mean a payment that existed only on
         // paper (and, once fiscalized, only at the tax service).
@@ -3002,15 +2988,32 @@ ipcHandle('tickets:print', async (_e, input) => {
           error: detail,
         });
       }
-    }
-    if (kind === 'PAYMENT') {
+    };
+
+    const dispatchOpts = { persistRetryOnTransientFailure: true };
+
+    if (paymentPrintWaitsForPrinters(kind)) {
+      const result: DispatchResult = await dispatchTicket(
+        payload,
+        settings as any,
+        dispatchOpts,
+      );
+      await reportDispatchFailure(result);
+      await persistAudit(result.ok ? 'SENT' : 'FAILED');
       const closeTable = paymentShouldCloseTable(payload?.meta);
       if (closeTable) {
         await closeTableAfterAcceptedPayment(area, tableLabel);
       }
-      return paymentPrintAccepted(ok, closeTable, fiscalExtra);
+      return paymentPrintAccepted(result.ok, closeTable, fiscalExtra);
     }
-    return ok;
+
+    // Kitchen / station chits: claim the idempotency key, then print
+    // without holding Send on every printer's connect timeout.
+    await persistAudit('SENT');
+    fireDispatchTicket(payload, settings as any, dispatchOpts, (result) => {
+      void reportDispatchFailure(result);
+    });
+    return true;
   };
 
   if (kindHint === 'PAYMENT') {
@@ -3487,10 +3490,10 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     // Validate items array
     if (!Array.isArray(items) || items.length === 0) return false;
 
-    // The whole "open ⇒ check ⇒ insert ⇒ KDS" sequence happens under
-    // the table lock so it can't interleave with a `tables:setOpen` or a
-    // transfer for the same table from another device.
-    return await withTableLock(sanitizedArea, sanitizedTableLabel, async () => {
+    // Hold the table lock only for occupancy + the TicketLog write.
+    // Compact and KDS are extra SQLite work and must not stall the
+    // waiter's Send ACK — other phones are waiting on the same WAL.
+    const logged = await withTableLock(sanitizedArea, sanitizedTableLabel, async () => {
       // Refuse to append to a closed table. Without this guard a stale
       // device could add lines to a table that has already been paid out
       // / voided / handed off — which silently rebuilds the closed
@@ -3559,9 +3562,6 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
         ? ((payload as any).kdsFireItems as any[])
         : undefined;
 
-      // Every send stores the whole ticket again, so tag the row with the
-      // session it belongs to — reports count the newest snapshot per session
-      // rather than adding each fire on top of the last.
       const sessionKey = await getCurrentTableSessionKey(
         sanitizedArea,
         sanitizedTableLabel,
@@ -3569,7 +3569,6 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
 
       try {
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-          await expireStaleMenuStock(tx);
           await tx.ticketLog.create({
             data: {
               userId: Number(userId),
@@ -3589,28 +3588,33 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
           );
         });
       } catch (e: any) {
-        if (e?.code === 'P2002' && idempotencyKey) return { ok: true };
+        if (e?.code === 'P2002' && idempotencyKey) return { ok: true as const };
         throw e;
       }
-      await compactTicketLogSession(sessionKey);
+      return {
+        ok: true as const,
+        written: true as const,
+        sessionKey,
+        kdsFireItems,
+      };
+    });
+    if (!logged || typeof logged !== 'object') return logged;
+    if ('ok' in logged && logged.ok === false) return logged;
+    if (!('written' in logged) || !logged.written) return { ok: true };
 
-      // Notify every other client so the table's waiter badge / metrics
-      // refresh in real time. Without this, a table that waiter B
-      // already had open keeps showing B's initials on every other
-      // device when waiter A appends an item — the open-set didn't
-      // change so the badge `useEffect` would not re-fetch.
-      try {
-        broadcastTicketsChanged({
-          area: sanitizedArea,
-          tableLabel: sanitizedTableLabel,
-          userId: Number(userId),
-        });
-      } catch {
-        // ignore — broadcasting is best-effort
-      }
+    try {
+      broadcastTicketsChanged({
+        area: sanitizedArea,
+        tableLabel: sanitizedTableLabel,
+        userId: Number(userId),
+      });
+    } catch {
+      // ignore — broadcasting is best-effort
+    }
 
-      // KDS: create station-specific ticket rows (best-effort; does not
-      // block sending). Store tills have no kitchen display.
+    void compactTicketLogSession(logged.sessionKey);
+    const kdsFireItems = logged.kdsFireItems;
+    void (async () => {
       try {
         if (!storePlanBlocksKds()) {
           await createKdsTicketFromLog({
@@ -3635,8 +3639,8 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
           context: 'tickets:log:KDS',
         });
       }
-      return { ok: true };
-    });
+    })();
+    return { ok: true };
   } catch (error: any) {
     captureException(
       error instanceof Error ? error : new Error(String(error)),

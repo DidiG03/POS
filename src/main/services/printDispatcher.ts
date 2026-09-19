@@ -490,9 +490,9 @@ export async function nextPendingRetryAt(): Promise<Date | null> {
  * Behaviour:
  *   - PAYMENT / RECEIPT / unspecified: print one slip to the receipt
  *     profile.
- *   - ORDER + routing enabled: split items by category, print per
- *     destination printer in parallel groups (sequential across
- *     printers, but one TCP connection per destination).
+ *   - ORDER + routing enabled: split items by category, print one slip
+ *     per destination printer in parallel (one TCP connection each).
+ *     A slow or dead kitchen must not delay the bar slip.
  *   - ORDER + routing disabled: print one slip to the receipt profile,
  *     same as a regular receipt.
  *
@@ -502,23 +502,67 @@ export async function nextPendingRetryAt(): Promise<Date | null> {
  * `persistRetryOnTransientFailure` (PR 3) opts the caller into the
  * retry queue: any per-destination failure with a transient-looking
  * error gets enqueued for the printer-station loop to keep retrying
- * (~4 min total). The synchronous response still reports failure so
- * the user knows about the problem — the queue is the safety net for
- * "actually, the kitchen printer came back 12 seconds later".
+ * (~4 min total). Kitchen/station callers should not await this — use
+ * {@link fireDispatchTicket} so a 5s connect timeout cannot freeze the
+ * waiter. Payments still wait because fiscalization + `printed: false`
+ * need a definite answer.
  */
+export type DispatchTicketOpts = {
+  retries?: number;
+  persistRetryOnTransientFailure?: boolean;
+  /**
+   * For the printer-station loop: how many attempts the row already
+   * has. Used to compute the next backoff if THIS attempt also
+   * fails.
+   */
+  priorAttempts?: number;
+};
+
+export function paymentPrintWaitsForPrinters(kind: unknown): boolean {
+  return String(kind || '').toUpperCase() === 'PAYMENT';
+}
+
+/**
+ * Start ESC/POS dispatch and return immediately.
+ *
+ * Kitchen Send used to `await dispatchTicket()` over LAN, so every
+ * destination's connect timeout (default 5s + one retry) stacked on the
+ * waiter's button — and `/print/*` allows 90s. Failures still land on
+ * the retry queue via `persistRetryOnTransientFailure`.
+ */
+export function fireDispatchTicket(
+  payload: TicketPrintPayload,
+  settings: SettingsDTO,
+  opts: DispatchTicketOpts | undefined,
+  onDone?: (result: DispatchResult) => void,
+): void {
+  void dispatchTicket(payload, settings, opts)
+    .then((result) => {
+      try {
+        onDone?.(result);
+      } catch (e) {
+        console.error('[print] dispatch onDone threw:', e);
+      }
+    })
+    .catch((e) => {
+      console.error('[print] background dispatch failed:', e);
+      try {
+        onDone?.({
+          ok: false,
+          failures: 1,
+          firstError: String((e as Error)?.message || e),
+          perPrinter: [],
+        });
+      } catch {
+        // ignore
+      }
+    });
+}
+
 export async function dispatchTicket(
   payload: TicketPrintPayload,
   settings: SettingsDTO,
-  opts: {
-    retries?: number;
-    persistRetryOnTransientFailure?: boolean;
-    /**
-     * For the printer-station loop: how many attempts the row already
-     * has. Used to compute the next backoff if THIS attempt also
-     * fails.
-     */
-    priorAttempts?: number;
-  } = {},
+  opts: DispatchTicketOpts = {},
 ): Promise<DispatchResult> {
   // Default to ONE silent retry for transient TCP errors. Empirically
   // this is the single highest-impact reliability tweak: most Wi-Fi
@@ -589,24 +633,23 @@ export async function dispatchTicket(
   }
 
   const buckets = await buildOrderBuckets(payload, settings);
-  let failures = 0;
-  let firstError: string | undefined;
-  const perPrinter: DispatchResult['perPrinter'] = [];
-  for (const bucket of buckets) {
-    const prof = pickPrinterProfile(settings, bucket.printerId) || fallback;
-    const r = await printWithProfile(bucket.payload, settings, prof, {
-      retries,
-    });
-    perPrinter.push({ profileId: prof.id, ok: r.ok, error: r.error });
-    if (!r.ok) {
-      failures++;
-      if (!firstError) firstError = r.error;
-      // Persist THIS bucket only — a routed order whose food slip went
-      // through but whose drinks slip didn't should only retry the
-      // drinks slip.
-      await maybePersistRetry(bucket.payload, prof.id, r.error);
-    }
-  }
+  const perPrinter = await Promise.all(
+    buckets.map(async (bucket) => {
+      const prof = pickPrinterProfile(settings, bucket.printerId) || fallback;
+      const r = await printWithProfile(bucket.payload, settings, prof, {
+        retries,
+      });
+      if (!r.ok) {
+        // Persist THIS bucket only — a routed order whose food slip went
+        // through but whose drinks slip didn't should only retry the
+        // drinks slip.
+        await maybePersistRetry(bucket.payload, prof.id, r.error);
+      }
+      return { profileId: prof.id, ok: r.ok, error: r.error };
+    }),
+  );
+  const failures = perPrinter.filter((p) => !p.ok).length;
+  const firstError = perPrinter.find((p) => !p.ok)?.error;
   return { ok: failures === 0, failures, firstError, perPrinter };
 }
 

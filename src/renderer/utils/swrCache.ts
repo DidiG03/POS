@@ -41,13 +41,27 @@ function load(): void {
   }
 }
 
+function persistableStore(): Store {
+  const out: Store = {};
+  for (const [k, v] of Object.entries(mem)) {
+    if (!shouldPersistCacheKey(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/** Floor occupancy is memory-only so a busy floor cannot evict the menu blob. */
+export function shouldPersistCacheKey(key: string): boolean {
+  return !key.startsWith('pos:floor:');
+}
+
 function schedulePersist(): void {
   if (!canUseStorage()) return;
   if (persistTimer != null) return;
   persistTimer = window.setTimeout(() => {
     persistTimer = null;
     try {
-      const json = JSON.stringify(mem);
+      const json = JSON.stringify(persistableStore());
       if (json.length > MAX_PERSIST_BYTES) return;
       localStorage.setItem(STORAGE_KEY, json);
     } catch {
@@ -74,6 +88,24 @@ export function writeCache<T>(key: string, value: T): void {
   load();
   mem[key] = { at: Date.now(), value };
   schedulePersist();
+}
+
+/**
+ * Mutate a cached value without resetting its age. Live table events must
+ * not bump `at` or a rush of Sends keeps SWR "fresh" and starves the
+ * background occupancy refresh every other waiter relies on.
+ */
+export function patchCacheValue<T>(
+  key: string,
+  patch: (value: T) => T | undefined,
+): boolean {
+  load();
+  const hit = mem[key];
+  if (!hit) return false;
+  const next = patch(hit.value as T);
+  if (next === undefined) return false;
+  hit.value = next;
+  return true;
 }
 
 export function invalidateCache(key: string): void {

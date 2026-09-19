@@ -39,6 +39,9 @@ const TablesPage = lazyPage(() => import('./app/pages/TablesPage'));
 const OrderPage = lazyPage(() => import('./app/pages/OrderPage'));
 const ReportsPage = lazyPage(() => import('./app/pages/ReportsPage'));
 const WaiterOrdersPage = lazyPage(() => import('./app/pages/WaiterOrdersPage'));
+const NotificationsPage = lazyPage(
+  () => import('./app/pages/NotificationsPage'),
+);
 const ClockPage = lazyPage(() => import('./app/pages/ClockPage'));
 const AdminPage = lazyPage(() => import('./app/pages/AdminPage'));
 const AdminTicketsPage = lazyPage(() => import('./app/pages/AdminTicketsPage'));
@@ -492,6 +495,10 @@ export const routes: RouteObject[] = [
             <RequireTables>{withSuspense(<TablesPage />)}</RequireTables>
           </RequirePosAccess>
         ),
+      },
+      {
+        path: 'notifications',
+        element: withSuspense(<NotificationsPage />),
       },
       {
         path: 'order',

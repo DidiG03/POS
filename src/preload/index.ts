@@ -252,7 +252,11 @@ const api: Api = {
   },
   notifications: {
     list: (userId: number, onlyUnread?: boolean) =>
-      ipcRenderer.invoke('notifications:list', { userId, onlyUnread }),
+      ipcRenderer.invoke('notifications:list', {
+        userId,
+        onlyUnread,
+        limit: onlyUnread ? 10 : 100,
+      }),
     markAllRead: (userId: number) =>
       ipcRenderer.invoke('notifications:markAllRead', { userId }),
   },

@@ -20,6 +20,7 @@ import {
 } from '@shared/kdsFloorOrders';
 import { broadcastTicketsChanged } from './realtime';
 import { getTableSessionStartedAt } from './tableSession';
+import { getFloorSnapshot } from './floorSnapshot';
 
 export type KdsListOptions = {
   /** This screen is the cooker's display (first of the two kitchen stages). */
@@ -318,18 +319,6 @@ export function notifyKdsTicketChanged(ticket: any) {
   }
 }
 
-async function waiterUserIdForTicket(ticket: any): Promise<number | null> {
-  const o = ticket?.order;
-  const area = String(o?.area || '');
-  const tableLabel = String(o?.tableLabel || '');
-  const ownerId =
-    area && tableLabel ? await getSessionOwnerId(area, tableLabel) : null;
-  const fromTicket = Number(ticket?.userId || 0);
-  if (ownerId && ownerId > 0) return ownerId;
-  if (Number.isFinite(fromTicket) && fromTicket > 0) return fromTicket;
-  return null;
-}
-
 /**
  * View-only board for the signed-in waiter: live lines on enabled KDS
  * stations that this waiter owns. Items leave when the kitchen display bumps
@@ -373,12 +362,27 @@ export async function listWaiterFloorOrders(
     })
     .catch(() => null);
   const waiterName = waiter?.displayName ?? null;
+  const floor = await getFloorSnapshot();
+  const ownerByTable = new Map<string, number>();
+  for (const row of floor.tables) {
+    const uid = Number(row?.userId || 0);
+    if (uid > 0) ownerByTable.set(`${row.area}:${row.label}`, uid);
+  }
 
   const out: KdsFloorOrder[] = [];
   for (const ticket of tickets) {
     const o = ticket?.order;
     if (voidedOrderIds.has(Number(o?.id))) continue;
-    const ownerId = await waiterUserIdForTicket(ticket);
+    const area = String(o?.area || '');
+    const tableLabel = String(o?.tableLabel || '');
+    const fromFloor = ownerByTable.get(`${area}:${tableLabel}`);
+    const fromTicket = Number(ticket?.userId || 0);
+    const ownerId =
+      fromFloor && fromFloor > 0
+        ? fromFloor
+        : Number.isFinite(fromTicket) && fromTicket > 0
+          ? fromTicket
+          : null;
     if (ownerId !== waiterUserId) continue;
     const items = floorItemsFromTicket(
       Array.isArray(ticket?.itemsJson) ? ticket.itemsJson : [],

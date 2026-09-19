@@ -1,11 +1,14 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
+  clearInflight,
   dedupe,
   invalidateCache,
+  patchCacheValue,
   peek,
+  peekAgeMs,
+  shouldPersistCacheKey,
   swr,
   writeCache,
-  clearInflight,
 } from './swrCache';
 
 describe('swrCache', () => {
@@ -145,5 +148,21 @@ describe('swrCache', () => {
     resolveFirst('stale-401');
     expect(await p2).toBe('fresh');
     expect(await p1).toBe('stale-401');
+  });
+
+  it('does not persist floor occupancy snapshots', () => {
+    expect(shouldPersistCacheKey('pos:floor:Salla')).toBe(false);
+    expect(shouldPersistCacheKey('pos:menu')).toBe(true);
+    expect(shouldPersistCacheKey('pos:ticket:Salla:T1')).toBe(true);
+  });
+
+  it('patches a cached value without resetting its age', async () => {
+    writeCache('k', { n: 1 });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(patchCacheValue<{ n: number }>('k', (v) => ({ n: v.n + 1 }))).toBe(
+      true,
+    );
+    expect(peek<{ n: number }>('k')?.n).toBe(2);
+    expect(peekAgeMs('k')).toBeGreaterThan(10);
   });
 });

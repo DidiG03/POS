@@ -9,6 +9,7 @@ import { applyHostPosUiTheme } from '../theme';
 import { themeFromChange } from '@shared/settingsChange';
 import {
   emitPosSyncCatchupSoon,
+  applyLiveTableEvent,
   invalidateFloorSnapshots,
   invalidateLayoutCache,
   invalidateTicketCache,
@@ -29,6 +30,7 @@ type RealtimePayload = {
   label?: string;
   tableLabel?: string;
   open?: boolean;
+  userId?: number | null;
 };
 
 export function applyPosRealtimeEvent(
@@ -40,23 +42,33 @@ export function applyPosRealtimeEvent(
   const label = String(p.tableLabel || p.label || '');
 
   if (eventName === 'pos:ticketsChanged') {
-    if (area && label) invalidateTicketCache(area, label);
-    invalidateFloorSnapshots();
+    if (area && label) {
+      invalidateTicketCache(area, label);
+      applyLiveTableEvent({
+        area,
+        label,
+        userId: p.userId,
+      });
+    }
     return;
   }
 
   if (eventName === 'pos:tablesChanged') {
     if (area && label && typeof p.open === 'boolean') {
       useTableStatus.getState().setOpen(area, label, p.open);
+      applyLiveTableEvent({
+        area,
+        label,
+        open: p.open,
+        userId: p.userId,
+      });
       if (!p.open) {
-        invalidateTicketCache(area, label);
         const openKeys = Object.entries(useTableStatus.getState().openMap)
           .filter(([, open]) => open)
           .map(([k]) => k);
         useTicketStore.getState().dropOrphanLiveBills(openKeys);
       }
     }
-    invalidateFloorSnapshots();
     return;
   }
 

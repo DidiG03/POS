@@ -10,12 +10,14 @@
  * still has to ingest floor bills: call `readFloorSnapshot`, do not rely
  * on wrapping `getFloorSnapshot`.
  */
-import type { FloorSnapshot } from '@shared/ipc';
+import type { FloorSnapshot, FloorTableSnapshot } from '@shared/ipc';
 import { saneTableAreas } from '@shared/tableAreas';
 import { asTicketLogItems } from '@shared/ticketLogItems';
+import { useSessionStore } from '../stores/session';
 import {
   invalidateCache,
   invalidateCachePrefix,
+  patchCacheValue,
   peek,
   swr,
   writeCache,
@@ -186,6 +188,8 @@ export async function readFloorSnapshot(
 
 export function prefetchHotReads(): void {
   if (typeof window === 'undefined') return;
+  const session = useSessionStore.getState();
+  if (!session.user || !session.sessionToken) return;
   const api = (window as any).api;
   if (!api) return;
   // Floor already loaded settings + users. Warm the menu for the first
@@ -276,13 +280,11 @@ function applyReadWraps(api: any): void {
   });
 
   wrapAfter(api.tables, 'setOpen', (_r, args) => {
-    const area = args[0];
-    const label = args[1];
-    const open = args[2];
-    if (!open && area && label) {
-      invalidateTicketCache(String(area), String(label));
-      invalidateCachePrefix('pos:floor:');
-    }
+    applyLiveTableEvent({
+      area: String(args[0] || ''),
+      label: String(args[1] || ''),
+      open: Boolean(args[2]),
+    });
   });
 
   wrapAfter(api.tables, 'transfer', (_r, args) => {
@@ -291,23 +293,35 @@ function applyReadWraps(api: any): void {
     const fromLabel = String(p.fromLabel || '');
     const toArea = String(p.toArea || '');
     const toLabel = String(p.toLabel || '');
-    if (fromArea && fromLabel) invalidateTicketCache(fromArea, fromLabel);
-    if (toArea && toLabel) invalidateTicketCache(toArea, toLabel);
-    invalidateFloorCache();
+    if (fromArea && fromLabel) {
+      applyLiveTableEvent({ area: fromArea, label: fromLabel, open: false });
+    }
+    if (toArea && toLabel) {
+      applyLiveTableEvent({
+        area: toArea,
+        label: toLabel,
+        open: true,
+        userId: Number(p.toUserId || p.actorUserId || 0) || null,
+      });
+    }
   });
 
-  const invalidateTicketWrite = (_r: unknown, args: any[]) => {
+  const noteTicketWrite = (_r: unknown, args: any[]) => {
     const p = args[0] || {};
     const area = String(p.area || '');
     const label = String(p.tableLabel || p.label || '');
-    if (area && label) invalidateTicketCache(area, label);
-    invalidateCachePrefix('pos:floor:');
-    invalidateCache(POS_CACHE.openTables);
+    if (!area || !label) return;
+    invalidateTicketCache(area, label);
+    applyLiveTableEvent({
+      area,
+      label,
+      userId: Number(p.userId || p.meta?.userId || 0) || null,
+    });
   };
-  wrapAfter(api.tickets, 'log', invalidateTicketWrite);
-  wrapAfter(api.tickets, 'voidItem', invalidateTicketWrite);
-  wrapAfter(api.tickets, 'voidTicket', invalidateTicketWrite);
-  wrapAfter(api.tickets, 'print', invalidateTicketWrite);
+  wrapAfter(api.tickets, 'log', noteTicketWrite);
+  wrapAfter(api.tickets, 'voidItem', noteTicketWrite);
+  wrapAfter(api.tickets, 'voidTicket', noteTicketWrite);
+  wrapAfter(api.tickets, 'print', noteTicketWrite);
 
   if (api.menu) {
     for (const m of [
@@ -365,7 +379,7 @@ export function installPosReadCache(): void {
 
 let catchupSoonTimer: ReturnType<typeof setTimeout> | null = null;
 let lastCatchupAt = 0;
-const CATCHUP_DEBOUNCE_MS = 2_000;
+const CATCHUP_DEBOUNCE_MS = 8_000;
 
 /** @internal vitest */
 export function resetPosReadCacheForTests(): void {
@@ -397,6 +411,113 @@ export function invalidateFloorCache(): void {
 export function invalidateFloorSnapshots(): void {
   invalidateCachePrefix('pos:floor:');
   invalidateCache(POS_CACHE.openTables);
+}
+
+function patchOpenTables(
+  area: string,
+  label: string,
+  open: boolean,
+): void {
+  const prev = peek<Array<{ area: string; label: string }>>(POS_CACHE.openTables);
+  const rows = Array.isArray(prev) ? prev : [];
+  const has = rows.some((t) => t.area === area && t.label === label);
+  if (open) {
+    if (has) return;
+    writeCache(POS_CACHE.openTables, [...rows, { area, label }]);
+    return;
+  }
+  if (!has) return;
+  writeCache(
+    POS_CACHE.openTables,
+    rows.filter((t) => !(t.area === area && t.label === label)),
+  );
+}
+
+function patchFloorTables(
+  scope: string,
+  mutate: (tables: FloorTableSnapshot[]) => FloorTableSnapshot[] | undefined,
+): void {
+  patchCacheValue<FloorSnapshot>(POS_CACHE.floor(scope), (snap) => {
+    if (!snap || !Array.isArray(snap.tables)) return undefined;
+    const next = mutate(snap.tables);
+    if (!next) return undefined;
+    return { tables: next };
+  });
+}
+
+/**
+ * Apply a live occupancy event from SSE / IPC without dropping every
+ * waiter's floor cache. One Send used to wipe `pos:floor:*` on every
+ * phone, then ten tablets refetched SQLite at once.
+ */
+export function applyLiveTableEvent(input: {
+  area: string;
+  label: string;
+  open?: boolean;
+  userId?: number | null;
+}): void {
+  const area = String(input.area || '').trim();
+  const label = String(input.label || '').trim();
+  if (!area || !label) return;
+  const scopes = [area, ''];
+
+  if (input.open === false) {
+    invalidateTicketCache(area, label);
+    patchOpenTables(area, label, false);
+    for (const scope of scopes) {
+      patchFloorTables(scope, (tables) => {
+        const next = tables.filter(
+          (row) => !(row.area === area && row.label === label),
+        );
+        return next.length === tables.length ? undefined : next;
+      });
+    }
+    lastIngestedSnap = null;
+    lastIngestedOpts = '';
+    return;
+  }
+
+  if (input.open === true) {
+    patchOpenTables(area, label, true);
+    for (const scope of scopes) {
+      patchFloorTables(scope, (tables) => {
+        if (tables.some((row) => row.area === area && row.label === label)) {
+          return undefined;
+        }
+        return [
+          ...tables,
+          {
+            area,
+            label,
+            openedAt: new Date().toISOString(),
+            userId: input.userId ?? null,
+            covers: null,
+            total: 0,
+            items: [],
+            note: null,
+          },
+        ];
+      });
+    }
+    lastIngestedSnap = null;
+    lastIngestedOpts = '';
+    return;
+  }
+
+  const uid = Number(input.userId);
+  if (!Number.isFinite(uid) || uid <= 0) return;
+  for (const scope of scopes) {
+    patchFloorTables(scope, (tables) => {
+      const idx = tables.findIndex(
+        (row) => row.area === area && row.label === label,
+      );
+      if (idx < 0) return undefined;
+      if (tables[idx].userId === uid) return undefined;
+      const next = tables.slice();
+      next[idx] = { ...tables[idx], userId: uid };
+      return next;
+    });
+  }
 }
 
 /** Tablets missed SSE while backgrounded — drop caches and tell every screen to refetch. */

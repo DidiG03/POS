@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KdsFloorOrder, KdsFloorOrderItem } from '@shared/kdsFloorOrders';
 import {
@@ -8,9 +8,10 @@ import {
 } from '@shared/kdsTimerUrgency';
 import { EmptyState, cn } from '../../components/ui';
 import { PageSpinner } from '../../components/PageSpinner';
-import { pollIntervalMs } from '../../utils/netQuality';
+import { isSseHealthy, pollIntervalMs } from '../../utils/netQuality';
 import { reportAppError } from '../../utils/reportAppError';
 import { IconCheck, IconFlame } from '../../components/icons';
+import { useSessionStore } from '../../stores/session';
 
 function fmtAgo(iso: string | null, atMs: number): string {
   if (!iso) return '';
@@ -26,6 +27,32 @@ function fmtAgo(iso: string | null, atMs: number): string {
 
 function itemIsReady(item: KdsFloorOrderItem): boolean {
   return item.cookerBumped === true || item.ready === true;
+}
+
+function ordersFingerprint(rows: KdsFloorOrder[]): string {
+  return rows
+    .map((order) => {
+      const items = order.items
+        .map(
+          (item) =>
+            `${item._idx ?? ''}:${itemIsReady(item) ? 1 : 0}:${item.qty ?? 1}`,
+        )
+        .join(',');
+      return `${order.ticketId}:${order.firedAt || ''}:${items}`;
+    })
+    .join('|');
+}
+
+function documentHidden(): boolean {
+  return (
+    typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  );
+}
+
+function boardPollMs(): number {
+  const hidden = documentHidden();
+  if (isSseHealthy() && !hidden) return 20_000;
+  return pollIntervalMs(4000, hidden);
 }
 
 function CookingIcon({ label }: { label: string }) {
@@ -54,7 +81,7 @@ function ReadyIcon({ label }: { label: string }) {
   );
 }
 
-function OrderCard({
+const OrderCard = memo(function OrderCard({
   order,
   index,
   clockMs,
@@ -145,37 +172,44 @@ function OrderCard({
       </div>
     </div>
   );
-}
+});
 
 export default function WaiterOrdersPage() {
   const { t } = useTranslation();
+  const waiterUserId = useSessionStore((s) => s.user?.id);
   const [orders, setOrders] = useState<KdsFloorOrder[]>([]);
   const [loading, setLoading] = useState(true);
-  const [clockMs, setClockMs] = useState(Date.now());
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  const fingerprintRef = useRef('');
 
   useEffect(() => {
-    const id = window.setInterval(() => setClockMs(Date.now()), 1000);
+    if (orders.length === 0) return;
+    const id = window.setInterval(() => {
+      if (documentHidden()) return;
+      setClockMs(Date.now());
+    }, 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [orders.length]);
 
   useEffect(() => {
     let alive = true;
     let pollTimer: number | null = null;
+    let sseTimer: number | null = null;
     let running = false;
 
     const load = async () => {
       if (!alive || running) return;
-      if (
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'hidden'
-      ) {
-        return;
-      }
+      if (documentHidden()) return;
       running = true;
       try {
         const rows = await window.api.kds.listFloorOrders();
         if (!alive) return;
-        setOrders(Array.isArray(rows) ? rows : []);
+        const next = Array.isArray(rows) ? rows : [];
+        const fp = ordersFingerprint(next);
+        if (fp !== fingerprintRef.current) {
+          fingerprintRef.current = fp;
+          setOrders(next);
+        }
       } catch (e) {
         if (alive) {
           reportAppError(e, {
@@ -192,23 +226,44 @@ export default function WaiterOrdersPage() {
     const poll = () => {
       void load().finally(() => {
         if (!alive) return;
-        pollTimer = window.setTimeout(poll, pollIntervalMs(4000));
+        pollTimer = window.setTimeout(poll, boardPollMs());
       });
     };
 
-    const onSse = () => {
+    const onSse = (ev: Event) => {
+      const uid = Number((ev as CustomEvent).detail?.userId);
+      if (
+        waiterUserId &&
+        Number.isFinite(uid) &&
+        uid > 0 &&
+        uid !== Number(waiterUserId)
+      ) {
+        return;
+      }
+      if (sseTimer != null) window.clearTimeout(sseTimer);
+      sseTimer = window.setTimeout(() => {
+        sseTimer = null;
+        void load();
+      }, 200);
+    };
+
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
       void load();
     };
 
     void load();
-    pollTimer = window.setTimeout(poll, pollIntervalMs(4000));
+    pollTimer = window.setTimeout(poll, boardPollMs());
     window.addEventListener('pos:ticketsChanged', onSse);
+    document.addEventListener('visibilitychange', onVis);
     return () => {
       alive = false;
       if (pollTimer != null) window.clearTimeout(pollTimer);
+      if (sseTimer != null) window.clearTimeout(sseTimer);
       window.removeEventListener('pos:ticketsChanged', onSse);
+      document.removeEventListener('visibilitychange', onVis);
     };
-  }, [t]);
+  }, [t, waiterUserId]);
 
   if (loading && orders.length === 0) {
     return <PageSpinner message={t('waiterOrders.loading')} />;

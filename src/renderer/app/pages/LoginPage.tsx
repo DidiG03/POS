@@ -41,7 +41,6 @@ import { applyHostPosUiTheme } from '../../theme';
 import {
   POS_CACHE,
   peekSettings,
-  prefetchHotReads,
 } from '../../utils/posReadCache';
 import { invalidateCache } from '../../utils/swrCache';
 import { loginDirectoryState } from '../../utils/loginDirectory';
@@ -299,7 +298,6 @@ export default function LoginPage() {
     if (selectedId == null) return;
     void retryLazyImport(() => import('../AppLayout'));
     void retryLazyImport(() => import('./TablesPage'));
-    void prefetchHotReads();
     void loadPosRealtimeSync();
   }, [selectedId]);
 
@@ -397,7 +395,6 @@ export default function LoginPage() {
   useEffect(() => {
     let cancelled = false;
     const refreshStaff = async () => {
-      invalidateCache(POS_CACHE.users);
       try {
         const users = await window.api.auth.listUsers({ includeAdmins: true });
         if (cancelled) return;
@@ -420,19 +417,10 @@ export default function LoginPage() {
     };
     window.addEventListener('pos:usersChanged', onUsers);
     window.addEventListener('pos:syncCatchup', onUsers);
-    const isBrowser =
-      typeof window !== 'undefined' &&
-      Boolean((window as any).__BROWSER_CLIENT__);
-    const pollId = isBrowser
-      ? window.setInterval(() => {
-          void refreshStaff();
-        }, 5_000)
-      : null;
     return () => {
       cancelled = true;
       window.removeEventListener('pos:usersChanged', onUsers);
       window.removeEventListener('pos:syncCatchup', onUsers);
-      if (pollId != null) window.clearInterval(pollId);
     };
   }, [isAdminContext]);
 

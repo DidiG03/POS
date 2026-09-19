@@ -20,6 +20,8 @@ import { coreServices, withTableLock } from './services/core';
 import { applyOpenAtLogin, isOpenAtLoginEnabled } from './services/hostRuntime';
 import {
   dispatchTicket,
+  fireDispatchTicket,
+  paymentPrintWaitsForPrinters,
   pickActiveReceiptProfile,
   testPrintWithProfile,
 } from './services/printDispatcher';
@@ -122,10 +124,12 @@ import {
 import { allowLanCorsOrigin, isTrustedLanClient } from './services/lanCors';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
+  gzipBodyIfAccepted,
   gzipHtmlIfAccepted,
   resolveStaticFilePath,
   staticAssetCacheControl,
 } from './services/staticPath';
+import { ifNoneMatchHits, weakEtag } from './services/lanConditional';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
 import {
   ensureSettledSaleFromPrintJob,
@@ -359,6 +363,52 @@ function send(
 
   res.writeHead(code);
   res.end(body);
+}
+
+/**
+ * Waiter-hot JSON: gzip when asked, and optional ETag so a phone can
+ * skip JSON.parse when occupancy / menu / kitchen board did not change.
+ */
+function sendJson(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  code: number,
+  data: any,
+  corsOrigin?: string | null,
+  opts?: { etag?: boolean },
+) {
+  setSecurityHeaders(res, corsOrigin || null);
+  const body = typeof data === 'string' ? data : JSON.stringify(data);
+  const contentType =
+    typeof data === 'string'
+      ? 'text/plain; charset=utf-8'
+      : 'application/json; charset=utf-8';
+
+  if (opts?.etag) {
+    const tag = weakEtag(body);
+    res.setHeader('ETag', tag);
+    if (!res.getHeader('Cache-Control')) {
+      res.setHeader('Cache-Control', 'private, no-cache');
+    }
+    if (code === 200 && ifNoneMatchHits(req.headers['if-none-match'], tag)) {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
+  }
+
+  const packed = gzipBodyIfAccepted(
+    Buffer.from(body),
+    contentType,
+    String(req.headers['accept-encoding'] || ''),
+  );
+  res.setHeader('Content-Type', contentType);
+  if (packed.contentEncoding) {
+    res.setHeader('Content-Encoding', packed.contentEncoding);
+    res.setHeader('Vary', 'Accept-Encoding');
+  }
+  res.writeHead(code);
+  res.end(packed.body);
 }
 
 function sendPlanError(
@@ -701,8 +751,9 @@ function setSecurityHeaders(
       // backend can recognise the native app and bypass the browser-only
       // "Allow Web access" gate. The WebView's CORS preflight will refuse
       // to send the actual request unless this header is listed here.
-      'Content-Type, Authorization, Idempotency-Key, X-POS-Client',
+      'Content-Type, Authorization, Idempotency-Key, X-POS-Client, If-None-Match',
     );
+    res.setHeader('Access-Control-Expose-Headers', 'ETag, Content-Encoding');
     res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
     // Admin/KDS Vite (localhost) fetching a private LAN IP is a Chromium
     // Private Network Access request. Without this the preflight fails as
@@ -1451,11 +1502,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'GET' && pathname === '/menu/categories') {
         res.setHeader('Cache-Control', 'private, no-cache');
         try {
-          return send(
+          const token = pickBearerToken(req, parsed);
+          const menuAuth = token ? await verifyToken(secret, token) : auth;
+          const role = String(menuAuth?.role || '').toUpperCase();
+          const adminMenu = role === 'ADMIN';
+          return sendJson(
+            req,
             res,
             200,
-            await listMenuCategoriesForClient(),
+            await listMenuCategoriesForClient({
+              includeCost: adminMenu || role === 'CASHIER',
+              includeInactiveItems: adminMenu,
+            }),
             corsOrigin,
+            { etag: true },
           );
         } catch (e: any) {
           return send(
@@ -1684,8 +1744,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               }
               throw e;
             }
-            await compactTicketLogSession(sessionKey);
-            return { ok: true as const };
+            return {
+              ok: true as const,
+              written: true as const,
+              sessionKey,
+            };
           },
         );
 
@@ -1696,13 +1759,22 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           return send(res, 409, { ...result, permanent: true }, corsOrigin);
         }
 
-        // Best-effort: append to the open KDS ticket (same logic as IPC).
-        try {
+        if ('written' in result && result.written) {
+          try {
+            broadcastTicketsChanged({
+              area: sanitizedArea,
+              tableLabel: sanitizedTableLabel,
+              userId: Number(userId),
+            });
+          } catch (e) {
+            void e;
+          }
+          void compactTicketLogSession(result.sessionKey);
           if (!storePlanBlocksKds()) {
             const kdsFireItems = Array.isArray(body?.kdsFireItems)
               ? body.kdsFireItems
               : undefined;
-            await createKdsTicketFromLog({
+            void createKdsTicketFromLog({
               userId: Number(userId),
               area: sanitizedArea,
               tableLabel: sanitizedTableLabel,
@@ -1713,22 +1785,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 typeof body?.kdsCourseLabel === 'string'
                   ? body.kdsCourseLabel
                   : null,
-            });
+            }).catch(() => undefined);
           }
-        } catch {
-          // ignore
-        }
-        // Broadcast change so every client (Electron windows + LAN/mobile
-        // tablets via SSE) refreshes the waiter badge / table metrics for
-        // this table immediately, instead of waiting for the next poll.
-        try {
-          broadcastTicketsChanged({
-            area: sanitizedArea,
-            tableLabel: sanitizedTableLabel,
-            userId: Number(userId),
-          });
-        } catch (e) {
-          void e;
         }
         return send(res, 201, { ok: true }, corsOrigin);
       }
@@ -1855,7 +1913,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const out = await listWaiterFloorOrders(stations, {
           waiterUserId: Number(auth?.userId || 0),
         });
-        return send(res, 200, out, corsOrigin);
+        return sendJson(req, res, 200, out, corsOrigin, { etag: true });
       }
       if (req.method === 'GET' && pathname === '/kds/ticket-detail') {
         const ok = await ensureKdsLocalSchema();
@@ -2518,39 +2576,40 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // the iOS routing gap (this HTTP route now respects per-station
           // / per-category printer assignments, just like the Electron
           // path does).
-          const r = await dispatchTicket(fiscalPayload, settings as any, {
-            // iOS / web waiters get the same automatic retry safety net
-            // as the Electron app (PR 3).
-            persistRetryOnTransientFailure: true,
-          });
-
-          // Receipt-history / audit row, matching the Electron path. This
-          // is also what makes `printIdempotencyKey` above effective, so a
-          // tablet retry is recognised as already-processed.
-          try {
-            await persistReceiptAudit({
-              payload: fiscalPayload,
-              idempotencyKey: printIdempotencyKey || undefined,
-              status: r.ok ? 'SENT' : 'FAILED',
-              settings,
-            });
-          } catch (e: any) {
-            // P2002 = a concurrent identical payment won the race; its row
-            // is the audit record and this one is a duplicate.
-            if (!(e?.code === 'P2002' && printIdempotencyKey)) {
-              // Without this row the payment is absent from the sales ledger
-              // and receipt history, and if it was fiscalized the tax
-              // service holds an invoice this POS cannot show.
-              await reportAuditWriteFailure({
-                area: String(body?.area || ''),
-                tableLabel: String(body?.tableLabel || ''),
-                actorUserId: Number(body?.meta?.userId || 0) || undefined,
-                error: String(e?.message || e),
+          const persistLanAudit = async (status: 'SENT' | 'FAILED') => {
+            try {
+              await persistReceiptAudit({
+                payload: fiscalPayload,
+                idempotencyKey: printIdempotencyKey || undefined,
+                status,
+                settings,
               });
+            } catch (e: any) {
+              // P2002 = a concurrent identical payment won the race; its row
+              // is the audit record and this one is a duplicate.
+              if (!(e?.code === 'P2002' && printIdempotencyKey)) {
+                // Without this row the payment is absent from the sales ledger
+                // and receipt history, and if it was fiscalized the tax
+                // service holds an invoice this POS cannot show.
+                await reportAuditWriteFailure({
+                  area: String(body?.area || ''),
+                  tableLabel: String(body?.tableLabel || ''),
+                  actorUserId: Number(body?.meta?.userId || 0) || undefined,
+                  error: String(e?.message || e),
+                });
+              }
             }
-          }
+          };
 
-          if (payKind === 'PAYMENT') {
+          const dispatchOpts = { persistRetryOnTransientFailure: true };
+
+          if (paymentPrintWaitsForPrinters(payKind)) {
+            const r = await dispatchTicket(
+              fiscalPayload,
+              settings as any,
+              dispatchOpts,
+            );
+            await persistLanAudit(r.ok ? 'SENT' : 'FAILED');
             const closeTable = paymentShouldCloseTable(payload?.meta);
             if (closeTable) {
               await closeTableAfterAcceptedPayment(
@@ -2566,12 +2625,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             );
           }
 
-          return send(
-            res,
-            r.ok ? 200 : 500,
-            { ok: r.ok, error: r.firstError },
-            corsOrigin,
-          );
+          // Kitchen Send must not sit on TCP to every printer before the
+          // tablet gets 200. Claim the idempotency key, then print in the
+          // background; a down printer retries via the station loop.
+          await persistLanAudit('SENT');
+          fireDispatchTicket(fiscalPayload, settings as any, dispatchOpts);
+          return send(res, 200, { ok: true }, corsOrigin);
         };
 
         if (payKindHint === 'PAYMENT') {
@@ -2992,7 +3051,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/tables/open') {
-        return send(res, 200, await coreServices.listOpenTables(), corsOrigin);
+        return sendJson(
+          req,
+          res,
+          200,
+          await coreServices.listOpenTables(),
+          corsOrigin,
+          { etag: true },
+        );
       }
       if (req.method === 'GET' && pathname === '/tables/floor-snapshot') {
         const area = String(parsed.query.area || '').trim();
@@ -3001,7 +3067,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           'Cache-Control',
           'private, max-age=2, stale-while-revalidate=10',
         );
-        return send(res, 200, snap, corsOrigin);
+        return sendJson(req, res, 200, snap, corsOrigin, { etag: true });
       }
 
       // Table transfer (move table and/or ownership transfer)

@@ -139,13 +139,11 @@ export default function ReservationsLoginPage() {
       void refresh();
     };
     window.addEventListener('pos:usersChanged', onUsers);
-    const pollId = window.setInterval(() => {
-      void refresh();
-    }, 5_000);
+    window.addEventListener('pos:syncCatchup', onUsers);
     return () => {
       cancelled = true;
       window.removeEventListener('pos:usersChanged', onUsers);
-      window.clearInterval(pollId);
+      window.removeEventListener('pos:syncCatchup', onUsers);
     };
   }, [isBrowserClient]);
 

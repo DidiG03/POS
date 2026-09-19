@@ -56,7 +56,16 @@ export function menuItemCostWrite(input: {
   return costWritePayload([emptyCostLine(Number(input.costPrice))]);
 }
 
-function mapCategory(c: any) {
+export function mapMenuCategoryForClient(
+  c: any,
+  opts?: { includeCost?: boolean; includeInactiveItems?: boolean },
+) {
+  const includeCost = opts?.includeCost !== false;
+  const includeInactive = opts?.includeInactiveItems !== false;
+  const rawItems = Array.isArray(c.items) ? c.items : [];
+  const items = includeInactive
+    ? rawItems
+    : rawItems.filter((i: any) => i?.active !== false);
   return {
     id: c.id,
     name: c.name,
@@ -64,7 +73,7 @@ function mapCategory(c: any) {
     active: c.active,
     color: c?.color ?? null,
     kdsStation: c?.kdsStation ?? null,
-    items: (c.items || []).map((i: any) => ({
+    items: items.map((i: any) => ({
       id: i.id,
       name: i.name,
       sku: i.sku,
@@ -79,19 +88,47 @@ function mapCategory(c: any) {
         i.stockRemaining != null && Number.isFinite(Number(i.stockRemaining))
           ? Number(i.stockRemaining)
           : null,
-      ...menuItemCostDto(i),
+      ...(includeCost ? menuItemCostDto(i) : {}),
     })),
   };
 }
 
-export async function listMenuCategoriesForClient() {
+let lastExpireStaleStockAt = 0;
+const EXPIRE_STALE_STOCK_EVERY_MS = 60_000;
+
+/** @internal vitest */
+export function resetMenuListThrottleForTests(): void {
+  lastExpireStaleStockAt = 0;
+}
+
+/**
+ * Waiter phones poll the menu through SWR. Expiring yesterday's 86s is a
+ * write — do it at most once a minute so ten tablets cannot stampede SQLite.
+ */
+async function expireStaleMenuStockThrottled(): Promise<void> {
+  const now = Date.now();
+  if (now - lastExpireStaleStockAt < EXPIRE_STALE_STOCK_EVERY_MS) return;
+  lastExpireStaleStockAt = now;
   await expireStaleMenuStock(prisma);
+}
+
+export async function listMenuCategoriesForClient(opts?: {
+  includeCost?: boolean;
+  includeInactiveItems?: boolean;
+}) {
+  await expireStaleMenuStockThrottled();
+  const includeInactive = opts?.includeInactiveItems !== false;
   const cats = await prisma.category.findMany({
     where: { active: true },
     orderBy: { sortOrder: 'asc' },
-    include: { items: { orderBy: { name: 'asc' } } },
+    include: {
+      items: {
+        ...(includeInactive ? {} : { where: { active: true } }),
+        orderBy: { name: 'asc' },
+      },
+    },
   });
-  return cats.map(mapCategory);
+  return cats.map((c: any) => mapMenuCategoryForClient(c, opts));
 }
 
 function slugifySku(name: string): string {

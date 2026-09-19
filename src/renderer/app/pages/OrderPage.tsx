@@ -1,5 +1,6 @@
 import {
   lazy,
+  memo,
   Suspense,
   useCallback,
   useEffect,
@@ -7,6 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   useTicketStore,
   toTicketLogLine,
@@ -80,9 +82,11 @@ import {
 import { isSseHealthy, pollIntervalMs } from '../../utils/netQuality';
 import { usePosUiTheme } from '../../theme';
 import { FALLBACK_MENU_TILE_BG, menuTileStyle } from '@shared/menuTileColor';
+import type { PosUiTheme } from '@shared/uiTheme';
 import {
   invalidateFloorCache,
   invalidateTicketCache,
+  peekFloorSnapshot,
   peekMenu,
 } from '../../utils/posReadCache';
 import { readTicketForTable } from '../../utils/ticketRead';
@@ -128,6 +132,18 @@ const FALLBACK_TILE_BG = FALLBACK_MENU_TILE_BG;
 const FAVOURITES_CAT_ID = -1;
 const COMMENTS_CAT_ID = -2;
 const COMMENT_TILE_BG = '#3d4d63';
+
+function CategorySwatch({ color }: { color: string }) {
+  return (
+    <span className="pos-menu-cat-mark" aria-hidden>
+      <span
+        className="pos-menu-cat-dot"
+        style={{ backgroundColor: color }}
+      />
+    </span>
+  );
+}
+
 const COMMENT_CUSTOM_BTN_BG = '#2563eb';
 
 function mergeNoteFragment(existing: string, fragment: string): string {
@@ -168,6 +184,144 @@ function menuItemLowStock(item: MenuItemDTO): boolean {
   if (item.stockRemaining != null && item.stockRemaining <= 0) return false;
   return true;
 }
+
+const MenuItemTile = memo(function MenuItemTile({
+  item,
+  isFav,
+  locked,
+  uiTheme,
+  categoryColor,
+  qty = 0,
+  showQtyBubble = false,
+  labels,
+  onAdd,
+  onToggleFav,
+}: {
+  item: MenuItemDTO;
+  isFav: boolean;
+  locked: boolean;
+  uiTheme: PosUiTheme;
+  categoryColor: string | null | undefined;
+  qty?: number;
+  showQtyBubble?: boolean;
+  labels: {
+    inactive: string;
+    out: string;
+    unavailable: string;
+    lowTitle: string;
+    lowAria: string;
+    remaining: (count: number) => string;
+    favAdd: string;
+    favRemove: string;
+  };
+  onAdd: (item: MenuItemDTO) => void;
+  onToggleFav: (sku: string) => void;
+}) {
+  const isDisabled = menuItemUnavailable(item);
+  const isLow = menuItemLowStock(item);
+  const stockRem =
+    item.stockRemaining != null && Number.isFinite(Number(item.stockRemaining))
+      ? Math.max(0, Math.floor(Number(item.stockRemaining)))
+      : null;
+  const tileStyle = menuTileStyle(
+    categoryColor || FALLBACK_TILE_BG,
+    uiTheme,
+  );
+  const unavailableTitle = !item.active
+    ? labels.inactive
+    : item.stockLevel === 'OUT'
+      ? labels.out
+      : undefined;
+  const qtyShown =
+    showQtyBubble && qty > 0 ? (qty > 99 ? '99+' : String(qty)) : null;
+  return (
+    <div className="relative min-h-0 h-full">
+      {isLow ? (
+        <span
+          className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
+          title={labels.lowTitle}
+          aria-hidden
+        >
+          <IconAlert className="h-4 w-4 shrink-0" />
+        </span>
+      ) : null}
+      {qtyShown ? (
+        <span className="pos-menu-qty" aria-hidden>
+          {qtyShown}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className={`pos-menu-tile ${
+          isDisabled ? 'pos-menu-tile--disabled' : 'cursor-pointer'
+        }`}
+        style={isDisabled ? undefined : tileStyle}
+        disabled={isDisabled || locked}
+        title={
+          isDisabled
+            ? unavailableTitle
+            : isLow
+              ? stockRem != null
+                ? `${labels.lowTitle} (${labels.remaining(stockRem)})`
+                : labels.lowTitle
+              : item.name
+        }
+        aria-label={
+          isDisabled
+            ? `${item.name}, ${unavailableTitle ?? labels.unavailable}`
+            : [
+                item.name,
+                qtyShown ? `×${qtyShown}` : null,
+                isLow
+                  ? stockRem != null
+                    ? `${labels.lowAria}, ${labels.remaining(stockRem)}`
+                    : labels.lowAria
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(', ')
+        }
+        onClick={() => {
+          if (isDisabled || locked) return;
+          onAdd(item);
+        }}
+      >
+        <div
+          className={`font-medium pr-9 leading-snug line-clamp-3 ${isDisabled ? 'line-through' : ''}`}
+        >
+          {item.name}
+        </div>
+        <div className="mt-auto pt-1">
+          <div className="text-sm tabular-nums">{item.price}</div>
+          {isLow && stockRem != null ? (
+            <div
+              className={`text-[11px] font-semibold mt-0.5 tabular-nums ${
+                uiTheme === 'light' ? 'text-amber-800' : 'text-amber-100/95'
+              }`}
+            >
+              {labels.remaining(stockRem)}
+            </div>
+          ) : null}
+        </div>
+      </button>
+      <button
+        type="button"
+        className={`pos-menu-fav absolute top-1.5 right-1.5 z-10 ${
+          isFav ? 'pos-menu-fav--on' : ''
+        }`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleFav(item.sku);
+        }}
+        title={isFav ? labels.favRemove : labels.favAdd}
+        aria-label={isFav ? labels.favRemove : labels.favAdd}
+        aria-pressed={isFav}
+      >
+        <IconHeart className={`size-3.5 ${isFav ? 'fill-current' : ''}`} />
+      </button>
+    </div>
+  );
+});
 
 /** TABLE labels from saved layout JSON (same rules as ReservationsLayout / FloorCanvas). */
 function labelsFromLayoutNodes(saved: any[] | null | undefined): string[] {
@@ -210,19 +364,50 @@ function activeTicketItems<T extends { voided?: boolean; paid?: boolean }>(
   return items.filter((it) => !it?.voided && !it?.paid);
 }
 
+/** Do not hold Send on a hung ticket GET — local lines still go to the kitchen. */
+const LIVE_TICKET_BUDGET_MS = 2_000;
+
+function raceWithBudget<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
 /**
  * The host's copy of this sitting's ticket, read past the SWR cache so a
  * stale entry cannot resurrect a line that was just voided. Failing to read
  * must not block a send, so an unreachable host answers "nothing".
  */
+function ownerIdFromFloorCache(area: string, label: string): number | null {
+  const snap = peekFloorSnapshot(area);
+  const row = snap?.tables?.find(
+    (t) => t.area === area && t.label === label,
+  );
+  const uid = Number(row?.userId);
+  return Number.isFinite(uid) && uid > 0 ? uid : null;
+}
+
 async function liveServerTicketLines(
   area: string,
   label: string,
 ): Promise<TicketLogItem[]> {
   try {
     invalidateTicketCache(area, label);
-    const read = await readTicketForTable(area, label);
-    if (!read.ok) return [];
+    const read = await raceWithBudget(
+      readTicketForTable(area, label),
+      LIVE_TICKET_BUDGET_MS,
+    );
+    if (!read?.ok) return [];
     return read.items as TicketLogItem[];
   } catch {
     return [];
@@ -270,6 +455,7 @@ function loadCustomCommentButtons(): Record<string, string[]> {
 
 const MENU_LAYOUT_KEY = 'pos.order.menuLayout';
 const MENU_CAT_GRID_WIDE = '(min-width: 640px)';
+const MENU_ITEM_GRID_MID = '(min-width: 380px)';
 /** Same breakpoint as `md:` — two-pane order layout vs phone stack. */
 const ORDER_TWO_PANE = '(min-width: 768px)';
 type MenuLayout = 'grid' | 'column';
@@ -337,6 +523,11 @@ export default function OrderPage() {
       ? window.matchMedia(MENU_CAT_GRID_WIDE).matches
       : true,
   );
+  const [itemGridMid, setItemGridMid] = useState(() =>
+    typeof window !== 'undefined'
+      ? window.matchMedia(MENU_ITEM_GRID_MID).matches
+      : true,
+  );
   const [twoPane, setTwoPane] = useState(() =>
     typeof window !== 'undefined'
       ? window.matchMedia(ORDER_TWO_PANE).matches
@@ -344,16 +535,20 @@ export default function OrderPage() {
   );
   useEffect(() => {
     const catMq = window.matchMedia(MENU_CAT_GRID_WIDE);
+    const itemMq = window.matchMedia(MENU_ITEM_GRID_MID);
     const paneMq = window.matchMedia(ORDER_TWO_PANE);
     const apply = () => {
       setCatGridWide(catMq.matches);
+      setItemGridMid(itemMq.matches);
       setTwoPane(paneMq.matches);
     };
     apply();
     catMq.addEventListener('change', apply);
+    itemMq.addEventListener('change', apply);
     paneMq.addEventListener('change', apply);
     return () => {
       catMq.removeEventListener('change', apply);
+      itemMq.removeEventListener('change', apply);
       paneMq.removeEventListener('change', apply);
     };
   }, []);
@@ -376,7 +571,28 @@ export default function OrderPage() {
     seats,
     activeSeatId,
     markLinesAsPaid,
-  } = useTicketStore();
+  } = useTicketStore(
+    useShallow((s) => ({
+      lines: s.lines,
+      addItem: s.addItem,
+      increment: s.increment,
+      decrement: s.decrement,
+      setLineNote: s.setLineNote,
+      orderNote: s.orderNote,
+      setOrderNote: s.setOrderNote,
+      clear: s.clear,
+      removeLine: s.removeLine,
+      markLineVoided: s.markLineVoided,
+      activeCourseId: s.activeCourseId,
+      addMode: s.addMode,
+      setAddMode: s.setAddMode,
+      bindTable: s.bindTable,
+      hasHydrated: s.hasHydrated,
+      seats: s.seats,
+      activeSeatId: s.activeSeatId,
+      markLinesAsPaid: s.markLinesAsPaid,
+    })),
+  );
   const [weightModal, setWeightModal] = useState<{
     sku: string;
     name: string;
@@ -612,6 +828,17 @@ export default function OrderPage() {
    */
   const billUnknown = isTableOpen && ticketLoadFailed;
   const activeLines = useMemo(() => lines.filter((l) => !l.voided), [lines]);
+  const qtyBySku = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of activeLines) {
+      const sku = String(l.sku || '').trim();
+      if (!sku) continue;
+      const q = Number(l.qty || 0);
+      if (!Number.isFinite(q) || q <= 0) continue;
+      m.set(sku, (m.get(sku) || 0) + q);
+    }
+    return m;
+  }, [activeLines]);
   /**
    * A sitting with nothing left but paid lines is settled money against a
    * filed invoice. The host refuses to void it; the button says so rather
@@ -1454,6 +1681,27 @@ export default function OrderPage() {
     return m;
   }, [categories]);
 
+  const toggleFavSku = useCallback(
+    (sku: string) => {
+      if (user?.id) fav.toggle(user.id, sku);
+    },
+    [fav, user?.id],
+  );
+
+  const menuTileLabels = useMemo(
+    () => ({
+      inactive: t('order.itemUnavailableInactive'),
+      out: t('order.outOfStockTitle'),
+      unavailable: t('order.unavailableAria'),
+      lowTitle: t('order.lowStockTitle'),
+      lowAria: t('order.lowStockAria'),
+      remaining: (count: number) => t('order.stockRemainingBadge', { count }),
+      favAdd: t('order.favouriteAddTitle'),
+      favRemove: t('order.favouriteRemoveTitle'),
+    }),
+    [t],
+  );
+
   useEffect(() => {
     loadMenu();
   }, []);
@@ -1654,6 +1902,12 @@ export default function OrderPage() {
       const optimistic = Number(optimisticUserId);
       if (Number.isFinite(optimistic) && optimistic > 0) {
         setOwnerId(optimistic);
+        if (isSseHealthy()) return;
+      }
+      const cached = ownerIdFromFloorCache(a, l);
+      if (cached) {
+        setOwnerId(cached);
+        if (isSseHealthy()) return;
       }
       try {
         const data = await window.api.tickets.getLatestForTable(a, l);
@@ -2058,7 +2312,9 @@ export default function OrderPage() {
       }
 
       if (opts.printKitchen && (isFireOrder || !hasStaged)) {
-        await printTicket({
+        // Do not await: the host already accepted the order, and TCP to
+        // kitchen/bar printers used to freeze this button for 5–90s.
+        void printTicket({
           area: selectedTable.area,
           tableLabel: selectedTable.label,
           covers: opts.covers,
@@ -2066,15 +2322,25 @@ export default function OrderPage() {
           note: state.orderNote,
           userName: user.displayName,
           meta: printMeta,
-        }).then((printed) => {
-          if (printed?.queued) {
+        })
+          .then((printed) => {
+            if (printed?.queued) {
+              toast.warn(
+                isFireOrder
+                  ? t('order.kitchenPrintQueued')
+                  : t('order.ticketPrintQueued'),
+              );
+            }
+          })
+          .catch((e: unknown) => {
+            if (typeof console !== 'undefined')
+              console.warn('[print/ticket] failed:', e);
             toast.warn(
               isFireOrder
                 ? t('order.kitchenPrintQueued')
                 : t('order.ticketPrintQueued'),
             );
-          }
-        });
+          });
       }
       return { ok: true, isFireOrder };
     },
@@ -2209,10 +2475,13 @@ export default function OrderPage() {
         };
         setBusyAction('send');
         try {
-          const lastCovers = await window.api.covers.getLast(
-            selectedTable.area,
-            selectedTable.label,
-          );
+          const lastCovers =
+            typeof coversKnownRef.current === 'number'
+              ? coversKnownRef.current
+              : await window.api.covers.getLast(
+                  selectedTable.area,
+                  selectedTable.label,
+                );
           await runKitchenFire({
             covers: lastCovers ?? null,
             courseId,
@@ -2298,6 +2567,21 @@ export default function OrderPage() {
   const catPad = columnMenu
     ? 0
     : catGridPadCount(catTileCount, catGridWide ? 3 : 2);
+  const showingComments =
+    !query.trim() && hasTables && selectedCatId === COMMENTS_CAT_ID;
+  const itemTileCount = showingComments
+    ? commentPresets.length + customCommentButtons.length + 1
+    : filteredItems.length;
+  const itemCols = columnMenu
+    ? catGridWide
+      ? 3
+      : itemGridMid
+        ? 2
+        : 1
+    : catGridWide
+      ? 3
+      : 2;
+  const itemPad = catGridPadCount(itemTileCount, itemCols);
   // Phone layout is a stack, not two columns. Keep only the visible pane
   // mounted: the ticket tree used to stay in the DOM with `flex` + `hidden`,
   // and on Tailwind v4 those two `display` utilities can fight so a
@@ -2364,23 +2648,21 @@ export default function OrderPage() {
             lockOrderScroll || columnMenu ? 'overflow-hidden' : 'overflow-auto'
           }`}
         >
-          <div className="mb-3 flex shrink-0 gap-2">
-            <div className="relative min-w-0 flex-1">
-              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--pos-fg-muted)]">
-                <IconSearch />
-              </span>
-              <input
-                placeholder={t(
-                  hasTables ? 'order.searchMenu' : 'order.searchProductsScan',
-                )}
-                className="pos-input pos-menu-search w-full"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </div>
+          <div className="relative mb-3 w-full shrink-0">
+            <span className="pointer-events-none absolute left-3 top-1/2 z-[1] -translate-y-1/2 text-[color:var(--pos-fg-muted)]">
+              <IconSearch />
+            </span>
+            <input
+              placeholder={t(
+                hasTables ? 'order.searchMenu' : 'order.searchProductsScan',
+              )}
+              className="pos-input pos-menu-search w-full"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
             <button
               type="button"
-              className="pos-ticket-iconbtn"
+              className="pos-menu-search-layout"
               onClick={() => {
                 const next = menuLayout === 'grid' ? 'column' : 'grid';
                 writeMenuLayout(next);
@@ -2415,11 +2697,11 @@ export default function OrderPage() {
                     : ''
                 }`}
               >
-                <span className="flex w-full min-w-0 items-center gap-2">
-                  <IconHeart className="size-3.5 shrink-0 text-pink-400" />
-                  <span
-                    className={columnMenu ? 'min-w-0 line-clamp-2' : undefined}
-                  >
+                <span className="pos-menu-cat-label">
+                  <span className="pos-menu-cat-mark">
+                    <IconHeart className="size-3.5 text-pink-400" />
+                  </span>
+                  <span className="min-w-0 line-clamp-2">
                     {t('order.favourites')}
                   </span>
                 </span>
@@ -2434,17 +2716,9 @@ export default function OrderPage() {
                       : ''
                   }`}
                 >
-                  <span className="flex w-full min-w-0 items-center gap-2">
-                    <span
-                      className="inline-block w-2.5 h-2.5 shrink-0 rounded-full"
-                      style={{ backgroundColor: COMMENT_TILE_BG }}
-                      aria-hidden
-                    />
-                    <span
-                      className={
-                        columnMenu ? 'min-w-0 line-clamp-2' : undefined
-                      }
-                    >
+                  <span className="pos-menu-cat-label">
+                    <CategorySwatch color={COMMENT_TILE_BG} />
+                    <span className="min-w-0 line-clamp-2">
                       {t('order.comments')}
                     </span>
                   </span>
@@ -2461,21 +2735,11 @@ export default function OrderPage() {
                       isActive ? 'pos-menu-cat--active' : ''
                     }`}
                   >
-                    <span className="flex w-full min-w-0 items-center gap-2">
-                      {tabColor ? (
-                        <span
-                          className="inline-block w-2.5 h-2.5 shrink-0 rounded-full"
-                          style={{ backgroundColor: tabColor }}
-                          aria-hidden
-                        />
-                      ) : null}
-                      <span
-                        className={
-                          columnMenu ? 'min-w-0 line-clamp-2' : undefined
-                        }
-                      >
-                        {c.name}
-                      </span>
+                    <span className="pos-menu-cat-label">
+                      <CategorySwatch
+                        color={tabColor || FALLBACK_TILE_BG}
+                      />
+                      <span className="min-w-0 line-clamp-2">{c.name}</span>
                     </span>
                   </button>
                 );
@@ -2533,124 +2797,28 @@ export default function OrderPage() {
               {(!query.trim() && selectedCatId === COMMENTS_CAT_ID
                 ? []
                 : filteredItems
-              ).map((i: MenuItemDTO) => {
-                const isFav = fav.isFav(user?.id || null, i.sku);
-                const isDisabled = menuItemUnavailable(i);
-                const isLow = menuItemLowStock(i);
-                const stockRem =
-                  i.stockRemaining != null &&
-                  Number.isFinite(Number(i.stockRemaining))
-                    ? Math.max(0, Math.floor(Number(i.stockRemaining)))
-                    : null;
-                // Inherit the parent category's colour as a bottom strip
-                // so food and drinks stay distinguishable without flooding
-                // the tile. Disabled items stay a neutral grey.
-                const tileStyle = menuTileStyle(
-                  categoryColorById.get(Number(i.categoryId)) ||
-                    FALLBACK_TILE_BG,
-                  uiTheme,
-                );
-                const unavailableTitle = !i.active
-                  ? t('order.itemUnavailableInactive')
-                  : i.stockLevel === 'OUT'
-                    ? t('order.outOfStockTitle')
-                    : undefined;
-                return (
-                  <div key={i.id} className="relative min-h-0 h-full">
-                    {isLow ? (
-                      <span
-                        className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
-                        title={t('order.lowStockTitle')}
-                        aria-hidden
-                      >
-                        <IconAlert className="h-4 w-4 shrink-0" />
-                      </span>
-                    ) : null}
-                    <button
-                      type="button"
-                      className={`pos-menu-tile ${
-                        isDisabled
-                          ? 'pos-menu-tile--disabled'
-                          : 'cursor-pointer'
-                      }`}
-                      style={isDisabled ? undefined : tileStyle}
-                      disabled={
-                        isDisabled || ticketSyncing || busyAction != null
-                      }
-                      title={
-                        isDisabled
-                          ? unavailableTitle
-                          : isLow
-                            ? stockRem != null
-                              ? `${t('order.lowStockTitle')} (${t('order.stockRemainingBadge', { count: stockRem })})`
-                              : t('order.lowStockTitle')
-                            : i.name
-                      }
-                      aria-label={
-                        isDisabled
-                          ? `${i.name}, ${unavailableTitle ?? t('order.unavailableAria')}`
-                          : isLow
-                            ? stockRem != null
-                              ? `${i.name}, ${t('order.lowStockAria')}, ${t('order.stockRemainingBadge', { count: stockRem })}`
-                              : `${i.name}, ${t('order.lowStockAria')}`
-                            : i.name
-                      }
-                      onClick={() => {
-                        if (isDisabled || ticketSyncing || busyAction != null)
-                          return;
-                        addMenuItemToSale(i);
-                      }}
-                    >
-                      <div
-                        className={`font-medium pr-9 leading-snug line-clamp-3 ${isDisabled ? 'line-through' : ''}`}
-                      >
-                        {i.name}
-                      </div>
-                      <div className="mt-auto pt-1">
-                        <div className="text-sm tabular-nums">{i.price}</div>
-                        {isLow && stockRem != null ? (
-                          <div
-                            className={`text-[11px] font-semibold mt-0.5 tabular-nums ${
-                              uiTheme === 'light'
-                                ? 'text-amber-800'
-                                : 'text-amber-100/95'
-                            }`}
-                          >
-                            {t('order.stockRemainingBadge', {
-                              count: stockRem,
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      className={`pos-menu-fav absolute top-1.5 right-1.5 z-10 ${
-                        isFav ? 'pos-menu-fav--on' : ''
-                      }`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (user?.id) fav.toggle(user.id, i.sku);
-                      }}
-                      title={
-                        isFav
-                          ? t('order.favouriteRemoveTitle')
-                          : t('order.favouriteAddTitle')
-                      }
-                      aria-label={
-                        isFav
-                          ? t('order.favouriteRemoveTitle')
-                          : t('order.favouriteAddTitle')
-                      }
-                      aria-pressed={isFav}
-                    >
-                      <IconHeart
-                        className={`size-3.5 ${isFav ? 'fill-current' : ''}`}
-                      />
-                    </button>
-                  </div>
-                );
-              })}
+              ).map((i: MenuItemDTO) => (
+                <MenuItemTile
+                  key={i.id}
+                  item={i}
+                  isFav={fav.isFav(user?.id || null, i.sku)}
+                  locked={ticketSyncing || busyAction != null}
+                  uiTheme={uiTheme}
+                  categoryColor={categoryColorById.get(Number(i.categoryId))}
+                  qty={qtyBySku.get(i.sku) || 0}
+                  showQtyBubble={!twoPane}
+                  labels={menuTileLabels}
+                  onAdd={addMenuItemToSale}
+                  onToggleFav={toggleFavSku}
+                />
+              ))}
+              {Array.from({ length: itemPad }, (_, i) => (
+                <div
+                  key={`item-pad-${i}`}
+                  className="pos-menu-tile pos-menu-tile--pad"
+                  aria-hidden
+                />
+              ))}
             </div>
           </div>
         </div>
@@ -2748,7 +2916,7 @@ export default function OrderPage() {
                       setCoversValue(
                         typeof coversKnown === 'number'
                           ? String(coversKnown)
-                          : '',
+                          : '1',
                       );
                       setShowCovers(true);
                     }}
@@ -3107,11 +3275,7 @@ export default function OrderPage() {
                         ) : null}
                         {hasTables ? (
                           <button
-                            className={
-                              canPay && isTableOpen && !hasUnsentItems
-                                ? 'pos-ticket-tool'
-                                : 'pos-ticket-tool pos-ticket-tool--accent'
-                            }
+                            className="pos-ticket-tool"
                             disabled={
                               activeLines.length === 0 ||
                               busyAction != null ||
@@ -3132,7 +3296,7 @@ export default function OrderPage() {
                                 !isOpen(selectedTable.area, selectedTable.label)
                               ) {
                                 setCoversMode('openAndSend');
-                                setCoversValue('');
+                                setCoversValue('1');
                                 setPrintStationTickets(true);
                                 setShowCovers(true);
                                 return;
@@ -3150,10 +3314,12 @@ export default function OrderPage() {
                               setBusyAction('send');
                               try {
                                 const lastCovers =
-                                  await window.api.covers.getLast(
-                                    selectedTable.area,
-                                    selectedTable.label,
-                                  );
+                                  typeof coversKnown === 'number'
+                                    ? coversKnown
+                                    : await window.api.covers.getLast(
+                                        selectedTable.area,
+                                        selectedTable.label,
+                                      );
                                 if (!user?.id) return;
                                 const fired = await runKitchenFire({
                                   covers: lastCovers ?? null,
@@ -4003,17 +4169,13 @@ export default function OrderPage() {
               >
                 −
               </button>
-              <input
-                autoFocus
-                inputMode="numeric"
-                pattern="[0-9]*"
-                className="pos-input h-[2.75rem] w-[4.5rem] text-center text-lg font-semibold tabular-nums"
-                value={coversValue}
-                onChange={(e) =>
-                  setCoversValue(e.target.value.replace(/[^\d]/g, ''))
-                }
+              <div
+                className="flex h-[2.75rem] w-[4.5rem] items-center justify-center rounded-[0.7rem] border border-[var(--pos-border-strong)] bg-[var(--pos-surface)] text-lg font-semibold tabular-nums"
+                aria-live="polite"
                 aria-label={t('order.editCovers')}
-              />
+              >
+                {Math.max(1, Math.floor(Number(coversValue) || 1))}
+              </div>
               <button
                 type="button"
                 className="pos-pay-stepper inline-flex items-center justify-center"
@@ -4258,17 +4420,15 @@ export default function OrderPage() {
                     if (!approved) return;
                     approvedByAdmin = approved;
                   }
-                  hydrateGenRef.current += 1; // cancel any in-flight background fetches
-                  setTicketSyncing(true);
-                  const vt = voidTarget; // capture before clearing modal
-                  setVoidTarget(null);
-                  try {
-                    // PR 4a: voidItem becomes queue-able. Same shape
-                    // as the live IPC; if we're offline, the void is
-                    // recorded for replay and the optimistic UI below
-                    // still proceeds (the line disappears for the
-                    // user; the server-side void lands on reconnect).
-                    await tryOrQueue('tickets.voidItem', {
+                    hydrateGenRef.current += 1;
+                    const vt = voidTarget;
+                    if (!vt) return;
+                    setVoidTarget(null);
+                    markLineVoided(vt.id);
+                    const remaining = useTicketStore
+                      .getState()
+                      .lines.filter((l) => !l.voided && !l.paid);
+                    void tryOrQueue('tickets.voidItem', {
                       userId: user.id,
                       area: selectedTable.area,
                       tableLabel: selectedTable.label,
@@ -4287,25 +4447,28 @@ export default function OrderPage() {
                             approvedByAdminToken: approvedByAdmin.approvalToken,
                           }
                         : {}),
-                    });
-                    // Optimistically mark the voided line immediately
-                    markLineVoided(vt.id);
-                    // Re-sync ticket from server to ensure consistency
-                    const latest = await window.api.tickets
-                      .getLatestForTable(
-                        selectedTable.area,
-                        selectedTable.label,
-                      )
-                      .catch(() => null as any);
-                    const allItems = ((latest?.items as any[]) || []) as any[];
-                    useTicketStore.getState().hydrate({
-                      items: allItems as any,
-                      note: latest?.note || '',
-                    });
-                    if (activeTicketItems(allItems).length === 0) {
-                      // All items voided → free the table. Queued so a stale
-                      // `{ open: true }` for this table is retired instead of
-                      // replaying later and re-occupying the sitting.
+                    })
+                      .then(() => {
+                        void raceWithBudget(
+                          window.api.tickets.getLatestForTable(
+                            selectedTable.area,
+                            selectedTable.label,
+                          ),
+                          LIVE_TICKET_BUDGET_MS,
+                        ).then((latest) => {
+                          if (!latest) return;
+                          const allItems = ((latest as any)?.items ||
+                            []) as any[];
+                          useTicketStore.getState().hydrate({
+                            items: allItems as any,
+                            note: (latest as any)?.note || '',
+                          });
+                        });
+                      })
+                      .catch(() => {
+                        toast.error(t('order.voidItemFailed'));
+                      });
+                    if (remaining.length === 0) {
                       setOpen(selectedTable.area, selectedTable.label, false);
                       void tryOrQueue(
                         'tables.setOpen',
@@ -4324,11 +4487,6 @@ export default function OrderPage() {
                         });
                       });
                     }
-                  } catch {
-                    toast.error(t('order.voidItemFailed'));
-                  } finally {
-                    setTicketSyncing(false);
-                  }
                 }}
               >
                 {t('order.voidConfirm')}

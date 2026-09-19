@@ -46,6 +46,19 @@ function formatElapsed(ms: number) {
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
 }
 
+function occupancyFingerprint(snap: FloorSnapshot): string {
+  const tables: FloorTableSnapshot[] = Array.isArray(snap?.tables)
+    ? snap.tables
+    : [];
+  return tables
+    .map(
+      (row) =>
+        `${row.area}\t${row.label}\t${row.userId ?? ''}\t${row.covers ?? ''}\t${row.total}\t${row.openedAt ?? ''}`,
+    )
+    .sort()
+    .join('\n');
+}
+
 function toInitials(name: string): string {
   const parts = String(name || '')
     .trim()
@@ -176,7 +189,8 @@ export default function TablesPage() {
     return () => window.removeEventListener('pos:tablesChanged', onChanged);
   }, [setOpen]);
 
-  const { hydrate, bindTable } = useTicketStore();
+  const hydrate = useTicketStore((s) => s.hydrate);
+  const bindTable = useTicketStore((s) => s.bindTable);
 
   const [userMap, setUserMap] = useState<Record<number, string>>({});
   const [initialsByTable, setInitialsByTable] = useState<
@@ -312,8 +326,10 @@ export default function TablesPage() {
   }, []);
 
   const pollGenRef = useRef(0);
+  const occupancyKeyRef = useRef('');
   useEffect(() => {
     const gen = ++pollGenRef.current;
+    occupancyKeyRef.current = '';
     let timer: ReturnType<typeof setTimeout>;
     let cancelled = false;
     const isHidden = () =>
@@ -321,6 +337,7 @@ export default function TablesPage() {
 
     const cachedSnap = peekFloorSnapshot(area);
     if (cachedSnap) {
+      occupancyKeyRef.current = occupancyFingerprint(cachedSnap);
       applySnapshot(cachedSnap, userMap, area || undefined);
       setOpenLoaded(true);
     }
@@ -338,7 +355,11 @@ export default function TablesPage() {
         }
         if (cancelled || gen !== pollGenRef.current) return;
         if (snap && Array.isArray(snap.tables)) {
-          applySnapshot(snap, userMap, area || undefined);
+          const key = occupancyFingerprint(snap);
+          if (key !== occupancyKeyRef.current) {
+            occupancyKeyRef.current = key;
+            applySnapshot(snap, userMap, area || undefined);
+          }
         } else {
           const open = await window.api.tables.listOpen();
           if (cancelled || gen !== pollGenRef.current) return;
@@ -394,9 +415,21 @@ export default function TablesPage() {
       if (typeof api.tables?.getFloorSnapshot !== 'function') return;
       void readFloorSnapshot(area || undefined)
         .then((snap: FloorSnapshot | null) => {
-          if (snap) applySnapshot(snap, userMap, area || undefined);
+          if (!snap) return;
+          const key = occupancyFingerprint(snap);
+          if (key === occupancyKeyRef.current) return;
+          occupancyKeyRef.current = key;
+          applySnapshot(snap, userMap, area || undefined);
         })
         .catch(() => undefined);
+    };
+    const paintFromCache = () => {
+      const snap = peekFloorSnapshot(area);
+      if (!snap) return;
+      const key = occupancyFingerprint(snap);
+      if (key === occupancyKeyRef.current) return;
+      occupancyKeyRef.current = key;
+      applySnapshot(snap, userMap, area || undefined);
     };
     const onTicketsChanged = (ev: any) => {
       try {
@@ -416,17 +449,17 @@ export default function TablesPage() {
           if (name)
             setInitialsByTable((prev) => ({ ...prev, [k]: toInitials(name) }));
         }
-        refresh();
+        paintFromCache();
       } catch {
         // ignore
       }
     };
     window.addEventListener('pos:ticketsChanged', onTicketsChanged);
-    window.addEventListener('pos:tablesChanged', refresh);
+    window.addEventListener('pos:tablesChanged', paintFromCache);
     window.addEventListener('pos:syncCatchup', refresh);
     return () => {
       window.removeEventListener('pos:ticketsChanged', onTicketsChanged);
-      window.removeEventListener('pos:tablesChanged', refresh);
+      window.removeEventListener('pos:tablesChanged', paintFromCache);
       window.removeEventListener('pos:syncCatchup', refresh);
     };
   }, [area, userMap, applySnapshot]);

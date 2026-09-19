@@ -65,6 +65,32 @@ export function staticAssetCacheControl(filePath: string): string {
   return 'no-store';
 }
 
+function typeLooksCompressible(contentType: string): boolean {
+  const type = String(contentType || '').toLowerCase();
+  return (
+    type.includes('text/html') ||
+    type.includes('application/json') ||
+    type.includes('text/plain') ||
+    type.includes('application/javascript')
+  );
+}
+
+/**
+ * Gzip HTML / JSON / JS when the client asks for it. Waiter phones spend
+ * more time on Wi-Fi and JSON.parse than the till does on gzip.
+ */
+export function gzipBodyIfAccepted(
+  body: Buffer,
+  contentType: string,
+  acceptEncoding?: string,
+  minBytes = 256,
+): { body: Buffer; contentEncoding?: 'gzip' } {
+  if (!typeLooksCompressible(contentType)) return { body };
+  if (!String(acceptEncoding || '').includes('gzip')) return { body };
+  if (body.length < minBytes) return { body };
+  return { body: gzipSync(body), contentEncoding: 'gzip' };
+}
+
 /** Gzip HTML when the client asks for it (Lighthouse document compression). */
 export function gzipHtmlIfAccepted(
   body: Buffer,
@@ -72,7 +98,5 @@ export function gzipHtmlIfAccepted(
   acceptEncoding?: string,
 ): { body: Buffer; contentEncoding?: 'gzip' } {
   if (!contentType.includes('text/html')) return { body };
-  if (!String(acceptEncoding || '').includes('gzip')) return { body };
-  if (body.length < 32) return { body };
-  return { body: gzipSync(body), contentEncoding: 'gzip' };
+  return gzipBodyIfAccepted(body, contentType, acceptEncoding, 32);
 }

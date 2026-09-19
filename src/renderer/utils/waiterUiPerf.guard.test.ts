@@ -160,4 +160,187 @@ describe('waiter UI stays responsive', () => {
     expect(read('src/main/index.ts')).toContain('key: { endsWith: suffix }');
     expect(read('src/main/api.ts')).toContain('key: { endsWith: suffix }');
   });
+
+  it('does not hold Send on kitchen TCP — print is fire-and-forget after the order is logged', () => {
+    const order = read('src/renderer/app/pages/OrderPage.tsx');
+    const fire = sliceBetween(
+      order,
+      'const runKitchenFire = useCallback',
+      'const printSeatBill = useCallback',
+    );
+    expect(fire).toMatch(/void printTicket\(/);
+    expect(fire).not.toMatch(/await printTicket\(/);
+    expect(order).toContain('const LIVE_TICKET_BUDGET_MS = 2_000');
+    expect(order).toContain('function raceWithBudget');
+  });
+
+  it('answers kitchen /print/ticket without waiting for the printers', () => {
+    const dispatcher = read('src/main/services/printDispatcher.ts');
+    expect(dispatcher).toContain('export function fireDispatchTicket');
+    expect(dispatcher).toContain('export function paymentPrintWaitsForPrinters');
+    expect(dispatcher).toContain('await Promise.all(');
+
+    const lan = read('src/main/api.ts');
+    const printRoute = sliceBetween(
+      lan,
+      "pathname === '/print/ticket'",
+      "pathname === '/tickets/void-item'",
+    );
+    expect(printRoute).toContain('fireDispatchTicket(');
+    expect(printRoute).toContain('paymentPrintWaitsForPrinters(payKind)');
+    expect(printRoute).not.toMatch(
+      /await dispatchTicket\([\s\S]*return send\(\s*res,\s*r\.ok \? 200 : 500/,
+    );
+
+    const ipc = read('src/main/index.ts');
+    const ipcPrint = sliceBetween(
+      ipc,
+      "ipcHandle('tickets:print'",
+      "ipcHandle('reports:listMyActiveTickets'",
+    );
+    expect(ipcPrint).toContain('fireDispatchTicket(');
+    expect(ipcPrint).toContain('paymentPrintWaitsForPrinters(kind)');
+  });
+
+  it('does not retry aborted POSTs and skips PIN-screen staff polling', () => {
+    const lan = read('src/renderer/browserLanApi.ts');
+    expect(lan).toContain('mutating && name === \'AbortError\'');
+    expect(lan).toContain('lastSseDataAt');
+    expect(lan).toContain('if (missedMs > 8_000) emitPosSyncCatchupSoon()');
+
+    const login = read('src/renderer/app/pages/LoginPage.tsx');
+    expect(login).not.toMatch(
+      /setInterval\(\(\)\s*=>[\s\S]{0,80}refreshStaff/,
+    );
+    expect(login).toContain('pos:usersChanged');
+
+    expect(read('src/renderer/utils/posReadCache.ts')).toContain(
+      'const CATCHUP_DEBOUNCE_MS = 8_000',
+    );
+    expect(read('src/renderer/utils/offlineQueue.ts')).toContain(
+      'const FAILED_MAX_ITEMS = 80',
+    );
+  });
+
+  it('does not resubscribe OrderPage or TablesPage to the whole ticket store', () => {
+    const order = read('src/renderer/app/pages/OrderPage.tsx');
+    expect(order).toContain("from 'zustand/react/shallow'");
+    expect(order).toContain('useShallow((s) => ({');
+    expect(order).not.toMatch(/\} = useTicketStore\(\);/);
+    expect(order).toContain('ownerIdFromFloorCache');
+    expect(order).toMatch(/void tryOrQueue\(\s*'tickets.voidItem'/);
+
+    const tables = read('src/renderer/app/pages/TablesPage.tsx');
+    expect(tables).toContain('useTicketStore((s) => s.hydrate)');
+    expect(tables).toContain('useTicketStore((s) => s.bindTable)');
+    expect(tables).not.toMatch(/const \{ hydrate, bindTable \} = useTicketStore\(\)/);
+  });
+
+  it('keeps floor occupancy payloads free of ticket lines', () => {
+    const floor = read('src/main/services/floorSnapshot.ts');
+    expect(floor).toContain('items: []');
+    expect(floor).not.toMatch(/total: ticketRunningTotal\(items\),\s*items,/);
+
+    const lan = read('src/main/api.ts');
+    expect(lan).toContain('function sendJson');
+    expect(lan).toContain('If-None-Match');
+    expect(lan).toContain("{ etag: true }");
+
+    const client = read('src/renderer/browserLanApi.ts');
+    expect(client).toContain("headers['If-None-Match']");
+    expect(client).toContain('r.status === 304');
+
+    expect(read('src/renderer/utils/swrCache.ts')).toContain(
+      "return !key.startsWith('pos:floor:')",
+    );
+  });
+
+  it('does not run a 1s clock per waiter order card', () => {
+    const src = read('src/renderer/app/pages/WaiterOrdersPage.tsx');
+    expect(src).toContain('const OrderCard = memo(');
+    expect(src).toContain('clockMs');
+    expect(src).toContain('boardPollMs');
+    expect(src).not.toMatch(
+      /function OrderCard\([\s\S]{0,400}setInterval\(\(\) => setClockMs/,
+    );
+    expect(read('src/main/services/kdsList.ts')).toContain(
+      'const floor = await getFloorSnapshot()',
+    );
+  });
+
+  it('memoizes menu tiles so adding a line does not rebuild the grid', () => {
+    const order = read('src/renderer/app/pages/OrderPage.tsx');
+    expect(order).toContain('const MenuItemTile = memo(');
+    expect(order).toContain('<MenuItemTile');
+    expect(order).toContain('showQtyBubble={!twoPane}');
+    expect(order).toContain('pos-menu-qty');
+    expect(read('src/renderer/styles/index.css')).toContain('.pos-menu-qty');
+    expect(order).toContain('pos-menu-cat-dot');
+    expect(order).toContain('tabColor || FALLBACK_TILE_BG');
+    expect(order).not.toMatch(/\{tabColor \? \(/);
+    expect(read('src/renderer/styles/index.css')).toContain(
+      'contain-intrinsic-size: auto 5.75rem',
+    );
+    expect(read('src/renderer/styles/index.css')).toContain(
+      '.pos-menu-cat-dot',
+    );
+  });
+
+  it('keeps other waiters floor caches and boards off one Send', () => {
+    const sync = read('src/renderer/utils/posRealtimeSync.ts');
+    const tickets = sliceBetween(
+      sync,
+      "eventName === 'pos:ticketsChanged'",
+      "eventName === 'pos:tablesChanged'",
+    );
+    expect(tickets).toContain('applyLiveTableEvent');
+    expect(tickets).not.toContain('invalidateFloorSnapshots');
+    expect(tickets).not.toContain('invalidateFloorCache');
+
+    const tablesPage = read('src/renderer/app/pages/TablesPage.tsx');
+    const onTickets = sliceBetween(
+      tablesPage,
+      'const onTicketsChanged = (ev: any) => {',
+      "window.addEventListener('pos:ticketsChanged', onTicketsChanged);",
+    );
+    expect(onTickets).not.toContain('readFloorSnapshot');
+    expect(onTickets).not.toContain('refresh()');
+    expect(onTickets).toContain('paintFromCache');
+
+    const waiter = read('src/renderer/app/pages/WaiterOrdersPage.tsx');
+    expect(waiter).toContain('waiterUserId');
+    expect(waiter).toContain('uid !== Number(waiterUserId)');
+    expect(waiter).toContain('sseTimer');
+
+    const ipcLog = sliceBetween(
+      read('src/main/index.ts'),
+      "ipcHandle('tickets:log'",
+      "ipcHandle('tickets:getLatestForTable'",
+    );
+    expect(ipcLog).not.toContain('expireStaleMenuStock');
+    expect(ipcLog).toContain('void compactTicketLogSession');
+    expect(ipcLog).toContain('void (async () => {');
+
+    const lanLog = sliceBetween(
+      read('src/main/api.ts'),
+      "pathname === '/tickets'",
+      "pathname === '/tickets/latest'",
+    );
+    expect(lanLog).toContain('void compactTicketLogSession');
+    expect(lanLog).toContain('void createKdsTicketFromLog');
+    expect(lanLog).not.toMatch(/await compactTicketLogSession/);
+    expect(lanLog).not.toMatch(/await createKdsTicketFromLog/);
+  });
+
+  it('puts phone notifications on a tab instead of overlaying Tables', () => {
+    const layout = read('src/renderer/app/AppLayout.tsx');
+    expect(layout).toContain("to: '/app/notifications'");
+    expect(layout).toContain('pos-mobile-tabbar');
+    expect(layout).toContain('relative hidden sm:inline-block');
+    expect(layout).not.toContain("from '../components/NotificationsPanel'");
+    expect(read('src/renderer/routes.tsx')).toContain("path: 'notifications'");
+    expect(read('src/renderer/app/pages/NotificationsPage.tsx')).toContain(
+      'NotificationsInbox',
+    );
+  });
 });

@@ -274,9 +274,9 @@ async function loadFloorSnapshot(area?: string): Promise<FloorSnapshot> {
     const parts = splitTableKey(k)!;
     const ticket = latestTicket.get(k);
     const cover = latestCover.get(k);
-    const items = asTicketLogItems(
-      ticket?.itemsJson,
-    ) as FloorTableSnapshot['items'];
+    const items = asTicketLogItems(ticket?.itemsJson) as Parameters<
+      typeof ticketRunningTotal
+    >[0];
     tables.push({
       area: parts.area,
       label: parts.label,
@@ -284,7 +284,10 @@ async function loadFloorSnapshot(area?: string): Promise<FloorSnapshot> {
       userId: ticket?.userId ?? null,
       covers: cover?.covers ?? ticket?.covers ?? null,
       total: ticketRunningTotal(items),
-      items,
+      // Occupancy only. Shipping every bill's lines on a 4s poll is what
+      // made Android spend a second in JSON.parse before the floor painted.
+      // The tapped table still hydrates from getLatestForTable / ticket cache.
+      items: [],
       note: ticket ? stripTransferTagsFromNote(ticket.note) || null : null,
     });
   }

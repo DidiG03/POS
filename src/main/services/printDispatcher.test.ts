@@ -94,6 +94,8 @@ import {
   pickActiveReceiptProfile,
   pickPrinterProfile,
   printWithProfile,
+  paymentPrintWaitsForPrinters,
+  fireDispatchTicket,
   profileMode,
   RETRY_MAX_ATTEMPTS,
   setRetryWakeup,
@@ -633,6 +635,100 @@ describe('dispatchTicket', () => {
       'bar',
       'kitchen',
     ]);
+  });
+
+  it('prints routed ORDER slips in parallel so a slow kitchen does not delay the bar', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    sendNetwork.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 40));
+      inFlight -= 1;
+      return { ok: true };
+    });
+    await dispatchTicket(
+      {
+        area: 'A',
+        tableLabel: 'T1',
+        items: [
+          { name: 'pizza', qty: 1, unitPrice: 1, categoryName: 'food' },
+          { name: 'beer', qty: 1, unitPrice: 1, categoryName: 'drinks' },
+        ],
+        meta: { kind: 'ORDER' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'kitchen',
+            name: 'Kitchen',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.2',
+            port: 9100,
+          },
+          {
+            id: 'bar',
+            name: 'Bar',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.3',
+            port: 9100,
+          },
+          {
+            id: 'receipt',
+            name: 'Receipt',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.1',
+            port: 9100,
+          },
+        ],
+        printerRouting: {
+          enabled: true,
+          receiptPrinterId: 'receipt',
+          categories: { food: 'kitchen', drinks: 'bar' },
+        },
+      } as any,
+      { retries: 0 },
+    );
+    expect(maxInFlight).toBe(2);
+  });
+
+  it('only payments wait on the physical printer before answering the waiter', () => {
+    expect(paymentPrintWaitsForPrinters('PAYMENT')).toBe(true);
+    expect(paymentPrintWaitsForPrinters('ORDER')).toBe(false);
+    expect(paymentPrintWaitsForPrinters('TICKET')).toBe(false);
+    expect(paymentPrintWaitsForPrinters('')).toBe(false);
+  });
+
+  it('fireDispatchTicket returns before a hung printer ACKs', async () => {
+    sendNetwork.mockImplementation(() => new Promise(() => {}));
+    const onDone = vi.fn();
+    fireDispatchTicket(
+      {
+        area: 'A',
+        tableLabel: 'T1',
+        items: [{ name: 'x', qty: 1, unitPrice: 1 }],
+        meta: { kind: 'ORDER' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'r',
+            name: 'R',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.1',
+            port: 9100,
+          },
+        ],
+      } as any,
+      { retries: 0 },
+      onDone,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onDone).not.toHaveBeenCalled();
   });
 
   it('reports per-printer failures and a first error', async () => {
