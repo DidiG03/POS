@@ -239,32 +239,43 @@ export function revivePersistedTicketDraft<
   };
 }
 
-/** Keep unsent local lines (and higher qty) when reloading a logged snapshot. */
+/**
+ * Keep unsent local lines (and higher qty) when reloading a logged snapshot.
+ *
+ * The snapshot is the bill, so every one of its lines is kept as-is. Two rows
+ * can legitimately share a line key — 3x Water sent, then 1x Water sent after
+ * it — and folding them together by key would drop the earlier quantity off
+ * the ticket.
+ *
+ * A local unsent line is only the same line as a hydrated line that is itself
+ * still unsent. Ordering one more of something already sent is a new line, not
+ * a higher quantity of the sent one, so it is appended instead of compared.
+ */
 export function mergeLocalStagedOntoHydrated<T extends TicketDraftLine>(
   hydrated: T[],
   local: T[],
 ): T[] {
-  const byKey = new Map<string, T>();
-  const order: string[] = [];
-  for (const line of hydrated) {
+  const out: T[] = [...hydrated];
+  const stagedAt = new Map<string, number>();
+  out.forEach((line, i) => {
+    if (line.voided === true || line.staged !== true) return;
     const key = ticketDraftLineKey(line);
-    if (!byKey.has(key)) order.push(key);
-    byKey.set(key, line);
-  }
+    if (!stagedAt.has(key)) stagedAt.set(key, i);
+  });
   for (const line of local) {
     if (line.voided === true || line.staged !== true) continue;
     const key = ticketDraftLineKey(line);
-    const existing = byKey.get(key);
-    if (!existing) {
-      order.push(key);
-      byKey.set(key, line);
+    const at = stagedAt.get(key);
+    if (at == null) {
+      stagedAt.set(key, out.length);
+      out.push(line);
       continue;
     }
-    if (Number(line.qty) > Number(existing.qty)) {
-      byKey.set(key, { ...existing, ...line, staged: true });
+    if (Number(line.qty) > Number(out[at].qty)) {
+      out[at] = { ...out[at], ...line, staged: true };
     }
   }
-  return order.map((key) => byKey.get(key)!).filter(Boolean);
+  return out;
 }
 
 export function shouldKeepLocalDraftOnEmptyLog(
@@ -286,20 +297,42 @@ export function shouldMergeLocalStagedOntoHydrated(
  * host still holds as fired-and-live must survive the next Send even if the
  * local cart lost it — otherwise one tap rewrites the bill from a stale
  * (or empty) cart and the guests are undercharged.
+ *
+ * `onBill` is the part of `outgoing` that was already fired before this Send;
+ * it defaults to all of `outgoing`. Lines being fired right now must be left
+ * out of it, because matching on the line key alone cannot tell "the host's
+ * 3x Water is already in this payload" from "this payload adds 1x more Water",
+ * and treating the second as the first bills one water instead of four.
  */
 export function restoreMissingServerLines<T extends TicketDraftLine>(
   outgoing: T[],
   server: T[],
+  onBill: T[] = outgoing,
 ): T[] {
-  const present = new Set(outgoing.map((l) => ticketDraftLineKey(l)));
-  const missing: T[] = [];
+  const have = new Map<string, number>();
+  for (const line of onBill) {
+    const key = ticketDraftLineKey(line);
+    have.set(key, (have.get(key) || 0) + Number(line.qty || 0));
+  }
+  const wanted = new Map<string, { line: T; qty: number }>();
+  const order: string[] = [];
   for (const line of server) {
     if (line.voided === true || line.paid === true) continue;
     if (line.fired !== true) continue;
     const key = ticketDraftLineKey(line);
-    if (present.has(key)) continue;
-    present.add(key);
-    missing.push(line);
+    const seen = wanted.get(key);
+    if (seen) {
+      seen.qty += Number(line.qty || 0);
+      continue;
+    }
+    wanted.set(key, { line, qty: Number(line.qty || 0) });
+    order.push(key);
+  }
+  const missing: T[] = [];
+  for (const key of order) {
+    const entry = wanted.get(key)!;
+    const gap = entry.qty - (have.get(key) || 0);
+    if (gap > 0) missing.push({ ...entry.line, qty: gap });
   }
   return missing.length ? [...missing, ...outgoing] : outgoing;
 }

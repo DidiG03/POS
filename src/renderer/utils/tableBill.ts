@@ -65,6 +65,22 @@ export function hostBillHasLiveLines(items: TicketReadItems): boolean {
 }
 
 /**
+ * The sitting's running total as the floor last painted it, or `null` when the
+ * floor has nothing to say about this table.
+ *
+ * The floor derives this from the same occupancy-bounded TicketLog row the
+ * ticket read asks for, so a positive total here is independent evidence that
+ * the sitting has a bill — even when the read hands back nothing.
+ */
+export function peekTableBillTotal(area: string, label: string): number | null {
+  const snap = peekFloorSnapshot(area);
+  const row = snap?.tables?.find((r) => r.area === area && r.label === label);
+  if (!row) return null;
+  const total = Number((row as { total?: unknown }).total);
+  return Number.isFinite(total) ? total : null;
+}
+
+/**
  * How to apply a host bill read to the open table the waiter is looking at.
  * `keep` means do not paint an empty cart — the sitting is still live.
  */
@@ -74,6 +90,8 @@ export function decideHostBill(opts: {
   hasCovers: boolean;
   suppressClose: boolean;
   withinPostSendGrace: boolean;
+  /** {@link peekTableBillTotal} — the floor's running total for this sitting. */
+  expectedTotal?: number | null;
 }): HostBillDecision {
   if (!opts.read.ok) return { kind: 'unreadable' };
   const items = opts.read.items;
@@ -87,6 +105,11 @@ export function decideHostBill(opts: {
   if (opts.suppressClose) return { kind: 'keep' };
   if (shouldKeepLocalDraftOnEmptyLog(opts.currentLines))
     return { kind: 'keep' };
+  // Nothing came back, yet the floor is painting money on this table. Treating
+  // that as an empty bill is how a waiter ends up staring at a blank ticket on
+  // an occupied table — and the next send would then rewrite the check down to
+  // just the new items. A read we can prove is incomplete is unreadable.
+  if (Number(opts.expectedTotal || 0) > 0) return { kind: 'unreadable' };
   if (opts.hasCovers) return { kind: 'keep' };
   return { kind: 'empty', note: opts.read.note };
 }

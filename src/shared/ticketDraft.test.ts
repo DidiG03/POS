@@ -223,7 +223,7 @@ describe('ticketDraft', () => {
     expect(shouldKeepLocalDraftOnEmptyLog([])).toBe(false);
   });
 
-  it('appends unsent local lines and keeps a higher local qty', () => {
+  it('appends unsent local lines beside the same item already sent', () => {
     const hydrated = [
       {
         name: 'Soup',
@@ -254,9 +254,56 @@ describe('ticketDraft', () => {
     ];
     const merged = mergeLocalStagedOntoHydrated(hydrated, local);
     expect(merged.map((l) => [l.name, l.qty, l.staged])).toEqual([
+      ['Soup', 1, false],
       ['Soup', 2, true],
       ['Steak', 1, true],
     ]);
+  });
+
+  it('keeps a higher local qty on a line the log still holds as unsent', () => {
+    const hydrated = [
+      {
+        name: 'Soup',
+        sku: 'soup',
+        qty: 1,
+        unitPrice: 5,
+        staged: true,
+        courseId: 'c1',
+      },
+    ];
+    const local = [
+      {
+        name: 'Soup',
+        sku: 'soup',
+        qty: 2,
+        unitPrice: 5,
+        staged: true,
+        courseId: 'c1',
+      },
+    ];
+    const merged = mergeLocalStagedOntoHydrated(hydrated, local);
+    expect(merged.map((l) => [l.name, l.qty, l.staged])).toEqual([
+      ['Soup', 2, true],
+    ]);
+  });
+
+  /**
+   * A bill legitimately holds two rows for the same product: 3x Water sent,
+   * then 1x Water sent after it. Re-reading the log used to fold them together
+   * by line key and keep only the last, so the table lost the first 3 waters.
+   */
+  it('keeps both sent rows when the same item was sent twice', () => {
+    const water = (qty: number) => ({
+      name: 'Water',
+      sku: 'water',
+      qty,
+      unitPrice: 100,
+      station: 'BAR',
+      staged: false,
+    });
+    const hydrated = [water(3), water(1)];
+    const merged = mergeLocalStagedOntoHydrated(hydrated, hydrated);
+    expect(merged.reduce((sum, l) => sum + Number(l.qty), 0)).toBe(4);
   });
 
   it('does not keep local staged lines on a fully voided ticket', () => {
@@ -336,6 +383,31 @@ describe('restoreMissingServerLines', () => {
   it('ignores server lines that were never fired', () => {
     const server = [{ sku: 'Draft', name: 'Draft', qty: 1, unitPrice: 5 }];
     expect(restoreMissingServerLines([], server)).toEqual([]);
+  });
+
+  /**
+   * The host holds 3x Water. A till whose cart went stale sends 1x more Water.
+   * Matching on the line key alone treated the new water as the host's line
+   * and rewrote the bill down to a single water.
+   */
+  it('tops up a sent quantity that the new line only looks like', () => {
+    const server = [fired('Water', 100, { qty: 3 })];
+    const extra = fired('Water', 100, { qty: 1 });
+    const next = restoreMissingServerLines([extra], server, []);
+    expect(next.reduce((sum, l) => sum + Number(l.qty), 0)).toBe(4);
+  });
+
+  it('does not top up when the cart still holds the sent line', () => {
+    const server = [fired('Water', 100, { qty: 3 })];
+    const onBill = [fired('Water', 100, { qty: 3 })];
+    const outgoing = [...onBill, fired('Water', 100, { qty: 1 })];
+    expect(restoreMissingServerLines(outgoing, server, onBill)).toBe(outgoing);
+  });
+
+  it('does not resurrect a quantity the waiter voided off the bill', () => {
+    const server = [fired('Water', 100, { qty: 3 })];
+    const onBill = [fired('Water', 100, { qty: 3, voided: true })];
+    expect(restoreMissingServerLines(onBill, server, onBill)).toBe(onBill);
   });
 
   it('keeps the same item on two seats apart', () => {

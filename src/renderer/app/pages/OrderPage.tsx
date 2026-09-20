@@ -92,7 +92,11 @@ import {
   peekMenu,
 } from '../../utils/posReadCache';
 import { readTicketForTable } from '../../utils/ticketRead';
-import { decideHostBill, peekTableBill } from '../../utils/tableBill';
+import {
+  decideHostBill,
+  peekTableBill,
+  peekTableBillTotal,
+} from '../../utils/tableBill';
 import { applyHostOpenTables } from '../../utils/openTablesSync';
 import { hasLocalCovers } from '../../utils/tableSessionKeepOpen';
 
@@ -1074,6 +1078,7 @@ export default function OrderPage() {
         hasCovers: opts.hasCovers,
         suppressClose: suppressFreeOnEmptyRef.current,
         withinPostSendGrace,
+        expectedTotal: peekTableBillTotal(opts.area, opts.label),
       });
       if (decision.kind === 'unreadable') {
         setTicketLoadFailed(true);
@@ -2237,6 +2242,13 @@ export default function OrderPage() {
         selectedTable.area,
         selectedTable.label,
       );
+      // What this cart already had on the bill before this tap. The lines
+      // being fired now are deliberately excluded: 1x Water added on top of
+      // 3x Water is a second line, not the host's line, and letting it stand
+      // in for it would rewrite the bill down to a single water.
+      const alreadyOnBill = state.lines
+        .filter((l) => l.staged !== true)
+        .map((l) => toTicketLogLine(l, { fired: true }));
       const logItems = restoreMissingServerLines(
         state.lines.map((l) =>
           toTicketLogLine(l, {
@@ -2245,6 +2257,7 @@ export default function OrderPage() {
           }),
         ),
         onServer,
+        alreadyOnBill,
       );
       const printLines = isFireOrder
         ? fireLines.map((l) => toTicketLogLine(l))
