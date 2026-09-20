@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isFloorLayoutPending, isFloorLayoutVacant } from './floorLayoutState';
+import {
+  isFloorCanvasFitReady,
+  isFloorLayoutPending,
+  isFloorLayoutVacant,
+} from './floorLayoutState';
 
 describe('floorLayoutState', () => {
   it('treats null as loading, not as an empty area', () => {
@@ -16,5 +20,11 @@ describe('floorLayoutState', () => {
     const nodes = [{ id: 1 }];
     expect(isFloorLayoutPending(nodes)).toBe(false);
     expect(isFloorLayoutVacant(nodes)).toBe(false);
+  });
+
+  it('waits for a measured canvas before the auto-fit paint', () => {
+    expect(isFloorCanvasFitReady({ w: 0, h: 0 })).toBe(false);
+    expect(isFloorCanvasFitReady({ w: 360, h: 0 })).toBe(false);
+    expect(isFloorCanvasFitReady({ w: 360, h: 520 })).toBe(true);
   });
 });

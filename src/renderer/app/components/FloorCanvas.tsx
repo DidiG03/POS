@@ -5,11 +5,20 @@
 // (window.api.layout.{get,save}) are identical to TablesPage so a layout
 // saved here is forward-compatible with future refactors.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { PageSpinner } from '../../components/PageSpinner';
 import { floorTableA11yName } from '../../utils/floorTableA11y';
 import {
+  isFloorCanvasFitReady,
   isFloorLayoutPending,
   isFloorLayoutVacant,
 } from '../../utils/floorLayoutState';
@@ -299,6 +308,28 @@ function nodesFromCachedLayout(area: string): FloorNode[] | null {
   return saved.length ? normaliseSavedNodes(saved) : [];
 }
 
+// Survive FloorCanvas remounts (area switch / user change) so the first
+// paint can reuse the last measured box instead of flashing identity
+// scale (tables clustered in saved coordinates) then spreading.
+let lastMeasuredCanvasSize = { w: 0, h: 0 };
+
+function readCanvasBox(el: HTMLElement | null): { w: number; h: number } {
+  if (!el) return { w: 0, h: 0 };
+  const r = el.getBoundingClientRect();
+  return {
+    w: Math.max(0, Math.floor(r.width)),
+    h: Math.max(0, Math.floor(r.height)),
+  };
+}
+
+function rememberCanvasSize(next: { w: number; h: number }): {
+  w: number;
+  h: number;
+} {
+  if (next.w > 0 && next.h > 0) lastMeasuredCanvasSize = next;
+  return next;
+}
+
 function nextTableLabel(cur: FloorNode[] | null): string {
   const used = new Set<number>();
   for (const n of cur || []) {
@@ -514,10 +545,9 @@ export default function FloorCanvas({
   // Track the actual visible canvas size so the read-only auto-fit
   // transform can stretch the layout to fill the full canvas — both
   // axes — instead of leaving big empty bands on the right / bottom.
-  const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({
-    w: 0,
-    h: 0,
-  });
+  const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>(
+    lastMeasuredCanvasSize,
+  );
   // Bumped only when a fresh layout is LOADED (open / area change / remote
   // update) — never on per-node edits — so the editor re-centres the
   // layout on load/resize without snapping back to centre mid-drag.
@@ -987,16 +1017,19 @@ export default function FloorCanvas({
   const showToolbar = isEditor;
 
   // Observe the outer canvas wrapper so the read-only auto-fit
-  // transform always uses the latest visible dimensions.
-  useEffect(() => {
+  // transform always uses the latest visible dimensions. Layout effect
+  // so the first *paint* already has the fitted scale — useEffect ran
+  // after paint and showed tables clustered at saved x/y for a frame.
+  useLayoutEffect(() => {
     const el = outerRef.current;
     if (!el) return;
     const update = () => {
-      const r = el.getBoundingClientRect();
-      setCanvasSize({
-        w: Math.max(0, Math.floor(r.width)),
-        h: Math.max(0, Math.floor(r.height)),
-      });
+      const next = readCanvasBox(el);
+      if (!isFloorCanvasFitReady(next)) return;
+      rememberCanvasSize(next);
+      setCanvasSize((prev) =>
+        prev.w === next.w && prev.h === next.h ? prev : next,
+      );
     };
     update();
     const ro = new ResizeObserver(() => update());
@@ -1022,7 +1055,9 @@ export default function FloorCanvas({
     if (!cur.length) return identity;
     const cw = Math.max(0, canvasSize.w);
     const ch = Math.max(0, canvasSize.h);
-    if (cw < 200 || ch < 200) return identity;
+    // Unmeasured canvas must not paint at scale 1 — that is the clustered
+    // flash. Callers hide the floor until `isFloorCanvasFitReady`.
+    if (!isFloorCanvasFitReady({ w: cw, h: ch })) return identity;
     const pad = Number.isFinite(Number(fitPadding))
       ? Math.max(0, Number(fitPadding))
       : 12;
@@ -1069,6 +1104,12 @@ export default function FloorCanvas({
     const ty = (ch - bh * scaleY) / 2 - minY * scaleY;
     return { scale, scaleX, scaleY, tx, ty };
   }, [editable, nodes, canvasSize.w, canvasSize.h, fitPadding]);
+
+  const canvasFitReady = editable || isFloorCanvasFitReady(canvasSize);
+  const showFloorSpinner =
+    !editable &&
+    (isFloorLayoutPending(nodes) ||
+      (Boolean(nodes?.length) && !canvasFitReady));
 
   // -------- Pinch-to-zoom + drag-to-pan (read-only canvas) --------
   // Layered ON TOP of the auto-fit transform: hosts can pinch to zoom
@@ -1356,9 +1397,6 @@ export default function FloorCanvas({
               >
                 {t('settingsFloor.alignGrid')}
               </button>
-              <span className="text-[11px] opacity-60 ml-1 hidden sm:inline">
-                {t('settingsFloor.snapHint', { px: FLOOR_GRID })}
-              </span>
             </>
           )}
           {(editable || dirty) && (
@@ -1396,7 +1434,7 @@ export default function FloorCanvas({
           fillAvailableHeight ? 'min-h-0 flex-1' : shellStaticHeightClasses
         } ${editable ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden touch-none'}`}
       >
-        {isFloorLayoutPending(nodes) && !editable ? (
+        {showFloorSpinner ? (
           <PageSpinner message={t('tables.loading')} />
         ) : null}
         {!editable && isZoomed && (
@@ -1424,6 +1462,8 @@ export default function FloorCanvas({
                   transform: `translate(${userZoom.tx}px, ${userZoom.ty}px) scale(${userZoom.scale})`,
                   transformOrigin: '0 0',
                   willChange: 'transform',
+                  transition: 'none',
+                  visibility: canvasFitReady ? 'visible' : 'hidden',
                 } as React.CSSProperties)
           }
         >
@@ -1436,7 +1476,7 @@ export default function FloorCanvas({
             className={
               editable
                 ? 'relative w-full min-w-[760px] sm:min-w-0 h-full touch-pan-x touch-pan-y'
-                : 'absolute inset-0 touch-none'
+                : 'absolute inset-0 touch-none pos-floor-canvas--fitted'
             }
             style={
               editable
@@ -1446,10 +1486,12 @@ export default function FloorCanvas({
                     // is delta-based, so this visual offset doesn't affect it.
                     transform: `translate(${editorOffset.tx}px, ${editorOffset.ty}px)`,
                     transformOrigin: 'top left',
+                    transition: 'none',
                   } as React.CSSProperties)
                 : ({
                     transform: `translate(${viewTransform.tx}px, ${viewTransform.ty}px) scale(${viewTransform.scaleX}, ${viewTransform.scaleY})`,
                     transformOrigin: 'top left',
+                    transition: 'none',
                     // Children read these to counter-distort their own
                     // shapes (so circles stay circles even when the
                     // wrapper is non-uniformly scaled to spread positions).
@@ -1505,88 +1547,90 @@ export default function FloorCanvas({
                 )}
               </div>
             )}
-            {areas.map((a) => (
-              <MemoAreaRect
-                key={`a-${a.id}`}
-                node={a}
-                editable={editable}
-                selected={selectedId === a.id}
-                onSelect={() => setSelectedId(a.id)}
-                onMove={handleMove}
-                onResize={handleAreaResize}
-                onRename={handleAreaRename}
-                onDelete={handleDelete}
-              />
-            ))}
-            {renderTables.map((t) => {
-              const canMergeDrag =
-                mergeEnabled && !editable && !membersOccupied(t.memberLabels);
-              const traced = Boolean(
-                highlightLabels?.some((label) =>
-                  t.memberLabels.includes(label),
-                ),
-              );
-              return (
-                <MemoCircle
-                  key={t.displayKey}
-                  node={t}
+            {canvasFitReady &&
+              areas.map((a) => (
+                <MemoAreaRect
+                  key={`a-${a.id}`}
+                  node={a}
                   editable={editable}
-                  selected={selectedId === t.id || traced}
-                  mergeHighlight={mergeHoverKey === t.displayKey}
-                  mergeDragEnabled={canMergeDrag}
+                  selected={selectedId === a.id}
+                  onSelect={() => setSelectedId(a.id)}
                   onMove={handleMove}
-                  onClick={() => {
-                    if (editable) {
-                      setSelectedId(t.id);
-                      return;
-                    }
-                    onTableClick?.(t.memberLabels[0], t.memberLabels);
-                  }}
-                  onLongPress={
-                    editable || !onTableLongPress
-                      ? undefined
-                      : (pos) =>
-                          onTableLongPress({
-                            label: t.memberLabels[0],
-                            members: t.memberLabels,
-                            clientX: pos.clientX,
-                            clientY: pos.clientY,
-                          })
-                  }
-                  onMergeMove={
-                    canMergeDrag
-                      ? (x, y) => handleMergeHover(t, x, y)
-                      : undefined
-                  }
-                  onMergeDrop={
-                    canMergeDrag
-                      ? (x, y) => handleMergeDrop(t, x, y)
-                      : undefined
-                  }
-                  pointerToLayout={(clientX, clientY) =>
-                    pointerToLayoutRef.current(clientX, clientY)
-                  }
-                  onMergeDragEnd={() => setMergeHoverKey(null)}
-                  onDelete={() => handleDelete(t.id)}
-                  colorClass={
-                    pickGroupColorClass(
-                      t.memberLabels,
-                      colorByLabel,
-                      unlistedColorClass,
-                    ) ?? undefined
-                  }
-                  badge={
-                    pickGroupUsageCount(t.memberLabels, usageCountByLabel)
-                      ? undefined
-                      : pickGroupBadge(t.memberLabels, badgeByLabel)
-                  }
-                  usageCount={pickGroupUsageCount(
-                    t.memberLabels,
-                    usageCountByLabel,
-                  )}
+                  onResize={handleAreaResize}
+                  onRename={handleAreaRename}
+                  onDelete={handleDelete}
                 />
-              );
-            })}
+              ))}
+            {canvasFitReady &&
+              renderTables.map((t) => {
+                const canMergeDrag =
+                  mergeEnabled && !editable && !membersOccupied(t.memberLabels);
+                const traced = Boolean(
+                  highlightLabels?.some((label) =>
+                    t.memberLabels.includes(label),
+                  ),
+                );
+                return (
+                  <MemoCircle
+                    key={t.displayKey}
+                    node={t}
+                    editable={editable}
+                    selected={selectedId === t.id || traced}
+                    mergeHighlight={mergeHoverKey === t.displayKey}
+                    mergeDragEnabled={canMergeDrag}
+                    onMove={handleMove}
+                    onClick={() => {
+                      if (editable) {
+                        setSelectedId(t.id);
+                        return;
+                      }
+                      onTableClick?.(t.memberLabels[0], t.memberLabels);
+                    }}
+                    onLongPress={
+                      editable || !onTableLongPress
+                        ? undefined
+                        : (pos) =>
+                            onTableLongPress({
+                              label: t.memberLabels[0],
+                              members: t.memberLabels,
+                              clientX: pos.clientX,
+                              clientY: pos.clientY,
+                            })
+                    }
+                    onMergeMove={
+                      canMergeDrag
+                        ? (x, y) => handleMergeHover(t, x, y)
+                        : undefined
+                    }
+                    onMergeDrop={
+                      canMergeDrag
+                        ? (x, y) => handleMergeDrop(t, x, y)
+                        : undefined
+                    }
+                    pointerToLayout={(clientX, clientY) =>
+                      pointerToLayoutRef.current(clientX, clientY)
+                    }
+                    onMergeDragEnd={() => setMergeHoverKey(null)}
+                    onDelete={() => handleDelete(t.id)}
+                    colorClass={
+                      pickGroupColorClass(
+                        t.memberLabels,
+                        colorByLabel,
+                        unlistedColorClass,
+                      ) ?? undefined
+                    }
+                    badge={
+                      pickGroupUsageCount(t.memberLabels, usageCountByLabel)
+                        ? undefined
+                        : pickGroupBadge(t.memberLabels, badgeByLabel)
+                    }
+                    usageCount={pickGroupUsageCount(
+                      t.memberLabels,
+                      usageCountByLabel,
+                    )}
+                  />
+                );
+              })}
             {isFloorLayoutVacant(nodes) && !layoutFailed && !editable && (
               <div className="absolute inset-0 flex items-center justify-center text-sm opacity-70 text-center px-4">
                 {emptyMessage ||
@@ -2074,6 +2118,7 @@ function AreaRect({
         transform:
           'translate(-50%, -50%) scale(var(--floor-cx, 1), var(--floor-cy, 1))',
         transformOrigin: 'center',
+        transition: 'none',
       }}
       onClick={(e) => {
         if (Date.now() < suppressClickUntilRef.current) {
@@ -2605,6 +2650,7 @@ function Circle({
         transform:
           'translate(-50%, -50%) scale(var(--floor-cx, 1), var(--floor-cy, 1))',
         transformOrigin: 'center',
+        transition: 'none',
         WebkitTouchCallout: 'none',
       }}
       onClick={() => {

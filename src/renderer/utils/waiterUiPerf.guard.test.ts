@@ -150,6 +150,9 @@ describe('waiter UI stays responsive', () => {
     expect(floor).toContain('nodesFromCachedLayout');
     expect(floor).toContain('peekLayout');
     expect(floor).toContain('readLayout');
+    expect(floor).toContain('useLayoutEffect');
+    expect(floor).toContain('isFloorCanvasFitReady');
+    expect(floor).toContain('lastMeasuredCanvasSize');
     expect(floor).not.toMatch(
       /setLayoutFailed\(false\);\s*setSaveError\(null\);\s*setNodes\(null\)/,
     );
@@ -177,7 +180,9 @@ describe('waiter UI stays responsive', () => {
   it('answers kitchen /print/ticket without waiting for the printers', () => {
     const dispatcher = read('src/main/services/printDispatcher.ts');
     expect(dispatcher).toContain('export function fireDispatchTicket');
-    expect(dispatcher).toContain('export function paymentPrintWaitsForPrinters');
+    expect(dispatcher).toContain(
+      'export function paymentPrintWaitsForPrinters',
+    );
     expect(dispatcher).toContain('await Promise.all(');
 
     const lan = read('src/main/api.ts');
@@ -204,14 +209,12 @@ describe('waiter UI stays responsive', () => {
 
   it('does not retry aborted POSTs and skips PIN-screen staff polling', () => {
     const lan = read('src/renderer/browserLanApi.ts');
-    expect(lan).toContain('mutating && name === \'AbortError\'');
+    expect(lan).toContain("mutating && name === 'AbortError'");
     expect(lan).toContain('lastSseDataAt');
     expect(lan).toContain('if (missedMs > 8_000) emitPosSyncCatchupSoon()');
 
     const login = read('src/renderer/app/pages/LoginPage.tsx');
-    expect(login).not.toMatch(
-      /setInterval\(\(\)\s*=>[\s\S]{0,80}refreshStaff/,
-    );
+    expect(login).not.toMatch(/setInterval\(\(\)\s*=>[\s\S]{0,80}refreshStaff/);
     expect(login).toContain('pos:usersChanged');
 
     expect(read('src/renderer/utils/posReadCache.ts')).toContain(
@@ -233,7 +236,9 @@ describe('waiter UI stays responsive', () => {
     const tables = read('src/renderer/app/pages/TablesPage.tsx');
     expect(tables).toContain('useTicketStore((s) => s.hydrate)');
     expect(tables).toContain('useTicketStore((s) => s.bindTable)');
-    expect(tables).not.toMatch(/const \{ hydrate, bindTable \} = useTicketStore\(\)/);
+    expect(tables).not.toMatch(
+      /const \{ hydrate, bindTable \} = useTicketStore\(\)/,
+    );
   });
 
   it('keeps floor occupancy payloads free of ticket lines', () => {
@@ -244,7 +249,7 @@ describe('waiter UI stays responsive', () => {
     const lan = read('src/main/api.ts');
     expect(lan).toContain('function sendJson');
     expect(lan).toContain('If-None-Match');
-    expect(lan).toContain("{ etag: true }");
+    expect(lan).toContain('{ etag: true }');
 
     const client = read('src/renderer/browserLanApi.ts');
     expect(client).toContain("headers['If-None-Match']");
