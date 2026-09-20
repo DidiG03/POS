@@ -219,11 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.49"
-            echo "- Named print routings: separate ORDER slips per routing even on the same printer"
-            echo "- Sold-by-kg weigh-in works on tablets; modals ignore accidental backdrop taps"
-            echo "- Admin ticket reports: reliable date filters, staff lists, and revenue totals"
-            echo "- Mobile Admin/Waiter boot restores the till host without hanging on splash"
+            echo "### Changes in v0.2.50"
+            echo "- Sending extra items keeps the whole bill instead of rewriting it down to the extras"
+            echo "- An occupied table whose bill cannot be read now warns and holds send/pay, instead of showing a blank ticket"
+            echo "- The floor no longer flashes tables clustered at their saved coordinates before the auto-fit lands"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
