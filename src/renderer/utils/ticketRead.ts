@@ -135,7 +135,9 @@ export async function readTicketForTable(
         ingest: false,
       });
       if (fromFloor) return { ok: true, ...fromFloor };
-      return { ok: true, items: confirmedItems, note: noteOf(confirmed) };
+      // Floor snapshots intentionally contain occupancy-only rows with
+      // `items: []`. That is not proof that the open table has no ticket;
+      // continue to a fresh snapshot before returning an empty bill.
     }
     if (typeof deps.fetchFloor === 'function') {
       const snap = await deps.fetchFloor(area).catch(() => null);

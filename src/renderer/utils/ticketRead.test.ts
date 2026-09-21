@@ -153,6 +153,49 @@ describe('readTicketForTable', () => {
     });
   });
 
+  it('does not treat an occupancy-only cached floor row as an empty ticket', async () => {
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T8',
+            openedAt: '2026-09-11T14:00:31.983Z',
+            userId: 1,
+            covers: 3,
+            total: 500,
+            items: [],
+            note: null,
+          },
+        ],
+      },
+      { area: 'Salla' },
+    );
+    const d: TicketReadDeps & { calls: number; invalidated: number } = {
+      ...deps([{ items: [] }, { items: [] }]),
+      fetchFloor: async () => ({
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T8',
+            openedAt: '2026-09-11T14:00:31.983Z',
+            userId: 1,
+            covers: 3,
+            total: 500,
+            items: [{ name: 'Pizza', qty: 1, unitPrice: 500 }],
+            note: null,
+          },
+        ],
+      }),
+    };
+
+    await expect(readTicketForTable('Salla', 'T8', d)).resolves.toEqual({
+      ok: true,
+      items: [{ name: 'Pizza', qty: 1, unitPrice: 500 }],
+      note: '',
+    });
+  });
+
   it('does not restore a leftover cache for a table missing from the floor', async () => {
     ingestFloorSnapshot({ tables: [] }, { area: 'Salla' });
     cacheLatestTicket('Salla', 'T7', {
