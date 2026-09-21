@@ -219,10 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.51"
-            echo "- Admin Tickets lists every waiter without a date filter; the day picker stays on the waiter page"
-            echo "- Waiter tickets no longer collapse a whole room into one sitting when session keys were truncated"
-            echo "- Paid receipts still show when kitchen ticket snapshots were compacted away"
+            echo "### Changes in v0.2.52"
+            echo "- Occupied tables show the sent items again instead of an empty ticket (till lookup now uses ticket id)"
+            echo "- Waiters can open personal reports on the phone; qty +/- works on the first unsent line"
+            echo "- Admin can erase all tickets after typing ERASE; menu and staff are kept"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
