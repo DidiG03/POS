@@ -89,6 +89,7 @@ describe('IPC policy shape', () => {
       'auth:deleteUser',
       'auth:syncStaffFromApi',
       'auth:updateUser',
+      'admin:eraseTickets',
       'backups:create',
       'backups:restore',
       'layout:save',

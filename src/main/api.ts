@@ -108,6 +108,10 @@ import {
   listAdminTicketCounts,
   listAdminTicketsByUser,
 } from './services/adminTickets';
+import {
+  eraseAllTickets,
+  eraseTicketsConfirmMatches,
+} from './services/eraseTickets';
 import { isThisMachineAddress } from '@shared/localPosHost';
 import os from 'node:os';
 import {
@@ -3610,6 +3614,24 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }),
           corsOrigin,
         );
+      }
+      if (req.method === 'POST' && pathname === '/admin/erase-tickets') {
+        const body = await parseJson(req);
+        if (!eraseTicketsConfirmMatches(body?.confirm)) {
+          return send(
+            res,
+            200,
+            { ok: false, error: 'confirm-required' },
+            corsOrigin,
+          );
+        }
+        const result = await eraseAllTickets();
+        logSecurityEvent('tickets_erased', {
+          userId: auth?.userId,
+          ticketLogs: result.ticketLogs,
+          orders: result.orders,
+        });
+        return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/admin/ticket-counts') {
         const rows = await listAdminTicketCounts({

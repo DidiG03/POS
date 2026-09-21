@@ -1434,6 +1434,12 @@ export function installBrowserLanApi(): void {
         const rows = await goLan('/admin/ticket-counts' + suffix);
         return Array.isArray(rows) ? rows : [];
       },
+      async eraseTickets(input: { confirm: string }) {
+        return await goLan('/admin/erase-tickets', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
+      },
       async listTicketsByUser(
         userId: number,
         range?: { startIso?: string; endIso?: string },

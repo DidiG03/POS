@@ -204,6 +204,10 @@ import {
   listAdminTicketsByUser,
 } from './services/adminTickets';
 import {
+  eraseAllTickets,
+  eraseTicketsConfirmMatches,
+} from './services/eraseTickets';
+import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
@@ -3493,111 +3497,117 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     // Hold the table lock only for occupancy + the TicketLog write.
     // Compact and KDS are extra SQLite work and must not stall the
     // waiter's Send ACK — other phones are waiting on the same WAL.
-    const logged = await withTableLock(sanitizedArea, sanitizedTableLabel, async () => {
-      // Refuse to append to a closed table. Without this guard a stale
-      // device could add lines to a table that has already been paid out
-      // / voided / handed off — which silently rebuilds the closed
-      // session, mis-attributes revenue, and (worst of all) reprints
-      // duplicate kitchen tickets.
-      const isOpen = await coreServices.isTableOpen(
-        sanitizedArea,
-        sanitizedTableLabel,
-      );
-      if (!isOpen) {
-        return {
-          ok: false,
-          error: `Table ${sanitizedArea} ${sanitizedTableLabel} is closed`,
-          code: 'TABLE_CLOSED',
-        };
-      }
-
-      // Anti-collision: if the latest log row IN THIS OPEN SESSION was
-      // written by a different waiter (and the actor isn't an admin),
-      // the actor is operating on a stale view — most likely both
-      // waiters tried to claim the same empty table, or this device
-      // missed a transfer broadcast. Reject so the renderer can refresh
-      // and toast a clear message instead of silently overwriting the
-      // session owner.
-      //
-      // CRITICAL: scope the lookup to the CURRENT open session via
-      // `getCurrentSessionOwnerId`. Tables get reused — without that
-      // scope, the first send by a fresh waiter who opened a
-      // previously-paid-out table would be rejected because the
-      // all-time "latest" row belongs to whoever last owned that
-      // table label (often days ago).
-      const ownerId = await getCurrentSessionOwnerId(
-        sanitizedArea,
-        sanitizedTableLabel,
-      );
-      if (ownerId !== null && ownerId !== Number(userId)) {
-        const actor = await prisma.user
-          .findUnique({ where: { id: Number(userId) } })
-          .catch(() => null);
-        const actorIsAdmin =
-          actor && String((actor as any).role || '').toUpperCase() === 'ADMIN';
-        if (!actorIsAdmin) {
-          const ownerName = await prisma.user
-            .findUnique({ where: { id: ownerId } })
-            .catch(() => null);
+    const logged = await withTableLock(
+      sanitizedArea,
+      sanitizedTableLabel,
+      async () => {
+        // Refuse to append to a closed table. Without this guard a stale
+        // device could add lines to a table that has already been paid out
+        // / voided / handed off — which silently rebuilds the closed
+        // session, mis-attributes revenue, and (worst of all) reprints
+        // duplicate kitchen tickets.
+        const isOpen = await coreServices.isTableOpen(
+          sanitizedArea,
+          sanitizedTableLabel,
+        );
+        if (!isOpen) {
           return {
             ok: false,
-            error: `Table is owned by ${ownerName?.displayName || `waiter #${ownerId}`}`,
-            code: 'TABLE_OWNED_BY_OTHER',
-            ownerId,
-            ownerName: ownerName?.displayName || null,
+            error: `Table ${sanitizedArea} ${sanitizedTableLabel} is closed`,
+            code: 'TABLE_CLOSED',
           };
         }
-      }
 
-      // Local-first: always use local DB for tickets
-      const stockConsumeLines = Array.isArray(
-        (payload as any)?.stockConsumeLines,
-      )
-        ? ((payload as any).stockConsumeLines as {
-            sku?: string;
-            qty?: number;
-          }[])
-        : [];
-      const kdsFireItems = Array.isArray((payload as any)?.kdsFireItems)
-        ? ((payload as any).kdsFireItems as any[])
-        : undefined;
+        // Anti-collision: if the latest log row IN THIS OPEN SESSION was
+        // written by a different waiter (and the actor isn't an admin),
+        // the actor is operating on a stale view — most likely both
+        // waiters tried to claim the same empty table, or this device
+        // missed a transfer broadcast. Reject so the renderer can refresh
+        // and toast a clear message instead of silently overwriting the
+        // session owner.
+        //
+        // CRITICAL: scope the lookup to the CURRENT open session via
+        // `getCurrentSessionOwnerId`. Tables get reused — without that
+        // scope, the first send by a fresh waiter who opened a
+        // previously-paid-out table would be rejected because the
+        // all-time "latest" row belongs to whoever last owned that
+        // table label (often days ago).
+        const ownerId = await getCurrentSessionOwnerId(
+          sanitizedArea,
+          sanitizedTableLabel,
+        );
+        if (ownerId !== null && ownerId !== Number(userId)) {
+          const actor = await prisma.user
+            .findUnique({ where: { id: Number(userId) } })
+            .catch(() => null);
+          const actorIsAdmin =
+            actor &&
+            String((actor as any).role || '').toUpperCase() === 'ADMIN';
+          if (!actorIsAdmin) {
+            const ownerName = await prisma.user
+              .findUnique({ where: { id: ownerId } })
+              .catch(() => null);
+            return {
+              ok: false,
+              error: `Table is owned by ${ownerName?.displayName || `waiter #${ownerId}`}`,
+              code: 'TABLE_OWNED_BY_OTHER',
+              ownerId,
+              ownerName: ownerName?.displayName || null,
+            };
+          }
+        }
 
-      const sessionKey = await getCurrentTableSessionKey(
-        sanitizedArea,
-        sanitizedTableLabel,
-      ).catch(() => null);
+        // Local-first: always use local DB for tickets
+        const stockConsumeLines = Array.isArray(
+          (payload as any)?.stockConsumeLines,
+        )
+          ? ((payload as any).stockConsumeLines as {
+              sku?: string;
+              qty?: number;
+            }[])
+          : [];
+        const kdsFireItems = Array.isArray((payload as any)?.kdsFireItems)
+          ? ((payload as any).kdsFireItems as any[])
+          : undefined;
 
-      try {
-        await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-          await tx.ticketLog.create({
-            data: {
-              userId: Number(userId),
-              area: sanitizedArea,
-              tableLabel: sanitizedTableLabel,
-              covers: sanitizedCovers,
-              itemsJson: items ?? [],
-              note: sanitizedNote,
-              ...(idempotencyKey ? { idempotencyKey } : {}),
-              ...(sessionKey ? { sessionKey } : {}),
-            } as any,
+        const sessionKey = await getCurrentTableSessionKey(
+          sanitizedArea,
+          sanitizedTableLabel,
+        ).catch(() => null);
+
+        try {
+          await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            await tx.ticketLog.create({
+              data: {
+                userId: Number(userId),
+                area: sanitizedArea,
+                tableLabel: sanitizedTableLabel,
+                covers: sanitizedCovers,
+                itemsJson: items ?? [],
+                note: sanitizedNote,
+                ...(idempotencyKey ? { idempotencyKey } : {}),
+                ...(sessionKey ? { sessionKey } : {}),
+              } as any,
+            });
+            await consumeMenuStockForTicketLines(
+              tx,
+              stockConsumeLines,
+              storePlanBlocksTables() ? 'onHand' : 'daily',
+            );
           });
-          await consumeMenuStockForTicketLines(
-            tx,
-            stockConsumeLines,
-            storePlanBlocksTables() ? 'onHand' : 'daily',
-          );
-        });
-      } catch (e: any) {
-        if (e?.code === 'P2002' && idempotencyKey) return { ok: true as const };
-        throw e;
-      }
-      return {
-        ok: true as const,
-        written: true as const,
-        sessionKey,
-        kdsFireItems,
-      };
-    });
+        } catch (e: any) {
+          if (e?.code === 'P2002' && idempotencyKey)
+            return { ok: true as const };
+          throw e;
+        }
+        return {
+          ok: true as const,
+          written: true as const,
+          sessionKey,
+          kdsFireItems,
+        };
+      },
+    );
     if (!logged || typeof logged !== 'object') return logged;
     if ('ok' in logged && logged.ok === false) return logged;
     if (!('written' in logged) || !logged.written) return { ok: true };
@@ -4379,6 +4389,19 @@ ipcHandle('notifications:markAllRead', async (_e, input, ctx) => {
 
 ipcHandle('admin:listTicketCounts', async (_e, input) => {
   return listAdminTicketCounts(input);
+});
+
+ipcHandle('admin:eraseTickets', async (_e, input, ctx) => {
+  if (!eraseTicketsConfirmMatches((input as any)?.confirm)) {
+    return { ok: false, error: 'confirm-required' };
+  }
+  const result = await eraseAllTickets();
+  logSecurityEvent('tickets_erased', {
+    userId: ctx.session?.userId,
+    ticketLogs: result.ticketLogs,
+    orders: result.orders,
+  });
+  return result;
 });
 
 ipcHandle('admin:listShifts', async (_e, input) => {

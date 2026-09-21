@@ -75,6 +75,10 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'admin:listShifts': { allow: ADMIN },
   'admin:listTicketCounts': { allow: ADMIN },
   'admin:listTicketsByUser': { allow: ADMIN },
+  'admin:eraseTickets': {
+    allow: ADMIN,
+    rateLimit: { maxAttempts: 4, windowMs: 60 * 60 * 1000 },
+  },
   // Reversing a settled sale. ADMIN plus a manager PIN re-entered in the
   // handler — the panel session alone must not be enough to void money.
   'admin:listFiscalSales': { allow: ADMIN },

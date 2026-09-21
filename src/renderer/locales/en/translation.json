@@ -600,7 +600,18 @@
     "statusPassphrase": "Receipts are encrypted. OneTap asks for the device passphrase after a restart.",
     "osUnavailable": "This computer cannot store the till key in Windows or Mac. Set a passphrase instead.",
     "saved": "Till unlock setting saved.",
-    "failed": "Could not save the till unlock setting."
+    "failed": "Could not save the till unlock setting.",
+    "eraseTitle": "Erase all tickets",
+    "eraseHelp": "Permanently deletes every kitchen ticket, paid sale, and open table on this till. Menu, staff, and settings are kept. This cannot be undone.",
+    "eraseButton": "Erase all tickets",
+    "eraseConfirmTitle": "Erase every ticket?",
+    "eraseConfirmBody": "This deletes all tickets, paid receipts, kitchen orders, and occupied tables. Type {{phrase}} to confirm.",
+    "erasePhrase": "ERASE",
+    "erasePhraseLabel": "Type {{phrase}} to confirm",
+    "eraseConfirmAction": "Erase tickets",
+    "erased": "All tickets were erased.",
+    "eraseFailed": "Could not erase tickets.",
+    "eraseLocked": "Unlock the till on the restaurant PC first."
   },
   "settingsAbout": {
     "title": "Business Info",

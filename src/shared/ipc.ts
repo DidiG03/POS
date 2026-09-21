@@ -1096,6 +1096,15 @@ export interface ApiAdmin {
     userId: number,
     range?: { startIso?: string; endIso?: string },
   ): Promise<AdminTicketDTO[]>;
+  /** Permanently wipes every ticket, paid sale, and open sitting. */
+  eraseTickets(input: { confirm: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    ticketLogs?: number;
+    orders?: number;
+    kdsOrders?: number;
+    openTables?: number;
+  }>;
   /** Settled sales, with the fiscal identifiers a correction must reference. */
   listFiscalSales?(input?: {
     startIso?: string;

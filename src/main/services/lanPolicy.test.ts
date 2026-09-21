@@ -310,4 +310,19 @@ describe('tablet client vs LAN policy', () => {
       );
     }
   });
+
+  it('lets a waiter load their own reports on a phone', () => {
+    for (const reportPath of [
+      '/reports/my/overview',
+      '/reports/my/sales-trends',
+      '/reports/my/top-selling-today',
+      '/reports/my/active-tickets',
+      '/reports/my/paid-tickets',
+      '/reports/my/voided-tickets',
+    ]) {
+      expect(authorizeLanRoute('GET', reportPath, 'WAITER'), reportPath).toBe(
+        'allow',
+      );
+    }
+  });
 });

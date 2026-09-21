@@ -20,6 +20,7 @@ import {
 import { Button, IconButton } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Field, Input, Select, Textarea } from '../../components/ui/Field';
+import { Modal } from '../../components/ui/Modal';
 import { Segmented } from '../../components/ui/Segmented';
 import { cn } from '../../components/ui/cn';
 import {
@@ -1964,6 +1965,13 @@ function DiskProtectionSettings() {
   } | null>(null);
   const [passphrase, setPassphrase] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [eraseOpen, setEraseOpen] = useState(false);
+  const [eraseTyped, setEraseTyped] = useState('');
+  const erasePhrase = t('settingsVault.erasePhrase');
+  const vaultLocked =
+    prefs?.state === 'locked' ||
+    prefs?.state === 'setup' ||
+    prefs?.state === 'broken';
 
   async function reload() {
     setLoading(true);
@@ -2019,6 +2027,25 @@ function DiskProtectionSettings() {
       await reload();
     } catch {
       setStatus(t('settingsVault.failed'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function eraseAll() {
+    if (eraseTyped.trim().toUpperCase() !== erasePhrase.toUpperCase()) return;
+    setBusy(true);
+    try {
+      const r = await window.api.admin.eraseTickets({ confirm: erasePhrase });
+      if (!r?.ok) {
+        setStatus(t('settingsVault.eraseFailed'), 'error');
+        return;
+      }
+      setEraseOpen(false);
+      setEraseTyped('');
+      setStatus(t('settingsVault.erased'));
+    } catch {
+      setStatus(t('settingsVault.eraseFailed'), 'error');
     } finally {
       setBusy(false);
     }
@@ -2126,6 +2153,76 @@ function DiskProtectionSettings() {
           </div>
         )}
       </SettingsCard>
+
+      <div className="mt-5">
+        <SettingsCard
+          title={t('settingsVault.eraseTitle')}
+          description={t('settingsVault.eraseHelp')}
+        >
+          <Button
+            variant="danger"
+            disabled={busy || loading || vaultLocked}
+            onClick={() => {
+              setEraseTyped('');
+              setEraseOpen(true);
+            }}
+          >
+            {t('settingsVault.eraseButton')}
+          </Button>
+          {vaultLocked ? (
+            <p className="mt-3 text-[12px] leading-relaxed text-gray-500">
+              {t('settingsVault.eraseLocked')}
+            </p>
+          ) : null}
+        </SettingsCard>
+      </div>
+
+      <Modal
+        open={eraseOpen}
+        onClose={() => {
+          if (busy) return;
+          setEraseOpen(false);
+        }}
+        title={t('settingsVault.eraseConfirmTitle')}
+        size="sm"
+        footer={
+          <>
+            <Button
+              disabled={busy}
+              onClick={() => setEraseOpen(false)}
+              className="max-sm:flex-1"
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="danger"
+              loading={busy}
+              disabled={
+                busy ||
+                eraseTyped.trim().toUpperCase() !== erasePhrase.toUpperCase()
+              }
+              className="max-sm:flex-1"
+              onClick={() => void eraseAll()}
+            >
+              {t('settingsVault.eraseConfirmAction')}
+            </Button>
+          </>
+        }
+      >
+        <p className="mb-3 text-[13px] leading-relaxed text-gray-300">
+          {t('settingsVault.eraseConfirmBody', { phrase: erasePhrase })}
+        </p>
+        <Field
+          label={t('settingsVault.erasePhraseLabel', { phrase: erasePhrase })}
+        >
+          <Input
+            autoComplete="off"
+            autoCapitalize="characters"
+            value={eraseTyped}
+            onChange={(e) => setEraseTyped(e.target.value)}
+          />
+        </Field>
+      </Modal>
     </div>
   );
 }

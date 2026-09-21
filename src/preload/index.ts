@@ -74,6 +74,8 @@ const api: Api = {
         userId,
         ...(range || {}),
       }),
+    eraseTickets: (input: { confirm: string }) =>
+      ipcRenderer.invoke('admin:eraseTickets', input),
     listFiscalSales: (input?: {
       startIso?: string;
       endIso?: string;

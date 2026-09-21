@@ -150,6 +150,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /backups/restore': { allow: ADMIN },
   'GET /vault/prefs': { allow: ADMIN },
   'POST /vault/prefs': { allow: ADMIN },
+  'POST /admin/erase-tickets': { allow: ADMIN },
   'GET /settings/fiscal-token-hint': { allow: ADMIN },
   'POST /settings/fiscal-test': { allow: ADMIN },
   'POST /settings/fiscal-test-minimal': { allow: ADMIN },

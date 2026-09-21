@@ -600,7 +600,18 @@
     "statusPassphrase": "Faturat janë të enkriptuara. OneTap kërkon fjalëkalimin e pajisjes pas rindezjes.",
     "osUnavailable": "Ky kompjuter nuk mund ta ruajë çelësin e arkës në Windows ose Mac. Vendos një fjalëkalim.",
     "saved": "Cilësimi i hapjes së arkës u ruajt.",
-    "failed": "Cilësimi i hapjes së arkës nuk u ruajt."
+    "failed": "Cilësimi i hapjes së arkës nuk u ruajt.",
+    "eraseTitle": "Fshi të gjitha faturat",
+    "eraseHelp": "Fshin përgjithmonë çdo faturë kuzhine, shitje të paguar dhe tavolinë të hapur në këtë arkë. Menyja, stafi dhe cilësimet mbeten. Ky veprim nuk kthehet mbrapsht.",
+    "eraseButton": "Fshi të gjitha faturat",
+    "eraseConfirmTitle": "Të fshihen të gjitha faturat?",
+    "eraseConfirmBody": "Kjo fshin të gjitha faturat, faturat e paguara, porositë e kuzhinës dhe tavolinat e zëna. Shkruaj {{phrase}} për të konfirmuar.",
+    "erasePhrase": "ERASE",
+    "erasePhraseLabel": "Shkruaj {{phrase}} për të konfirmuar",
+    "eraseConfirmAction": "Fshi faturat",
+    "erased": "Të gjitha faturat u fshinë.",
+    "eraseFailed": "Faturat nuk u fshinë.",
+    "eraseLocked": "Hape arkën fillimisht në kompjuterin e restorantit."
   },
   "settingsAbout": {
     "title": "Të dhënat e biznesit",
