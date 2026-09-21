@@ -82,12 +82,10 @@ describe('encryptPlaintextSqlite', () => {
     await client.execute(
       'CREATE TABLE "Item" (id INTEGER PRIMARY KEY, name TEXT)',
     );
-    for (let i = 0; i < 250; i++) {
-      await client.execute({
-        sql: 'INSERT INTO "Item" (name) VALUES (?)',
-        args: [`n${i}`],
-      });
-    }
+    // One multi-row INSERT keeps this under Vitest's 5s CI budget — 250
+    // sequential round-trips were flaking on GitHub runners.
+    const values = Array.from({ length: 250 }, (_, i) => `('n${i}')`).join(',');
+    await client.execute(`INSERT INTO "Item" (name) VALUES ${values}`);
     await client.close();
 
     await encryptPlaintextSqlite({
