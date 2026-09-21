@@ -319,6 +319,12 @@ html[data-shell='capacitor'] body {
     --pos-mobile-tab-h: calc(3.5rem + env(safe-area-inset-bottom, 0px));
   }
 }
+/* Admin uses the bottom dock through the lg breakpoint (rail starts at lg). */
+@media (max-width: 1023px) {
+  .admin-app.pos-app--mobile-tabs {
+    --pos-mobile-tab-h: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  }
+}
 
 /* Keep chrome visible; sit in the same well as Tables/Orders. */
 :root {
@@ -1881,6 +1887,28 @@ html[data-shell='capacitor'] {
     font-size: 12px;
     line-height: 1.4;
     color: #64748b;
+  }
+  @media (max-width: 639px) {
+    .admin-metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .admin-metric {
+      padding: 0.9rem 0.75rem;
+    }
+    .admin-metric:nth-child(2n) {
+      border-right: 0;
+    }
+    .admin-metric:nth-child(n + 3) {
+      border-top: 1px solid var(--pos-hairline);
+    }
+    .admin-metric:first-child,
+    .admin-metric:nth-child(2) {
+      padding-top: 0.9rem;
+    }
+    .admin-metric-value {
+      font-size: 18px;
+      margin-top: 0.35rem;
+    }
   }
   .admin-panel {
     overflow: hidden;

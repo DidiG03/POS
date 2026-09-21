@@ -249,7 +249,7 @@ import {
   kdsStationsWithActiveItems,
   loadKdsRoutingFromDb,
 } from './services/kdsStationRouting';
-import { finalizeShiftAfterClockOut } from './services/shiftSummary';
+import { finalizeShiftAfterClockOut, printMyDaySummary } from './services/shiftSummary';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
 import { runPendingMigrations } from './services/migrator';
 import {
@@ -3045,6 +3045,12 @@ ipcHandle('reports:listMyVoidedTickets', async (_e, input, ctx) => {
     resolveActorUserId(ctx, input?.userId),
     input?.limit,
   );
+});
+
+ipcHandle('reports:printMyDaySummary', async (_e, input, ctx) => {
+  const userId = resolveActorUserId(ctx, input?.userId);
+  if (!userId) return { ok: false, error: 'unauthorized' };
+  return await printMyDaySummary(userId);
 });
 
 // Persist open tables in SyncState - Local-first: always use local DB

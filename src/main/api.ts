@@ -172,7 +172,7 @@ import {
 } from './services/tableSession';
 import { compactTicketLogSession } from './services/ticketLogCompact';
 import { compactCoversForTable } from './services/coversCompact';
-import { finalizeShiftAfterClockOut } from './services/shiftSummary';
+import { finalizeShiftAfterClockOut, printMyDaySummary } from './services/shiftSummary';
 import {
   listMyActiveTickets,
   listMyPaidTickets,
@@ -4002,6 +4002,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           Number(parsed.query.limit || 40),
         );
         return send(res, 200, tickets, corsOrigin);
+      }
+      if (
+        req.method === 'POST' &&
+        pathname === '/reports/my/print-day-summary'
+      ) {
+        if (!auth) return send(res, 401, { error: 'unauthorized' }, corsOrigin);
+        const result = await printMyDaySummary(auth.userId);
+        return send(
+          res,
+          result.ok ? 200 : 502,
+          { ok: result.ok, error: result.error },
+          corsOrigin,
+        );
       }
 
       // ----- Reservations (mobile / LAN HOST + ADMIN clients) -----

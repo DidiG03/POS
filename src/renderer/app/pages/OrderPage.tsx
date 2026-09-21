@@ -608,7 +608,7 @@ export default function OrderPage() {
     useState<Record<string, string[]>>(loadCustomCommentButtons);
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
   const [showOrderNote, setShowOrderNote] = useState(false);
-  const { selectedTable, setPendingAction, setSelectedTable } =
+  const { selectedTable, pendingAction, setPendingAction, setSelectedTable } =
     useOrderContext();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const uiTheme = usePosUiTheme();
@@ -1300,6 +1300,99 @@ export default function OrderPage() {
       typeof coversKnown === 'number' &&
       coversKnown > 0
     : Boolean(selectedTable) && billableLines.length > 0;
+
+  useEffect(() => {
+    if (pendingAction !== 'pay') return;
+    if (!ticketPersistReady || !ticketLoaded || ticketSyncing) return;
+    if (showPayment) {
+      setPendingAction(null);
+      return;
+    }
+    if (billUnknown) {
+      setPendingAction(null);
+      toast.warn(t('order.billUnreadableHint'));
+      return;
+    }
+    // Covers are loaded asynchronously for open tables — wait before bailing.
+    if (hasTables && isTableOpen && coversKnown === undefined) return;
+    if (!canPay) {
+      setPendingAction(null);
+      if (hasUnsentItems) toast.warn(t('order.sendBeforePay'));
+      else if (
+        hasTables &&
+        !(typeof coversKnown === 'number' && coversKnown > 0)
+      ) {
+        toast.warn(t('order.setGuestsBeforePay'));
+      } else if (!billableLines.length) toast.warn(t('order.addItems'));
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        await ensureStoreTillOpen();
+      } catch {
+        if (!cancelled) setPendingAction(null);
+        return;
+      }
+      if (cancelled) return;
+      setPendingAction(null);
+      setPaymentMethod('CASH');
+      setDiscountType('NONE');
+      setDiscountValue('');
+      setDiscountReason('');
+      const scEnabled = serviceChargeCfg.enabled;
+      setApplyServiceCharge(scEnabled);
+      const base = Number(
+        computeTotals(billableLines, vatEnabled, defaultVatRate).total || 0,
+      );
+      const v = Number(serviceChargeCfg.value || 0);
+      const scAmt = scEnabled
+        ? serviceChargeCfg.mode === 'PERCENT'
+          ? (base * v) / 100
+          : v
+        : 0;
+      setAmountPaid(
+        String(
+          Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0)).toFixed(2),
+        ),
+      );
+      setPrintReceipt(true);
+      if (addMode === 'seat') {
+        const ids = unpaidSeatIds(seats, lines);
+        setPaySeatId(ids[0] ?? null);
+      } else {
+        setPaySeatId(null);
+      }
+      setShowPayment(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    pendingAction,
+    ticketPersistReady,
+    ticketLoaded,
+    ticketSyncing,
+    showPayment,
+    billUnknown,
+    canPay,
+    hasUnsentItems,
+    hasTables,
+    isTableOpen,
+    coversKnown,
+    billableLines,
+    serviceChargeCfg.enabled,
+    serviceChargeCfg.mode,
+    serviceChargeCfg.value,
+    vatEnabled,
+    defaultVatRate,
+    addMode,
+    seats,
+    lines,
+    ensureStoreTillOpen,
+    setPendingAction,
+    t,
+  ]);
 
   const totals = useMemo(
     () => computeTotals(payLines, vatEnabled, defaultVatRate),

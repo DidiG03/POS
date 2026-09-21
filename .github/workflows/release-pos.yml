@@ -219,10 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.54"
-            echo "- Opening an occupied table loads the host bill when the floor only has a total (no blank tickets)"
-            echo "- Empty carts on open tables rehydrate from the owner poll / getLatestForTable path"
-            echo "- Removed temporary ticket-trace debug logging"
+            echo "### Changes in v0.2.55"
+            echo "- Long-press / right-click an occupied table to Print Ticket or open Pay"
+            echo "- Reports on phone: scrollable list, print a ticket, and print day summary"
+            echo "- Floor remembers the last area after returning from an order"
+            echo "- Admin on phones: bottom tabs, settings section chips, menu list→detail"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

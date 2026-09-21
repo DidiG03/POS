@@ -406,7 +406,14 @@
     "failedActive": "Failed to load active tickets",
     "failedPaid": "Failed to load paid tickets",
     "failedActiveStore": "Failed to load open sales",
-    "failedPaidStore": "Failed to load paid sales"
+    "failedPaidStore": "Failed to load paid sales",
+    "printingTicket": "Printing…",
+    "ticketPrinted": "Ticket sent to printer",
+    "printTicketFailed": "Could not print this ticket",
+    "printDaySummary": "Print day summary",
+    "printingDaySummary": "Printing day summary…",
+    "daySummaryPrinted": "Day summary sent to printer",
+    "daySummaryFailed": "Could not print day summary"
   },
   "waiterOrders": {
     "title": "Orders",
@@ -445,7 +452,12 @@
     "tooltipSince": "Since:",
     "tooltipTotal": "Total:",
     "coversChip": "P: {{val}}",
-    "a11ySeats": "{{count}} seats"
+    "a11ySeats": "{{count}} seats",
+    "quickMenu": "Table",
+    "tableLabel": "Table {{label}}",
+    "payTicket": "Pay ticket",
+    "menuNeedsOpen": "Open the table first — this one is free.",
+    "menuNoItems": "Nothing to print on this table."
   },
   "preferences": {
     "title": "Preferences",
@@ -506,6 +518,7 @@
     "groupVenue": "Venue",
     "groupOperations": "Operations",
     "groupSystem": "System",
+    "pickSection": "Settings section",
     "printer": "Printers",
     "areas": "Table Areas",
     "kds": "Kitchen Display",

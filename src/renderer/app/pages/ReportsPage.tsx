@@ -1,11 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { describeTicketNote } from '@shared/utils/transferNote';
 import { useSessionStore } from '../../stores/session';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
-import { receiptLocationTitle, receiptStaffLine } from './reportsReceipt';
+import {
+  buildReportPrintPayload,
+  receiptLocationTitle,
+  receiptStaffLine,
+} from './reportsReceipt';
+import { printTicket } from '../../api';
+import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
 import { reportAppError } from '../../utils/reportAppError';
+import { IconPrinter } from '../../components/icons';
 
 type Overview = {
   revenueTodayNet: number;
@@ -49,6 +56,7 @@ export default function ReportsPage() {
   const [voidedTicketsError, setVoidedTicketsError] = useState<string | null>(
     null,
   );
+  const [printingDay, setPrintingDay] = useState(false);
   const [ticketsApiMissing, setTicketsApiMissing] = useState<boolean>(false);
 
   useEffect(() => {
@@ -185,7 +193,7 @@ export default function ReportsPage() {
   );
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden pr-1">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-y-auto overscroll-contain pr-1 lg:overflow-hidden">
       <div className="mb-4 hidden shrink-0 items-center justify-between sm:flex">
         <h2 className="text-lg font-semibold tracking-tight">
           {t('reports.title')}
@@ -204,145 +212,93 @@ export default function ReportsPage() {
 
       {!loading && user && overview && (
         <div
-          className={`mb-6 grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-2 ${hasTables ? 'lg:grid-cols-3' : ''}`}
+          className={`mb-4 grid shrink-0 gap-2 sm:mb-6 sm:gap-3 ${
+            hasTables ? 'grid-cols-3' : 'grid-cols-2'
+          }`}
         >
           <StatCard
             title={t('reports.revenueTodayNet')}
             value={fmtCurrency.format(overview.revenueTodayNet || 0)}
+            compact
           />
           <StatCard
             title={t('reports.vatToday')}
             value={fmtCurrency.format(overview.revenueTodayVat || 0)}
+            compact
           />
           {hasTables ? (
             <StatCard
               title={t('reports.openOrders')}
               value={String(overview.openOrders)}
+              compact
             />
           ) : null}
         </div>
       )}
 
-      {!loading && (
-        <div className="grid shrink-0 grid-cols-1 gap-4 lg:grid-cols-3">
-          {/* <div className="lg:col-span-2 p-3 rounded bg-gray-800 border border-gray-700">
-            <div className="font-medium mb-2">Sales trend</div>
-            … re-enable with getMySalesTrends when this panel is restored …
-          </div> */}
-
-          {/* <div className="p-3 rounded bg-gray-800 border border-gray-700">
-            <div className="font-medium mb-2">Top selling (today)</div>
-            {!topSelling ? (
-              <div className="opacity-70 text-sm">No data</div>
-            ) : (
-              <div className="text-sm">
-                <div className="font-semibold">{topSelling.name}</div>
-                <div className="opacity-80">Qty: {topSelling.qty}</div>
-                <div>Revenue: {fmtCurrency.format(topSelling.revenue)}</div>
-              </div>
-            )}
-          </div> */}
-        </div>
-      )}
-
-      {/* Tickets: fills remaining viewport; each column scrolls independently on lg+ */}
+      {/* Phone: one page scroll, full-height ticket lists. Desktop: three
+          independent columns that fill the remaining viewport. */}
       {user && (
-        <section className="flex min-h-0 flex-1 flex-col">
+        <section className="flex flex-col pb-[max(1rem,env(safe-area-inset-bottom))] lg:min-h-0 lg:flex-1 lg:pb-0">
+          {hasTables ? (
+            <div className="mb-3 shrink-0">
+              <button
+                type="button"
+                className="pos-btn-primary flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold"
+                disabled={printingDay || !user?.id}
+                onClick={() => {
+                  if (!user?.id || printingDay) return;
+                  setPrintingDay(true);
+                  void window.api.reports
+                    .printMyDaySummary(user.id)
+                    .then((r) => {
+                      if (r?.ok) {
+                        toast.success(t('reports.daySummaryPrinted'));
+                      } else {
+                        toast.error(
+                          String(r?.error || t('reports.daySummaryFailed')),
+                        );
+                      }
+                    })
+                    .catch((e: unknown) => {
+                      reportAppError(e, {
+                        fallback: t('reports.daySummaryFailed'),
+                        key: `reports.daySummary:${user.id}`,
+                      });
+                      toast.error(t('reports.daySummaryFailed'));
+                    })
+                    .finally(() => setPrintingDay(false));
+                }}
+              >
+                <IconPrinter className="size-4" />
+                {printingDay
+                  ? t('reports.printingDaySummary')
+                  : t('reports.printDaySummary')}
+              </button>
+            </div>
+          ) : null}
           <div
-            className={`grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto overscroll-contain lg:grid-rows-1 lg:items-stretch lg:overflow-hidden [&>*]:min-h-0 lg:[&>*]:max-h-full ${
+            className={`grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-rows-1 lg:items-stretch lg:overflow-hidden lg:[&>*]:min-h-0 lg:[&>*]:max-h-full ${
               hasTables ? 'lg:grid-cols-3' : 'lg:grid-cols-2'
             }`}
           >
             {hasTables ? (
-              <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
-                <div className="mb-2 flex shrink-0 items-center justify-between">
-                  <div className="font-medium">
-                    {t('reports.activeTickets')}
-                  </div>
-                  <div className="text-xs opacity-70">
-                    {activeTickets.length}
-                  </div>
-                </div>
-                {activeTicketsError && (
-                  <div className="pos-alert mb-2 shrink-0 text-xs">
-                    {t('reports.activeTicketsError')}{' '}
-                    <span className="font-semibold">{activeTicketsError}</span>
-                  </div>
-                )}
-                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-                  {activeTickets.length === 0 ? (
-                    <div className="text-sm opacity-70">
-                      {t('reports.noActiveTickets')}
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {activeTickets.map((rec: any, idx: number) => (
-                        <ReceiptCard
-                          key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
-                          ticket={rec}
-                          fmtCurrency={fmtCurrency}
-                          hasTables={hasTables}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
-              <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">
-                  {t(
-                    hasTables ? 'reports.paidToday' : 'reports.paidSalesToday',
-                  )}
-                </div>
-                <div className="text-xs opacity-70">{paidTickets.length}</div>
-              </div>
-              {paidTicketsError && (
-                <div className="pos-alert mb-2 shrink-0 text-xs">
-                  {t(
-                    hasTables
-                      ? 'reports.paidTicketsError'
-                      : 'reports.paidSalesError',
-                  )}{' '}
-                  <span className="font-semibold">{paidTicketsError}</span>
-                </div>
-              )}
-              <div className="mb-3 flex shrink-0 items-center gap-2">
-                <input
-                  className="pos-input min-w-0 flex-1"
-                  placeholder={t(
-                    hasTables
-                      ? 'reports.searchPlaceholder'
-                      : 'reports.searchPlaceholderStore',
-                  )}
-                  value={paidQuery}
-                  onChange={(e) => setPaidQuery(e.target.value)}
-                />
-                <select
-                  className="pos-input w-auto shrink-0"
-                  value={String(paidLimit)}
-                  onChange={(e) => setPaidLimit(Number(e.target.value))}
-                >
-                  <option value="20">20</option>
-                  <option value="40">40</option>
-                  <option value="80">80</option>
-                  <option value="120">120</option>
-                </select>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-                {paidTickets.length === 0 ? (
+              <TicketPanel
+                title={t('reports.activeTickets')}
+                count={activeTickets.length}
+                error={
+                  activeTicketsError
+                    ? `${t('reports.activeTicketsError')} ${activeTicketsError}`
+                    : null
+                }
+              >
+                {activeTickets.length === 0 ? (
                   <div className="text-sm opacity-70">
-                    {t(
-                      hasTables
-                        ? 'reports.noPaidToday'
-                        : 'reports.noPaidSalesToday',
-                    )}
+                    {t('reports.noActiveTickets')}
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {paidTickets.map((rec: any, idx: number) => (
+                    {activeTickets.map((rec: any, idx: number) => (
                       <ReceiptCard
                         key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
                         ticket={rec}
@@ -352,47 +308,133 @@ export default function ReportsPage() {
                     ))}
                   </div>
                 )}
-              </div>
-            </div>
+              </TicketPanel>
+            ) : null}
 
-            <div className="flex min-h-[16rem] flex-col pos-card sm:min-h-[min(28rem,45vh)] lg:min-h-0">
-              <div className="mb-2 flex shrink-0 items-center justify-between">
-                <div className="font-medium">
+            <TicketPanel
+              title={t(
+                hasTables ? 'reports.paidToday' : 'reports.paidSalesToday',
+              )}
+              count={paidTickets.length}
+              error={
+                paidTicketsError
+                  ? `${t(
+                      hasTables
+                        ? 'reports.paidTicketsError'
+                        : 'reports.paidSalesError',
+                    )} ${paidTicketsError}`
+                  : null
+              }
+              toolbar={
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <input
+                    className="pos-input min-w-0 flex-1"
+                    placeholder={t(
+                      hasTables
+                        ? 'reports.searchPlaceholder'
+                        : 'reports.searchPlaceholderStore',
+                    )}
+                    value={paidQuery}
+                    onChange={(e) => setPaidQuery(e.target.value)}
+                  />
+                  <select
+                    className="pos-input w-full shrink-0 sm:w-auto"
+                    value={String(paidLimit)}
+                    onChange={(e) => setPaidLimit(Number(e.target.value))}
+                    aria-label={t('reports.paidToday')}
+                  >
+                    <option value="20">20</option>
+                    <option value="40">40</option>
+                    <option value="80">80</option>
+                    <option value="120">120</option>
+                  </select>
+                </div>
+              }
+            >
+              {paidTickets.length === 0 ? (
+                <div className="text-sm opacity-70">
                   {t(
                     hasTables
-                      ? 'reports.voidedToday'
-                      : 'reports.voidedSalesToday',
+                      ? 'reports.noPaidToday'
+                      : 'reports.noPaidSalesToday',
                   )}
                 </div>
-                <div className="text-xs opacity-70">{voidedTickets.length}</div>
-              </div>
-              {voidedTicketsError && (
-                <div className="pos-alert mb-2 shrink-0 text-xs">
-                  {voidedTicketsError}
+              ) : (
+                <div className="space-y-3">
+                  {paidTickets.map((rec: any, idx: number) => (
+                    <ReceiptCard
+                      key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+                      ticket={rec}
+                      fmtCurrency={fmtCurrency}
+                      hasTables={hasTables}
+                    />
+                  ))}
                 </div>
               )}
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-                {voidedTickets.length === 0 ? (
-                  <div className="text-sm opacity-70">
-                    {t('reports.nothingVoided')}
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {voidedTickets.map((rec: any, idx: number) => (
-                      <VoidedReceiptCard
-                        key={`void-${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
-                        ticket={rec}
-                        fmtCurrency={fmtCurrency}
-                        hasTables={hasTables}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            </TicketPanel>
+
+            <TicketPanel
+              title={t(
+                hasTables
+                  ? 'reports.voidedToday'
+                  : 'reports.voidedSalesToday',
+              )}
+              count={voidedTickets.length}
+              error={voidedTicketsError}
+            >
+              {voidedTickets.length === 0 ? (
+                <div className="text-sm opacity-70">
+                  {t('reports.nothingVoided')}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {voidedTickets.map((rec: any, idx: number) => (
+                    <VoidedReceiptCard
+                      key={`void-${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+                      ticket={rec}
+                      fmtCurrency={fmtCurrency}
+                      hasTables={hasTables}
+                    />
+                  ))}
+                </div>
+              )}
+            </TicketPanel>
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+function TicketPanel({
+  title,
+  count,
+  error,
+  toolbar,
+  children,
+}: {
+  title: string;
+  count: number;
+  error?: string | null;
+  toolbar?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col pos-card lg:min-h-0">
+      <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
+        <div className="font-medium">{title}</div>
+        <div className="text-xs opacity-70 tabular-nums">{count}</div>
+      </div>
+      {error ? (
+        <div className="pos-alert mb-2 shrink-0 text-xs">
+          <span className="font-semibold">{error}</span>
+        </div>
+      ) : null}
+      {toolbar ? <div className="mb-3 shrink-0">{toolbar}</div> : null}
+      {/* Nested scroll only on large screens; phones scroll the whole page. */}
+      <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain lg:pr-1">
+        {children}
+      </div>
     </div>
   );
 }
@@ -422,11 +464,29 @@ function TicketNoteLines({
   );
 }
 
-function StatCard({ title, value }: { title: string; value: string }) {
+function StatCard({
+  title,
+  value,
+  compact = false,
+}: {
+  title: string;
+  value: string;
+  compact?: boolean;
+}) {
   return (
-    <div className="pos-stat">
-      <div className="pos-section-label">{title}</div>
-      <div className="text-xl mt-1.5 font-semibold tabular-nums tracking-tight text-gray-50">
+    <div className={`pos-stat ${compact ? 'p-2.5 sm:p-3.5' : ''}`}>
+      <div
+        className={`pos-section-label ${compact ? 'line-clamp-2 text-[10px] leading-tight sm:text-[11px]' : ''}`}
+      >
+        {title}
+      </div>
+      <div
+        className={`mt-1 font-semibold tabular-nums tracking-tight text-gray-50 sm:mt-1.5 ${
+          compact
+            ? 'text-base leading-tight sm:text-xl'
+            : 'text-xl'
+        }`}
+      >
         {value}
       </div>
     </div>
@@ -443,7 +503,9 @@ function ReceiptCard({
   hasTables: boolean;
 }) {
   const { t } = useTranslation();
+  const { user } = useSessionStore();
   const [open, setOpen] = useState<boolean>(false);
+  const [printing, setPrinting] = useState(false);
   const items = Array.isArray(ticket?.items) ? ticket.items : [];
   const createdAt = ticket?.paidAt || ticket?.createdAt;
   const when = createdAt ? new Date(createdAt) : null;
@@ -473,10 +535,38 @@ function ReceiptCard({
     return null;
   })();
 
+  const canPrint = Boolean(buildReportPrintPayload(ticket, {}));
+
+  const onPrint = async () => {
+    const payload = buildReportPrintPayload(ticket, {
+      userId: user?.id,
+      userName: user?.displayName || ticket?.userName,
+    });
+    if (!payload || printing) return;
+    setPrinting(true);
+    try {
+      const printed = await printTicket(payload);
+      if (printed?.queued) {
+        toast.warn(t('order.ticketPrintQueued'));
+      } else {
+        toast.success(t('reports.ticketPrinted'));
+      }
+    } catch (e: unknown) {
+      reportAppError(e, {
+        fallback: t('reports.printTicketFailed'),
+        key: `reports.print:${ticket?.area}:${ticket?.tableLabel}`,
+      });
+      toast.warn(t('order.ticketPrintQueued'));
+    } finally {
+      setPrinting(false);
+    }
+  };
+
   return (
     <div className="ticket-line overflow-hidden">
       <button
-        className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-2.5 text-left"
+        type="button"
+        className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-3 text-left sm:py-2.5"
         onClick={() => setOpen((v) => !v)}
       >
         <div className="min-w-0">
@@ -492,9 +582,22 @@ function ReceiptCard({
               ? ` • ${t('common.covers')}: ${ticket.covers}`
               : ''}
           </div>
+          {!open ? (
+            <div className="mt-1 text-sm font-semibold tabular-nums text-gray-50">
+              {fmtCurrency.format(Number(ticket?.total || 0))}
+              {items.length > 0 ? (
+                <span className="ml-1.5 text-xs font-normal text-[color:var(--pos-fg-muted)]">
+                  · {items.length}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-        <div className="max-w-[46%] text-right text-xs leading-snug text-[color:var(--pos-fg-muted)] sm:max-w-none sm:whitespace-nowrap">
+        <div className="max-w-[42%] shrink-0 text-right text-xs leading-snug text-[color:var(--pos-fg-muted)] sm:max-w-none sm:whitespace-nowrap">
           {headerRight}
+          <div className="mt-1 text-[11px] font-medium text-[color:var(--pos-accent)] sm:hidden">
+            {open ? '▴' : '▾'}
+          </div>
         </div>
       </button>
 
@@ -601,6 +704,21 @@ function ReceiptCard({
           </div>
         </div>
       )}
+
+      <div className="border-t border-[var(--pos-border)] p-2">
+        <button
+          type="button"
+          className="pos-btn-primary flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold"
+          disabled={printing || !canPrint}
+          onClick={(e) => {
+            e.stopPropagation();
+            void onPrint();
+          }}
+        >
+          <IconPrinter className="size-4" />
+          {printing ? t('reports.printingTicket') : t('order.printTicket')}
+        </button>
+      </div>
     </div>
   );
 }
@@ -624,7 +742,8 @@ function VoidedReceiptCard({
   return (
     <div className="pos-alert overflow-hidden !p-0">
       <button
-        className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-2.5 text-left"
+        type="button"
+        className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-3 text-left sm:py-2.5"
         onClick={() => setOpen((v) => !v)}
       >
         <div className="min-w-0">
@@ -646,9 +765,17 @@ function VoidedReceiptCard({
               ? ` • ${t('common.covers')}: ${ticket.covers}`
               : ''}
           </div>
+          {!open ? (
+            <div className="mt-1 text-sm font-semibold tabular-nums text-rose-300">
+              {fmtCurrency.format(Number(ticket?.subtotal || 0))}
+            </div>
+          ) : null}
         </div>
-        <div className="max-w-[46%] text-right text-xs leading-snug text-[color:var(--pos-fg-muted)] sm:max-w-none sm:whitespace-nowrap">
+        <div className="max-w-[42%] shrink-0 text-right text-xs leading-snug text-[color:var(--pos-fg-muted)] sm:max-w-none sm:whitespace-nowrap">
           {when ? when.toLocaleString() : ''}
+          <div className="mt-1 text-[11px] font-medium text-[color:var(--pos-accent)] sm:hidden">
+            {open ? '▴' : '▾'}
+          </div>
         </div>
       </button>
 

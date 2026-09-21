@@ -406,7 +406,14 @@
     "failedActive": "Ngarkimi i biletave aktive dështoi",
     "failedPaid": "Ngarkimi i biletave të paguara dështoi",
     "failedActiveStore": "Ngarkimi i shitjeve të hapura dështoi",
-    "failedPaidStore": "Ngarkimi i shitjeve të paguara dështoi"
+    "failedPaidStore": "Ngarkimi i shitjeve të paguara dështoi",
+    "printingTicket": "Duke printuar…",
+    "ticketPrinted": "Bileta u dërgua te printeri",
+    "printTicketFailed": "Nuk u printua kjo biletë",
+    "printDaySummary": "Printo përmbledhjen e ditës",
+    "printingDaySummary": "Duke printuar përmbledhjen…",
+    "daySummaryPrinted": "Përmbledhja e ditës u dërgua te printeri",
+    "daySummaryFailed": "Nuk u printua përmbledhja e ditës"
   },
   "waiterOrders": {
     "title": "Porositë",
@@ -445,7 +452,12 @@
     "tooltipSince": "Prej:",
     "tooltipTotal": "Totali:",
     "coversChip": "Ft: {{val}}",
-    "a11ySeats": "{{count}} vende"
+    "a11ySeats": "{{count}} vende",
+    "quickMenu": "Tavolina",
+    "tableLabel": "Tavolina {{label}}",
+    "payTicket": "Paguaj biletën",
+    "menuNeedsOpen": "Hap tavolinën më parë — kjo është e lirë.",
+    "menuNoItems": "Nuk ka asgjë për të printuar në këtë tavolinë."
   },
   "preferences": {
     "title": "Preferencat",
@@ -506,6 +518,7 @@
     "groupVenue": "Salla",
     "groupOperations": "Operacionet",
     "groupSystem": "Sistemi",
+    "pickSection": "Seksioni i cilësimeve",
     "printer": "Printerët",
     "areas": "Zonat e tavolinave",
     "kds": "Ekrani i kuzhinës",

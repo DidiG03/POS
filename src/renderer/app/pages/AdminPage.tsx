@@ -629,7 +629,7 @@ export default function AdminPage() {
           <div
             role="dialog"
             aria-modal="true"
-            className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-white/10 bg-[var(--pos-surface)] shadow-2xl"
+            className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-white/10 bg-[var(--pos-surface)] shadow-2xl max-sm:max-h-[min(92vh,100%)]"
           >
             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/7 px-4 py-3">
               <div className="min-w-0">

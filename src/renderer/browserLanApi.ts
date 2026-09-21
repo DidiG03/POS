@@ -1624,6 +1624,12 @@ export function installBrowserLanApi(): void {
         const limit = Number(input?.limit || 40);
         return await goLan(`/reports/my/voided-tickets?limit=${limit}`);
       },
+      async printMyDaySummary(_userId: number) {
+        return await goLan('/reports/my/print-day-summary', {
+          method: 'POST',
+          body: '{}',
+        });
+      },
     },
     offline: {
       async getStatus() {

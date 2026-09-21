@@ -166,6 +166,8 @@ const api: Api = {
     }) => ipcRenderer.invoke('reports:listMyPaidTickets', input),
     listMyVoidedTickets: (input: { userId: number; limit?: number }) =>
       ipcRenderer.invoke('reports:listMyVoidedTickets', input),
+    printMyDaySummary: (userId: number) =>
+      ipcRenderer.invoke('reports:printMyDaySummary', { userId }),
   },
   offline: {
     getStatus: () => ipcRenderer.invoke('offline:getStatus'),

@@ -201,10 +201,10 @@ export default function AdminSettingsPage() {
     setParams(next, { replace: true });
   };
   return (
-    <div className="flex min-h-0 flex-1 bg-[var(--pos-canvas)] max-lg:border max-lg:border-white/7">
+    <div className="flex min-h-0 flex-1 bg-[var(--pos-canvas)] max-lg:border-0">
       <nav
         className={cn(
-          'admin-settings-nav relative z-20 flex shrink-0 flex-col border-r border-white/[0.06] transition-[width] duration-200',
+          'admin-settings-nav relative z-20 hidden shrink-0 flex-col border-r border-white/[0.06] transition-[width] duration-200 lg:flex',
           navCollapsed ? 'is-collapsed w-16 p-1.5' : 'w-[232px] p-3',
         )}
       >
@@ -245,8 +245,34 @@ export default function AdminSettingsPage() {
           onToggle={() => setNavCollapsed(!navCollapsed)}
         />
       </nav>
-      <div className="min-w-0 flex-1 overflow-auto px-8 py-7">
+      <div className="min-w-0 flex-1 overflow-auto px-4 py-4 sm:px-6 sm:py-5 lg:px-8 lg:py-7">
         <div className="mx-auto max-w-3xl">
+          <div className="lg:hidden mb-4">
+            <label className="sr-only" htmlFor="admin-settings-section">
+              {t('settingsNav.pickSection')}
+            </label>
+            <div className="no-scrollbar -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+              {visibleKeys.map((key) => (
+                <button
+                  key={key}
+                  id={key === section ? 'admin-settings-section' : undefined}
+                  type="button"
+                  className={cn(
+                    'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] font-medium transition-colors',
+                    section === key
+                      ? 'border-blue-500/50 bg-blue-500/15 text-gray-100'
+                      : 'border-white/10 bg-[var(--pos-surface)] text-gray-400',
+                  )}
+                  onClick={() => openSection(key)}
+                >
+                  <SectionIcon k={key} />
+                  <span className="whitespace-nowrap">
+                    {t(`settingsNav.${key}`)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
           {section === 'printer' && <PrinterSettings />}
           {section === 'areas' && <AreasSettings />}
           {section === 'kds' && <KdsSettings />}

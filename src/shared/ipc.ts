@@ -1193,6 +1193,11 @@ export interface ApiReports {
     userId: number;
     limit?: number;
   }): Promise<VoidedTicketReportDTO[]>;
+  /** Print today's paid summary slip for this waiter (receipt printer). */
+  printMyDaySummary(userId: number): Promise<{
+    ok: boolean;
+    error?: string;
+  }>;
 }
 
 export interface ReportTicketDTO {

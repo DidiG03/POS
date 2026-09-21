@@ -10,6 +10,7 @@ import {
 } from '../../components/StockAvailabilityPanel';
 import {
   IconAlert,
+  IconChevronLeft,
   IconClose,
   IconPlus,
   IconRefresh,
@@ -222,6 +223,7 @@ export default function AdminMenuPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [cats, setCats] = useState<MenuCategory[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [billingPaused, setBillingPaused] = useState(false);
   const [editCategoryId, setEditCategoryId] = useState<number | null>(null);
@@ -341,7 +343,10 @@ export default function AdminMenuPage() {
       setShowAddCategory(false);
       await reload();
       const createdId = Number((resp as any)?.id || 0);
-      if (createdId) setSelectedId(createdId);
+      if (createdId) {
+        setSelectedId(createdId);
+        setMobileDetailOpen(true);
+      }
     });
   }
 
@@ -350,7 +355,12 @@ export default function AdminMenuPage() {
   return (
     <>
       <div className="flex h-full min-h-0 flex-col gap-3 md:flex-row">
-        <aside className="admin-panel flex min-h-0 w-full shrink-0 flex-col overflow-hidden md:w-[340px]">
+        <aside
+          className={cn(
+            'admin-panel min-h-0 w-full shrink-0 flex-col overflow-hidden md:flex md:w-[340px]',
+            mobileDetailOpen ? 'hidden' : 'flex',
+          )}
+        >
           <div className="flex items-center gap-2 border-b border-white/7 px-3 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-semibold text-gray-100">
@@ -558,7 +568,10 @@ export default function AdminMenuPage() {
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                      onClick={() => setSelectedId(c.id)}
+                      onClick={() => {
+                        setSelectedId(c.id);
+                        setMobileDetailOpen(true);
+                      }}
                     >
                       <span
                         className="inline-block size-2.5 shrink-0 rounded-full"
@@ -582,6 +595,7 @@ export default function AdminMenuPage() {
                           label: t('common.edit'),
                           onSelect: () => {
                             setSelectedId(c.id);
+                            setMobileDetailOpen(true);
                             setEditCategoryId(c.id);
                           },
                           disabled: busy,
@@ -611,8 +625,19 @@ export default function AdminMenuPage() {
           </div>
         </aside>
 
-        <section className="admin-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-white/7 px-4 py-2.5">
+        <section
+          className={cn(
+            'admin-panel min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex',
+            mobileDetailOpen ? 'flex' : 'hidden',
+          )}
+        >
+          <div className="flex items-center gap-2 border-b border-white/7 px-3 py-2.5 sm:px-4">
+            <IconButton
+              className="md:hidden"
+              label={t('common.back')}
+              icon={<IconChevronLeft />}
+              onClick={() => setMobileDetailOpen(false)}
+            />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-semibold text-gray-100">
                 {selected
@@ -1318,7 +1343,7 @@ function AddItemForm({
         </Field>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label={t('adminMenu.price')}>
           <Input
             placeholder="0.00"
@@ -1851,7 +1876,7 @@ function EditItemModal({
           </Field>
         ) : null}
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label={t('adminMenu.price')}>
             <Input
               placeholder="0.00"

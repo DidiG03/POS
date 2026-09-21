@@ -177,6 +177,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /reports/my/active-tickets': { allow: 'session' },
   'GET /reports/my/paid-tickets': { allow: 'session' },
   'GET /reports/my/voided-tickets': { allow: 'session' },
+  'POST /reports/my/print-day-summary': { allow: 'session' },
 
   // -------------------------------------------------------------- requests
   'GET /requests/list-for-owner': { allow: 'session' },

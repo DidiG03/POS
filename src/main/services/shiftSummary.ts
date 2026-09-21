@@ -78,9 +78,11 @@ export async function computeShiftPaidTotals(args: {
 export async function printShiftCloseReceipt(
   summary: ShiftClosePrintSummary,
   settings: SettingsDTO,
-): Promise<void> {
+): Promise<{ printed: boolean; error?: string }> {
   try {
-    if (!pickActiveReceiptProfile(settings)) return;
+    if (!pickActiveReceiptProfile(settings)) {
+      return { printed: false, error: 'No printer configured' };
+    }
     await dispatchTicket(
       {
         area: 'SHIFT',
@@ -93,9 +95,56 @@ export async function printShiftCloseReceipt(
       settings,
       { persistRetryOnTransientFailure: true },
     );
+    return { printed: true };
   } catch (e) {
     console.warn('[shiftSummary] print failed:', e);
+    return {
+      printed: false,
+      error: String((e as Error)?.message || e || 'print failed'),
+    };
   }
+}
+
+/**
+ * Paid totals for this waiter's calendar day (or open shift if it started
+ * today), printed as the same shift-summary slip used on clock-out.
+ */
+export async function printMyDaySummary(userId: number): Promise<{
+  ok: boolean;
+  error?: string;
+  summary?: ShiftClosePrintSummary;
+}> {
+  const id = Number(userId);
+  if (!Number.isFinite(id) || id <= 0) {
+    return { ok: false, error: 'no-user' };
+  }
+  const now = new Date();
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  const openShift = await prisma.dayShift
+    .findFirst({
+      where: { openedById: id, closedAt: null },
+      orderBy: { openedAt: 'desc' },
+      select: { openedAt: true },
+    })
+    .catch(() => null);
+  const openedAt =
+    openShift?.openedAt instanceof Date && openShift.openedAt >= dayStart
+      ? openShift.openedAt
+      : dayStart;
+  const summary = await computeShiftPaidTotals({
+    userId: id,
+    openedAt,
+    closedAt: now,
+  });
+  const settings = (await coreServices
+    .readSettings()
+    .catch(() => ({}))) as SettingsDTO;
+  const printed = await printShiftCloseReceipt(summary, settings);
+  if (!printed.printed) {
+    return { ok: false, error: printed.error || 'print failed', summary };
+  }
+  return { ok: true, summary };
 }
 
 /**

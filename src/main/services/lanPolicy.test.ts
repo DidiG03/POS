@@ -309,6 +309,9 @@ describe('tablet client vs LAN policy', () => {
         'allow',
       );
     }
+    expect(
+      authorizeLanRoute('POST', '/reports/my/print-day-summary', 'CASHIER'),
+    ).toBe('allow');
   });
 
   it('lets a waiter load their own reports on a phone', () => {
@@ -324,5 +327,8 @@ describe('tablet client vs LAN policy', () => {
         'allow',
       );
     }
+    expect(
+      authorizeLanRoute('POST', '/reports/my/print-day-summary', 'WAITER'),
+    ).toBe('allow');
   });
 });

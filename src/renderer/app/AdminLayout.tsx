@@ -212,10 +212,9 @@ export default function AdminLayout() {
   }
 
   return (
-    <div className="admin-app pos-app flex h-screen min-h-0 text-gray-100">
+    <div className="admin-app pos-app pos-app--mobile-tabs flex h-screen min-h-0 text-gray-100">
       <DocumentMeta title={t('adminLayout.panelTitle')} />
-      {/* Sidebar — the back office has six sections, which is more than a
-          horizontal bar can hold without truncating. */}
+      {/* Desktop sidebar — phones/tablets use the bottom tab bar instead. */}
       <aside
         className={cn(
           'admin-rail relative z-20 hidden shrink-0 flex-col border-r border-white/[0.06] transition-[width] duration-200 lg:flex',
@@ -310,30 +309,9 @@ export default function AdminLayout() {
           <div className="lg:hidden">
             <BrandMark size="sm" compact wordmark={false} />
           </div>
-          <h1 className="admin-page-title hidden min-w-0 flex-1 truncate lg:block">
+          <h1 className="admin-page-title min-w-0 flex-1 truncate">
             {activeLabel}
           </h1>
-
-          {/* Compact nav for narrow admin windows. */}
-          <nav className="no-scrollbar -mx-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1 lg:hidden">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                title={t(item.labelKey)}
-                className={({ isActive }) =>
-                  cn(
-                    'pos-nav-link shrink-0',
-                    isActive ? 'pos-nav-link--active' : 'pos-nav-link--idle',
-                  )
-                }
-              >
-                {item.icon}
-                <span className="hidden sm:inline">{t(item.labelKey)}</span>
-              </NavLink>
-            ))}
-          </nav>
 
           <div className="flex shrink-0 items-center gap-1.5">
             <StatusChip
@@ -425,12 +403,35 @@ export default function AdminLayout() {
           className={cn(
             'flex min-h-0 flex-1 flex-col overflow-auto',
             location.pathname.startsWith('/admin/settings')
-              ? 'px-3 pt-2 pb-4 lg:p-0'
-              : 'safe-pb px-6 pt-5 pb-8 sm:px-8 sm:pt-6',
+              ? 'px-0 pt-0 pb-0 lg:p-0'
+              : 'safe-x px-4 pt-4 pb-4 sm:px-6 sm:pt-5 sm:pb-6 lg:px-8',
           )}
         >
           <Outlet />
         </main>
+
+        <nav
+          className="pos-mobile-tabbar lg:hidden"
+          aria-label={t('layout.primaryNav')}
+        >
+          {navItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              title={t(item.labelKey)}
+              className={({ isActive }) =>
+                cn(
+                  'pos-mobile-tab',
+                  isActive ? 'pos-mobile-tab--active' : 'pos-mobile-tab--idle',
+                )
+              }
+            >
+              <span className="inline-flex [&_.pos-icon]:size-5">{item.icon}</span>
+              <span className="max-w-full truncate">{t(item.labelKey)}</span>
+            </NavLink>
+          ))}
+        </nav>
       </div>
     </div>
   );

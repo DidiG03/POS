@@ -213,6 +213,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'reports:listMyActiveTickets': { allow: 'session' },
   'reports:listMyPaidTickets': { allow: 'session' },
   'reports:listMyVoidedTickets': { allow: 'session' },
+  'reports:printMyDaySummary': { allow: 'session' },
 
   // ------------------------------------------------------------- requests
   'requests:approve': { allow: POS },

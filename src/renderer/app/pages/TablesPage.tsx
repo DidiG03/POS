@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
-import { useOrderContext } from '@shared/stores/orderContext';
+import { useOrderContext, type PendingAction } from '@shared/stores/orderContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useTicketStore } from '../../stores/ticket';
@@ -10,7 +10,11 @@ import { formatMoneyCompact } from '../../utils/format';
 import { PageSpinner } from '../../components/PageSpinner';
 import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
 import FloorCanvas from '../components/FloorCanvas';
-import { sanitizeMergeGroups, type TableMergeGroup } from '@shared/tableMerge';
+import {
+  formatMergeLabel,
+  sanitizeMergeGroups,
+  type TableMergeGroup,
+} from '@shared/tableMerge';
 import type { FloorSnapshot, FloorTableSnapshot } from '@shared/ipc';
 import { isSseHealthy, pollIntervalMs } from '../../utils/netQuality';
 import {
@@ -22,21 +26,43 @@ import {
 import { peekTableBill } from '../../utils/tableBill';
 import { loadOpenTableBill } from '../../utils/ticketRead';
 import { applyHostOpenTables } from '../../utils/openTablesSync';
+import {
+  resolveBootFloorArea,
+  writeLastFloorArea,
+} from '../../utils/floorAreaPref';
+import { buildReportPrintPayload } from './reportsReceipt';
+import { printTicket } from '../../api';
+import { toast } from '../../stores/toasts';
 import { bootTrace } from '@shared/bootTrace';
 import { reportAppError } from '../../utils/reportAppError';
 import { retryLazyImport } from '../../utils/lazyRetry';
 import {
+  IconCard,
   IconClock,
   IconCovers,
   IconMoney,
+  IconPrinter,
   IconUsers,
 } from '../../components/icons';
 
 type ViewMode = 'occupied' | 'covers' | 'revenue' | 'time';
 
+type TableFloorMenu = {
+  label: string;
+  members: string[];
+  x: number;
+  y: number;
+};
+
 const RED = 'bg-rose-700';
 const ORANGE = 'bg-amber-700';
 
+function clampMenuPos(x: number, y: number, width = 224, height = 168) {
+  const pad = 8;
+  const left = Math.max(pad, Math.min(x, window.innerWidth - width - pad));
+  const top = Math.max(pad, Math.min(y, window.innerHeight - height - pad));
+  return { left, top };
+}
 function formatElapsed(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const hh = Math.floor(s / 3600);
@@ -76,8 +102,14 @@ export default function TablesPage() {
   const cachedAreas = cachedSettings
     ? saneTableAreas(cachedSettings?.tableAreas)
     : [];
-  const [area, setArea] = useState<string>(() =>
-    pickConfiguredArea('', cachedAreas),
+  const { setSelectedTable, setPendingAction } = useOrderContext();
+  const [tableMenu, setTableMenu] = useState<TableFloorMenu | null>(null);
+  const [menuBusy, setMenuBusy] = useState(false);
+  const [area, setAreaState] = useState<string>(() =>
+    resolveBootFloorArea(
+      cachedAreas,
+      useOrderContext.getState().selectedTable?.area,
+    ),
   );
   const [areas, setAreas] = useState<{ name: string; count: number }[]>(
     () => cachedAreas,
@@ -88,12 +120,25 @@ export default function TablesPage() {
   const { user } = useSessionStore();
   const [viewMode, setViewMode] = useState<ViewMode>('occupied');
   const [currency, setCurrency] = useState<string>('EUR');
-  const { setSelectedTable, pendingAction, setPendingAction } =
-    useOrderContext();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const traceArea = String(params.get('area') || '').trim();
   const traceTable = String(params.get('table') || '').trim();
+
+  const setArea = useCallback((next: string) => {
+    setAreaState(String(next || '').trim());
+  }, []);
+
+  // Keep the floor sticky across Order ↔ Tables remounts.
+  useEffect(() => {
+    if (!area) return;
+    writeLastFloorArea(area);
+    const cur = String(params.get('area') || '').trim();
+    if (cur === area) return;
+    const q = new URLSearchParams(params);
+    q.set('area', area);
+    setParams(q, { replace: true });
+  }, [area, params, setParams]);
 
   const openMap = useTableStatus((s) => s.openMap);
   const setOpen = useTableStatus((s) => s.setOpen);
@@ -111,7 +156,11 @@ export default function TablesPage() {
   );
 
   const [openLoaded, setOpenLoaded] = useState(() => {
-    const snap = peekFloorSnapshot(pickConfiguredArea('', cachedAreas));
+    const bootArea = resolveBootFloorArea(
+      cachedAreas,
+      useOrderContext.getState().selectedTable?.area,
+    );
+    const snap = peekFloorSnapshot(bootArea);
     return (
       Boolean(snap?.tables?.length) ||
       Object.keys(useTableStatus.getState().openMap).length > 0
@@ -291,7 +340,7 @@ export default function TablesPage() {
         );
         const nextAreas = saneTableAreas(s?.tableAreas);
         setAreas(nextAreas);
-        setArea((current) => pickConfiguredArea(current, nextAreas));
+        setAreaState((current) => pickConfiguredArea(current, nextAreas));
       } catch {
         // ignore — empty-area UI stays until settings succeed
       } finally {
@@ -308,7 +357,7 @@ export default function TablesPage() {
       const nextAreas = saneTableAreas(cached?.tableAreas);
       if (nextAreas.length) {
         setAreas(nextAreas);
-        setArea((current) => pickConfiguredArea(current, nextAreas));
+        setAreaState((current) => pickConfiguredArea(current, nextAreas));
         setAreasReady(true);
       }
     }
@@ -532,19 +581,22 @@ export default function TablesPage() {
     formatMoney,
   ]);
 
-  const handleTableClick = useCallback(
-    (label: string, members?: string[]) => {
+  const openTable = useCallback(
+    (
+      label: string,
+      members?: string[],
+      opts?: { pending?: PendingAction },
+    ) => {
       void retryLazyImport(() => import('./OrderPage'));
       const labels = (members?.length ? members : [label]).filter(Boolean);
       const openLabel =
         labels.find((l) => isOpenFn(area, l)) || labels[0] || label;
       const isOpen = isOpenFn(area, openLabel);
+      setPendingAction(opts?.pending ?? null);
       setSelectedTable({ id: 0, label: openLabel, area });
       bindTable(tableKey(area, openLabel), {
         keepLiveBill: isOpen,
       });
-      const action = pendingAction;
-      if (action) setPendingAction(null);
       if (isOpen) {
         const peeked = peekTableBill(area, openLabel);
         if (peeked) {
@@ -572,7 +624,6 @@ export default function TablesPage() {
     },
     [
       area,
-      pendingAction,
       setPendingAction,
       setSelectedTable,
       isOpenFn,
@@ -581,6 +632,129 @@ export default function TablesPage() {
       navigate,
     ],
   );
+
+  const handleTableClick = useCallback(
+    (label: string, members?: string[]) => {
+      setTableMenu(null);
+      openTable(label, members);
+    },
+    [openTable],
+  );
+
+  const openTableMenu = useCallback(
+    (info: {
+      label: string;
+      members?: string[];
+      clientX: number;
+      clientY: number;
+    }) => {
+      const members = info.members?.length ? info.members : [info.label];
+      const openLabel =
+        members.find((l) => isOpenFn(area, l)) || members[0] || info.label;
+      if (!isOpenFn(area, openLabel)) {
+        toast.warn(t('tables.menuNeedsOpen'));
+        return;
+      }
+      setTableMenu({
+        label: info.label,
+        members,
+        x: info.clientX,
+        y: info.clientY,
+      });
+    },
+    [area, isOpenFn, t],
+  );
+
+  useEffect(() => {
+    if (!tableMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTableMenu(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tableMenu]);
+
+  useEffect(() => {
+    setTableMenu(null);
+  }, [area]);
+
+  const printMenuTicket = useCallback(async () => {
+    if (!tableMenu || menuBusy) return;
+    const members = tableMenu.members.length
+      ? tableMenu.members
+      : [tableMenu.label];
+    const openLabel =
+      members.find((l) => isOpenFn(area, l)) || members[0] || tableMenu.label;
+    setTableMenu(null);
+    if (!isOpenFn(area, openLabel)) {
+      toast.warn(t('tables.menuNeedsOpen'));
+      return;
+    }
+    setMenuBusy(true);
+    try {
+      const peeked = peekTableBill(area, openLabel);
+      const bill =
+        peeked ??
+        (await loadOpenTableBill(area, openLabel).catch(() => null));
+      const payload = buildReportPrintPayload(
+        {
+          kind: 'ACTIVE',
+          area,
+          tableLabel: openLabel,
+          items: bill?.items,
+          note: bill?.note,
+        },
+        {
+          userId: user?.id,
+          userName: user?.displayName,
+        },
+      );
+      if (!payload) {
+        toast.warn(t('tables.menuNoItems'));
+        return;
+      }
+      const printed = await printTicket(payload);
+      if (printed?.queued) {
+        toast.warn(t('order.ticketPrintQueued'));
+      } else {
+        toast.success(t('reports.ticketPrinted'));
+      }
+    } catch (e: unknown) {
+      reportAppError(e, {
+        fallback: t('reports.printTicketFailed'),
+        key: `tables.print:${area}:${openLabel}`,
+      });
+      toast.warn(t('order.ticketPrintQueued'));
+    } finally {
+      setMenuBusy(false);
+    }
+  }, [tableMenu, menuBusy, area, isOpenFn, t, user?.id, user?.displayName]);
+
+  const payMenuTicket = useCallback(() => {
+    if (!tableMenu || menuBusy) return;
+    const { label, members } = tableMenu;
+    setTableMenu(null);
+    const openLabel =
+      (members.length ? members : [label]).find((l) => isOpenFn(area, l)) ||
+      label;
+    if (!isOpenFn(area, openLabel)) {
+      toast.warn(t('tables.menuNeedsOpen'));
+      return;
+    }
+    openTable(label, members, { pending: 'pay' });
+  }, [tableMenu, menuBusy, area, isOpenFn, t, openTable]);
+
+  const menuMembers = tableMenu?.members?.length
+    ? tableMenu.members
+    : tableMenu
+      ? [tableMenu.label]
+      : [];
+  const menuDisplayLabel = menuMembers.length
+    ? formatMergeLabel(menuMembers)
+    : tableMenu?.label || '';
+  const menuPos = tableMenu
+    ? clampMenuPos(tableMenu.x, tableMenu.y)
+    : { left: 0, top: 0 };
 
   if (!areasReady && !openLoaded) {
     return <PageSpinner message={openLoadError || t('tables.loading')} />;
@@ -610,9 +784,55 @@ export default function TablesPage() {
             mergeGroups={mergeGroups}
             highlightLabels={traceTable ? [traceTable] : undefined}
             onTableClick={handleTableClick}
+            onTableLongPress={openTableMenu}
           />
         ) : null}
       </div>
+
+      {tableMenu ? (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setTableMenu(null)}
+        >
+          <div
+            role="menu"
+            className="absolute w-56 rounded-lg border border-[var(--pos-border)] bg-[var(--pos-surface)] shadow-2xl overflow-hidden"
+            style={{ left: menuPos.left, top: menuPos.top }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-3 py-2 border-b border-[var(--pos-border)]">
+              <div className="text-[10px] uppercase tracking-wide text-[color:var(--pos-fg-muted)]">
+                {t('tables.quickMenu')}
+              </div>
+              <div className="font-semibold truncate">
+                {t('tables.tableLabel', { label: menuDisplayLabel })}
+              </div>
+            </div>
+            <div className="p-1.5 space-y-1">
+              <button
+                type="button"
+                role="menuitem"
+                disabled={menuBusy}
+                className="w-full flex items-center gap-2 text-left px-3 py-2.5 rounded text-sm font-medium hover:bg-[var(--pos-hover)] disabled:opacity-50"
+                onClick={() => void printMenuTicket()}
+              >
+                <IconPrinter />
+                <span>{t('order.printTicket')}</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={menuBusy}
+                className="w-full flex items-center gap-2 text-left px-3 py-2.5 rounded text-sm font-medium hover:bg-[var(--pos-hover)] disabled:opacity-50"
+                onClick={payMenuTicket}
+              >
+                <IconCard />
+                <span>{t('tables.payTicket')}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="absolute top-0 left-0 right-0 z-10 flex items-start justify-end gap-3 px-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-3 pointer-events-none">
         <div className="pointer-events-auto flex gap-2 overflow-x-auto no-scrollbar max-w-full">
