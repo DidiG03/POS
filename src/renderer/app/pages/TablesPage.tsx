@@ -20,6 +20,7 @@ import {
   readFloorSnapshot,
 } from '../../utils/posReadCache';
 import { peekTableBill } from '../../utils/tableBill';
+import { loadOpenTableBill } from '../../utils/ticketRead';
 import { applyHostOpenTables } from '../../utils/openTablesSync';
 import { bootTrace } from '@shared/bootTrace';
 import { reportAppError } from '../../utils/reportAppError';
@@ -537,18 +538,34 @@ export default function TablesPage() {
       const labels = (members?.length ? members : [label]).filter(Boolean);
       const openLabel =
         labels.find((l) => isOpenFn(area, l)) || labels[0] || label;
+      const isOpen = isOpenFn(area, openLabel);
       setSelectedTable({ id: 0, label: openLabel, area });
       bindTable(tableKey(area, openLabel), {
-        keepLiveBill: isOpenFn(area, openLabel),
+        keepLiveBill: isOpen,
       });
       const action = pendingAction;
       if (action) setPendingAction(null);
-      if (isOpenFn(area, openLabel)) {
+      if (isOpen) {
         const peeked = peekTableBill(area, openLabel);
         if (peeked) {
           hydrate({ items: peeked.items as any, note: peeked.note });
+          navigate('/app/order');
+          return;
         }
-        navigate('/app/order');
+        // Floor polls ship total but items:[]. Load the host bill before
+        // opening the order screen so occupied tables never paint empty.
+        void (async () => {
+          try {
+            const bill = await loadOpenTableBill(area, openLabel);
+            if (bill) {
+              hydrate({ items: bill.items as any, note: bill.note });
+            }
+          } catch {
+            // OrderPage sync still retries once mounted.
+          } finally {
+            navigate('/app/order');
+          }
+        })();
         return;
       }
       navigate('/app/order');

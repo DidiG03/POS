@@ -1,7 +1,11 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { invalidateCachePrefix } from './swrCache';
 import { cacheLatestTicket, ingestFloorSnapshot } from './posReadCache';
-import { readTicketForTable, type TicketReadDeps } from './ticketRead';
+import {
+  readTicketForTable,
+  loadOpenTableBill,
+  type TicketReadDeps,
+} from './ticketRead';
 
 function deps(
   answers: Array<unknown | Error>,
@@ -247,5 +251,53 @@ describe('readTicketForTable', () => {
       note: 'no onion',
     });
     expect(floorCalls).toBe(0);
+  });
+});
+
+describe('loadOpenTableBill', () => {
+  beforeEach(() => {
+    invalidateCachePrefix('pos:ticket:');
+    invalidateCachePrefix('pos:floor:');
+  });
+
+  it('returns live host lines when the floor only has a total', async () => {
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T8',
+            openedAt: '2026-09-21T16:00:00.000Z',
+            userId: 1,
+            covers: 2,
+            total: 1400,
+            items: [],
+            note: null,
+          },
+        ],
+      },
+      { area: 'Salla' },
+    );
+    const d = deps([
+      {
+        items: [
+          { name: 'Byrek', qty: 2, unitPrice: 150 },
+          { name: 'Cola', qty: 1, unitPrice: 200 },
+        ],
+        note: '',
+      },
+    ]);
+    await expect(loadOpenTableBill('Salla', 'T8', d)).resolves.toEqual({
+      items: [
+        { name: 'Byrek', qty: 2, unitPrice: 150 },
+        { name: 'Cola', qty: 1, unitPrice: 200 },
+      ],
+      note: '',
+    });
+  });
+
+  it('returns null when the host has no live lines', async () => {
+    const d = deps([{ items: [] }, { items: [] }]);
+    await expect(loadOpenTableBill('Salla', 'T8', d)).resolves.toBeNull();
   });
 });

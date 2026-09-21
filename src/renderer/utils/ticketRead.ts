@@ -1,11 +1,3 @@
-/**
- * Ask the host what is on this table's bill right now.
- *
- * Empty is the expensive answer to get wrong: never take a cached `[]` as
- * truth, confirm against `getLatestForTable`, then fall back to the floor
- * snapshot (and any already-ingested cache) so Electron and tablets restore
- * the same sitting.
- */
 import type { FloorSnapshot } from '@shared/ipc';
 import { asTicketLogItems } from '@shared/ticketLogItems';
 import {
@@ -150,4 +142,24 @@ export async function readTicketForTable(
   } catch {
     return { ok: false };
   }
+}
+
+/**
+ * Live bill for an occupied table.
+ *
+ * Floor polls deliberately ship `items: []` (total only) for waiter-UI
+ * perf — so peeks often miss even when the till already has lines. Callers
+ * that open an occupied table must use this (or {@link readTicketForTable})
+ * instead of trusting the floor row alone.
+ */
+export async function loadOpenTableBill(
+  area: string,
+  label: string,
+  deps: TicketReadDeps = defaultDeps(),
+): Promise<{ items: TicketReadItems; note: string } | null> {
+  const read = await readTicketForTable(area, label, deps);
+  if (!read.ok) return null;
+  const live = read.items.filter((it) => it && it.voided !== true);
+  if (!live.length) return null;
+  return { items: read.items, note: read.note };
 }

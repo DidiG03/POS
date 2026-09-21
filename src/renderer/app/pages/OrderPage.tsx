@@ -86,6 +86,7 @@ import { usePosUiTheme } from '../../theme';
 import { FALLBACK_MENU_TILE_BG, menuTileStyle } from '@shared/menuTileColor';
 import type { PosUiTheme } from '@shared/uiTheme';
 import {
+  cacheLatestTicket,
   invalidateFloorCache,
   invalidateTicketCache,
   peekFloorSnapshot,
@@ -1076,13 +1077,14 @@ export default function OrderPage() {
             sentTable.area === opts.area &&
             sentTable.label === opts.label,
         );
+      const expectedTotal = peekTableBillTotal(opts.area, opts.label);
       const decision = decideHostBill({
         read,
         currentLines,
         hasCovers: opts.hasCovers,
         suppressClose: suppressFreeOnEmptyRef.current,
         withinPostSendGrace,
-        expectedTotal: peekTableBillTotal(opts.area, opts.label),
+        expectedTotal,
       });
       if (decision.kind === 'unreadable') {
         setTicketLoadFailed(true);
@@ -1102,7 +1104,9 @@ export default function OrderPage() {
         }
         return;
       }
-      if (decision.kind === 'keep') return;
+      if (decision.kind === 'keep') {
+        return;
+      }
       if (opts.mayCloseTable) {
         useTicketStore.getState().hydrate({ items: [], note: decision.note });
         closeOccupiedTable(opts.area, opts.label);
@@ -1119,7 +1123,9 @@ export default function OrderPage() {
       opts: { mayCloseTable: boolean; cancelled?: () => boolean },
     ) => {
       const read = await readTicketForTable(area, label);
-      if (opts.cancelled?.() || gen !== hydrateGenRef.current) return;
+      if (opts.cancelled?.() || gen !== hydrateGenRef.current) {
+        return;
+      }
       let hasCovers = hasLocalCovers(coversKnownRef.current);
       if (
         read.ok &&
@@ -1128,7 +1134,9 @@ export default function OrderPage() {
         opts.mayCloseTable
       ) {
         hasCovers = await sessionHasCovers(area, label, coversKnownRef.current);
-        if (opts.cancelled?.() || gen !== hydrateGenRef.current) return;
+        if (opts.cancelled?.() || gen !== hydrateGenRef.current) {
+          return;
+        }
       }
       applyHostBill(read, {
         mayCloseTable: opts.mayCloseTable,
@@ -1160,18 +1168,21 @@ export default function OrderPage() {
     let cancelled = false;
     const gen = hydrateGenRef.current;
     (async () => {
-      if (!ticketPersistReady || !openLoaded) return;
+      if (!ticketPersistReady || !openLoaded) {
+        return;
+      }
       if (!selectedTable) {
         setTicketLoaded(true);
         return;
       }
+      const openLocal = isOpen(selectedTable.area, selectedTable.label);
       // Closed tables keep the persisted local draft (unsent items + add mode).
       // But "closed" here is a local flag, and a wrong one hides a live bill:
       // every ticket read below is skipped, so the panel shows an empty cart
       // for an occupied table. Confirm with the host in the background —
       // awaiting that GET on a native shell (10s × 2) left the menu on screen
       // while the WebView was busy, which on a phone felt like a dead UI.
-      if (!isOpen(selectedTable.area, selectedTable.label)) {
+      if (!openLocal) {
         const table = selectedTable;
         const key = tableKey(table.area, table.label);
         // Once per table only. A sitting with neither lines nor covers gets
@@ -1218,10 +1229,10 @@ export default function OrderPage() {
           mayCloseTable: true,
           cancelled: () => cancelled,
         });
-      } catch {
-        // next visibility / ticketsChanged pass retries
       } finally {
-        if (!cancelled && gen === hydrateGenRef.current) setTicketLoaded(true);
+        if (!cancelled && gen === hydrateGenRef.current) {
+          setTicketLoaded(true);
+        }
       }
     })();
     return () => {
@@ -1922,21 +1933,61 @@ export default function OrderPage() {
       const optimistic = Number(optimisticUserId);
       if (Number.isFinite(optimistic) && optimistic > 0) {
         setOwnerId(optimistic);
-        if (isSseHealthy()) return;
+        // Still need the bill when the cart is empty — floor only ships a
+        // total, not line items. Skipping the fetch here left occupied
+        // tables blank while owner polls already had the full check.
       }
       const cached = ownerIdFromFloorCache(a, l);
       if (cached) {
         setOwnerId(cached);
-        if (isSseHealthy()) return;
+      }
+      const cartEmpty = !useTicketStore
+        .getState()
+        .lines.some((line) => line.voided !== true);
+      // SSE can keep ownership fresh without a ticket round-trip, but an
+      // empty cart on an occupied table still needs the host bill.
+      if (isSseHealthy() && !cartEmpty) {
+        if (cached || (Number.isFinite(optimistic) && optimistic > 0)) return;
       }
       try {
         const data = await window.api.tickets.getLatestForTable(a, l);
         if (gen !== ownerFetchGenRef.current) return;
         const fetched = Number(data?.userId);
         if (Number.isFinite(optimistic) && optimistic > 0) {
-          if (Number.isFinite(fetched) && fetched !== optimistic) return;
+          if (Number.isFinite(fetched) && fetched !== optimistic) {
+            // Optimistic owner wins unless the host disagrees later via SSE.
+          } else {
+            setOwnerId(
+              Number.isFinite(fetched) && fetched > 0 ? fetched : null,
+            );
+          }
+        } else {
+          setOwnerId(Number.isFinite(fetched) && fetched > 0 ? fetched : null);
         }
-        setOwnerId(Number.isFinite(fetched) && fetched > 0 ? fetched : null);
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const live = items.filter(
+          (it) => (it as { voided?: boolean })?.voided !== true,
+        );
+        if (live.length > 0) {
+          cacheLatestTicket(a, l, {
+            items,
+            note: typeof data?.note === 'string' ? data.note : '',
+            covers: data?.covers,
+            createdAt:
+              typeof data?.createdAt === 'string'
+                ? data.createdAt
+                : new Date().toISOString(),
+            userId: data?.userId,
+          });
+        }
+        if (cartEmpty && live.length > 0) {
+          useTicketStore.getState().hydrate({
+            items: items as any,
+            note: typeof data?.note === 'string' ? data.note : '',
+          });
+          setTicketLoadFailed(false);
+          setTicketLoaded(true);
+        }
       } catch {
         if (gen !== ownerFetchGenRef.current) return;
         if (!(Number.isFinite(optimistic) && optimistic > 0)) setOwnerId(null);

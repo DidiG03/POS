@@ -1,12 +1,3 @@
-/**
- * One answer for "what is on this occupied table's bill?".
- *
- * Floor, order, and send/void all used to ask that question differently.
- * An empty cache, a frozen Electron bridge, or a second hydrate effect
- * could then paint an empty cart on a table that still had sent lines.
- * Peek, host read, and apply decisions live here so every device uses
- * the same rules.
- */
 import { shouldKeepLocalDraftOnEmptyLog } from '@shared/ticketDraft';
 import { asTicketLogItems } from '@shared/ticketLogItems';
 import { peekFloorSnapshot, peekLatestTicket } from './posReadCache';
@@ -45,17 +36,23 @@ export function peekTableBill(
     return null;
   }
   if (snapRow && cachedTicketHasLines(snapRow)) {
+    const items = asTicketLogItems(snapRow.items) as TicketReadItems;
     return {
-      items: asTicketLogItems(snapRow.items) as TicketReadItems,
+      items,
       note: noteOf(snapRow),
     };
   }
   const cached = peekLatestTicket(area, label);
-  if (!cachedTicketHasLines(cached)) return null;
+  if (!cachedTicketHasLines(cached)) {
+    return null;
+  }
   const openedAt = snapRow?.openedAt;
-  if (openedAt && !cacheLooksLikeCurrentSession(cached, openedAt)) return null;
+  if (openedAt && !cacheLooksLikeCurrentSession(cached, openedAt)) {
+    return null;
+  }
+  const items = asTicketLogItems(cached.items) as TicketReadItems;
   return {
-    items: asTicketLogItems(cached.items) as TicketReadItems,
+    items,
     note: noteOf(cached),
   };
 }
@@ -93,7 +90,9 @@ export function decideHostBill(opts: {
   /** {@link peekTableBillTotal} — the floor's running total for this sitting. */
   expectedTotal?: number | null;
 }): HostBillDecision {
-  if (!opts.read.ok) return { kind: 'unreadable' };
+  if (!opts.read.ok) {
+    return { kind: 'unreadable' };
+  }
   const items = opts.read.items;
   if (hostBillHasLiveLines(items)) {
     return { kind: 'hydrate', items, note: opts.read.note };
@@ -101,15 +100,24 @@ export function decideHostBill(opts: {
   if (items.length > 0) {
     return { kind: 'voided', items, note: opts.read.note };
   }
-  if (opts.withinPostSendGrace) return { kind: 'keep' };
-  if (opts.suppressClose) return { kind: 'keep' };
-  if (shouldKeepLocalDraftOnEmptyLog(opts.currentLines))
+  if (opts.withinPostSendGrace) {
     return { kind: 'keep' };
+  }
+  if (opts.suppressClose) {
+    return { kind: 'keep' };
+  }
+  if (shouldKeepLocalDraftOnEmptyLog(opts.currentLines)) {
+    return { kind: 'keep' };
+  }
   // Nothing came back, yet the floor is painting money on this table. Treating
   // that as an empty bill is how a waiter ends up staring at a blank ticket on
   // an occupied table — and the next send would then rewrite the check down to
   // just the new items. A read we can prove is incomplete is unreadable.
-  if (Number(opts.expectedTotal || 0) > 0) return { kind: 'unreadable' };
-  if (opts.hasCovers) return { kind: 'keep' };
+  if (Number(opts.expectedTotal || 0) > 0) {
+    return { kind: 'unreadable' };
+  }
+  if (opts.hasCovers) {
+    return { kind: 'keep' };
+  }
   return { kind: 'empty', note: opts.read.note };
 }

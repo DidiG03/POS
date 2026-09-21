@@ -3676,8 +3676,9 @@ ipcHandle('tickets:getLatestForTable', async (_e, input) => {
   // the previous owner's items on a free table.
   const last = await findLatestTicketLogForCurrentSession(area, tableLabel);
   if (!last) return null;
+  const items = asTicketLogItems(last.itemsJson);
   return {
-    items: asTicketLogItems(last.itemsJson),
+    items,
     note: stripTransferTagsFromNote(last.note) || null,
     covers: last.covers ?? null,
     createdAt: ticketCreatedAtIso(last.createdAt),

@@ -46,6 +46,24 @@ describe('peekTableBill', () => {
     expect(peekTableBill('Salla', 'T7')).toBeNull();
   });
 
+  it('does not treat floor total-only rows as a bill (items are stripped for perf)', () => {
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            ...SNAP.tables[0],
+            items: [],
+            total: 1400,
+            note: null,
+          },
+        ],
+      },
+      { area: 'Salla' },
+    );
+    expect(peekTableBillTotal('Salla', 'T7')).toBe(1400);
+    expect(peekTableBill('Salla', 'T7')).toBeNull();
+  });
+
   it('does not use a leftover ticket cache when the table is missing from the floor', () => {
     ingestFloorSnapshot({ tables: [] }, { area: 'Salla' });
     cacheLatestTicket('Salla', 'T7', {

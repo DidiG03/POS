@@ -219,10 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.53"
-            echo "- Occupied tables show the sent items again instead of an empty ticket (till lookup now uses ticket id)"
-            echo "- Waiters can open personal reports on the phone; qty +/- works on the first unsent line"
-            echo "- Admin can erase all tickets after typing ERASE; menu and staff are kept"
+            echo "### Changes in v0.2.54"
+            echo "- Opening an occupied table loads the host bill when the floor only has a total (no blank tickets)"
+            echo "- Empty carts on open tables rehydrate from the owner poll / getLatestForTable path"
+            echo "- Removed temporary ticket-trace debug logging"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

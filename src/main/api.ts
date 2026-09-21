@@ -1803,12 +1803,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           area,
           tableLabel,
         );
-        if (!last) return send(res, 200, null, corsOrigin);
+        if (!last) {
+          return send(res, 200, null, corsOrigin);
+        }
+        const items = asTicketLogItems(last.itemsJson);
         return send(
           res,
           200,
           {
-            items: asTicketLogItems(last.itemsJson),
+            items,
             note: stripTransferTagsFromNote(last.note) || null,
             covers: last.covers ?? null,
             createdAt: ticketCreatedAtIso(last.createdAt),

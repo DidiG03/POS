@@ -258,6 +258,11 @@ describe('waiter UI stays responsive', () => {
     expect(read('src/renderer/utils/swrCache.ts')).toContain(
       "return !key.startsWith('pos:floor:')",
     );
+
+    // Occupied-table taps must load the host bill — floor rows are total-only.
+    const tables = read('src/renderer/app/pages/TablesPage.tsx');
+    expect(tables).toContain('loadOpenTableBill');
+    expect(tables).toContain('peekTableBill');
   });
 
   it('loads the open-table bill by id, not mixed createdAt', () => {

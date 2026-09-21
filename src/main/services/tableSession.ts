@@ -67,16 +67,24 @@ export async function getCurrentTableSessionKey(
 export function pickLatestSessionTicket<
   T extends { id: number; createdAt: unknown },
 >(rowsNewestIdFirst: T[], sessionStartMs: number | null): T | null {
-  if (rowsNewestIdFirst.length === 0) return null;
+  if (rowsNewestIdFirst.length === 0) {
+    return null;
+  }
   const newest = rowsNewestIdFirst[0];
-  if (sessionStartMs == null) return newest;
+  if (sessionStartMs == null) {
+    return newest;
+  }
   const inSession = rowsNewestIdFirst.find((row) =>
     rowIsInOpenSession(row.createdAt, sessionStartMs),
   );
-  if (inSession) return inSession;
+  if (inSession) {
+    return inSession;
+  }
   // Occupied sitting whose DateTime we cannot parse: the newest id is
   // still this table's live bill.
-  if (!Number.isFinite(ticketLogCreatedAtMs(newest.createdAt))) return newest;
+  if (!Number.isFinite(ticketLogCreatedAtMs(newest.createdAt))) {
+    return newest;
+  }
   return null;
 }
 
@@ -113,7 +121,9 @@ export async function findLatestTicketLogForCurrentSession(
   tableLabel: string,
 ) {
   const sessionStart = await getTableSessionStartedAt(area, tableLabel);
-  if (!sessionStart) return null;
+  if (!sessionStart) {
+    return null;
+  }
   return findLatestTicketLogSince(area, tableLabel, sessionStart);
 }
 

@@ -1,30 +1,27 @@
-const startedAt = nowMs();
+/**
+ * Boot / cold-start timing breadcrumbs. Kept as no-ops in production builds
+ * so call sites stay cheap to leave in place without console noise.
+ */
+const startedAt =
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
 
 function nowMs(): number {
-  if (
-    typeof performance !== 'undefined' &&
+  return typeof performance !== 'undefined' &&
     typeof performance.now === 'function'
-  ) {
-    return performance.now();
-  }
-  return Date.now();
+    ? performance.now()
+    : Date.now();
 }
 
-/** Elapsed since this process loaded. Main and renderer each have their own clock. */
-export function bootTrace(step: string, extra?: string | number): void {
-  const ms = Math.round(nowMs() - startedAt);
-  const suffix = extra == null || extra === '' ? '' : ` ${extra}`;
-  console.log(`[boot] +${ms}ms ${step}${suffix}`);
+export function bootTrace(_step: string, _extra?: string | number): void {
+  void startedAt;
+  void nowMs;
 }
 
 export async function bootStep<T>(
-  name: string,
+  _name: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const t0 = nowMs();
-  try {
-    return await fn();
-  } finally {
-    console.log(`[boot] ${name} ${Math.round(nowMs() - t0)}ms`);
-  }
+  return await fn();
 }
