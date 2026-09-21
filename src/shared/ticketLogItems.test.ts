@@ -73,13 +73,23 @@ describe('ticketLogCreatedAtRangeSql', () => {
     const end = Date.parse('2026-09-19T23:59:59.999Z');
     const q = ticketLogCreatedAtRangeSql(start, end);
     expect(q?.sql).toContain('typeof(createdAt)');
+    const startSec = Math.floor(start / 1000);
+    const endSec = Math.ceil(end / 1000);
+    const startIso = new Date(start).toISOString();
+    const endIso = new Date(end).toISOString();
+    expect(q?.sql).toContain("typeof(createdAt) IN ('integer', 'real')");
+    expect(q?.sql).toContain("createdAt NOT GLOB '*[^0-9]*'");
     expect(q?.params).toEqual([
       start,
       end,
-      Math.floor(start / 1000),
-      Math.ceil(end / 1000),
-      new Date(start).toISOString(),
-      new Date(end).toISOString(),
+      startSec,
+      endSec,
+      startIso,
+      endIso,
+      start,
+      end,
+      startSec,
+      endSec,
     ]);
   });
 

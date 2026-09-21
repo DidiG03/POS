@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const src = fs.readFileSync(path.resolve(__dirname, 'adminTickets.ts'), 'utf8');
+const staffPage = fs.readFileSync(
+  path.resolve(__dirname, '../../renderer/app/pages/AdminTicketsPage.tsx'),
+  'utf8',
+);
 
 describe('admin tickets SQLite DateTime / itemsJson', () => {
   it('serializes createdAt without assuming a Date', () => {
@@ -14,8 +18,18 @@ describe('admin tickets SQLite DateTime / itemsJson', () => {
     expect(src).not.toMatch(/Array\.isArray\(r\.itemsJson\)/);
   });
 
-  it('lists staff who wrote tickets even if they did not clock in', () => {
-    expect(src).toContain('(counts[id] ?? 0) > 0');
-    expect(src).toContain('latestRowPerSession');
+  it('always returns every waiter, not only staff who clocked in', () => {
+    expect(src).toContain("role: { not: 'ADMIN' }");
+    expect(src).not.toContain('clockedInDuringPeriod');
+    expect(src).toContain('unionTicketLogsById');
+    expect(src).toContain('paidSalesNotOnTickets');
+    expect(src).toContain('matchOrdersToTicketRows');
+  });
+
+  it('staff list has no date-range filter of its own', () => {
+    expect(staffPage).not.toContain('computeDateRange');
+    expect(staffPage).not.toContain('clockedIn');
+    expect(staffPage).toMatch(/listTicketCounts\(\s*\)/);
+    expect(staffPage).toContain('Search staff');
   });
 });

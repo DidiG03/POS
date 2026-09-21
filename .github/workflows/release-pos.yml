@@ -219,10 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.50"
-            echo "- Sending extra items keeps the whole bill instead of rewriting it down to the extras"
-            echo "- An occupied table whose bill cannot be read now warns and holds send/pay, instead of showing a blank ticket"
-            echo "- The floor no longer flashes tables clustered at their saved coordinates before the auto-fit lands"
+            echo "### Changes in v0.2.51"
+            echo "- Admin Tickets lists every waiter without a date filter; the day picker stays on the waiter page"
+            echo "- Waiter tickets no longer collapse a whole room into one sitting when session keys were truncated"
+            echo "- Paid receipts still show when kitchen ticket snapshots were compacted away"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

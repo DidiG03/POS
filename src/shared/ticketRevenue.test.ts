@@ -57,6 +57,46 @@ describe('latestRowPerSession', () => {
     expect(JSON.parse(String(kept[0].itemsJson))).toHaveLength(2);
   });
 
+  it('does not merge every table in an area when SQLite truncated the NUL key', () => {
+    const rows = [
+      {
+        sessionKey: 'Salla',
+        area: 'Salla',
+        tableLabel: 'T15',
+        createdAt: new Date(1_000),
+        itemsJson: [line('Pizza', 10)],
+      },
+      {
+        sessionKey: 'Salla',
+        area: 'Salla',
+        tableLabel: 'T6',
+        createdAt: new Date(2_000),
+        itemsJson: [line('Steak', 20)],
+      },
+      {
+        sessionKey: 'Veranda',
+        area: 'Veranda',
+        tableLabel: 'T30',
+        createdAt: new Date(3_000),
+        itemsJson: [line('Water', 1)],
+      },
+      {
+        sessionKey: 'Veranda',
+        area: 'Veranda',
+        tableLabel: 'T31',
+        createdAt: new Date(4_000),
+        itemsJson: [line('Beer', 3)],
+      },
+    ];
+    const kept = latestRowPerSession(rows);
+    expect(kept.map((r) => r.tableLabel).sort()).toEqual([
+      'T15',
+      'T30',
+      'T31',
+      'T6',
+    ]);
+  });
+
   it('counts a re-seated table as a separate session', () => {
     const rows = [
       {

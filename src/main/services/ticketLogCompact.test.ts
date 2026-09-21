@@ -51,7 +51,22 @@ describe('compactTicketLogSession', () => {
         },
       },
     };
-    await expect(compactTicketLogSession('k', client)).resolves.toBe(0);
+    await expect(compactTicketLogSession('A:1@t0', client)).resolves.toBe(0);
+  });
+
+  it('refuses an area-only leftover key so it cannot wipe the room', async () => {
+    const client = {
+      ticketLog: {
+        findMany: async () => {
+          throw new Error('should not compact Salla');
+        },
+        deleteMany: async () => {
+          throw new Error('should not compact Salla');
+        },
+      },
+    };
+    await expect(compactTicketLogSession('Salla', client)).resolves.toBe(0);
+    await expect(compactTicketLogSession('Veranda', client)).resolves.toBe(0);
   });
 });
 
@@ -68,9 +83,9 @@ describe('compactOversizedTicketLogSessions', () => {
       },
     };
     await expect(
-      compactOversizedTicketLogSessions(['S1', 'S1', 'S2', ''], client),
+      compactOversizedTicketLogSessions(['S1:a', 'S1:a', 'S2:a', ''], client),
     ).resolves.toBe(2);
-    expect(keys).toEqual(['S1', 'S2']);
+    expect(keys).toEqual(['S1:a', 'S2:a']);
   });
 });
 
@@ -101,14 +116,12 @@ describe('applyTicketLogSessionKeys', () => {
         expect.objectContaining({
           where: {
             id: { in: [1, 2] },
-            OR: [{ sessionKey: null }, { sessionKey: '' }],
           },
           data: { sessionKey: 'k-a' },
         }),
         expect.objectContaining({
           where: {
             id: { in: [3] },
-            OR: [{ sessionKey: null }, { sessionKey: '' }],
           },
           data: { sessionKey: 'k-b' },
         }),

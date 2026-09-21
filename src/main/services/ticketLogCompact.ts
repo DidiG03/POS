@@ -1,5 +1,10 @@
 import { prisma } from '@db/client';
-import { proposedSessionKeys, type SessionKeyRow } from '@shared/ticketRevenue';
+import {
+  proposedSessionKeys,
+  sessionKeyCanGroup,
+  sessionKeyIsSafeToCompact,
+  type SessionKeyRow,
+} from '@shared/ticketRevenue';
 import { buildTableSessionKey } from './tableSession';
 
 /**
@@ -46,7 +51,7 @@ export async function compactTicketLogSession(
   client: CompactClient = prisma as CompactClient,
 ): Promise<number> {
   const key = String(sessionKey || '').trim();
-  if (!key) return 0;
+  if (!sessionKeyIsSafeToCompact(key)) return 0;
   try {
     const newest = await client.ticketLog.findMany({
       where: { sessionKey: key },
@@ -100,10 +105,7 @@ export async function applyTicketLogSessionKeys(
   for (const [key, ids] of idsBySessionKey(assignments)) {
     if (ids.length === 0) continue;
     const result = await client.ticketLog.updateMany({
-      where: {
-        id: { in: ids },
-        OR: [{ sessionKey: null }, { sessionKey: '' }],
-      },
+      where: { id: { in: ids } },
       data: { sessionKey: key },
     });
     keyed += Number(result?.count || 0);
@@ -114,17 +116,26 @@ export async function applyTicketLogSessionKeys(
 async function loadUnkeyedTableLogs(
   client: BackfillClient,
 ): Promise<SessionKeyRow[]> {
-  const tables = await client.ticketLog.findMany({
-    where: { OR: [{ sessionKey: null }, { sessionKey: '' }] },
-    distinct: ['area', 'tableLabel'],
-    select: { area: true, tableLabel: true },
+  const tagged = await client.ticketLog.findMany({
+    select: { area: true, tableLabel: true, sessionKey: true },
   });
-  if (!Array.isArray(tables) || tables.length === 0) return [];
-
-  const rows: SessionKeyRow[] = [];
-  for (const t of tables as Array<{ area?: string; tableLabel?: string }>) {
+  const want = new Set<string>();
+  for (const t of tagged as Array<{
+    area?: string;
+    tableLabel?: string;
+    sessionKey?: string | null;
+  }>) {
+    if (sessionKeyCanGroup(t?.sessionKey, t?.area)) continue;
     const area = String(t?.area || '');
     const tableLabel = String(t?.tableLabel || '');
+    if (!area || !tableLabel) continue;
+    want.add(`${area}\u0000${tableLabel}`);
+  }
+  if (want.size === 0) return [];
+
+  const rows: SessionKeyRow[] = [];
+  for (const k of want) {
+    const [area, tableLabel] = k.split('\u0000');
     if (!area || !tableLabel) continue;
     const batch = await client.ticketLog.findMany({
       where: { area, tableLabel },
@@ -157,7 +168,8 @@ async function oversizedSessionKeys(client: BackfillClient): Promise<string[]> {
     for (const row of grouped || []) {
       const key = String(row?.sessionKey || '').trim();
       const n = Number(row?._count?.id ?? row?._count?._all ?? 0);
-      if (key && n > TICKET_LOG_KEEP_PER_SESSION) out.push(key);
+      if (sessionKeyIsSafeToCompact(key) && n > TICKET_LOG_KEEP_PER_SESSION)
+        out.push(key);
     }
     return out;
   } catch {

@@ -3,14 +3,10 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { reportAppError } from '../../utils/reportAppError';
-import { computeDateRange, type DateRangePreset } from '@shared/dateRange';
 import {
   Badge,
-  Button,
   EmptyState,
-  Input,
   SearchInput,
-  Select,
   StatusDot,
   Table,
   TableFrame,
@@ -36,9 +32,6 @@ export default function AdminTicketsPage() {
   const me = useAdminSessionStore((s) => s.user);
   const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState('');
-  const [range, setRange] = useState<DateRangePreset>('today');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
   const [tracing, setTracing] = useState(
     Boolean(params.get('table') || params.get('sale')),
   );
@@ -49,16 +42,8 @@ export default function AdminTicketsPage() {
       setRows([]);
       return;
     }
-    const { startIso, endIso } = computeDateRange(
-      range,
-      customStart,
-      customEnd,
-    );
     try {
-      const data = await window.api.admin.listTicketCounts({
-        startIso,
-        endIso,
-      });
+      const data = await window.api.admin.listTicketCounts();
       setRows(Array.isArray(data) ? data : []);
     } catch (e) {
       reportAppError(e, {
@@ -71,7 +56,7 @@ export default function AdminTicketsPage() {
 
   useEffect(() => {
     void load();
-  }, [me?.id, me?.role, range, customStart, customEnd]);
+  }, [me?.id, me?.role]);
 
   useEffect(() => {
     const table = String(params.get('table') || '').trim();
@@ -150,17 +135,14 @@ export default function AdminTicketsPage() {
 
   const filtered = rows
     .filter((r) => r.name.toLowerCase().includes(q.toLowerCase()))
-    .sort((a, b) => b.tickets - a.tickets);
+    .sort((a, b) => {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      if (b.tickets !== a.tickets) return b.tickets - a.tickets;
+      return a.name.localeCompare(b.name);
+    });
 
   const openStaff = (r: Row) => {
-    const { startIso, endIso } = computeDateRange(
-      range,
-      customStart,
-      customEnd,
-    );
-    navigate(
-      `/admin/tickets/${r.id}?start=${encodeURIComponent(startIso || '')}&end=${encodeURIComponent(endIso || '')}&name=${encodeURIComponent(r.name)}`,
-    );
+    navigate(`/admin/tickets/${r.id}?name=${encodeURIComponent(r.name)}`);
   };
 
   return (
@@ -179,42 +161,13 @@ export default function AdminTicketsPage() {
           <div className="mt-0.5">{t('inbox.traceMissBody')}</div>
         </div>
       ) : null}
-      <div className="flex flex-wrap items-end gap-2">
-        <SearchInput
-          value={q}
-          onValueChange={setQ}
-          placeholder="Search staff"
-          className="w-full sm:w-64"
-        />
-        <Select
-          value={range}
-          onChange={(e) => setRange(e.target.value as any)}
-          className="w-full sm:w-40"
-        >
-          <option value="today">Today</option>
-          <option value="yesterday">Yesterday</option>
-          <option value="last7">Last 7 days</option>
-          <option value="last30">Last 30 days</option>
-          <option value="custom">Custom</option>
-        </Select>
-        {range === 'custom' && (
-          <>
-            <Input
-              type="date"
-              className="w-full sm:w-40"
-              value={customStart}
-              onChange={(e) => setCustomStart(e.target.value)}
-            />
-            <Input
-              type="date"
-              className="w-full sm:w-40"
-              value={customEnd}
-              onChange={(e) => setCustomEnd(e.target.value)}
-            />
-            <Button onClick={load}>Apply</Button>
-          </>
-        )}
-      </div>
+
+      <SearchInput
+        value={q}
+        onValueChange={setQ}
+        placeholder="Search staff"
+        className="w-full sm:w-64"
+      />
 
       <section>
         <h2 className="admin-kicker mb-3">
@@ -223,11 +176,11 @@ export default function AdminTicketsPage() {
         {filtered.length === 0 ? (
           <EmptyState
             icon={<IconTicket />}
-            title="No staff activity"
+            title="No staff"
             description={
-              hasTables
-                ? 'No tickets were opened by staff in the selected period.'
-                : 'No sales were opened by staff in the selected period.'
+              q.trim()
+                ? 'No staff match that search.'
+                : 'No waiters are set up yet.'
             }
           />
         ) : (
@@ -254,6 +207,9 @@ export default function AdminTicketsPage() {
                         <span className="truncate font-medium text-gray-100">
                           {r.name}
                         </span>
+                        {r.active ? (
+                          <Badge tone="accent">On shift</Badge>
+                        ) : null}
                       </div>
                     </Td>
                     <Td numeric className="tabular">
@@ -262,13 +218,9 @@ export default function AdminTicketsPage() {
                     {hasTables ? (
                       <Td numeric className="tabular">
                         {r.transfersIn > 0 ? (
-                          <span
-                            title={`${r.transfersIn} ticket${r.transfersIn === 1 ? '' : 's'} received via table transfer in this period`}
-                          >
-                            <Badge tone="info" className="tabular">
-                              {r.transfersIn}
-                            </Badge>
-                          </span>
+                          <Badge tone="info" className="tabular">
+                            {r.transfersIn}
+                          </Badge>
                         ) : (
                           <span className="text-gray-500">—</span>
                         )}

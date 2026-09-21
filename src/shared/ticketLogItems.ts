@@ -88,15 +88,40 @@ export function ticketLogCreatedAtRangeSql(
   const endSec = Math.ceil(end / 1000);
   return {
     sql: `(
-      CASE typeof(createdAt)
-        WHEN 'integer' THEN (
+      (
+        typeof(createdAt) IN ('integer', 'real')
+        AND (
           (createdAt >= ? AND createdAt <= ?)
           OR (createdAt >= ? AND createdAt <= ?)
         )
-        ELSE (createdAt >= ? AND createdAt <= ?)
-      END
+      )
+      OR (
+        typeof(createdAt) NOT IN ('integer', 'real')
+        AND (
+          (createdAt >= ? AND createdAt <= ?)
+          OR (
+            createdAt GLOB '[0-9]*'
+            AND createdAt NOT GLOB '*[^0-9]*'
+            AND (
+              (CAST(createdAt AS INTEGER) >= ? AND CAST(createdAt AS INTEGER) <= ?)
+              OR (CAST(createdAt AS INTEGER) >= ? AND CAST(createdAt AS INTEGER) <= ?)
+            )
+          )
+        )
+      )
     )`,
-    params: [start, end, startSec, endSec, startIso, endIso],
+    params: [
+      start,
+      end,
+      startSec,
+      endSec,
+      startIso,
+      endIso,
+      start,
+      end,
+      startSec,
+      endSec,
+    ],
   };
 }
 

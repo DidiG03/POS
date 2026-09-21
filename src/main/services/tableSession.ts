@@ -20,12 +20,19 @@ export async function getTableSessionStartedAt(
  * value changing, which makes it the natural grouping key. See
  * `latestRowPerSession` in `@shared/ticketRevenue`.
  */
+/**
+ * Unit Separator. A NUL (`\u0000`) used to be the delimiter; libSQL/SQLite
+ * TEXT truncated at the first NUL, so every sitting in Salla stored the key
+ * `"Salla"` and Admin collapsed the whole room into one ticket.
+ */
+export const TABLE_SESSION_KEY_SEP = '\u001f';
+
 export function buildTableSessionKey(
   area: string,
   label: string,
   startedAtIso: string,
 ): string {
-  return `${area}\u0000${label}\u0000${startedAtIso}`;
+  return `${area}${TABLE_SESSION_KEY_SEP}${label}${TABLE_SESSION_KEY_SEP}${startedAtIso}`;
 }
 
 /**

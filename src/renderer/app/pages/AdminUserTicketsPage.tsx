@@ -532,6 +532,7 @@ export default function AdminUserTicketsPage() {
   const [params, setParams] = useSearchParams();
   const start = params.get('start') || undefined;
   const end = params.get('end') || undefined;
+  const allDays = !start;
   const name = params.get('name') || '';
   const tableFilter = params.get('table') || '';
   const areaFilter = params.get('area') || '';
@@ -603,13 +604,20 @@ export default function AdminUserTicketsPage() {
 
   const viewDate = parseViewDate(start);
   const today = new Date();
-  const isToday = viewDate.toDateString() === today.toDateString();
+  const isToday = !allDays && viewDate.toDateString() === today.toDateString();
 
   function goToDate(d: Date) {
     const { startIso, endIso } = dayRangeIso(d);
     const next = new URLSearchParams(params);
     next.set('start', startIso);
     next.set('end', endIso);
+    setParams(next);
+  }
+
+  function showAllDays() {
+    const next = new URLSearchParams(params);
+    next.delete('start');
+    next.delete('end');
     setParams(next);
   }
 
@@ -729,12 +737,16 @@ export default function AdminUserTicketsPage() {
               label="Previous day"
               icon={<IconChevronLeft />}
               onClick={() =>
-                goToDate(new Date(viewDate.getTime() - 24 * 60 * 60 * 1000))
+                goToDate(
+                  allDays
+                    ? new Date(today.getTime() - 24 * 60 * 60 * 1000)
+                    : new Date(viewDate.getTime() - 24 * 60 * 60 * 1000),
+                )
               }
             />
             <Input
               type="date"
-              value={toDateKey(viewDate)}
+              value={allDays ? '' : toDateKey(viewDate)}
               onChange={(e) => {
                 const v = e.target.value;
                 if (v) {
@@ -751,8 +763,21 @@ export default function AdminUserTicketsPage() {
               onClick={() =>
                 goToDate(new Date(viewDate.getTime() + 24 * 60 * 60 * 1000))
               }
-              disabled={isToday}
+              disabled={allDays || isToday}
             />
+            {allDays ? (
+              <span className="text-[12px] font-medium text-gray-400">
+                All days
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="text-[12px] font-medium text-sky-300 hover:text-sky-200"
+                onClick={showAllDays}
+              >
+                All days
+              </button>
+            )}
           </div>
 
           <Button

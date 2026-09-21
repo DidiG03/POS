@@ -56,6 +56,31 @@ function extendsSnapshot(prev: unknown, next: unknown): boolean {
 }
 
 /**
+ * True when `key` can identify one sitting. Area-only leftovers (`"Salla"`)
+ * come from a NUL delimiter that SQLite truncated; grouping on those would
+ * merge every table in the room.
+ */
+export function sessionKeyCanGroup(
+  key: string | null | undefined,
+  area?: string | null,
+): boolean {
+  const k = String(key || '').trim();
+  if (!k) return false;
+  if (k.includes('\u001f') || k.includes('\u0000')) return true;
+  if (area != null && k === String(area).trim()) return false;
+  return true;
+}
+
+/** Compact must not run on an area-only leftover — that would wipe the room. */
+export function sessionKeyIsSafeToCompact(
+  key: string | null | undefined,
+): boolean {
+  const k = String(key || '').trim();
+  if (!k) return false;
+  return k.includes('\u001f') || k.includes('\u0000') || k.includes(':');
+}
+
+/**
  * Collapse cumulative TicketLog snapshots down to one row per dining session.
  *
  * Every "send to kitchen" writes a full snapshot of the ticket, not just the
@@ -87,7 +112,7 @@ export function latestRowPerSession<T extends TicketSnapshotRow>(
 
   for (const { row, index } of ordered) {
     const sessionKey = String(row?.sessionKey ?? '').trim();
-    if (sessionKey) {
+    if (sessionKeyCanGroup(sessionKey, row?.area)) {
       const slot = keyed.get(sessionKey);
       if (slot) {
         slot.row = row;
@@ -169,7 +194,7 @@ export function proposedSessionKeys(
     for (const row of group) {
       const official = String(row.sessionKey ?? '').trim();
       const id = Number(row.id);
-      if (official) {
+      if (sessionKeyCanGroup(official, row?.area)) {
         if (slot && slot.key === official) {
           slot.lastItems = row.itemsJson;
         } else if (

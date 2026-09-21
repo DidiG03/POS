@@ -28,6 +28,73 @@ function rangeMs(input?: { startIso?: string; endIso?: string }): {
   };
 }
 
+/** Newest-id-first union. Raw SQL can miss mixed SQLite DateTime shapes. */
+export function unionTicketLogsById<T extends { id: number }>(
+  a: T[],
+  b: T[],
+): T[] {
+  const byId = new Map<number, T>();
+  for (const row of a) byId.set(Number(row.id), row);
+  for (const row of b) {
+    const id = Number(row.id);
+    if (!byId.has(id)) byId.set(id, row);
+  }
+  return [...byId.values()].sort((x, y) => Number(y.id) - Number(x.id));
+}
+
+export function paidSalesNotOnTickets<T extends { orderId: number }>(
+  usedOrderIds: Set<number>,
+  sales: T[],
+): T[] {
+  return sales.filter((sale) => !usedOrderIds.has(Number(sale.orderId)));
+}
+
+export function matchOrdersToTicketRows(
+  tickets: Array<{
+    id: number;
+    area?: string | null;
+    tableLabel?: string | null;
+    createdAt?: unknown;
+  }>,
+  orders: Array<{
+    id: number;
+    area?: string | null;
+    tableLabel?: string | null;
+    closedAt?: unknown;
+  }>,
+): { usedOrderIds: Set<number>; orderIdByTicketId: Map<number, number> } {
+  const byTable = new Map<string, { id: number; atMs: number }[]>();
+  for (const order of orders) {
+    const at = ticketLogCreatedAtMs(order.closedAt);
+    if (!Number.isFinite(at)) continue;
+    const key = `${String(order.area || '')}|${String(order.tableLabel || '')}`;
+    const arr = byTable.get(key) || [];
+    arr.push({ id: Number(order.id), atMs: at });
+    byTable.set(key, arr);
+  }
+  for (const arr of byTable.values()) arr.sort((a, b) => a.atMs - b.atMs);
+
+  const usedOrderIds = new Set<number>();
+  const orderIdByTicketId = new Map<number, number>();
+  const chronological = [...tickets].sort((a, b) => {
+    const ta = ticketLogCreatedAtMs(a.createdAt);
+    const tb = ticketLogCreatedAtMs(b.createdAt);
+    return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0);
+  });
+  for (const row of chronological) {
+    const key = `${String(row.area || '')}|${String(row.tableLabel || '')}`;
+    const rowMs = ticketLogCreatedAtMs(row.createdAt);
+    const covering = (byTable.get(key) || []).find(
+      (p) =>
+        Number.isFinite(rowMs) && p.atMs >= rowMs && !usedOrderIds.has(p.id),
+    );
+    if (!covering) continue;
+    usedOrderIds.add(covering.id);
+    orderIdByTicketId.set(Number(row.id), covering.id);
+  }
+  return { usedOrderIds, orderIdByTicketId };
+}
+
 async function loadTicketLogs(input?: {
   userId?: number;
   startIso?: string;
@@ -60,28 +127,66 @@ async function loadTicketLogs(input?: {
       .filter((id): id is number => id != null);
   };
 
+  let rawRows: any[] = [];
   try {
     const ids = await viaRaw();
     if (ids && ids.length) {
-      const rows = await prisma.ticketLog.findMany({
+      rawRows = await prisma.ticketLog.findMany({
         where: { id: { in: ids } },
       });
-      rows.sort((a: any, b: any) => Number(b.id) - Number(a.id));
-      return rows;
     }
   } catch {
-    // Fall through to Prisma + JS filter when raw SQL is unavailable.
+    // Prisma + JS filter below still recovers mixed DateTime rows.
   }
 
   const where: any = {};
   if (userId) where.userId = userId;
-  const rows = await prisma.ticketLog.findMany({
+  const recent = await prisma.ticketLog.findMany({
     where,
     orderBy: { id: 'desc' },
     take,
   });
-  if (startMs == null && endMs == null) return rows;
-  return rows.filter((r: any) => ticketLogInRange(r.createdAt, startMs, endMs));
+  const jsRows =
+    startMs == null && endMs == null
+      ? recent
+      : recent.filter((r: any) =>
+          ticketLogInRange(r.createdAt, startMs, endMs),
+        );
+  return unionTicketLogsById(
+    rawRows as { id: number }[],
+    jsRows as { id: number }[],
+  );
+}
+
+const PAID_ORDER_INCLUDE = {
+  items: { orderBy: { sortOrder: 'asc' as const } },
+  payments: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+  corrections: { orderBy: { createdAt: 'desc' as const } },
+};
+
+async function loadPaidOrders(input?: {
+  userId?: number;
+  startIso?: string;
+  endIso?: string;
+  take?: number;
+}) {
+  const take = Math.min(4000, Math.max(1, Number(input?.take || 2000)));
+  const userId = Number(input?.userId) || 0;
+  const { startMs, endMs } = rangeMs(input);
+  const where: any = { status: { in: ['PAID', 'VOID'] } };
+  if (userId) where.userId = userId;
+  const rows = await prisma.order
+    .findMany({
+      where,
+      orderBy: { id: 'desc' },
+      take,
+      include: PAID_ORDER_INCLUDE,
+    } as any)
+    .catch(() => []);
+  if (startMs == null && endMs == null) return rows as any[];
+  return (rows as any[]).filter((r) =>
+    ticketLogInRange(r.closedAt ?? r.createdAt, startMs, endMs),
+  );
 }
 
 export async function listAdminTicketCounts(input?: {
@@ -102,31 +207,6 @@ export async function listAdminTicketCounts(input?: {
     where: { role: { not: 'ADMIN' } } as any,
   });
 
-  let clockedInDuringPeriod: Set<number> | null = null;
-  if (input?.startIso || input?.endIso) {
-    const rangeStart = input?.startIso ? new Date(input.startIso) : new Date(0);
-    const rangeEnd = input?.endIso ? new Date(input.endIso) : new Date();
-    const periodShifts = await prisma.dayShift
-      .findMany({
-        where: {
-          OR: [
-            { closedAt: null, openedAt: { lte: rangeEnd } },
-            {
-              openedAt: { lte: rangeEnd },
-              closedAt: { gte: rangeStart },
-            },
-          ],
-        },
-        select: { openedById: true },
-      } as any)
-      .catch(() => [] as { openedById: number }[]);
-    clockedInDuringPeriod = new Set(
-      (periodShifts as { openedById: number }[]).map((s) =>
-        Number(s.openedById),
-      ),
-    );
-  }
-
   const openShifts = await prisma.dayShift.findMany({
     where: { closedAt: null },
   });
@@ -143,15 +223,22 @@ export async function listAdminTicketCounts(input?: {
     }
   }
 
-  const visibleUsers = users.filter((u: any) => {
-    const id = Number(u.id);
-    if ((counts[id] ?? 0) > 0 || (transfersIn[id] ?? 0) > 0) return true;
-    if (openIds.has(id)) return true;
-    if (clockedInDuringPeriod) return clockedInDuringPeriod.has(id);
-    return true;
-  });
+  const paidOrders = await loadPaidOrders({
+    startIso: input?.startIso,
+    endIso: input?.endIso,
+    take: 4000,
+  }).catch(() => []);
+  const { usedOrderIds } = matchOrdersToTicketRows(live as any[], paidOrders);
+  for (const order of paidSalesNotOnTickets(
+    usedOrderIds,
+    (paidOrders as any[]).map((row) => ({ ...row, orderId: Number(row.id) })),
+  )) {
+    const uid = Number(order.userId);
+    if (!Number.isInteger(uid) || uid <= 0) continue;
+    counts[uid] = (counts[uid] ?? 0) + 1;
+  }
 
-  return visibleUsers.map((u: any) => ({
+  return users.map((u: any) => ({
     id: u.id,
     name: u.displayName,
     active: openIds.has(u.id),
@@ -176,105 +263,48 @@ export async function listAdminTicketsByUser(input?: {
     userId,
     startIso: input?.startIso,
     endIso: input?.endIso,
-    take: Math.min(8000, Math.max(limit * 4, limit)),
+    take: 8000,
   });
 
   const visibleRows = latestRowPerSession(
     (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   ).slice(0, limit);
 
-  const uniqueTables = Array.from(
-    new Set(
-      (visibleRows as any[]).map((r: any) => `${r.area}|${r.tableLabel}`),
-    ),
-  );
   const openMap: Record<string, boolean> = {};
   for (const t of await coreServices.listOpenTables().catch(() => [])) {
     openMap[`${t.area}:${t.label}`] = true;
   }
 
-  const paymentsByTable = new Map<
-    string,
-    {
-      atMs: number;
-      vatEnabled: boolean;
-      sale: ReturnType<typeof mapOrderToFiscalSaleRow>;
-    }[]
+  const paidOrders = await loadPaidOrders({
+    userId,
+    startIso: input?.startIso,
+    endIso: input?.endIso,
+    take: 4000,
+  });
+  const { usedOrderIds, orderIdByTicketId } = matchOrdersToTicketRows(
+    visibleRows as any[],
+    paidOrders as any[],
+  );
+  const saleByOrderId = new Map<
+    number,
+    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
   >();
-  if (uniqueTables.length) {
-    const tableFilters = uniqueTables
-      .map((k) => {
-        const [area, tableLabel] = String(k).split('|');
-        if (!area || !tableLabel) return null;
-        return { area, tableLabel };
-      })
-      .filter(Boolean) as { area: string; tableLabel: string }[];
-    const earliestClosedFrom = (visibleRows as any[]).reduce(
-      (min: number, r: any) => {
-        const ms = ticketLogCreatedAtMs(r.createdAt);
-        return Number.isFinite(ms) && ms < min ? ms : min;
-      },
-      Number.POSITIVE_INFINITY,
-    );
-    const sales = tableFilters.length
-      ? await prisma.order
-          .findMany({
-            where: {
-              status: { in: ['PAID', 'VOID'] } as any,
-              OR: tableFilters,
-              ...(Number.isFinite(earliestClosedFrom)
-                ? { closedAt: { gte: new Date(earliestClosedFrom) } }
-                : {}),
-            } as any,
-            include: {
-              items: { orderBy: { sortOrder: 'asc' } },
-              payments: { orderBy: { createdAt: 'desc' }, take: 1 },
-              corrections: { orderBy: { createdAt: 'desc' } },
-            } as any,
-          })
-          .catch(() => [])
-      : [];
-    for (const sale of sales as any[]) {
-      const k = `${String(sale.area || '')}|${String(sale.tableLabel || '')}`;
-      if (!uniqueTables.includes(k)) continue;
-      const at = sale.closedAt ? ticketLogCreatedAtMs(sale.closedAt) : NaN;
-      if (!Number.isFinite(at)) continue;
-      const arr = paymentsByTable.get(k) || [];
-      arr.push({
-        atMs: at,
-        vatEnabled: Boolean(sale.vatEnabled),
-        sale: mapOrderToFiscalSaleRow(sale, { tin: fiscalTin }),
-      });
-      paymentsByTable.set(k, arr);
-    }
-    for (const [, arr] of paymentsByTable) arr.sort((a, b) => a.atMs - b.atMs);
+  for (const order of paidOrders as any[]) {
+    saleByOrderId.set(Number(order.id), {
+      vatEnabled: Boolean(order.vatEnabled),
+      sale: mapOrderToFiscalSaleRow(order, { tin: fiscalTin }),
+    });
   }
-
-  const usedOrderIds = new Set<number>();
   const saleByLogId = new Map<
     number,
     { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
   >();
-  const chronological = [...(visibleRows as any[])].sort((a, b) => {
-    const ta = ticketLogCreatedAtMs(a.createdAt);
-    const tb = ticketLogCreatedAtMs(b.createdAt);
-    return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0);
-  });
-  for (const r of chronological) {
-    const tKey = `${r.area}|${r.tableLabel}`;
-    const rowMs = ticketLogCreatedAtMs(r.createdAt);
-    const covering = (paymentsByTable.get(tKey) || []).find(
-      (p) =>
-        Number.isFinite(rowMs) &&
-        p.atMs >= rowMs &&
-        !usedOrderIds.has(p.sale.orderId),
-    );
-    if (!covering) continue;
-    usedOrderIds.add(covering.sale.orderId);
-    saleByLogId.set(Number(r.id), covering);
+  for (const [ticketId, orderId] of orderIdByTicketId) {
+    const covering = saleByOrderId.get(orderId);
+    if (covering) saleByLogId.set(ticketId, covering);
   }
 
-  return visibleRows.map((r: any) => {
+  const fromLogs = visibleRows.map((r: any) => {
     const items = asTicketLogItems(r.itemsJson) as any[];
     const liveItems = items.filter((it: any) => !it?.voided);
     const noteStr = String(r.note || '').toUpperCase();
@@ -336,4 +366,57 @@ export async function listAdminTicketsByUser(input?: {
       })(),
     };
   });
+
+  const unmatchedOrders = paidSalesNotOnTickets(
+    usedOrderIds,
+    (paidOrders as any[]).map((row) => ({ ...row, orderId: Number(row.id) })),
+  );
+  const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
+  const fromOrders = unmatchedOrders.map((order: any) => {
+    const covering = saleByOrderId.get(Number(order.id));
+    const items = (Array.isArray(order.items) ? order.items : []).map(
+      (it: any) => ({
+        name: String(it?.name || 'Item'),
+        qty: Number(it?.qty || 1),
+        unitPrice: Number(it?.unitPrice || 0),
+        vatRate: Number(it?.vatRate || 0),
+        note: it?.note,
+        voided: it?.voidedAt != null || it?.voided === true,
+      }),
+    );
+    const liveItems = items.filter((it: any) => !it?.voided);
+    const saleVoided =
+      String(covering?.sale.status || order.status || '').toUpperCase() ===
+      'VOID';
+    const { net, vat } = sumTicketLinesNetVat(
+      liveItems,
+      covering ? covering.vatEnabled : defaultVatEnabled,
+      defaultVatRate,
+    );
+    return {
+      id: -Number(order.id),
+      area: String(order.area || ''),
+      tableLabel: String(order.tableLabel || ''),
+      covers: order.covers ?? null,
+      createdAt: ticketCreatedAtIso(order.closedAt ?? order.createdAt),
+      items,
+      note: order.note ?? null,
+      status: (saleVoided ? 'VOIDED' : 'PAID') as
+        | 'PAID'
+        | 'VOIDED'
+        | 'ACTIVE'
+        | 'TRANSFERRED',
+      transfer: null,
+      sale: covering?.sale ?? null,
+      subtotal: net,
+      vat,
+    };
+  });
+
+  return [...fromLogs, ...fromOrders]
+    .sort(
+      (a, b) =>
+        Date.parse(String(b.createdAt)) - Date.parse(String(a.createdAt)),
+    )
+    .slice(0, limit);
 }
