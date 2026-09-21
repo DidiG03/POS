@@ -1,5 +1,8 @@
 import { prisma } from '@db/client';
-import { rowIsInOpenSession } from '@shared/ticketLogItems';
+import {
+  rowIsInOpenSession,
+  ticketLogCreatedAtMs,
+} from '@shared/ticketLogItems';
 import { getOpenedAt } from './tableOccupancy';
 
 /** Lower bound for `(area, label)` rows tied to the current POS session. */
@@ -50,37 +53,54 @@ export async function getCurrentTableSessionKey(
 }
 
 /**
+ * Newest TicketLog in `rows` for the current sitting.
+ *
+ * Rows must already be newest-`id`-first. Auto-increment `id` is the only
+ * monotonic order on this table: SQLite DateTime is mixed ISO text and
+ * epoch ms, so `ORDER BY createdAt DESC` can hide the live bill behind
+ * older rows and the waiter sees an empty ticket on an occupied table.
+ *
+ * Covers already look up this way (`orderBy: { id: 'desc' }`). Tickets
+ * did not — which is why guest count and elapsed time survived while
+ * the items disappeared.
+ */
+export function pickLatestSessionTicket<
+  T extends { id: number; createdAt: unknown },
+>(rowsNewestIdFirst: T[], sessionStartMs: number | null): T | null {
+  if (rowsNewestIdFirst.length === 0) return null;
+  const newest = rowsNewestIdFirst[0];
+  if (sessionStartMs == null) return newest;
+  const inSession = rowsNewestIdFirst.find((row) =>
+    rowIsInOpenSession(row.createdAt, sessionStartMs),
+  );
+  if (inSession) return inSession;
+  // Occupied sitting whose DateTime we cannot parse: the newest id is
+  // still this table's live bill.
+  if (!Number.isFinite(ticketLogCreatedAtMs(newest.createdAt))) return newest;
+  return null;
+}
+
+/**
  * Newest TicketLog at `(area, tableLabel)`, optionally bounded by the
- * sitting's occupancy `openedAt`. A SQL `gte` on SQLite DateTime can miss rows
- * stored as epoch ms; when that happens we re-read recent rows and bound
- * them in JS so an occupied table cannot render as an empty ticket.
+ * sitting's occupancy `openedAt`. Recency is `id`, session membership is
+ * decided in JS so mixed SQLite DateTime storage cannot hide the bill.
  */
 export async function findLatestTicketLogSince(
   area: string,
   tableLabel: string,
   since: Date | null,
 ) {
-  if (since) {
-    const sqlHit = await prisma.ticketLog
-      .findFirst({
-        where: { area, tableLabel, createdAt: { gte: since } },
-        orderBy: { createdAt: 'desc' },
-      })
-      .catch(() => null);
-    if (sqlHit) return sqlHit;
-  }
   const recent = await prisma.ticketLog.findMany({
     where: { area, tableLabel },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { id: 'desc' },
     take: 40,
   });
-  if (!since) return recent[0] ?? null;
-  const startMs = since.getTime();
-  return (
-    recent.find((row: { createdAt: Date }) =>
-      rowIsInOpenSession(row.createdAt, startMs),
-    ) ?? null
-  );
+  // Prisma client is typed as `any` in this process; pin the row through so
+  // callers still see `itemsJson` / `note` / `userId`.
+  return pickLatestSessionTicket(
+    recent as Array<{ id: number; createdAt: unknown }>,
+    since ? since.getTime() : null,
+  ) as (typeof recent)[number] | null;
 }
 
 /**

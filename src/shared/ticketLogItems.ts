@@ -8,15 +8,20 @@
  * so a missed SQL match still finds the bill.
  */
 
-export function asTicketLogItems(value: unknown): unknown[] {
+export function asTicketLogItems(value: unknown, depth = 0): unknown[] {
   if (Array.isArray(value)) return value;
+  if (depth > 2) return [];
   if (typeof value === 'string' && value.trim()) {
     try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed : [];
+      return asTicketLogItems(JSON.parse(value), depth + 1);
     } catch {
       return [];
     }
+  }
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if (Array.isArray(obj.items)) return obj.items;
+    if (Array.isArray(obj.lines)) return obj.lines;
   }
   return [];
 }

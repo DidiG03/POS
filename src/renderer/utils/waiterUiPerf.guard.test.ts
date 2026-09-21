@@ -260,6 +260,15 @@ describe('waiter UI stays responsive', () => {
     );
   });
 
+  it('loads the open-table bill by id, not mixed createdAt', () => {
+    const src = read('src/main/services/tableSession.ts');
+    expect(src).toContain('pickLatestSessionTicket');
+    expect(src).toContain("orderBy: { id: 'desc' }");
+    expect(src).not.toMatch(
+      /findLatestTicketLogSince[\s\S]{0,400}orderBy: \{ createdAt: 'desc' \}/,
+    );
+  });
+
   it('does not run a 1s clock per waiter order card', () => {
     const src = read('src/renderer/app/pages/WaiterOrdersPage.tsx');
     expect(src).toContain('const OrderCard = memo(');
@@ -280,6 +289,14 @@ describe('waiter UI stays responsive', () => {
     expect(order).toContain('showQtyBubble={!twoPane}');
     expect(order).toContain('pos-menu-qty');
     expect(read('src/renderer/styles/index.css')).toContain('.pos-menu-qty');
+    // After Send, remaining bill lines stay on the ticket. Bubbles must
+    // count only staged (unsent) qty so waiters are not shown last round.
+    const qtyBySku = sliceBetween(
+      order,
+      'const qtyBySku = useMemo',
+      'const ticketFullySettled',
+    );
+    expect(qtyBySku).toContain('if (l.staged !== true) continue;');
     expect(order).toContain('pos-menu-cat-dot');
     expect(order).toContain('tabColor || FALLBACK_TILE_BG');
     expect(order).not.toMatch(/\{tabColor \? \(/);

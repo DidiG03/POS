@@ -103,6 +103,48 @@ describe('pickLatestPerTable', () => {
     });
   });
 
+  it('keeps an occupied table whose DateTime cannot be parsed', () => {
+    const since = { [tableSessionKey('Sallon', 'T1')]: 5_000 };
+    const picked = pickLatestPerTable(
+      [
+        {
+          area: 'Sallon',
+          tableLabel: 'T1',
+          createdAt: 'not-a-date',
+          id: 41,
+        },
+      ],
+      since,
+    );
+    expect(picked.get(tableSessionKey('Sallon', 'T1'))).toMatchObject({
+      id: 41,
+    });
+  });
+
+  it('prefers the higher id when timestamps are mixed', () => {
+    const since = { [tableSessionKey('Sallon', 'T1')]: 1_000 };
+    const picked = pickLatestPerTable(
+      [
+        {
+          area: 'Sallon',
+          tableLabel: 'T1',
+          createdAt: '2026-09-20T18:00:00.000Z',
+          id: 10,
+        },
+        {
+          area: 'Sallon',
+          tableLabel: 'T1',
+          createdAt: 1_700_000_000_000,
+          id: 41,
+        },
+      ],
+      since,
+    );
+    expect(picked.get(tableSessionKey('Sallon', 'T1'))).toMatchObject({
+      id: 41,
+    });
+  });
+
   it('still sees a quiet table when busy tables have many newer fires', () => {
     const since: Record<string, number> = {};
     const rows: Array<{

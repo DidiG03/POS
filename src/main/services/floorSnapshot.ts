@@ -17,6 +17,7 @@ import { splitTableKey, tableKey } from '@shared/utils/tableKey';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import { listOccupiedTables } from './tableOccupancy';
 import {
+  asPositiveId,
   latestCoverIdSelectSql,
   latestIdWhereSql,
   latestTicketIdSelectSql,
@@ -47,11 +48,26 @@ type DatedRow = {
   area: string;
   tableLabel: string;
   createdAt: Date | number | string;
+  id?: number | string;
 };
+
+function rowIsNewerThan<T extends DatedRow>(row: T, prev: T): boolean {
+  const rowId = asPositiveId(row.id);
+  const prevId = asPositiveId(prev.id);
+  if (rowId != null && prevId != null) return rowId > prevId;
+  const rt = ticketLogCreatedAtMs(row.createdAt);
+  const pt = ticketLogCreatedAtMs(prev.createdAt);
+  if (Number.isFinite(rt) && Number.isFinite(pt)) return rt > pt;
+  return Number.isFinite(rt) && !Number.isFinite(pt);
+}
 
 /**
  * Keep the newest row per table, ignoring anything written before that
  * table's current open session (`TableOccupancy.openedAt`).
+ *
+ * Unparseable DateTime is not "before the sitting" — dropping those rows
+ * is how an occupied table's floor total went to 0 and the ticket panel
+ * showed empty after a send.
  */
 export function pickLatestPerTable<T extends DatedRow>(
   rows: T[],
@@ -64,15 +80,21 @@ export function pickLatestPerTable<T extends DatedRow>(
     if (!(key in sinceMsByKey)) continue;
     const since = sinceMsByKey[key];
     const t = ticketLogCreatedAtMs(row.createdAt);
-    if (!Number.isFinite(t)) continue;
-    if (since != null && t < since - SESSION_START_SLACK_MS) continue;
+    if (
+      since != null &&
+      Number.isFinite(t) &&
+      t < since - SESSION_START_SLACK_MS
+    ) {
+      continue;
+    }
     const prev = out.get(key);
-    if (!prev || t > ticketLogCreatedAtMs(prev.createdAt)) out.set(key, row);
+    if (!prev || rowIsNewerThan(row, prev)) out.set(key, row);
   }
   return out;
 }
 
 const TICKET_SNAP_SELECT = {
+  id: true,
   area: true,
   tableLabel: true,
   createdAt: true,
@@ -83,6 +105,7 @@ const TICKET_SNAP_SELECT = {
 } as const;
 
 const COVER_SNAP_SELECT = {
+  id: true,
   area: true,
   label: true,
   covers: true,
@@ -229,16 +252,18 @@ async function loadFloorSnapshot(area?: string): Promise<FloorSnapshot> {
   ]);
 
   type TicketSnapRow = DatedRow & {
+    id?: number;
     userId: number;
     itemsJson: unknown;
     note: string | null;
     covers: number | null;
   };
 
-  type CoverSnapRow = DatedRow & { covers: number };
+  type CoverSnapRow = DatedRow & { id?: number; covers: number };
 
   const latestTicket = pickLatestPerTable<TicketSnapRow>(
     ticketRows.map((r: TicketSnapRow) => ({
+      id: r.id,
       area: r.area,
       tableLabel: r.tableLabel,
       createdAt: r.createdAt,
@@ -255,11 +280,13 @@ async function loadFloorSnapshot(area?: string): Promise<FloorSnapshot> {
   const latestCover = pickLatestPerTable<CoverSnapRow>(
     coverRows.map(
       (r: {
+        id?: number;
         area: string;
         label: string;
         createdAt: Date;
         covers: number;
       }) => ({
+        id: r.id,
         area: r.area,
         tableLabel: r.label,
         createdAt: r.createdAt,

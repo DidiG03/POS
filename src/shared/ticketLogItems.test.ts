@@ -21,6 +21,21 @@ describe('asTicketLogItems', () => {
     ]);
   });
 
+  it('unwraps a double-encoded JSON string', () => {
+    expect(
+      asTicketLogItems(JSON.stringify('[{"name":"Byrek","qty":1}]')),
+    ).toEqual([{ name: 'Byrek', qty: 1 }]);
+  });
+
+  it('unwraps { items } / { lines } objects from mixed writers', () => {
+    expect(asTicketLogItems({ items: [{ name: 'Coke', qty: 1 }] })).toEqual([
+      { name: 'Coke', qty: 1 },
+    ]);
+    expect(asTicketLogItems({ lines: [{ name: 'Water', qty: 2 }] })).toEqual([
+      { name: 'Water', qty: 2 },
+    ]);
+  });
+
   it('treats missing or invalid payloads as no lines', () => {
     expect(asTicketLogItems(null)).toEqual([]);
     expect(asTicketLogItems('{not json')).toEqual([]);
