@@ -53,8 +53,10 @@ export const TicketLineRow = memo(function TicketLineRow({
   const noteLocked = Boolean(
     isVoided || (dimmed && !(showRequestOnly && line.staged)),
   );
+  // Qty +/- belongs on unsent lines, including the first add before the
+  // table is marked open (and counter tickets with no table at all).
   const showQtyStepper =
-    isTableOpen && !showRequestOnly && Boolean(line.staged) && !isVoided;
+    !showRequestOnly && Boolean(line.staged) && !isVoided && !isPaid;
 
   return (
     <div

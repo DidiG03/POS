@@ -826,9 +826,13 @@ export default function OrderPage() {
    */
   const billUnknown = isTableOpen && ticketLoadFailed;
   const activeLines = useMemo(() => lines.filter((l) => !l.voided), [lines]);
+  // Menu-tile bubbles are a waiter cue for *this* send, not the whole bill.
+  // After kitchen fire, lines stay on the ticket with staged=false — counting
+  // them would leave the old badges up and confuse a second round of items.
   const qtyBySku = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of activeLines) {
+      if (l.staged !== true) continue;
       const sku = String(l.sku || '').trim();
       if (!sku) continue;
       const q = Number(l.qty || 0);

@@ -411,8 +411,8 @@ function RequireClockAccess({ children }: { children: React.ReactElement }) {
   return children;
 }
 
-// On mobile (Capacitor / browser shell) only ADMIN and CASHIER may see
-// the Reports screen. Other roles get redirected to Tables. The Electron
+// On mobile (Capacitor / browser shell) ADMIN, CASHIER and WAITER may see
+// the personal Reports screen. Other roles get redirected. The Electron
 // desktop is unrestricted because admins use it for back-office work.
 function RequireReportsAccess({ children }: { children: React.ReactElement }) {
   const user = useSessionStore((s) => s.user);

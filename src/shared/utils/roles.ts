@@ -19,8 +19,8 @@ export function isClockOnlyRole(role: unknown): boolean {
 // guard; these helpers describe what a logged-in user should be able
 // to access from the Capacitor / browser shell.
 
-// Roles allowed to view the Reports screen on mobile.
-export const MOBILE_REPORTS_ROLES = new Set(['ADMIN', 'CASHIER']);
+// Roles allowed to view the personal Reports screen on phones/tablets.
+export const MOBILE_REPORTS_ROLES = new Set(['ADMIN', 'CASHIER', 'WAITER']);
 
 // Roles allowed to view the KDS screen on mobile (kitchen staff).
 export const MOBILE_KDS_ROLES = new Set([

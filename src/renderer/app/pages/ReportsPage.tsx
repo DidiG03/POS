@@ -186,7 +186,7 @@ export default function ReportsPage() {
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden pr-1">
-      <div className="flex shrink-0 items-center justify-between mb-4">
+      <div className="mb-4 hidden shrink-0 items-center justify-between sm:flex">
         <h2 className="text-lg font-semibold tracking-tight">
           {t('reports.title')}
         </h2>
@@ -479,7 +479,7 @@ function ReceiptCard({
         className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-2.5 text-left"
         onClick={() => setOpen((v) => !v)}
       >
-        <div>
+        <div className="min-w-0">
           <div className="text-sm font-semibold">
             {receiptLocationTitle(t, hasTables, ticket)}
             <span className="ml-2 text-xs font-normal text-[color:var(--pos-fg-muted)]">
@@ -493,7 +493,7 @@ function ReceiptCard({
               : ''}
           </div>
         </div>
-        <div className="whitespace-nowrap text-xs text-[color:var(--pos-fg-muted)]">
+        <div className="max-w-[46%] text-right text-xs leading-snug text-[color:var(--pos-fg-muted)] sm:max-w-none sm:whitespace-nowrap">
           {headerRight}
         </div>
       </button>
@@ -627,8 +627,8 @@ function VoidedReceiptCard({
         className="flex w-full items-start justify-between gap-3 border-b border-[var(--pos-border)] px-3 py-2.5 text-left"
         onClick={() => setOpen((v) => !v)}
       >
-        <div>
-          <div className="flex items-center gap-2 text-sm font-semibold">
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm font-semibold">
             {receiptLocationTitle(t, hasTables, ticket)}
             <span
               className={`rounded-md px-2 py-0.5 text-xs font-medium ${isFullVoid ? 'bg-rose-600/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'}`}
@@ -647,7 +647,7 @@ function VoidedReceiptCard({
               : ''}
           </div>
         </div>
-        <div className="whitespace-nowrap text-xs text-[color:var(--pos-fg-muted)]">
+        <div className="max-w-[46%] text-right text-xs leading-snug text-[color:var(--pos-fg-muted)] sm:max-w-none sm:whitespace-nowrap">
           {when ? when.toLocaleString() : ''}
         </div>
       </button>
