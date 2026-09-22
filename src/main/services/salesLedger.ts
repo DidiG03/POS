@@ -21,6 +21,7 @@ import {
   stockLinesFromTicketItems,
 } from './menuStock';
 import { storePlanBlocksTables } from './license';
+import { isPaymentReprint } from './paymentSettle';
 
 type Db = {
   order: any;
@@ -59,6 +60,10 @@ export async function writeSettledSale(
   if (!isPaymentPayload(args.payload)) return null;
   const payload = args.payload || {};
   const meta = (payload.meta as any) || {};
+  // Reports "Print ticket" sends kind=PAYMENT with reprint=true so the
+  // guest slip routes to the receipt printer. That must not create a
+  // second Order — paid tickets in Reports are listed from Order rows.
+  if (isPaymentReprint(meta)) return null;
   const key = optionalKey(args.idempotencyKey);
   const printJobId =
     Number(args.printJobId) > 0 ? Math.floor(Number(args.printJobId)) : null;
@@ -264,7 +269,11 @@ export async function persistReceiptAudit(input: {
         paidAt: job.createdAt instanceof Date ? job.createdAt : new Date(),
         settings,
       });
-      if (isPaymentPayload(input.payload) && storePlanBlocksTables()) {
+      if (
+        isPaymentPayload(input.payload) &&
+        !isPaymentReprint(input.payload?.meta) &&
+        storePlanBlocksTables()
+      ) {
         await consumeMenuStockForTicketLines(
           tx as Parameters<typeof consumeMenuStockForTicketLines>[0],
           stockLinesFromTicketItems(input.payload?.items),

@@ -67,6 +67,19 @@ describe('writeSettledSale', () => {
     expect(orderCreate).not.toHaveBeenCalled();
   });
 
+  it('does not create a second sale for a Reports payment reprint', async () => {
+    const r = await writeSettledSale(db(), {
+      payload: {
+        ...payload,
+        meta: { ...payload.meta, reprint: true, closeTable: false },
+      },
+      idempotencyKey: 'reprint-1',
+      printJobId: 99,
+    });
+    expect(r).toBeNull();
+    expect(orderCreate).not.toHaveBeenCalled();
+  });
+
   it('writes Order + items + Payment for a PAYMENT payload', async () => {
     const r = await writeSettledSale(db(), {
       payload,
