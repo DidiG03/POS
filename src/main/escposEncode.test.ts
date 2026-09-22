@@ -364,6 +364,54 @@ describe('fiscal receipt block', () => {
       ),
     ).toBe(false);
   });
+  it('prints EUR under the total on paid tickets when Kursi EUR is set', () => {
+    const buf = buildEscposTicket(
+      {
+        area: 'Salla',
+        tableLabel: 'T7',
+        items: [{ name: 'Sallate', qty: 1, unitPrice: 600 }],
+        meta: {
+          kind: 'PAYMENT',
+          method: 'CASH',
+          totalAfter: 600,
+        },
+      },
+      {
+        restaurantName: 'Test',
+        currency: 'ALL',
+        fiscal: { eurExchangeRate: 100.5 },
+      } as any,
+    );
+    const text = buf.toString('latin1');
+    expect(text).toContain('TOTAL');
+    expect(text).toMatch(/LEK\s+600\.00/);
+    expect(text).toMatch(/EUR\s+5\.97/);
+  });
+
+  it('prints LEK and EUR on non-fiscal payment receipts', () => {
+    const buf = buildEscposTicket(
+      {
+        area: 'Salla',
+        tableLabel: 'T2',
+        items: [{ name: 'Uje', qty: 1, unitPrice: 201 }],
+        meta: {
+          kind: 'PAYMENT',
+          method: 'CASH',
+          totalAfter: 201,
+          fiscalEnabled: false,
+        },
+      },
+      {
+        restaurantName: 'Test',
+        currency: 'ALL',
+        fiscal: { enabled: false, eurExchangeRate: 100.5 },
+      } as any,
+    );
+    const text = buf.toString('latin1');
+    expect(text).toMatch(/LEK\s+201\.00/);
+    expect(text).toMatch(/EUR\s+2\.00/);
+    expect(text).not.toContain('FISKALIZUAR');
+  });
 });
 
 describe('escposQrCode', () => {

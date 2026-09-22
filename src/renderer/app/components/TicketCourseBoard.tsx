@@ -577,7 +577,7 @@ export const TicketCourseBoard = memo(function TicketCourseBoard({
         {canEdit || canAddCourse ? (
           <button
             type="button"
-            className="w-full rounded-lg border border-dashed border-[var(--pos-border-strong)] py-2 text-sm text-[color:var(--pos-fg)] hover:bg-[var(--pos-hover)]"
+            className="w-full rounded-[var(--pos-btn-radius)] border border-dashed border-[var(--pos-border-strong)] py-2 text-sm text-[color:var(--pos-fg)] hover:bg-[var(--pos-hover)]"
             onClick={() => (seatMode ? addSeat() : addCourse())}
           >
             {t(seatMode ? 'order.addSeat' : 'order.addCourse')}

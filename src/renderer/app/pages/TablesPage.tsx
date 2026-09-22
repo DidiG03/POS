@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
-import { useOrderContext, type PendingAction } from '@shared/stores/orderContext';
+import {
+  useOrderContext,
+  type PendingAction,
+} from '@shared/stores/orderContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useTicketStore } from '../../stores/ticket';
@@ -582,11 +585,7 @@ export default function TablesPage() {
   ]);
 
   const openTable = useCallback(
-    (
-      label: string,
-      members?: string[],
-      opts?: { pending?: PendingAction },
-    ) => {
+    (label: string, members?: string[], opts?: { pending?: PendingAction }) => {
       void retryLazyImport(() => import('./OrderPage'));
       const labels = (members?.length ? members : [label]).filter(Boolean);
       const openLabel =
@@ -599,9 +598,13 @@ export default function TablesPage() {
       });
       if (isOpen) {
         const peeked = peekTableBill(area, openLabel);
+        const navOpts =
+          opts?.pending === 'pay'
+            ? { state: { openPayment: true } }
+            : undefined;
         if (peeked) {
           hydrate({ items: peeked.items as any, note: peeked.note });
-          navigate('/app/order');
+          navigate('/app/order', navOpts);
           return;
         }
         // Floor polls ship total but items:[]. Load the host bill before
@@ -615,12 +618,15 @@ export default function TablesPage() {
           } catch {
             // OrderPage sync still retries once mounted.
           } finally {
-            navigate('/app/order');
+            navigate('/app/order', navOpts);
           }
         })();
         return;
       }
-      navigate('/app/order');
+      navigate(
+        '/app/order',
+        opts?.pending === 'pay' ? { state: { openPayment: true } } : undefined,
+      );
     },
     [
       area,
@@ -694,8 +700,7 @@ export default function TablesPage() {
     try {
       const peeked = peekTableBill(area, openLabel);
       const bill =
-        peeked ??
-        (await loadOpenTableBill(area, openLabel).catch(() => null));
+        peeked ?? (await loadOpenTableBill(area, openLabel).catch(() => null));
       const payload = buildReportPrintPayload(
         {
           kind: 'ACTIVE',
@@ -790,10 +795,7 @@ export default function TablesPage() {
       </div>
 
       {tableMenu ? (
-        <div
-          className="fixed inset-0 z-50"
-          onClick={() => setTableMenu(null)}
-        >
+        <div className="fixed inset-0 z-50" onClick={() => setTableMenu(null)}>
           <div
             role="menu"
             className="absolute w-56 rounded-lg border border-[var(--pos-border)] bg-[var(--pos-surface)] shadow-2xl overflow-hidden"

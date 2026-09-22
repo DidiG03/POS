@@ -690,6 +690,7 @@ function PreferencesSettings() {
   const hasReservations = useLicenseCapabilities((s) => s.hasReservations);
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [currency, setCurrency] = useState<string>('EUR');
+  const [eurExchangeRate, setEurExchangeRate] = useState('');
   const [language, setLanguage] = useState<'en' | 'sq'>('en');
   const [theme, setTheme] = useState<PosUiTheme>('dark');
   const [enabled, setEnabled] = useState(false);
@@ -702,6 +703,10 @@ function PreferencesSettings() {
   const [autoCloseShiftEnabled, setAutoCloseShiftEnabled] = useState(false);
   const [autoCloseShiftHours, setAutoCloseShiftHours] = useState<12 | 24>(12);
   const [captureClockInOut, setCaptureClockInOut] = useState(true);
+  const [blockShiftReopenEnabled, setBlockShiftReopenEnabled] = useState(false);
+  const [blockShiftReopenHours, setBlockShiftReopenHours] = useState<
+    2 | 4 | 8 | 12 | 24
+  >(12);
   const [reservationNoShowEnabled, setReservationNoShowEnabled] =
     useState(false);
   const [reservationNoShowMinutes, setReservationNoShowMinutes] =
@@ -711,6 +716,7 @@ function PreferencesSettings() {
 
   type PrefDraft = {
     currency: string;
+    eurExchangeRate: string;
     language: 'en' | 'sq';
     theme: PosUiTheme;
     enabled: boolean;
@@ -720,6 +726,8 @@ function PreferencesSettings() {
     requireMgrVoid: boolean;
     requireMgrServiceRemoval: boolean;
     captureClockInOut: boolean;
+    blockShiftReopenEnabled: boolean;
+    blockShiftReopenHours: 2 | 4 | 8 | 12 | 24;
     autoCloseShiftEnabled: boolean;
     autoCloseShiftHours: 12 | 24;
     reservationNoShowEnabled: boolean;
@@ -728,6 +736,7 @@ function PreferencesSettings() {
 
   const draftRef = useRef<PrefDraft>({
     currency: 'EUR',
+    eurExchangeRate: '',
     language: 'en',
     theme: 'dark',
     enabled: false,
@@ -737,6 +746,8 @@ function PreferencesSettings() {
     requireMgrVoid: true,
     requireMgrServiceRemoval: true,
     captureClockInOut: true,
+    blockShiftReopenEnabled: false,
+    blockShiftReopenHours: 12,
     autoCloseShiftEnabled: false,
     autoCloseShiftHours: 12,
     reservationNoShowEnabled: false,
@@ -747,6 +758,7 @@ function PreferencesSettings() {
 
   draftRef.current = {
     currency,
+    eurExchangeRate,
     language,
     theme,
     enabled,
@@ -756,6 +768,8 @@ function PreferencesSettings() {
     requireMgrVoid,
     requireMgrServiceRemoval,
     captureClockInOut,
+    blockShiftReopenEnabled,
+    blockShiftReopenHours,
     autoCloseShiftEnabled,
     autoCloseShiftHours,
     reservationNoShowEnabled,
@@ -770,6 +784,15 @@ function PreferencesSettings() {
       if (!/^[A-Z]{3}$/.test(cur)) {
         setStatus(t('preferences.currencyInvalid'), 'warn');
         return;
+      }
+      const eurRaw = String(next.eurExchangeRate || '').trim();
+      let eurRate: number | null = null;
+      if (eurRaw) {
+        eurRate = Number(eurRaw.replace(',', '.'));
+        if (!Number.isFinite(eurRate) || eurRate <= 0) {
+          setStatus(t('preferences.eurExchangeRateInvalid'), 'warn');
+          return;
+        }
       }
       const n = Number(String(next.value).replace(',', '.'));
       if (!Number.isFinite(n) || n < 0) {
@@ -789,6 +812,8 @@ function PreferencesSettings() {
       }
       const payload = {
         currency: cur,
+        // Still stored under fiscal so easyPos invoice exRate keeps working.
+        fiscal: { eurExchangeRate: eurRate },
         security: {
           approvals: {
             requireManagerPinForDiscount: next.requireMgrDiscount,
@@ -802,6 +827,12 @@ function PreferencesSettings() {
           theme: next.theme,
           serviceCharge: { enabled: next.enabled, mode: next.mode, value: n },
           captureClockInOut: next.captureClockInOut,
+          blockShiftReopen: {
+            enabled: next.captureClockInOut
+              ? next.blockShiftReopenEnabled
+              : false,
+            hours: next.blockShiftReopenHours,
+          },
           autoCloseShift: {
             enabled: next.autoCloseShiftEnabled,
             hours: next.autoCloseShiftHours,
@@ -895,6 +926,13 @@ function PreferencesSettings() {
             .trim()
             .toUpperCase() || 'EUR';
         setCurrency(cur);
+        const fiscal = (s as any)?.fiscal || {};
+        setEurExchangeRate(
+          fiscal.eurExchangeRate != null &&
+            Number.isFinite(Number(fiscal.eurExchangeRate))
+            ? String(fiscal.eurExchangeRate)
+            : '',
+        );
         const lang = String(
           (s as any)?.preferences?.language || 'en',
         ).toLowerCase();
@@ -919,6 +957,12 @@ function PreferencesSettings() {
         const acs = (s as any)?.preferences?.autoCloseShift || {};
         setCaptureClockInOut(
           (s as any)?.preferences?.captureClockInOut !== false,
+        );
+        const bsr = (s as any)?.preferences?.blockShiftReopen || {};
+        setBlockShiftReopenEnabled(Boolean(bsr.enabled));
+        const bh = Number(bsr.hours);
+        setBlockShiftReopenHours(
+          bh === 2 || bh === 4 || bh === 8 || bh === 24 ? bh : 12,
         );
         setAutoCloseShiftEnabled(Boolean(acs.enabled));
         const h = Number(acs.hours);
@@ -965,6 +1009,23 @@ function PreferencesSettings() {
               <option value="AED">AED</option>
               <option value="ALL">ALL</option>
             </Select>
+          </SettingsCard>
+
+          <SettingsCard
+            title={t('preferences.eurExchangeRate')}
+            description={t('preferences.eurExchangeRateHelp')}
+          >
+            <Input
+              className="max-w-[180px]"
+              value={eurExchangeRate}
+              onChange={(e) => {
+                const next = e.target.value;
+                setEurExchangeRate(next);
+                persistDebounced({ eurExchangeRate: next });
+              }}
+              placeholder="100.5"
+              inputMode="decimal"
+            />
           </SettingsCard>
 
           <SettingsCard
@@ -1069,16 +1130,88 @@ function PreferencesSettings() {
                 : 'preferences.captureClockHelpStore',
             )}
           >
-            <SettingsToggleRow
-              title={t('preferences.captureClockEnable')}
-              description={t('preferences.captureClockEnableHelp')}
-              checked={captureClockInOut}
-              onChange={(next) => {
-                setCaptureClockInOut(next);
-                persistImmediate({ captureClockInOut: next });
-              }}
-              label={t('preferences.captureClockEnable')}
-            />
+            <div className="space-y-3">
+              <SettingsToggleRow
+                title={t('preferences.captureClockEnable')}
+                description={t('preferences.captureClockEnableHelp')}
+                checked={captureClockInOut}
+                onChange={(next) => {
+                  setCaptureClockInOut(next);
+                  if (!next) setBlockShiftReopenEnabled(false);
+                  persistImmediate({
+                    captureClockInOut: next,
+                    ...(next ? {} : { blockShiftReopenEnabled: false }),
+                  });
+                }}
+                label={t('preferences.captureClockEnable')}
+              />
+              <SettingsToggleRow
+                title={t('preferences.blockShiftReopenEnable')}
+                description={t(
+                  hasTables
+                    ? 'preferences.blockShiftReopenEnableHelp'
+                    : 'preferences.blockShiftReopenEnableHelpStore',
+                )}
+                checked={blockShiftReopenEnabled && captureClockInOut}
+                disabled={!captureClockInOut}
+                onChange={(next) => {
+                  if (!captureClockInOut) return;
+                  setBlockShiftReopenEnabled(next);
+                  persistImmediate({ blockShiftReopenEnabled: next });
+                }}
+                label={t('preferences.blockShiftReopenEnable')}
+              />
+              <div
+                className={
+                  captureClockInOut && blockShiftReopenEnabled
+                    ? ''
+                    : 'pointer-events-none opacity-45'
+                }
+              >
+                <div className="mb-2 text-[13px] font-medium text-[color:var(--pos-fg)]">
+                  {t('preferences.blockShiftReopenHours')}
+                </div>
+                <p className="mb-2 text-[12px] leading-snug text-[color:var(--pos-fg-muted)]">
+                  {t('preferences.blockShiftReopenHoursHelp')}
+                </p>
+                <Segmented
+                  block
+                  value={blockShiftReopenHours}
+                  onChange={(next) => {
+                    setBlockShiftReopenHours(next);
+                    persistImmediate({ blockShiftReopenHours: next });
+                  }}
+                  ariaLabel={t('preferences.blockShiftReopenHours')}
+                  options={[
+                    {
+                      value: 2,
+                      label: t('preferences.hours2'),
+                      disabled: !captureClockInOut || !blockShiftReopenEnabled,
+                    },
+                    {
+                      value: 4,
+                      label: t('preferences.hours4'),
+                      disabled: !captureClockInOut || !blockShiftReopenEnabled,
+                    },
+                    {
+                      value: 8,
+                      label: t('preferences.hours8'),
+                      disabled: !captureClockInOut || !blockShiftReopenEnabled,
+                    },
+                    {
+                      value: 12,
+                      label: t('preferences.hours12'),
+                      disabled: !captureClockInOut || !blockShiftReopenEnabled,
+                    },
+                    {
+                      value: 24,
+                      label: t('preferences.hours24'),
+                      disabled: !captureClockInOut || !blockShiftReopenEnabled,
+                    },
+                  ]}
+                />
+              </div>
+            </div>
           </SettingsCard>
 
           <SettingsCard
@@ -1270,7 +1403,6 @@ function FiscalSettings() {
   const [nipt, setNipt] = useState('');
   const [defaultSoldIn, setDefaultSoldIn] = useState('XPP');
   const [cloudFallbackArticleId, setCloudFallbackArticleId] = useState('');
-  const [eurExchangeRate, setEurExchangeRate] = useState('');
   const [openingFloat, setOpeningFloat] = useState('');
   const setStatus = useStatusToast();
   const [testing, setTesting] = useState(false);
@@ -1308,12 +1440,6 @@ function FiscalSettings() {
         setCloudFallbackArticleId(
           String(fiscal.cloudFallbackArticleId || '').trim(),
         );
-        setEurExchangeRate(
-          fiscal.eurExchangeRate != null &&
-            Number.isFinite(Number(fiscal.eurExchangeRate))
-            ? String(fiscal.eurExchangeRate)
-            : '',
-        );
         setOpeningFloat(
           fiscal.openingFloat != null &&
             Number.isFinite(Number(fiscal.openingFloat))
@@ -1340,7 +1466,6 @@ function FiscalSettings() {
     const url = String(baseUrl || '')
       .trim()
       .replace(/\/+$/g, '');
-    const eur = String(eurExchangeRate || '').trim();
     const float = String(openingFloat || '').trim();
     return {
       enabled: options.enabled,
@@ -1358,7 +1483,6 @@ function FiscalSettings() {
       // Blank means no float, not "leave whatever was there" — an empty box
       // has to be able to set the drawer back to zero.
       openingFloat: float ? Number(float.replace(',', '.')) : 0,
-      ...(eur ? { eurExchangeRate: Number(eur.replace(',', '.')) } : {}),
     };
   }
 
@@ -1660,22 +1784,6 @@ function FiscalSettings() {
                 />
                 <div className="text-[11px] opacity-60 mt-1">
                   {t('fiscal.cloudFallbackArticleIdHelp')}
-                </div>
-              </label>
-
-              <label className="block">
-                <div className="text-sm mb-1">
-                  {t('fiscal.eurExchangeRate')}
-                </div>
-                <input
-                  className="bg-gray-700 rounded px-3 py-2 w-full max-w-xs"
-                  value={eurExchangeRate}
-                  onChange={(e) => setEurExchangeRate(e.target.value)}
-                  placeholder="100.5"
-                  disabled={!enabled}
-                />
-                <div className="text-[11px] opacity-60 mt-1">
-                  {t('fiscal.eurExchangeRateHelp')}
                 </div>
               </label>
 

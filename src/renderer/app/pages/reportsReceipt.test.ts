@@ -4,6 +4,8 @@ import {
   receiptLocationTitle,
   receiptStaffLine,
   reportTicketPrintItems,
+  reportTicketShowsFiscal,
+  reportTicketVerifyUrl,
 } from './reportsReceipt';
 
 const labels: Record<string, string> = {
@@ -59,12 +61,59 @@ describe('reportsReceipt', () => {
         paidAt: '2026-09-21T12:00:00.000Z',
         total: 500,
         items: [{ name: 'Pizza', qty: 1, unitPrice: 500 }],
+        fiscalEnabled: true,
+        fiscalNslf: 'NSLF-ABC',
+        fiscalNivf: 'NIVF-XYZ',
+        fiscalLink: 'https://example.test/verify',
+        fiscalTin: 'L12345678A',
       },
       { userId: 1 },
     );
     expect(payload?.meta?.kind).toBe('PAYMENT');
     expect(payload?.meta?.method).toBe('CASH');
+    expect(payload?.meta?.reprint).toBe(true);
+    expect(payload?.meta?.closeTable).toBe(false);
+    expect(payload?.meta?.fiscalEnabled).toBe(true);
+    expect(payload?.meta?.fiscalNslf).toBe('NSLF-ABC');
+    expect(payload?.meta?.fiscalNivf).toBe('NIVF-XYZ');
+    expect(payload?.meta?.fiscalLink).toBe('https://example.test/verify');
+    expect(payload?.meta?.fiscalTin).toBe('L12345678A');
     expect(reportTicketPrintItems({ items: payload?.items })).toHaveLength(1);
+  });
+
+  it('does not invent fiscal marks on a non-fiscal paid sale', () => {
+    const payload = buildReportPrintPayload(
+      {
+        kind: 'PAID',
+        area: 'Salla',
+        tableLabel: 'T2',
+        paymentMethod: 'CARD',
+        total: 200,
+        items: [{ name: 'Uje', qty: 1, unitPrice: 200 }],
+      },
+      { userId: 1 },
+    );
+    expect(payload?.meta?.reprint).toBe(true);
+    expect(payload?.meta?.fiscalEnabled).toBeUndefined();
+    expect(payload?.meta?.fiscalNivf).toBeUndefined();
+  });
+
+  it('exposes fiscal codes and a verify URL for fiskalizuar tickets', () => {
+    const ticket = {
+      fiscalEnabled: true,
+      fiscalNslf: 'NSLF-ABC',
+      fiscalNivf: 'NIVF-XYZ',
+      fiscalEic: 'EIC-1',
+      fiscalLink: 'https://example.test/verify?x=1',
+      fiscalTin: 'L12345678A',
+      paidAt: '2026-09-22T15:20:19.000Z',
+      total: 600,
+    };
+    expect(reportTicketShowsFiscal(ticket)).toBe(true);
+    expect(reportTicketVerifyUrl(ticket)).toBe(
+      'https://example.test/verify?x=1',
+    );
+    expect(reportTicketShowsFiscal({ total: 100 })).toBe(false);
   });
 
   it('returns null when there is nothing live to print', () => {

@@ -64,6 +64,7 @@ import { setTableOpenWithSideEffects } from './services/tableOpen';
 import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
+  isPaymentReprint,
   paymentPrintAccepted,
   paymentShouldCloseTable,
   tableAlreadyPaidResult,
@@ -76,6 +77,7 @@ import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { shiftReopenBlockedUntil } from '@shared/shiftReopen';
 import { settingsChangeFromHost } from '@shared/settingsChange';
 import { authorizeLanRoute } from './services/lanPolicy';
 import {
@@ -172,7 +174,10 @@ import {
 } from './services/tableSession';
 import { compactTicketLogSession } from './services/ticketLogCompact';
 import { compactCoversForTable } from './services/coversCompact';
-import { finalizeShiftAfterClockOut, printMyDaySummary } from './services/shiftSummary';
+import {
+  finalizeShiftAfterClockOut,
+  printMyDaySummary,
+} from './services/shiftSummary';
 import {
   listMyActiveTickets,
   listMyPaidTickets,
@@ -2511,7 +2516,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             | { fiscalPending: true; fiscalMessage?: string }
             | undefined;
           const payKind = String(payload?.meta?.kind || '').toUpperCase();
-          if (payKind === 'PAYMENT') {
+          if (payKind === 'PAYMENT' && !isPaymentReprint(payload?.meta)) {
             if (
               !(await tableIsOpenForPayment(payload.area, payload.tableLabel))
             ) {
@@ -3258,6 +3263,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const settings = await coreServices.readSettings().catch(() => null);
         if (!isClockCaptureEnabled(settings))
           return send(res, 200, null, corsOrigin);
+
+        const lastClosed = await prisma.dayShift.findFirst({
+          where: { openedById: Number(userId), closedAt: { not: null } },
+          orderBy: { closedAt: 'desc' },
+          select: { closedAt: true },
+        });
+        const reopenAt = shiftReopenBlockedUntil(
+          settings,
+          lastClosed?.closedAt,
+        );
+        if (reopenAt) {
+          return send(
+            res,
+            200,
+            {
+              ok: false,
+              code: 'SHIFT_REOPEN_BLOCKED',
+              error: 'Shift reopen is blocked until the cooldown ends.',
+              reopenAt: reopenAt.toISOString(),
+            },
+            corsOrigin,
+          );
+        }
+
         const created = await prisma.dayShift.create({
           data: { openedById: Number(userId), totalsJson: {} as any } as any,
         });

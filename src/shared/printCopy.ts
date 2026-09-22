@@ -25,6 +25,8 @@ type PrintCopy = {
   discount: string;
   discountPct: (pct: number) => string;
   total: string;
+  totalLek: string;
+  totalEur: string;
   currency: string;
   paid: string;
   method: string;
@@ -57,6 +59,8 @@ const EN: PrintCopy = {
   discount: 'Discount',
   discountPct: (pct) => `Discount (${pct}%)`,
   total: 'TOTAL',
+  totalLek: 'LEK',
+  totalEur: 'EUR',
   currency: 'Currency',
   paid: 'PAID',
   method: 'Method',
@@ -90,6 +94,8 @@ const SQ: PrintCopy = {
   discount: 'Zbritje',
   discountPct: (pct) => `Zbritje (${pct}%)`,
   total: 'TOTALI',
+  totalLek: 'LEK',
+  totalEur: 'EUR',
   currency: 'Valuta',
   paid: 'E PAGUAR',
   method: 'Metoda',

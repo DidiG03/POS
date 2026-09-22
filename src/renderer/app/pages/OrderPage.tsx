@@ -36,7 +36,7 @@ import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { ensureStoreCounterSelected } from '@shared/editionCapabilities';
 import { ORDER_ADD_MODES } from '@shared/orderAddMode';
 import { useTableStatus } from '../../stores/tableStatus';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { logTicket, printTicket } from '../../api';
@@ -239,7 +239,7 @@ const MenuItemTile = memo(function MenuItemTile({
     <div className="relative min-h-0 h-full">
       {isLow ? (
         <span
-          className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
+          className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-[var(--pos-btn-radius)] bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
           title={labels.lowTitle}
           aria-hidden
         >
@@ -688,6 +688,10 @@ export default function OrderPage() {
     note?: string;
   } | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  const openPaymentFromNav = Boolean(
+    (location.state as { openPayment?: boolean } | null)?.openPayment,
+  );
   const { user } = useSessionStore();
 
   useEffect(() => {
@@ -1301,22 +1305,76 @@ export default function OrderPage() {
       coversKnown > 0
     : Boolean(selectedTable) && billableLines.length > 0;
 
+  const openPaymentUi = useCallback(() => {
+    setPaymentMethod('CASH');
+    setDiscountType('NONE');
+    setDiscountValue('');
+    setDiscountReason('');
+    const scEnabled = serviceChargeCfg.enabled;
+    setApplyServiceCharge(scEnabled);
+    const base = Number(
+      computeTotals(billableLines, vatEnabled, defaultVatRate).total || 0,
+    );
+    const v = Number(serviceChargeCfg.value || 0);
+    const scAmt = scEnabled
+      ? serviceChargeCfg.mode === 'PERCENT'
+        ? (base * v) / 100
+        : v
+      : 0;
+    setAmountPaid(
+      String(
+        Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0)).toFixed(2),
+      ),
+    );
+    setPrintReceipt(true);
+    if (addMode === 'seat') {
+      const ids = unpaidSeatIds(seats, lines);
+      setPaySeatId(ids[0] ?? null);
+    } else {
+      setPaySeatId(null);
+    }
+    setShowPayment(true);
+  }, [
+    serviceChargeCfg.enabled,
+    serviceChargeCfg.mode,
+    serviceChargeCfg.value,
+    billableLines,
+    vatEnabled,
+    defaultVatRate,
+    addMode,
+    seats,
+    lines,
+  ]);
+
+  // Floor "Pay ticket" (and order→tables→pay) land here with pendingAction
+  // and/or location.state.openPayment. Open PaymentCheckout once the bill is
+  // ready — synchronously, so React effect cleanups cannot cancel it.
   useEffect(() => {
-    if (pendingAction !== 'pay') return;
-    if (!ticketPersistReady || !ticketLoaded || ticketSyncing) return;
+    const wantPay = pendingAction === 'pay' || openPaymentFromNav;
+    if (!wantPay) return;
+    if (!ticketPersistReady || !ticketLoaded) return;
     if (showPayment) {
-      setPendingAction(null);
+      if (pendingAction === 'pay') setPendingAction(null);
+      if (openPaymentFromNav) {
+        navigate('.', { replace: true, state: null });
+      }
       return;
     }
     if (billUnknown) {
-      setPendingAction(null);
+      if (pendingAction === 'pay') setPendingAction(null);
+      if (openPaymentFromNav) {
+        navigate('.', { replace: true, state: null });
+      }
       toast.warn(t('order.billUnreadableHint'));
       return;
     }
     // Covers are loaded asynchronously for open tables — wait before bailing.
     if (hasTables && isTableOpen && coversKnown === undefined) return;
     if (!canPay) {
-      setPendingAction(null);
+      if (pendingAction === 'pay') setPendingAction(null);
+      if (openPaymentFromNav) {
+        navigate('.', { replace: true, state: null });
+      }
       if (hasUnsentItems) toast.warn(t('order.sendBeforePay'));
       else if (
         hasTables &&
@@ -1326,53 +1384,18 @@ export default function OrderPage() {
       } else if (!billableLines.length) toast.warn(t('order.addItems'));
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        await ensureStoreTillOpen();
-      } catch {
-        if (!cancelled) setPendingAction(null);
-        return;
-      }
-      if (cancelled) return;
-      setPendingAction(null);
-      setPaymentMethod('CASH');
-      setDiscountType('NONE');
-      setDiscountValue('');
-      setDiscountReason('');
-      const scEnabled = serviceChargeCfg.enabled;
-      setApplyServiceCharge(scEnabled);
-      const base = Number(
-        computeTotals(billableLines, vatEnabled, defaultVatRate).total || 0,
-      );
-      const v = Number(serviceChargeCfg.value || 0);
-      const scAmt = scEnabled
-        ? serviceChargeCfg.mode === 'PERCENT'
-          ? (base * v) / 100
-          : v
-        : 0;
-      setAmountPaid(
-        String(
-          Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0)).toFixed(2),
-        ),
-      );
-      setPrintReceipt(true);
-      if (addMode === 'seat') {
-        const ids = unpaidSeatIds(seats, lines);
-        setPaySeatId(ids[0] ?? null);
-      } else {
-        setPaySeatId(null);
-      }
-      setShowPayment(true);
-    })();
-    return () => {
-      cancelled = true;
-    };
+
+    if (pendingAction === 'pay') setPendingAction(null);
+    if (openPaymentFromNav) {
+      navigate('.', { replace: true, state: null });
+    }
+    void ensureStoreTillOpen();
+    openPaymentUi();
   }, [
     pendingAction,
+    openPaymentFromNav,
     ticketPersistReady,
     ticketLoaded,
-    ticketSyncing,
     showPayment,
     billUnknown,
     canPay,
@@ -1380,17 +1403,11 @@ export default function OrderPage() {
     hasTables,
     isTableOpen,
     coversKnown,
-    billableLines,
-    serviceChargeCfg.enabled,
-    serviceChargeCfg.mode,
-    serviceChargeCfg.value,
-    vatEnabled,
-    defaultVatRate,
-    addMode,
-    seats,
-    lines,
+    billableLines.length,
     ensureStoreTillOpen,
+    openPaymentUi,
     setPendingAction,
+    navigate,
     t,
   ]);
 
@@ -3020,7 +3037,7 @@ export default function OrderPage() {
                   role="tablist"
                   aria-label={t('order.addModeLabel')}
                   aria-disabled={isTableOpen}
-                  className={`inline-flex min-h-11 flex-1 items-stretch overflow-hidden rounded-lg border border-[var(--pos-border-strong)] ${
+                  className={`inline-flex min-h-11 flex-1 items-stretch overflow-hidden rounded-[var(--pos-btn-radius)] border border-[var(--pos-border-strong)] ${
                     isTableOpen ? 'opacity-50' : ''
                   }`}
                 >
@@ -3620,36 +3637,7 @@ export default function OrderPage() {
                             return;
                           }
                           await ensureStoreTillOpen();
-                          // Open payment modal (choose method + amount + print)
-                          setPaymentMethod('CASH');
-                          setDiscountType('NONE');
-                          setDiscountValue('');
-                          setDiscountReason('');
-                          const scEnabled = serviceChargeCfg.enabled;
-                          setApplyServiceCharge(scEnabled);
-                          const base = Number(totals.total || 0);
-                          const v = Number(serviceChargeCfg.value || 0);
-                          const scAmt = scEnabled
-                            ? serviceChargeCfg.mode === 'PERCENT'
-                              ? (base * v) / 100
-                              : v
-                            : 0;
-                          setAmountPaid(
-                            String(
-                              Math.max(
-                                0,
-                                base + (Number.isFinite(scAmt) ? scAmt : 0),
-                              ).toFixed(2),
-                            ),
-                          );
-                          setPrintReceipt(true);
-                          if (addMode === 'seat') {
-                            const ids = unpaidSeatIds(seats, lines);
-                            setPaySeatId(ids[0] ?? null);
-                          } else {
-                            setPaySeatId(null);
-                          }
-                          setShowPayment(true);
+                          openPaymentUi();
                         }}
                         type="button"
                       >

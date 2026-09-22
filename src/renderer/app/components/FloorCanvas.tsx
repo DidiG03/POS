@@ -18,6 +18,8 @@ import { useTranslation } from 'react-i18next';
 import { PageSpinner } from '../../components/PageSpinner';
 import { floorTableA11yName } from '../../utils/floorTableA11y';
 import {
+  computeFloorViewTransform,
+  FLOOR_VIEW_IDENTITY,
   isFloorCanvasFitReady,
   isFloorLayoutPending,
   isFloorLayoutVacant,
@@ -676,7 +678,6 @@ export default function FloorCanvas({
     const bw = Math.max(1, maxX - minX);
     const bh = Math.max(1, maxY - minY);
     return { tx: (cw - bw) / 2 - minX, ty: (ch - bh) / 2 - minY };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editable, layoutVersion, canvasSize.w, canvasSize.h]);
 
   const handleMove = useCallback((id: number, x: number, y: number) => {
@@ -1044,65 +1045,26 @@ export default function FloorCanvas({
   }, []);
 
   // Auto-fit transform — applied only in read-only (waiter / host)
-  // mode so the layout fills the entire visible canvas in BOTH axes.
-  // Position scale is non-uniform (so the floor reaches every edge);
-  // children apply a counter-scale so individual shapes stay
-  // proportional. Editor mode keeps free-positioning at scale 1.
+  // mode. Uniform contain-fit keeps the saved layout aspect ratio so a
+  // plan that looks right on phones is not stretched on wide desktops.
+  // (Children still support --floor-cx/--floor-cy counters; with uniform
+  // scale they stay at 1.)
   const viewTransform = useMemo(() => {
-    const identity = { scale: 1, scaleX: 1, scaleY: 1, tx: 0, ty: 0 };
-    if (editable) return identity;
+    if (editable) return FLOOR_VIEW_IDENTITY;
     const cur = nodes || [];
-    if (!cur.length) return identity;
-    const cw = Math.max(0, canvasSize.w);
-    const ch = Math.max(0, canvasSize.h);
-    // Unmeasured canvas must not paint at scale 1 — that is the clustered
-    // flash. Callers hide the floor until `isFloorCanvasFitReady`.
-    if (!isFloorCanvasFitReady({ w: cw, h: ch })) return identity;
-    const pad = Number.isFinite(Number(fitPadding))
-      ? Math.max(0, Number(fitPadding))
-      : 12;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const n of cur as any[]) {
-      if (!n) continue;
-      // Both tables and areas use translate(-50%, -50%), so x/y is
-      // the CENTRE of the node — measure the half-extents on each axis.
-      const x = Number(n.x || 0);
-      const y = Number(n.y || 0);
-      const isArea = String(n.kind || 'TABLE') === 'AREA';
-      const halfW = isArea
-        ? Math.max(0, Number(n.w || 0)) / 2
-        : Math.max(32, Number(n.w || 64) / 2);
-      const halfH = isArea
-        ? Math.max(0, Number(n.h || 0)) / 2
-        : Math.max(32, Number(n.h || 64) / 2);
-      minX = Math.min(minX, x - halfW);
-      minY = Math.min(minY, y - halfH);
-      maxX = Math.max(maxX, x + halfW);
-      maxY = Math.max(maxY, y + halfH);
-    }
-    if (
-      !Number.isFinite(minX) ||
-      !Number.isFinite(minY) ||
-      !Number.isFinite(maxX) ||
-      !Number.isFinite(maxY)
-    )
-      return identity;
-    const bw = Math.max(1, maxX - minX);
-    const bh = Math.max(1, maxY - minY);
-    const minScale = 0.3;
-    const positionMaxScale = 6;
-    const shapeMaxScale = 1.8;
-    const clamp = (raw: number, lo: number, hi: number) =>
-      Math.max(lo, Math.min(hi, raw));
-    const scaleX = clamp((cw - pad * 2) / bw, minScale, positionMaxScale);
-    const scaleY = clamp((ch - pad * 2) / bh, minScale, positionMaxScale);
-    const scale = clamp(Math.min(scaleX, scaleY), minScale, shapeMaxScale);
-    const tx = (cw - bw * scaleX) / 2 - minX * scaleX;
-    const ty = (ch - bh * scaleY) / 2 - minY * scaleY;
-    return { scale, scaleX, scaleY, tx, ty };
+    if (!cur.length) return FLOOR_VIEW_IDENTITY;
+    return computeFloorViewTransform({
+      canvasW: canvasSize.w,
+      canvasH: canvasSize.h,
+      nodes: cur as Array<{
+        x?: number;
+        y?: number;
+        w?: number;
+        h?: number;
+        kind?: string;
+      }>,
+      fitPadding,
+    });
   }, [editable, nodes, canvasSize.w, canvasSize.h, fitPadding]);
 
   const canvasFitReady = editable || isFloorCanvasFitReady(canvasSize);
@@ -1493,8 +1455,8 @@ export default function FloorCanvas({
                     transformOrigin: 'top left',
                     transition: 'none',
                     // Children read these to counter-distort their own
-                    // shapes (so circles stay circles even when the
-                    // wrapper is non-uniformly scaled to spread positions).
+                    // shapes if scaleX/scaleY ever diverge; uniform fit
+                    // keeps them at 1.
                     ['--floor-cx' as any]:
                       viewTransform.scaleX > 0
                         ? viewTransform.scale / viewTransform.scaleX

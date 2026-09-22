@@ -83,6 +83,7 @@ import {
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { shiftReopenBlockedUntil } from '@shared/shiftReopen';
 import { settingsChangeFromHost } from '@shared/settingsChange';
 import {
   activateKey,
@@ -212,6 +213,7 @@ import {
   closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
   paymentShouldCloseTable,
+  isPaymentReprint,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
   withPaymentLock,
@@ -249,7 +251,10 @@ import {
   kdsStationsWithActiveItems,
   loadKdsRoutingFromDb,
 } from './services/kdsStationRouting';
-import { finalizeShiftAfterClockOut, printMyDaySummary } from './services/shiftSummary';
+import {
+  finalizeShiftAfterClockOut,
+  printMyDaySummary,
+} from './services/shiftSummary';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
 import { runPendingMigrations } from './services/migrator';
 import {
@@ -2161,6 +2166,22 @@ ipcHandle('shifts:clockIn', async (_e, { userId }, ctx) => {
     };
   const settings = await coreServices.readSettings().catch(() => null);
   if (!isClockCaptureEnabled(settings)) return null;
+
+  const lastClosed = await prisma.dayShift.findFirst({
+    where: { openedById: userId, closedAt: { not: null } },
+    orderBy: { closedAt: 'desc' },
+    select: { closedAt: true },
+  });
+  const reopenAt = shiftReopenBlockedUntil(settings, lastClosed?.closedAt);
+  if (reopenAt) {
+    return {
+      ok: false as const,
+      code: 'SHIFT_REOPEN_BLOCKED' as const,
+      error: 'Shift reopen is blocked until the cooldown ends.',
+      reopenAt: reopenAt.toISOString(),
+    };
+  }
+
   const created = await prisma.dayShift.create({
     data: { openedById: userId, totalsJson: {} } as any,
   });
@@ -2747,12 +2768,14 @@ ipcHandle('tickets:print', async (_e, input) => {
 
     // If this is a payment receipt and includes a discount, add an admin-visible notification entry.
     // (Admin UI lists all notifications, grouped by userName, so we store it against the waiter userId.)
+    // Skip on Reports reprints — the sale was already recorded.
     try {
       const kind = String(meta?.kind || '');
       const userId = Number(meta?.userId || 0);
       const discountAmt = Number(meta?.discountAmount || 0);
       if (
         kind === 'PAYMENT' &&
+        !isPaymentReprint(meta) &&
         userId &&
         Number.isFinite(discountAmt) &&
         discountAmt > 0
@@ -2804,7 +2827,7 @@ ipcHandle('tickets:print', async (_e, input) => {
     }
 
     const kind = String(meta?.kind || '').toUpperCase();
-    if (kind === 'PAYMENT') {
+    if (kind === 'PAYMENT' && !isPaymentReprint(meta)) {
       if (!(await tableIsOpenForPayment(area, tableLabel))) {
         return tableAlreadyPaidResult();
       }

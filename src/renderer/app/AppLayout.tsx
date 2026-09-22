@@ -413,7 +413,8 @@ export default function AppLayout() {
     showReportsTab,
     t,
   ]);
-  const notificationsActive = location.pathname.startsWith('/app/notifications');
+  const notificationsActive =
+    location.pathname.startsWith('/app/notifications');
   const mobileNavItems = useMemo(() => {
     const items = navItems.map((item) => ({ ...item, badge: 0 }));
     if (!user) return items;
@@ -515,7 +516,7 @@ export default function AppLayout() {
               {hasOpen && captureClock ? (
                 <button
                   type="button"
-                  className="min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)]"
+                  className="min-w-0 truncate rounded-[var(--pos-btn-radius)] px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)]"
                   style={{ minHeight: 0 }}
                   title={t('layout.clockOut')}
                   aria-label={t('layout.clockOut')}

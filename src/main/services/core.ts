@@ -208,6 +208,10 @@ export const coreServices = {
           ...((current.preferences as any)?.reservationAutoNoShow || {}),
           ...((input.preferences as any)?.reservationAutoNoShow || {}),
         },
+        blockShiftReopen: {
+          ...((current.preferences as any)?.blockShiftReopen || {}),
+          ...((input.preferences as any)?.blockShiftReopen || {}),
+        },
       };
     if (input?.fiscal) {
       merged.fiscal = { ...(current.fiscal || {}), ...input.fiscal };

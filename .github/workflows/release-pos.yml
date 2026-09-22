@@ -219,11 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.55"
-            echo "- Long-press / right-click an occupied table to Print Ticket or open Pay"
-            echo "- Reports on phone: scrollable list, print a ticket, and print day summary"
-            echo "- Floor remembers the last area after returning from an order"
-            echo "- Admin on phones: bottom tabs, settings section chips, menu list→detail"
+            echo "### Changes in v0.2.56"
+            echo "- Reports: print paid tickets with fiscal codes/QR; Print Ticket only when expanded"
+            echo "- Paid receipts show LEK and EUR (Kursi EUR moved to Preferences)"
+            echo "- Shift reopen cooldown after clock-out; hide day summary when clock capture is on"
+            echo "- Order menu rail taller with chevrons; confirm dialogs and button radii polished"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

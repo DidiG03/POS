@@ -21,6 +21,8 @@ export type ModalProps = {
   description?: ReactNode;
   /** Rendered in the footer, right aligned. */
   footer?: ReactNode;
+  /** Extra classes for the footer row (e.g. split equal buttons). */
+  footerClassName?: string;
   size?: keyof typeof WIDTH;
   /** Clicking the backdrop closes by default. */
   dismissable?: boolean;
@@ -46,6 +48,7 @@ export function Modal({
   title,
   description,
   footer,
+  footerClassName,
   size = 'md',
   dismissable = true,
   flush,
@@ -116,7 +119,11 @@ export function Modal({
         >
           {children}
         </div>
-        {footer ? <div className="pos-dialog-footer">{footer}</div> : null}
+        {footer ? (
+          <div className={cn('pos-dialog-footer', footerClassName)}>
+            {footer}
+          </div>
+        ) : null}
       </div>
     </div>,
     document.body,
@@ -223,16 +230,24 @@ export function ConfirmDialog({
       onClose={onCancel}
       title={title}
       size="sm"
+      footerClassName="pos-dialog-footer--split"
       footer={
         <>
-          <Button onClick={onCancel} disabled={busy} className="max-sm:flex-1">
+          <Button
+            variant="secondary"
+            size="lg"
+            onClick={onCancel}
+            disabled={busy}
+            className="min-w-0"
+          >
             {cancelLabel}
           </Button>
           <Button
             variant={destructive ? 'danger' : 'primary'}
+            size="lg"
             onClick={onConfirm}
             loading={busy}
-            className="max-sm:flex-1"
+            className="min-w-0"
           >
             {confirmLabel}
           </Button>

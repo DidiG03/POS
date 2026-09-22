@@ -22,6 +22,7 @@ import {
   TABLE_ALREADY_PAID,
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
+  isPaymentReprint,
   paymentPrintAccepted,
   paymentShouldCloseTable,
   tableAlreadyPaidResult,
@@ -44,6 +45,11 @@ describe('paymentSettle', () => {
     expect(
       paymentShouldCloseTable({ kind: 'PAYMENT', closeTable: false }),
     ).toBe(false);
+    expect(paymentShouldCloseTable({ kind: 'PAYMENT', reprint: true })).toBe(
+      false,
+    );
+    expect(isPaymentReprint({ kind: 'PAYMENT', reprint: true })).toBe(true);
+    expect(isPaymentReprint({ kind: 'PAYMENT' })).toBe(false);
   });
 
   it('closes the table after a fiscalized payment without taking a second lock', async () => {

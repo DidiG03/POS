@@ -18,6 +18,7 @@ import {
   isFiscalPending,
   isFiscalRegistered,
 } from '@shared/fiscalReceipt';
+import { dualTotalsFromSettings } from '@shared/paymentDisplay';
 import { getActiveLicenseEdition } from './services/license';
 import os from 'node:os';
 import { BrowserWindow } from 'electron';
@@ -449,13 +450,25 @@ export function buildEscposTicket(
     lines.push(...twoCol(copy.total, formatMoneyEscpos(totalFinal), layout));
     lines.push(cmdTextSize('normal'));
     lines.push(cmdBold(false));
-    lines.push(
-      ...twoCol(
-        copy.currency,
-        String(currency).slice(0, 3).toUpperCase(),
-        layout,
-      ),
-    );
+    // Guest receipts (paid or unpaid bill) show LEK + EUR when Kursi EUR
+    // is set — fiscalization is unrelated.
+    if (kind === 'PAYMENT' || kind === 'RECEIPT') {
+      const fx = dualTotalsFromSettings(totalFinal, settings);
+      if (fx.lek != null) {
+        lines.push(...twoCol(copy.totalLek, formatMoneyEscpos(fx.lek), layout));
+      }
+      if (fx.eur != null) {
+        lines.push(...twoCol(copy.totalEur, formatMoneyEscpos(fx.eur), layout));
+      }
+    } else {
+      lines.push(
+        ...twoCol(
+          copy.currency,
+          String(currency).slice(0, 3).toUpperCase(),
+          layout,
+        ),
+      );
+    }
   }
 
   // Payment section (only for payment receipts)
@@ -630,6 +643,10 @@ export function buildHtmlReceipt(
   const totalFinal = Number.isFinite(totalAfter)
     ? Math.max(0, totalAfter)
     : fallbackTotal;
+  const fx =
+    kind === 'PAYMENT' || kind === 'RECEIPT'
+      ? dualTotalsFromSettings(totalFinal, settings)
+      : { lek: null, eur: null };
 
   const rows = items
     .map((it) => {
@@ -757,7 +774,15 @@ export function buildHtmlReceipt(
     ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
     ${scLine}
     ${discountLine}
-    <div class="row" style="font-weight:700"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>`
+    <div class="row" style="font-weight:700"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>${
+      fx.lek != null
+        ? `<div class="row"><div class="left">${safe(copy.totalLek)}</div><div class="right">${safe(formatMoney(fx.lek, 'ALL'))}</div></div>`
+        : ''
+    }${
+      fx.eur != null
+        ? `<div class="row"><div class="left">${safe(copy.totalEur)}</div><div class="right">${safe(formatMoney(fx.eur, 'EUR'))}</div></div>`
+        : ''
+    }`
     }
     ${payload.note ? `<div class="sep"></div><div class="small">${safe(copy.note)}:</div><div class="small">${safe(payload.note)}</div>` : ''}
     ${paidBlock}

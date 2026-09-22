@@ -121,7 +121,8 @@ export async function listMyPaidTickets(
 
   const out: any[] = [];
   for (const sale of sales as any[]) {
-    const meta = (sale.payments?.[0]?.metaJson as any) || {};
+    const pay = sale.payments?.[0] || null;
+    const meta = (pay?.metaJson as any) || {};
     const area = String(sale.area || '');
     const tableLabel = String(sale.tableLabel || '');
     // Lines struck off by a corrective invoice are no longer on the bill.
@@ -143,8 +144,7 @@ export async function listMyPaidTickets(
       : [];
     const userName =
       String(sale.userName || sale.user?.displayName || '').trim() || null;
-    const paidAtRaw =
-      sale.closedAt || sale.payments?.[0]?.paidAt || sale.createdAt;
+    const paidAtRaw = sale.closedAt || pay?.paidAt || sale.createdAt;
     const paidAt =
       paidAtRaw instanceof Date
         ? paidAtRaw.toISOString()
@@ -159,6 +159,22 @@ export async function listMyPaidTickets(
     const discountAmount = Number(
       sale.discountAmount ?? meta.discountAmount ?? 0,
     );
+    const fiscalNslf =
+      String(pay?.fiscalNslf || meta.fiscalNslf || '').trim() || null;
+    const fiscalNivf =
+      String(pay?.fiscalNivf || meta.fiscalNivf || '').trim() || null;
+    const fiscalEic =
+      String(pay?.fiscalEic || meta.fiscalEic || '').trim() || null;
+    const fiscalLink = String(meta.fiscalLink || '').trim() || null;
+    const fiscalQrCode = String(meta.fiscalQrCode || '').trim() || null;
+    const fiscalTin = String(meta.fiscalTin || '').trim() || null;
+    const fiscalStatus = String(meta.fiscalStatus || '').trim() || null;
+    const fiscalWarning = String(meta.fiscalWarning || '').trim() || null;
+    const fiscalEnabled =
+      meta.fiscalEnabled === true ||
+      Boolean(fiscalNivf) ||
+      Boolean(fiscalNslf) ||
+      String(fiscalStatus || '').toLowerCase() === 'pending';
     out.push({
       kind: 'PAID',
       area,
@@ -168,7 +184,7 @@ export async function listMyPaidTickets(
       covers: sale.covers ?? null,
       note: sale.note ?? null,
       userName,
-      paymentMethod: sale.payments?.[0]?.method ?? meta.method ?? null,
+      paymentMethod: pay?.method ?? meta.method ?? null,
       vatEnabled: Boolean(sale.vatEnabled),
       serviceChargeEnabled: (meta.serviceChargeEnabled ?? null) as any,
       serviceChargeApplied: (meta.serviceChargeApplied ?? null) as any,
@@ -181,6 +197,15 @@ export async function listMyPaidTickets(
       discountValue: (meta.discountValue ?? null) as any,
       discountAmount: Number.isFinite(discountAmount) ? discountAmount : null,
       discountReason: sale.discountReason ?? meta.discountReason ?? null,
+      fiscalEnabled,
+      fiscalNslf,
+      fiscalNivf,
+      fiscalEic,
+      fiscalLink,
+      fiscalQrCode,
+      fiscalTin,
+      fiscalStatus,
+      fiscalWarning,
       items,
       subtotal: Number(sale.subtotal || 0),
       vat: Number(sale.vatAmount || 0),

@@ -265,7 +265,32 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
               void (async () => {
                 setShiftBusy(true);
                 try {
-                  await (window as any).api.shifts.clockIn(user.id);
+                  const r: any = await (window as any).api.shifts.clockIn(
+                    user.id,
+                  );
+                  if (r?.ok === false && r?.code === 'SHIFT_REOPEN_BLOCKED') {
+                    const when = (() => {
+                      try {
+                        return new Date(
+                          String(r.reopenAt || ''),
+                        ).toLocaleString();
+                      } catch {
+                        return String(r.reopenAt || '');
+                      }
+                    })();
+                    try {
+                      window.dispatchEvent(
+                        new CustomEvent('pos:forceLogout', {
+                          detail: {
+                            reason: t('login.shiftReopenBlocked', { when }),
+                          },
+                        }),
+                      );
+                    } catch {
+                      // ignore
+                    }
+                    return;
+                  }
                   setNeedsShift(false);
                 } catch {
                   // Stay on the prompt; PIN bounce is worse than a retry.

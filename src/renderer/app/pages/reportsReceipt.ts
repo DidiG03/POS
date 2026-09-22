@@ -1,4 +1,9 @@
 import type { PrintTicketInput } from '@shared/ipc';
+import {
+  fiscalOriginalVerifyUrl,
+  isFiscalPending,
+  isFiscalRegistered,
+} from '@shared/fiscalReceipt';
 
 export type ReportsTranslate = (
   key: string,
@@ -30,6 +35,52 @@ export function receiptStaffLine(
     });
   }
   return `${t(hasTables ? 'common.waiter' : 'common.cashier')}: —`;
+}
+
+export type ReportTicketFiscal = {
+  fiscalEnabled?: boolean | null;
+  fiscalNslf?: string | null;
+  fiscalNivf?: string | null;
+  fiscalEic?: string | null;
+  fiscalLink?: string | null;
+  fiscalQrCode?: string | null;
+  fiscalTin?: string | null;
+  fiscalStatus?: string | null;
+  fiscalWarning?: string | null;
+  paidAt?: string | null;
+  createdAt?: string | null;
+  total?: number | null;
+};
+
+/** True when the receipt should show fiskalizimi codes / pending state. */
+export function reportTicketShowsFiscal(ticket: ReportTicketFiscal): boolean {
+  const nslf = String(ticket.fiscalNslf || '').trim();
+  const nivf = String(ticket.fiscalNivf || '').trim();
+  const eic = String(ticket.fiscalEic || '').trim();
+  if (nslf || nivf || eic) return true;
+  if (ticket.fiscalEnabled !== true) return false;
+  const meta = {
+    fiscalStatus: ticket.fiscalStatus ?? undefined,
+    fiscalNivf: ticket.fiscalNivf ?? undefined,
+    fiscalNslf: ticket.fiscalNslf ?? undefined,
+    fiscalLink: ticket.fiscalLink ?? undefined,
+    fiscalWarning: ticket.fiscalWarning ?? undefined,
+  };
+  return isFiscalPending(meta) || isFiscalRegistered(meta);
+}
+
+/** CIS / provider verify URL for an expanded reports ticket. */
+export function reportTicketVerifyUrl(
+  ticket: ReportTicketFiscal,
+): string | undefined {
+  return fiscalOriginalVerifyUrl({
+    fiscalNslf: ticket.fiscalNslf,
+    fiscalLink: ticket.fiscalLink,
+    fiscalQrCode: ticket.fiscalQrCode,
+    fiscalTin: ticket.fiscalTin,
+    closedAt: ticket.paidAt || ticket.createdAt,
+    total: ticket.total,
+  });
 }
 
 type ReportPrintItem = {
@@ -113,6 +164,19 @@ export function buildReportPrintPayload(
   const serviceChargeAmount = Number(ticket.serviceChargeAmount || 0);
   const discountType = String(ticket.discountType || '').toUpperCase();
   const serviceMode = String(ticket.serviceChargeMode || '').toUpperCase();
+  const fiscalNivf = String(ticket.fiscalNivf || '').trim();
+  const fiscalNslf = String(ticket.fiscalNslf || '').trim();
+  const fiscalLink = String(ticket.fiscalLink || '').trim();
+  const fiscalQrCode = String(ticket.fiscalQrCode || '').trim();
+  const fiscalTin = String(ticket.fiscalTin || '').trim();
+  const fiscalEic = String(ticket.fiscalEic || '').trim();
+  const fiscalStatus = String(ticket.fiscalStatus || '').trim();
+  const fiscalWarning = String(ticket.fiscalWarning || '').trim();
+  const fiscalEnabled =
+    ticket.fiscalEnabled === true ||
+    Boolean(fiscalNivf) ||
+    Boolean(fiscalNslf) ||
+    fiscalStatus.toLowerCase() === 'pending';
 
   return {
     area,
@@ -127,6 +191,12 @@ export function buildReportPrintPayload(
       String(opts.userName || ticket.userName || '').trim() || undefined,
     meta: {
       kind: isPaid ? 'PAYMENT' : 'RECEIPT',
+      // Paid slips from Reports are guest reprints of an already-settled
+      // sale — never re-fiscalize or require the table to still be open.
+      // When the original payment was fiskalizuar, carry NSLF/NIVF/QR so
+      // the reprint still prints as a registered fiscal receipt.
+      reprint: isPaid ? true : undefined,
+      closeTable: isPaid ? false : undefined,
       userId: opts.userId ?? null,
       vatEnabled,
       hidePrices: false,
@@ -179,6 +249,19 @@ export function buildReportPrintPayload(
         Number.isFinite(serviceChargeAmount) && serviceChargeAmount > 0
           ? serviceChargeAmount
           : undefined,
+      ...(isPaid && fiscalEnabled
+        ? {
+            fiscalEnabled: true,
+            fiscalNslf: fiscalNslf || undefined,
+            fiscalNivf: fiscalNivf || undefined,
+            fiscalEic: fiscalEic || undefined,
+            fiscalLink: fiscalLink || undefined,
+            fiscalQrCode: fiscalQrCode || undefined,
+            fiscalTin: fiscalTin || undefined,
+            fiscalStatus: fiscalStatus || undefined,
+            fiscalWarning: fiscalWarning || undefined,
+          }
+        : {}),
     },
   };
 }

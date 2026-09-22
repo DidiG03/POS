@@ -79,6 +79,18 @@ export interface SettingsDTO {
      * behaviour). When false, staff log in without starting a shift.
      */
     captureClockInOut?: boolean;
+    /**
+     * After a waiter clocks out, refuse another clock-in until `hours`
+     * have passed. Only applies when captureClockInOut is on.
+     */
+    blockShiftReopen?: {
+      enabled?: boolean;
+      hours?: 2 | 4 | 8 | 12 | 24;
+    };
+    autoCloseShift?: {
+      enabled?: boolean;
+      hours?: 12 | 24;
+    };
   };
   // Multi-printer support (recommended). Backward compatible with legacy `printer`.
   printers?: PrinterProfileDTO[];
@@ -156,7 +168,7 @@ export interface SettingsDTO {
     defaultSoldIn?: string;
     /** Used only for lines with no menu SKU (service charge, discounts, uncoded items). Never overwrites a real SKU. */
     cloudFallbackArticleId?: string;
-    /** Required when POS currency is EUR — sent as currency.exRate to easyPos cloud. */
+    /** ALL per 1 EUR (Kursi EUR). Edited under Preferences; sent as currency.exRate to easyPos when POS currency is EUR. */
     eurExchangeRate?: number;
     /**
      * Cash in the drawer at the start of a business day, in ALL.
@@ -625,9 +637,17 @@ export interface ClockOutBlockedDTO {
   openTables: { area: string; label: string }[];
 }
 
+/** Waiter closed a shift and reopen is blocked until `reopenAt`. */
+export interface ClockInBlockedDTO {
+  ok: false;
+  error: string;
+  code: 'SHIFT_REOPEN_BLOCKED';
+  reopenAt: string;
+}
+
 export interface ApiShifts {
   getOpen(userId: number): Promise<ShiftDTO | null>;
-  clockIn(userId: number): Promise<ShiftDTO>;
+  clockIn(userId: number): Promise<ShiftDTO | ClockInBlockedDTO | null>;
   clockOut(userId: number): Promise<ShiftDTO | ClockOutBlockedDTO | null>;
   listOpen(): Promise<number[]>; // userIds with open shifts
 }
@@ -1226,6 +1246,16 @@ export interface ReportTicketDTO {
   discountValue?: number | null;
   discountAmount?: number | null;
   discountReason?: string | null;
+  /** Present on paid sales that went through fiskalizimi (for guest reprints). */
+  fiscalEnabled?: boolean | null;
+  fiscalNslf?: string | null;
+  fiscalNivf?: string | null;
+  fiscalEic?: string | null;
+  fiscalLink?: string | null;
+  fiscalQrCode?: string | null;
+  fiscalTin?: string | null;
+  fiscalStatus?: string | null;
+  fiscalWarning?: string | null;
   items: {
     sku?: string;
     name: string;

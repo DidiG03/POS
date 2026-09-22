@@ -7,12 +7,18 @@ import {
   buildReportPrintPayload,
   receiptLocationTitle,
   receiptStaffLine,
+  reportTicketShowsFiscal,
+  reportTicketVerifyUrl,
 } from './reportsReceipt';
 import { printTicket } from '../../api';
 import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
 import { reportAppError } from '../../utils/reportAppError';
 import { IconPrinter } from '../../components/icons';
+import { FiscalVerifyQr } from '../../components/FiscalVerifyQr';
+import { isFiscalPending, isFiscalRegistered } from '@shared/fiscalReceipt';
+import { convertPosAmount, parseEurExchangeRate } from '@shared/paymentDisplay';
+import { formatEur } from '../../utils/format';
 
 type Overview = {
   revenueTodayNet: number;
@@ -43,6 +49,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
+  const [eurExchangeRate, setEurExchangeRate] = useState<number | null>(null);
   const [, setTicketLoading] = useState<boolean>(false);
   const [activeTickets, setActiveTickets] = useState<any[]>([]);
   const [activeTicketsError, setActiveTicketsError] = useState<string | null>(
@@ -58,6 +65,7 @@ export default function ReportsPage() {
   );
   const [printingDay, setPrintingDay] = useState(false);
   const [ticketsApiMissing, setTicketsApiMissing] = useState<boolean>(false);
+  const [captureClockInOut, setCaptureClockInOut] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -66,6 +74,12 @@ export default function ReportsPage() {
         const s = await window.api.settings.get().catch(() => null as any);
         const cur = String((s as any)?.currency || 'EUR').trim() || 'EUR';
         setCurrency(cur);
+        setEurExchangeRate(
+          parseEurExchangeRate((s as any)?.fiscal?.eurExchangeRate),
+        );
+        setCaptureClockInOut(
+          (s as any)?.preferences?.captureClockInOut !== false,
+        );
         if (!user?.id) {
           setOverview(null);
           return;
@@ -240,7 +254,7 @@ export default function ReportsPage() {
           independent columns that fill the remaining viewport. */}
       {user && (
         <section className="flex flex-col pb-[max(1rem,env(safe-area-inset-bottom))] lg:min-h-0 lg:flex-1 lg:pb-0">
-          {hasTables ? (
+          {hasTables && !captureClockInOut ? (
             <div className="mb-3 shrink-0">
               <button
                 type="button"
@@ -304,6 +318,8 @@ export default function ReportsPage() {
                         ticket={rec}
                         fmtCurrency={fmtCurrency}
                         hasTables={hasTables}
+                        posCurrency={currency}
+                        eurExchangeRate={eurExchangeRate}
                       />
                     ))}
                   </div>
@@ -367,6 +383,8 @@ export default function ReportsPage() {
                       ticket={rec}
                       fmtCurrency={fmtCurrency}
                       hasTables={hasTables}
+                      posCurrency={currency}
+                      eurExchangeRate={eurExchangeRate}
                     />
                   ))}
                 </div>
@@ -375,9 +393,7 @@ export default function ReportsPage() {
 
             <TicketPanel
               title={t(
-                hasTables
-                  ? 'reports.voidedToday'
-                  : 'reports.voidedSalesToday',
+                hasTables ? 'reports.voidedToday' : 'reports.voidedSalesToday',
               )}
               count={voidedTickets.length}
               error={voidedTicketsError}
@@ -482,9 +498,7 @@ function StatCard({
       </div>
       <div
         className={`mt-1 font-semibold tabular-nums tracking-tight text-gray-50 sm:mt-1.5 ${
-          compact
-            ? 'text-base leading-tight sm:text-xl'
-            : 'text-xl'
+          compact ? 'text-base leading-tight sm:text-xl' : 'text-xl'
         }`}
       >
         {value}
@@ -497,10 +511,14 @@ function ReceiptCard({
   ticket,
   fmtCurrency,
   hasTables,
+  posCurrency,
+  eurExchangeRate,
 }: {
   ticket: any;
   fmtCurrency: Intl.NumberFormat;
   hasTables: boolean;
+  posCurrency?: string;
+  eurExchangeRate?: number | null;
 }) {
   const { t } = useTranslation();
   const { user } = useSessionStore();
@@ -536,6 +554,15 @@ function ReceiptCard({
   })();
 
   const canPrint = Boolean(buildReportPrintPayload(ticket, {}));
+  const ticketTotal = Number(ticket?.total || 0);
+  const eurTotal =
+    ticket?.kind === 'PAID'
+      ? convertPosAmount(
+          ticketTotal,
+          String(posCurrency || 'ALL'),
+          eurExchangeRate ?? null,
+        ).eur
+      : null;
 
   const onPrint = async () => {
     const payload = buildReportPrintPayload(ticket, {
@@ -701,24 +728,110 @@ function ReceiptCard({
                 {fmtCurrency.format(Number(ticket?.total || 0))}
               </span>
             </div>
+            {eurTotal != null ? (
+              <div className="flex justify-between text-sm">
+                <span className="text-[color:var(--pos-fg-muted)]">EUR</span>
+                <span className="font-semibold tabular-nums">
+                  {formatEur(eurTotal)}
+                </span>
+              </div>
+            ) : null}
           </div>
+
+          {reportTicketShowsFiscal(ticket) ? (
+            <ReceiptFiscalBlock ticket={ticket} />
+          ) : null}
         </div>
       )}
 
-      <div className="border-t border-[var(--pos-border)] p-2">
-        <button
-          type="button"
-          className="pos-btn-primary flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold"
-          disabled={printing || !canPrint}
-          onClick={(e) => {
-            e.stopPropagation();
-            void onPrint();
-          }}
-        >
-          <IconPrinter className="size-4" />
-          {printing ? t('reports.printingTicket') : t('order.printTicket')}
-        </button>
-      </div>
+      {open ? (
+        <div className="border-t border-[var(--pos-border)] p-2">
+          <button
+            type="button"
+            className="pos-btn-primary flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold"
+            disabled={printing || !canPrint}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onPrint();
+            }}
+          >
+            <IconPrinter className="size-4" />
+            {printing ? t('reports.printingTicket') : t('order.printTicket')}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ReceiptFiscalBlock({ ticket }: { ticket: any }) {
+  const { t } = useTranslation();
+  const pending = isFiscalPending(ticket);
+  const registered = isFiscalRegistered(ticket);
+  const nslf = String(ticket?.fiscalNslf || '').trim();
+  const nivf = String(ticket?.fiscalNivf || '').trim();
+  const eic = String(ticket?.fiscalEic || '').trim();
+  const verifyUrl = reportTicketVerifyUrl(ticket);
+  const hasCodes = Boolean(nslf || nivf || eic);
+
+  return (
+    <div className="mt-2 space-y-2 border-t border-[var(--pos-border)] pt-2 text-xs">
+      {pending ? (
+        <div className="space-y-1">
+          <div className="text-center text-sm font-semibold text-amber-600">
+            {t('reports.fiscalPendingTitle')}
+          </div>
+          <p className="text-center text-[11px] leading-snug text-[color:var(--pos-fg-muted)]">
+            {t('reports.fiscalPendingBody')}
+          </p>
+          {ticket?.fiscalWarning ? (
+            <p className="break-all text-[11px] text-[color:var(--pos-fg-muted)]">
+              {String(ticket.fiscalWarning)}
+            </p>
+          ) : null}
+        </div>
+      ) : registered || hasCodes ? (
+        <div className="text-center text-sm font-semibold tracking-wide">
+          {t('reports.fiscalRegistered')}
+        </div>
+      ) : null}
+
+      {hasCodes ? (
+        <div className="space-y-1 break-all font-mono text-[11px] leading-snug text-[color:var(--pos-fg)]">
+          {nivf ? (
+            <div>
+              {t('fiscal.salesNivf')}: {nivf}
+            </div>
+          ) : null}
+          {nslf ? (
+            <div>
+              {t('fiscal.salesNslf')}: {nslf}
+            </div>
+          ) : null}
+          {eic ? (
+            <div>
+              {t('fiscal.salesEic')}: {eic}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {verifyUrl ? (
+        <>
+          <p className="break-all font-mono text-[10px] leading-snug text-[color:var(--pos-fg-muted)]">
+            {verifyUrl}
+          </p>
+          <FiscalVerifyQr
+            value={verifyUrl}
+            caption={t('fiscal.salesVerifyQr')}
+            openLabel={t('fiscal.salesOpenOfficial')}
+          />
+        </>
+      ) : hasCodes || registered ? (
+        <p className="text-[11px] leading-snug text-[color:var(--pos-fg-muted)]">
+          {t('fiscal.salesVerifyNeedsNipt')}
+        </p>
+      ) : null}
     </div>
   );
 }

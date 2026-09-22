@@ -38,10 +38,7 @@ import {
 } from '../../utils/lanLoginError';
 import { captureRendererException } from '../../utils/sentryBrowser';
 import { applyHostPosUiTheme } from '../../theme';
-import {
-  POS_CACHE,
-  peekSettings,
-} from '../../utils/posReadCache';
+import { POS_CACHE, peekSettings } from '../../utils/posReadCache';
 import { invalidateCache } from '../../utils/swrCache';
 import { loginDirectoryState } from '../../utils/loginDirectory';
 import { bootTrace } from '@shared/bootTrace';
@@ -834,7 +831,26 @@ export default function LoginPage() {
               // ignore
             }
             try {
-              await window.api.shifts.clockIn(pendingUser.id);
+              const r = await window.api.shifts.clockIn(pendingUser.id);
+              if (
+                r &&
+                typeof r === 'object' &&
+                (r as { ok?: boolean; code?: string }).ok === false &&
+                (r as { code?: string }).code === 'SHIFT_REOPEN_BLOCKED'
+              ) {
+                const when = (() => {
+                  try {
+                    return new Date(
+                      String((r as { reopenAt?: string }).reopenAt || ''),
+                    ).toLocaleString();
+                  } catch {
+                    return String((r as { reopenAt?: string }).reopenAt || '');
+                  }
+                })();
+                setShowShiftConfirm(false);
+                showLoginMessage(t('login.shiftReopenBlocked', { when }));
+                return;
+              }
               setShowShiftConfirm(false);
               setPendingUser(null);
               setUser(pendingUser);

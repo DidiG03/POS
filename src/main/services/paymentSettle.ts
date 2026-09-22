@@ -23,9 +23,21 @@ export type PrintTicketErr = {
 export type PrintTicketResult = PrintTicketOk | PrintTicketErr;
 
 export function paymentShouldCloseTable(meta: unknown): boolean {
-  const m = (meta || {}) as { kind?: string; closeTable?: boolean };
+  const m = (meta || {}) as {
+    kind?: string;
+    closeTable?: boolean;
+    reprint?: boolean;
+  };
   if (String(m.kind || '').toUpperCase() !== 'PAYMENT') return false;
+  // Guest slip reprints from Reports must not close (or re-close) a table.
+  if (m.reprint === true) return false;
   return m.closeTable !== false;
+}
+
+/** Paid-sale reprint from Reports — print only, no fiscalize / settle. */
+export function isPaymentReprint(meta: unknown): boolean {
+  const m = (meta || {}) as { kind?: string; reprint?: boolean };
+  return String(m.kind || '').toUpperCase() === 'PAYMENT' && m.reprint === true;
 }
 
 export function tableAlreadyPaidResult(): PrintTicketErr {

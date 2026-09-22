@@ -3,6 +3,8 @@ import {
   cashChangeDue,
   cashTenderSuggestions,
   convertPosAmount,
+  dualTotalsFromSettings,
+  eurTotalFromSettings,
   parseEurExchangeRate,
   splitEvenly,
   toEurAtRate,
@@ -58,6 +60,32 @@ describe('toEurAtRate', () => {
 
   it('returns null without a rate', () => {
     expect(toEurAtRate(4200, null)).toBeNull();
+  });
+});
+
+describe('eurTotalFromSettings', () => {
+  it('converts ALL totals with Kursi EUR', () => {
+    expect(
+      eurTotalFromSettings(600, {
+        currency: 'ALL',
+        fiscal: { eurExchangeRate: 100.5 },
+      }),
+    ).toBe(5.97);
+  });
+
+  it('keeps EUR totals as euros', () => {
+    expect(eurTotalFromSettings(42, { currency: 'EUR', fiscal: {} })).toBe(42);
+  });
+});
+
+describe('dualTotalsFromSettings', () => {
+  it('returns both LEK and EUR for an ALL total', () => {
+    expect(
+      dualTotalsFromSettings(600, {
+        currency: 'ALL',
+        fiscal: { eurExchangeRate: 100.5 },
+      }),
+    ).toEqual({ lek: 600, eur: 5.97 });
   });
 });
 

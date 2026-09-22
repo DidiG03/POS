@@ -115,7 +115,20 @@ export default function ClockPage() {
               setErr(null);
               setBusy('in');
               try {
-                await window.api.shifts.clockIn(user.id);
+                const r: any = await window.api.shifts.clockIn(user.id);
+                if (r?.ok === false && r?.code === 'SHIFT_REOPEN_BLOCKED') {
+                  const when = (() => {
+                    try {
+                      return new Date(
+                        String(r.reopenAt || ''),
+                      ).toLocaleString();
+                    } catch {
+                      return String(r.reopenAt || '');
+                    }
+                  })();
+                  setErr(t('layout.shiftReopenBlocked', { when }));
+                  return;
+                }
                 await refresh();
               } catch (e: any) {
                 setErr(e?.message || 'Clock in failed');

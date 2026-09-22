@@ -69,10 +69,10 @@
   --color-indigo-800: #3730a3;
   --color-indigo-900: #312e81;
 
-  --radius-xs: 0.1875rem;
-  --radius-sm: 0.25rem;
-  --radius-md: 0.3125rem;
-  --radius-lg: 0.375rem;
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.5rem;
   --radius-xl: 0.5rem;
   --radius-2xl: 0.5rem;
   --radius-3xl: 0.625rem;
@@ -127,8 +127,9 @@
   --pos-hover: color-mix(in srgb, #fff 6%, transparent);
   --pos-hairline: rgba(255, 255, 255, 0.08);
 
-  --pos-radius: 0.375rem;
-  --pos-menu-radius: 0.4rem;
+  --pos-radius: 0.5rem;
+  --pos-btn-radius: 0.5rem;
+  --pos-menu-radius: 0.5rem;
   --pos-control-h: 34px;
   --pos-control-h-lg: 40px;
   --pos-header-h: 56px;
@@ -482,14 +483,14 @@ html[data-shell='capacitor'] {
   }
 
   .pos-nav-link {
-    @apply inline-flex cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     min-height: var(--pos-control-h);
+    border-radius: var(--pos-btn-radius);
   }
   .pos-nav-link--active {
     background: color-mix(in srgb, var(--pos-accent) 18%, var(--pos-surface-3));
     color: var(--pos-fg);
-    border-radius: 0.75rem;
   }
   .pos-nav-link--idle {
     color: var(--pos-fg-muted);
@@ -497,7 +498,6 @@ html[data-shell='capacitor'] {
   .pos-nav-link--idle:hover {
     background: var(--pos-hover);
     color: var(--pos-fg);
-    border-radius: 0.75rem;
   }
 
   .pos-mobile-tabbar {
@@ -543,14 +543,16 @@ html[data-shell='capacitor'] {
   }
 
   .pos-segmented {
-    @apply inline-flex items-center gap-0.5 rounded-[0.7rem] p-1.5;
+    @apply inline-flex items-center gap-0.5 p-1.5;
+    border-radius: var(--pos-btn-radius);
     background: var(--pos-surface);
   }
   .pos-segment {
-    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     color: var(--pos-fg-muted);
     min-height: calc(var(--pos-control-h) - 6px);
+    border-radius: calc(var(--pos-btn-radius) - 2px);
   }
   .pos-segment:hover {
     color: var(--pos-fg);
@@ -565,12 +567,13 @@ html[data-shell='capacitor'] {
     stroke-width: 1.7;
   }
   .pos-icon-btn {
-    @apply relative inline-flex cursor-pointer items-center justify-center rounded transition-colors duration-100;
+    @apply relative inline-flex cursor-pointer items-center justify-center transition-colors duration-100;
     color: var(--pos-fg-muted);
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     width: var(--pos-control-h);
     height: var(--pos-control-h);
     min-height: 0;
+    border-radius: var(--pos-btn-radius);
   }
   .pos-icon-btn:hover {
     background: var(--pos-hover);
@@ -719,7 +722,7 @@ html[data-shell='capacitor'] {
       min-width: 2.4rem;
     }
     .pos-menu-cat--rail {
-      min-height: 3rem;
+      min-height: 3.5rem;
     }
     .pos-menu-fav {
       width: 2.4rem;
@@ -747,7 +750,7 @@ html[data-shell='capacitor'] {
     min-height: 3.15rem;
     align-items: center;
     justify-content: center;
-    border-radius: 0.8rem;
+    border-radius: var(--pos-btn-radius);
     background: var(--pos-accent-strong);
     color: #fff;
     font-size: 1.02rem;
@@ -769,7 +772,7 @@ html[data-shell='capacitor'] {
     justify-content: center;
     gap: 0.35rem;
     padding: 0 0.75rem;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     background: var(--pos-surface-2);
     font-size: 0.8125rem;
     font-weight: 650;
@@ -800,7 +803,7 @@ html[data-shell='capacitor'] {
     align-items: center;
     justify-content: center;
     padding: 0.55rem;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid var(--pos-border-strong);
     color: var(--pos-fg);
   }
@@ -831,7 +834,7 @@ html[data-shell='capacitor'] {
     min-height: 2.85rem;
     align-items: center;
     justify-content: center;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface-2);
     font-size: 1.05rem;
@@ -891,7 +894,7 @@ html[data-shell='capacitor'] {
     height: 2.85rem;
     min-height: 2.85rem;
     width: 100%;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     padding-left: 2.4rem;
     padding-right: 2.75rem;
     font-size: 0.9375rem;
@@ -909,7 +912,7 @@ html[data-shell='capacitor'] {
     translate: 0 -50%;
     align-items: center;
     justify-content: center;
-    border-radius: 0.55rem;
+    border-radius: var(--pos-btn-radius);
     color: var(--pos-fg-muted);
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
@@ -994,10 +997,25 @@ html[data-shell='capacitor'] {
     box-shadow: inset 0 0 0 1px var(--pos-border);
   }
   .pos-menu-cat--rail {
-    min-height: 2.85rem;
+    position: relative;
+    min-height: 3.35rem;
     justify-content: flex-start;
-    padding: 0.55rem 0.65rem;
+    padding: 0.7rem 1.85rem 0.7rem 0.75rem;
     text-align: left;
+  }
+  .pos-menu-cat--rail::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: 0.8rem;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-right: 2px solid
+      color-mix(in srgb, var(--pos-fg-muted) 72%, transparent);
+    border-bottom: 2px solid
+      color-mix(in srgb, var(--pos-fg-muted) 72%, transparent);
+    transform: translateY(-55%) rotate(-45deg);
+    pointer-events: none;
   }
   .pos-menu-cat--grid {
     height: 100%;
@@ -1091,7 +1109,7 @@ html[data-shell='capacitor'] {
     align-items: center;
     justify-content: center;
     padding: 0;
-    border-radius: 0.3rem;
+    border-radius: calc(var(--pos-btn-radius) - 2px);
     background: var(--pos-surface);
     color: var(--pos-fg-muted);
     cursor: pointer;
@@ -1127,38 +1145,41 @@ html[data-shell='capacitor'] {
   }
 
   .pos-btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 px-3 text-[13px] font-medium transition-colors duration-100;
     @apply text-gray-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface-2);
+    border-radius: var(--pos-btn-radius);
   }
   .pos-btn:hover {
     background: var(--pos-surface-3);
   }
 
   .pos-btn-primary {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
     background: var(--pos-accent-strong);
     border: 1px solid transparent;
+    border-radius: var(--pos-btn-radius);
   }
   .pos-btn-primary:hover {
     background: #1d4ed8;
   }
 
   .pos-btn-ghost {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 px-3 text-[13px] font-medium transition-colors duration-100;
     color: var(--pos-fg-muted);
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
     border: 1px solid transparent;
     background: transparent;
+    border-radius: var(--pos-btn-radius);
   }
   .pos-btn-ghost:hover {
     background: var(--pos-hover);
@@ -1166,24 +1187,26 @@ html[data-shell='capacitor'] {
   }
 
   .pos-danger-btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 px-3.5 text-[13px] font-semibold text-white transition-colors duration-100;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50;
     @apply disabled:opacity-45 disabled:pointer-events-none;
     min-height: var(--pos-control-h);
-    background: #b42318;
+    background: #dc2626;
     border: 1px solid transparent;
+    border-radius: var(--pos-btn-radius);
   }
   .pos-danger-btn:hover {
-    background: #c43228;
+    background: #ef4444;
   }
 
   .pos-signout-btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-[0.7rem] px-3 text-[13px] font-medium transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 px-3 text-[13px] font-medium transition-colors duration-100;
     @apply text-gray-400 hover:text-rose-200;
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40;
     min-height: var(--pos-control-h);
     border: 1px solid var(--pos-border);
     background: transparent;
+    border-radius: var(--pos-btn-radius);
   }
   .pos-signout-btn:hover {
     border-color: rgba(244, 63, 94, 0.32);
@@ -1191,10 +1214,11 @@ html[data-shell='capacitor'] {
   }
 
   .pos-input {
-    @apply w-full rounded-[0.7rem] px-3 text-[13px] placeholder:text-gray-500 transition-colors duration-100;
+    @apply w-full px-3 text-[13px] placeholder:text-gray-500 transition-colors duration-100;
     color: var(--pos-fg);
     min-height: var(--pos-control-h);
     background: var(--pos-control-bg);
+    border-radius: var(--pos-btn-radius);
   }
   .pos-input:hover {
     border-color: var(--pos-border-strong);
@@ -1294,7 +1318,7 @@ html[data-shell='capacitor'] {
 
   .pos-staff-tile {
     @apply w-full px-3 py-2.5 flex items-center justify-between gap-3 text-left transition-colors duration-100 cursor-pointer;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     min-height: var(--pos-control-h-lg);
     background: var(--pos-surface-2);
   }
@@ -1350,8 +1374,22 @@ html[data-shell='capacitor'] {
   }
   .pos-dialog-footer {
     @apply flex flex-wrap items-center justify-end gap-2 px-4 py-3;
-    border-top: 1px solid var(--pos-border);
-    background: var(--pos-surface-2);
+    background: transparent;
+  }
+  .pos-dialog-footer--split {
+    @apply flex-nowrap justify-center;
+  }
+  .pos-dialog-footer--split > * {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .pos-dialog-footer .pos-btn,
+  .pos-dialog-footer .pos-btn-primary,
+  .pos-dialog-footer .pos-danger-btn {
+    min-height: var(--pos-control-h-lg);
+    padding-inline: 1.1rem;
+    font-size: 0.875rem;
+    font-weight: 650;
   }
 
   .pos-sheet {
@@ -1405,7 +1443,7 @@ html[data-shell='capacitor'] {
     min-height: 2.75rem;
     padding: 0 0.5rem 0 0.15rem;
     margin-left: -0.15rem;
-    border-radius: 0.5rem;
+    border-radius: var(--pos-btn-radius);
     font-size: 0.9375rem;
     font-weight: 600;
     color: var(--pos-fg);
@@ -1521,7 +1559,7 @@ html[data-shell='capacitor'] {
     justify-content: center;
     gap: 0.35rem;
     min-height: 4.5rem;
-    border-radius: 0.9rem;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface);
     font-size: 0.9375rem;
@@ -1534,7 +1572,7 @@ html[data-shell='capacitor'] {
   }
   .pos-pay-chip {
     min-height: 2.85rem;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface-2);
     font-size: 0.875rem;
@@ -1549,7 +1587,7 @@ html[data-shell='capacitor'] {
   .pos-pay-input {
     width: 100%;
     min-height: 2.85rem;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-control-bg);
     color: var(--pos-fg);
@@ -1560,7 +1598,7 @@ html[data-shell='capacitor'] {
   .pos-pay-stepper {
     width: 2.75rem;
     height: 2.75rem;
-    border-radius: 0.7rem;
+    border-radius: var(--pos-btn-radius);
     background: var(--pos-surface-3);
     font-size: 1.25rem;
     line-height: 1;
@@ -1578,7 +1616,7 @@ html[data-shell='capacitor'] {
     align-items: flex-start;
     justify-content: center;
     padding: 0.45rem 0.7rem;
-    border-radius: 0.75rem;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid var(--pos-border-strong);
     background: var(--pos-surface);
     text-align: left;
@@ -1620,7 +1658,7 @@ html[data-shell='capacitor'] {
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    border-radius: 0.9rem;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid transparent;
     background: var(--pos-accent-strong);
     color: #fff;
@@ -1700,11 +1738,12 @@ html[data-shell='capacitor'] {
   }
 
   .pos-floor-chip {
-    @apply inline-flex cursor-pointer items-center rounded-md px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
+    @apply inline-flex cursor-pointer items-center px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-100;
     min-height: var(--pos-control-h);
     border: 1px solid var(--pos-border-strong);
     background: color-mix(in srgb, var(--pos-canvas) 82%, transparent);
     color: var(--pos-fg-muted);
+    border-radius: var(--pos-btn-radius);
   }
   .pos-floor-chip:hover {
     color: var(--pos-fg);
@@ -1717,7 +1756,8 @@ html[data-shell='capacitor'] {
   }
 
   .pos-floor-dock {
-    @apply inline-flex items-center gap-1 rounded-lg p-1;
+    @apply inline-flex items-center gap-1 p-1;
+    border-radius: var(--pos-btn-radius);
     border: 1px solid var(--pos-border-strong);
     background: color-mix(in srgb, var(--pos-canvas) 88%, transparent);
   }
@@ -1759,9 +1799,10 @@ html[data-shell='capacitor'] {
   }
 
   .pos-floor-mode {
-    @apply flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 py-2 transition-colors duration-100 sm:flex-initial sm:gap-2 sm:px-3;
+    @apply flex flex-1 cursor-pointer items-center justify-center gap-1.5 px-2 py-2 transition-colors duration-100 sm:flex-initial sm:gap-2 sm:px-3;
     min-height: 0;
     color: var(--pos-fg-muted);
+    border-radius: var(--pos-btn-radius);
   }
   .pos-floor-mode:hover {
     background: var(--pos-hover);
@@ -2229,6 +2270,15 @@ html[data-theme='light'] .pos-btn-primary,
 html[data-theme='light'] .pos-danger-btn,
 html[data-theme='light'] .pos-floor-chip--active {
   color: #fff;
+}
+
+html[data-theme='light'] .pos-dialog-footer .pos-btn {
+  background: #ffffff;
+  color: #0b1220;
+  border-color: var(--pos-border-strong);
+}
+html[data-theme='light'] .pos-dialog-footer .pos-btn:hover {
+  background: #f8fafc;
 }
 
 html[data-theme='light']

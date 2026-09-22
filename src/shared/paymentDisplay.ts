@@ -1,6 +1,6 @@
 import { roundMoney } from './pricing';
 
-/** Fiscal "Kursi EUR" is ALL per 1 EUR. */
+/** Fiscal "Kursi EUR" is ALL per 1 EUR (edited under Preferences). */
 export function parseEurExchangeRate(raw: unknown): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -8,7 +8,7 @@ export function parseEurExchangeRate(raw: unknown): number | null {
 }
 
 /**
- * Convert a POS amount using the fiscal ALL-per-EUR rate.
+ * Convert a POS amount using the ALL-per-EUR rate (Kursi EUR).
  * Only ALL ↔ EUR is defined — other POS currencies return nulls.
  */
 export function convertPosAmount(
@@ -36,7 +36,7 @@ export function convertPosAmount(
 }
 
 /**
- * Waiter-facing euro quote: POS amounts ÷ fiscal Kursi EUR (ALL per 1 EUR).
+ * Waiter-facing euro quote: POS amounts ÷ Kursi EUR (ALL per 1 EUR).
  * Used on the payment screen so guests paying in euro hear a real figure.
  */
 export function toEurAtRate(
@@ -47,6 +47,43 @@ export function toEurAtRate(
   const rate = parseEurExchangeRate(allPerEur);
   if (!Number.isFinite(n) || rate == null) return null;
   return roundMoney(n / rate);
+}
+
+/** Read Kursi EUR from settings (stored under fiscal for easyPos exRate). */
+export function eurExchangeRateFromSettings(settings: unknown): number | null {
+  return parseEurExchangeRate(
+    (settings as { fiscal?: { eurExchangeRate?: unknown } } | null)?.fiscal
+      ?.eurExchangeRate,
+  );
+}
+
+/**
+ * Euro equivalent of a POS total for receipts / payment UI.
+ * ALL ÷ rate; EUR stays as-is; other currencies return null.
+ */
+export function eurTotalFromSettings(
+  amount: number,
+  settings: unknown,
+): number | null {
+  return dualTotalsFromSettings(amount, settings).eur;
+}
+
+/**
+ * LEK (ALL) and EUR amounts for a guest receipt total.
+ * Uses Kursi EUR whenever the POS currency is ALL or EUR.
+ */
+export function dualTotalsFromSettings(
+  amount: number,
+  settings: unknown,
+): { lek: number | null; eur: number | null } {
+  const currency = String(
+    (settings as { currency?: string } | null)?.currency || '',
+  )
+    .trim()
+    .toUpperCase();
+  const rate = eurExchangeRateFromSettings(settings);
+  const fx = convertPosAmount(amount, currency || 'ALL', rate);
+  return { lek: fx.all, eur: fx.eur };
 }
 
 export function splitEvenly(
