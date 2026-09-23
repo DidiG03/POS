@@ -104,12 +104,12 @@ describe('optimisticOpenTtlMs', () => {
 });
 
 describe('dropOptimisticOpenState', () => {
-  it('clears write timestamps so a restart trusts the host', () => {
+  it('clears occupancy so a restart trusts the host', () => {
     const next = dropOptimisticOpenState({
-      openMap: { 'Salla:T6': false },
+      openMap: { 'Salla:T6': true, 'Salla:1': true },
       lastSetAt: { 'Salla:T6': NOW },
     });
     expect(next.lastSetAt).toEqual({});
-    expect(next.openMap).toEqual({ 'Salla:T6': false });
+    expect(next.openMap).toEqual({});
   });
 });

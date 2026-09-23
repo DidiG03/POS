@@ -62,7 +62,13 @@ export function mergeOpenTables(input: {
 
 /** Optimistic writes are per-session; a restart must not inherit them. */
 export function dropOptimisticOpenState<
-  T extends { lastSetAt?: Record<string, number> },
+  T extends {
+    openMap?: Record<string, boolean>;
+    lastSetAt?: Record<string, number>;
+  },
 >(state: T): T {
-  return { ...state, lastSetAt: {} };
+  // Clearing only `lastSetAt` used to leave yesterday's `openMap` looking
+  // occupied until the first listOpen poll — Send then skipped the covers
+  // handshake and the host answered TABLE_CLOSED for every table.
+  return { ...state, openMap: {}, lastSetAt: {} };
 }

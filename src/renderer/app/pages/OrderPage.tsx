@@ -2465,6 +2465,30 @@ export default function OrderPage() {
       };
 
       if (hasStaged) {
+        // Host requires TableOccupancy before tickets.log. Local `isOpen`
+        // can be stale (persisted flag, optimistic TTL) and skip the covers
+        // dialog — open on the host here so Send does not die with
+        // TABLE_CLOSED on every table.
+        suppressFreeOnEmptyRef.current = true;
+        setOpen(selectedTable.area, selectedTable.label, true);
+        try {
+          await tryOrQueue(
+            'tables.setOpen',
+            {
+              area: selectedTable.area,
+              label: selectedTable.label,
+              open: true,
+            },
+            {
+              dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+            },
+          );
+        } catch (e: unknown) {
+          reportAppError(e, {
+            fallback: t('order.toastTryAgain'),
+            key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+          });
+        }
         const logResult = await logTicket({
           userId: user.id,
           area: selectedTable.area,

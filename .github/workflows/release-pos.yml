@@ -219,10 +219,8 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.58"
-            echo "- Admin: correct ticket revenue (settled sales only; no false PAID / double-count)"
-            echo "- Dedupe reprint Orders across review, tickets, and shift close totals"
-            echo "- VAT follows Fiskalizimi only; ticket notes are larger and lighter"
+            echo "### Changes in v0.2.59"
+            echo "- Fix: Send no longer blocked with \"table is closed\" from stale phone occupancy cache"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
