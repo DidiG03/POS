@@ -145,6 +145,26 @@ function aggregateTicketItems(items: TicketPrintItem[]): TicketPrintItem[] {
   }
   return order.map((k) => map.get(k)!).filter(Boolean);
 }
+
+/** Guest payment / bill slips — kitchen ORDER tickets keep notes. */
+export function isCustomerFacingPrintKind(kind: string): boolean {
+  const k = String(kind || '').toUpperCase();
+  return k === 'PAYMENT' || k === 'RECEIPT';
+}
+
+/** Drop ticket + line notes so customer receipts stay clean. */
+export function withoutKitchenNotes(
+  payload: TicketPrintPayload,
+): TicketPrintPayload {
+  return {
+    ...payload,
+    note: null,
+    items: (Array.isArray(payload.items) ? payload.items : []).map((it) => ({
+      ...it,
+      note: undefined,
+    })),
+  };
+}
 export type TicketPrintPayload = {
   area: string;
   tableLabel: string;
@@ -245,17 +265,22 @@ export function buildEscposShiftSummary(
 }
 
 export function buildEscposTicket(
-  payload: TicketPrintPayload,
+  rawPayload: TicketPrintPayload,
   settings: SettingsDTO,
 ): Buffer {
-  const meta: any = payload.meta || {};
-  const kindEarly = String(meta?.kind || '').toUpperCase();
-  if (kindEarly === 'SHIFT_CLOSE' && meta?.shiftSummary) {
+  const metaEarly: any = rawPayload.meta || {};
+  const kindEarly = String(metaEarly?.kind || '').toUpperCase();
+  if (kindEarly === 'SHIFT_CLOSE' && metaEarly?.shiftSummary) {
     return buildEscposShiftSummary(
-      meta.shiftSummary as ShiftClosePrintSummary,
+      metaEarly.shiftSummary as ShiftClosePrintSummary,
       settings,
     );
   }
+
+  const payload = isCustomerFacingPrintKind(kindEarly)
+    ? withoutKitchenNotes(rawPayload)
+    : rawPayload;
+  const meta: any = payload.meta || {};
 
   const now = payload.printedAtIso
     ? new Date(payload.printedAtIso)
@@ -580,9 +605,15 @@ export function buildEscposTicket(
 }
 
 export function buildHtmlReceipt(
-  payload: TicketPrintPayload,
+  rawPayload: TicketPrintPayload,
   settings: SettingsDTO,
 ): string {
+  const metaEarly: any = rawPayload.meta || {};
+  const kindEarly = String(metaEarly?.kind || '').toUpperCase();
+  const payload = isCustomerFacingPrintKind(kindEarly)
+    ? withoutKitchenNotes(rawPayload)
+    : rawPayload;
+
   const now = payload.printedAtIso
     ? new Date(payload.printedAtIso)
     : new Date();

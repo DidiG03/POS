@@ -3569,7 +3569,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const settings = await coreServices.readSettings();
         const fiscalVatEnabled = isVatEnabledFromSettings(settings);
         const { revenueNet: revenueTodayNet, revenueVat: revenueTodayVat } =
-          sumPaidRevenue(sales);
+          sumPaidRevenue(sales, { vatEnabled: fiscalVatEnabled });
         return send(
           res,
           200,
@@ -3949,7 +3949,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           userId: auth!.userId,
         });
         const { revenueNet: revenueTodayNet, revenueVat: revenueTodayVat } =
-          sumPaidRevenue(sales);
+          sumPaidRevenue(sales, { vatEnabled: fiscalVatEnabled });
         const openList = await coreServices.listOpenTables().catch(() => []);
         const latestMatches = await Promise.all(
           openList.map(async ({ area, label }) => {

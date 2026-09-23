@@ -72,10 +72,26 @@ function RouteErrorPage() {
   const { t } = useTranslation();
   const chunk = isChunkLoadError(err);
   useEffect(() => {
+    // Capacitor's console bridge JSON.stringifies Errors → `{}`. Log a
+    // plain string so pinch/render crashes stay diagnosable on device.
+    try {
+      const anyE = err as { message?: unknown; stack?: unknown } | null;
+      const msg = [
+        anyE instanceof Error ? anyE.message : '',
+        typeof anyE?.message === 'string' ? anyE.message : '',
+        typeof err === 'string' ? err : '',
+        err != null ? String(err) : '',
+      ]
+        .map((s) => String(s || '').trim())
+        .find(Boolean);
+      if (msg) console.error('[RouteError]', msg);
+    } catch {
+      /* ignore */
+    }
     if (!chunk) return;
     const id = window.setTimeout(() => window.location.reload(), 450);
     return () => window.clearTimeout(id);
-  }, [chunk]);
+  }, [chunk, err]);
   return (
     <PageSpinner
       message={chunk ? t('boot.reloadChunk') : t('common.toastError')}

@@ -7,9 +7,11 @@ vi.mock('./core', () => ({
 
 import {
   fillTrendPoints,
+  normalizePaidSaleVat,
   paidSaleFromOrderRow,
   saleClosesTable,
   summarizePaidSales,
+  sumPaidRevenue,
   topSellingFromSales,
   type PaidSale,
 } from './paidAnalytics';
@@ -217,6 +219,37 @@ describe('summarizePaidSales', () => {
     expect(out.byMethod.find((m) => m.method === 'CASH')?.revenue).toBe(900);
     expect(out.byCategory.reduce((n, c) => n + c.revenue, 0)).toBe(1000);
     expect(out.ticketSizes.reduce((n, b) => n + b.revenue, 0)).toBe(900);
+  });
+});
+
+describe('normalizePaidSaleVat / sumPaidRevenue', () => {
+  it('backfills VAT without wiping service or discount from total', () => {
+    const fixed = normalizePaidSaleVat(
+      sale({
+        closedAt: day,
+        subtotal: 1000,
+        vatAmount: 0,
+        total: 1140,
+        items: [
+          { name: 'Pizza', qty: 1, unitPrice: 1200, categoryName: 'Food' },
+        ],
+      }),
+      { vatEnabled: true, defaultVatRate: 0.2 },
+    );
+    expect(fixed.total).toBe(1140);
+    expect(fixed.vatAmount).toBeGreaterThan(0);
+    expect(fixed.subtotal + fixed.vatAmount).toBeCloseTo(1200, 2);
+  });
+
+  it('when VAT is off, headline net matches gross receipt total', () => {
+    const sales = [
+      sale({ closedAt: day, subtotal: 1000, vatAmount: 200, total: 1140 }),
+    ];
+    expect(sumPaidRevenue(sales, { vatEnabled: false })).toEqual({
+      revenueNet: 1140,
+      revenueVat: 0,
+      revenueGross: 1140,
+    });
   });
 });
 

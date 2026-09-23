@@ -7,6 +7,7 @@
  * of miss that bounced waiters back to the PIN screen.
  */
 
+import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import { isTransferredOutNote } from './tableTransfer';
@@ -109,8 +110,8 @@ export async function listMyPaidTickets(
   const sales = await prisma.order
     .findMany({
       where: { status: 'PAID' as any, userId } as any,
-      orderBy: { closedAt: 'desc' },
-      take,
+      orderBy: [{ closedAt: 'desc' }, { id: 'desc' }],
+      take: Math.min(1000, Math.max(take * 3, 100)),
       include: {
         items: { orderBy: { sortOrder: 'asc' } },
         payments: { orderBy: { createdAt: 'asc' }, take: 1 },
@@ -119,8 +120,12 @@ export async function listMyPaidTickets(
     })
     .catch(() => []);
 
+  const settings = await coreServices.readSettings().catch(() => ({}));
+  const paidVatEnabled = isVatEnabledFromSettings(settings);
+  const paidDefaultVatRate = Number((settings as any)?.defaultVatRate || 0);
+
   const out: any[] = [];
-  for (const sale of sales as any[]) {
+  for (const sale of keepCanonicalPaidOrders(sales as any[])) {
     const pay = sale.payments?.[0] || null;
     const meta = (pay?.metaJson as any) || {};
     const area = String(sale.area || '');
@@ -175,6 +180,22 @@ export async function listMyPaidTickets(
       Boolean(fiscalNivf) ||
       Boolean(fiscalNslf) ||
       String(fiscalStatus || '').toLowerCase() === 'pending';
+    const { net, vat } = sumTicketLinesNetVat(
+      items,
+      paidVatEnabled,
+      paidDefaultVatRate,
+    );
+    const goods = net + (paidVatEnabled ? vat : 0);
+    const settledTotal = Number(sale.total);
+    const total =
+      Number.isFinite(settledTotal) && settledTotal > 0
+        ? settledTotal
+        : Math.max(
+            0,
+            goods +
+              (Number.isFinite(serviceChargeAmount) ? serviceChargeAmount : 0) -
+              (Number.isFinite(discountAmount) ? discountAmount : 0),
+          );
     out.push({
       kind: 'PAID',
       area,
@@ -185,7 +206,7 @@ export async function listMyPaidTickets(
       note: sale.note ?? null,
       userName,
       paymentMethod: pay?.method ?? meta.method ?? null,
-      vatEnabled: Boolean(sale.vatEnabled),
+      vatEnabled: paidVatEnabled,
       serviceChargeEnabled: (meta.serviceChargeEnabled ?? null) as any,
       serviceChargeApplied: (meta.serviceChargeApplied ?? null) as any,
       serviceChargeMode: (meta.serviceChargeMode ?? null) as any,
@@ -207,9 +228,9 @@ export async function listMyPaidTickets(
       fiscalStatus,
       fiscalWarning,
       items,
-      subtotal: Number(sale.subtotal || 0),
-      vat: Number(sale.vatAmount || 0),
-      total: Number(sale.total || 0),
+      subtotal: net,
+      vat: paidVatEnabled ? vat : 0,
+      total,
     });
     if (out.length >= limit) break;
   }

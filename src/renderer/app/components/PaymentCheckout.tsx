@@ -68,11 +68,6 @@ export function PaymentCheckout({
   eurPerPerson,
   paymentMethod,
   onPaymentMethod,
-  cashSuggestions,
-  cashTendered,
-  cashTenderedNum,
-  onCashTendered,
-  cashChange,
   formatAmount,
   posCurrency,
   printReceipt,
@@ -120,11 +115,6 @@ export function PaymentCheckout({
   eurPerPerson: number | null;
   paymentMethod: 'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE';
   onPaymentMethod: (next: 'CASH' | 'CARD') => void;
-  cashSuggestions: number[];
-  cashTendered: string;
-  cashTenderedNum: number;
-  onCashTendered: (next: string) => void;
-  cashChange: number;
   formatAmount: (n: number) => string;
   posCurrency: string;
   printReceipt: boolean;
@@ -191,7 +181,7 @@ export function PaymentCheckout({
           <IconChevronLeft />
           <span>{t('common.back')}</span>
         </button>
-        <div className="min-w-0 flex-1">
+        <div className="ml-auto min-w-0 shrink text-right">
           <h1 id="pos-pay-title" className="pos-pay-title">
             {t('order.payment')}
           </h1>
@@ -312,55 +302,6 @@ export function PaymentCheckout({
               </PayMethodTile>
             </div>
           </section>
-
-          {paymentMethod === 'CASH' ? (
-            <section className="pos-pay-card">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[13px] font-semibold">
-                  {t('order.cashReceived')}
-                </div>
-                <div
-                  className={`text-right tabular-nums ${
-                    cashChange > 0
-                      ? 'pos-pay-fx'
-                      : 'text-[color:var(--pos-fg-muted)]'
-                  }`}
-                >
-                  <div className="text-[11px] font-medium uppercase tracking-wide opacity-80">
-                    {t('order.changeDue')}
-                  </div>
-                  <div className="text-lg font-bold leading-tight">
-                    {formatAmount(cashChange)}
-                  </div>
-                </div>
-              </div>
-              <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {cashSuggestions.map((amt) => {
-                  const selected =
-                    Number.isFinite(cashTenderedNum) &&
-                    Math.abs(cashTenderedNum - amt) < 1e-9;
-                  const exact = Math.abs(amt - totalDue) < 1e-9;
-                  return (
-                    <button
-                      key={amt}
-                      type="button"
-                      className={`pos-pay-chip ${selected ? 'pos-pay-chip--active' : ''}`}
-                      onClick={() => onCashTendered(String(amt))}
-                    >
-                      {exact ? t('order.exactAmount') : formatAmount(amt)}
-                    </button>
-                  );
-                })}
-              </div>
-              <input
-                className="pos-pay-input mt-2"
-                inputMode="decimal"
-                placeholder={t('order.cashReceivedPlaceholder')}
-                value={cashTendered}
-                onChange={(e) => onCashTendered(e.target.value)}
-              />
-            </section>
-          ) : null}
 
           {addMode !== 'seat' ? (
             <section className="pos-pay-card flex items-center justify-between gap-3">

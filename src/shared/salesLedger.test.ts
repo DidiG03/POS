@@ -56,13 +56,12 @@ describe('saleFiguresFromPayload', () => {
         meta: {
           kind: 'PAYMENT',
           method: 'CASH',
-          vatEnabled: true,
           totalAfter: 1140,
           discountAmount: 60,
           serviceChargeAmount: 0,
         },
       },
-      { defaultVatRate: 0.2 },
+      { fiscal: { enabled: true }, defaultVatRate: 0.2 },
     );
     expect(figs.method).toBe('CASH');
     expect(figs.total).toBe(1140);
@@ -72,13 +71,27 @@ describe('saleFiguresFromPayload', () => {
     expect(figs.vat).toBe(200);
   });
 
+  it('turns VAT off when fiskalizimi is disabled even if meta says otherwise', () => {
+    const figs = saleFiguresFromPayload(
+      {
+        items: [pizza],
+        meta: { kind: 'PAYMENT', vatEnabled: true },
+      },
+      { fiscal: { enabled: false } },
+    );
+    expect(figs.vatEnabled).toBe(false);
+    expect(figs.total).toBe(1200);
+    expect(figs.vat).toBe(0);
+    expect(figs.subtotal).toBe(1200);
+  });
+
   it('falls back to line math when totalAfter is missing', () => {
     const figs = saleFiguresFromPayload(
       {
         items: [pizza],
-        meta: { kind: 'PAYMENT', vatEnabled: false },
+        meta: { kind: 'PAYMENT' },
       },
-      {},
+      { fiscal: { enabled: false } },
     );
     expect(figs.total).toBe(1200);
     expect(figs.vat).toBe(0);

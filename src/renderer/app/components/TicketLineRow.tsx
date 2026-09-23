@@ -209,7 +209,7 @@ export const TicketLineRow = memo(function TicketLineRow({
       </div>
       {showNoteField ? (
         <input
-          className={`mt-2 w-full pos-input px-2 py-1 ${
+          className={`mt-2 w-full pos-input px-2 py-1 text-[15px] font-light ${
             noteLocked ? 'opacity-60 cursor-not-allowed' : ''
           } ${isVoided ? 'line-through decoration-2' : ''}`}
           placeholder={t('order.lineNotePlaceholder')}

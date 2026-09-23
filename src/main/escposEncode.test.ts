@@ -246,7 +246,8 @@ describe('buildEscposTicket language', () => {
     has(buf, 'TOTALI');
     has(buf, 'E PAGUAR');
     has(buf, 'Metoda: PARA');
-    has(buf, 'Shënim:');
+    lacks(buf, 'Shënim:');
+    lacks(buf, 'Pa qepë');
     has(buf, 'Faleminderit!');
     lacks(buf, 'Waiter:');
     lacks(buf, 'Covers:');
@@ -266,6 +267,58 @@ describe('buildEscposTicket language', () => {
     lacks(buf, 'Faleminderit!');
   });
 
+  it('omits ticket and item notes on customer payment slips', () => {
+    const withNotes = {
+      ...payload,
+      note: 'Extra napkins',
+      items: [
+        {
+          name: 'Antipastë e shtëpisë',
+          qty: 2,
+          unitPrice: 1200,
+          note: 'Pa qepë',
+        },
+      ],
+    };
+    const payment = buildEscposTicket(withNotes, {
+      restaurantName: 'Test',
+      currency: 'EUR',
+    } as any);
+    lacks(payment, 'Note:');
+    lacks(payment, 'Extra napkins');
+    lacks(payment, 'Pa qepë');
+
+    const receiptHtml = buildHtmlReceipt(withNotes, {
+      restaurantName: 'Test',
+      currency: 'EUR',
+    } as any);
+    expect(receiptHtml).not.toContain('Extra napkins');
+    expect(receiptHtml).not.toContain('Pa qepë');
+    expect(receiptHtml).not.toContain('Note:');
+
+    const kitchen = buildEscposTicket(
+      {
+        area: 'Salla Brenda',
+        tableLabel: 'T1',
+        userName: 'Sefrid',
+        note: 'Extra napkins',
+        items: [
+          {
+            name: 'Steak',
+            qty: 1,
+            unitPrice: 0,
+            station: 'KITCHEN',
+            note: 'Pa qepë',
+          },
+        ],
+        meta: { kind: 'ORDER' as const },
+      },
+      { restaurantName: 'Test', currency: 'EUR' } as any,
+    );
+    has(kitchen, 'Extra napkins');
+    has(kitchen, 'Pa qepë');
+  });
+
   it('prints Albanian HTML receipts too', () => {
     const html = buildHtmlReceipt(payload, {
       restaurantName: 'Test',
@@ -279,6 +332,8 @@ describe('buildEscposTicket language', () => {
     expect(html).toContain('Metoda: PARA');
     expect(html).toContain('Faleminderit!');
     expect(html).not.toContain('Thank you!');
+    expect(html).not.toContain('Pa qepë');
+    expect(html).not.toContain('Shënim:');
   });
 });
 

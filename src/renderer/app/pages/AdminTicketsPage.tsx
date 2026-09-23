@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { reportAppError } from '../../utils/reportAppError';
 import {
-  Badge,
   EmptyState,
   SearchInput,
   StatusDot,
@@ -21,8 +20,33 @@ type Row = {
   name: string;
   active: boolean;
   tickets: number;
-  transfersIn: number;
+  paid: number;
+  activeTickets: number;
+  voids: number;
+  transferred: number;
+  total: number;
 };
+
+function todayRangeIso(): { startIso: string; endIso: string } {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    23,
+    59,
+    59,
+    999,
+  );
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+function fmtMoney(n: number): string {
+  const v = Number(n || 0);
+  if (!Number.isFinite(v)) return '—';
+  return v.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
 
 export default function AdminTicketsPage() {
   const { t } = useTranslation();
@@ -36,6 +60,7 @@ export default function AdminTicketsPage() {
     Boolean(params.get('table') || params.get('sale')),
   );
   const [traceMiss, setTraceMiss] = useState(false);
+  const dayRange = useMemo(() => todayRangeIso(), []);
 
   async function load() {
     if (!me || me.role !== 'ADMIN') {
@@ -43,8 +68,22 @@ export default function AdminTicketsPage() {
       return;
     }
     try {
-      const data = await window.api.admin.listTicketCounts();
-      setRows(Array.isArray(data) ? data : []);
+      const data = await window.api.admin.listTicketCounts(dayRange);
+      setRows(
+        Array.isArray(data)
+          ? data.map((r: any) => ({
+              id: Number(r.id),
+              name: String(r.name || ''),
+              active: Boolean(r.active),
+              tickets: Number(r.tickets || 0),
+              paid: Number(r.paid || 0),
+              activeTickets: Number(r.activeTickets || 0),
+              voids: Number(r.voids || 0),
+              transferred: Number(r.transferred ?? r.transfersIn ?? 0),
+              total: Number(r.total ?? r.revenue ?? 0),
+            }))
+          : [],
+      );
     } catch (e) {
       reportAppError(e, {
         fallback: t('common.actionFailed'),
@@ -56,14 +95,14 @@ export default function AdminTicketsPage() {
 
   useEffect(() => {
     void load();
-  }, [me?.id, me?.role]);
+  }, [me?.id, me?.role, dayRange.startIso, dayRange.endIso]);
 
   useEffect(() => {
     const table = String(params.get('table') || '').trim();
     const area = String(params.get('area') || '').trim();
     const sale = String(params.get('sale') || '').trim();
-    const startIso = params.get('start') || undefined;
-    const endIso = params.get('end') || undefined;
+    const startIso = params.get('start') || dayRange.startIso;
+    const endIso = params.get('end') || dayRange.endIso;
     const wantStatus = String(params.get('status') || '').toUpperCase();
     if (!table && !sale) {
       setTracing(false);
@@ -99,8 +138,8 @@ export default function AdminTicketsPage() {
           ) || ranked[0];
         if (!hit) continue;
         const next = new URLSearchParams();
-        if (startIso) next.set('start', startIso);
-        if (endIso) next.set('end', endIso);
+        next.set('start', startIso);
+        next.set('end', endIso);
         next.set('name', row.name);
         if (table) next.set('table', table);
         if (area) next.set('area', area);
@@ -131,7 +170,15 @@ export default function AdminTicketsPage() {
     return () => {
       cancelled = true;
     };
-  }, [me?.id, me?.role, params, navigate]);
+  }, [
+    me?.id,
+    me?.role,
+    params,
+    navigate,
+    dayRange.startIso,
+    dayRange.endIso,
+    t,
+  ]);
 
   const filtered = rows
     .filter((r) => r.name.toLowerCase().includes(q.toLowerCase()))
@@ -142,7 +189,12 @@ export default function AdminTicketsPage() {
     });
 
   const openStaff = (r: Row) => {
-    navigate(`/admin/tickets/${r.id}?name=${encodeURIComponent(r.name)}`);
+    const q = new URLSearchParams({
+      name: r.name,
+      start: dayRange.startIso,
+      end: dayRange.endIso,
+    });
+    navigate(`/admin/tickets/${r.id}?${q.toString()}`);
   };
 
   return (
@@ -172,6 +224,9 @@ export default function AdminTicketsPage() {
       <section>
         <h2 className="admin-kicker mb-3">
           {hasTables ? 'Tickets by staff' : 'Sales by staff'}
+          <span className="ml-2 font-normal normal-case tracking-normal text-gray-500">
+            · Today
+          </span>
         </h2>
         {filtered.length === 0 ? (
           <EmptyState
@@ -180,7 +235,7 @@ export default function AdminTicketsPage() {
             description={
               q.trim()
                 ? 'No staff match that search.'
-                : 'No waiters are set up yet.'
+                : 'No waiters configured yet.'
             }
           />
         ) : (
@@ -190,7 +245,11 @@ export default function AdminTicketsPage() {
                 <tr>
                   <Th>Staff</Th>
                   <Th numeric>{hasTables ? 'Tickets' : 'Sales'}</Th>
-                  {hasTables ? <Th numeric>Transferred in</Th> : null}
+                  <Th numeric>Paid</Th>
+                  <Th numeric>Active</Th>
+                  <Th numeric>Voided</Th>
+                  {hasTables ? <Th numeric>Transferred</Th> : null}
+                  <Th numeric>Total</Th>
                   <Th className="w-10" />
                 </tr>
               </thead>
@@ -207,25 +266,48 @@ export default function AdminTicketsPage() {
                         <span className="truncate font-medium text-gray-100">
                           {r.name}
                         </span>
-                        {r.active ? (
-                          <Badge tone="accent">On shift</Badge>
-                        ) : null}
                       </div>
                     </Td>
                     <Td numeric className="tabular">
                       {r.tickets}
                     </Td>
+                    <Td numeric className="tabular text-emerald-400">
+                      {r.paid > 0 ? (
+                        r.paid
+                      ) : (
+                        <span className="text-gray-500">—</span>
+                      )}
+                    </Td>
+                    <Td numeric className="tabular text-amber-400">
+                      {r.activeTickets > 0 ? (
+                        r.activeTickets
+                      ) : (
+                        <span className="text-gray-500">—</span>
+                      )}
+                    </Td>
+                    <Td numeric className="tabular">
+                      {r.voids > 0 ? (
+                        <span className="text-rose-300">{r.voids}</span>
+                      ) : (
+                        <span className="text-gray-500">—</span>
+                      )}
+                    </Td>
                     {hasTables ? (
                       <Td numeric className="tabular">
-                        {r.transfersIn > 0 ? (
-                          <Badge tone="info" className="tabular">
-                            {r.transfersIn}
-                          </Badge>
+                        {r.transferred > 0 ? (
+                          r.transferred
                         ) : (
                           <span className="text-gray-500">—</span>
                         )}
                       </Td>
                     ) : null}
+                    <Td numeric className="tabular font-medium text-gray-100">
+                      {r.total > 0 ? (
+                        fmtMoney(r.total)
+                      ) : (
+                        <span className="font-normal text-gray-500">—</span>
+                      )}
+                    </Td>
                     <Td className="text-right">
                       <button
                         type="button"

@@ -467,13 +467,13 @@ function TicketNoteLines({
   const lines = hasTables ? history : [];
   if (lines.length === 0 && !userNote) return null;
   return (
-    <div className="text-xs mb-2 space-y-0.5">
+    <div className="mb-2 space-y-0.5 text-[15px] font-light leading-snug">
       {lines.map((line, i) => (
         <div key={`${line}-${i}`}>{line}</div>
       ))}
       {userNote ? (
         <div>
-          <span className="font-semibold">{t('common.note')}:</span> {userNote}
+          <span className="font-medium">{t('common.note')}:</span> {userNote}
         </div>
       ) : null}
     </div>

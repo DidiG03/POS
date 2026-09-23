@@ -23,6 +23,7 @@ import {
   isFloorCanvasFitReady,
   isFloorLayoutPending,
   isFloorLayoutVacant,
+  type FloorFitPadding,
 } from '../../utils/floorLayoutState';
 import { reportAppError } from '../../utils/reportAppError';
 import {
@@ -479,7 +480,7 @@ type FloorCanvasProps = {
   /** Drop rounded border so the floor can bleed to the page edges. */
   flush?: boolean;
   /** Extra inset for the read-only auto-fit (waiter overlays). */
-  fitPadding?: number;
+  fitPadding?: FloorFitPadding;
   emptyMessage?: string;
   // Visual overrides
   colorByLabel?: ColorMap;
@@ -1079,12 +1080,16 @@ export default function FloorCanvas({
   const [userZoom, setUserZoom] = useState({ scale: 1, tx: 0, ty: 0 });
   const userZoomRef = useRef(userZoom);
   userZoomRef.current = userZoom;
+  const viewTransformRef = useRef(viewTransform);
+  viewTransformRef.current = viewTransform;
   const isZoomed = userZoom.scale > 1.02;
   const resetZoom = useCallback(
     () => setUserZoom({ scale: 1, tx: 0, ty: 0 }),
     [],
   );
-  pointerToLayoutRef.current = (clientX, clientY) => {
+  // Stable callback so MemoCircle does not re-render on every pinch frame
+  // (an inline arrow here used to bust memo and thrash the whole floor).
+  const pointerToLayout = useCallback((clientX: number, clientY: number) => {
     const outer = outerRef.current?.getBoundingClientRect();
     if (!outer) return { x: clientX, y: clientY };
     return clientToFloorLayout(
@@ -1092,13 +1097,18 @@ export default function FloorCanvas({
       clientY,
       outer,
       userZoomRef.current,
-      viewTransform,
+      viewTransformRef.current,
     );
-  };
+  }, []);
+  pointerToLayoutRef.current = pointerToLayout;
 
   useEffect(() => {
     const el = outerRef.current;
     if (!el || editable) return;
+    // Hidden keep-alive floors must not capture pinch (preventDefault
+    // would steal touches from the screen above).
+    if (el.closest('[aria-hidden="true"]')) return;
+
     let pinchStart: {
       d0: number;
       midX: number;
@@ -1114,15 +1124,51 @@ export default function FloorCanvas({
       ty: number;
       moved: boolean;
     } | null = null;
+    let raf = 0;
+    let pending: { scale: number; tx: number; ty: number } | null = null;
+
+    const sanitizeZoom = (next: { scale: number; tx: number; ty: number }) => {
+      const scale = Number(next.scale);
+      const tx = Number(next.tx);
+      const ty = Number(next.ty);
+      if (
+        !Number.isFinite(scale) ||
+        !Number.isFinite(tx) ||
+        !Number.isFinite(ty)
+      ) {
+        return { scale: 1, tx: 0, ty: 0 };
+      }
+      return {
+        scale: Math.max(1, Math.min(5, scale)),
+        tx,
+        ty,
+      };
+    };
+
+    // Coalesce touchmove → one React update per frame. Unbounded
+    // setState on every touch event re-rendered every table and crashed
+    // some Android/iOS WebViews mid-pinch (RR empty `{}` error).
+    const commitZoom = (next: { scale: number; tx: number; ty: number }) => {
+      pending = sanitizeZoom(next);
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        if (!pending) return;
+        const z = pending;
+        pending = null;
+        userZoomRef.current = z;
+        setUserZoom(z);
+      });
+    };
 
     // Use NATIVE TouchEvents (passive: false) instead of PointerEvents.
     // iOS WebKit drops the second pointer in some scenarios when the first
     // lands on an interactive child, but TouchEvents always report all
     // active fingers. preventDefault() also stops the OS double-tap-zoom.
 
-    const ptFromTouch = (t: Touch) => {
+    const ptFromTouch = (touch: Touch) => {
       const r = el.getBoundingClientRect();
-      return { x: t.clientX - r.left, y: t.clientY - r.top };
+      return { x: touch.clientX - r.left, y: touch.clientY - r.top };
     };
 
     const onTouchStart = (e: TouchEvent) => {
@@ -1164,9 +1210,10 @@ export default function FloorCanvas({
         const d1 = Math.max(1, Math.hypot(dx, dy));
         const midX = (a.x + b.x) / 2;
         const midY = (a.y + b.y) / 2;
+        const baseScale = Math.max(1, pinchStart.scale);
         const ratio = d1 / pinchStart.d0;
-        const newScale = Math.max(1, Math.min(5, pinchStart.scale * ratio));
-        const k = newScale / pinchStart.scale;
+        const newScale = Math.max(1, Math.min(5, baseScale * ratio));
+        const k = newScale / baseScale;
         const newTx =
           pinchStart.midX -
           k * (pinchStart.midX - pinchStart.tx) +
@@ -1175,7 +1222,7 @@ export default function FloorCanvas({
           pinchStart.midY -
           k * (pinchStart.midY - pinchStart.ty) +
           (midY - pinchStart.midY);
-        setUserZoom({ scale: newScale, tx: newTx, ty: newTy });
+        commitZoom({ scale: newScale, tx: newTx, ty: newTy });
         e.preventDefault();
       } else if (touches.length === 1 && panStart) {
         const p = ptFromTouch(touches[0]);
@@ -1183,11 +1230,11 @@ export default function FloorCanvas({
         const dyp = p.y - panStart.y;
         if (!panStart.moved && Math.hypot(dxp, dyp) > 6) panStart.moved = true;
         if (panStart.moved) {
-          setUserZoom((prev) => ({
-            ...prev,
-            tx: panStart!.tx + dxp,
-            ty: panStart!.ty + dyp,
-          }));
+          commitZoom({
+            scale: userZoomRef.current.scale,
+            tx: panStart.tx + dxp,
+            ty: panStart.ty + dyp,
+          });
           e.preventDefault();
         }
       }
@@ -1203,6 +1250,7 @@ export default function FloorCanvas({
     el.addEventListener('touchend', onTouchEnd, { passive: true });
     el.addEventListener('touchcancel', onTouchEnd, { passive: true });
     return () => {
+      if (raf) window.cancelAnimationFrame(raf);
       el.removeEventListener('touchstart', onTouchStart as any);
       el.removeEventListener('touchmove', onTouchMove as any);
       el.removeEventListener('touchend', onTouchEnd as any);
@@ -1403,17 +1451,19 @@ export default function FloorCanvas({
           <button
             type="button"
             onClick={resetZoom}
-            className="absolute top-2 right-2 z-20 px-2.5 py-1.5 rounded-full bg-[var(--pos-surface)]/90 backdrop-blur text-xs font-semibold text-[var(--pos-fg)] border border-[var(--pos-border)] shadow-lg active:scale-95"
+            className="absolute top-2 right-2 z-20 px-2.5 py-1.5 rounded-full bg-[var(--pos-surface)]/90 text-xs font-semibold text-[var(--pos-fg)] border border-[var(--pos-border)] shadow-lg active:scale-95"
             title={t('tables.resetZoom')}
             aria-label={t('tables.resetZoom')}
           >
-            {t('tables.resetZoomPct', {
-              pct: Math.round(userZoom.scale * 100),
-            })}
+            {String(
+              t('tables.resetZoomPct', {
+                pct: Math.round(userZoom.scale * 100),
+              }),
+            )}
           </button>
         )}
         <div
-          className={editable ? 'contents' : 'absolute inset-0'}
+          className={editable ? 'contents' : 'absolute inset-0 touch-none'}
           style={
             editable
               ? undefined
@@ -1421,9 +1471,8 @@ export default function FloorCanvas({
                   // User pinch-zoom + pan layer wraps the auto-fit
                   // transform so hosts can zoom into busy parts of the
                   // floor without disrupting the read-only fit.
-                  transform: `translate(${userZoom.tx}px, ${userZoom.ty}px) scale(${userZoom.scale})`,
+                  transform: `translate(${Number.isFinite(userZoom.tx) ? userZoom.tx : 0}px, ${Number.isFinite(userZoom.ty) ? userZoom.ty : 0}px) scale(${Number.isFinite(userZoom.scale) ? userZoom.scale : 1})`,
                   transformOrigin: '0 0',
-                  willChange: 'transform',
                   transition: 'none',
                   visibility: canvasFitReady ? 'visible' : 'hidden',
                 } as React.CSSProperties)
@@ -1569,9 +1618,7 @@ export default function FloorCanvas({
                         ? (x, y) => handleMergeDrop(t, x, y)
                         : undefined
                     }
-                    pointerToLayout={(clientX, clientY) =>
-                      pointerToLayoutRef.current(clientX, clientY)
-                    }
+                    pointerToLayout={pointerToLayout}
                     onMergeDragEnd={() => setMergeHoverKey(null)}
                     onDelete={() => handleDelete(t.id)}
                     colorClass={
@@ -2466,8 +2513,9 @@ function Circle({
     const applyPosFromEvent = (e: PointerEvent) => {
       const mapped = pointerToLayoutRef.current?.(e.clientX, e.clientY);
       if (!mapped) return;
-      const newX = mapped.x;
-      const newY = mapped.y;
+      const newX = Number(mapped.x);
+      const newY = Number(mapped.y);
+      if (!Number.isFinite(newX) || !Number.isFinite(newY)) return;
       posRef.current = { x: newX, y: newY };
       if (rafRef.current == null) {
         rafRef.current = window.requestAnimationFrame(() => {
@@ -2563,6 +2611,21 @@ function Circle({
   const useTokenFill = !colorClass && fill === DEFAULT_TABLE_COLOR;
   const w = Math.max(44, Number(node.w) || (shape === 'rect' ? 100 : 64));
   const h = Math.max(44, Number(node.h) || (shape === 'rect' ? 56 : 64));
+  const left = Number.isFinite(Number(pos.x)) ? Number(pos.x) : 0;
+  const top = Number.isFinite(Number(pos.y)) ? Number(pos.y) : 0;
+  const labelText = String(node.label ?? '');
+  const badgeText =
+    badge == null || badge === ''
+      ? ''
+      : typeof badge === 'string' || typeof badge === 'number'
+        ? String(badge)
+        : '';
+  const seatsText =
+    node.seats != null &&
+    typeof node.seats !== 'object' &&
+    Number(node.seats) > 0
+      ? String(node.seats)
+      : '';
   const radius =
     shape === 'circle' ? '9999px' : shape === 'square' ? '10px' : '12px';
   const ring = selected
@@ -2578,13 +2641,13 @@ function Circle({
         : 'cursor-grab'
       : 'cursor-pointer';
   const tableName = floorTableA11yName({
-    label: node.label,
+    label: labelText,
     occupied: Boolean(colorClass),
     openLabel: t('tables.statusOpen'),
     freeLabel: t('tables.statusFree'),
     detail:
-      badge ||
-      (node.seats ? t('tables.a11ySeats', { count: node.seats }) : null),
+      badgeText ||
+      (seatsText ? t('tables.a11ySeats', { count: Number(node.seats) }) : null),
   });
   return (
     // Outer wrapper sized to the table; allows the floating delete
@@ -2596,8 +2659,8 @@ function Circle({
       aria-label={tableName}
       className={`absolute ${cursorClass} select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70`}
       style={{
-        left: pos.x,
-        top: pos.y,
+        left,
+        top,
         width: w,
         height: h,
         zIndex: mergeDragging || mergeHighlight ? 30 : undefined,
@@ -2652,10 +2715,10 @@ function Circle({
         <div className="flex flex-col items-center leading-none px-1">
           <span
             className={`font-semibold ${
-              String(node.label).length > 6 ? 'text-[11px]' : 'text-sm'
+              labelText.length > 6 ? 'text-[11px]' : 'text-sm'
             }`}
           >
-            {node.label}
+            {labelText}
           </span>
           {usageCount != null && usageCount > 0 ? (
             <>
@@ -2667,17 +2730,17 @@ function Circle({
                 {usageCount}
               </span>
             </>
-          ) : badge ? (
+          ) : badgeText ? (
             <span className="pos-floor-table-badge mt-0.5 text-[10px] font-semibold px-1 rounded max-w-[80px] truncate">
-              {badge}
+              {badgeText}
             </span>
           ) : null}
         </div>
         {/* Capacity badge — bottom-right, hidden when a status badge
             is overriding it. */}
-        {node.seats && !badge && !(usageCount != null && usageCount > 0) && (
+        {seatsText && !badgeText && !(usageCount != null && usageCount > 0) && (
           <span className="absolute bottom-0.5 right-1 text-[10px] font-semibold opacity-80">
-            {node.seats}
+            {seatsText}
           </span>
         )}
       </div>

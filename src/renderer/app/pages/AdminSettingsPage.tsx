@@ -3844,10 +3844,7 @@ function AreasSettings() {
           </SettingsCard>
         ) : (
           areas.map((a, idx) => (
-            <div
-              key={idx}
-              className="flex items-center gap-2 rounded-lg border border-white/7 bg-[var(--pos-canvas)] px-3 py-2"
-            >
+            <div key={idx} className="flex items-center gap-2 px-0 py-1">
               <Input
                 className="flex-1"
                 value={a.name}

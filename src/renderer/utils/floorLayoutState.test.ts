@@ -5,6 +5,7 @@ import {
   isFloorCanvasFitReady,
   isFloorLayoutPending,
   isFloorLayoutVacant,
+  resolveFloorFitPadding,
 } from './floorLayoutState';
 
 describe('floorLayoutState', () => {
@@ -30,6 +31,11 @@ describe('floorLayoutState', () => {
     expect(isFloorCanvasFitReady({ w: 360, h: 520 })).toBe(true);
   });
 
+  it('resolves asymmetric fit padding for waiter overlays', () => {
+    expect(resolveFloorFitPadding(72)).toEqual({ x: 72, y: 72 });
+    expect(resolveFloorFitPadding({ x: 8, y: 88 })).toEqual({ x: 8, y: 88 });
+  });
+
   it('fits the floor uniformly so wide desktops do not stretch gaps', () => {
     const nodes = [
       { x: 100, y: 100, w: 80, h: 80 },
@@ -39,7 +45,7 @@ describe('floorLayoutState', () => {
       canvasW: 390,
       canvasH: 700,
       nodes,
-      fitPadding: 24,
+      fitPadding: { x: 8, y: 88 },
     });
     const desktop = computeFloorViewTransform({
       canvasW: 1400,
@@ -53,6 +59,28 @@ describe('floorLayoutState', () => {
     expect(desktop.scaleX).toBeCloseTo(desktop.scale, 5);
     // Wide canvas must not inflate X beyond Y (the old non-uniform stretch).
     expect(desktop.scaleX / desktop.scaleY).toBeCloseTo(1, 5);
+  });
+
+  it('fills phone width instead of leaving empty side bands', () => {
+    // Tall layout on a portrait phone: old contain-fit letterboxed the
+    // sides. Width-first should use ~full canvas width (minus padX).
+    const nodes = [
+      { x: 100, y: 80, w: 64, h: 64 },
+      { x: 280, y: 80, w: 64, h: 64 },
+      { x: 100, y: 520, w: 64, h: 64 },
+      { x: 280, y: 520, w: 64, h: 64 },
+    ];
+    const phone = computeFloorViewTransform({
+      canvasW: 390,
+      canvasH: 720,
+      nodes,
+      fitPadding: { x: 8, y: 88 },
+    });
+    const contentW = 280 - 100 + 64; // maxX-minX with half extents ≈ 244
+    // Scale should be close to width-fill, not height-contain.
+    const widthFill = (390 - 16) / contentW;
+    expect(phone.scale).toBeGreaterThan(1.2);
+    expect(phone.scale).toBeCloseTo(Math.min(widthFill, 5), 1);
   });
 
   it('returns identity when the canvas is not measured yet', () => {

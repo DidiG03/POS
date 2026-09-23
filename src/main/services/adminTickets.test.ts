@@ -10,8 +10,10 @@ vi.mock('./core', () => ({
 }));
 
 import {
+  adminTicketRevenueAmount,
   matchOrdersToTicketRows,
   paidSalesNotOnTickets,
+  resolveAdminTicketStatus,
   unionTicketLogsById,
 } from './adminTickets';
 
@@ -24,6 +26,52 @@ describe('unionTicketLogsById', () => {
       { id: 30, tableLabel: 'T3' },
     ];
     expect(unionTicketLogsById(raw, js).map((r) => r.id)).toEqual([50, 40, 30]);
+  });
+});
+
+describe('resolveAdminTicketStatus', () => {
+  it('never marks an unmatched closed sitting as PAID', () => {
+    expect(
+      resolveAdminTicketStatus({
+        isVoided: false,
+        isTransferred: false,
+        isPaid: false,
+      }),
+    ).toBe('ACTIVE');
+  });
+
+  it('marks a matched sale as PAID', () => {
+    expect(
+      resolveAdminTicketStatus({
+        isVoided: false,
+        isTransferred: false,
+        isPaid: true,
+      }),
+    ).toBe('PAID');
+  });
+});
+
+describe('adminTicketRevenueAmount', () => {
+  it('prefers the settled Order total over kitchen line math', () => {
+    expect(
+      adminTicketRevenueAmount({
+        settledTotal: 1140,
+        liveItems: [{ name: 'Pizza', qty: 1, unitPrice: 1200, vatRate: 0.2 }],
+        vatEnabled: true,
+        defaultVatRate: 0.2,
+      }),
+    ).toBe(1140);
+  });
+
+  it('falls back to VAT-inclusive goods when no settled total', () => {
+    expect(
+      adminTicketRevenueAmount({
+        settledTotal: null,
+        liveItems: [{ name: 'Pizza', qty: 1, unitPrice: 1200, vatRate: 0.2 }],
+        vatEnabled: true,
+        defaultVatRate: 0.2,
+      }),
+    ).toBe(1200);
   });
 });
 

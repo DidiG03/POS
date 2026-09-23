@@ -7,15 +7,11 @@ import type { FiscalSaleDTO } from '@shared/ipc';
 import {
   Badge,
   Button,
-  Card,
-  Divider,
   EmptyState,
   IconButton,
   Input,
   Modal,
-  SectionLabel,
   Segmented,
-  Stat,
   Table,
   TableFrame,
   Td,
@@ -29,6 +25,7 @@ import {
   IconChevronRight,
   IconGrid,
   IconList,
+  IconMoreVertical,
   IconTicket,
 } from '../../components/icons';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
@@ -213,6 +210,15 @@ function computeServiceCharge(
   return v;
 }
 
+/** Settled receipt total when this ticket is matched to an Order. */
+function settledSaleTotal(
+  ticket: Pick<Ticket, 'status' | 'sale'>,
+): number | null {
+  if ((ticket.status || 'PAID') !== 'PAID') return null;
+  const n = Number(ticket.sale?.total);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function TicketTotalsRow({
   ticket,
   prefs,
@@ -224,31 +230,43 @@ function TicketTotalsRow({
   computeServiceCharge: (base: number, p: Preferences | null) => number;
   layout?: 'stack' | 'inline';
 }) {
-  const vatEnabled = prefs?.vatEnabled !== false;
-  const vat = vatEnabled ? ticket.vat : 0;
-  const base = ticket.subtotal + vat;
-  const serviceCharge = computeServiceCharge(base, prefs);
-  const total = base + serviceCharge;
+  // Line prices are tax-inclusive. `ticket.subtotal`/`ticket.vat` are the
+  // net/VAT split from the server — always sum both for the goods total so
+  // we match item amounts and the staff-list TOTAL, even when VAT is off
+  // in settings (which only hides the VAT breakdown, not the money).
+  const vatStored = Number(ticket.vat || 0);
+  const goods = Number(ticket.subtotal || 0) + vatStored;
+  const vatEnabled = prefs?.vatEnabled === true;
+  const settled = settledSaleTotal(ticket);
+  // Prefer the ledger total (includes service / discount). Only invent a
+  // service charge from current prefs when no settled sale is attached.
+  const serviceCharge =
+    settled != null ? 0 : computeServiceCharge(goods, prefs);
+  const total = settled != null ? settled : goods + serviceCharge;
+  const showService =
+    settled == null &&
+    Boolean(prefs?.serviceCharge?.enabled) &&
+    serviceCharge > 0;
   const fmt = (n: number) => n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   if (layout === 'inline') {
     return (
       <div className="mt-3 flex flex-wrap items-center justify-end gap-x-5 gap-y-1 text-[12px] text-gray-400">
         {vatEnabled ? (
           <div>
-            VAT <span className="tabular text-gray-200">{fmt(vat)}</span>
+            VAT <span className="tabular text-gray-200">{fmt(vatStored)}</span>
           </div>
         ) : (
           <div>
             VAT <span className="text-gray-500">Disabled</span>
           </div>
         )}
-        {prefs?.serviceCharge?.enabled && serviceCharge > 0 && (
+        {showService && (
           <div>
             Service{' '}
             <span className="tabular text-gray-200">{fmt(serviceCharge)}</span>
           </div>
         )}
-        <div className="text-[13px]">
+        <div className="text-[16px]">
           Total{' '}
           <span className="tabular font-semibold text-gray-50">
             {fmt(total)}
@@ -262,7 +280,7 @@ function TicketTotalsRow({
       {vatEnabled ? (
         <div className="flex justify-between text-gray-400">
           <span>VAT</span>
-          <span className="tabular text-gray-200">{fmt(vat)}</span>
+          <span className="tabular text-gray-200">{fmt(vatStored)}</span>
         </div>
       ) : (
         <div className="flex justify-between text-gray-400">
@@ -270,13 +288,13 @@ function TicketTotalsRow({
           <span className="text-gray-500">Disabled</span>
         </div>
       )}
-      {prefs?.serviceCharge?.enabled && serviceCharge > 0 && (
+      {showService && (
         <div className="flex justify-between text-gray-400">
           <span>Service charge</span>
           <span className="tabular text-gray-200">{fmt(serviceCharge)}</span>
         </div>
       )}
-      <div className="flex items-baseline justify-between pt-0.5 text-[13px] font-semibold text-gray-50">
+      <div className="flex items-baseline justify-between pt-0.5 text-[16px] font-semibold text-gray-50">
         <span>Total</span>
         <span className="tabular">{fmt(total)}</span>
       </div>
@@ -310,9 +328,6 @@ function TicketCard({
   const [moreOpen, setMoreOpen] = useState(Boolean(autoOpen));
   const liveItems = ticket.items.filter((it) => !it.voided);
   const voidedItems = ticket.items.filter((it) => it.voided);
-  const isVoided = ((ticket.status as TicketStatus) || 'PAID') === 'VOIDED';
-  const isTransferred =
-    ((ticket.status as TicketStatus) || 'PAID') === 'TRANSFERRED';
   const visibleLive = mode === 'grid' ? liveItems.slice(0, 8) : liveItems;
   const hiddenLive = Math.max(0, liveItems.length - visibleLive.length);
   const table = formatSaleLocation({
@@ -320,19 +335,14 @@ function TicketCard({
     area: ticket.area,
     tableLabel: ticket.tableLabel,
   });
-  const cardTone = isVoided
-    ? 'border-rose-500/25'
-    : isTransferred || ticketHasTransfer(ticket)
-      ? 'border-sky-500/25'
-      : 'border-white/7';
 
   return (
     <article
       id={autoOpen ? `ticket-${ticket.id}` : undefined}
       className={cn(
-        'rounded-xl border bg-gray-800 p-4',
-        cardTone,
-        autoOpen && 'ring-1 ring-sky-400/70',
+        'py-4',
+        mode === 'grid' && 'md:pr-6',
+        autoOpen && 'ring-1 ring-inset ring-sky-400/70',
       )}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -358,19 +368,12 @@ function TicketCard({
             ) : null}
           </div>
         </div>
-        <div className="shrink-0 text-left sm:text-right">
-          <SectionLabel>Total</SectionLabel>
-          <div className="tabular mt-0.5 text-[18px] font-semibold leading-none tracking-tight text-gray-50">
-            {fmtInt(
-              ticket.subtotal +
-                (prefs?.vatEnabled !== false ? ticket.vat : 0) +
-                computeServiceCharge(
-                  ticket.subtotal +
-                    (prefs?.vatEnabled !== false ? ticket.vat : 0),
-                  prefs,
-                ),
-            )}
-          </div>
+        <div className="flex shrink-0 items-start sm:justify-end">
+          <IconButton
+            icon={<IconMoreVertical />}
+            label={t('common.viewMore')}
+            onClick={() => setMoreOpen(true)}
+          />
         </div>
       </div>
 
@@ -379,12 +382,12 @@ function TicketCard({
         const showHistory = hasTables;
         if ((showHistory ? !history.length : true) && !userNote) return null;
         return (
-          <div className="pos-well mt-3 space-y-1 px-3 py-2 text-[12px] text-gray-400">
+          <div className="pos-well mt-3 space-y-1 px-3 py-2 text-[15px] font-light leading-snug text-gray-400">
             {showHistory
               ? history.map((line, i) => <div key={`${line}-${i}`}>{line}</div>)
               : null}
             {userNote ? (
-              <div className="text-gray-300">Note: {userNote}</div>
+              <div className="font-light text-gray-300">Note: {userNote}</div>
             ) : null}
           </div>
         );
@@ -400,10 +403,9 @@ function TicketCard({
                 ? 'No active items on this ticket.'
                 : 'No items on this sale.'
             }
-            className="rounded-lg border border-white/7"
           />
         ) : (
-          <TableFrame>
+          <TableFrame className="rounded-none border-0">
             <Table>
               <thead>
                 <tr>
@@ -421,7 +423,7 @@ function TicketCard({
                           {it.name}
                         </div>
                         {it.note ? (
-                          <div className="mt-0.5 text-[12px] text-gray-400">
+                          <div className="mt-0.5 text-[15px] font-light leading-snug text-gray-400">
                             {it.note}
                           </div>
                         ) : null}
@@ -445,7 +447,7 @@ function TicketCard({
           </div>
         )}
         {voidedItems.length > 0 && (
-          <details className="rounded-lg border border-rose-500/25 bg-rose-500/6 px-3 py-2">
+          <details className="border-t border-white/[0.06] pt-2">
             <summary className="cursor-pointer text-[12px] font-medium text-rose-200">
               {voidedItems.length} voided item
               {voidedItems.length === 1 ? '' : 's'}
@@ -475,12 +477,6 @@ function TicketCard({
         computeServiceCharge={computeServiceCharge}
         layout={mode === 'list' ? 'inline' : 'stack'}
       />
-
-      <div className="mt-3">
-        <Button size="sm" onClick={() => setMoreOpen(true)}>
-          {t('common.viewMore')}
-        </Button>
-      </div>
 
       <Modal
         open={moreOpen}
@@ -530,9 +526,14 @@ export default function AdminUserTicketsPage() {
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const { userId } = useParams();
   const [params, setParams] = useSearchParams();
-  const start = params.get('start') || undefined;
-  const end = params.get('end') || undefined;
-  const allDays = !start;
+  const wantsAllDays = params.get('all') === '1';
+  const startParam = params.get('start') || undefined;
+  const endParam = params.get('end') || undefined;
+  // Until the URL is filled with today's range, still query today (not all days).
+  const defaultDay = dayRangeIso(new Date());
+  const start = wantsAllDays ? undefined : startParam || defaultDay.startIso;
+  const end = wantsAllDays ? undefined : endParam || defaultDay.endIso;
+  const allDays = wantsAllDays;
   const name = params.get('name') || '';
   const tableFilter = params.get('table') || '';
   const areaFilter = params.get('area') || '';
@@ -551,6 +552,23 @@ export default function AdminUserTicketsPage() {
           | 'ALL')
       : 'ALL',
   );
+
+  // Persist today's range in the URL so the date control shows today by default.
+  useEffect(() => {
+    if (wantsAllDays || startParam) return;
+    const next = new URLSearchParams(params);
+    next.set('start', defaultDay.startIso);
+    next.set('end', defaultDay.endIso);
+    next.delete('all');
+    setParams(next, { replace: true });
+  }, [
+    wantsAllDays,
+    startParam,
+    defaultDay.startIso,
+    defaultDay.endIso,
+    params,
+    setParams,
+  ]);
 
   const refreshTickets = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -611,6 +629,7 @@ export default function AdminUserTicketsPage() {
     const next = new URLSearchParams(params);
     next.set('start', startIso);
     next.set('end', endIso);
+    next.delete('all');
     setParams(next);
   }
 
@@ -618,6 +637,7 @@ export default function AdminUserTicketsPage() {
     const next = new URLSearchParams(params);
     next.delete('start');
     next.delete('end');
+    next.set('all', '1');
     setParams(next);
   }
 
@@ -626,10 +646,11 @@ export default function AdminUserTicketsPage() {
   }, [refreshTickets]);
 
   const totals = useMemo(() => {
-    const vatEnabled = prefs?.vatEnabled !== false;
+    const vatEnabled = prefs?.vatEnabled === true;
     let subtotal = 0;
     let vat = 0;
     let serviceCharge = 0;
+    let grand = 0;
     let transfers = 0;
     const counts: Record<TicketStatus, number> = {
       PAID: 0,
@@ -640,20 +661,35 @@ export default function AdminUserTicketsPage() {
     for (const t of tickets) {
       const s: TicketStatus = (t.status as TicketStatus) || 'PAID';
       counts[s] += 1;
-      // TRANSFERRED rows are snapshots of a session that moved to
-      // another table — the destination row in the same list already
-      // contributes the money, so we deliberately leave their
-      // subtotal / vat / service charge out of the period totals.
-      if (s !== 'TRANSFERRED') {
+      // Period money is paid sittings only. ACTIVE (open/abandoned) and
+      // VOIDED must not inflate the grand total; TRANSFERRED snapshots are
+      // already counted on the destination row.
+      if (s === 'PAID') {
         subtotal += t.subtotal;
-        vat += vatEnabled ? t.vat : 0;
-        const base = t.subtotal + (vatEnabled ? t.vat : 0);
-        serviceCharge += computeServiceCharge(base, prefs);
+        vat += Number(t.vat || 0);
+        const goods = t.subtotal + Number(t.vat || 0);
+        const settled = settledSaleTotal(t);
+        if (settled != null) {
+          grand += settled;
+        } else {
+          const sc = computeServiceCharge(goods, prefs);
+          serviceCharge += sc;
+          grand += goods + sc;
+        }
       }
       if (ticketHasTransfer(t)) transfers += 1;
     }
-    const grand = subtotal + vat + serviceCharge;
-    return { subtotal, vat, serviceCharge, grand, counts, transfers };
+    return {
+      subtotal,
+      vat,
+      serviceCharge,
+      grand,
+      counts,
+      transfers,
+      /** Goods total at menu prices (tax-inclusive). */
+      goods: subtotal + vat,
+      vatEnabled,
+    };
   }, [tickets, prefs]);
 
   const filteredTickets = useMemo(() => {
@@ -730,8 +766,8 @@ export default function AdminUserTicketsPage() {
         </div>
       ) : null}
 
-      <Card padded={false}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
+      <div className="border-y border-white/[0.06]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
           <div className="flex items-center gap-2">
             <IconButton
               label="Previous day"
@@ -791,9 +827,7 @@ export default function AdminUserTicketsPage() {
           </Button>
         </div>
 
-        <Divider />
-
-        <div className="flex flex-wrap items-center justify-between gap-3 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] py-3">
           <Segmented
             ariaLabel="Status filter"
             value={statusFilter}
@@ -811,12 +845,12 @@ export default function AdminUserTicketsPage() {
             <span>
               Subtotal{' '}
               <span className="tabular text-gray-200">
-                {fmtInt(totals.subtotal)}
+                {fmtInt(totals.vatEnabled ? totals.subtotal : totals.goods)}
               </span>
             </span>
             <span>
               VAT{' '}
-              {prefs?.vatEnabled !== false ? (
+              {totals.vatEnabled ? (
                 <span className="tabular text-gray-200">
                   {fmtInt(totals.vat)}
                 </span>
@@ -844,17 +878,65 @@ export default function AdminUserTicketsPage() {
             )}
           </div>
         </div>
-      </Card>
+      </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label={hasTables ? 'Tickets' : 'Sales'} value={tickets.length} />
-        <Stat label="Paid" value={totals.counts.PAID} tone="accent" />
-        <Stat label="Active" value={totals.counts.ACTIVE} tone="warn" />
-        <Stat label="Voided" value={totals.counts.VOIDED} tone="danger" />
+      <div className="admin-metrics">
+        <div className="admin-metric">
+          <div className="admin-metric-label">
+            {hasTables ? 'Tickets' : 'Sales'}
+          </div>
+          <div className="admin-metric-value">{tickets.length}</div>
+        </div>
+        <div className="admin-metric">
+          <div className="admin-metric-label">Paid</div>
+          <div
+            className={cn(
+              'admin-metric-value',
+              totals.counts.PAID === 0 ? 'is-quiet' : '!text-emerald-500',
+            )}
+          >
+            {totals.counts.PAID}
+          </div>
+        </div>
+        <div className="admin-metric">
+          <div className="admin-metric-label">Active</div>
+          <div
+            className={cn(
+              'admin-metric-value',
+              totals.counts.ACTIVE === 0 ? 'is-quiet' : '!text-amber-500',
+            )}
+          >
+            {totals.counts.ACTIVE}
+          </div>
+        </div>
+        <div className="admin-metric">
+          <div className="admin-metric-label">Voided</div>
+          <div
+            className={cn(
+              'admin-metric-value',
+              totals.counts.VOIDED === 0 ? 'is-quiet' : '!text-rose-500',
+            )}
+          >
+            {totals.counts.VOIDED}
+          </div>
+        </div>
         {hasTables ? (
-          <Stat label="Transferred" value={totals.counts.TRANSFERRED} />
+          <div className="admin-metric">
+            <div className="admin-metric-label">Transferred</div>
+            <div
+              className={cn(
+                'admin-metric-value',
+                totals.counts.TRANSFERRED === 0 && 'is-quiet',
+              )}
+            >
+              {totals.counts.TRANSFERRED}
+            </div>
+          </div>
         ) : null}
-        <Stat label="Total" value={fmtInt(totals.grand)} />
+        <div className="admin-metric">
+          <div className="admin-metric-label">Total</div>
+          <div className="admin-metric-value">{fmtInt(totals.grand)}</div>
+        </div>
       </div>
 
       {loading ? (
@@ -862,19 +944,17 @@ export default function AdminUserTicketsPage() {
           <PageSpinner variant="overlay" message={t('common.loading')} />
         </div>
       ) : filteredTickets.length === 0 ? (
-        <Card padded={false}>
-          <EmptyState
-            icon={<IconTicket />}
-            title={
-              hasTables
-                ? 'No tickets match this filter.'
-                : 'No sales match this filter.'
-            }
-            description="Try a different status or another day."
-          />
-        </Card>
+        <EmptyState
+          icon={<IconTicket />}
+          title={
+            hasTables
+              ? 'No tickets match this filter.'
+              : 'No sales match this filter.'
+          }
+          description="Try a different status or another day."
+        />
       ) : view === 'grid4' ? (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
+        <div className="admin-list grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3">
           {filteredTickets.map((t) => (
             <TicketCard
               key={t.id}
@@ -893,7 +973,7 @@ export default function AdminUserTicketsPage() {
           ))}
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="admin-list">
           {filteredTickets.map((t) => (
             <TicketCard
               key={t.id}

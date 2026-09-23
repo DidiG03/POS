@@ -42,26 +42,41 @@ type FloorFitNode = {
   kind?: string;
 };
 
+/** Uniform inset, or separate X/Y (waiter chips + dock need more vertical inset). */
+export type FloorFitPadding = number | { x?: number; y?: number };
+
+export function resolveFloorFitPadding(pad?: FloorFitPadding): {
+  x: number;
+  y: number;
+} {
+  if (pad == null) return { x: 12, y: 12 };
+  if (typeof pad === 'number') {
+    const n = Number.isFinite(pad) ? Math.max(0, pad) : 12;
+    return { x: n, y: n };
+  }
+  const x = Number.isFinite(Number(pad.x)) ? Math.max(0, Number(pad.x)) : 12;
+  const y = Number.isFinite(Number(pad.y)) ? Math.max(0, Number(pad.y)) : 12;
+  return { x, y };
+}
+
 /**
  * Uniform contain-fit for the waiter/host floor. Preserves the layout's
- * aspect ratio so a plan designed on Admin (or looking right on phones)
- * does not stretch sideways on wide desktop canvases. Letterboxing is
- * intentional — non-uniform stretch used to inflate horizontal gaps.
+ * aspect ratio so a plan designed on Admin does not stretch sideways on
+ * wide desktops. On narrow (phone) canvases we prefer filling the width
+ * so tables are not tiny with empty bands on the sides.
  */
 export function computeFloorViewTransform(args: {
   canvasW: number;
   canvasH: number;
   nodes: readonly FloorFitNode[];
-  fitPadding?: number;
+  fitPadding?: FloorFitPadding;
 }): FloorViewTransform {
   const cw = Math.max(0, args.canvasW);
   const ch = Math.max(0, args.canvasH);
   if (!isFloorCanvasFitReady({ w: cw, h: ch }) || !args.nodes.length) {
     return FLOOR_VIEW_IDENTITY;
   }
-  const pad = Number.isFinite(Number(args.fitPadding))
-    ? Math.max(0, Number(args.fitPadding))
-    : 12;
+  const { x: padX, y: padY } = resolveFloorFitPadding(args.fitPadding);
 
   let minX = Infinity;
   let minY = Infinity;
@@ -96,15 +111,29 @@ export function computeFloorViewTransform(args: {
 
   const bw = Math.max(1, maxX - minX);
   const bh = Math.max(1, maxY - minY);
+  const availW = Math.max(1, cw - padX * 2);
+  const availH = Math.max(1, ch - padY * 2);
+  const scaleW = availW / bw;
+  const scaleH = availH / bh;
   const minScale = 0.3;
-  const maxScale = 2.4;
+  // Phones need room to grow — the old 2.4 cap left dense plans tiny.
+  const maxScale = 5;
   const clamp = (raw: number, lo: number, hi: number) =>
     Math.max(lo, Math.min(hi, raw));
-  const fit = clamp(
-    Math.min((cw - pad * 2) / bw, (ch - pad * 2) / bh),
-    minScale,
-    maxScale,
-  );
+
+  let fit: number;
+  if (cw <= 700) {
+    // Prefer filling the screen width. Mild vertical overflow is OK —
+    // overlays already reserve padY, and pinch-pan covers the rest.
+    // Only fall back to contain when width-fill would clip height a lot.
+    const widthFirst = scaleW;
+    const heightOverflow = (widthFirst * bh) / availH;
+    fit = heightOverflow > 1.45 ? Math.min(scaleW, scaleH) : widthFirst;
+  } else {
+    fit = Math.min(scaleW, scaleH);
+  }
+  fit = clamp(fit, minScale, maxScale);
+
   return {
     scale: fit,
     scaleX: fit,

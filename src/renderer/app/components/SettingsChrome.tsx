@@ -18,6 +18,7 @@ export type KebabItem = {
   disabled?: boolean;
   danger?: boolean;
   hidden?: boolean;
+  icon?: ReactNode;
 };
 
 /** Overflow menu for secondary / destructive settings actions. */
@@ -111,7 +112,7 @@ export function KebabMenu({
           role="menuitem"
           disabled={item.disabled}
           className={cn(
-            'w-full cursor-pointer px-3 py-2 text-left text-[13px] hover:bg-white/[0.06] disabled:cursor-default disabled:opacity-50',
+            'flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left text-[13px] hover:bg-white/[0.06] disabled:cursor-default disabled:opacity-50',
             item.danger
               ? 'text-rose-300 hover:bg-rose-500/10'
               : 'text-gray-100',
@@ -121,7 +122,12 @@ export function KebabMenu({
             item.onSelect();
           }}
         >
-          {item.label}
+          {item.icon ? (
+            <span className="inline-flex size-4 shrink-0 items-center justify-center opacity-80 [&_.pos-icon]:size-4">
+              {item.icon}
+            </span>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate">{item.label}</span>
         </button>
       ))}
     </div>

@@ -1620,7 +1620,7 @@ export default function KdsPage() {
 
                     {t.note && (
                       <div
-                        className="mb-2 text-base bg-gray-950 border border-gray-800 rounded p-2"
+                        className="mb-2 rounded border border-gray-800 bg-gray-950 p-2 text-base font-light leading-snug"
                         data-kds-ticket-note
                         style={{ breakInside: 'avoid' }}
                       >
@@ -1699,7 +1699,7 @@ export default function KdsPage() {
                                 {it.name}
                               </span>
                               {it.note ? (
-                                <div className="mt-0.5 flex items-start gap-1.5 pl-4 text-base font-normal">
+                                <div className="mt-0.5 flex items-start gap-1.5 pl-4 text-base font-light leading-snug">
                                   <span
                                     className="text-amber-400 font-bold leading-none"
                                     aria-hidden

@@ -152,7 +152,7 @@ const OrderCard = memo(function OrderCard({
                   {item.name}
                 </span>
                 {item.note ? (
-                  <div className="mt-0.5 flex items-start gap-1.5 pl-4 text-[12px] font-normal not-italic text-[color:var(--pos-fg-muted)]">
+                  <div className="mt-0.5 flex items-start gap-1.5 pl-4 text-[15px] font-light not-italic leading-snug text-[color:var(--pos-fg-muted)]">
                     <span
                       className="font-bold leading-none text-amber-400"
                       aria-hidden

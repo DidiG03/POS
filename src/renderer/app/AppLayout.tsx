@@ -578,7 +578,7 @@ export default function AppLayout() {
             <StatusChip
               tone={syncTone}
               title={syncTitle}
-              className="hidden sm:inline-flex"
+              className="pos-status-chip--bare hidden sm:inline-flex"
             >
               {!syncOk
                 ? t('layout.syncIndicatorOffline')
@@ -620,7 +620,7 @@ export default function AppLayout() {
             }}
           >
             <button
-              className="pos-ticket-iconbtn"
+              className="pos-ticket-iconbtn pos-ticket-iconbtn--bare"
               aria-label={t('common.notifications')}
               aria-expanded={showNotifications}
               aria-haspopup="dialog"
@@ -694,7 +694,7 @@ export default function AppLayout() {
 
           {user && (
             <button
-              className="pos-ticket-iconbtn hover:!text-rose-400"
+              className="pos-ticket-iconbtn pos-ticket-iconbtn--bare hover:!text-rose-400"
               onClick={() => {
                 forceLogout(t('common.loggedOut'));
               }}

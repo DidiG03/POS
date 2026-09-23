@@ -15,6 +15,7 @@ import { asPositiveId } from './ticketLogLatest';
 import { coreServices } from './core';
 import { mapOrderToFiscalSaleRow } from './saleCorrection';
 import { isTransferredOutNote, parseTransferTag } from './tableTransfer';
+import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
 
 function rangeMs(input?: { startIso?: string; endIso?: string }): {
   startMs?: number;
@@ -47,6 +48,63 @@ export function paidSalesNotOnTickets<T extends { orderId: number }>(
   sales: T[],
 ): T[] {
   return sales.filter((sale) => !usedOrderIds.has(Number(sale.orderId)));
+}
+
+/** @deprecated use keepCanonicalPaidOrders */
+export function dedupePaidOrdersBySettlement<
+  T extends {
+    id?: number;
+    userId?: number | null;
+    area?: string | null;
+    tableLabel?: string | null;
+    total?: number | null;
+    closedAt?: unknown;
+    createdAt?: unknown;
+    payments?: Array<{
+      metaJson?: unknown;
+      fiscalNslf?: string | null;
+      fiscalNivf?: string | null;
+    }>;
+  },
+>(orders: T[]): T[] {
+  return keepCanonicalPaidOrders(orders);
+}
+
+export type AdminTicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
+
+/**
+ * Closed tables without a matched sale stay ACTIVE (unpaid / abandoned).
+ * Defaulting those to PAID used to double-count unmatched Orders and inflate
+ * staff revenue for walkouts.
+ */
+export function resolveAdminTicketStatus(args: {
+  isVoided: boolean;
+  isTransferred: boolean;
+  isPaid: boolean;
+}): AdminTicketStatus {
+  if (args.isVoided) return 'VOIDED';
+  if (args.isTransferred) return 'TRANSFERRED';
+  if (args.isPaid) return 'PAID';
+  return 'ACTIVE';
+}
+
+/** Prefer settled Order.total; fall back to VAT-inclusive line goods. */
+export function adminTicketRevenueAmount(args: {
+  settledTotal?: number | null;
+  liveItems: unknown;
+  vatEnabled: boolean;
+  defaultVatRate: number;
+}): number {
+  const settled = Number(args.settledTotal);
+  if (Number.isFinite(settled) && settled > 0) {
+    return Math.round(settled * 100) / 100;
+  }
+  const { net, vat } = sumTicketLinesNetVat(
+    args.liveItems,
+    args.vatEnabled,
+    args.defaultVatRate,
+  );
+  return Math.round((net + (args.vatEnabled ? vat : 0)) * 100) / 100;
 }
 
 export function matchOrdersToTicketRows(
@@ -194,6 +252,11 @@ export async function listAdminTicketCounts(input?: {
   endIso?: string;
 }) {
   const { startMs, endMs } = rangeMs(input);
+  const settings = await coreServices.readSettings().catch(() => ({}));
+  const defaultVatEnabled = isVatEnabledFromSettings(settings);
+  const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
+  const fiscalTin = String((settings as any)?.fiscal?.nipt || '').trim();
+
   const logs = await loadTicketLogs({
     startIso: input?.startIso,
     endIso: input?.endIso,
@@ -211,31 +274,127 @@ export async function listAdminTicketCounts(input?: {
     where: { closedAt: null },
   });
   const openIds = new Set(openShifts.map((s: any) => s.openedById));
+
+  const paidOrders = dedupePaidOrdersBySettlement(
+    await loadPaidOrders({
+      startIso: input?.startIso,
+      endIso: input?.endIso,
+      take: 4000,
+    }).catch(() => []),
+  );
+  const { usedOrderIds, orderIdByTicketId } = matchOrdersToTicketRows(
+    live as any[],
+    paidOrders as any[],
+  );
+  const saleByOrderId = new Map<
+    number,
+    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
+  >();
+  for (const order of paidOrders as any[]) {
+    saleByOrderId.set(Number(order.id), {
+      vatEnabled: Boolean(order.vatEnabled),
+      sale: mapOrderToFiscalSaleRow(order, { tin: fiscalTin }),
+    });
+  }
+  const saleByLogId = new Map<
+    number,
+    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
+  >();
+  for (const [ticketId, orderId] of orderIdByTicketId) {
+    const covering = saleByOrderId.get(orderId);
+    if (covering) saleByLogId.set(ticketId, covering);
+  }
+
   const counts: Record<number, number> = {};
-  const transfersIn: Record<number, number> = {};
+  const paid: Record<number, number> = {};
+  const active: Record<number, number> = {};
+  const voids: Record<number, number> = {};
+  const transferred: Record<number, number> = {};
+  const total: Record<number, number> = {};
+
+  const bump = (bag: Record<number, number>, uid: number, n = 1) => {
+    bag[uid] = (bag[uid] ?? 0) + n;
+  };
+
   for (const r of live as any[]) {
     const uid = Number(r.userId);
     if (!Number.isInteger(uid) || uid <= 0) continue;
     if (!ticketLogInRange(r.createdAt, startMs, endMs)) continue;
-    counts[uid] = (counts[uid] ?? 0) + 1;
-    if (/\[TRANSFER/i.test(String(r.note || ''))) {
-      transfersIn[uid] = (transfersIn[uid] ?? 0) + 1;
+    bump(counts, uid);
+
+    const items = asTicketLogItems(r.itemsJson) as any[];
+    const liveItems = items.filter((it: any) => !it?.voided);
+    const noteStr = String(r.note || '').toUpperCase();
+    const allVoided =
+      items.length > 0 && items.every((it: any) => it?.voided === true);
+    const covering = saleByLogId.get(Number(r.id));
+    const saleVoided =
+      String(covering?.sale.status || '').toUpperCase() === 'VOID';
+    const isVoided = allVoided || /\bVOIDED\b/.test(noteStr) || saleVoided;
+    const isTransferred = isTransferredOutNote(r.note);
+    const isPaid = Boolean(covering);
+    const status = resolveAdminTicketStatus({
+      isVoided,
+      isTransferred,
+      isPaid,
+    });
+
+    if (status === 'VOIDED') bump(voids, uid);
+    else if (status === 'ACTIVE') bump(active, uid);
+    else if (status === 'TRANSFERRED') bump(transferred, uid);
+    else bump(paid, uid);
+
+    // Revenue is settled money only — open/abandoned tickets stay out.
+    if (status === 'PAID') {
+      bump(
+        total,
+        uid,
+        adminTicketRevenueAmount({
+          settledTotal: covering?.sale?.total,
+          liveItems,
+          vatEnabled: defaultVatEnabled,
+          defaultVatRate,
+        }),
+      );
     }
   }
 
-  const paidOrders = await loadPaidOrders({
-    startIso: input?.startIso,
-    endIso: input?.endIso,
-    take: 4000,
-  }).catch(() => []);
-  const { usedOrderIds } = matchOrdersToTicketRows(live as any[], paidOrders);
   for (const order of paidSalesNotOnTickets(
     usedOrderIds,
     (paidOrders as any[]).map((row) => ({ ...row, orderId: Number(row.id) })),
   )) {
     const uid = Number(order.userId);
     if (!Number.isInteger(uid) || uid <= 0) continue;
-    counts[uid] = (counts[uid] ?? 0) + 1;
+    bump(counts, uid);
+    const covering = saleByOrderId.get(Number(order.id));
+    const items = (Array.isArray(order.items) ? order.items : []).map(
+      (it: any) => ({
+        name: String(it?.name || 'Item'),
+        qty: Number(it?.qty || 1),
+        unitPrice: Number(it?.unitPrice || 0),
+        vatRate: Number(it?.vatRate || 0),
+        voided: it?.voidedAt != null || it?.voided === true,
+      }),
+    );
+    const liveItems = items.filter((it: any) => !it?.voided);
+    const saleVoided =
+      String(covering?.sale.status || order.status || '').toUpperCase() ===
+      'VOID';
+    if (saleVoided) {
+      bump(voids, uid);
+    } else {
+      bump(paid, uid);
+      bump(
+        total,
+        uid,
+        adminTicketRevenueAmount({
+          settledTotal: covering?.sale?.total ?? order.total,
+          liveItems,
+          vatEnabled: defaultVatEnabled,
+          defaultVatRate,
+        }),
+      );
+    }
   }
 
   return users.map((u: any) => ({
@@ -243,7 +402,15 @@ export async function listAdminTicketCounts(input?: {
     name: u.displayName,
     active: openIds.has(u.id),
     tickets: counts[u.id] ?? 0,
-    transfersIn: transfersIn[u.id] ?? 0,
+    paid: paid[u.id] ?? 0,
+    activeTickets: active[u.id] ?? 0,
+    voids: voids[u.id] ?? 0,
+    transferred: transferred[u.id] ?? 0,
+    /** @deprecated use transferred — kept for older clients */
+    transfersIn: transferred[u.id] ?? 0,
+    total: Math.round((total[u.id] ?? 0) * 100) / 100,
+    /** @deprecated use total */
+    revenue: Math.round((total[u.id] ?? 0) * 100) / 100,
   }));
 }
 
@@ -270,17 +437,14 @@ export async function listAdminTicketsByUser(input?: {
     (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
   ).slice(0, limit);
 
-  const openMap: Record<string, boolean> = {};
-  for (const t of await coreServices.listOpenTables().catch(() => [])) {
-    openMap[`${t.area}:${t.label}`] = true;
-  }
-
-  const paidOrders = await loadPaidOrders({
-    userId,
-    startIso: input?.startIso,
-    endIso: input?.endIso,
-    take: 4000,
-  });
+  const paidOrders = dedupePaidOrdersBySettlement(
+    await loadPaidOrders({
+      userId,
+      startIso: input?.startIso,
+      endIso: input?.endIso,
+      take: 4000,
+    }).catch(() => []),
+  );
   const { usedOrderIds, orderIdByTicketId } = matchOrdersToTicketRows(
     visibleRows as any[],
     paidOrders as any[],
@@ -317,18 +481,12 @@ export async function listAdminTicketsByUser(input?: {
     const isTransferredOut = isTransferredOutNote(r.note);
 
     const isPaid = Boolean(covering);
-    const rowVatEnabled = covering ? covering.vatEnabled : defaultVatEnabled;
-    const isOpen = Boolean(openMap[`${r.area}:${r.tableLabel}`]);
 
-    const status: 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED' = isVoided
-      ? 'VOIDED'
-      : isTransferredOut
-        ? 'TRANSFERRED'
-        : isPaid
-          ? 'PAID'
-          : isOpen
-            ? 'ACTIVE'
-            : 'PAID';
+    const status = resolveAdminTicketStatus({
+      isVoided,
+      isTransferred: isTransferredOut,
+      isPaid,
+    });
 
     const parsedTransfer = parseTransferTag(r.note);
     const transfer = parsedTransfer
@@ -359,7 +517,7 @@ export async function listAdminTicketsByUser(input?: {
       ...(() => {
         const { net, vat } = sumTicketLinesNetVat(
           liveItems,
-          rowVatEnabled,
+          defaultVatEnabled,
           Number((settings as any)?.defaultVatRate || 0),
         );
         return { subtotal: net, vat };
@@ -390,7 +548,7 @@ export async function listAdminTicketsByUser(input?: {
       'VOID';
     const { net, vat } = sumTicketLinesNetVat(
       liveItems,
-      covering ? covering.vatEnabled : defaultVatEnabled,
+      defaultVatEnabled,
       defaultVatRate,
     );
     return {

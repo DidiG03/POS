@@ -600,7 +600,7 @@ export default function TablesPage() {
         const peeked = peekTableBill(area, openLabel);
         const navOpts =
           opts?.pending === 'pay'
-            ? { state: { openPayment: true } }
+            ? { state: { openPayment: true, focusTicket: true } }
             : undefined;
         if (peeked) {
           hydrate({ items: peeked.items as any, note: peeked.note });
@@ -625,7 +625,9 @@ export default function TablesPage() {
       }
       navigate(
         '/app/order',
-        opts?.pending === 'pay' ? { state: { openPayment: true } } : undefined,
+        opts?.pending === 'pay'
+          ? { state: { openPayment: true, focusTicket: true } }
+          : undefined,
       );
     },
     [
@@ -782,7 +784,7 @@ export default function TablesPage() {
             editable={false}
             fillAvailableHeight
             flush
-            fitPadding={72}
+            fitPadding={{ x: 8, y: 88 }}
             emptyMessage={t('tables.noLayout')}
             colorByLabel={colorByLabel}
             badgeByLabel={badgeByLabel}

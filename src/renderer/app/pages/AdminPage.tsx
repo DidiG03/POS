@@ -121,6 +121,15 @@ function RoleSelect({
   );
 }
 
+type StaffTicketStats = {
+  tickets: number;
+  paid: number;
+  activeTickets: number;
+  voids: number;
+  transferred: number;
+  total: number;
+};
+
 export default function AdminPage() {
   const { t } = useTranslation();
   const [params] = useSearchParams();
@@ -128,6 +137,9 @@ export default function AdminPage() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
   const [shifts, setShifts] = useState<AdminShift[]>([]);
+  const [staffTodayStats, setStaffTodayStats] = useState<
+    Record<number, StaffTicketStats>
+  >({});
   const [showShiftsModal, setShowShiftsModal] = useState(false);
   const [shiftFilter, setShiftFilter] = useState<'OPEN' | 'CLOSED' | 'ALL'>(
     'OPEN',
@@ -204,7 +216,15 @@ export default function AdminPage() {
       }
 
       // Run independent IPC calls in parallel; previously they ran sequentially.
-      const [ovRes, shRes, topRes, usersRes, billingRes] =
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date();
+      todayEnd.setHours(23, 59, 59, 999);
+      const dayRange = {
+        startIso: todayStart.toISOString(),
+        endIso: todayEnd.toISOString(),
+      };
+      const [ovRes, shRes, topRes, usersRes, billingRes, countsRes] =
         await Promise.allSettled([
           window.api.admin.getOverview(),
           clockOn
@@ -213,6 +233,7 @@ export default function AdminPage() {
           window.api.admin.getTopSellingToday(),
           window.api.auth.listUsers(),
           (window.api as any).billing?.getStatus?.() ?? Promise.resolve(null),
+          window.api.admin.listTicketCounts(dayRange),
         ]);
       if (cancelled) return;
 
@@ -230,7 +251,22 @@ export default function AdminPage() {
         topRes.status === 'fulfilled' ? topRes.value : (null as any),
       );
       safeSet(setUsers, usersRes.status === 'fulfilled' ? usersRes.value : []);
-
+      if (countsRes.status === 'fulfilled' && Array.isArray(countsRes.value)) {
+        const map: Record<number, StaffTicketStats> = {};
+        for (const row of countsRes.value) {
+          map[Number(row.id)] = {
+            tickets: Number(row.tickets || 0),
+            paid: Number(row.paid || 0),
+            activeTickets: Number(row.activeTickets || 0),
+            voids: Number(row.voids || 0),
+            transferred: Number(row.transferred ?? row.transfersIn ?? 0),
+            total: Number(row.total ?? row.revenue ?? 0),
+          };
+        }
+        safeSet(setStaffTodayStats, map);
+      } else {
+        safeSet(setStaffTodayStats, {});
+      }
       if (billingRes.status === 'fulfilled' && billingRes.value) {
         const b = billingRes.value as any;
         const enabled = Boolean(b?.billingEnabled);
@@ -366,6 +402,22 @@ export default function AdminPage() {
         .filter((s) => s.isOpen)
         .sort((a, b) => String(b.openedAt).localeCompare(String(a.openedAt))),
     [shifts],
+  );
+  const onShiftOps = useMemo(
+    () =>
+      openShifts.map((s) => {
+        const stats = staffTodayStats[s.userId];
+        return {
+          shift: s,
+          tickets: stats?.tickets ?? 0,
+          paid: stats?.paid ?? 0,
+          activeTickets: stats?.activeTickets ?? 0,
+          voids: stats?.voids ?? 0,
+          transferred: stats?.transferred ?? 0,
+          total: stats?.total ?? 0,
+        };
+      }),
+    [openShifts, staffTodayStats],
   );
   const closedShiftCount = useMemo(
     () => shifts.filter((s) => !s.isOpen).length,
@@ -579,7 +631,7 @@ export default function AdminPage() {
               {t('adminOverview.viewAll')}
             </Button>
           </div>
-          {openShifts.length === 0 ? (
+          {onShiftOps.length === 0 ? (
             <EmptyState
               compact
               title={t('adminOverview.noOpenShifts')}
@@ -590,26 +642,52 @@ export default function AdminPage() {
               )}
             />
           ) : (
-            <div className="admin-list divide-y divide-white/[0.06]">
-              {openShifts.slice(0, 4).map((s) => (
+            <div className="admin-list divide-y divide-white/[0.06] overflow-x-auto">
+              <div className="grid min-w-[36rem] grid-cols-[minmax(8rem,1.4fr)_repeat(4,minmax(3.5rem,0.7fr))_minmax(5.5rem,0.9fr)] gap-2 px-0.5 pb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                <div>{t('adminOverview.opsStaff')}</div>
+                <div className="text-right">
+                  {hasTables
+                    ? t('adminOverview.opsTickets')
+                    : t('adminOverview.opsSales')}
+                </div>
+                <div className="text-right">{t('adminOverview.opsPaid')}</div>
+                <div className="text-right">{t('adminOverview.opsActive')}</div>
+                <div className="text-right">
+                  {t('adminOverview.opsOnShift')}
+                </div>
+                <div className="text-right">
+                  {t('adminOverview.opsRevenue')}
+                </div>
+              </div>
+              {onShiftOps.map((row) => (
                 <div
-                  key={s.id}
-                  className="flex items-center justify-between gap-3 py-2.5"
+                  key={row.shift.id}
+                  className="grid min-w-[36rem] grid-cols-[minmax(8rem,1.4fr)_repeat(4,minmax(3.5rem,0.7fr))_minmax(5.5rem,0.9fr)] items-center gap-2 py-2.5"
                 >
                   <div className="min-w-0">
                     <div className="truncate text-[13px] font-medium text-gray-100">
-                      {s.userName}
+                      {row.shift.userName}
                     </div>
-                    <div className="mt-0.5 text-[12px] text-gray-500">
+                    <div className="mt-0.5 truncate text-[12px] text-gray-500">
                       {t('adminOverview.sinceOpened', {
-                        when: new Date(s.openedAt).toLocaleString(),
+                        when: new Date(row.shift.openedAt).toLocaleString(),
                       })}
                     </div>
                   </div>
-                  <div className="shrink-0 text-right">
-                    <div className="text-[13px] font-medium tabular-nums text-gray-200">
-                      {formatShiftDuration(s.durationHours, t)}
-                    </div>
+                  <div className="text-right text-[13px] tabular-nums text-gray-200">
+                    {row.tickets > 0 ? row.tickets : '—'}
+                  </div>
+                  <div className="text-right text-[13px] tabular-nums text-emerald-400">
+                    {row.paid > 0 ? row.paid : '—'}
+                  </div>
+                  <div className="text-right text-[13px] tabular-nums text-amber-400">
+                    {row.activeTickets > 0 ? row.activeTickets : '—'}
+                  </div>
+                  <div className="text-right text-[13px] font-medium tabular-nums text-gray-200">
+                    {formatShiftDuration(row.shift.durationHours, t)}
+                  </div>
+                  <div className="text-right text-[13px] font-medium tabular-nums text-gray-100">
+                    {row.total > 0 ? formatMoney(row.total, currency) : '—'}
                   </div>
                 </div>
               ))}

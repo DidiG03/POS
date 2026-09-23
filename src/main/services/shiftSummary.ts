@@ -1,4 +1,5 @@
 import type { SettingsDTO } from '@shared/ipc';
+import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { prisma } from '@db/client';
 import { coreServices } from './core';
@@ -44,7 +45,7 @@ export async function computeShiftPaidTotals(args: {
   let orders = 0;
   const byMethod = new Map<string, number>();
 
-  for (const sale of sales as any[]) {
+  for (const sale of keepCanonicalPaidOrders(sales as any[])) {
     const subtotal = num(sale.subtotal);
     const vat = num(sale.vatAmount);
     const total = num(sale.total);

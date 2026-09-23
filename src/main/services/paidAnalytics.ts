@@ -14,8 +14,10 @@ import { emptyReviewHeatmap, reviewHeatmapIndex } from '@shared/reviewHeatmap';
 import { buildTicketSizeBuckets, spendPerCover } from '@shared/reviewMix';
 import { normalizePaymentMethod } from '@shared/salesLedger';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
+import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
 import { coreServices } from './core';
 import { roundMoney } from '@shared/pricing';
+import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
 import { isTransferredOutNote } from './tableTransfer';
 
 export type PaidSaleLine = {
@@ -92,12 +94,43 @@ export function paidSaleFromOrderRow(row: any): PaidSale {
   };
 }
 
+export function normalizePaidSaleVat(
+  sale: PaidSale,
+  opts: { vatEnabled: boolean; defaultVatRate?: number },
+): PaidSale {
+  if (!opts.vatEnabled) {
+    const gross = roundMoney(
+      sale.total > 0 ? sale.total : sale.subtotal + sale.vatAmount,
+    );
+    return { ...sale, subtotal: gross, vatAmount: 0, total: gross };
+  }
+  if (sale.vatAmount > 0) return sale;
+  const { net, vat } = sumTicketLinesNetVat(
+    sale.items,
+    true,
+    Number(opts.defaultVatRate || 0),
+  );
+  const goods = roundMoney(net + vat);
+  // Keep the settled receipt total (service / discount). Only fall back to
+  // goods when the ledger row never stored a total.
+  const total = sale.total > 0 ? roundMoney(sale.total) : goods;
+  return {
+    ...sale,
+    subtotal: roundMoney(net),
+    vatAmount: roundMoney(vat),
+    total,
+  };
+}
+
 export async function fetchPaidSales(args: {
   from: Date;
   to: Date;
   userId?: number;
 }): Promise<PaidSale[]> {
   const safe = safeFetchRange(args.from, args.to);
+  const settings = await coreServices.readSettings().catch(() => ({}));
+  const vatEnabled = isVatEnabledFromSettings(settings);
+  const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const rows = await prisma.order
     .findMany({
       where: {
@@ -105,14 +138,16 @@ export async function fetchPaidSales(args: {
         closedAt: { gte: safe.from, lte: safe.to },
         ...(args.userId ? { userId: args.userId } : {}),
       } as any,
-      orderBy: { closedAt: 'asc' },
+      orderBy: [{ closedAt: 'asc' }, { id: 'asc' }],
       include: {
         items: { orderBy: { sortOrder: 'asc' } },
         payments: { orderBy: { createdAt: 'asc' }, take: 1 },
       },
     })
     .catch(() => []);
-  return (rows as any[]).map(paidSaleFromOrderRow);
+  return keepCanonicalPaidOrders(rows as any[])
+    .map(paidSaleFromOrderRow)
+    .map((sale) => normalizePaidSaleVat(sale, { vatEnabled, defaultVatRate }));
 }
 
 export async function countVoidedTickets(
@@ -463,7 +498,10 @@ export function fillTrendPoints(
   return result;
 }
 
-export function sumPaidRevenue(sales: PaidSale[]): {
+export function sumPaidRevenue(
+  sales: PaidSale[],
+  opts?: { vatEnabled?: boolean },
+): {
   revenueNet: number;
   revenueVat: number;
   revenueGross: number;
@@ -476,10 +514,15 @@ export function sumPaidRevenue(sales: PaidSale[]): {
     revenueVat += sale.vatAmount;
     revenueGross += sale.total;
   }
+  const gross = roundMoney(revenueGross);
+  // When fiskalizimi/VAT is off, headline revenue matches ticket totals (gross).
+  if (opts?.vatEnabled === false) {
+    return { revenueNet: gross, revenueVat: 0, revenueGross: gross };
+  }
   return {
     revenueNet: roundMoney(revenueNet),
     revenueVat: roundMoney(revenueVat),
-    revenueGross: roundMoney(revenueGross),
+    revenueGross: gross,
   };
 }
 

@@ -3220,15 +3220,7 @@ ipcHandle('admin:getOverview', async (_e) => {
     prisma.syncState
       .findUnique({ where: { key: 'staff:lastSync' } })
       .catch(() => null),
-    prisma.order
-      .findMany({
-        where: {
-          status: 'PAID' as any,
-          closedAt: { gte: todayStart, lte: todayEnd },
-        } as any,
-        select: { subtotal: true, vatAmount: true } as any,
-      })
-      .catch(() => []),
+    fetchPaidSales({ from: todayStart, to: todayEnd }),
     // Pull all cover writes that happened today. A waiter may save covers
     // multiple times for the same dining session (e.g. corrected from 4 → 5),
     // so we de-dupe per (area, label) keeping only the most recent write.
@@ -3277,14 +3269,8 @@ ipcHandle('admin:getOverview', async (_e) => {
           }[],
       ),
   ]);
-  const revenueTodayNet = (revenueRows as any[]).reduce(
-    (s, r) => s + Number(r?.subtotal || 0),
-    0,
-  );
-  const revenueTodayVat = (revenueRows as any[]).reduce(
-    (s, r) => s + Number(r?.vatAmount || 0),
-    0,
-  );
+  const { revenueNet: revenueTodayNet, revenueVat: revenueTodayVat } =
+    sumPaidRevenue(revenueRows as any[], { vatEnabled: fiscalVatEnabled });
 
   // Sum the latest cover count per (area, label) for today so we report
   // "guests served today" rather than the total number of cover writes.
@@ -4554,7 +4540,9 @@ ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date();
   const sales = await fetchPaidSales({ from: start, to: end, userId });
-  const { revenueNet, revenueVat } = sumPaidRevenue(sales);
+  const { revenueNet, revenueVat } = sumPaidRevenue(sales, {
+    vatEnabled: fiscalVatEnabled,
+  });
   // Open orders: open tables where latest ticket owner is this user.
   const openList = await coreServices.listOpenTables().catch(() => []);
   const openKeys = openList.map((t) => `${t.area}:${t.label}`);

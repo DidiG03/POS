@@ -23,8 +23,6 @@ import {
   roundMoney,
 } from '@shared/pricing';
 import {
-  cashChangeDue,
-  cashTenderSuggestions,
   parseEurExchangeRate,
   splitEvenly,
   toEurAtRate,
@@ -657,7 +655,6 @@ export default function OrderPage() {
   const [posCurrency, setPosCurrency] = useState<string>('EUR');
   const [eurExchangeRate, setEurExchangeRate] = useState<number | null>(null);
   const [splitGuestCount, setSplitGuestCount] = useState(1);
-  const [cashTendered, setCashTendered] = useState('');
   const [amountPaid, setAmountPaid] = useState<string>('');
   const [printReceipt, setPrintReceipt] = useState<boolean>(true);
   const [paySeatId, setPaySeatId] = useState<string | null>(null);
@@ -692,7 +689,21 @@ export default function OrderPage() {
   const openPaymentFromNav = Boolean(
     (location.state as { openPayment?: boolean } | null)?.openPayment,
   );
+  const focusTicketFromNav = Boolean(
+    (location.state as { focusTicket?: boolean } | null)?.focusTicket,
+  );
   const { user } = useSessionStore();
+
+  // Floor "Pay ticket" lands on the ticket (and payment), not the menu grid.
+  // Keep ticket-only while payment is opening/open so the menu does not flash.
+  const preferTicketView =
+    showPayment || pendingAction === 'pay' || openPaymentFromNav;
+
+  useEffect(() => {
+    if (preferTicketView || focusTicketFromNav) {
+      setMobilePane('ticket');
+    }
+  }, [preferTicketView, focusTicketFromNav]);
 
   useEffect(() => {
     ensureStoreCounterSelected({
@@ -1355,7 +1366,7 @@ export default function OrderPage() {
     if (!ticketPersistReady || !ticketLoaded) return;
     if (showPayment) {
       if (pendingAction === 'pay') setPendingAction(null);
-      if (openPaymentFromNav) {
+      if (openPaymentFromNav || focusTicketFromNav) {
         navigate('.', { replace: true, state: null });
       }
       return;
@@ -1363,7 +1374,7 @@ export default function OrderPage() {
     if (billUnknown) {
       if (pendingAction === 'pay') setPendingAction(null);
       if (openPaymentFromNav) {
-        navigate('.', { replace: true, state: null });
+        navigate('.', { replace: true, state: { focusTicket: true } });
       }
       toast.warn(t('order.billUnreadableHint'));
       return;
@@ -1373,7 +1384,8 @@ export default function OrderPage() {
     if (!canPay) {
       if (pendingAction === 'pay') setPendingAction(null);
       if (openPaymentFromNav) {
-        navigate('.', { replace: true, state: null });
+        // Stay on the ticket pane so the waiter can send / set guests, then pay.
+        navigate('.', { replace: true, state: { focusTicket: true } });
       }
       if (hasUnsentItems) toast.warn(t('order.sendBeforePay'));
       else if (
@@ -1386,7 +1398,7 @@ export default function OrderPage() {
     }
 
     if (pendingAction === 'pay') setPendingAction(null);
-    if (openPaymentFromNav) {
+    if (openPaymentFromNav || focusTicketFromNav) {
       navigate('.', { replace: true, state: null });
     }
     void ensureStoreTillOpen();
@@ -1394,6 +1406,7 @@ export default function OrderPage() {
   }, [
     pendingAction,
     openPaymentFromNav,
+    focusTicketFromNav,
     ticketPersistReady,
     ticketLoaded,
     showPayment,
@@ -1585,16 +1598,6 @@ export default function OrderPage() {
     () => (split ? toEurAtRate(split.perPerson, eurExchangeRate) : null),
     [split, eurExchangeRate],
   );
-  const cashSuggestions = useMemo(
-    () =>
-      cashTenderSuggestions(
-        totalDue,
-        eurExchangeRate != null ? 'ALL' : posCurrency,
-      ),
-    [totalDue, posCurrency, eurExchangeRate],
-  );
-  const cashTenderedNum = Number(String(cashTendered || '').replace(',', '.'));
-  const cashChange = cashChangeDue(cashTenderedNum, totalDue);
 
   useEffect(() => {
     if (!showPayment) return;
@@ -1603,7 +1606,6 @@ export default function OrderPage() {
         ? Math.floor(coversKnown)
         : 1;
     setSplitGuestCount(n);
-    setCashTendered('');
     if (addMode === 'seat') {
       const ids = unpaidSeatIds(seats, lines);
       setPaySeatId((cur) =>
@@ -2775,8 +2777,9 @@ export default function OrderPage() {
   // mounted: the ticket tree used to stay in the DOM with `flex` + `hidden`,
   // and on Tailwind v4 those two `display` utilities can fight so a
   // transparent ticket pane sits on top of the menu and eats every tap.
-  const showMenuPane = twoPane || mobilePane === 'menu';
-  const showTicketPane = twoPane || mobilePane === 'ticket';
+  // Floor "Pay ticket" skips the menu and shows only the ticket column.
+  const showMenuPane = !preferTicketView && (twoPane || mobilePane === 'menu');
+  const showTicketPane = preferTicketView || twoPane || mobilePane === 'ticket';
 
   return (
     <div className="h-full min-h-0 min-w-0 w-full flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3 relative">
@@ -2842,9 +2845,13 @@ export default function OrderPage() {
               <IconSearch />
             </span>
             <input
-              placeholder={t(
-                hasTables ? 'order.searchMenu' : 'order.searchProductsScan',
-              )}
+              placeholder={
+                hasTables
+                  ? selectedTable?.label
+                    ? t('order.searchMenu', { label: selectedTable.label })
+                    : t('order.searchMenuPlain')
+                  : t('order.searchProductsScan')
+              }
               className="pos-input pos-menu-search w-full"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -3012,7 +3019,11 @@ export default function OrderPage() {
       ) : null}
 
       {showTicketPane ? (
-        <div className="pos-ticket-pane flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div
+          className={`pos-ticket-pane flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
+            preferTicketView ? 'md:col-span-3' : ''
+          }`}
+        >
           <div className="mb-2 shrink-0 space-y-2">
             <div className="flex items-center gap-2">
               <div className="min-w-0 flex-1">
@@ -3234,7 +3245,7 @@ export default function OrderPage() {
                     const hasNote = Boolean(String(orderNote || '').trim());
                     return (
                       <textarea
-                        className={`w-full pos-input px-2 py-2 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        className={`w-full pos-input px-2 py-2 text-[15px] font-light ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
                         rows={2}
                         placeholder={t('order.orderNotesPlaceholder')}
                         value={orderNote}
@@ -3693,10 +3704,6 @@ export default function OrderPage() {
           split={split}
           eurPerPerson={eurPerPerson}
           paymentMethod={paymentMethod}
-          cashSuggestions={cashSuggestions}
-          cashTendered={cashTendered}
-          cashTenderedNum={cashTenderedNum}
-          cashChange={cashChange}
           formatAmount={formatAmount}
           posCurrency={posCurrency}
           printReceipt={printReceipt}
@@ -3724,7 +3731,6 @@ export default function OrderPage() {
           onClose={() => setShowPayment(false)}
           onPaySeat={(id) => {
             setPaySeatId(id);
-            setCashTendered('');
             setDiscountType('NONE');
             setDiscountValue('');
           }}
@@ -3734,7 +3740,6 @@ export default function OrderPage() {
           onDiscountReason={setDiscountReason}
           onSplitGuestCount={setSplitGuestCount}
           onPaymentMethod={(next) => setPaymentMethod(next)}
-          onCashTendered={setCashTendered}
           onTogglePrint={() => setPrintReceipt((v) => !v)}
           onConfirm={async () => {
             if (busyAction != null) return;
@@ -3945,7 +3950,6 @@ export default function OrderPage() {
                     useTicketStore.getState().lines,
                   );
                   setPaySeatId(nextIds[0] ?? null);
-                  setCashTendered('');
                   setDiscountType('NONE');
                   setDiscountValue('');
                   toast.success(
@@ -4055,9 +4059,6 @@ export default function OrderPage() {
                         </option>
                       ))}
                     </select>
-                    <div className="text-xs opacity-70">
-                      {t('order.waiterShiftHint')}
-                    </div>
                   </div>
                 );
               })()
@@ -4311,10 +4312,10 @@ export default function OrderPage() {
                 ? `${t('order.coversEditTitle')} ${selectedTable.label}`
                 : `${t('order.coversOpenTitle')} ${selectedTable.label}`}
             </h3>
-            <div className="flex items-center justify-center gap-2">
+            <div className="flex w-full items-center gap-2">
               <button
                 type="button"
-                className="pos-pay-stepper inline-flex items-center justify-center"
+                className="pos-pay-stepper inline-flex shrink-0 items-center justify-center"
                 disabled={Math.floor(Number(coversValue) || 0) <= 1}
                 onClick={() =>
                   setCoversValue(
@@ -4328,7 +4329,7 @@ export default function OrderPage() {
                 −
               </button>
               <div
-                className="flex h-[2.75rem] w-[4.5rem] items-center justify-center rounded-[0.7rem] border border-[var(--pos-border-strong)] bg-[var(--pos-surface)] text-lg font-semibold tabular-nums"
+                className="flex h-[2.75rem] min-w-0 flex-1 items-center justify-center rounded-[var(--pos-btn-radius)] border border-[var(--pos-border-strong)] bg-[var(--pos-surface)] text-lg font-semibold tabular-nums"
                 aria-live="polite"
                 aria-label={t('order.editCovers')}
               >
@@ -4336,7 +4337,7 @@ export default function OrderPage() {
               </div>
               <button
                 type="button"
-                className="pos-pay-stepper inline-flex items-center justify-center"
+                className="pos-pay-stepper inline-flex shrink-0 items-center justify-center"
                 disabled={Math.floor(Number(coversValue) || 0) >= 99}
                 onClick={() =>
                   setCoversValue(

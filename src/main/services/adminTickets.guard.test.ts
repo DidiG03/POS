@@ -24,12 +24,18 @@ describe('admin tickets SQLite DateTime / itemsJson', () => {
     expect(src).toContain('unionTicketLogsById');
     expect(src).toContain('paidSalesNotOnTickets');
     expect(src).toContain('matchOrdersToTicketRows');
+    expect(src).toContain('keepCanonicalPaidOrders');
   });
 
-  it('staff list has no date-range filter of its own', () => {
+  it('staff list defaults to today and shows per-waiter metrics', () => {
     expect(staffPage).not.toContain('computeDateRange');
     expect(staffPage).not.toContain('clockedIn');
-    expect(staffPage).toMatch(/listTicketCounts\(\s*\)/);
+    expect(staffPage).toContain('listTicketCounts(dayRange)');
+    expect(staffPage).toContain('todayRangeIso');
+    expect(staffPage).toContain('Paid');
+    expect(staffPage).toContain('Active');
+    expect(staffPage).toContain('Voided');
+    expect(staffPage).toContain('Total');
     expect(staffPage).toContain('Search staff');
   });
 });

@@ -1108,8 +1108,15 @@ export interface ApiAdmin {
       name: string;
       active: boolean;
       tickets: number;
-      /** Number of tickets in the period whose log row was created by a transfer. */
+      paid: number;
+      activeTickets: number;
+      voids: number;
+      transferred: number;
+      /** @deprecated alias of transferred */
       transfersIn: number;
+      total: number;
+      /** @deprecated alias of total */
+      revenue: number;
     }[]
   >;
   listTicketsByUser(

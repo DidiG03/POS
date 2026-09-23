@@ -5,11 +5,14 @@ export function isVatEnabledFromSettings(settings: unknown): boolean {
   );
 }
 
-/** Resolve VAT for a stored payment/receipt payload. Explicit meta wins; otherwise fiscal policy. */
+/**
+ * Resolve whether VAT applies for a payment/receipt.
+ * Fiskalizimi is the only switch — stored meta.vatEnabled is ignored so
+ * turning fiscal off turns VAT off everywhere (and on turns it on).
+ */
 export function resolveVatEnabledFromMeta(
-  meta: { vatEnabled?: boolean | null } | null | undefined,
+  _meta: { vatEnabled?: boolean | null } | null | undefined,
   settings: unknown,
 ): boolean {
-  if (meta && typeof meta.vatEnabled === 'boolean') return meta.vatEnabled;
   return isVatEnabledFromSettings(settings);
 }

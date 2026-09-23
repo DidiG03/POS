@@ -372,23 +372,24 @@ export default function AdminMenuPage() {
                 </div>
               ) : null}
             </div>
-            <IconButton
-              label={t('adminMenu.addCategory')}
-              icon={<IconPlus />}
-              disabled={busy}
-              onClick={() => setShowAddCategory((v) => !v)}
-            />
-            <IconButton
-              label={t('common.refresh')}
-              icon={<IconRefresh />}
-              onClick={() => void reload()}
-            />
             <KebabMenu
               label={t('common.moreActions')}
               disabled={billingPaused}
               items={[
                 {
+                  label: t('adminMenu.addCategory'),
+                  icon: <IconPlus />,
+                  onSelect: () => setShowAddCategory((v) => !v),
+                  disabled: busy || billingPaused,
+                },
+                {
+                  label: t('common.refresh'),
+                  icon: <IconRefresh />,
+                  onSelect: () => void reload(),
+                },
+                {
                   label: t('adminMenu.import'),
+                  icon: <IconUpload />,
                   onSelect: () => setShowImport(true),
                   disabled: billingPaused,
                 },
