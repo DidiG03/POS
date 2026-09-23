@@ -219,8 +219,8 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.60"
-            echo "- Fix: host opens the table during Send so phones no longer get TABLE_CLOSED on LAN"
+            echo "### Changes in v0.2.61"
+            echo "- Fix: ticket items no longer flash as duplicates right after Send"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

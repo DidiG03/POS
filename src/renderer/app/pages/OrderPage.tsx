@@ -2402,13 +2402,12 @@ export default function OrderPage() {
       const hasStaged = state.lines.some((l) => l.staged && !l.voided);
       const isFireOrder = fireLines.length > 0;
       const firingIds = new Set(fireLines.map((l) => l.id));
-      // A ticket log replaces the whole bill, so send what the host already
-      // holds for this sitting plus our lines. Without this, a till whose
-      // cart went stale (or empty) silently drops items off the bill.
-      const onServer = await liveServerTicketLines(
-        selectedTable.area,
-        selectedTable.label,
-      );
+      const fireIds = fireLines.map((l) => l.id);
+      // Capture the log payload from the pre-send cart, then unstage
+      // immediately — before any await. Host TicketLog + SSE hydrate can
+      // land while these lines are still staged; mergeLocalStagedOntoHydrated
+      // then appends them again next to the hydrated copy (double item,
+      // double total) until the waiter leaves and re-opens the table.
       // What this cart already had on the bill before this tap. The lines
       // being fired now are deliberately excluded: 1x Water added on top of
       // 3x Water is a second line, not the host's line, and letting it stand
@@ -2416,19 +2415,30 @@ export default function OrderPage() {
       const alreadyOnBill = state.lines
         .filter((l) => l.staged !== true)
         .map((l) => toTicketLogLine(l, { fired: true }));
+      const localLogItems = state.lines.map((l) =>
+        toTicketLogLine(l, {
+          fired: l.voided === true || l.staged !== true || firingIds.has(l.id),
+        }),
+      );
+      const printLinesBase = isFireOrder
+        ? fireLines.map((l) => toTicketLogLine(l))
+        : null;
+      if (hasStaged) {
+        useTicketStore.getState().markLinesAsSent(fireIds);
+      }
+      // A ticket log replaces the whole bill, so send what the host already
+      // holds for this sitting plus our lines. Without this, a till whose
+      // cart went stale (or empty) silently drops items off the bill.
+      const onServer = await liveServerTicketLines(
+        selectedTable.area,
+        selectedTable.label,
+      );
       const logItems = restoreMissingServerLines(
-        state.lines.map((l) =>
-          toTicketLogLine(l, {
-            fired:
-              l.voided === true || l.staged !== true || firingIds.has(l.id),
-          }),
-        ),
+        localLogItems,
         onServer,
         alreadyOnBill,
       );
-      const printLines = isFireOrder
-        ? fireLines.map((l) => toTicketLogLine(l))
-        : logItems;
+      const printLines = printLinesBase ?? logItems;
       const courseIdForLabel =
         String(opts.courseId || '').trim() ||
         (addMode === 'course'
@@ -2498,6 +2508,7 @@ export default function OrderPage() {
           kdsCourseLabel: opts.printKitchen ? courseLabel : undefined,
         });
         if (!logResult.ok) {
+          useTicketStore.getState().markLinesAsStaged(fireIds);
           toast.error(logResult.error, {
             title: t('order.toastSendBlocked'),
           });
@@ -2516,7 +2527,6 @@ export default function OrderPage() {
           }
           return { ok: false, isFireOrder };
         }
-        useTicketStore.getState().markLinesAsSent(fireLines.map((l) => l.id));
       }
 
       if (opts.printKitchen && (isFireOrder || !hasStaged)) {

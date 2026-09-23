@@ -140,6 +140,8 @@ interface TicketState {
   clear: () => void;
   markAllAsSent: () => void;
   markLinesAsSent: (ids: string[]) => void;
+  /** Undo {@link markLinesAsSent} when a Send fails after optimistic unstage. */
+  markLinesAsStaged: (ids: string[]) => void;
   ensureCourses: () => void;
   addCourse: () => void;
   removeCourse: (courseId: string) => void;
@@ -466,6 +468,17 @@ export const useTicketStore = create<TicketState>()(
           return {
             lines: s.lines.map((l) =>
               sent.has(l.id) ? { ...l, staged: false } : l,
+            ),
+          };
+        }),
+      markLinesAsStaged: (ids) =>
+        set((s) => {
+          const staged = new Set(ids);
+          return {
+            lines: s.lines.map((l) =>
+              staged.has(l.id) && l.voided !== true && l.paid !== true
+                ? { ...l, staged: true }
+                : l,
             ),
           };
         }),

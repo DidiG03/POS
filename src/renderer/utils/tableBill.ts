@@ -95,6 +95,15 @@ export function decideHostBill(opts: {
   }
   const items = opts.read.items;
   if (hostBillHasLiveLines(items)) {
+    // Right after Send the host bill matches what we just unstaged locally.
+    // Hydrating in that window re-merges staged copies and briefly doubles
+    // every line on the ticket until the waiter leaves and comes back.
+    if (
+      opts.withinPostSendGrace &&
+      opts.currentLines.some((l) => l.voided !== true)
+    ) {
+      return { kind: 'keep' };
+    }
     return { kind: 'hydrate', items, note: opts.read.note };
   }
   if (items.length > 0) {

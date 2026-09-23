@@ -202,6 +202,23 @@ describe('decideHostBill', () => {
     ).toEqual({ kind: 'keep' });
   });
 
+  it('does not re-hydrate a live host bill during the post-send grace', () => {
+    expect(
+      decideHostBill({
+        read: {
+          ok: true,
+          items: [{ name: 'Sallate rradhiqe', qty: 1 }],
+          note: '',
+        },
+        currentLines: [{ voided: false }],
+        hasCovers: true,
+        suppressClose: false,
+        withinPostSendGrace: true,
+        expectedTotal: 500,
+      }),
+    ).toEqual({ kind: 'keep' });
+  });
+
   it('still hydrates when the read and the floor agree', () => {
     expect(
       decideHostBill({
