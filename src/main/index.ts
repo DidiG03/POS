@@ -187,6 +187,7 @@ import {
 import {
   setTableOpenWithSideEffects,
   applyTableOpenState,
+  ensureOccupiedForTicketWrite,
 } from './services/tableOpen';
 import {
   backfillTableOccupancyFromSyncState,
@@ -3516,22 +3517,9 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
       sanitizedArea,
       sanitizedTableLabel,
       async () => {
-        // Refuse to append to a closed table. Without this guard a stale
-        // device could add lines to a table that has already been paid out
-        // / voided / handed off — which silently rebuilds the closed
-        // session, mis-attributes revenue, and (worst of all) reprints
-        // duplicate kitchen tickets.
-        const isOpen = await coreServices.isTableOpen(
-          sanitizedArea,
-          sanitizedTableLabel,
-        );
-        if (!isOpen) {
-          return {
-            ok: false,
-            error: `Table ${sanitizedArea} ${sanitizedTableLabel} is closed`,
-            code: 'TABLE_CLOSED',
-          };
-        }
+        // Open if needed inside the same lock as the TicketLog write —
+        // phones used to open in a prior LAN call that often lost the race.
+        await ensureOccupiedForTicketWrite(sanitizedArea, sanitizedTableLabel);
 
         // Anti-collision: if the latest log row IN THIS OPEN SESSION was
         // written by a different waiter (and the actor isn't an admin),

@@ -69,3 +69,25 @@ export async function setTableOpenWithSideEffects(
     return true;
   });
 }
+
+/**
+ * Call only while already holding `withTableLock(area, label)`.
+ *
+ * Waiter phones used to open the table in a separate LAN round-trip before
+ * `tickets.log`. On a slow Wi-Fi that open was budget-handed-off or raced the
+ * ticket write, and the host answered TABLE_CLOSED even though the waiter was
+ * actively sending. Opening here (inside the same lock as the TicketLog write)
+ * makes Send work regardless of whether the client remembered to open first.
+ *
+ * Idempotent TicketLog replays still short-circuit on `idempotencyKey` *before*
+ * this runs, so a duplicate delivery after pay cannot resurrect occupancy.
+ */
+export async function ensureOccupiedForTicketWrite(
+  area: string,
+  label: string,
+): Promise<void> {
+  if (!area || !label) return;
+  const open = await coreServices.isTableOpen(area, label);
+  if (open) return;
+  await applyTableOpenState(area, label, true);
+}

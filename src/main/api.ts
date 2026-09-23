@@ -60,7 +60,10 @@ import {
 } from '@shared/ticketLogItems';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
-import { setTableOpenWithSideEffects } from './services/tableOpen';
+import {
+  setTableOpenWithSideEffects,
+  ensureOccupiedForTicketWrite,
+} from './services/tableOpen';
 import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
@@ -1692,17 +1695,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           sanitizedArea,
           sanitizedTableLabel,
           async () => {
-            const isOpen = await coreServices.isTableOpen(
+            // Open if needed inside the same lock as the TicketLog write —
+            // phones used to open in a prior LAN call that often lost the race.
+            await ensureOccupiedForTicketWrite(
               sanitizedArea,
               sanitizedTableLabel,
             );
-            if (!isOpen) {
-              return {
-                ok: false as const,
-                error: `Table ${sanitizedArea} ${sanitizedTableLabel} is closed`,
-                code: 'TABLE_CLOSED',
-              };
-            }
 
             const ownerId = await getCurrentSessionOwnerId(
               sanitizedArea,
@@ -3052,11 +3050,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // Tables open
       if (req.method === 'POST' && pathname === '/tables/open') {
         const { area, label, open } = await parseJson(req);
-        if (!area || !label) return send(res, 400, 'invalid', corsOrigin);
-        if (!allowStoreCounterArea(area, res, corsOrigin)) return;
+        const areaTrim = String(area || '').trim();
+        const labelTrim = String(label || '').trim();
+        if (!areaTrim || !labelTrim)
+          return send(res, 400, 'invalid', corsOrigin);
+        if (!allowStoreCounterArea(areaTrim, res, corsOrigin)) return;
         const ok = await setTableOpenWithSideEffects(
-          String(area),
-          String(label),
+          areaTrim,
+          labelTrim,
           Boolean(open),
         );
         if (!ok) return send(res, 400, 'invalid', corsOrigin);
