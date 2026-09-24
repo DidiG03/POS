@@ -41,6 +41,15 @@ import {
 const ESC = Buffer.from([0x1b]);
 const GS = Buffer.from([0x1d]);
 
+/**
+ * Pulse the cash drawer connected to the receipt printer (ESC p).
+ * Pin 2 (m=0) is the Epson-compatible default used by most RJ-11 tills.
+ * ON ≈ 50ms, OFF ≈ 500ms.
+ */
+export function cmdOpenCashDrawer(pin: 0 | 1 = 0): Buffer {
+  return Buffer.from([0x1b, 0x70, pin, 0x19, 0xfa]);
+}
+
 function cmdPrinterInit(): Buffer[] {
   return [ESC, Buffer.from('@'), ESC_POS_FONT_A, ESC_POS_PC850];
 }
@@ -301,6 +310,9 @@ export function buildEscposTicket(
   lines.push(...cmdPrinterInit());
 
   const kind = String(meta?.kind || '').toUpperCase();
+  const paymentMethodRaw = String(
+    meta?.method || meta?.paymentMethod || '',
+  ).toUpperCase();
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
   const itemsToPrint: TicketPrintItem[] = hidePrices
     ? payload.items || []
@@ -599,6 +611,12 @@ export function buildEscposTicket(
     lines.push(cmdAlign('left'));
   }
   lines.push(escposText('\n'));
+  // Cash payment receipts: kick the till drawer on the receipt printer
+  // before cutting so NETWORK / SERIAL / CUPS-raw paths all open it.
+  // Use the raw method (CASH), not the localized label (e.g. PARA).
+  if (kind === 'PAYMENT' && paymentMethodRaw === 'CASH') {
+    lines.push(cmdOpenCashDrawer(0));
+  }
   lines.push(GS, Buffer.from('V'), Buffer.from([0x41]), Buffer.from([0x10])); // partial cut
 
   return Buffer.concat(lines);

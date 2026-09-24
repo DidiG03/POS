@@ -17,7 +17,11 @@ import {
   receiptLayout,
   receiptPaperMm,
 } from './escposEncode';
-import { buildEscposTicket, buildHtmlReceipt } from './print';
+import {
+  buildEscposTicket,
+  buildHtmlReceipt,
+  cmdOpenCashDrawer,
+} from './print';
 
 describe('encodeEscposText', () => {
   it('keeps ASCII intact', () => {
@@ -97,6 +101,33 @@ describe('buildEscposTicket width', () => {
     expect(buf.includes(0x89)).toBe(true);
     const ascii = buf.toString('ascii');
     expect(ascii).not.toMatch(/Antipast\?/);
+  });
+
+  it('opens the cash drawer on CASH payment receipts', () => {
+    const kick = cmdOpenCashDrawer(0);
+    const cash = buildEscposTicket(payload, {
+      restaurantName: 'Test',
+      currency: 'EUR',
+    } as any);
+    expect(cash.includes(kick)).toBe(true);
+
+    const card = buildEscposTicket(
+      {
+        ...payload,
+        meta: { kind: 'PAYMENT' as const, method: 'CARD', totalAfter: 2400 },
+      },
+      { restaurantName: 'Test', currency: 'EUR' } as any,
+    );
+    expect(card.includes(kick)).toBe(false);
+
+    const order = buildEscposTicket(
+      {
+        ...payload,
+        meta: { kind: 'ORDER' as const, station: 'KITCHEN' },
+      },
+      { restaurantName: 'Test', currency: 'EUR' } as any,
+    );
+    expect(order.includes(kick)).toBe(false);
   });
 
   it('prints a store till as Cashier without covers', () => {

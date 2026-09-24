@@ -219,8 +219,8 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.61"
-            echo "- Fix: ticket items no longer flash as duplicates right after Send"
+            echo "### Changes in v0.2.62"
+            echo "- Open the cash drawer when a cash payment receipt is printed"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
