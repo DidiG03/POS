@@ -561,6 +561,10 @@ export function applyLiveTableEvent(input: {
 export function emitPosSyncCatchup(): void {
   lastCatchupAt = Date.now();
   invalidateFloorCache();
+  // Layouts are host-specific furniture, not shared. Leaving them cached is
+  // why switching tills kept painting the previous POS floor until the waiter
+  // changed area or remounted Tables.
+  invalidateLayoutCache();
   invalidateCache(POS_CACHE.settings);
   invalidateCache(POS_CACHE.users);
   try {

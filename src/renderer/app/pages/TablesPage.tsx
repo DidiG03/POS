@@ -466,6 +466,7 @@ export default function TablesPage() {
     const refresh = () => {
       const api = window.api as any;
       if (typeof api.tables?.getFloorSnapshot !== 'function') return;
+      void reloadMerges();
       void readFloorSnapshot(area || undefined)
         .then((snap: FloorSnapshot | null) => {
           if (!snap) return;
@@ -515,7 +516,7 @@ export default function TablesPage() {
       window.removeEventListener('pos:tablesChanged', paintFromCache);
       window.removeEventListener('pos:syncCatchup', refresh);
     };
-  }, [area, userMap, applySnapshot]);
+  }, [area, userMap, applySnapshot, reloadMerges]);
   useEffect(() => {
     if (viewMode !== 'time') return;
     if (!openLabelsInArea.length) return;

@@ -291,11 +291,13 @@ describe('emitPosSyncCatchupSoon', () => {
   beforeEach(() => {
     resetPosReadCacheForTests();
     invalidateCache(POS_CACHE.settings);
+    invalidateCachePrefix('pos:layout:');
     (globalThis as any).window = prevWindow ?? {};
   });
 
   afterEach(() => {
     resetPosReadCacheForTests();
+    invalidateCachePrefix('pos:layout:');
     if (prevWindow === undefined) delete (globalThis as any).window;
     else (globalThis as any).window = prevWindow;
   });
@@ -311,6 +313,20 @@ describe('emitPosSyncCatchupSoon', () => {
     emitPosSyncCatchupSoon(0);
     await new Promise((r) => setTimeout(r, 20));
     expect(peek(POS_CACHE.settings)).toEqual({ n: 2 });
+  });
+
+  it('drops furniture layouts so a new till cannot paint the previous floor', async () => {
+    const { writeCache } = await import('./swrCache');
+    const { emitPosSyncCatchup, invalidateHostScopedCaches } = await import(
+      './posReadCache'
+    );
+    writeCache(POS_CACHE.layout('Salla'), [{ id: 1, label: 'T1', x: 0, y: 0 }]);
+    expect(peekLayout('Salla')?.[0]).toMatchObject({ label: 'T1' });
+    emitPosSyncCatchup();
+    expect(peekLayout('Salla')).toBeUndefined();
+    writeCache(POS_CACHE.layout('Salla'), [{ id: 2, label: 'T9', x: 1, y: 1 }]);
+    invalidateHostScopedCaches();
+    expect(peekLayout('Salla')).toBeUndefined();
   });
 });
 

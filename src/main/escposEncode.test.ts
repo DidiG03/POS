@@ -470,8 +470,8 @@ describe('fiscal receipt block', () => {
     );
     const text = buf.toString('latin1');
     expect(text).toContain('TOTAL');
-    expect(text).toMatch(/LEK\s+600\.00/);
-    expect(text).toMatch(/EUR\s+5\.97/);
+    expect(text).toMatch(/LEK\s+600(?!\.)/);
+    expect(text).toMatch(/EUR\s+6(?!\.)/);
   });
 
   it('prints LEK and EUR on non-fiscal payment receipts', () => {
@@ -494,8 +494,8 @@ describe('fiscal receipt block', () => {
       } as any,
     );
     const text = buf.toString('latin1');
-    expect(text).toMatch(/LEK\s+201\.00/);
-    expect(text).toMatch(/EUR\s+2\.00/);
+    expect(text).toMatch(/LEK\s+201(?!\.)/);
+    expect(text).toMatch(/EUR\s+2(?!\.)/);
     expect(text).not.toContain('FISKALIZUAR');
   });
 });

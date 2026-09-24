@@ -1267,38 +1267,41 @@ export default function FloorCanvas({
     // late reply would drop the previous area's table positions onto the view
     // they are now looking at.
     let cancelled = false;
+    const reloadLayout = () => {
+      // Don't blow away an in-progress edit: when the editor is open
+      // (`dirty === true`), respect the local draft and let the admin
+      // save explicitly. Read-only views always pick up the change.
+      if (editable && dirty) return;
+      invalidateLayoutCache(area);
+      (async () => {
+        try {
+          const saved = await readLayout(area, { userId, scope }).catch(
+            (e: unknown) => {
+              reportAppError(e, {
+                fallback: t('tables.layoutLoadFailed'),
+                key: `layout.get:${userId}:${area}:${scope}`,
+              });
+              return null;
+            },
+          );
+          if (cancelled) return;
+          if (!Array.isArray(saved)) return;
+          setNodes(normaliseSavedNodes(saved));
+          setDirty(false);
+          setLayoutVersion((v) => v + 1);
+        } catch (e) {
+          reportAppError(e, {
+            fallback: t('tables.layoutLoadFailed'),
+            key: `layout.get:${userId}:${area}:${scope}`,
+          });
+        }
+      })();
+    };
     const onLayoutChanged = (ev: any) => {
       try {
         const detail = (ev?.detail || {}) as { area?: string };
         if (!area || !detail.area || detail.area !== area) return;
-        // Don't blow away an in-progress edit: when the editor is open
-        // (`dirty === true`), respect the local draft and let the admin
-        // save explicitly. Read-only views always pick up the change.
-        if (editable && dirty) return;
-        invalidateLayoutCache(area);
-        (async () => {
-          try {
-            const saved = await readLayout(area, { userId, scope }).catch(
-              (e: unknown) => {
-                reportAppError(e, {
-                  fallback: t('tables.layoutLoadFailed'),
-                  key: `layout.get:${userId}:${area}:${scope}`,
-                });
-                return null;
-              },
-            );
-            if (cancelled) return;
-            if (!Array.isArray(saved)) return;
-            setNodes(normaliseSavedNodes(saved));
-            setDirty(false);
-            setLayoutVersion((v) => v + 1);
-          } catch (e) {
-            reportAppError(e, {
-              fallback: t('tables.layoutLoadFailed'),
-              key: `layout.get:${userId}:${area}:${scope}`,
-            });
-          }
-        })();
+        reloadLayout();
       } catch (e) {
         reportAppError(e, {
           fallback: t('tables.layoutLoadFailed'),
@@ -1306,10 +1309,16 @@ export default function FloorCanvas({
         });
       }
     };
+    const onSyncCatchup = () => {
+      if (!area) return;
+      reloadLayout();
+    };
     window.addEventListener('pos:layoutChanged', onLayoutChanged);
+    window.addEventListener('pos:syncCatchup', onSyncCatchup);
     return () => {
       cancelled = true;
       window.removeEventListener('pos:layoutChanged', onLayoutChanged);
+      window.removeEventListener('pos:syncCatchup', onSyncCatchup);
     };
   }, [area, userId, scope, editable, dirty, t]);
 
