@@ -152,6 +152,7 @@ export async function createKdsTicketFromLog(
 
   const routing = await loadKdsRoutingFromDb(prisma).catch(() => ({
     categoryIdToKdsStation: {},
+    categoryIdToSortOrder: {},
     skuToKdsStation: {},
   }));
   const decorated = decorateKdsTicketItemsFromCategory(rawLines, routing);

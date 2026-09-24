@@ -18,6 +18,10 @@ import {
   floorItemsFromTicket,
   type KdsFloorOrder,
 } from '@shared/kdsFloorOrders';
+import {
+  loadKdsRoutingFromDb,
+  sortKdsItemsByCategoryOrder,
+} from './kdsStationRouting';
 import { broadcastTicketsChanged } from './realtime';
 import { getTableSessionStartedAt } from './tableSession';
 import { getFloorSnapshot } from './floorSnapshot';
@@ -143,6 +147,9 @@ export async function formatKdsTicketListRows(
   );
 
   const voidedOrderIds = await voidedClosedOrderIds(rows);
+  const categoryOrder = await loadKdsRoutingFromDb(prisma)
+    .then((routing) => routing.categoryIdToSortOrder)
+    .catch(() => ({}));
 
   return (rows as any[])
     .map((r: any) => {
@@ -159,8 +166,10 @@ export async function formatKdsTicketListRows(
         null;
 
       const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
-      const stationItems = itemsAll
-        .map((it: any, idx: number) => ({ ...it, _idx: idx }))
+      const stationItems = sortKdsItemsByCategoryOrder(
+        itemsAll.map((it: any, idx: number) => ({ ...it, _idx: idx })),
+        categoryOrder,
+      )
         .filter(
           (it: any) => String(it?.station || '').toUpperCase() === station,
         );
@@ -258,7 +267,14 @@ export async function getKdsTicketDetail(
     (row.userId ? waiterById.get(Number(row.userId)) : null) ??
     null;
 
-  const itemsAll = Array.isArray(row.itemsJson) ? row.itemsJson : [];
+  const itemsAll = sortKdsItemsByCategoryOrder(
+    (Array.isArray(row.itemsJson) ? row.itemsJson : []).map(
+      (it: any, idx: number) => ({ ...it, _idx: idx }),
+    ),
+    await loadKdsRoutingFromDb(prisma)
+      .then((routing) => routing.categoryIdToSortOrder)
+      .catch(() => ({})),
+  );
   const byStation = new Map<
     string,
     KdsTicketDetailDTO['stations'][0]['items']
@@ -273,7 +289,7 @@ export async function getKdsTicketDetail(
       note: it?.note ? String(it.note) : undefined,
       voided: Boolean(it?.voided),
       bumped: Boolean(it?.bumped),
-      _idx: idx,
+      _idx: Number.isFinite(Number(it?._idx)) ? Number(it._idx) : idx,
     });
   }
 

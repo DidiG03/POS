@@ -4,6 +4,7 @@ import {
   decorateKdsTicketItemsFromCategory,
   enabledStationsFromSettings,
   kdsStationsWithActiveItems,
+  sortKdsItemsByCategoryOrder,
 } from './kdsStationRouting';
 
 describe('enabledStationsFromSettings', () => {
@@ -37,6 +38,7 @@ describe('enabledStationsFromSettings', () => {
 describe('disabled stations stop routing', () => {
   const routing = {
     categoryIdToKdsStation: { 1: 'KITCHEN', 2: 'BAR' },
+    categoryIdToSortOrder: {},
     skuToKdsStation: {},
   };
 
@@ -53,5 +55,25 @@ describe('disabled stations stop routing', () => {
     });
     const used = kdsStationsWithActiveItems(decorated, enabled);
     expect(used).toEqual(['KITCHEN']);
+  });
+});
+
+describe('KDS category ordering', () => {
+  it('sorts known categories by admin order and leaves unknown lines last', () => {
+    const sorted = sortKdsItemsByCategoryOrder(
+      [
+        { name: 'Pizza', categoryId: 3 },
+        { name: 'Salad', categoryId: 1 },
+        { name: 'Note', categoryId: 99 },
+        { name: 'Starter', categoryId: 2 },
+      ],
+      { 1: 0, 2: 1, 3: 2 },
+    );
+    expect(sorted.map((item) => item.name)).toEqual([
+      'Salad',
+      'Starter',
+      'Pizza',
+      'Note',
+    ]);
   });
 });

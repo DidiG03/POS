@@ -29,18 +29,27 @@ export function enabledStationsFromSettings(settings: unknown): Set<string> {
 
 export type KdsRoutingMaps = {
   categoryIdToKdsStation: Record<number, string | null>;
+  categoryIdToSortOrder: Record<number, number>;
   skuToKdsStation: Record<string, string | null>;
 };
 
 export function buildKdsRoutingMaps(
-  categories: Array<{ id: number; kdsStation?: string | null }>,
+  categories: Array<{
+    id: number;
+    kdsStation?: string | null;
+    sortOrder?: number;
+  }>,
   menuItems: Array<{ sku: string; categoryId: number }>,
 ): KdsRoutingMaps {
   const categoryIdToKdsStation: Record<number, string | null> = {};
+  const categoryIdToSortOrder: Record<number, number> = {};
   for (const c of categories) {
     categoryIdToKdsStation[c.id] = c.kdsStation
       ? String(c.kdsStation).toUpperCase()
       : null;
+    if (Number.isFinite(Number(c.sortOrder))) {
+      categoryIdToSortOrder[c.id] = Number(c.sortOrder);
+    }
   }
   const skuToKdsStation: Record<string, string | null> = {};
   for (const item of menuItems) {
@@ -48,17 +57,43 @@ export function buildKdsRoutingMaps(
     if (!sku) continue;
     skuToKdsStation[sku] = categoryIdToKdsStation[item.categoryId] ?? null;
   }
-  return { categoryIdToKdsStation, skuToKdsStation };
+  return {
+    categoryIdToKdsStation,
+    categoryIdToSortOrder,
+    skuToKdsStation,
+  };
 }
 
 export async function loadKdsRoutingFromDb(
   prisma: any,
 ): Promise<KdsRoutingMaps> {
   const [categories, menuItems] = await Promise.all([
-    prisma.category.findMany({ select: { id: true, kdsStation: true } }),
+    prisma.category.findMany({
+      select: { id: true, kdsStation: true, sortOrder: true },
+    }),
     prisma.menuItem.findMany({ select: { sku: true, categoryId: true } }),
   ]);
   return buildKdsRoutingMaps(categories, menuItems);
+}
+
+/** Sort ticket lines by the admin-defined category order without reordering
+ * lines whose category is unavailable (legacy tickets or deleted categories). */
+export function sortKdsItemsByCategoryOrder(
+  items: any[],
+  categoryIdToSortOrder: Record<number, number>,
+): any[] {
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const aOrder = categoryIdToSortOrder[Number(a.item?.categoryId)];
+      const bOrder = categoryIdToSortOrder[Number(b.item?.categoryId)];
+      const aKnown = Number.isFinite(aOrder);
+      const bKnown = Number.isFinite(bOrder);
+      if (aKnown && bKnown && aOrder !== bOrder) return aOrder - bOrder;
+      if (aKnown !== bKnown) return aKnown ? -1 : 1;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
 }
 
 /** Resolve KDS station from the menu category link; omit unlinked categories. */
