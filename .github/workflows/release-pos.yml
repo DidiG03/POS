@@ -219,11 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.63"
-            echo "- Faster occupied-table opens: navigate immediately, hydrate the bill in the background"
-            echo "- Reports and notifications wait for data before painting empty screens"
-            echo "- Whole amounts (no .00), slimmer phone toggles, taller menu categories"
-            echo "- Clock-in staff list shows a spinner until open-shift columns are ready"
+            echo "### Changes in v0.2.64"
+            echo "- Reload the floor layout automatically when switching to another POS till"
+            echo "- Fix CI: receipt tests match whole-number amounts (no .00)"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
