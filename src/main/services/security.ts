@@ -9,6 +9,12 @@
  */
 
 import { IpcMainInvokeEvent } from 'electron';
+import {
+  isAdminPinRole,
+  normalizePin,
+  promotionNeedsNewPin,
+  staffPinError,
+} from '@shared/staffPin';
 
 // Rate limiting for IPC handlers (in-memory, per sender)
 const ipcRateLimits = new Map<
@@ -190,24 +196,30 @@ export function sanitizeStringArray(
 }
 
 /**
- * Validate PIN format and complexity
- * PINs should be 4-6 digits (current requirement)
- * Can be extended for stronger requirements
+ * Validate PIN format and complexity.
+ * Staff: 1–6 letters or digits. Admin: 4–6 digits (see `@shared/staffPin`).
+ * Omit `role` at login — the stored hash is the real check there.
  */
 export function validatePin(
   pin: string | null | undefined,
   rejectWeak = true,
+  role?: string | null,
 ): { valid: boolean; error?: string } {
-  if (!pin) return { valid: false, error: 'PIN is required' };
-  const pinStr = String(pin).trim();
-
-  // Current requirement: 4-6 digits
-  if (!/^\d{4,6}$/.test(pinStr)) {
-    return { valid: false, error: 'PIN must be 4-6 digits' };
+  const formatError = staffPinError(pin, role ?? undefined);
+  if (formatError === 'required') {
+    return { valid: false, error: 'PIN is required' };
   }
+  if (formatError === 'adminDigits') {
+    return { valid: false, error: 'Admin PIN must be 4-6 digits' };
+  }
+  if (formatError === 'staffFormat') {
+    return { valid: false, error: 'PIN must be 1-6 letters or digits' };
+  }
+  const pinStr = normalizePin(pin);
 
-  // Only reject weak PINs when creating/updating (not during login)
-  if (rejectWeak) {
+  // Only reject weak admin PINs when creating/updating (not during login).
+  // Staff may pick a single character, so a "common PIN" list is moot there.
+  if (rejectWeak && isAdminPinRole(role)) {
     const weakPins = [
       '0000',
       '1111',
@@ -227,6 +239,28 @@ export function validatePin(
   }
 
   return { valid: true };
+}
+
+/** PIN checks for an update, where the role may change in the same request. */
+export function validatePinUpdate(opts: {
+  pin?: string | null;
+  currentRole?: string | null;
+  nextRole?: string | null;
+}): { valid: boolean; error?: string } {
+  if (
+    promotionNeedsNewPin({
+      currentRole: opts.currentRole,
+      nextRole: opts.nextRole,
+      pin: opts.pin,
+    })
+  ) {
+    return {
+      valid: false,
+      error: 'Set a new 4-6 digit PIN when making this user an admin',
+    };
+  }
+  if (!normalizePin(opts.pin)) return { valid: true };
+  return validatePin(opts.pin, true, opts.nextRole ?? opts.currentRole);
 }
 
 /**

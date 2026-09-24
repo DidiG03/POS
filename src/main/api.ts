@@ -129,7 +129,9 @@ import {
   logSecurityEvent,
   sanitizeString,
   validatePin,
+  validatePinUpdate,
 } from './services/security';
+import { normalizePin } from '@shared/staffPin';
 import { allowLanCorsOrigin, isTrustedLanClient } from './services/lanCors';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
@@ -1223,7 +1225,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           : { active: true };
         const user = await prisma.user.findFirst({ where });
         if (!user) return send(res, 200, null, corsOrigin);
-        const ok = await bcrypt.compare(String(pin || ''), user.pinHash);
+        const ok = await bcrypt.compare(normalizePin(pin), user.pinHash);
         if (!ok) {
           await prisma.notification
             .create({
@@ -3724,7 +3726,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         try {
           const input = CreateUserInputSchema.parse(await parseJson(req));
           if (input.pin) {
-            const pinValidation = validatePin(input.pin);
+            const pinValidation = validatePin(input.pin, true, input.role);
             if (!pinValidation.valid) {
               return send(
                 res,
@@ -3753,7 +3755,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             return send(res, 403, { error: 'forbidden' }, corsOrigin);
           }
           assertStaffRoleAllowed(input.role);
-          const pinHash = await bcrypt.hash(input.pin, 10);
+          const pinHash = await bcrypt.hash(normalizePin(input.pin), 10);
           const salary = salaryWriteData(
             input.salaryAmount ?? null,
             input.salaryPeriod ?? null,
@@ -3783,8 +3785,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/auth/update-user') {
         try {
           const input = UpdateUserInputSchema.parse(await parseJson(req));
-          if (input.pin) {
-            const pinValidation = validatePin(input.pin);
+          if (input.pin || input.role) {
+            const current = await prisma.user
+              .findUnique({ where: { id: input.id }, select: { role: true } })
+              .catch(() => null);
+            const pinValidation = validatePinUpdate({
+              pin: input.pin,
+              currentRole: current?.role,
+              nextRole: input.role,
+            });
             if (!pinValidation.valid) {
               return send(
                 res,
@@ -3810,7 +3819,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           if (sanitizedInput.role) assertStaffRoleAllowed(sanitizedInput.role);
           let pinHash: string | undefined;
           if (sanitizedInput.pin)
-            pinHash = await bcrypt.hash(sanitizedInput.pin, 10);
+            pinHash = await bcrypt.hash(normalizePin(sanitizedInput.pin), 10);
           const salaryPatch =
             input.salaryAmount !== undefined || input.salaryPeriod !== undefined
               ? salaryWriteData(

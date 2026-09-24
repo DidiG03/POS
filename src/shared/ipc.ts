@@ -343,7 +343,7 @@ export interface TicketPrintMeta {
 }
 
 export const LoginWithPinInputSchema = z.object({
-  pin: z.string().min(4).max(6),
+  pin: z.string().min(1).max(6),
   userId: z.number().optional(),
   pairingCode: z.string().min(4).max(12).optional(),
 });
@@ -365,7 +365,7 @@ export const CreateUserInputSchema = z.object({
     'BARBACK',
     'CLEANER',
   ]),
-  pin: z.string().min(4).max(6),
+  pin: z.string().min(1).max(6),
   active: z.boolean().optional().default(true),
   salaryAmount: z.number().nonnegative().nullable().optional(),
   salaryPeriod: z.enum(SALARY_PERIODS).nullable().optional(),
@@ -391,7 +391,7 @@ export const UpdateUserInputSchema = z.object({
       'CLEANER',
     ])
     .optional(),
-  pin: z.string().min(4).max(6).optional(),
+  pin: z.string().min(1).max(6).optional(),
   active: z.boolean().optional(),
   salaryAmount: z.number().nonnegative().nullable().optional(),
   salaryPeriod: z.enum(SALARY_PERIODS).nullable().optional(),

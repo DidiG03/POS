@@ -121,9 +121,11 @@ import {
   logSecurityEvent,
   sanitizeString,
   validatePin,
+  validatePinUpdate,
   sanitizeNumber,
   getSecurityLog,
 } from './services/security';
+import { normalizePin } from '@shared/staffPin';
 import { ipcHandle } from './services/ipcGuard';
 import { authorizeCreateUser } from './services/createUserAuth';
 import { reportAuditWriteFailure } from './services/adminAlerts';
@@ -1746,7 +1748,7 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
   const where: any = userId ? { id: userId, active: true } : { active: true };
   const user = await prisma.user.findFirst({ where });
   if (user) {
-    const ok = await bcrypt.compare(pin, user.pinHash);
+    const ok = await bcrypt.compare(normalizePin(pin), user.pinHash);
     if (ok) {
       clearPinFailures(_e.sender.id);
       const userData = {
@@ -1780,7 +1782,7 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
 ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
   const pin = String((payload as any)?.pin || '').trim();
   // Validate format (but don't reject weak PINs during verification - managers may already have them)
-  const pinValidation = validatePin(pin, false); // rejectWeak = false for verification
+  const pinValidation = validatePin(pin, false, 'ADMIN'); // rejectWeak = false for verification
   if (!pinValidation.valid) return { ok: false };
 
   // Suspicious-pattern alerting (local): repeated manager PIN failures from the same window/sender.
@@ -1924,7 +1926,7 @@ ipcHandle('auth:createUser', async (_e, payload) => {
 
   // Validate PIN format
   if (input.pin) {
-    const pinValidation = validatePin(input.pin);
+    const pinValidation = validatePin(input.pin, true, input.role);
     if (!pinValidation.valid) {
       logSecurityEvent('invalid_pin_format', {
         handler: 'auth:createUser',
@@ -1963,7 +1965,7 @@ ipcHandle('auth:createUser', async (_e, payload) => {
 
   assertStaffRoleAllowed(input.role);
 
-  const pinHash = await bcrypt.hash(input.pin, 10);
+  const pinHash = await bcrypt.hash(normalizePin(input.pin), 10);
   const salary = salaryWriteData(
     input.salaryAmount ?? null,
     input.salaryPeriod ?? null,
@@ -1997,9 +1999,16 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
   // Rate limit declared in IPC_POLICIES.
   const input = UpdateUserInputSchema.parse(payload);
 
-  // Validate PIN format if provided
-  if (input.pin) {
-    const pinValidation = validatePin(input.pin);
+  // Validate PIN format (role may change in the same request)
+  if (input.pin || input.role) {
+    const current = await prisma.user
+      .findUnique({ where: { id: input.id }, select: { role: true } })
+      .catch(() => null);
+    const pinValidation = validatePinUpdate({
+      pin: input.pin,
+      currentRole: current?.role,
+      nextRole: input.role,
+    });
     if (!pinValidation.valid) {
       logSecurityEvent('invalid_pin_format', {
         handler: 'auth:updateUser',
@@ -2033,7 +2042,8 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
 
   // Local-first: always use local DB for user updates
   let pinHash: string | undefined;
-  if (sanitizedInput.pin) pinHash = await bcrypt.hash(sanitizedInput.pin, 10);
+  if (sanitizedInput.pin)
+    pinHash = await bcrypt.hash(normalizePin(sanitizedInput.pin), 10);
   const salaryPatch =
     input.salaryAmount !== undefined || input.salaryPeriod !== undefined
       ? salaryWriteData(input.salaryAmount ?? null, input.salaryPeriod ?? null)
@@ -2317,7 +2327,7 @@ ipcHandle('auth:syncStaffFromApi', async (_e, raw) => {
   for (const s of staff) {
     if (s.isActive === false) continue;
     const fullName = [s.firstName, s.lastName].filter(Boolean).join(' ').trim();
-    const pin = String(s.posPin ?? '').trim();
+    const pin = normalizePin(s.posPin);
     if (!pin) continue;
     const pinHash = await bcrypt.hash(pin, 10);
     const existing = await prisma.user.findFirst({

@@ -219,9 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.68"
-            echo "- Larger, more readable customer receipt body text"
-            echo "- Bigger waiter / area / table header on kitchen tickets"
+            echo "### Changes in v0.2.69"
+            echo "- Waiters can now use a short PIN (1-6 letters or digits); admin PINs stay 4-6 digits"
+            echo "- Login screen supports letter PINs (ABC / 123 toggle)"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

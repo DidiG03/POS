@@ -5,6 +5,7 @@ import { useReservationSessionStore } from '../../stores/reservationSession';
 import type { UserDTO } from '@shared/ipc';
 
 import { isHostOrAdminRole, jwtRole } from '@shared/jwtRole';
+import { sanitizePinInput } from '@shared/staffPin';
 import { BrandMark } from '../../components/BrandMark';
 import { PageSpinner } from '../../components/PageSpinner';
 import { IconChevronLeft } from '../../components/icons';
@@ -168,7 +169,7 @@ export default function ReservationsLoginPage() {
       showLoginMessage(t('reservations.chooseNameFirst'));
       return;
     }
-    if (pin.length < 4) {
+    if (pin.length < 1) {
       showLoginMessage(t('login.pinTooShort'));
       return;
     }
@@ -332,14 +333,15 @@ export default function ReservationsLoginPage() {
               <input
                 autoFocus={!!selectedId}
                 type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder={t('login.enterPin')}
                 maxLength={6}
                 autoComplete="one-time-code"
                 value={pin}
                 onChange={(e) => {
-                  setPin(e.target.value.replace(/\D+/g, '').slice(0, 6));
+                  setPin(sanitizePinInput(e.target.value));
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') submit();

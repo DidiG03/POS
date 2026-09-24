@@ -13,6 +13,7 @@ import {
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
+import { sanitizePinInput } from '@shared/staffPin';
 import { BrandMark } from '../../components/BrandMark';
 import { SpinnerGlyph } from '../../components/SpinnerGlyph';
 import { resolveBackendHost } from '../../utils/backendHost';
@@ -101,6 +102,7 @@ export default function LoginPage() {
   const pairingCodeRef = useRef<HTMLInputElement>(null);
   const pinRef = useRef<HTMLInputElement>(null);
   const [pin, setPin] = useState('');
+  const [pinLetters, setPinLetters] = useState(false);
   const [showPin, setShowPin] = useState(false);
   const [pairingCode, setPairingCode] = useState<string>(() => {
     try {
@@ -165,7 +167,7 @@ export default function LoginPage() {
       showLoginMessage(t('login.loginFailed'));
       return;
     }
-    if (pin.length < 4) {
+    if (pin.length < 1) {
       showLoginMessage(t('login.pinTooShort'));
       return;
     }
@@ -777,24 +779,42 @@ export default function LoginPage() {
             // The card frame and header stay so the user keeps the
             // "I'm on the login page" context.
             <div className="flex flex-col gap-3">
-              {/* Mask PIN (dots/bullets). `inputMode="numeric"` + `pattern` keep a
-                  digits-friendly keyboard on mobile. 20px font avoids Safari zoom. */}
-              <input
-                ref={pinRef}
-                type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder={t('login.pinPlaceholder')}
-                maxLength={6}
-                autoComplete="one-time-code"
-                value={pin}
-                onChange={(e) =>
-                  setPin(e.target.value.replace(/\D+/g, '').slice(0, 6))
-                }
-                className="pos-input py-3 text-center tracking-[0.55em] tabular"
-                style={{ fontSize: '20px' }}
-                onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
-              />
+              {/* Mask PIN (dots/bullets). Digits keyboard by default; staff
+                  PINs may contain letters, so ABC switches the mobile keyboard.
+                  20px font avoids Safari zoom. */}
+              <div className="relative">
+                <input
+                  ref={pinRef}
+                  type="password"
+                  inputMode={pinLetters ? 'text' : 'numeric'}
+                  pattern={pinLetters ? undefined : '[0-9]*'}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder={t('login.pinPlaceholder')}
+                  maxLength={6}
+                  autoComplete="one-time-code"
+                  value={pin}
+                  onChange={(e) => setPin(sanitizePinInput(e.target.value))}
+                  className="pos-input py-3 px-16 text-center tracking-[0.55em] tabular"
+                  style={{ fontSize: '20px' }}
+                  onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
+                />
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md px-2.5 py-1.5 text-[12px] font-semibold text-gray-500 hover:bg-white/5"
+                  aria-label={t(
+                    pinLetters ? 'login.pinUseDigits' : 'login.pinUseLetters',
+                  )}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setPinLetters((v) => !v);
+                    requestAnimationFrame(() => pinRef.current?.focus());
+                  }}
+                >
+                  {pinLetters ? '123' : 'ABC'}
+                </button>
+              </div>
               {needsPairingCode ? (
                 <input
                   ref={pairingCodeRef}

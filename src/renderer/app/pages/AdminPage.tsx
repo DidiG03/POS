@@ -11,6 +11,12 @@ import {
   type SalaryPeriod,
 } from '@shared/staffSalary';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
+import {
+  isAdminPinRole,
+  promotionNeedsNewPin,
+  sanitizePinInput,
+  staffPinError,
+} from '@shared/staffPin';
 import { reportAppError } from '../../utils/reportAppError';
 import { IconClose } from '../../components/icons';
 import { KebabMenu } from '../components/SettingsChrome';
@@ -1272,8 +1278,14 @@ function AddStaffModal({
       setError(t('adminOverview.nameRequired'));
       return;
     }
-    if (pin.length < 4) {
-      setError(t('adminOverview.pinRequired'));
+    if (staffPinError(pin, role)) {
+      setError(
+        t(
+          isAdminPinRole(role)
+            ? 'adminOverview.adminPinRequired'
+            : 'adminOverview.pinRequired',
+        ),
+      );
       return;
     }
     const parsedSalary = parseSalaryAmountInput(salary);
@@ -1343,19 +1355,32 @@ function AddStaffModal({
           <Field label={t('adminOverview.role')}>
             <RoleSelect
               value={role}
-              onChange={setRole}
+              onChange={(next) => {
+                setRole(next);
+                setPin((p) => sanitizePinInput(p, next));
+              }}
               disabled={billingPaused}
             />
           </Field>
-          <Field label={t('adminOverview.pinDigits')}>
+          <Field
+            label={t(
+              isAdminPinRole(role)
+                ? 'adminOverview.adminPinDigits'
+                : 'adminOverview.pinDigits',
+            )}
+          >
             <Input
-              placeholder={t('adminOverview.pinDigits')}
+              placeholder={t(
+                isAdminPinRole(role)
+                  ? 'adminOverview.adminPinDigits'
+                  : 'adminOverview.pinDigits',
+              )}
               type="password"
-              inputMode="numeric"
+              inputMode={isAdminPinRole(role) ? 'numeric' : 'text'}
+              autoCapitalize="none"
+              autoCorrect="off"
               value={pin}
-              onChange={(e) =>
-                setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
-              }
+              onChange={(e) => setPin(sanitizePinInput(e.target.value, role))}
               disabled={billingPaused}
             />
           </Field>
@@ -1471,8 +1496,20 @@ function EditStaffModal({
       setError(t('adminOverview.nameRequired'));
       return;
     }
-    if (pin && pin.length < 4) {
-      setError(t('adminOverview.pinKeepOrBlank'));
+    if (
+      promotionNeedsNewPin({ currentRole: staff.role, nextRole: role, pin })
+    ) {
+      setError(t('adminOverview.adminPromotionNeedsPin'));
+      return;
+    }
+    if (pin && staffPinError(pin, role)) {
+      setError(
+        t(
+          isAdminPinRole(role)
+            ? 'adminOverview.adminPinKeepOrBlank'
+            : 'adminOverview.pinKeepOrBlank',
+        ),
+      );
       return;
     }
     if (!parsedSalary.ok) {
@@ -1549,7 +1586,10 @@ function EditStaffModal({
           >
             <RoleSelect
               value={role}
-              onChange={setRole}
+              onChange={(next) => {
+                setRole(next);
+                setPin((p) => sanitizePinInput(p, next));
+              }}
               disabled={isSelf && staff.role === 'ADMIN'}
             />
           </Field>
@@ -1558,14 +1598,18 @@ function EditStaffModal({
             hint={t('adminOverview.newPinHint')}
           >
             <Input
-              placeholder={t('adminOverview.pinDigitsShort')}
+              placeholder={t(
+                isAdminPinRole(role)
+                  ? 'adminOverview.adminPinDigitsShort'
+                  : 'adminOverview.pinDigitsShort',
+              )}
               type="password"
-              inputMode="numeric"
+              inputMode={isAdminPinRole(role) ? 'numeric' : 'text'}
+              autoCapitalize="none"
+              autoCorrect="off"
               autoComplete="new-password"
               value={pin}
-              onChange={(e) =>
-                setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
-              }
+              onChange={(e) => setPin(sanitizePinInput(e.target.value, role))}
             />
           </Field>
           <div className="flex items-center justify-between gap-3">
