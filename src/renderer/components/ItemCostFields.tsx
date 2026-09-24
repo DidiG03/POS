@@ -15,18 +15,18 @@ import { IconPlus, IconTrash } from './icons';
 import { cn } from './ui/cn';
 
 export function formatCostMoney(amount: number, currency: string): string {
-  const n = Number.isFinite(amount) ? amount : 0;
+  const n = Math.round(Number.isFinite(amount) ? amount : 0);
   const cur = String(currency || 'EUR').trim() || 'EUR';
   const iso = /^[A-Z]{3}$/i.test(cur) ? cur.toUpperCase() : 'EUR';
   try {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
       currency: iso,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     }).format(n);
   } catch {
-    return `${n.toFixed(2)} ${cur}`;
+    return `${n} ${cur}`;
   }
 }
 
@@ -126,7 +126,7 @@ export function ItemCostFields({
               <Input
                 className="w-[7.5rem] shrink-0 text-[13px]"
                 inputMode="decimal"
-                placeholder="0.00"
+                placeholder="0"
                 value={amountDraft[line.id] ?? ''}
                 disabled={disabled}
                 onChange={(e) => {
@@ -169,7 +169,7 @@ export function ItemCostFields({
         >
           <Input
             inputMode="decimal"
-            placeholder="0.00"
+            placeholder="0"
             value={sellPrice}
             disabled={disabled || !onSellPriceChange}
             readOnly={!onSellPriceChange}

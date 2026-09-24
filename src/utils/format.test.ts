@@ -6,16 +6,17 @@ import { describe, it, expect } from 'vitest';
 
 function makeFormatAmount() {
   return (n: number) => {
-    const v = Number.isFinite(n) ? n : 0;
-    const decimals = Math.abs(v - Math.round(v)) > 1e-9 ? 2 : 0;
-    return v.toFixed(decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const v = Math.round(Number.isFinite(n) ? n : 0);
+    return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   };
 }
 
 function formatMoneyCompact(currency: string, amount: number) {
   const a = Number.isFinite(amount) ? amount : 0;
   const rounded = Math.round(a);
-  const cur = String(currency || '').trim().toUpperCase();
+  const cur = String(currency || '')
+    .trim()
+    .toUpperCase();
   // Prefer ISO currency formatting when possible
   if (/^[A-Z]{3}$/.test(cur)) {
     try {
@@ -23,6 +24,7 @@ function formatMoneyCompact(currency: string, amount: number) {
         style: 'currency',
         currency: cur,
         maximumFractionDigits: 0,
+        minimumFractionDigits: 0,
       }).format(rounded);
     } catch {
       // fall through
@@ -42,11 +44,11 @@ describe('Formatting Utilities', () => {
       expect(format(1000000)).toBe('1,000,000');
     });
 
-    it('should format decimals with 2 decimal places', () => {
+    it('should round fractional amounts to whole numbers', () => {
       const format = makeFormatAmount();
-      expect(format(100.5)).toBe('100.50');
-      expect(format(100.99)).toBe('100.99');
-      expect(format(1000.123)).toBe('1,000.12');
+      expect(format(100.5)).toBe('101');
+      expect(format(100.4)).toBe('100');
+      expect(format(1000.123)).toBe('1,000');
     });
 
     it('should handle zero', () => {
@@ -57,7 +59,7 @@ describe('Formatting Utilities', () => {
     it('should handle negative numbers', () => {
       const format = makeFormatAmount();
       expect(format(-100)).toBe('-100');
-      expect(format(-100.5)).toBe('-100.50');
+      expect(format(-100.6)).toBe('-101');
     });
 
     it('should handle NaN and Infinity', () => {

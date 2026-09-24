@@ -14,6 +14,7 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
 import { BrandMark } from '../../components/BrandMark';
+import { SpinnerGlyph } from '../../components/SpinnerGlyph';
 import { resolveBackendHost } from '../../utils/backendHost';
 import { DocumentMeta } from '../../components/DocumentMeta';
 import { DevEditionSwitch } from '../components/DevEditionSwitch';
@@ -366,8 +367,10 @@ export default function LoginPage() {
       setNeedsFirstAdmin(false);
       setEmptyDatabase(directory.emptyDatabase);
       setStaff(directory.staff);
-      setStaffLoading(false);
       bootTrace('login:staff');
+      // Keep the spinner up until open-shift ids land. Clearing staffLoading
+      // first paints everyone under "Not clocked in", then moves them once
+      // listOpen returns — a visible reshuffle on every refresh.
       if (!isAdminContext && got.live && isClockCaptureEnabled(s)) {
         try {
           const ids = await window.api.shifts.listOpen();
@@ -383,6 +386,7 @@ export default function LoginPage() {
         setOpenIds([]);
         setOpenShiftKnown(true);
       }
+      if (!cancelled) setStaffLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -468,6 +472,10 @@ export default function LoginPage() {
 
   const onShift = staff.filter((s) => openIds.includes(s.id));
   const offShift = staff.filter((s) => !openIds.includes(s.id));
+  // Clock columns need open-shift ids before paint; otherwise everyone flashes
+  // under "Not clocked in" and then jumps to the right column.
+  const rosterReady =
+    !staffLoading && (captureClock !== true || openShiftKnown);
 
   return (
     <div
@@ -660,6 +668,13 @@ export default function LoginPage() {
                 )}
               </div>
             </div>
+          ) : !showPin && !isAdminContext && !rosterReady ? (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 py-16">
+              <SpinnerGlyph className="size-6 text-[color:var(--pos-fg-muted)]" />
+              <div className="text-sm text-[color:var(--pos-fg-muted)]">
+                {t('login.loadingStaff')}
+              </div>
+            </div>
           ) : !showPin && !isAdminContext && captureClock !== true ? (
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 space-y-1.5 overflow-auto">
@@ -680,18 +695,14 @@ export default function LoginPage() {
                     compact
                     icon={<IconUsers />}
                     title={
-                      staffLoading
-                        ? t('login.loadingStaff')
-                        : emptyDatabase
-                          ? t('login.waitingForAdminSetup')
-                          : t('login.noStaffSync')
+                      emptyDatabase
+                        ? t('login.waitingForAdminSetup')
+                        : t('login.noStaffSync')
                     }
                     description={
-                      staffLoading
-                        ? undefined
-                        : emptyDatabase
-                          ? t('login.waitingForAdminSetupHelp')
-                          : t('login.useAdminApp')
+                      emptyDatabase
+                        ? t('login.waitingForAdminSetupHelp')
+                        : t('login.useAdminApp')
                     }
                   />
                 )}
@@ -704,7 +715,7 @@ export default function LoginPage() {
                   {t('login.notClockedIn')}
                 </SectionLabel>
                 <div className="min-h-0 flex-1 space-y-1.5 overflow-auto">
-                  {staff.length === 0 && !staffLoading ? (
+                  {staff.length === 0 ? (
                     <EmptyState
                       compact
                       icon={<IconUsers />}
@@ -741,9 +752,7 @@ export default function LoginPage() {
                   {t('login.clockedIn')}
                 </SectionLabel>
                 <div className="min-h-0 flex-1 space-y-1.5 overflow-auto">
-                  {onShift.length === 0 && !staffLoading ? (
-                    <ColumnPlaceholder />
-                  ) : null}
+                  {onShift.length === 0 ? <ColumnPlaceholder /> : null}
                   {onShift.map((s) => (
                     <StaffTile
                       key={s.id}

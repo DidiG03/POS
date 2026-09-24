@@ -604,23 +604,20 @@ export default function TablesPage() {
             : undefined;
         if (peeked) {
           hydrate({ items: peeked.items as any, note: peeked.note });
-          navigate('/app/order', navOpts);
-          return;
+        } else {
+          // Floor polls ship total but items:[], so peeks often miss. Do not
+          // await the host bill — that LAN RTT is what made occupied taps
+          // feel stuck on phones. OrderPage still syncs on mount; this
+          // background hydrate can fill the cart while the chunk loads.
+          void loadOpenTableBill(area, openLabel)
+            .then((bill) => {
+              if (bill) {
+                hydrate({ items: bill.items as any, note: bill.note });
+              }
+            })
+            .catch(() => undefined);
         }
-        // Floor polls ship total but items:[]. Load the host bill before
-        // opening the order screen so occupied tables never paint empty.
-        void (async () => {
-          try {
-            const bill = await loadOpenTableBill(area, openLabel);
-            if (bill) {
-              hydrate({ items: bill.items as any, note: bill.note });
-            }
-          } catch {
-            // OrderPage sync still retries once mounted.
-          } finally {
-            navigate('/app/order', navOpts);
-          }
-        })();
+        navigate('/app/order', navOpts);
         return;
       }
       navigate(

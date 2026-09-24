@@ -1417,13 +1417,14 @@ export default function KdsPage() {
                 role="switch"
                 aria-checked={cooker}
                 onClick={() => setCooker(!cooker)}
-                className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${
+                style={{ minHeight: 0 }}
+                className={`relative inline-flex h-6 w-[2.625rem] shrink-0 items-center rounded-full transition-colors before:absolute before:left-1/2 before:top-1/2 before:size-11 before:-translate-x-1/2 before:-translate-y-1/2 ${
                   cooker ? 'bg-emerald-600' : 'bg-gray-700'
                 }`}
               >
                 <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
-                    cooker ? 'translate-x-6' : 'translate-x-1'
+                  className={`inline-block size-5 transform rounded-full bg-white shadow-sm transition-transform ${
+                    cooker ? 'translate-x-[1.125rem]' : 'translate-x-0.5'
                   }`}
                 />
               </button>

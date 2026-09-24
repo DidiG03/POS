@@ -259,10 +259,24 @@ describe('waiter UI stays responsive', () => {
       "return !key.startsWith('pos:floor:')",
     );
 
-    // Occupied-table taps must load the host bill — floor rows are total-only.
+    // Occupied taps may kick loadOpenTableBill in the background, but must
+    // never await it before navigating — that LAN wait blocked every open.
     const tables = read('src/renderer/app/pages/TablesPage.tsx');
     expect(tables).toContain('loadOpenTableBill');
     expect(tables).toContain('peekTableBill');
+    const openTable = sliceBetween(
+      tables,
+      'const openTable = useCallback',
+      'const handleTableClick',
+    );
+    expect(openTable).toContain("navigate('/app/order', navOpts)");
+    expect(openTable).toContain('void loadOpenTableBill');
+    expect(openTable).not.toMatch(/await loadOpenTableBill/);
+    // Navigate is outside the bill promise — not gated on it finishing.
+    const navAt = openTable.indexOf("navigate('/app/order', navOpts)");
+    const loadAt = openTable.indexOf('void loadOpenTableBill');
+    expect(loadAt).toBeGreaterThan(-1);
+    expect(navAt).toBeGreaterThan(loadAt);
   });
 
   it('loads the open-table bill by id, not mixed createdAt', () => {

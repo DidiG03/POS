@@ -1946,7 +1946,9 @@ function FiscalReviewPanel() {
                       ? t('fiscal.reviewKindDeferred')
                       : t('fiscal.reviewKindUnknown')}
                 </span>
-                {row.total != null ? <span>{row.total.toFixed(2)}</span> : null}
+                {row.total != null ? (
+                  <span>{Math.round(Number(row.total))}</span>
+                ) : null}
                 <span className="opacity-60">
                   {new Date(row.updatedAt).toLocaleString()}
                 </span>

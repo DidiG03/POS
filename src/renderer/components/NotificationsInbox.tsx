@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatNotificationTime } from '@shared/notificationDisplay';
 import { NotificationsPanel, type NotificationRow } from './NotificationsPanel';
 import { Button } from './ui/Button';
+import { SpinnerGlyph } from './SpinnerGlyph';
 import { reportAppError } from '../utils/reportAppError';
 
 export function emitNotificationsUnread(count: number): void {
@@ -19,9 +20,11 @@ export function NotificationsInbox({
   userId,
   admin = false,
   hasTables = false,
+  compact = false,
   refreshKey = 0,
   onCount,
   onNavigate,
+  onReady,
 }: {
   userId: number;
   admin?: boolean;
@@ -30,17 +33,42 @@ export function NotificationsInbox({
   refreshKey?: number;
   onCount?: (n: number) => void;
   onNavigate?: () => void;
+  /** Fires once the first fetch for this inbox has finished. */
+  onReady?: () => void;
 }) {
+  const [listReady, setListReady] = useState(false);
+  const [requestsReady, setRequestsReady] = useState(!hasTables);
+  const ready = listReady && requestsReady;
+  const readySent = useRef(false);
+  const onListReady = useCallback(() => setListReady(true), []);
+  const onRequestsReady = useCallback(() => setRequestsReady(true), []);
+
+  useEffect(() => {
+    if (!ready || readySent.current) return;
+    readySent.current = true;
+    onReady?.();
+  }, [ready, onReady]);
+
   return (
     <>
-      <NotificationsList
-        userId={userId}
-        admin={admin}
-        refreshKey={refreshKey}
-        onCount={onCount}
-        onNavigate={onNavigate}
-      />
-      {hasTables ? <OwnerRequests userId={userId} /> : null}
+      {!ready && compact ? (
+        <div className="flex items-center justify-center py-8">
+          <SpinnerGlyph className="size-5 text-[color:var(--pos-fg-muted)]" />
+        </div>
+      ) : null}
+      <div className={ready ? undefined : 'hidden'} aria-hidden={!ready}>
+        <NotificationsList
+          userId={userId}
+          admin={admin}
+          refreshKey={refreshKey}
+          onCount={onCount}
+          onNavigate={onNavigate}
+          onReady={onListReady}
+        />
+        {hasTables ? (
+          <OwnerRequests userId={userId} onReady={onRequestsReady} />
+        ) : null}
+      </div>
     </>
   );
 }
@@ -51,14 +79,21 @@ function NotificationsList({
   refreshKey = 0,
   onCount,
   onNavigate,
+  onReady,
 }: {
   userId: number;
   admin?: boolean;
   refreshKey?: number;
   onCount?: (n: number) => void;
   onNavigate?: () => void;
+  onReady?: () => void;
 }) {
   const [items, setItems] = useState<NotificationRow[]>([]);
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const onCountRef = useRef(onCount);
+  onCountRef.current = onCount;
+
   useEffect(() => {
     if (!userId) return;
     let cancelled = false;
@@ -68,22 +103,34 @@ function NotificationsList({
       const rows = Array.isArray(all) ? all : [];
       setItems(rows);
       const unread = rows.filter((n) => !n?.readAt).length;
-      onCount?.(unread);
+      onCountRef.current?.(unread);
       emitNotificationsUnread(unread);
+      onReadyRef.current?.();
     })();
     return () => {
       cancelled = true;
     };
-  }, [userId, onCount, refreshKey]);
+  }, [userId, refreshKey]);
+
   const filtered = items.filter(
     (n) => !/requested to add items/i.test(n.message),
   );
   return (
-    <NotificationsPanel items={filtered} admin={admin} onNavigate={onNavigate} />
+    <NotificationsPanel
+      items={filtered}
+      admin={admin}
+      onNavigate={onNavigate}
+    />
   );
 }
 
-function OwnerRequests({ userId }: { userId: number }) {
+function OwnerRequests({
+  userId,
+  onReady,
+}: {
+  userId: number;
+  onReady?: () => void;
+}) {
   const { t } = useTranslation();
   const [rows, setRows] = useState<
     Array<{
@@ -100,16 +147,22 @@ function OwnerRequests({ userId }: { userId: number }) {
   // is decided twice, and the second decision runs against a row the host has
   // already moved on from.
   const [deciding, setDeciding] = useState<number | null>(null);
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const r = await window.api.requests.listForOwner(userId).catch(() => []);
-      if (!cancelled) setRows(r);
+      if (cancelled) return;
+      setRows(r);
+      onReadyRef.current?.();
     })();
     return () => {
       cancelled = true;
     };
   }, [userId]);
+
   if (!rows.length) return null;
   return (
     <div className="mt-2 border-t border-[var(--pos-border)] pt-2">

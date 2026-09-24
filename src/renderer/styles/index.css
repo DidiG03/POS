@@ -287,7 +287,9 @@ button:disabled,
 }
 
 @media (any-pointer: coarse) {
-  button,
+  /* Switches keep their own compact proportions; stretching them to 44px
+     turns the track into a tall oval on phones. */
+  button:not([role='switch']),
   .btn {
     min-height: 44px;
   }
@@ -722,7 +724,7 @@ html[data-shell='capacitor'] {
       min-width: 2.4rem;
     }
     .pos-menu-cat--rail {
-      min-height: 3.5rem;
+      min-height: 4rem;
     }
     .pos-menu-fav {
       width: 2.4rem;
@@ -1007,6 +1009,13 @@ html[data-shell='capacitor'] {
     justify-content: flex-start;
     padding: 0.7rem 1.85rem 0.7rem 0.75rem;
     text-align: left;
+  }
+  @media (max-width: 639px) {
+    .pos-menu-cat--rail {
+      min-height: 4rem;
+      padding-top: 0.95rem;
+      padding-bottom: 0.95rem;
+    }
   }
   .pos-menu-cat--rail::after {
     content: '';
@@ -1640,21 +1649,32 @@ html[data-shell='capacitor'] {
     border-color: var(--pos-accent);
     background: var(--pos-accent-soft);
   }
-  /* Keep switch proportions on touch devices — global `button { min-height: 44px }`
-     otherwise stretches the track into a tall oval. */
+  /* Compact pill; hit area expanded below so coarse pointers stay easy. */
   .pos-pay-switch {
     position: relative;
     box-sizing: border-box;
-    width: 3.25rem;
-    height: 2rem;
-    min-width: 3.25rem;
-    min-height: 2rem;
-    max-height: 2rem;
+    width: 2.625rem;
+    height: 1.5rem;
+    min-width: 2.625rem;
+    min-height: 0;
+    max-height: 1.5rem;
     flex-shrink: 0;
     padding: 0;
     border: 0;
     border-radius: 999px;
     background: var(--pos-surface-3);
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  /* Invisible 44×44 tap target without stretching the visible track. */
+  .pos-pay-switch::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
   }
   .pos-pay-switch--on {
     background: var(--pos-accent);
@@ -1662,18 +1682,18 @@ html[data-shell='capacitor'] {
   .pos-pay-switch-knob {
     position: absolute;
     top: 50%;
-    left: 0.2rem;
-    width: 1.5rem;
-    height: 1.5rem;
+    left: 0.125rem;
+    width: 1.25rem;
+    height: 1.25rem;
     border-radius: 999px;
     background: #fff;
     transform: translateY(-50%);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     transition: left 0.18s ease-out;
     pointer-events: none;
   }
   .pos-pay-switch--on .pos-pay-switch-knob {
-    left: calc(100% - 1.5rem - 0.2rem);
+    left: calc(100% - 1.25rem - 0.125rem);
   }
   .pos-pay-confirm {
     display: inline-flex;

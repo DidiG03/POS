@@ -12,7 +12,7 @@ import { toast } from '../../stores/toasts';
 function fmtAmount(n: number): string {
   const v = Number(n || 0);
   if (!Number.isFinite(v)) return '—';
-  return v.toFixed(2);
+  return String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 /**

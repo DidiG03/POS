@@ -1256,18 +1256,19 @@ function formatMoney(amount: number, currency: string): string {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
       currency,
-      maximumFractionDigits: 2,
-    }).format(amount);
+      maximumFractionDigits: 0,
+      minimumFractionDigits: 0,
+    }).format(Math.round(Number(amount) || 0));
   } catch {
-    return amount.toFixed(2) + ' ' + currency;
+    return `${Math.round(Number(amount) || 0)} ${currency}`;
   }
 }
 
 function formatMoneyEscpos(amount: number): string {
   const n = Number(amount || 0);
-  if (!Number.isFinite(n)) return '0.00';
-  // Keep ASCII only for printer compatibility.
-  return n.toFixed(2);
+  if (!Number.isFinite(n)) return '0';
+  // Keep ASCII only for printer compatibility; no trailing .00.
+  return String(Math.round(n));
 }
 
 function escposText(s: string): Buffer {

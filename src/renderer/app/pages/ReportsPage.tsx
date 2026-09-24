@@ -14,11 +14,18 @@ import { printTicket } from '../../api';
 import { toast } from '../../stores/toasts';
 import { PageSpinner } from '../../components/PageSpinner';
 import { reportAppError } from '../../utils/reportAppError';
-import { IconPrinter } from '../../components/icons';
+import {
+  IconCash,
+  IconPrinter,
+  IconReceipt,
+  IconTicket,
+  IconTrash,
+} from '../../components/icons';
 import { FiscalVerifyQr } from '../../components/FiscalVerifyQr';
 import { isFiscalPending, isFiscalRegistered } from '@shared/fiscalReceipt';
 import { convertPosAmount, parseEurExchangeRate } from '@shared/paymentDisplay';
 import { formatEur } from '../../utils/format';
+import { EmptyState, SearchInput, Segmented } from '../../components/ui';
 
 type Overview = {
   revenueTodayNet: number;
@@ -26,6 +33,8 @@ type Overview = {
   openOrders: number;
   fiscalEnabled?: boolean;
 };
+
+type ReportTab = 'active' | 'paid' | 'voided';
 
 /** Same local calendar day as `ref` (default: now). */
 function isSameLocalCalendarDay(
@@ -50,7 +59,7 @@ export default function ReportsPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [currency, setCurrency] = useState<string>('EUR');
   const [eurExchangeRate, setEurExchangeRate] = useState<number | null>(null);
-  const [, setTicketLoading] = useState<boolean>(false);
+  const [ticketsReady, setTicketsReady] = useState<boolean>(false);
   const [activeTickets, setActiveTickets] = useState<any[]>([]);
   const [activeTicketsError, setActiveTicketsError] = useState<string | null>(
     null,
@@ -66,6 +75,15 @@ export default function ReportsPage() {
   const [printingDay, setPrintingDay] = useState(false);
   const [ticketsApiMissing, setTicketsApiMissing] = useState<boolean>(false);
   const [captureClockInOut, setCaptureClockInOut] = useState(true);
+  const [tab, setTab] = useState<ReportTab>(hasTables ? 'active' : 'paid');
+
+  useEffect(() => {
+    if (!hasTables && tab === 'active') setTab('paid');
+  }, [hasTables, tab]);
+
+  useEffect(() => {
+    setTicketsReady(false);
+  }, [user?.id]);
 
   useEffect(() => {
     (async () => {
@@ -103,15 +121,20 @@ export default function ReportsPage() {
       setActiveTickets([]);
       setPaidTickets([]);
       setVoidedTickets([]);
+      setTicketsReady(true);
       return;
     }
-    if (ticketsApiMissing) return;
+    if (ticketsApiMissing) {
+      setTicketsReady(true);
+      return;
+    }
     let alive = true;
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
-    const load = async () => {
-      if (isHidden()) return;
-      setTicketLoading(true);
+    const load = async (opts?: { initial?: boolean }) => {
+      // Background polls can wait for the tab; the first paint cannot, or the
+      // spinner never ends and the empty lists never get a chance to fill.
+      if (isHidden() && !opts?.initial) return;
       try {
         setActiveTicketsError(null);
         setPaidTicketsError(null);
@@ -185,11 +208,11 @@ export default function ReportsPage() {
           });
         }
       } finally {
-        if (alive) setTicketLoading(false);
+        if (alive) setTicketsReady(true);
       }
     };
-    void load();
-    const refreshTimer = setInterval(load, 20000);
+    void load({ initial: true });
+    const refreshTimer = setInterval(() => void load(), 20000);
     return () => {
       alive = false;
       clearInterval(refreshTimer);
@@ -201,223 +224,365 @@ export default function ReportsPage() {
       new Intl.NumberFormat(undefined, {
         style: 'currency',
         currency: currency || 'EUR',
-        maximumFractionDigits: 2,
+        maximumFractionDigits: 0,
+        minimumFractionDigits: 0,
       }),
     [currency],
   );
 
+  const pageLoading = loading || (Boolean(user?.id) && !ticketsReady);
+
+  const tabOptions = useMemo(
+    () =>
+      [
+        hasTables
+          ? {
+              value: 'active' as const,
+              label: t('reports.tabActive'),
+              count: activeTickets.length,
+            }
+          : null,
+        {
+          value: 'paid' as const,
+          label: t('reports.tabPaid'),
+          count: paidTickets.length,
+        },
+        {
+          value: 'voided' as const,
+          label: t('reports.tabVoided'),
+          count: voidedTickets.length,
+        },
+      ].filter(Boolean) as Array<{
+        value: ReportTab;
+        label: string;
+        count: number;
+      }>,
+    [
+      hasTables,
+      t,
+      activeTickets.length,
+      paidTickets.length,
+      voidedTickets.length,
+    ],
+  );
+
+  if (pageLoading) {
+    return <PageSpinner message={t('reports.loadingStats')} />;
+  }
+
+  const printDaySummaryBtn =
+    hasTables && !captureClockInOut ? (
+      <button
+        type="button"
+        className="pos-btn-primary flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold sm:w-auto sm:px-4"
+        disabled={printingDay || !user?.id}
+        onClick={() => {
+          if (!user?.id || printingDay) return;
+          setPrintingDay(true);
+          void window.api.reports
+            .printMyDaySummary(user.id)
+            .then((r) => {
+              if (r?.ok) {
+                toast.success(t('reports.daySummaryPrinted'));
+              } else {
+                toast.error(String(r?.error || t('reports.daySummaryFailed')));
+              }
+            })
+            .catch((e: unknown) => {
+              reportAppError(e, {
+                fallback: t('reports.daySummaryFailed'),
+                key: `reports.daySummary:${user.id}`,
+              });
+              toast.error(t('reports.daySummaryFailed'));
+            })
+            .finally(() => setPrintingDay(false));
+        }}
+      >
+        <IconPrinter className="size-4" />
+        {printingDay
+          ? t('reports.printingDaySummary')
+          : t('reports.printDaySummary')}
+      </button>
+    ) : null;
+
+  const activeList =
+    activeTickets.length === 0 ? (
+      <EmptyState
+        compact
+        icon={<IconTicket />}
+        title={t('reports.noActiveTickets')}
+      />
+    ) : (
+      <div className="space-y-2">
+        {activeTickets.map((rec: any, idx: number) => (
+          <ReceiptCard
+            key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+            ticket={rec}
+            fmtCurrency={fmtCurrency}
+            hasTables={hasTables}
+            posCurrency={currency}
+            eurExchangeRate={eurExchangeRate}
+          />
+        ))}
+      </div>
+    );
+
+  const paidToolbar = (
+    <div className="flex items-center gap-2">
+      <SearchInput
+        className="min-w-0 flex-1"
+        placeholder={t(
+          hasTables
+            ? 'reports.searchPlaceholder'
+            : 'reports.searchPlaceholderStore',
+        )}
+        value={paidQuery}
+        onValueChange={setPaidQuery}
+      />
+      <select
+        className="pos-input w-[4.5rem] shrink-0 !min-h-0 py-0"
+        style={{ height: 'var(--pos-control-h)', minHeight: 0 }}
+        value={String(paidLimit)}
+        onChange={(e) => setPaidLimit(Number(e.target.value))}
+        aria-label={t('reports.paidToday')}
+      >
+        <option value="20">20</option>
+        <option value="40">40</option>
+        <option value="80">80</option>
+        <option value="120">120</option>
+      </select>
+    </div>
+  );
+
+  const paidList =
+    paidTickets.length === 0 ? (
+      <EmptyState
+        compact
+        icon={<IconReceipt />}
+        title={t(
+          hasTables ? 'reports.noPaidToday' : 'reports.noPaidSalesToday',
+        )}
+      />
+    ) : (
+      <div className="space-y-2">
+        {paidTickets.map((rec: any, idx: number) => (
+          <ReceiptCard
+            key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+            ticket={rec}
+            fmtCurrency={fmtCurrency}
+            hasTables={hasTables}
+            posCurrency={currency}
+            eurExchangeRate={eurExchangeRate}
+          />
+        ))}
+      </div>
+    );
+
+  const voidedList =
+    voidedTickets.length === 0 ? (
+      <EmptyState
+        compact
+        icon={<IconTrash />}
+        title={t('reports.nothingVoided')}
+      />
+    ) : (
+      <div className="space-y-2">
+        {voidedTickets.map((rec: any, idx: number) => (
+          <VoidedReceiptCard
+            key={`void-${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
+            ticket={rec}
+            fmtCurrency={fmtCurrency}
+            hasTables={hasTables}
+          />
+        ))}
+      </div>
+    );
+
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-y-auto overscroll-contain pr-1 lg:overflow-hidden">
-      <div className="mb-4 hidden shrink-0 items-center justify-between sm:flex">
-        <h2 className="text-lg font-semibold tracking-tight">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-y-auto overscroll-contain lg:overflow-hidden">
+      <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold tracking-tight text-[color:var(--pos-fg)]">
           {t('reports.title')}
         </h2>
+        {printDaySummaryBtn ? (
+          <div className="hidden sm:block">{printDaySummaryBtn}</div>
+        ) : null}
       </div>
 
-      {loading ? (
-        <div className="relative min-h-0 flex-1 overflow-hidden">
-          <PageSpinner variant="overlay" message={t('reports.loadingStats')} />
+      {!user && (
+        <div className="shrink-0 text-sm text-[color:var(--pos-fg-muted)]">
+          {t('reports.loginToView')}
+        </div>
+      )}
+
+      {user && overview ? (
+        <div className="pos-well mb-3 shrink-0 px-3 py-3 sm:mb-4 sm:px-4 sm:py-3.5">
+          <div className="pos-section-label mb-2.5">
+            {t('reports.todaySummary')}
+          </div>
+          <div
+            className={`grid gap-3 ${hasTables ? 'grid-cols-3' : 'grid-cols-2'}`}
+          >
+            <TodayMetric
+              icon={<IconCash className="size-3.5" />}
+              label={t('reports.revenueTodayNetShort')}
+              value={fmtCurrency.format(overview.revenueTodayNet || 0)}
+            />
+            <TodayMetric
+              icon={<IconChartVat />}
+              label={t('reports.vatTodayShort')}
+              value={fmtCurrency.format(overview.revenueTodayVat || 0)}
+            />
+            {hasTables ? (
+              <TodayMetric
+                icon={<IconTicket className="size-3.5" />}
+                label={t('reports.openOrdersShort')}
+                value={String(overview.openOrders)}
+              />
+            ) : null}
+          </div>
         </div>
       ) : null}
 
-      {!loading && !user && (
-        <div className="shrink-0 opacity-70">{t('reports.loginToView')}</div>
-      )}
+      {printDaySummaryBtn ? (
+        <div className="mb-3 shrink-0 sm:hidden">{printDaySummaryBtn}</div>
+      ) : null}
 
-      {!loading && user && overview && (
-        <div
-          className={`mb-4 grid shrink-0 gap-2 sm:mb-6 sm:gap-3 ${
-            hasTables ? 'grid-cols-3' : 'grid-cols-2'
-          }`}
-        >
-          <StatCard
-            title={t('reports.revenueTodayNet')}
-            value={fmtCurrency.format(overview.revenueTodayNet || 0)}
-            compact
-          />
-          <StatCard
-            title={t('reports.vatToday')}
-            value={fmtCurrency.format(overview.revenueTodayVat || 0)}
-            compact
-          />
-          {hasTables ? (
-            <StatCard
-              title={t('reports.openOrders')}
-              value={String(overview.openOrders)}
-              compact
+      {user ? (
+        <>
+          {/* Phone: one tab at a time. Desktop: three columns side by side. */}
+          <div className="mb-3 shrink-0 lg:hidden">
+            <Segmented
+              block
+              size="sm"
+              ariaLabel={t('reports.tickets')}
+              value={tab}
+              onChange={setTab}
+              options={tabOptions}
             />
-          ) : null}
-        </div>
-      )}
+          </div>
 
-      {/* Phone: one page scroll, full-height ticket lists. Desktop: three
-          independent columns that fill the remaining viewport. */}
-      {user && (
-        <section className="flex flex-col pb-[max(1rem,env(safe-area-inset-bottom))] lg:min-h-0 lg:flex-1 lg:pb-0">
-          {hasTables && !captureClockInOut ? (
-            <div className="mb-3 shrink-0">
-              <button
-                type="button"
-                className="pos-btn-primary flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold"
-                disabled={printingDay || !user?.id}
-                onClick={() => {
-                  if (!user?.id || printingDay) return;
-                  setPrintingDay(true);
-                  void window.api.reports
-                    .printMyDaySummary(user.id)
-                    .then((r) => {
-                      if (r?.ok) {
-                        toast.success(t('reports.daySummaryPrinted'));
-                      } else {
-                        toast.error(
-                          String(r?.error || t('reports.daySummaryFailed')),
-                        );
-                      }
-                    })
-                    .catch((e: unknown) => {
-                      reportAppError(e, {
-                        fallback: t('reports.daySummaryFailed'),
-                        key: `reports.daySummary:${user.id}`,
-                      });
-                      toast.error(t('reports.daySummaryFailed'));
-                    })
-                    .finally(() => setPrintingDay(false));
-                }}
-              >
-                <IconPrinter className="size-4" />
-                {printingDay
-                  ? t('reports.printingDaySummary')
-                  : t('reports.printDaySummary')}
-              </button>
+          <section className="flex min-h-0 flex-1 flex-col pb-[max(1rem,env(safe-area-inset-bottom))] lg:pb-0">
+            <div className="lg:hidden">
+              {tab === 'active' && hasTables ? (
+                <TicketPanel
+                  error={
+                    activeTicketsError
+                      ? `${t('reports.activeTicketsError')} ${activeTicketsError}`
+                      : null
+                  }
+                >
+                  {activeList}
+                </TicketPanel>
+              ) : null}
+              {tab === 'paid' ? (
+                <TicketPanel
+                  error={
+                    paidTicketsError
+                      ? `${t(
+                          hasTables
+                            ? 'reports.paidTicketsError'
+                            : 'reports.paidSalesError',
+                        )} ${paidTicketsError}`
+                      : null
+                  }
+                  toolbar={paidToolbar}
+                >
+                  {paidList}
+                </TicketPanel>
+              ) : null}
+              {tab === 'voided' ? (
+                <TicketPanel error={voidedTicketsError}>
+                  {voidedList}
+                </TicketPanel>
+              ) : null}
             </div>
-          ) : null}
-          <div
-            className={`grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-rows-1 lg:items-stretch lg:overflow-hidden lg:[&>*]:min-h-0 lg:[&>*]:max-h-full ${
-              hasTables ? 'lg:grid-cols-3' : 'lg:grid-cols-2'
-            }`}
-          >
-            {hasTables ? (
+
+            <div
+              className={`hidden lg:grid lg:min-h-0 lg:flex-1 lg:grid-rows-1 lg:items-stretch lg:gap-3 lg:overflow-hidden lg:[&>*]:min-h-0 lg:[&>*]:max-h-full ${
+                hasTables ? 'lg:grid-cols-3' : 'lg:grid-cols-2'
+              }`}
+            >
+              {hasTables ? (
+                <TicketPanel
+                  title={t('reports.activeTickets')}
+                  count={activeTickets.length}
+                  error={
+                    activeTicketsError
+                      ? `${t('reports.activeTicketsError')} ${activeTicketsError}`
+                      : null
+                  }
+                >
+                  {activeList}
+                </TicketPanel>
+              ) : null}
               <TicketPanel
-                title={t('reports.activeTickets')}
-                count={activeTickets.length}
+                title={t(
+                  hasTables ? 'reports.paidToday' : 'reports.paidSalesToday',
+                )}
+                count={paidTickets.length}
                 error={
-                  activeTicketsError
-                    ? `${t('reports.activeTicketsError')} ${activeTicketsError}`
+                  paidTicketsError
+                    ? `${t(
+                        hasTables
+                          ? 'reports.paidTicketsError'
+                          : 'reports.paidSalesError',
+                      )} ${paidTicketsError}`
                     : null
                 }
+                toolbar={paidToolbar}
               >
-                {activeTickets.length === 0 ? (
-                  <div className="text-sm opacity-70">
-                    {t('reports.noActiveTickets')}
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {activeTickets.map((rec: any, idx: number) => (
-                      <ReceiptCard
-                        key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
-                        ticket={rec}
-                        fmtCurrency={fmtCurrency}
-                        hasTables={hasTables}
-                        posCurrency={currency}
-                        eurExchangeRate={eurExchangeRate}
-                      />
-                    ))}
-                  </div>
-                )}
+                {paidList}
               </TicketPanel>
-            ) : null}
+              <TicketPanel
+                title={t(
+                  hasTables
+                    ? 'reports.voidedToday'
+                    : 'reports.voidedSalesToday',
+                )}
+                count={voidedTickets.length}
+                error={voidedTicketsError}
+              >
+                {voidedList}
+              </TicketPanel>
+            </div>
+          </section>
+        </>
+      ) : null}
+    </div>
+  );
+}
 
-            <TicketPanel
-              title={t(
-                hasTables ? 'reports.paidToday' : 'reports.paidSalesToday',
-              )}
-              count={paidTickets.length}
-              error={
-                paidTicketsError
-                  ? `${t(
-                      hasTables
-                        ? 'reports.paidTicketsError'
-                        : 'reports.paidSalesError',
-                    )} ${paidTicketsError}`
-                  : null
-              }
-              toolbar={
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <input
-                    className="pos-input min-w-0 flex-1"
-                    placeholder={t(
-                      hasTables
-                        ? 'reports.searchPlaceholder'
-                        : 'reports.searchPlaceholderStore',
-                    )}
-                    value={paidQuery}
-                    onChange={(e) => setPaidQuery(e.target.value)}
-                  />
-                  <select
-                    className="pos-input w-full shrink-0 sm:w-auto"
-                    value={String(paidLimit)}
-                    onChange={(e) => setPaidLimit(Number(e.target.value))}
-                    aria-label={t('reports.paidToday')}
-                  >
-                    <option value="20">20</option>
-                    <option value="40">40</option>
-                    <option value="80">80</option>
-                    <option value="120">120</option>
-                  </select>
-                </div>
-              }
-            >
-              {paidTickets.length === 0 ? (
-                <div className="text-sm opacity-70">
-                  {t(
-                    hasTables
-                      ? 'reports.noPaidToday'
-                      : 'reports.noPaidSalesToday',
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {paidTickets.map((rec: any, idx: number) => (
-                    <ReceiptCard
-                      key={`${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
-                      ticket={rec}
-                      fmtCurrency={fmtCurrency}
-                      hasTables={hasTables}
-                      posCurrency={currency}
-                      eurExchangeRate={eurExchangeRate}
-                    />
-                  ))}
-                </div>
-              )}
-            </TicketPanel>
+function IconChartVat() {
+  return (
+    <span className="text-[11px] font-semibold leading-none tracking-tight">
+      %
+    </span>
+  );
+}
 
-            <TicketPanel
-              title={t(
-                hasTables ? 'reports.voidedToday' : 'reports.voidedSalesToday',
-              )}
-              count={voidedTickets.length}
-              error={voidedTicketsError}
-            >
-              {voidedTickets.length === 0 ? (
-                <div className="text-sm opacity-70">
-                  {t('reports.nothingVoided')}
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {voidedTickets.map((rec: any, idx: number) => (
-                    <VoidedReceiptCard
-                      key={`void-${rec.area}:${rec.tableLabel}:${rec.createdAt}:${idx}`}
-                      ticket={rec}
-                      fmtCurrency={fmtCurrency}
-                      hasTables={hasTables}
-                    />
-                  ))}
-                </div>
-              )}
-            </TicketPanel>
-          </div>
-        </section>
-      )}
+function TodayMetric({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 flex items-center gap-1 text-[color:var(--pos-fg-muted)]">
+        <span className="inline-flex size-4 shrink-0 items-center justify-center opacity-80">
+          {icon}
+        </span>
+        <span className="truncate text-[11px] font-medium leading-tight">
+          {label}
+        </span>
+      </div>
+      <div className="truncate text-[1.05rem] font-semibold tabular-nums tracking-tight text-[color:var(--pos-fg)] sm:text-lg">
+        {value}
+      </div>
     </div>
   );
 }
@@ -429,25 +594,36 @@ function TicketPanel({
   toolbar,
   children,
 }: {
-  title: string;
-  count: number;
+  title?: string;
+  count?: number;
   error?: string | null;
   toolbar?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col pos-card lg:min-h-0">
-      <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
-        <div className="font-medium">{title}</div>
-        <div className="text-xs opacity-70 tabular-nums">{count}</div>
-      </div>
+    <div
+      className={
+        title
+          ? 'pos-card flex min-h-0 flex-col lg:min-h-0'
+          : 'flex min-h-0 flex-col'
+      }
+    >
+      {title ? (
+        <div className="mb-2.5 flex shrink-0 items-center justify-between gap-2">
+          <div className="text-[14px] font-semibold tracking-tight text-[color:var(--pos-fg)]">
+            {title}
+          </div>
+          {typeof count === 'number' ? (
+            <span className="pos-badge tabular-nums">{count}</span>
+          ) : null}
+        </div>
+      ) : null}
       {error ? (
         <div className="pos-alert mb-2 shrink-0 text-xs">
           <span className="font-semibold">{error}</span>
         </div>
       ) : null}
       {toolbar ? <div className="mb-3 shrink-0">{toolbar}</div> : null}
-      {/* Nested scroll only on large screens; phones scroll the whole page. */}
       <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain lg:pr-1">
         {children}
       </div>
@@ -476,33 +652,6 @@ function TicketNoteLines({
           <span className="font-medium">{t('common.note')}:</span> {userNote}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function StatCard({
-  title,
-  value,
-  compact = false,
-}: {
-  title: string;
-  value: string;
-  compact?: boolean;
-}) {
-  return (
-    <div className={`pos-stat ${compact ? 'p-2.5 sm:p-3.5' : ''}`}>
-      <div
-        className={`pos-section-label ${compact ? 'line-clamp-2 text-[10px] leading-tight sm:text-[11px]' : ''}`}
-      >
-        {title}
-      </div>
-      <div
-        className={`mt-1 font-semibold tabular-nums tracking-tight text-gray-50 sm:mt-1.5 ${
-          compact ? 'text-base leading-tight sm:text-xl' : 'text-xl'
-        }`}
-      >
-        {value}
-      </div>
     </div>
   );
 }

@@ -1334,7 +1334,7 @@ export default function OrderPage() {
       : 0;
     setAmountPaid(
       String(
-        Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0)).toFixed(2),
+        Math.round(Math.max(0, base + (Number.isFinite(scAmt) ? scAmt : 0))),
       ),
     );
     setPrintReceipt(true);

@@ -177,7 +177,8 @@ export function Switch({
       onClick={() => onChange(!checked)}
       style={{ minHeight: 0 }}
       className={cn(
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors duration-100',
+        'relative inline-flex h-[1.5rem] w-[2.625rem] shrink-0 items-center rounded-full border transition-colors duration-100',
+        'before:absolute before:left-1/2 before:top-1/2 before:size-11 before:-translate-x-1/2 before:-translate-y-1/2',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50',
         checked
           ? 'border-transparent bg-[var(--pos-accent)]'
@@ -188,8 +189,8 @@ export function Switch({
     >
       <span
         className={cn(
-          'ml-0.5 size-4 rounded-full transition-transform duration-100',
-          checked ? 'translate-x-4 bg-white' : 'translate-x-0 bg-white',
+          'ml-0.5 size-5 rounded-full bg-white shadow-sm transition-transform duration-100',
+          checked ? 'translate-x-[1.125rem]' : 'translate-x-0',
         )}
       />
     </button>

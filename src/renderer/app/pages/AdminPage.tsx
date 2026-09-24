@@ -1124,11 +1124,11 @@ function formatMoney(amount: number, currency: string): string {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
       currency: currency || 'EUR',
-      maximumFractionDigits: 2,
-      minimumFractionDigits: 2,
-    }).format(n);
+      maximumFractionDigits: 0,
+      minimumFractionDigits: 0,
+    }).format(Math.round(n));
   } catch {
-    return `${n.toFixed(2)} ${currency || 'EUR'}`;
+    return `${Math.round(n)} ${currency || 'EUR'}`;
   }
 }
 

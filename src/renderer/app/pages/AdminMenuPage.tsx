@@ -1028,7 +1028,7 @@ function MenuImportModal({
   }
 
   const fmtPrice = (n: number) =>
-    Number.isInteger(n) ? String(n) : n.toFixed(2);
+    String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
@@ -1347,7 +1347,7 @@ function AddItemForm({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label={t('adminMenu.price')}>
           <Input
-            placeholder="0.00"
+            placeholder="0"
             inputMode="decimal"
             value={price}
             onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
@@ -1368,7 +1368,7 @@ function AddItemForm({
       {!hasTables ? (
         <Field label={t('stockPanel.unitCost')} hint={t('adminMenu.costHint')}>
           <Input
-            placeholder="0.00"
+            placeholder="0"
             inputMode="decimal"
             value={cost}
             onChange={(e) => setCost(e.target.value.replace(/[^0-9.]/g, ''))}
@@ -1685,7 +1685,10 @@ function ItemRow({
           </div>
         </div>
         <div className="shrink-0 text-[14px] font-semibold tabular-nums text-gray-50">
-          {Number(item.price).toFixed(2)}
+          {String(Math.round(Number(item.price) || 0)).replace(
+            /\B(?=(\d{3})+(?!\d))/g,
+            ',',
+          )}
         </div>
         <Switch
           checked={active}
@@ -1880,7 +1883,7 @@ function EditItemModal({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label={t('adminMenu.price')}>
             <Input
-              placeholder="0.00"
+              placeholder="0"
               inputMode="decimal"
               value={price}
               onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
