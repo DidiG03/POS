@@ -219,9 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.67"
-            echo "- Kitchen and customer tickets follow the admin menu category order"
-            echo "- Fix ordering when every category still has the default sortOrder (0)"
+            echo "### Changes in v0.2.68"
+            echo "- Larger, more readable customer receipt body text"
+            echo "- Bigger waiter / area / table header on kitchen tickets"
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
