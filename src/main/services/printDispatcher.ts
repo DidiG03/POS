@@ -24,6 +24,7 @@ import {
   findPrintRouteForCategory,
   normalizePrintRoutes,
 } from '@shared/printRoutes';
+import { sortKdsItemsByCategoryOrder } from './kdsStationRouting';
 import {
   ESC_POS_FONT_A,
   ESC_POS_PC850,
@@ -285,14 +286,25 @@ async function buildOrderBuckets(
   const skus = Array.from(
     new Set(items.map((it) => String(it?.sku || '')).filter(Boolean)),
   );
-  const menuRows = skus.length
-    ? await prisma.menuItem
-        .findMany({
-          where: { sku: { in: skus } },
-          select: { sku: true, station: true, categoryId: true },
-        } as any)
-        .catch(() => [])
-    : [];
+  const [menuRows, categories] = await Promise.all([
+    skus.length
+      ? prisma.menuItem
+          .findMany({
+            where: { sku: { in: skus } },
+            select: { sku: true, station: true, categoryId: true },
+          } as any)
+          .catch(() => [])
+      : [],
+    prisma.category
+      .findMany({ select: { id: true, sortOrder: true } } as any)
+      .catch(() => []),
+  ]);
+  const categoryOrder: Record<number, number> = {};
+  for (const category of categories as any[]) {
+    if (Number.isFinite(Number(category?.sortOrder))) {
+      categoryOrder[Number(category.id)] = Number(category.sortOrder);
+    }
+  }
   const bySku = new Map<string, { station?: string; categoryId?: number }>();
   for (const m of menuRows as any[]) {
     bySku.set(String(m.sku), {
@@ -306,7 +318,8 @@ async function buildOrderBuckets(
     string,
     { printerId: string; routeLabel: string; items: any[] }
   >();
-  for (const it of items) {
+  const orderedItems = sortKdsItemsByCategoryOrder(items, categoryOrder);
+  for (const it of orderedItems) {
     const sku = String(it?.sku || '');
     const info = sku ? bySku.get(sku) : undefined;
     const categoryId = Number.isFinite(Number(it?.categoryId))
@@ -629,10 +642,26 @@ export async function dispatchTicket(
   };
 
   if (!routingEnabled || kind !== 'ORDER') {
-    const r = await printWithProfile(payload, settings, fallback, {
+    const categoryRows = await prisma.category
+      .findMany({ select: { id: true, sortOrder: true } } as any)
+      .catch(() => []);
+    const categoryOrder: Record<number, number> = {};
+    for (const category of categoryRows as any[]) {
+      if (Number.isFinite(Number(category?.sortOrder))) {
+        categoryOrder[Number(category.id)] = Number(category.sortOrder);
+      }
+    }
+    const orderedPayload =
+      kind === 'ORDER'
+        ? {
+            ...payload,
+            items: sortKdsItemsByCategoryOrder(payload.items, categoryOrder),
+          }
+        : payload;
+    const r = await printWithProfile(orderedPayload, settings, fallback, {
       retries,
     });
-    if (!r.ok) await maybePersistRetry(payload, fallback.id, r.error);
+    if (!r.ok) await maybePersistRetry(orderedPayload, fallback.id, r.error);
     return {
       ok: r.ok,
       failures: r.ok ? 0 : 1,

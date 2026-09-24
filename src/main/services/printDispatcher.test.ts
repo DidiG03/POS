@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   defaultSendNetwork,
   findMenuItems,
+  findCategories,
   printJobCreate,
   printJobFindMany,
   printJobFindFirst,
@@ -38,6 +39,7 @@ const {
     return { ok: true as boolean };
   }
   const findMenuItems = vi.fn(async () => [] as any[]);
+  const findCategories = vi.fn(async () => [] as any[]);
   const printJobCreate = vi.fn(async (_args: unknown) => ({ id: 1 }) as any);
   const printJobFindMany = vi.fn(async () => [] as any[]);
   const printJobFindFirst = vi.fn(async () => null as any);
@@ -50,6 +52,7 @@ const {
   return {
     defaultSendNetwork,
     findMenuItems,
+    findCategories,
     printJobCreate,
     printJobFindMany,
     printJobFindFirst,
@@ -65,6 +68,7 @@ const {
 vi.mock('@db/client', () => ({
   prisma: {
     menuItem: { findMany: findMenuItems },
+    category: { findMany: findCategories },
     printJob: {
       create: printJobCreate,
       findMany: printJobFindMany,
@@ -104,6 +108,7 @@ import {
 
 beforeEach(() => {
   findMenuItems.mockReset().mockResolvedValue([]);
+  findCategories.mockReset().mockResolvedValue([]);
   printJobCreate.mockReset().mockImplementation(
     async (_args: unknown) =>
       ({
@@ -513,6 +518,55 @@ describe('dispatchTicket', () => {
     );
     expect(r.ok).toBe(true);
     expect(r.perPrinter.length).toBe(1);
+  });
+
+  it('orders an unrouted ORDER by the admin category order before printing', async () => {
+    findCategories.mockResolvedValue([
+      { id: 1, sortOrder: 0 },
+      { id: 2, sortOrder: 1 },
+      { id: 3, sortOrder: 2 },
+      { id: 4, sortOrder: 3 },
+    ]);
+
+    await dispatchTicket(
+      {
+        area: 'A',
+        tableLabel: 'T1',
+        items: [
+          { name: 'Parfe', qty: 1, unitPrice: 1, categoryId: 3 },
+          { name: 'Antipasta', qty: 1, unitPrice: 1, categoryId: 1 },
+          { name: 'Pice ulishtja', qty: 1, unitPrice: 1, categoryId: 4 },
+          { name: 'Salmon', qty: 1, unitPrice: 1, categoryId: 2 },
+        ],
+        meta: { kind: 'ORDER' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'r',
+            name: 'R',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.1',
+            port: 9100,
+          },
+        ],
+        printerRouting: { enabled: false },
+      } as any,
+      { retries: 0 },
+    );
+
+    expect(buildEscpos).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({ name: 'Antipasta' }),
+          expect.objectContaining({ name: 'Salmon' }),
+          expect.objectContaining({ name: 'Parfe' }),
+          expect.objectContaining({ name: 'Pice ulishtja' }),
+        ],
+      }),
+      expect.anything(),
+    );
   });
 
   it('routing ON + ORDER: legacy category map still merges categories on the same printer', async () => {
