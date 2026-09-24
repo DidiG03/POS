@@ -154,6 +154,7 @@ export async function createKdsTicketFromLog(
     categoryIdToKdsStation: {},
     categoryIdToSortOrder: {},
     skuToKdsStation: {},
+    skuToCategoryId: {},
   }));
   const decorated = decorateKdsTicketItemsFromCategory(rawLines, routing);
   const batches = kdsFireBatches(decorated).filter(

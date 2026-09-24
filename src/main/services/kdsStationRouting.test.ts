@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   ALL_KDS_STATIONS,
+  buildCategoryDisplayOrder,
   decorateKdsTicketItemsFromCategory,
   enabledStationsFromSettings,
+  enrichItemsWithCategoryId,
   kdsStationsWithActiveItems,
   sortKdsItemsByCategoryOrder,
 } from './kdsStationRouting';
@@ -40,6 +42,7 @@ describe('disabled stations stop routing', () => {
     categoryIdToKdsStation: { 1: 'KITCHEN', 2: 'BAR' },
     categoryIdToSortOrder: {},
     skuToKdsStation: {},
+    skuToCategoryId: {},
   };
 
   it('drops a disabled station from the fan-out', () => {
@@ -75,5 +78,65 @@ describe('KDS category ordering', () => {
       'Pizza',
       'Note',
     ]);
+  });
+
+  it('ties items in the same category by name', () => {
+    const sorted = sortKdsItemsByCategoryOrder(
+      [
+        { name: 'Burrata', categoryId: 1 },
+        { name: 'Antipastë e shtëpisë', categoryId: 1 },
+      ],
+      { 1: 0 },
+    );
+    expect(sorted.map((item) => item.name)).toEqual([
+      'Antipastë e shtëpisë',
+      'Burrata',
+    ]);
+  });
+});
+
+describe('buildCategoryDisplayOrder', () => {
+  it('ranks tied sortOrder values by category id (admin list order)', () => {
+    const rank = buildCategoryDisplayOrder([
+      { id: 9, sortOrder: 0 },
+      { id: 5, sortOrder: 0 },
+      { id: 8, sortOrder: 0 },
+      { id: 6, sortOrder: 0 },
+      { id: 12, sortOrder: 0 },
+      { id: 7, sortOrder: 0 },
+    ]);
+    const sorted = sortKdsItemsByCategoryOrder(
+      [
+        { name: 'Tortë me Portokall', categoryId: 9 },
+        { name: 'Tavë karkalec', categoryId: 8 },
+        { name: 'Fileto Viçi', categoryId: 7 },
+        { name: 'Pene me gjalpë', categoryId: 6 },
+        { name: 'Karpaco viçi', categoryId: 5 },
+        { name: 'Zhveps', categoryId: 12 },
+      ],
+      rank,
+    );
+    expect(sorted.map((item) => item.name)).toEqual([
+      'Karpaco viçi',
+      'Pene me gjalpë',
+      'Fileto Viçi',
+      'Tavë karkalec',
+      'Tortë me Portokall',
+      'Zhveps',
+    ]);
+  });
+});
+
+describe('enrichItemsWithCategoryId', () => {
+  it('fills missing categoryId from SKU without overwriting known ids', () => {
+    const enriched = enrichItemsWithCategoryId(
+      [
+        { name: 'Steak', sku: 'steak', categoryId: 9 },
+        { name: 'Salad', sku: 'salad' },
+        { name: 'Note' },
+      ],
+      { steak: 4, salad: 1 },
+    );
+    expect(enriched.map((item) => item.categoryId)).toEqual([9, 1, undefined]);
   });
 });

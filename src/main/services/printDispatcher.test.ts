@@ -569,6 +569,99 @@ describe('dispatchTicket', () => {
     );
   });
 
+  it('orders customer TICKET prints by admin category order', async () => {
+    findCategories.mockResolvedValue([
+      { id: 1, sortOrder: 0 },
+      { id: 2, sortOrder: 1 },
+      { id: 3, sortOrder: 2 },
+    ]);
+
+    await dispatchTicket(
+      {
+        area: 'Salla',
+        tableLabel: '1',
+        items: [
+          { name: 'Linguini fruta deti', qty: 1, unitPrice: 1, categoryId: 2 },
+          { name: 'Antipastë e shtëpisë', qty: 1, unitPrice: 1, categoryId: 1 },
+          { name: 'Sufle me Parfe', qty: 1, unitPrice: 1, categoryId: 3 },
+        ],
+        meta: { kind: 'TICKET' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'r',
+            name: 'R',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.1',
+            port: 9100,
+          },
+        ],
+        printerRouting: { enabled: false },
+      } as any,
+      { retries: 0 },
+    );
+
+    expect(buildEscpos).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({ name: 'Antipastë e shtëpisë' }),
+          expect.objectContaining({ name: 'Linguini fruta deti' }),
+          expect.objectContaining({ name: 'Sufle me Parfe' }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('enriches SKU-only ORDER lines before sorting by category', async () => {
+    findCategories.mockResolvedValue([
+      { id: 1, sortOrder: 0 },
+      { id: 2, sortOrder: 1 },
+    ]);
+    findMenuItems.mockResolvedValue([
+      { sku: 'burrata', categoryId: 1 },
+      { sku: 'steak', categoryId: 2 },
+    ]);
+
+    await dispatchTicket(
+      {
+        area: 'A',
+        tableLabel: 'T1',
+        items: [
+          { name: 'Biftek', qty: 1, unitPrice: 1, sku: 'steak' },
+          { name: 'Burrata', qty: 1, unitPrice: 1, sku: 'burrata' },
+        ],
+        meta: { kind: 'ORDER' },
+      } as any,
+      {
+        printers: [
+          {
+            id: 'r',
+            name: 'R',
+            enabled: true,
+            mode: 'NETWORK',
+            ip: '10.0.0.1',
+            port: 9100,
+          },
+        ],
+        printerRouting: { enabled: false },
+      } as any,
+      { retries: 0 },
+    );
+
+    expect(buildEscpos).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({ name: 'Burrata', categoryId: 1 }),
+          expect.objectContaining({ name: 'Biftek', categoryId: 2 }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
   it('routing ON + ORDER: legacy category map still merges categories on the same printer', async () => {
     const r = await dispatchTicket(
       {

@@ -19,6 +19,7 @@ import {
   type KdsFloorOrder,
 } from '@shared/kdsFloorOrders';
 import {
+  enrichItemsWithCategoryId,
   loadKdsRoutingFromDb,
   sortKdsItemsByCategoryOrder,
 } from './kdsStationRouting';
@@ -147,9 +148,9 @@ export async function formatKdsTicketListRows(
   );
 
   const voidedOrderIds = await voidedClosedOrderIds(rows);
-  const categoryOrder = await loadKdsRoutingFromDb(prisma)
-    .then((routing) => routing.categoryIdToSortOrder)
-    .catch(() => ({}));
+  const routing = await loadKdsRoutingFromDb(prisma).catch(() => null);
+  const categoryOrder = routing?.categoryIdToSortOrder ?? {};
+  const skuToCategoryId = routing?.skuToCategoryId ?? {};
 
   return (rows as any[])
     .map((r: any) => {
@@ -167,12 +168,14 @@ export async function formatKdsTicketListRows(
 
       const itemsAll = Array.isArray(t?.itemsJson) ? t.itemsJson : [];
       const stationItems = sortKdsItemsByCategoryOrder(
-        itemsAll.map((it: any, idx: number) => ({ ...it, _idx: idx })),
+        enrichItemsWithCategoryId(
+          itemsAll.map((it: any, idx: number) => ({ ...it, _idx: idx })),
+          skuToCategoryId,
+        ),
         categoryOrder,
-      )
-        .filter(
-          (it: any) => String(it?.station || '').toUpperCase() === station,
-        );
+      ).filter(
+        (it: any) => String(it?.station || '').toUpperCase() === station,
+      );
       if (stationItems.length === 0) return null;
 
       let items = stationItems;
@@ -267,13 +270,15 @@ export async function getKdsTicketDetail(
     (row.userId ? waiterById.get(Number(row.userId)) : null) ??
     null;
 
+  const routing = await loadKdsRoutingFromDb(prisma).catch(() => null);
   const itemsAll = sortKdsItemsByCategoryOrder(
-    (Array.isArray(row.itemsJson) ? row.itemsJson : []).map(
-      (it: any, idx: number) => ({ ...it, _idx: idx }),
+    enrichItemsWithCategoryId(
+      (Array.isArray(row.itemsJson) ? row.itemsJson : []).map(
+        (it: any, idx: number) => ({ ...it, _idx: idx }),
+      ),
+      routing?.skuToCategoryId ?? {},
     ),
-    await loadKdsRoutingFromDb(prisma)
-      .then((routing) => routing.categoryIdToSortOrder)
-      .catch(() => ({})),
+    routing?.categoryIdToSortOrder ?? {},
   );
   const byStation = new Map<
     string,

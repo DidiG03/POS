@@ -121,7 +121,7 @@ export async function listMenuCategoriesForClient(opts?: {
   const includeInactive = opts?.includeInactiveItems !== false;
   const cats = await prisma.category.findMany({
     where: { active: true },
-    orderBy: { sortOrder: 'asc' },
+    orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
     include: {
       items: {
         ...(includeInactive ? {} : { where: { active: true } }),

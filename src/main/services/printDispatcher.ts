@@ -24,7 +24,11 @@ import {
   findPrintRouteForCategory,
   normalizePrintRoutes,
 } from '@shared/printRoutes';
-import { sortKdsItemsByCategoryOrder } from './kdsStationRouting';
+import {
+  buildCategoryDisplayOrder,
+  enrichItemsWithCategoryId,
+  sortKdsItemsByCategoryOrder,
+} from './kdsStationRouting';
 import {
   ESC_POS_FONT_A,
   ESC_POS_PC850,
@@ -259,6 +263,45 @@ function printerNamesFromSettings(settings: any): Record<string, string> {
 }
 
 /**
+ * Align printed lines with the admin menu category order. SKU-only lines
+ * get `categoryId` filled from the live menu first so they still sort.
+ */
+async function orderPayloadItemsForPrint(
+  items: any[] | undefined,
+): Promise<any[]> {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return list;
+  const skus = Array.from(
+    new Set(list.map((it) => String(it?.sku || '')).filter(Boolean)),
+  );
+  const [menuRows, categories] = await Promise.all([
+    skus.length
+      ? prisma.menuItem
+          .findMany({
+            where: { sku: { in: skus } },
+            select: { sku: true, categoryId: true },
+          } as any)
+          .catch(() => [])
+      : [],
+    prisma.category
+      .findMany({ select: { id: true, sortOrder: true } } as any)
+      .catch(() => []),
+  ]);
+  const categoryOrder = buildCategoryDisplayOrder(categories as any[]);
+  const skuToCategoryId: Record<string, number> = {};
+  for (const m of menuRows as any[]) {
+    const categoryId = Number(m.categoryId);
+    if (Number.isFinite(categoryId) && categoryId > 0) {
+      skuToCategoryId[String(m.sku)] = categoryId;
+    }
+  }
+  return sortKdsItemsByCategoryOrder(
+    enrichItemsWithCategoryId(list, skuToCategoryId),
+    categoryOrder,
+  );
+}
+
+/**
  * For routed ORDER tickets: one slip per named routing whose categories
  * appear on the order. Two routings that share a printer still produce
  * two tickets. Items whose category is on no routing fall through to
@@ -299,18 +342,19 @@ async function buildOrderBuckets(
       .findMany({ select: { id: true, sortOrder: true } } as any)
       .catch(() => []),
   ]);
-  const categoryOrder: Record<number, number> = {};
-  for (const category of categories as any[]) {
-    if (Number.isFinite(Number(category?.sortOrder))) {
-      categoryOrder[Number(category.id)] = Number(category.sortOrder);
-    }
-  }
+  const categoryOrder = buildCategoryDisplayOrder(categories as any[]);
   const bySku = new Map<string, { station?: string; categoryId?: number }>();
+  const skuToCategoryId: Record<string, number> = {};
   for (const m of menuRows as any[]) {
-    bySku.set(String(m.sku), {
+    const sku = String(m.sku);
+    const categoryId = Number(m.categoryId);
+    bySku.set(sku, {
       station: String(m.station || ''),
-      categoryId: Number(m.categoryId),
+      categoryId,
     });
+    if (Number.isFinite(categoryId) && categoryId > 0) {
+      skuToCategoryId[sku] = categoryId;
+    }
   }
 
   const FALLBACK_KEY = '__fallback__';
@@ -318,7 +362,11 @@ async function buildOrderBuckets(
     string,
     { printerId: string; routeLabel: string; items: any[] }
   >();
-  const orderedItems = sortKdsItemsByCategoryOrder(items, categoryOrder);
+  // Enrich before sort so SKU-only lines still follow admin category order.
+  const orderedItems = sortKdsItemsByCategoryOrder(
+    enrichItemsWithCategoryId(items, skuToCategoryId),
+    categoryOrder,
+  );
   for (const it of orderedItems) {
     const sku = String(it?.sku || '');
     const info = sku ? bySku.get(sku) : undefined;
@@ -642,22 +690,10 @@ export async function dispatchTicket(
   };
 
   if (!routingEnabled || kind !== 'ORDER') {
-    const categoryRows = await prisma.category
-      .findMany({ select: { id: true, sortOrder: true } } as any)
-      .catch(() => []);
-    const categoryOrder: Record<number, number> = {};
-    for (const category of categoryRows as any[]) {
-      if (Number.isFinite(Number(category?.sortOrder))) {
-        categoryOrder[Number(category.id)] = Number(category.sortOrder);
-      }
-    }
-    const orderedPayload =
-      kind === 'ORDER'
-        ? {
-            ...payload,
-            items: sortKdsItemsByCategoryOrder(payload.items, categoryOrder),
-          }
-        : payload;
+    const orderedPayload = {
+      ...payload,
+      items: await orderPayloadItemsForPrint(payload.items),
+    };
     const r = await printWithProfile(orderedPayload, settings, fallback, {
       retries,
     });

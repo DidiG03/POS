@@ -31,7 +31,35 @@ export type KdsRoutingMaps = {
   categoryIdToKdsStation: Record<number, string | null>;
   categoryIdToSortOrder: Record<number, number>;
   skuToKdsStation: Record<string, string | null>;
+  skuToCategoryId: Record<string, number>;
 };
+
+/**
+ * Rank matching the admin menu list: `sortOrder` ascending, then `id`.
+ * Raw `sortOrder` alone is not enough — installs often leave every
+ * category at the default `0`, and the UI still shows a stable order by id.
+ */
+export function buildCategoryDisplayOrder(
+  categories: Array<{ id: number; sortOrder?: number | null }>,
+): Record<number, number> {
+  const ordered = [...(Array.isArray(categories) ? categories : [])].sort(
+    (a, b) => {
+      const ao = Number(a.sortOrder);
+      const bo = Number(b.sortOrder);
+      const aOk = Number.isFinite(ao);
+      const bOk = Number.isFinite(bo);
+      if (aOk && bOk && ao !== bo) return ao - bo;
+      if (aOk !== bOk) return aOk ? -1 : 1;
+      return Number(a.id) - Number(b.id);
+    },
+  );
+  const out: Record<number, number> = {};
+  ordered.forEach((c, index) => {
+    const id = Number(c.id);
+    if (Number.isFinite(id)) out[id] = index;
+  });
+  return out;
+}
 
 export function buildKdsRoutingMaps(
   categories: Array<{
@@ -42,25 +70,28 @@ export function buildKdsRoutingMaps(
   menuItems: Array<{ sku: string; categoryId: number }>,
 ): KdsRoutingMaps {
   const categoryIdToKdsStation: Record<number, string | null> = {};
-  const categoryIdToSortOrder: Record<number, number> = {};
   for (const c of categories) {
     categoryIdToKdsStation[c.id] = c.kdsStation
       ? String(c.kdsStation).toUpperCase()
       : null;
-    if (Number.isFinite(Number(c.sortOrder))) {
-      categoryIdToSortOrder[c.id] = Number(c.sortOrder);
-    }
   }
+  const categoryIdToSortOrder = buildCategoryDisplayOrder(categories);
   const skuToKdsStation: Record<string, string | null> = {};
+  const skuToCategoryId: Record<string, number> = {};
   for (const item of menuItems) {
     const sku = String(item.sku || '').trim();
     if (!sku) continue;
-    skuToKdsStation[sku] = categoryIdToKdsStation[item.categoryId] ?? null;
+    const categoryId = Number(item.categoryId);
+    skuToKdsStation[sku] = categoryIdToKdsStation[categoryId] ?? null;
+    if (Number.isFinite(categoryId) && categoryId > 0) {
+      skuToCategoryId[sku] = categoryId;
+    }
   }
   return {
     categoryIdToKdsStation,
     categoryIdToSortOrder,
     skuToKdsStation,
+    skuToCategoryId,
   };
 }
 
@@ -76,8 +107,26 @@ export async function loadKdsRoutingFromDb(
   return buildKdsRoutingMaps(categories, menuItems);
 }
 
-/** Sort ticket lines by the admin-defined category order without reordering
- * lines whose category is unavailable (legacy tickets or deleted categories). */
+/** Fill missing `categoryId` from the live menu SKU map so sort/routing
+ * still follow the admin category order when lines only carry a SKU. */
+export function enrichItemsWithCategoryId(
+  items: any[],
+  skuToCategoryId: Record<string, number>,
+): any[] {
+  return (Array.isArray(items) ? items : []).map((it) => {
+    const existing = Number(it?.categoryId);
+    if (Number.isFinite(existing) && existing > 0) return it;
+    const sku = String(it?.sku || '').trim();
+    const fromSku = sku ? Number(skuToCategoryId[sku]) : NaN;
+    if (Number.isFinite(fromSku) && fromSku > 0) {
+      return { ...it, categoryId: fromSku };
+    }
+    return it;
+  });
+}
+
+/** Sort ticket lines by the admin-defined category order (then name),
+ * without reordering lines whose category is unavailable. */
 export function sortKdsItemsByCategoryOrder(
   items: any[],
   categoryIdToSortOrder: Record<number, number>,
@@ -91,6 +140,12 @@ export function sortKdsItemsByCategoryOrder(
       const bKnown = Number.isFinite(bOrder);
       if (aKnown && bKnown && aOrder !== bOrder) return aOrder - bOrder;
       if (aKnown !== bKnown) return aKnown ? -1 : 1;
+      const byName = String(a.item?.name || '').localeCompare(
+        String(b.item?.name || ''),
+        undefined,
+        { sensitivity: 'base' },
+      );
+      if (byName !== 0) return byName;
       return a.index - b.index;
     })
     .map(({ item }) => item);
@@ -104,7 +159,11 @@ export function decorateKdsTicketItemsFromCategory(
   const out: any[] = [];
   for (const it of Array.isArray(lines) ? lines : []) {
     const sku = String(it?.sku || '').trim();
-    const catId = Number(it?.categoryId);
+    let catId = Number(it?.categoryId);
+    if (!(Number.isFinite(catId) && catId > 0) && sku) {
+      const fromSku = Number(routing.skuToCategoryId?.[sku]);
+      if (Number.isFinite(fromSku) && fromSku > 0) catId = fromSku;
+    }
     let station: string | null = null;
     if (Number.isFinite(catId) && catId > 0) {
       station = routing.categoryIdToKdsStation[catId] ?? null;
@@ -113,7 +172,11 @@ export function decorateKdsTicketItemsFromCategory(
       station = routing.skuToKdsStation[sku] ?? null;
     }
     if (!station) continue;
-    out.push({ ...it, station });
+    out.push({
+      ...it,
+      ...(Number.isFinite(catId) && catId > 0 ? { categoryId: catId } : null),
+      station,
+    });
   }
   return out;
 }

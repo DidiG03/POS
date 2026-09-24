@@ -79,7 +79,9 @@ describe('createKdsTicketFromLog', () => {
     readSettings.mockResolvedValue({ kds: { stations: { KITCHEN: true } } });
     loadKdsRoutingFromDb.mockResolvedValue({
       categoryIdToKdsStation: {},
+      categoryIdToSortOrder: {},
       skuToKdsStation: {},
+      skuToCategoryId: {},
     });
     kdsOrderFindFirst.mockResolvedValue({ id: 10, orderNo: 5 });
     kdsTicketStationFindFirst.mockResolvedValue(null);
