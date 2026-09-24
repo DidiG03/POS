@@ -314,6 +314,9 @@ export function buildEscposTicket(
     meta?.method || meta?.paymentMethod || '',
   ).toUpperCase();
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
+  // Guest bills/receipts need readable body text; kitchen ORDER stays as-is.
+  const customerReceipt = kind !== 'ORDER';
+  const bodySize = customerReceipt ? 'md' : 'normal';
   const itemsToPrint: TicketPrintItem[] = hidePrices
     ? payload.items || []
     : aggregateTicketItems(payload.items || []);
@@ -327,7 +330,7 @@ export function buildEscposTicket(
     for (const ln of wrapEscposText(restaurant, layout.doubleWidthCols)) {
       lines.push(escposText(`${ln}\n`));
     }
-    lines.push(cmdTextSize('normal'));
+    lines.push(cmdTextSize(bodySize));
     lines.push(cmdBold(false));
     // Subtitle: address + phone (business info)
     const subtitleLines: string[] = [];
@@ -380,10 +383,13 @@ export function buildEscposTicket(
       lines.push(cmdTextSize('normal'));
       lines.push(cmdBold(false));
     }
-    const identityLines = kitchenOrderIdentityLines(payload, layout.cols);
+    const identityLines = kitchenOrderIdentityLines(
+      payload,
+      layout.doubleWidthCols,
+    );
     if (identityLines.length) {
       lines.push(cmdBold(true));
-      lines.push(cmdTextSize('md'));
+      lines.push(cmdTextSize('lg'));
       for (const ln of identityLines) {
         lines.push(escposText(`${ln}\n`));
       }
@@ -483,9 +489,9 @@ export function buildEscposTicket(
       );
     }
     lines.push(cmdBold(true));
-    lines.push(cmdTextSize('md'));
+    lines.push(cmdTextSize(customerReceipt ? 'lg' : 'md'));
     lines.push(...twoCol(copy.total, formatMoneyEscpos(totalFinal), layout));
-    lines.push(cmdTextSize('normal'));
+    lines.push(cmdTextSize(bodySize));
     lines.push(cmdBold(false));
     // Guest receipts (paid or unpaid bill) show LEK + EUR when Kursi EUR
     // is set — fiscalization is unrelated.
@@ -783,27 +789,30 @@ export function buildHtmlReceipt(
     <style>
       @page { size: ${paperMm}mm auto; margin: 2mm; }
       html, body { width: 100%; margin: 0; padding: 0; }
-      body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #000; font-size: 13px; }
+      body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #000; font-size: 15px; }
       .title { text-align: center; font-weight: 800; font-size: 22px; margin: 2px 0 6px; }
       .titleSlip { text-align: center; font-weight: 500; font-size: 12px; margin: 2px 0 6px; }
       .subtitle { text-align: center; margin: -2px 0 6px; }
+      .meta { margin: 2px 0; }
       .sep { border-top: 1px dashed #000; margin: 6px 0; }
-      .small { font-size: 11px; }
-      .row { display: flex; justify-content: space-between; gap: 8px; }
+      .small { font-size: 13px; }
+      .row { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; }
       .left { flex: 1; word-break: break-word; }
       .right { min-width: 70px; text-align: right; white-space: nowrap; }
-      .note { margin-left: 8px; font-size: 11px; }
+      .note { margin-left: 8px; font-size: 13px; }
       .orderItem { font-size: 22px; font-weight: 800; line-height: 1.2; margin: 3px 0; }
       .orderFoot { font-size: 22px; font-weight: 800; line-height: 1.2; margin: 4px 0 2px; }
+      .orderIdentity { font-size: 28px; font-weight: 800; line-height: 1.15; margin: 4px 0 6px; }
+      .total { font-weight: 800; font-size: 18px; }
+      .paid { text-align: center; font-weight: 800; font-size: 16px; margin: 2px 0; }
       .footer { text-align: center; margin-top: 10px; }
-      .paid { text-align: center; font-weight: 800; font-size: 14px; margin: 2px 0; }
     </style>
   </head>
   <body>
     ${
       kind === 'ORDER'
         ? `${routeLabel ? `<div class="orderFoot">${safe(routeLabel)}</div>` : ''}
-    ${orderIdentity ? `<div class="orderFoot">${safe(orderIdentity)}</div>` : ''}
+    ${orderIdentity ? `<div class="orderIdentity">${safe(orderIdentity)}</div>` : ''}
     <div class="sep"></div>`
         : `<div class="title">${safe(restaurant)}</div>
     ${subtitleHtml}
@@ -823,7 +832,7 @@ export function buildHtmlReceipt(
     ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
     ${scLine}
     ${discountLine}
-    <div class="row" style="font-weight:700"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>${
+    <div class="row total"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>${
       fx.lek != null
         ? `<div class="row"><div class="left">${safe(copy.totalLek)}</div><div class="right">${safe(formatMoney(fx.lek, 'ALL'))}</div></div>`
         : ''

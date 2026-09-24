@@ -79,6 +79,28 @@ describe('buildEscposTicket width', () => {
     meta: { kind: 'PAYMENT' as const, method: 'CASH', totalAfter: 2400 },
   };
 
+  it('prints customer receipt body at double height for readability', () => {
+    const payment = buildEscposTicket(payload, {
+      restaurantName: 'Test',
+      currency: 'EUR',
+    } as any);
+    // GS ! n — body uses double-height (0x01); TOTAL uses double width+height (0x11)
+    expect(payment.includes(Buffer.from([0x1d, 0x21, 0x01]))).toBe(true);
+    expect(payment.includes(Buffer.from([0x1d, 0x21, 0x11]))).toBe(true);
+
+    const kitchen = buildEscposTicket(
+      {
+        ...payload,
+        meta: { kind: 'ORDER' as const, station: 'KITCHEN', hidePrices: true },
+      },
+      { restaurantName: 'Test', currency: 'EUR' } as any,
+    );
+    // Kitchen body stays large for items; it should not switch into the
+    // customer double-height-only body mode after a brand header.
+    const text = kitchen.toString('latin1');
+    expect(text).not.toContain('Waiter:');
+  });
+
   it('prints a 48-char rule on 80mm paper', () => {
     const buf = buildEscposTicket(payload, {
       restaurantName: 'OneTap',
@@ -153,6 +175,25 @@ describe('buildEscposTicket width', () => {
     expect(text).not.toContain('Covers:');
   });
 
+  it('prints kitchen ORDER waiter/table identity at double size', () => {
+    const kitchen = buildEscposTicket(
+      {
+        area: 'Salla',
+        tableLabel: 'T1',
+        userName: 'DidiG03',
+        items: [{ name: 'Steak', qty: 1, unitPrice: 0, station: 'KITCHEN' }],
+        meta: { kind: 'ORDER' as const },
+      },
+      { restaurantName: 'Test', currency: 'EUR' } as any,
+    );
+    const text = kitchen.toString('latin1');
+    const idAt = text.indexOf('DidiG03 - Salla - T1');
+    expect(idAt).toBeGreaterThan(-1);
+    // GS ! 0x11 (double width+height) must appear before the identity line.
+    const lg = Buffer.from([0x1d, 0x21, 0x11]).toString('latin1');
+    expect(text.lastIndexOf(lg, idAt)).toBeGreaterThan(-1);
+  });
+
   it('prints a compact kitchen ORDER slip with waiter/table then items then time', () => {
     const kitchen = buildEscposTicket(
       {
@@ -169,10 +210,10 @@ describe('buildEscposTicket width', () => {
     expect(text).toContain('Steak');
     expect(text).toMatch(/Steak\s+1/);
     expect(text).not.toContain('1 x Steak');
-    expect(text).toContain('Sefrid - Salla Brenda - T1');
-    expect(text.indexOf('Sefrid - Salla Brenda - T1')).toBeLessThan(
-      text.indexOf('Steak'),
-    );
+    // Double-width header may split long "name - area - table" across lines.
+    expect(text).toContain('Sefrid');
+    expect(text).toContain('Salla Brenda - T1');
+    expect(text.indexOf('Sefrid')).toBeLessThan(text.indexOf('Steak'));
     expect(text.indexOf('Steak')).toBeLessThan(
       text.search(/\d{2}\/\d{2}\/\d{4}/),
     );
@@ -195,6 +236,7 @@ describe('buildEscposTicket width', () => {
     expect(html).toContain('>Steak</div>');
     expect(html).toContain('>1</div>');
     expect(html).toContain('Sefrid - Salla Brenda - T1');
+    expect(html).toContain('orderIdentity');
     expect(html.indexOf('Sefrid - Salla Brenda - T1')).toBeLessThan(
       html.indexOf('>Steak</div>'),
     );
