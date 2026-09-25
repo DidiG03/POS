@@ -1,0 +1,148 @@
+name: Release Android Waiter
+
+# Builds the signed OneTap Waiter Android App Bundle (.aab) for Google Play.
+# Trigger:
+#   - Push `v*` (same tag as POS) so the .aab lands on that GitHub Release.
+#   - Push `android-v*` for an Android-only rebuild.
+#   - Manual run from Actions → "Run workflow".
+#
+# Required repository secrets (upload key, see android/keystore.properties.example):
+#   ANDROID_KEYSTORE_BASE64   base64 of the upload keystore file
+#   ANDROID_KEYSTORE_PASSWORD store password
+#   ANDROID_KEY_ALIAS         key alias
+#   ANDROID_KEY_PASSWORD      key password
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'android-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Attach the .aab to the GitHub Release for this version'
+        required: true
+        default: 'true'
+
+concurrency:
+  group: release-android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build signed .aab
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build mobile web bundle
+        run: pnpm build:mobile
+
+      - name: Sync Capacitor Android project
+        run: pnpm exec cap sync android
+
+      - name: Configure upload key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing repository secret $name (Play uploads must be signed)"
+              exit 1
+            fi
+          done
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/release.keystore
+          {
+            echo "storeFile=release.keystore"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+          } > android/keystore.properties
+          keytool -list -keystore android/release.keystore \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+      - name: Build release bundle
+        working-directory: android
+        run: ./gradlew --no-daemon bundleRelease
+
+      - name: Verify signature and rename
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          SRC=android/app/build/outputs/bundle/release/app-release.aab
+          jarsigner -verify "$SRC" | tee /tmp/verify.txt
+          grep -q 'jar verified' /tmp/verify.txt
+          mkdir -p dist-android
+          cp "$SRC" "dist-android/OneTap-Waiter-${VERSION}.aab"
+          ls -la dist-android
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f android/release.keystore android/keystore.properties
+
+      - name: Upload .aab as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-waiter-aab
+          path: dist-android/*.aab
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Attach to GitHub Release
+    needs: build
+    if: >-
+      github.event_name == 'push' ||
+      github.event.inputs.publish != 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download .aab
+        uses: actions/download-artifact@v4
+        with:
+          name: android-waiter-aab
+          path: dist-android
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
+          gh_ensure_release "$TAG" "${VERSION}" \
+            "OneTap ${VERSION}."
+          gh_upload_with_retry "$TAG" dist-android/*.aab
+          echo "Attached Android bundle to https://github.com/${{ github.repository }}/releases/tag/${TAG}"

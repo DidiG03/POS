@@ -32,3 +32,4 @@ android/app/release
 android/app/debug
 android/captures
 android/.idea
+dist-android
