@@ -1,0 +1,37 @@
+--- src/main/index.ts
++++ src/main/index.ts
+@@ -3529,8 +3529,6 @@
+       async () => {
+         // Open if needed inside the same lock as the TicketLog write —
+         // phones used to open in a prior LAN call that often lost the race.
+-        await ensureOccupiedForTicketWrite(sanitizedArea, sanitizedTableLabel);
+-
+         // Anti-collision: if the latest log row IN THIS OPEN SESSION was
+         // written by a different waiter (and the actor isn't an admin),
+         // the actor is operating on a stale view — most likely both
+@@ -3590,6 +3588,9 @@
+           sanitizedTableLabel,
+         ).catch(() => null);
+
++        // Ensure it is opened only after checking constraints, right before the transaction
++        await ensureOccupiedForTicketWrite(sanitizedArea, sanitizedTableLabel);
++
+         try {
+           await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+             await tx.ticketLog.create({
+@@ -4149,6 +4150,15 @@
+       where: { id: sitting.id },
+       data: { itemsJson: items },
+     });
++
++    // If this void operation clears out all unpaid items, close the table
++    // otherwise it remains a ghost table.
++    const remainingPlan = planTicketVoid(items);
++    if (remainingPlan.outcome === 'paid' || remainingPlan.outcome === 'empty') {
++      await withTableLock(area, tableLabel, async () => {
++        await applyTableOpenState(area, tableLabel, false);
++      });
++    }
+   }
+   try {
+     broadcastTicketsChanged({
