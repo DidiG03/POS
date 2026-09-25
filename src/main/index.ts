@@ -3529,8 +3529,6 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
       async () => {
         // Open if needed inside the same lock as the TicketLog write —
         // phones used to open in a prior LAN call that often lost the race.
-        await ensureOccupiedForTicketWrite(sanitizedArea, sanitizedTableLabel);
-
         // Anti-collision: if the latest log row IN THIS OPEN SESSION was
         // written by a different waiter (and the actor isn't an admin),
         // the actor is operating on a stale view — most likely both
@@ -3587,6 +3585,9 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
           sanitizedArea,
           sanitizedTableLabel,
         ).catch(() => null);
+
+        // Ensure it is opened only after checking constraints, right before the transaction
+        await ensureOccupiedForTicketWrite(sanitizedArea, sanitizedTableLabel);
 
         try {
           await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -4148,6 +4149,15 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
       where: { id: sitting.id },
       data: { itemsJson: items },
     });
+
+    // If this void operation clears out all unpaid items, close the table
+    // otherwise it remains a ghost table.
+    const remainingPlan = planTicketVoid(items);
+    if (remainingPlan.outcome === 'paid' || (remainingPlan.outcome === 'ok' && remainingPlan.keptPaidCount === 0 && items.filter((i: any) => !i.voided).length === 0)) {
+      await withTableLock(area, tableLabel, async () => {
+        await applyTableOpenState(area, tableLabel, false);
+      });
+    }
   }
   try {
     broadcastTicketsChanged({

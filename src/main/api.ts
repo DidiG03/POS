@@ -1697,13 +1697,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           sanitizedArea,
           sanitizedTableLabel,
           async () => {
-            // Open if needed inside the same lock as the TicketLog write —
-            // phones used to open in a prior LAN call that often lost the race.
-            await ensureOccupiedForTicketWrite(
-              sanitizedArea,
-              sanitizedTableLabel,
-            );
-
             const ownerId = await getCurrentSessionOwnerId(
               sanitizedArea,
               sanitizedTableLabel,
@@ -1733,6 +1726,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               sanitizedArea,
               sanitizedTableLabel,
             ).catch(() => null);
+
+            // Open if needed inside the same lock as the TicketLog write —
+            // phones used to open in a prior LAN call that often lost the race.
+            // Executed here so a failure in the ownership check doesn't leave ghost tables.
+            await ensureOccupiedForTicketWrite(
+              sanitizedArea,
+              sanitizedTableLabel,
+            );
 
             try {
               await prisma.ticketLog.create({
