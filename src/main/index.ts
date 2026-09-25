@@ -4153,7 +4153,7 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
     // If this void operation clears out all unpaid items, close the table
     // otherwise it remains a ghost table.
     const remainingPlan = planTicketVoid(items);
-    if (remainingPlan.outcome === 'paid' || remainingPlan.outcome === 'empty') {
+    if (remainingPlan.outcome === 'paid' || (remainingPlan.outcome === 'ok' && remainingPlan.keptPaidCount === 0 && items.filter((i: any) => !i.voided).length === 0)) {
       await withTableLock(area, tableLabel, async () => {
         await applyTableOpenState(area, tableLabel, false);
       });
