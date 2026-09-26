@@ -6,13 +6,11 @@ import {
   dekToEncryptionKey,
   generateDek,
   generateRecoveryKey,
-  normalizePassphrase,
   recoveryKeyToBytes,
   unwrapKey,
-  unwrapPassphrase,
-  validatePassphrase,
   wrapKey,
   type Argon2Params,
+  type WrappedKey,
 } from './crypto';
 import { isOsUnlockAvailable, unwrapDekFromOs, wrapDekForOs } from './osUnlock';
 import { secureDelete, secureDeleteSqliteGroup } from './secureDelete';
@@ -22,7 +20,6 @@ import {
   vaultFilePath,
   writeVaultFile,
   type VaultFile,
-  type VaultUnlockMode,
 } from './store';
 import {
   encryptPlaintextSqlite,
@@ -37,17 +34,15 @@ export type VaultState = 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
 
 export type VaultStatus = {
   state: VaultState;
-  unlockMode?: VaultUnlockMode | 'disabled';
+  unlockMode?: 'os' | 'disabled';
   osAvailable?: boolean;
-  hasPassphrase?: boolean;
   recoveryKey?: string;
 };
 
 export type VaultPrefs = {
   state: VaultState;
-  unlockMode: VaultUnlockMode | 'disabled';
+  unlockMode: 'os' | 'disabled';
   osAvailable: boolean;
-  hasPassphrase: boolean;
 };
 
 export type VaultActionResult =
@@ -101,7 +96,6 @@ export function getVaultPrefs(opts?: {
     state: status.state,
     unlockMode: status.unlockMode || 'disabled',
     osAvailable: Boolean(status.osAvailable),
-    hasPassphrase: Boolean(status.hasPassphrase),
   };
 }
 
@@ -115,7 +109,6 @@ export function getVaultStatus(opts?: {
       state: 'disabled',
       unlockMode: 'disabled',
       osAvailable,
-      hasPassphrase: false,
     };
   }
   const userData = opts?.userData ?? vaultUserData();
@@ -123,10 +116,7 @@ export function getVaultStatus(opts?: {
   const vault = readVaultFile(userData);
   const extras = {
     osAvailable,
-    hasPassphrase: Boolean(vault?.passphrase),
-    unlockMode: (vault ? effectiveUnlockMode(vault) : 'os') as
-      | VaultUnlockMode
-      | 'disabled',
+    unlockMode: 'os' as const,
     recoveryKey: pendingRecoveryKey || undefined,
   };
   if (unlockedDek) return { state: 'open', ...extras };
@@ -136,24 +126,43 @@ export function getVaultStatus(opts?: {
   return { state: 'locked', ...extras };
 }
 
-function persistVault(
-  userData: string,
-  vault: VaultFile,
-  dek: Buffer,
-  unlockMode: VaultUnlockMode,
-): void {
-  const osBlob =
-    unlockMode === 'os' ? wrapDekForOs(dek) || vault.os?.blob : undefined;
-  writeVaultFile(userData, {
+function persistVault(userData: string, vault: VaultFile, dek: Buffer): void {
+  const osBlob = wrapDekForOs(dek) || vault.os?.blob;
+  const next: VaultFile = {
     version: 2,
-    passphrase: vault.passphrase,
     recovery: vault.recovery,
-    unlockMode,
-    os:
-      unlockMode === 'os' && osBlob
-        ? { provider: 'safeStorage', blob: osBlob }
-        : undefined,
-  });
+    unlockMode: 'os',
+    os: osBlob ? { provider: 'safeStorage', blob: osBlob } : undefined,
+  };
+  // Keep an older wrap only while this PC cannot store the key itself.
+  if (!osBlob && vault.passphrase) {
+    next.passphrase = vault.passphrase;
+    next.unlockMode = 'passphrase';
+  }
+  writeVaultFile(userData, next);
+}
+
+/** Opens vault files written before the device secret was removed. */
+async function unwrapLegacyWrap(
+  secret: string,
+  wrapped: WrappedKey,
+): Promise<Buffer | null> {
+  const raw = String(secret || '');
+  const candidates = [
+    raw.normalize('NFC').trim(),
+    raw,
+    raw.trim(),
+    raw.normalize('NFD').trim(),
+    raw.normalize('NFC'),
+  ];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    const dek = await unwrapKey(candidate, wrapped);
+    if (dek) return dek;
+  }
+  return null;
 }
 
 async function openWithDek(
@@ -183,81 +192,16 @@ function discardIncompleteVault(userData: string, dbFile: string): void {
   secureDelete(`${dbFile}.encrypted-new`);
 }
 
-export async function setupVault(
-  passphrase: string,
-  opts?: {
-    userData?: string;
-    dbFile?: string;
-    kdf?: Argon2Params;
-    openPrisma?: boolean;
-  },
-): Promise<VaultActionResult> {
-  return withVaultOp(() => setupVaultOp(passphrase, opts));
-}
-
-async function setupVaultOp(
-  passphrase: string,
-  opts?: {
-    userData?: string;
-    dbFile?: string;
-    kdf?: Argon2Params;
-    openPrisma?: boolean;
-  },
-): Promise<VaultActionResult> {
-  const secret = normalizePassphrase(passphrase);
-  const check = validatePassphrase(secret);
-  if (!check.ok) return { ok: false, error: check.error };
-  const userData = opts?.userData ?? vaultUserData();
-  const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
-  const existing = readVaultFile(userData);
-  if (existing && looksLikeSqliteCiphertext(dbFile)) {
-    return { ok: false, error: 'already_setup' };
-  }
-  if (existing && !looksLikeSqliteCiphertext(dbFile)) {
-    // First encrypt wrote vault.json then failed to swap the Windows DB.
-    const dek = existing.passphrase
-      ? await unwrapPassphrase(secret, existing.passphrase)
-      : null;
-    if (dek) {
-      try {
-        await openWithDek(dbFile, dek, opts?.openPrisma !== false);
-        persistVault(userData, existing, dek, effectiveUnlockMode(existing));
-        shredPlaintextSidecars(userData, dbFile);
-        return { ok: true };
-      } catch (e) {
-        unlockedDek = null;
-        return { ok: false, error: vaultOpError(e) };
-      }
-    }
-    discardIncompleteVault(userData, dbFile);
-  }
-
-  const dek = generateDek();
-  const recoveryKey = generateRecoveryKey();
-  const recoveryBytes = recoveryKeyToBytes(recoveryKey);
-  if (!recoveryBytes) return { ok: false, error: 'recovery_failed' };
-  const kdf = opts?.kdf ?? DEFAULT_KDF;
-  try {
-    const vault: VaultFile = {
-      version: 2,
-      passphrase: await wrapKey(secret, dek, kdf),
-      recovery: await wrapKey(recoveryBytes, dek, kdf),
-      unlockMode: isOsUnlockAvailable() ? 'os' : 'passphrase',
-    };
-
-    await openWithDek(dbFile, dek, opts?.openPrisma !== false);
-    persistVault(userData, vault, dek, vault.unlockMode || 'passphrase');
-    shredPlaintextSidecars(userData, dbFile);
-    pendingRecoveryKey = recoveryKey;
-    return { ok: true, recoveryKey };
-  } catch (e) {
-    unlockedDek = null;
-    discardIncompleteVault(userData, dbFile);
-    return { ok: false, error: vaultOpError(e) };
-  }
-}
-
 export async function setupVaultWithOs(opts?: {
+  userData?: string;
+  dbFile?: string;
+  kdf?: Argon2Params;
+  openPrisma?: boolean;
+}): Promise<VaultActionResult> {
+  return withVaultOp(() => setupVaultWithOsOp(opts));
+}
+
+async function setupVaultWithOsOp(opts?: {
   userData?: string;
   dbFile?: string;
   kdf?: Argon2Params;
@@ -315,11 +259,16 @@ export async function tryUnlockWithOs(opts?: {
   if (!dek) return false;
   try {
     await openWithDek(dbFile, dek, opts?.openPrisma !== false);
-    return true;
   } catch {
     unlockedDek = null;
     return false;
   }
+  try {
+    persistVault(userData, vault, dek);
+  } catch (e) {
+    console.error('[vault] persist after unlock failed:', e);
+  }
+  return true;
 }
 
 export async function bootstrapVault(opts?: {
@@ -331,8 +280,7 @@ export async function bootstrapVault(opts?: {
   if (!isVaultRequired()) return;
   if (unlockedDek) return;
   if (await tryUnlockWithOs(opts)) return;
-  // A missing vault must stay on the setup screen. Auto-creating an OS-only
-  // wrap (no passphrase) made "Unlock this till" reject every typed secret.
+  // A missing vault stays on the setup screen until the owner encrypts it.
 }
 
 export async function unlockVault(
@@ -352,14 +300,6 @@ async function unlockVaultOp(
   const vault = readVaultFile(userData);
   if (!vault) return { ok: false, error: 'missing_vault' };
 
-  let passphraseDek: Buffer | null = null;
-  try {
-    passphraseDek = vault.passphrase
-      ? await unwrapPassphrase(secret, vault.passphrase)
-      : null;
-  } catch (e) {
-    console.error('[vault] passphrase unwrap failed:', e);
-  }
   let recoveryDek: Buffer | null = null;
   try {
     const recoveryBytes = recoveryKeyToBytes(secret);
@@ -369,7 +309,15 @@ async function unlockVaultOp(
   } catch (e) {
     console.error('[vault] recovery unwrap failed:', e);
   }
-  const dek = passphraseDek || recoveryDek;
+  let legacyDek: Buffer | null = null;
+  if (!recoveryDek && vault.passphrase) {
+    try {
+      legacyDek = await unwrapLegacyWrap(secret, vault.passphrase);
+    } catch (e) {
+      console.error('[vault] legacy unwrap failed:', e);
+    }
+  }
+  const dek = recoveryDek || legacyDek;
   if (!dek) return { ok: false, error: 'wrong_secret' };
 
   try {
@@ -379,7 +327,7 @@ async function unlockVaultOp(
     return { ok: false, error: vaultOpError(e) };
   }
   try {
-    persistVault(userData, vault, dek, effectiveUnlockMode(vault));
+    persistVault(userData, vault, dek);
   } catch (e) {
     // The ledger is already open. Rewriting vault.json (OS Keychain wrap)
     // must not send the owner back to "could not open the till".
@@ -388,39 +336,15 @@ async function unlockVaultOp(
   return { ok: true };
 }
 
-export async function setVaultUnlockMode(
-  input: { unlockMode: VaultUnlockMode; passphrase?: string },
-  opts?: { userData?: string; kdf?: Argon2Params },
-): Promise<VaultActionResult> {
+export async function setVaultUnlockMode(opts?: {
+  userData?: string;
+}): Promise<VaultActionResult> {
   if (!unlockedDek) return { ok: false, error: 'locked' };
+  if (!isOsUnlockAvailable()) return { ok: false, error: 'os_unavailable' };
   const userData = opts?.userData ?? vaultUserData();
   const vault = readVaultFile(userData);
   if (!vault) return { ok: false, error: 'missing_vault' };
-  const mode = input.unlockMode;
-  if (mode === 'os') {
-    if (!isOsUnlockAvailable()) return { ok: false, error: 'os_unavailable' };
-    persistVault(userData, vault, unlockedDek, 'os');
-    return { ok: true };
-  }
-  let next: VaultFile = vault;
-  if (!vault.passphrase) {
-    const secret = normalizePassphrase(String(input.passphrase || ''));
-    const check = validatePassphrase(secret);
-    if (!check.ok) return { ok: false, error: check.error };
-    next = {
-      ...vault,
-      passphrase: await wrapKey(secret, unlockedDek, opts?.kdf ?? DEFAULT_KDF),
-    };
-  } else if (input.passphrase) {
-    const secret = normalizePassphrase(input.passphrase);
-    const check = validatePassphrase(secret);
-    if (!check.ok) return { ok: false, error: check.error };
-    next = {
-      ...vault,
-      passphrase: await wrapKey(secret, unlockedDek, opts?.kdf ?? DEFAULT_KDF),
-    };
-  }
-  persistVault(userData, next, unlockedDek, 'passphrase');
+  persistVault(userData, vault, unlockedDek);
   return { ok: true };
 }
 

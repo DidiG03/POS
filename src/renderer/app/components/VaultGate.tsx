@@ -23,12 +23,8 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<VaultState | null>(
     host ? null : 'disabled',
   );
-  const [hasPassphrase, setHasPassphrase] = useState(true);
-  const [passphrase, setPassphrase] = useState('');
-  const [confirm, setConfirm] = useState('');
   const [secret, setSecret] = useState('');
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
-  const [useRecovery, setUseRecovery] = useState(false);
   const [wroteItDown, setWroteItDown] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +38,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
       .then((s) => {
         if (!cancelled) {
           setState(s?.state || 'disabled');
-          setHasPassphrase(s?.hasPassphrase !== false);
           if (s?.recoveryKey) setRecoveryKey(s.recoveryKey);
-          if (s?.state === 'locked' && s?.hasPassphrase === false) {
-            setUseRecovery(true);
-          }
         }
       })
       .catch(() => {
@@ -70,28 +62,14 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
 
   async function onSetup() {
     if (busyRef.current) return;
-    if (passphrase !== confirm) {
-      setError('mismatch');
-      return;
-    }
     busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
-      const r = await window.api.vault!.setup({ passphrase });
+      const r = await window.api.vault!.setup();
       if (!r.ok) {
         if (r.error === 'already_setup') {
-          const unlocked = await window.api.vault!.unlock({
-            secret: passphrase,
-          });
-          if (unlocked.ok) {
-            setState('open');
-            return;
-          }
-          setError(unlocked.error || 'already_setup');
           setState('locked');
-          setHasPassphrase(true);
-          setSecret(passphrase);
           return;
         }
         setError(r.error || 'generic');
@@ -114,11 +92,7 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
     try {
       const r = await window.api.vault!.unlock({ secret });
       if (!r.ok) {
-        setError(
-          !hasPassphrase && !useRecovery
-            ? 'no_passphrase'
-            : r.error || 'generic',
-        );
+        setError(r.error || 'generic');
         return;
       }
       setState('open');
@@ -156,38 +130,12 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
               <p className="text-[13px] text-gray-400">
                 {t('vault.setupBody')}
               </p>
-              <Field label={t('vault.passphrase')} error={errorText}>
-                <Input
-                  type="password"
-                  autoFocus
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  value={passphrase}
-                  onChange={(e) => setPassphrase(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !busy) void onSetup();
-                  }}
-                />
-              </Field>
-              <Field label={t('vault.confirm')}>
-                <Input
-                  type="password"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !busy) void onSetup();
-                  }}
-                />
-              </Field>
               <p className="text-[12px] text-gray-500">
                 {t('vault.setupHint')}
               </p>
+              {errorText ? (
+                <p className="text-[12px] text-red-300">{errorText}</p>
+              ) : null}
               <Button
                 variant="primary"
                 block
@@ -241,20 +189,11 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                 {t('vault.unlockTitle')}
               </h1>
               <p className="text-[13px] text-gray-400">
-                {useRecovery || !hasPassphrase
-                  ? t('vault.unlockRecoveryBody')
-                  : t('vault.unlockBody')}
+                {t('vault.unlockRecoveryBody')}
               </p>
-              <Field
-                label={
-                  useRecovery || !hasPassphrase
-                    ? t('vault.recoveryKey')
-                    : t('vault.passphrase')
-                }
-                error={errorText}
-              >
+              <Field label={t('vault.recoveryKey')} error={errorText}>
                 <Input
-                  type={useRecovery || !hasPassphrase ? 'text' : 'password'}
+                  type="text"
                   autoFocus
                   autoComplete="off"
                   autoCorrect="off"
@@ -267,21 +206,6 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
                   }}
                 />
               </Field>
-              {hasPassphrase ? (
-                <button
-                  type="button"
-                  className="text-[12px] text-gray-400 hover:text-gray-100"
-                  onClick={() => {
-                    setUseRecovery((v) => !v);
-                    setSecret('');
-                    setError(null);
-                  }}
-                >
-                  {useRecovery
-                    ? t('vault.usePassphrase')
-                    : t('vault.useRecovery')}
-                </button>
-              ) : null}
               <Button
                 variant="primary"
                 block

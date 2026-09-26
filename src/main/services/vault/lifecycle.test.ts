@@ -7,13 +7,12 @@ import { createClient } from '@libsql/client';
 import { disconnectPrisma, isSqliteLocked } from '@db/client';
 import {
   lockVaultForTests,
-  setVaultUnlockMode,
-  setupVault,
   setupVaultWithOs,
   tryUnlockWithOs,
   unlockVault,
   bootstrapVault,
 } from './lifecycle';
+import { recoveryKeyToBytes, unwrapKey, wrapKey } from './crypto';
 import { setOsVaultCryptoForTests, type OsVaultCrypto } from './osUnlock';
 import { looksLikeSqliteCiphertext } from './sqliteCipher';
 
@@ -24,6 +23,10 @@ function tmpDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-vault-'));
   dirs.push(dir);
   return dir;
+}
+
+function useOs() {
+  setOsVaultCryptoForTests(memoryOsVault());
 }
 
 beforeEach(() => {
@@ -55,12 +58,13 @@ async function readUsers(dbFile: string, key: string) {
   }
 }
 
-describe('setupVault / unlockVault', () => {
+describe('setupVaultWithOs / unlockVault', () => {
   it('reports the sqlite client as locked before unlock', () => {
     expect(isSqliteLocked()).toBe(true);
   });
 
-  it('encrypts a plaintext ledger and reopens it with the passphrase', async () => {
+  it('encrypts a plaintext ledger and reopens it with the recovery key', async () => {
+    useOs();
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');
     const src = createClient({ url: `file:${dbFile}` });
@@ -70,7 +74,7 @@ describe('setupVault / unlockVault', () => {
     await src.execute(`INSERT INTO "User" (displayName) VALUES ('Ada')`);
     await src.close();
 
-    const setup = await setupVault('kitchen-pass-1', {
+    const setup = await setupVaultWithOs({
       userData: dir,
       dbFile,
       kdf: FAST,
@@ -82,16 +86,22 @@ describe('setupVault / unlockVault', () => {
     expect(fs.existsSync(path.join(dir, 'vault.json'))).toBe(true);
     expect(looksLikeSqliteCiphertext(dbFile)).toBe(true);
 
+    const written = JSON.parse(
+      fs.readFileSync(path.join(dir, 'vault.json'), 'utf8'),
+    );
+    expect(written.passphrase).toBeUndefined();
+    expect(written.unlockMode).toBe('os');
+
     lockVaultForTests();
 
-    const wrong = await unlockVault('not-the-passphrase', {
+    const wrong = await unlockVault('not-the-recovery-key', {
       userData: dir,
       dbFile,
       openPrisma: false,
     });
     expect(wrong).toEqual({ ok: false, error: 'wrong_secret' });
 
-    const ok = await unlockVault('kitchen-pass-1', {
+    const ok = await unlockVault(setup.recoveryKey!, {
       userData: dir,
       dbFile,
       openPrisma: false,
@@ -101,39 +111,17 @@ describe('setupVault / unlockVault', () => {
     const vault = JSON.parse(
       fs.readFileSync(path.join(dir, 'vault.json'), 'utf8'),
     );
-    const { unwrapKey } = await import('./crypto');
-    const dek = await unwrapKey('kitchen-pass-1', vault.passphrase);
+    const dek = await unwrapKey(
+      recoveryKeyToBytes(setup.recoveryKey!)!,
+      vault.recovery,
+    );
     expect(dek).toBeTruthy();
     const rows = await readUsers(dbFile, dek!.toString('hex'));
     expect(rows.rows).toEqual([{ displayName: 'Ada' }]);
   });
 
-  it('unlocks with the recovery key', async () => {
-    const dir = tmpDir();
-    const dbFile = path.join(dir, 'pos.db');
-    const src = createClient({ url: `file:${dbFile}` });
-    await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
-    await src.close();
-    const setup = await setupVault('kitchen-pass-1', {
-      userData: dir,
-      dbFile,
-      kdf: FAST,
-      openPrisma: false,
-    });
-    expect(setup, JSON.stringify(setup)).toMatchObject({ ok: true });
-    if (!setup.ok) return;
-    lockVaultForTests();
-    const recovered = await unlockVault(setup.recoveryKey!, {
-      userData: dir,
-      dbFile,
-      openPrisma: false,
-    });
-    expect(recovered).toEqual({ ok: true });
-  });
-
-  it('opens again from the OS wrap without a passphrase', async () => {
-    const os = memoryOsVault();
-    setOsVaultCryptoForTests(os);
+  it('opens again from the OS wrap', async () => {
+    useOs();
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');
     const setup = await setupVaultWithOs({
@@ -150,8 +138,8 @@ describe('setupVault / unlockVault', () => {
     ).toBe(true);
   });
 
-  it('can require a passphrase at start after OS setup', async () => {
-    setOsVaultCryptoForTests(memoryOsVault());
+  it('opens an older till file once, then drops that wrap', async () => {
+    useOs();
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');
     const setup = await setupVaultWithOs({
@@ -161,36 +149,23 @@ describe('setupVault / unlockVault', () => {
       openPrisma: false,
     });
     expect(setup.ok).toBe(true);
-    const switched = await setVaultUnlockMode(
-      { unlockMode: 'passphrase', passphrase: 'kitchen-pass-1' },
-      { userData: dir, kdf: FAST },
+    if (!setup.ok) return;
+    const vaultPath = path.join(dir, 'vault.json');
+    const vault = JSON.parse(fs.readFileSync(vaultPath, 'utf8'));
+    const dek = await unwrapKey(
+      recoveryKeyToBytes(setup.recoveryKey!)!,
+      vault.recovery,
     );
-    expect(switched).toEqual({ ok: true });
+    const nfd = 'fjalëkalimi1'.normalize('NFD');
+    vault.passphrase = await wrapKey(nfd, dek!, FAST);
+    vault.unlockMode = 'passphrase';
+    delete vault.os;
+    fs.writeFileSync(vaultPath, `${JSON.stringify(vault, null, 2)}\n`);
     lockVaultForTests();
+
     expect(
       await tryUnlockWithOs({ userData: dir, dbFile, openPrisma: false }),
     ).toBe(false);
-    expect(
-      await unlockVault('kitchen-pass-1', {
-        userData: dir,
-        dbFile,
-        openPrisma: false,
-      }),
-    ).toEqual({ ok: true });
-  });
-
-  it('opens a passphrase wrapped with trailing spaces or combining marks', async () => {
-    const dir = tmpDir();
-    const dbFile = path.join(dir, 'pos.db');
-    const nfd = 'fjalëkalimi1'.normalize('NFD');
-    const setup = await setupVault(`  ${nfd}  `, {
-      userData: dir,
-      dbFile,
-      kdf: FAST,
-      openPrisma: false,
-    });
-    expect(setup.ok).toBe(true);
-    lockVaultForTests();
     expect(
       await unlockVault('fjalëkalimi1'.normalize('NFC'), {
         userData: dir,
@@ -198,9 +173,28 @@ describe('setupVault / unlockVault', () => {
         openPrisma: false,
       }),
     ).toEqual({ ok: true });
+
+    const after = JSON.parse(fs.readFileSync(vaultPath, 'utf8'));
+    expect(after.passphrase).toBeUndefined();
+    expect(after.os?.blob).toBeTruthy();
+    expect(after.unlockMode).toBe('os');
+
+    lockVaultForTests();
+    expect(
+      await tryUnlockWithOs({ userData: dir, dbFile, openPrisma: false }),
+    ).toBe(true);
+    lockVaultForTests();
+    expect(
+      await unlockVault('fjalëkalimi1', {
+        userData: dir,
+        dbFile,
+        openPrisma: false,
+      }),
+    ).toEqual({ ok: false, error: 'wrong_secret' });
   });
 
-  it('still opens when vault.json cannot be rewritten after a correct passphrase', async () => {
+  it('still opens when vault.json cannot be rewritten after a correct recovery key', async () => {
+    useOs();
     const dir = tmpDir();
     const dataDir = path.join(dir, 'data');
     const dbDir = path.join(dir, 'db');
@@ -210,21 +204,19 @@ describe('setupVault / unlockVault', () => {
     const src = createClient({ url: `file:${dbFile}` });
     await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
     await src.close();
-    expect(
-      (
-        await setupVault('kitchen-pass-1', {
-          userData: dataDir,
-          dbFile,
-          kdf: FAST,
-          openPrisma: false,
-        })
-      ).ok,
-    ).toBe(true);
+    const setup = await setupVaultWithOs({
+      userData: dataDir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(true);
+    if (!setup.ok) return;
     lockVaultForTests();
     fs.chmodSync(dataDir, 0o555);
     try {
       expect(
-        await unlockVault('kitchen-pass-1', {
+        await unlockVault(setup.recoveryKey!, {
           userData: dataDir,
           dbFile,
           openPrisma: false,
@@ -235,30 +227,29 @@ describe('setupVault / unlockVault', () => {
     }
   });
 
-  it('serializes overlapping unlocks of the same passphrase', async () => {
+  it('serializes overlapping unlocks of the same recovery key', async () => {
+    useOs();
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');
     const src = createClient({ url: `file:${dbFile}` });
     await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
     await src.close();
-    expect(
-      (
-        await setupVault('kitchen-pass-1', {
-          userData: dir,
-          dbFile,
-          kdf: FAST,
-          openPrisma: false,
-        })
-      ).ok,
-    ).toBe(true);
+    const setup = await setupVaultWithOs({
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(true);
+    if (!setup.ok) return;
     lockVaultForTests();
     const [a, b] = await Promise.all([
-      unlockVault('kitchen-pass-1', {
+      unlockVault(setup.recoveryKey!, {
         userData: dir,
         dbFile,
         openPrisma: false,
       }),
-      unlockVault('kitchen-pass-1', {
+      unlockVault(setup.recoveryKey!, {
         userData: dir,
         dbFile,
         openPrisma: false,
@@ -269,10 +260,11 @@ describe('setupVault / unlockVault', () => {
   });
 
   it('does not keep vault.json when the database cannot be encrypted', async () => {
+    useOs();
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');
     fs.writeFileSync(dbFile, 'not-sqlite');
-    const setup = await setupVault('kitchen-pass-1', {
+    const setup = await setupVaultWithOs({
       userData: dir,
       dbFile,
       kdf: FAST,
@@ -284,12 +276,13 @@ describe('setupVault / unlockVault', () => {
   });
 
   it('finishes encrypting if vault.json was left beside a plaintext ledger', async () => {
+    useOs();
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');
     const src = createClient({ url: `file:${dbFile}` });
     await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
     await src.close();
-    const setup = await setupVault('kitchen-pass-1', {
+    const setup = await setupVaultWithOs({
       userData: dir,
       dbFile,
       kdf: FAST,
@@ -307,7 +300,7 @@ describe('setupVault / unlockVault', () => {
     fs.copyFileSync(plain, dbFile);
     fs.writeFileSync(vaultPath, vaultJson);
 
-    const again = await setupVault('kitchen-pass-1', {
+    const again = await setupVaultWithOs({
       userData: dir,
       dbFile,
       kdf: FAST,
@@ -317,8 +310,8 @@ describe('setupVault / unlockVault', () => {
     expect(looksLikeSqliteCiphertext(dbFile)).toBe(true);
   });
 
-  it('does not auto-create an OS-only vault before the owner sets a passphrase', async () => {
-    setOsVaultCryptoForTests(memoryOsVault());
+  it('does not auto-create a vault before the owner encrypts the till', async () => {
+    useOs();
     const dir = tmpDir();
     const dbFile = path.join(dir, 'pos.db');
     await bootstrapVault({

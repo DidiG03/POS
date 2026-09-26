@@ -1317,10 +1317,15 @@ export function installBrowserLanApi(): void {
       },
     },
     tables: {
-      async setOpen(area: string, label: string, open: boolean) {
+      async setOpen(
+        area: string,
+        label: string,
+        open: boolean,
+        intentAt?: number,
+      ) {
         await goLan('/tables/open', {
           method: 'POST',
-          body: JSON.stringify({ area, label, open }),
+          body: JSON.stringify({ area, label, open, intentAt }),
         });
         return true;
       },
@@ -1399,13 +1404,10 @@ export function installBrowserLanApi(): void {
       async ackRecovery() {
         return { ok: true };
       },
-      async setUnlockMode(input: {
-        unlockMode: 'os' | 'passphrase';
-        passphrase?: string;
-      }) {
+      async setUnlockMode() {
         return await goLan('/vault/prefs', {
           method: 'POST',
-          body: JSON.stringify(input ?? {}),
+          body: JSON.stringify({}),
         });
       },
     },

@@ -6,6 +6,11 @@ import { seatCoveringReservationForOpenTable } from './reservations';
 export type SetTableOpenOptions = {
   /** When true, skip SSE/IPC fan-out (rare — caller broadcasts separately). */
   skipBroadcast?: boolean;
+  /**
+   * Waiter tap time. Older than the last open/close that landed means this
+   * request lost the race (usually a slow `open: true` after Pay).
+   */
+  intentAt?: number | null;
 };
 
 /**
@@ -23,8 +28,13 @@ export async function applyTableOpenState(
   label: string,
   open: boolean,
   options?: SetTableOpenOptions,
-): Promise<void> {
-  await coreServices.setTableOpen(area, label, open);
+): Promise<boolean> {
+  const applied = await coreServices.setTableOpen(area, label, open, {
+    intentAt: options?.intentAt,
+  });
+  // Stale open/close: do not broadcast, or every till paints a table red
+  // that the host deliberately left free.
+  if (!applied) return false;
 
   if (!open) {
     try {
@@ -54,6 +64,7 @@ export async function applyTableOpenState(
       // best-effort — must not roll back the DB write
     }
   }
+  return true;
 }
 
 /** Serialized entry point for every open/close from IPC or LAN API. */
@@ -65,6 +76,8 @@ export async function setTableOpenWithSideEffects(
 ): Promise<boolean> {
   if (!area || !label) return false;
   return withTableLock(area, label, async () => {
+    // A stale open/close is settled: returning false made tablets retry it
+    // forever. The row is simply left as the newer write set it.
     await applyTableOpenState(area, label, open, options);
     return true;
   });

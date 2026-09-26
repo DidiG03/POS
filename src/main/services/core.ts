@@ -248,8 +248,13 @@ export const coreServices = {
    * forever. Keeping the lock only at the outer call sites avoids the
    * re-entrancy problem without needing `AsyncLocalStorage`.
    */
-  async setTableOpen(area: string, label: string, open: boolean) {
-    await setTableOccupied(area, label, open);
+  async setTableOpen(
+    area: string,
+    label: string,
+    open: boolean,
+    options?: { intentAt?: number | null },
+  ) {
+    return setTableOccupied(area, label, open, undefined, options);
   },
 
   async isTableOpen(area: string, label: string): Promise<boolean> {
@@ -258,7 +263,17 @@ export const coreServices = {
 
   async listOpenTables() {
     const tables = await listOccupiedTables();
-    return tables.map((t) => ({ area: t.area, label: t.label }));
+    // Drop sittings that have a timer and nothing else before the floor
+    // paints them red. Best-effort: a lookup failure must still list.
+    const closed = await import('./bareOccupancy')
+      .then((m) => m.releaseBareOccupancy(Date.now(), tables))
+      .catch(() => [] as Array<{ area: string; label: string }>);
+    const closedKeys = new Set(
+      (closed || []).map((t) => `${t.area}:${t.label}`),
+    );
+    return tables
+      .filter((t) => !closedKeys.has(`${t.area}:${t.label}`))
+      .map((t) => ({ area: t.area, label: t.label }));
   },
 
   async countOpenTables() {

@@ -1,8 +1,8 @@
 /**
  * Wrap the till DEK with the logged-in OS user (DPAPI / Keychain).
  *
- * This is what lets OneTap open without typing a passphrase after Windows or
- * macOS has already unlocked. It is not a substitute for BitLocker/FileVault
+ * This is what lets OneTap open after Windows or macOS has already unlocked.
+ * It is not a substitute for BitLocker/FileVault
  * against a thief who can boot the stolen PC as the same user.
  */
 

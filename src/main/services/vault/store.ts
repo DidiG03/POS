@@ -14,6 +14,7 @@ export type VaultOsWrap = {
 
 export type VaultFile = {
   version: 1 | typeof VAULT_VERSION;
+  /** Older files only. New files do not write this wrap. */
   passphrase?: WrappedKey;
   recovery: WrappedKey;
   unlockMode?: VaultUnlockMode;
@@ -31,9 +32,8 @@ function isWrapped(value: unknown): value is WrappedKey {
 }
 
 export function effectiveUnlockMode(vault: VaultFile): VaultUnlockMode {
-  if (vault.unlockMode === 'passphrase' || vault.unlockMode === 'os') {
-    return vault.unlockMode;
-  }
+  if (vault.os?.blob) return 'os';
+  if (vault.unlockMode === 'passphrase') return 'passphrase';
   return 'os';
 }
 

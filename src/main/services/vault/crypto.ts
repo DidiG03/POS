@@ -1,16 +1,12 @@
 /**
- * Passphrase wrapping for the database data key.
+ * Wrapping for the database data key.
  *
- * The passphrase never touches disk. Argon2id stretches it into a key that
- * AES-256-GCM uses to wrap a random 256-bit DEK. That DEK is what libSQL
- * encrypts `pos.db` with. Changing the passphrase only re-wraps the DEK.
+ * A random 256-bit DEK is what libSQL encrypts `pos.db` with. The operating
+ * system wraps that key, and a recovery key wraps the same DEK a second time.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { argon2idAsync } from '@noble/hashes/argon2.js';
-
-export const MIN_PASSPHRASE_LENGTH = 12;
-export const MAX_PASSPHRASE_LENGTH = 200;
 
 export type Argon2Params = {
   t: number;
@@ -30,57 +26,6 @@ export type WrappedKey = {
   iv: string;
   ct: string;
 };
-
-/**
- * Same secret the owner typed, even if macOS/Albanian IME stored ë as
- * combining marks, or the password field kept a trailing space.
- */
-export function normalizePassphrase(passphrase: string): string {
-  return String(passphrase || '')
-    .normalize('NFC')
-    .trim();
-}
-
-export function passphraseCandidates(secret: string): string[] {
-  const raw = String(secret || '');
-  const out: string[] = [];
-  const add = (value: string) => {
-    if (value && !out.includes(value)) out.push(value);
-  };
-  add(normalizePassphrase(raw));
-  add(raw);
-  add(raw.trim());
-  add(raw.normalize('NFD').trim());
-  add(raw.normalize('NFC'));
-  return out;
-}
-
-export function validatePassphrase(
-  passphrase: string,
-): { ok: true } | { ok: false; error: string } {
-  const value = normalizePassphrase(passphrase);
-  if (value.length < MIN_PASSPHRASE_LENGTH) {
-    return { ok: false, error: 'too_short' };
-  }
-  if (value.length > MAX_PASSPHRASE_LENGTH) {
-    return { ok: false, error: 'too_long' };
-  }
-  if (/^\d+$/.test(value)) {
-    return { ok: false, error: 'digits_only' };
-  }
-  return { ok: true };
-}
-
-export async function unwrapPassphrase(
-  secret: string,
-  wrapped: WrappedKey,
-): Promise<Buffer | null> {
-  for (const candidate of passphraseCandidates(secret)) {
-    const dek = await unwrapKey(candidate, wrapped);
-    if (dek) return dek;
-  }
-  return null;
-}
 
 export function generateDek(): Buffer {
   return randomBytes(DEK_BYTES);

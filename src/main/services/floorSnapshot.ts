@@ -227,7 +227,18 @@ export async function getFloorSnapshot(area?: string): Promise<FloorSnapshot> {
 
 async function loadFloorSnapshot(area?: string): Promise<FloorSnapshot> {
   const wantArea = String(area || '').trim();
-  const occupied = await listOccupiedTables();
+  const listed = await listOccupiedTables();
+  // Ghost sittings (timer only, no ticket, no covers) must not be painted
+  // as occupied. Reuse the rows just loaded so the snapshot stays one read.
+  const closed = await import('./bareOccupancy')
+    .then((m) => m.releaseBareOccupancy(Date.now(), listed))
+    .catch(() => [] as Array<{ area: string; label: string }>);
+  const closedKeys = new Set(
+    (closed || []).map((t) => tableSessionKey(t.area, t.label)),
+  );
+  const occupied = listed.filter(
+    (t) => !closedKeys.has(tableSessionKey(t.area, t.label)),
+  );
   const openKeys: string[] = [];
   const sinceMsByKey: Record<string, number | null> = {};
   const openedAtByKey: Record<string, string> = {};

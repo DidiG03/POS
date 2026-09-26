@@ -799,32 +799,24 @@ export interface ApiSystem {
 export interface ApiVault {
   getStatus(): Promise<{
     state: 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
-    unlockMode?: 'os' | 'passphrase' | 'disabled';
+    unlockMode?: 'os' | 'disabled';
     osAvailable?: boolean;
-    hasPassphrase?: boolean;
     recoveryKey?: string;
   }>;
   getPrefs?(): Promise<{
     state: 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
-    unlockMode: 'os' | 'passphrase' | 'disabled';
+    unlockMode: 'os' | 'disabled';
     osAvailable: boolean;
-    hasPassphrase: boolean;
   }>;
-  setup(input: {
-    passphrase: string;
-  }): Promise<{ ok: boolean; recoveryKey?: string; error?: string }>;
+  setup(): Promise<{ ok: boolean; recoveryKey?: string; error?: string }>;
   unlock(input: { secret: string }): Promise<{ ok: boolean; error?: string }>;
   ackRecovery?(): Promise<{ ok: boolean }>;
-  setUnlockMode?(input: {
-    unlockMode: 'os' | 'passphrase';
-    passphrase?: string;
-  }): Promise<{
+  setUnlockMode?(): Promise<{
     ok: boolean;
     error?: string;
     state?: 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
-    unlockMode?: 'os' | 'passphrase' | 'disabled';
+    unlockMode?: 'os' | 'disabled';
     osAvailable?: boolean;
-    hasPassphrase?: boolean;
   }>;
 }
 
@@ -1833,7 +1825,13 @@ export type FloorSnapshot = {
 };
 
 export interface ApiTables {
-  setOpen(area: string, label: string, open: boolean): Promise<boolean>;
+  setOpen(
+    area: string,
+    label: string,
+    open: boolean,
+    /** Waiter tap time. The host ignores this write when a newer one landed. */
+    intentAt?: number,
+  ): Promise<boolean>;
   listOpen(): Promise<{ area: string; label: string }[]>;
   /**
    * Occupied tables for one area (or every area) in a single round-trip:

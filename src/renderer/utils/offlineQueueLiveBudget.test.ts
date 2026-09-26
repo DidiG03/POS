@@ -104,7 +104,12 @@ describe('live-attempt budget', () => {
     });
 
     expect(result.queued).toBe(false);
-    expect(setOpen).toHaveBeenCalledWith('Main Hall', '4', false);
+    expect(setOpen).toHaveBeenCalledWith(
+      'Main Hall',
+      '4',
+      false,
+      expect.any(Number),
+    );
   });
 
   it('does NOT cut short a payment — money waits for a definite answer', async () => {

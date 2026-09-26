@@ -27,7 +27,7 @@ describe('vault boot guards', () => {
     );
   });
 
-  it('does not treat a correct passphrase as failed when host boot throws', () => {
+  it('does not treat a correct unlock as failed when host boot throws', () => {
     const gate = read('src/renderer/app/components/VaultGate.tsx');
     expect(gate).toContain('busyRef');
     expect(gate).toContain("if (e.key === 'Enter' && !busy) void onUnlock()");

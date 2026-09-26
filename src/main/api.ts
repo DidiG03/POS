@@ -2271,13 +2271,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, getVaultPrefs(), corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/vault/prefs') {
-        const body = await parseJson(req);
-        const unlockMode =
-          body?.unlockMode === 'passphrase' ? 'passphrase' : 'os';
-        const result = await setVaultUnlockMode({
-          unlockMode,
-          passphrase: body?.passphrase ? String(body.passphrase) : undefined,
-        });
+        await parseJson(req);
+        const result = await setVaultUnlockMode();
         if (!result.ok) {
           return send(res, 200, result, corsOrigin);
         }
@@ -3051,9 +3046,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // Tables open
       if (req.method === 'POST' && pathname === '/tables/open') {
-        const { area, label, open } = await parseJson(req);
+        const body = await parseJson(req);
+        const { area, label, open } = body || {};
         const areaTrim = String(area || '').trim();
         const labelTrim = String(label || '').trim();
+        const intentAt = Number(body?.intentAt);
         if (!areaTrim || !labelTrim)
           return send(res, 400, 'invalid', corsOrigin);
         if (!allowStoreCounterArea(areaTrim, res, corsOrigin)) return;
@@ -3061,6 +3058,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           areaTrim,
           labelTrim,
           Boolean(open),
+          {
+            intentAt:
+              Number.isFinite(intentAt) && intentAt > 0 ? intentAt : undefined,
+          },
         );
         if (!ok) return send(res, 400, 'invalid', corsOrigin);
         return send(res, 200, 'ok', corsOrigin);

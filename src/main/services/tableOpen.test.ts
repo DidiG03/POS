@@ -27,7 +27,7 @@ import { ensureOccupiedForTicketWrite } from './tableOpen';
 describe('ensureOccupiedForTicketWrite', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    setTableOpen.mockResolvedValue(undefined);
+    setTableOpen.mockResolvedValue(true);
     seatCoveringReservationForOpenTable.mockResolvedValue(undefined);
   });
 
@@ -40,7 +40,9 @@ describe('ensureOccupiedForTicketWrite', () => {
   it('opens a closed table before the ticket write', async () => {
     isTableOpen.mockResolvedValue(false);
     await ensureOccupiedForTicketWrite('Salla', '1');
-    expect(setTableOpen).toHaveBeenCalledWith('Salla', '1', true);
+    expect(setTableOpen).toHaveBeenCalledWith('Salla', '1', true, {
+      intentAt: undefined,
+    });
     expect(broadcastTableStatusChanged).toHaveBeenCalledWith({
       area: 'Salla',
       label: '1',

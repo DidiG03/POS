@@ -149,7 +149,7 @@ import {
   getVaultStatus,
   isVaultRequired,
   setVaultUnlockMode,
-  setupVault,
+  setupVaultWithOs,
   unlockVault,
 } from './services/vault/lifecycle';
 import type { Prisma } from '@prisma/client';
@@ -1507,8 +1507,8 @@ async function completeVaultAndBoot(): Promise<void> {
   try {
     await startHostDatabaseAndServices();
   } catch (e) {
-    // Passphrase already opened the ledger. A LAN/Keychain/boot failure
-    // must not look like the owner typed the wrong secret.
+    // The till is already open. A LAN/Keychain/boot failure
+    // must not look like the recovery key was wrong.
     console.error('[vault] boot after open failed:', e);
   }
 }
@@ -1667,26 +1667,21 @@ ipcHandle('vault:ackRecovery', async () => {
   return { ok: true };
 });
 
-ipcHandle('vault:setup', async (_e, payload) => {
-  const passphrase = String(payload?.passphrase || '');
-  const result = await setupVault(passphrase);
+ipcHandle('vault:setup', async () => {
+  const result = await setupVaultWithOs();
   if (result.ok) await completeVaultAndBoot();
   return result;
 });
 
 ipcHandle('vault:unlock', async (_e, payload) => {
-  const secret = String(payload?.secret || payload?.passphrase || '');
+  const secret = String(payload?.secret || '');
   const result = await unlockVault(secret);
   if (result.ok) await completeVaultAndBoot();
   return result;
 });
 
-ipcHandle('vault:setUnlockMode', async (_e, payload) => {
-  const unlockMode = payload?.unlockMode === 'passphrase' ? 'passphrase' : 'os';
-  const result = await setVaultUnlockMode({
-    unlockMode,
-    passphrase: payload?.passphrase ? String(payload.passphrase) : undefined,
-  });
+ipcHandle('vault:setUnlockMode', async () => {
+  const result = await setVaultUnlockMode();
   if (!result.ok) return result;
   return { ok: true, ...getVaultPrefs() };
 });
@@ -3092,8 +3087,11 @@ ipcHandle('tables:setOpen', async (_e, input) => {
   const area = String(input?.area || '');
   const label = String(input?.label || '');
   const open = Boolean(input?.open);
+  const intentAt = Number(input?.intentAt);
   assertStoreCounterAllowed(area);
-  return setTableOpenWithSideEffects(area, label, open);
+  return setTableOpenWithSideEffects(area, label, open, {
+    intentAt: Number.isFinite(intentAt) && intentAt > 0 ? intentAt : undefined,
+  });
 });
 
 // Local-first: always use local occupancy rows for open tables

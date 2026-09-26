@@ -38,7 +38,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
 import { logTicket, printTicket } from '../../api';
-import { tryOrQueue } from '../../utils/offlineQueue';
+import { retireQueuedTableOpen, tryOrQueue } from '../../utils/offlineQueue';
 import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
@@ -2485,6 +2485,7 @@ export default function OrderPage() {
             selectedTable.area,
             selectedTable.label,
             true,
+            Date.now(),
           );
         } catch (e: unknown) {
           reportAppError(e, {
@@ -3552,32 +3553,19 @@ export default function OrderPage() {
                                   printKitchen: true,
                                 });
                                 if (!fired.ok) return;
-                                // Mark table open optimistically (server poll merges, but we protect optimistic state for a short TTL)
+                                // Mark table open optimistically. Do not queue
+                                // another open:true — a handed-off copy of that
+                                // write replays after Pay and leaves a red table
+                                // with no ticket, only the timer.
                                 setOpen(
                                   selectedTable.area,
                                   selectedTable.label,
                                   true,
                                 );
-                                // Not awaited: this runs while `busyAction` holds
-                                // the full-screen lock, and the chit has already
-                                // fired. Blocking the lock on a table flag is what
-                                // made a slow host look like a frozen app.
-                                void tryOrQueue(
-                                  'tables.setOpen',
-                                  {
-                                    area: selectedTable.area,
-                                    label: selectedTable.label,
-                                    open: true,
-                                  },
-                                  {
-                                    dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                                  },
-                                ).catch((e: unknown) => {
-                                  reportAppError(e, {
-                                    fallback: t('order.toastTryAgain'),
-                                    key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                                  });
-                                });
+                                void retireQueuedTableOpen(
+                                  selectedTable.area,
+                                  selectedTable.label,
+                                );
                               } catch (e: any) {
                                 const raw = String(
                                   e?.message || e || '',
@@ -4520,28 +4508,13 @@ export default function OrderPage() {
                       printKitchen: printStationTickets,
                     });
                     if (!fired.ok) return;
-                    // Best-effort "ensure open" after printing. Shares the
-                    // dedupe key above so landing here retires the queued
-                    // copy instead of letting it replay once the table is
-                    // paid and freed. Not awaited: the chit has already
-                    // fired, so holding the send lock open for a repeat of a
-                    // write we made moments ago buys the waiter nothing.
-                    void tryOrQueue(
-                      'tables.setOpen',
-                      {
-                        area: selectedTable.area,
-                        label: selectedTable.label,
-                        open: true,
-                      },
-                      {
-                        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                      },
-                    ).catch((e: unknown) => {
-                      reportAppError(e, {
-                        fallback: t('order.toastTryAgain'),
-                        key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                      });
-                    });
+                    // The host opened the table inside the ticket write.
+                    // Drop any handed-off `open: true` so it cannot replay
+                    // after this sitting is paid and paint an empty red table.
+                    void retireQueuedTableOpen(
+                      selectedTable.area,
+                      selectedTable.label,
+                    );
                   } finally {
                     setBusyAction(null);
                     suppressFreeOnEmptyRef.current = false;

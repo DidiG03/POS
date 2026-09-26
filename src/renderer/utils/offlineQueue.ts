@@ -369,11 +369,14 @@ const LIVE_ATTEMPT_BUDGET_MS = 4_000;
 /**
  * Ops whose live attempt may be abandoned early.
  *
- * Strictly the writes that set absolute table state and carry a dedupe key:
- * replaying one that quietly landed sets the same value again, so handing off
- * mid-flight cannot corrupt anything. Money, kitchen chits and transfers are
- * deliberately excluded — the waiter needs a definite live answer for those,
- * and a second delivery is not free even with an idempotency key.
+ * Strictly the writes that set absolute table state and carry a dedupe key.
+ * A replay of `open: true` is NOT free: if the sitting was paid and closed
+ * while the request was in flight, applying it again paints a red table
+ * whose ticket, owner, and covers are all null and only the timer runs.
+ * Background replays therefore refuse to re-open a table the host says is
+ * free; the ticket write opens the table itself when the order is still real.
+ * Money, kitchen chits and transfers are deliberately excluded — the waiter
+ * needs a definite live answer for those.
  */
 const BUDGETED_OPS = new Set<OfflineOp>(['tables.setOpen', 'covers.save']);
 
@@ -498,6 +501,7 @@ export async function dispatchTicketLog(
         String(a.area),
         String(a.tableLabel),
         true,
+        Date.now(),
       );
       rejection = await send();
     } catch {
@@ -519,6 +523,43 @@ export async function dispatchTicketLog(
 }
 
 /**
+ * Deliver `tables.setOpen`.
+ *
+ * A background replay (`attempt > 0`) of `open: true` must not occupy a
+ * table the host currently says is free. That replay is what left paid
+ * tables red with an empty ticket and a running timer. A live tap
+ * (`attempt === 0`) still opens, and `tickets.log` opens the table itself
+ * when a queued order is a real send.
+ */
+export async function applyQueuedTableOpen(
+  a: { area?: string; label?: string; open?: boolean; intentAt?: number },
+  ctx: DispatchContext,
+): Promise<void> {
+  const area = String(a.area || '');
+  const label = String(a.label || '');
+  const open = Boolean(a.open);
+  const intentRaw = Number(a.intentAt);
+  const intentAt =
+    Number.isFinite(intentRaw) && intentRaw > 0 ? intentRaw : undefined;
+  if (open && ctx.attempt > 0) {
+    try {
+      const listed = await window.api.tables.listOpen();
+      if (Array.isArray(listed)) {
+        const stillOpen = listed.some(
+          (row: { area?: string; label?: string }) =>
+            row?.area === area && row?.label === label,
+        );
+        if (!stillOpen) return;
+      }
+    } catch {
+      // Can't see the floor. The host still drops this if a newer
+      // close already landed (`intentAt`).
+    }
+  }
+  await window.api.tables.setOpen(area, label, open, intentAt);
+}
+
+/**
  * Per-op dispatchers. These are the SAME calls the renderer would make
  * when online — kept thin so the queue never "knows" anything special
  * about each op.
@@ -537,13 +578,7 @@ const dispatchers: Record<
     await window.api.tickets.voidTicket(a);
   },
 
-  'tables.setOpen': async (a) => {
-    await window.api.tables.setOpen(
-      String(a.area),
-      String(a.label),
-      Boolean(a.open),
-    );
-  },
+  'tables.setOpen': (a, ctx) => applyQueuedTableOpen(a, ctx),
 
   'tables.transfer': async (a) => {
     if (!window.api.tables?.transfer) {
@@ -1095,9 +1130,7 @@ class OfflineQueue {
         const overflow = rows.length + 1 - FAILED_MAX_ITEMS;
         if (overflow > 0) {
           rows
-            .sort(
-              (a, b) => Number(a.failedAt || 0) - Number(b.failedAt || 0),
-            )
+            .sort((a, b) => Number(a.failedAt || 0) - Number(b.failedAt || 0))
             .slice(0, overflow)
             .forEach((row) => store.delete(row.id));
         }
@@ -1231,11 +1264,34 @@ export const offlineQueue = getGlobalOfflineQueue();
  *   - On any OTHER error (validation, auth, etc.) → re-throw so the
  *     UI can show its normal error state.
  */
+export function tableOpenDedupeKey(area: string, label: string): string {
+  return `tables.setOpen:${area}:${label}`;
+}
+
+/**
+ * Drop a queued open/close for this table. Used after Send so a handed-off
+ * `open: true` cannot replay once the sitting has been paid and freed.
+ */
+export async function retireQueuedTableOpen(
+  area: string,
+  label: string,
+): Promise<void> {
+  await offlineQueue
+    .purgeSuperseded(tableOpenDedupeKey(area, label))
+    .catch(() => undefined);
+}
+
 export async function tryOrQueue<T = unknown>(
   op: OfflineOp,
   args: any,
   options?: { dedupeKey?: string },
 ): Promise<{ queued: boolean; result?: T; error?: string }> {
+  if (op === 'tables.setOpen') {
+    const intentAt = Number(args?.intentAt);
+    if (!Number.isFinite(intentAt) || intentAt <= 0) {
+      args = { ...args, intentAt: Date.now() };
+    }
+  }
   const dispatcher = dispatchers[op];
   if (!dispatcher) {
     throw new Error(`Unknown offline op: ${op}`);

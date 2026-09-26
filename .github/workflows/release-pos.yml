@@ -219,9 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.69"
-            echo "- Waiters can now use a short PIN (1-6 letters or digits); admin PINs stay 4-6 digits"
-            echo "- Login screen supports letter PINs (ABC / 123 toggle)"
+            echo "### Changes in v0.2.70"
+            echo "- The till no longer asks for a device passphrase. It opens with the Windows or Mac login, and the recovery key is the backup."
+            echo "- Tables no longer turn occupied with an empty ticket and only a sitting timer."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

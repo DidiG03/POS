@@ -247,8 +247,8 @@ const api: Api = {
       ipcRenderer.invoke('print:cancelRetry', { id }),
   },
   tables: {
-    setOpen: (area: string, label: string, open: boolean) =>
-      ipcRenderer.invoke('tables:setOpen', { area, label, open }),
+    setOpen: (area: string, label: string, open: boolean, intentAt?: number) =>
+      ipcRenderer.invoke('tables:setOpen', { area, label, open, intentAt }),
     listOpen: () => ipcRenderer.invoke('tables:listOpen'),
     getFloorSnapshot: (area?: string) =>
       ipcRenderer.invoke('tables:getFloorSnapshot', { area }),
@@ -311,10 +311,10 @@ const api: Api = {
   vault: {
     getStatus: () => ipcRenderer.invoke('vault:getStatus'),
     getPrefs: () => ipcRenderer.invoke('vault:getPrefs'),
-    setup: (input) => ipcRenderer.invoke('vault:setup', input),
+    setup: () => ipcRenderer.invoke('vault:setup'),
     unlock: (input) => ipcRenderer.invoke('vault:unlock', input),
     ackRecovery: () => ipcRenderer.invoke('vault:ackRecovery'),
-    setUnlockMode: (input) => ipcRenderer.invoke('vault:setUnlockMode', input),
+    setUnlockMode: () => ipcRenderer.invoke('vault:setUnlockMode'),
   },
 };
 

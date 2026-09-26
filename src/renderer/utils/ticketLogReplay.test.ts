@@ -91,7 +91,12 @@ describe('dispatchTicketLog', () => {
 
     await dispatchTicketLog(ORDER, { attempt: 0 });
 
-    expect(setOpen).toHaveBeenCalledWith('Salla', 'T1', true);
+    expect(setOpen).toHaveBeenCalledWith(
+      'Salla',
+      'T1',
+      true,
+      expect.any(Number),
+    );
     expect(log).toHaveBeenCalledTimes(2);
   });
 

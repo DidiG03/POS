@@ -82,6 +82,7 @@ import {
   moveTableOccupancy,
   occupancyMaps,
   resetOccupancyImportLatchForTests,
+  resetOccupancyIntentCacheForTests,
   setTableOccupied,
 } from './tableOccupancy';
 
@@ -91,6 +92,7 @@ describe('tableOccupancy', () => {
     fake.sync.clear();
     fake.sync.set('tables:occupancyMigrated', true);
     resetOccupancyImportLatchForTests();
+    resetOccupancyIntentCacheForTests();
   });
 
   it('keeps both tables when two waiters open at the same time', async () => {
@@ -165,5 +167,80 @@ describe('tableOccupancy', () => {
     const after = await listOccupiedTables();
     expect(after.some((t) => t.label === 'T9')).toBe(false);
     expect(after).toHaveLength(2);
+  });
+
+  it('ignores an open that was tapped before the sitting was closed', async () => {
+    // Waiter taps Open, then Pay closes the table, then the slow Open
+    // request finally reaches the host. The table must stay free — that
+    // late open is a red table with a timer and no ticket.
+    const t0 = Date.now();
+    await setTableOccupied('Veranda', 'T29', true, undefined, {
+      intentAt: t0 - 3_000,
+    });
+    expect(
+      await setTableOccupied('Veranda', 'T29', false, undefined, {
+        intentAt: t0 - 1_000,
+      }),
+    ).toBe(true);
+    expect(
+      await setTableOccupied('Veranda', 'T29', true, undefined, {
+        intentAt: t0 - 2_000,
+      }),
+    ).toBe(false);
+    expect(await isTableOccupied('Veranda', 'T29')).toBe(false);
+  });
+
+  it('accepts a newer open after the table was closed', async () => {
+    const t0 = Date.now();
+    await setTableOccupied('Salla', '1', true, undefined, {
+      intentAt: t0 - 3_000,
+    });
+    await setTableOccupied('Salla', '1', false, undefined, {
+      intentAt: t0 - 2_000,
+    });
+    expect(
+      await setTableOccupied('Salla', '1', true, undefined, {
+        intentAt: t0 - 500,
+      }),
+    ).toBe(true);
+    expect(await isTableOccupied('Salla', '1')).toBe(true);
+  });
+
+  it('does not let a slow close undo a newer open', async () => {
+    const t0 = Date.now();
+    await setTableOccupied('Veranda', 'T29', false, undefined, {
+      intentAt: t0 - 3_000,
+    });
+    await setTableOccupied('Veranda', 'T29', true, undefined, {
+      intentAt: t0 - 500,
+    });
+    expect(
+      await setTableOccupied('Veranda', 'T29', false, undefined, {
+        intentAt: t0 - 2_000,
+      }),
+    ).toBe(false);
+    expect(await isTableOccupied('Veranda', 'T29')).toBe(true);
+  });
+
+  it('still opens from the ticket write when the client did not send a tap time', async () => {
+    await setTableOccupied('Salla', 'T5', false, undefined, {
+      intentAt: Date.now() - 5_000,
+    });
+    expect(await setTableOccupied('Salla', 'T5', true)).toBe(true);
+    expect(await isTableOccupied('Salla', 'T5')).toBe(true);
+  });
+
+  it('does not resurrect the table a sitting was just moved away from', async () => {
+    await setTableOccupied('Salla', 'T12', true, undefined, {
+      intentAt: Date.now() - 5_000,
+    });
+    await moveTableOccupancy('Salla', 'T12', 'Salla', 'T7');
+    expect(
+      await setTableOccupied('Salla', 'T12', true, undefined, {
+        intentAt: Date.now() - 4_000,
+      }),
+    ).toBe(false);
+    expect(await isTableOccupied('Salla', 'T12')).toBe(false);
+    expect(await isTableOccupied('Salla', 'T7')).toBe(true);
   });
 });

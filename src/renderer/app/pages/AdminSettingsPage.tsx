@@ -2095,12 +2095,9 @@ function DiskProtectionSettings() {
   const [busy, setBusy] = useState(false);
   const [prefs, setPrefs] = useState<{
     state: string;
-    unlockMode: 'os' | 'passphrase' | 'disabled';
+    unlockMode: 'os' | 'disabled';
     osAvailable: boolean;
-    hasPassphrase: boolean;
   } | null>(null);
-  const [passphrase, setPassphrase] = useState('');
-  const [confirm, setConfirm] = useState('');
   const [eraseOpen, setEraseOpen] = useState(false);
   const [eraseTyped, setEraseTyped] = useState('');
   const erasePhrase = t('settingsVault.erasePhrase');
@@ -2119,12 +2116,8 @@ function DiskProtectionSettings() {
       if (next && 'unlockMode' in next) {
         setPrefs({
           state: String(next.state || 'disabled'),
-          unlockMode: (next.unlockMode || 'disabled') as
-            | 'os'
-            | 'passphrase'
-            | 'disabled',
+          unlockMode: (next.unlockMode || 'disabled') as 'os' | 'disabled',
           osAvailable: Boolean(next.osAvailable),
-          hasPassphrase: Boolean(next.hasPassphrase),
         });
       } else {
         setPrefs(null);
@@ -2139,34 +2132,6 @@ function DiskProtectionSettings() {
   useEffect(() => {
     void reload();
   }, []);
-
-  async function setMode(unlockMode: 'os' | 'passphrase', secret?: string) {
-    setBusy(true);
-    try {
-      const r = await window.api.vault?.setUnlockMode?.({
-        unlockMode,
-        passphrase: secret,
-      });
-      if (!r?.ok) {
-        const code = r?.error || 'generic';
-        setStatus(
-          t(`vault.errors.${code}`, {
-            defaultValue: t('settingsVault.failed'),
-          }),
-          'error',
-        );
-        return;
-      }
-      setPassphrase('');
-      setConfirm('');
-      setStatus(t('settingsVault.saved'));
-      await reload();
-    } catch {
-      setStatus(t('settingsVault.failed'), 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function eraseAll() {
     if (eraseTyped.trim().toUpperCase() !== erasePhrase.toUpperCase()) return;
@@ -2186,8 +2151,6 @@ function DiskProtectionSettings() {
       setBusy(false);
     }
   }
-
-  const autoOn = prefs?.unlockMode === 'os';
 
   return (
     <div>
@@ -2213,78 +2176,12 @@ function DiskProtectionSettings() {
         ) : (
           <div className="space-y-4">
             <p className="text-[13px] leading-relaxed text-gray-400">
-              {autoOn
-                ? t('settingsVault.statusOs')
-                : t('settingsVault.statusPassphrase')}
+              {t('settingsVault.statusOs')}
             </p>
-            <SettingsToggleRow
-              title={t('settingsVault.autoTitle')}
-              description={t('settingsVault.autoHelp')}
-              checked={autoOn}
-              disabled={busy || (!autoOn && !prefs.osAvailable)}
-              onChange={(next) => {
-                if (next) {
-                  void setMode('os');
-                  return;
-                }
-                if (prefs.hasPassphrase) {
-                  void setMode('passphrase');
-                  return;
-                }
-                setPrefs({ ...prefs, unlockMode: 'passphrase' });
-              }}
-              label={t('settingsVault.autoTitle')}
-            />
             {!prefs.osAvailable ? (
               <p className="text-[12px] leading-relaxed text-gray-500">
                 {t('settingsVault.osUnavailable')}
               </p>
-            ) : null}
-            {!autoOn ? (
-              <div className="space-y-3 border-t border-white/[0.06] pt-4">
-                <div className="text-[13px] font-medium text-gray-100">
-                  {t('settingsVault.passphraseTitle')}
-                </div>
-                <p className="text-[12px] leading-relaxed text-gray-500">
-                  {t('settingsVault.passphraseHelp')}
-                </p>
-                {!prefs.hasPassphrase ? (
-                  <>
-                    <Field label={t('settingsVault.passphrase')}>
-                      <Input
-                        type="password"
-                        autoComplete="new-password"
-                        value={passphrase}
-                        onChange={(e) => setPassphrase(e.target.value)}
-                      />
-                    </Field>
-                    <Field label={t('settingsVault.confirm')}>
-                      <Input
-                        type="password"
-                        autoComplete="new-password"
-                        value={confirm}
-                        onChange={(e) => setConfirm(e.target.value)}
-                      />
-                    </Field>
-                    <Button
-                      variant="primary"
-                      loading={busy}
-                      disabled={
-                        busy || passphrase.length < 12 || passphrase !== confirm
-                      }
-                      onClick={() => {
-                        if (passphrase !== confirm) {
-                          setStatus(t('vault.errors.mismatch'), 'error');
-                          return;
-                        }
-                        void setMode('passphrase', passphrase);
-                      }}
-                    >
-                      {t('settingsVault.savePassphrase')}
-                    </Button>
-                  </>
-                ) : null}
-              </div>
             ) : null}
           </div>
         )}
