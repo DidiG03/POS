@@ -7,13 +7,66 @@
  */
 
 import { prisma } from '@db/client';
+import { isPaymentReprint } from './paymentSettle';
 
 export type AdminAlertType = 'SECURITY' | 'OTHER';
 
 /**
- * Notify every active admin, plus the staff member who triggered the
- * action so they know their own sale needs attention.
+ * One line for the admin feed when a payment includes a discount.
+ * Returns null when this sale should not produce that notice.
  */
+export function paymentDiscountAlertMessage(input: {
+  area: string;
+  tableLabel: string;
+  meta: unknown;
+}): string | null {
+  const meta = (input.meta || {}) as Record<string, unknown>;
+  const kind = String(meta.kind || '').toUpperCase();
+  const userId = Number(meta.userId || 0);
+  const discountAmt = Number(meta.discountAmount || 0);
+  if (
+    kind !== 'PAYMENT' ||
+    isPaymentReprint(meta) ||
+    !userId ||
+    !Number.isFinite(discountAmt) ||
+    discountAmt <= 0
+  ) {
+    return null;
+  }
+  const before = Number(meta.totalBefore ?? meta.total ?? 0);
+  const after = Number(meta.totalAfter ?? Math.max(0, before - discountAmt));
+  const dtype = String(meta.discountType || '').toUpperCase();
+  const dval = meta.discountValue;
+  const dLabel =
+    dtype === 'PERCENT' && Number.isFinite(Number(dval))
+      ? `${Number(dval)}%`
+      : dtype === 'AMOUNT' && Number.isFinite(Number(dval))
+        ? `${Number(dval).toFixed(2)}`
+        : 'custom';
+  const reason = String(meta.discountReason || '').trim();
+  const approvedBy = String(meta.managerApprovedByName || '').trim();
+  return (
+    `Discount applied (${dLabel}) on ${input.area} Table ${input.tableLabel}: -${discountAmt.toFixed(2)} ` +
+    `(total ${before.toFixed(2)} → ${after.toFixed(2)})` +
+    `${meta.method ? ` · method ${String(meta.method)}` : ''}` +
+    `${reason ? ` · reason: ${reason}` : ''}` +
+    `${approvedBy ? ` · approved by: ${approvedBy}` : ' · NO MANAGER APPROVAL'}`
+  );
+}
+
+export async function notifyPaymentDiscount(input: {
+  area: string;
+  tableLabel: string;
+  meta: unknown;
+}): Promise<void> {
+  const message = paymentDiscountAlertMessage(input);
+  if (!message) return;
+  const userId = Number(
+    ((input.meta || {}) as { userId?: unknown }).userId || 0,
+  );
+  await notifyAdminsAndActor({ message, actorUserId: userId });
+}
+
 export async function notifyAdminsAndActor(input: {
   message: string;
   actorUserId?: number;

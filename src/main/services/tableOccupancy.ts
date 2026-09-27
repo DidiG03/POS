@@ -300,9 +300,10 @@ export async function getOpenedAt(
  * Open or close one table. A repeated open leaves `openedAt` unchanged
  * so session-bounded ticket queries stay on the same sitting.
  *
- * `intentAt` is the moment the waiter tapped, not when the request
- * arrived. A slow `open: true` that lands after Pay must not paint the
- * table red again with nothing on it but the sitting timer.
+ * `intentAt` is the tap on the till's clock. Phones send how long ago
+ * they tapped, and the host converts that before calling here. A slow
+ * `open: true` that was tapped before Pay must not paint the table red
+ * again with nothing on it but the sitting timer.
  *
  * Returns false when the write is ignored as stale.
  */

@@ -10,7 +10,12 @@
  */
 import { prisma } from '@db/client';
 import { rowIsInOpenSession } from '@shared/ticketLogItems';
-import { listOccupiedTables, setTableOccupied } from './tableOccupancy';
+import { withTableLock } from './core';
+import {
+  getOpenedAt,
+  listOccupiedTables,
+  setTableOccupied,
+} from './tableOccupancy';
 import { findLatestTicketLogForCurrentSession } from './tableSession';
 
 /** Long enough for open → covers → ticket on a slow LAN. */
@@ -55,6 +60,54 @@ async function sessionHasCovers(
 }
 
 /**
+ * Re-read the sitting after taking the table lock. A Send holds that lock
+ * while it writes the ticket, so a floor poll must not delete the row from
+ * a look it took before the ticket committed.
+ */
+async function closeIfStillBare(
+  area: string,
+  label: string,
+  now: number,
+): Promise<boolean> {
+  try {
+    return await withTableLock(area, label, async () => {
+      const opened = await getOpenedAt(area, label);
+      const openedAtMs = opened?.getTime() ?? Number.NaN;
+      if (!Number.isFinite(openedAtMs)) return false;
+      if (now - openedAtMs < BARE_OCCUPANCY_GRACE_MS) return false;
+
+      let hasTicket = true;
+      try {
+        const ticket = await findLatestTicketLogForCurrentSession(area, label);
+        hasTicket = Boolean(ticket);
+      } catch {
+        return false;
+      }
+      let hasCovers = true;
+      try {
+        hasCovers = await sessionHasCovers(area, label, openedAtMs);
+      } catch {
+        return false;
+      }
+      if (
+        !isBareOccupancy({
+          openedAtMs,
+          now,
+          hasSessionTicket: hasTicket,
+          hasSessionCovers: hasCovers,
+        })
+      ) {
+        return false;
+      }
+      return setTableOccupied(area, label, false);
+    });
+  } catch {
+    // Table is busy with a Send or Pay. Leave the sitting.
+    return false;
+  }
+}
+
+/**
  * Close occupied tables whose sitting never received a ticket or a guest
  * count. Returns the tables that were freed.
  *
@@ -74,35 +127,7 @@ export async function releaseBareOccupancy(
     const openedAtMs = table.openedAt.getTime();
     if (!Number.isFinite(openedAtMs)) continue;
     if (now - openedAtMs < BARE_OCCUPANCY_GRACE_MS) continue;
-
-    let hasTicket = true;
-    try {
-      const ticket = await findLatestTicketLogForCurrentSession(
-        table.area,
-        table.label,
-      );
-      hasTicket = Boolean(ticket);
-    } catch {
-      // Can't tell — leave the sitting alone.
-      continue;
-    }
-    let hasCovers = true;
-    try {
-      hasCovers = await sessionHasCovers(table.area, table.label, openedAtMs);
-    } catch {
-      continue;
-    }
-    if (
-      !isBareOccupancy({
-        openedAtMs,
-        now,
-        hasSessionTicket: hasTicket,
-        hasSessionCovers: hasCovers,
-      })
-    ) {
-      continue;
-    }
-    const applied = await setTableOccupied(table.area, table.label, false);
+    const applied = await closeIfStillBare(table.area, table.label, now);
     if (!applied) continue;
     closed.push({ area: table.area, label: table.label });
   }

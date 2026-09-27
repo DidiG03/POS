@@ -1321,11 +1321,11 @@ export function installBrowserLanApi(): void {
         area: string,
         label: string,
         open: boolean,
-        intentAt?: number,
+        intentAgeMs?: number,
       ) {
         await goLan('/tables/open', {
           method: 'POST',
-          body: JSON.stringify({ area, label, open, intentAt }),
+          body: JSON.stringify({ area, label, open, intentAgeMs }),
         });
         return true;
       },

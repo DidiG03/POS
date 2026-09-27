@@ -21,20 +21,24 @@ beforeEach(() => {
 });
 
 describe('applyQueuedTableOpen', () => {
-  it('opens on the live tap and stamps the tap time', async () => {
+  it('opens on the live tap and sends how long ago it was tapped', async () => {
+    const tappedAt = Date.now() - 1_500;
     await applyQueuedTableOpen(
-      { area: 'Veranda', label: 'T29', open: true, intentAt: 1_700 },
+      { area: 'Veranda', label: 'T29', open: true, tappedAt },
       { attempt: 0 },
     );
     expect(listOpen).not.toHaveBeenCalled();
-    expect(setOpen).toHaveBeenCalledWith('Veranda', 'T29', true, 1_700);
+    const age = setOpen.mock.calls[0][3] as number;
+    expect(setOpen).toHaveBeenCalledWith('Veranda', 'T29', true, age);
+    expect(age).toBeGreaterThanOrEqual(1_400);
+    expect(age).toBeLessThan(5_000);
   });
 
   it('does not re-open a free table on a background replay', async () => {
     listOpen.mockResolvedValue([{ area: 'Salla', label: 'T5' }]);
 
     await applyQueuedTableOpen(
-      { area: 'Veranda', label: 'T29', open: true, intentAt: 1_700 },
+      { area: 'Veranda', label: 'T29', open: true, tappedAt: Date.now() },
       { attempt: 2 },
     );
 
@@ -45,25 +49,51 @@ describe('applyQueuedTableOpen', () => {
     listOpen.mockResolvedValue([{ area: 'Veranda', label: 'T29' }]);
 
     await applyQueuedTableOpen(
-      { area: 'Veranda', label: 'T29', open: true, intentAt: 1_700 },
+      { area: 'Veranda', label: 'T29', open: true, tappedAt: Date.now() },
       { attempt: 1 },
     );
 
-    expect(setOpen).toHaveBeenCalledWith('Veranda', 'T29', true, 1_700);
+    const age = setOpen.mock.calls[0][3] as number;
+    expect(setOpen).toHaveBeenCalledWith('Veranda', 'T29', true, age);
+    expect(age).toBeGreaterThanOrEqual(0);
+    expect(age).toBeLessThan(5_000);
   });
 
   it('still delivers a close on replay', async () => {
     await applyQueuedTableOpen(
-      { area: 'Veranda', label: 'T29', open: false, intentAt: 1_800 },
+      {
+        area: 'Veranda',
+        label: 'T29',
+        open: false,
+        tappedAt: Date.now() - 800,
+      },
       { attempt: 4 },
     );
     expect(listOpen).not.toHaveBeenCalled();
-    expect(setOpen).toHaveBeenCalledWith('Veranda', 'T29', false, 1_800);
+    const age = setOpen.mock.calls[0][3] as number;
+    expect(setOpen).toHaveBeenCalledWith('Veranda', 'T29', false, age);
+    expect(age).toBeGreaterThanOrEqual(700);
+    expect(age).toBeLessThan(5_000);
+  });
+
+  it('turns an older queued phone clock into an age', async () => {
+    await applyQueuedTableOpen(
+      {
+        area: 'Veranda',
+        label: 'T29',
+        open: true,
+        intentAt: Date.now() - 2_000,
+      },
+      { attempt: 0 },
+    );
+    const age = setOpen.mock.calls[0][3] as number;
+    expect(age).toBeGreaterThanOrEqual(1_900);
+    expect(age).toBeLessThan(5_000);
   });
 });
 
 describe('tryOrQueue tables.setOpen', () => {
-  it('stamps a tap time so a late delivery can lose to a newer close', async () => {
+  it('sends the age of the tap, not the phone clock', async () => {
     await tryOrQueue('tables.setOpen', {
       area: 'Salla',
       label: '1',
@@ -75,7 +105,8 @@ describe('tryOrQueue tables.setOpen', () => {
       true,
       expect.any(Number),
     );
-    const stamped = setOpen.mock.calls[0][3] as number;
-    expect(stamped).toBeGreaterThan(1_000_000_000_000);
+    const age = setOpen.mock.calls[0][3] as number;
+    expect(age).toBeGreaterThanOrEqual(0);
+    expect(age).toBeLessThan(5_000);
   });
 });

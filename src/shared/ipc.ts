@@ -1829,8 +1829,11 @@ export interface ApiTables {
     area: string,
     label: string,
     open: boolean,
-    /** Waiter tap time. The host ignores this write when a newer one landed. */
-    intentAt?: number,
+    /**
+     * How long ago the waiter tapped, in milliseconds, measured on the phone.
+     * The till subtracts this from its own clock.
+     */
+    intentAgeMs?: number,
   ): Promise<boolean>;
   listOpen(): Promise<{ area: string; label: string }[]>;
   /**

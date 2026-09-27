@@ -46,6 +46,33 @@ export async function withTableLock<T>(
 }
 
 /**
+ * Hold the locks for several tables at once (a move touches two).
+ *
+ * Keys are taken in sorted order, so a move T1 → T2 and a move T2 → T1
+ * running together queue behind each other instead of each holding one
+ * lock and waiting forever for the other.
+ */
+export async function withTablesLocked<T>(
+  tables: Array<{ area: string; label: string }>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const seen = new Set<string>();
+  const ordered = tables
+    .filter((t) => {
+      const key = `${t.area}:${t.label}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => (`${a.area}:${a.label}` < `${b.area}:${b.label}` ? -1 : 1));
+  const run = (i: number): Promise<T> =>
+    i >= ordered.length
+      ? fn()
+      : withTableLock(ordered[i].area, ordered[i].label, () => run(i + 1));
+  return run(0);
+}
+
+/**
  * In-memory cache for the merged settings document.
  *
  * Why: `coreServices.readSettings()` is called from every print, every

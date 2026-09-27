@@ -79,4 +79,12 @@ describe('lanLoginError', () => {
     ).toBe('login.loginFailedDetail:500 sqlite is busy');
     expect(humanLoginDetail(new TypeError('Failed to fetch'))).toBe('');
   });
+  it('shows a lockout message when the till throttles sign-in', () => {
+    const locked = Object.assign(new Error('Too many failed login attempts'), {
+      status: 429,
+      code: 'LOGIN_LOCKED',
+    });
+    expect(classifyLanLoginError(locked)).toBe('locked');
+    expect(lanLoginErrorCopyKey('locked')).toBe('login.tooManyAttempts');
+  });
 });

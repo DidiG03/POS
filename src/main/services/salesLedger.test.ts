@@ -102,6 +102,33 @@ describe('writeSettledSale', () => {
     expect(data.payments.create.idempotencyKey).toBe('pay-1');
   });
 
+  it('keeps the fiscal identifiers, including the e-invoice EIC', async () => {
+    await writeSettledSale(db(), {
+      payload: {
+        ...payload,
+        meta: {
+          ...payload.meta,
+          fiscalNslf: 'IIC-1',
+          fiscalNivf: 'FIC-1',
+          fiscalEic: 'EIC-1',
+        },
+      },
+      idempotencyKey: 'pay-eic',
+    });
+    const payment = orderCreate.mock.calls[0][0].data.payments.create;
+    expect(payment).toMatchObject({
+      fiscalNslf: 'IIC-1',
+      fiscalNivf: 'FIC-1',
+      fiscalEic: 'EIC-1',
+    });
+  });
+
+  it('stores no EIC for an ordinary (non-electronic) invoice', async () => {
+    await writeSettledSale(db(), { payload, idempotencyKey: 'pay-plain' });
+    const payment = orderCreate.mock.calls[0][0].data.payments.create;
+    expect(payment.fiscalEic).toBeNull();
+  });
+
   it('does not insert twice for the same idempotency key', async () => {
     orderFindFirst.mockResolvedValue({ id: 44, printJobId: 88 });
     const r = await writeSettledSale(db(), {

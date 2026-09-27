@@ -61,6 +61,7 @@ import {
   windowKindFor,
   SESSION_TTL_MS,
 } from './ipcSession';
+import { __resetLanAuthForTests } from './lanAuth';
 
 const ADMIN = { id: 1, role: 'ADMIN', displayName: 'Owner', active: true };
 const WAITER = { id: 2, role: 'WAITER', displayName: 'Ana', active: true };
@@ -68,6 +69,7 @@ const WAITER = { id: 2, role: 'WAITER', displayName: 'Ana', active: true };
 beforeEach(() => {
   store.clear();
   users.clear();
+  __resetLanAuthForTests();
   users.set(ADMIN.id, { ...ADMIN });
   users.set(WAITER.id, { ...WAITER });
   __resetSessionsForTests();
@@ -210,6 +212,13 @@ describe('revocation', () => {
     __resetSessionsForTests(); // only the persisted row remains
     await revokeSessionsForUser(WAITER.id);
     expect(await resumeSession(30, token)).toBeNull();
+  });
+
+  it('revokeSessionsForUser also revokes the phone (LAN) tokens', async () => {
+    await revokeSessionsForUser(WAITER.id);
+    const revoked = store.get('lan:tokensRevokedBefore')?.valueJson ?? {};
+    expect(Number(revoked[String(WAITER.id)])).toBeGreaterThan(0);
+    expect(revoked[String(ADMIN.id)]).toBeUndefined();
   });
 });
 

@@ -1,4 +1,9 @@
-export type LanLoginErrorKind = 'pairing' | 'host' | 'invalid_pin' | 'other';
+export type LanLoginErrorKind =
+  | 'pairing'
+  | 'host'
+  | 'invalid_pin'
+  | 'locked'
+  | 'other';
 
 function errorText(error: unknown): string {
   if (error == null) return '';
@@ -35,9 +40,18 @@ export function isPairingRejectedError(error: unknown): boolean {
   );
 }
 
+/** The till locked sign-in after repeated failures (HTTP 429). */
+export function isLoginLockedError(error: unknown): boolean {
+  const anyE = error as { status?: unknown; code?: unknown } | null;
+  return (
+    Number(anyE?.status) === 429 || String(anyE?.code || '') === 'LOGIN_LOCKED'
+  );
+}
+
 export function classifyLanLoginError(error: unknown): LanLoginErrorKind {
   if (error == null) return 'other';
   if (isLanNetworkError(error)) return 'host';
+  if (isLoginLockedError(error)) return 'locked';
   if (isPairingRejectedError(error)) return 'pairing';
   const msg = errorText(error).toLowerCase();
   if (/invalid pin|wrong pin|incorrect pin/.test(msg)) return 'invalid_pin';
@@ -50,8 +64,10 @@ export function lanLoginErrorCopyKey(
   | 'login.pairingRequired'
   | 'login.hostUnavailable'
   | 'login.invalidPin'
+  | 'login.tooManyAttempts'
   | 'login.loginFailed' {
   if (kind === 'host') return 'login.hostUnavailable';
+  if (kind === 'locked') return 'login.tooManyAttempts';
   if (kind === 'pairing') return 'login.pairingRequired';
   if (kind === 'invalid_pin') return 'login.invalidPin';
   return 'login.loginFailed';
@@ -85,6 +101,7 @@ export function lanLoginUserMessage(error: unknown, t: LoginCopy): string {
   if (kind === 'host') return t('login.hostUnavailable');
   if (kind === 'pairing') return t('login.pairingRequired');
   if (kind === 'invalid_pin') return t('login.invalidPin');
+  if (kind === 'locked') return t('login.tooManyAttempts');
   const detail = humanLoginDetail(error);
   const lower = detail.toLowerCase();
   if (/lan disabled/.test(lower)) return t('login.lanDisabled');

@@ -15,7 +15,9 @@ import {
   UpdateUserInputSchema,
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
+import { resolveHostIntent } from '@shared/tableIntent';
 import { revokeSessionsForUser } from './services/ipcSession';
+import { resolveLanTokenSubject } from './services/lanAuth';
 import { coreServices, withTableLock } from './services/core';
 import { applyOpenAtLogin, isOpenAtLoginEnabled } from './services/hostRuntime';
 import {
@@ -32,7 +34,11 @@ import {
   testFiscalConnection,
   testMinimalCloudInvoice,
 } from './services/fiscal';
-import { reportAuditWriteFailure } from './services/adminAlerts';
+import {
+  notifyAdminsAndActor,
+  notifyPaymentDiscount,
+  reportAuditWriteFailure,
+} from './services/adminAlerts';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import * as reservationsService from './services/reservations';
 import {
@@ -110,6 +116,14 @@ import {
 } from './services/fiscalReviews';
 import { lanLoginRequiresPairingCode } from './services/lanLoginPairing';
 import {
+  ADMIN_LOCK_MS,
+  IP_LOCK_MS,
+  clearLanLoginFailures,
+  lanLoginAdminLockedFor,
+  lanLoginIpLockedFor,
+  recordLanLoginFailure,
+} from './services/lanLoginThrottle';
+import {
   listAdminTicketCounts,
   listAdminTicketsByUser,
 } from './services/adminTickets';
@@ -168,7 +182,6 @@ import {
 } from './services/kdsStationRouting';
 import {
   kdsStationListWhere,
-  localDayStart,
   purgeKdsDoneTicketsForStation,
 } from './services/kdsRetention';
 import {
@@ -177,6 +190,12 @@ import {
   getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
+import { voidBlockedByOtherOwner } from './services/voidOwnership';
+import { decideTicketRequest } from './services/ticketRequests';
+import {
+  stockLinesFromPayload,
+  writeTicketSnapshot,
+} from './services/ticketLogWrite';
 import { compactTicketLogSession } from './services/ticketLogCompact';
 import { compactCoversForTable } from './services/coversCompact';
 import {
@@ -575,6 +594,61 @@ function pairingCodesMatch(provided: unknown, expected: string): boolean {
   }
 }
 
+function sendLoginLocked(
+  res: http.ServerResponse,
+  lockedForMs: number,
+  corsOrigin?: string | null,
+) {
+  res.setHeader(
+    'Retry-After',
+    String(Math.max(1, Math.ceil(lockedForMs / 1000))),
+  );
+  return send(
+    res,
+    429,
+    {
+      error: 'Too many failed login attempts. Try again later.',
+      code: 'LOGIN_LOCKED',
+      retryAfterMs: lockedForMs,
+    },
+    corsOrigin,
+  );
+}
+
+/**
+ * Count a failed LAN login or pairing attempt, slow the answer down, and tell
+ * admins when a device or an admin account gets locked out.
+ */
+async function failLanLogin(
+  remoteIp: string,
+  opts: {
+    reason: 'pin' | 'pairing' | 'user';
+    adminUserId?: number | null;
+    targetName?: string;
+  },
+): Promise<void> {
+  const outcome = recordLanLoginFailure(remoteIp, {
+    adminUserId: opts.adminUserId,
+  });
+  logSecurityEvent('lan_login_failed', {
+    remoteIp,
+    reason: opts.reason,
+    adminUserId: opts.adminUserId ?? null,
+    ipLocked: outcome.ipLocked,
+    adminLocked: outcome.adminLocked,
+  });
+  if (outcome.ipLocked || outcome.adminLocked) {
+    const what = outcome.adminLocked
+      ? `LAN sign-in for admin "${opts.targetName || `#${opts.adminUserId}`}" is locked for ${Math.round(ADMIN_LOCK_MS / 60_000)} minutes`
+      : `LAN sign-in from ${remoteIp || 'an unknown device'} is locked for ${Math.round(IP_LOCK_MS / 60_000)} minutes`;
+    await notifyAdminsAndActor({
+      message: `Unusual activity: repeated failed sign-ins over Wi-Fi. ${what}. Sign-in at the till itself still works.`,
+      type: 'SECURITY',
+    }).catch(() => undefined);
+  }
+  await new Promise((resolve) => setTimeout(resolve, outcome.delayMs));
+}
+
 function hostInterfaceAddresses(): string[] {
   const out: string[] = [];
   try {
@@ -635,12 +709,16 @@ async function issueToken(
   ttlSeconds = 12 * 60 * 60,
 ) {
   const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const now = Math.floor(Date.now() / 1000);
+  const nowMs = Date.now();
+  const now = Math.floor(nowMs / 1000);
   const payload = base64url(
     JSON.stringify({
       sub: ctx.userId,
       role: ctx.role,
       iat: now,
+      // Millisecond issue time so a revocation in the same second as a
+      // fresh sign-in does not reject the new token.
+      iatMs: nowMs,
       exp: now + ttlSeconds,
     }),
   );
@@ -721,10 +799,50 @@ async function verifyToken(
   const userId = Number(payload.sub);
   if (!Number.isFinite(userId) || userId <= 0) return null;
   if (typeof payload.exp === 'number' && payload.exp < now) return null;
-  return {
-    userId,
-    role: String(payload.role || '').toUpperCase(),
-  };
+  // The signature proves the till issued this token, not that the user is
+  // still allowed in. Role and active state come from the database now.
+  const issuedAtMs = Number.isFinite(Number(payload.iatMs))
+    ? Number(payload.iatMs)
+    : Number(payload.iat) * 1000;
+  return resolveLanTokenSubject({ userId, issuedAtMs });
+}
+
+/**
+ * A waiter may void only the table they opened. An admin, or a verified
+ * manager approval, may void anyone's table. Same rule as the till.
+ */
+async function phoneVoidBlockedByOwnership(opts: {
+  secret: string;
+  auth: AuthContext;
+  userId: number;
+  area: string;
+  tableLabel: string;
+  approvedByAdminId: unknown;
+  approvedByAdminToken: unknown;
+}): Promise<boolean> {
+  const actorIsAdmin = opts.auth?.role === 'ADMIN';
+  let approvalLifts = false;
+  const aid =
+    opts.approvedByAdminId != null ? Number(opts.approvedByAdminId) : 0;
+  const tok = String(opts.approvedByAdminToken || '').trim();
+  if (!actorIsAdmin && aid && tok) {
+    const approved = await verifyApprovalToken(opts.secret, tok);
+    approvalLifts = Boolean(
+      approved &&
+        approved.userId === aid &&
+        String(approved.role || '').toUpperCase() === 'ADMIN',
+    );
+  }
+  const ownerId =
+    actorIsAdmin || approvalLifts
+      ? null
+      : await getCurrentSessionOwnerId(opts.area, opts.tableLabel);
+  return voidBlockedByOtherOwner({
+    actorIsAdmin,
+    actorUserId: opts.userId,
+    ownerId,
+    approvalLifts,
+  });
 }
 
 /**
@@ -1089,7 +1207,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const lastEventId = Number(lastEventRaw);
         const catchup = sseCatchupIfMissed(lastEventId);
         if (catchup) res.write(catchup);
-        const client = { res } as any;
+        // `userId` lets a revocation close this stream (see `lanAuth`).
+        const client = { res, userId: auth.userId } as any;
         (globalThis as any).__SSE_CLIENTS__ =
           (globalThis as any).__SSE_CLIENTS__ || new Set();
         const clients: Set<any> = (globalThis as any).__SSE_CLIENTS__;
@@ -1163,14 +1282,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           if (!requirePairing) return send(res, 200, { ok: true }, corsOrigin);
           if (isLoopback(remoteIp))
             return send(res, 200, { ok: true }, corsOrigin);
+          const lockedFor = lanLoginIpLockedFor(remoteIp);
+          if (lockedFor > 0) return sendLoginLocked(res, lockedFor, corsOrigin);
           const code = await getOrCreatePairingCode();
-          if (!pairingCodesMatch(pairingCode, code))
+          if (!pairingCodesMatch(pairingCode, code)) {
+            // Without a budget this route is a free oracle for the code.
+            await failLanLogin(remoteIp, { reason: 'pairing' });
             return send(
               res,
               403,
               { ok: false, error: 'pairing code required' },
               corsOrigin,
             );
+          }
           return send(res, 200, { ok: true }, corsOrigin);
         } catch {
           if (!isLoopback(remoteIp))
@@ -1184,16 +1308,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
       }
       if (req.method === 'POST' && pathname === '/auth/login') {
-        // Login is intentionally not rate-limited. Waiter tablets retype PINs
-        // throughout a shift and a 429 mid-service is worse than the
-        // brute-force risk, which is already mitigated by the LAN pairing
-        // code requirement for staff devices.
+        // Failed logins from the network are throttled (see
+        // `lanLoginThrottle`): a short delay per miss, then a lockout per IP
+        // and per admin account. Admin logins skip the pairing code, so
+        // without this the admin PIN was the only barrier and it could be
+        // walked in minutes. The till itself (loopback) is never throttled.
         const { pin, userId, pairingCode } = await parseJson(req);
-        const remoteIp = (req.socket as any)?.remoteAddress;
+        const remoteIp = String((req.socket as any)?.remoteAddress || '');
+        const loopback = isLoopback(remoteIp);
+        if (!loopback) {
+          const lockedFor = lanLoginIpLockedFor(remoteIp);
+          if (lockedFor > 0) return sendLoginLocked(res, lockedFor, corsOrigin);
+        }
         let requirePairing = false;
         // If this is a LAN client (not loopback), gate web access first.
-        // Pairing is checked after the PIN so Admin — the issuer of the
-        // code — can sign in without typing its own invite.
         try {
           const s = await coreServices.readSettings();
           requirePairing = Boolean((s as any)?.security?.requirePairingCode);
@@ -1224,7 +1352,40 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           ? { id: Number(userId), active: true }
           : { active: true };
         const user = await prisma.user.findFirst({ where });
-        if (!user) return send(res, 200, null, corsOrigin);
+        if (!user) {
+          if (!loopback) await failLanLogin(remoteIp, { reason: 'user' });
+          return send(res, 200, null, corsOrigin);
+        }
+        const adminUserId =
+          String(user.role || '').toUpperCase() === 'ADMIN'
+            ? Number(user.id)
+            : null;
+        if (!loopback && adminUserId) {
+          const lockedFor = lanLoginAdminLockedFor(adminUserId);
+          if (lockedFor > 0) return sendLoginLocked(res, lockedFor, corsOrigin);
+        }
+        // Pairing is checked BEFORE the PIN. Checking it after made the
+        // answer differ between a wrong PIN (null) and a right PIN with no
+        // code (403), so the PIN could be guessed without the code. Admin —
+        // the issuer of the code — is still exempt.
+        if (
+          lanLoginRequiresPairingCode({
+            requirePairing,
+            loopback,
+            role: user.role,
+          })
+        ) {
+          const code = await getOrCreatePairingCode();
+          if (!pairingCodesMatch(pairingCode, code)) {
+            await failLanLogin(remoteIp, { reason: 'pairing' });
+            return send(
+              res,
+              403,
+              { error: 'pairing code required' },
+              corsOrigin,
+            );
+          }
+        }
         const ok = await bcrypt.compare(normalizePin(pin), user.pinHash);
         if (!ok) {
           await prisma.notification
@@ -1236,25 +1397,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               },
             })
             .catch(() => {});
+          if (!loopback) {
+            await failLanLogin(remoteIp, {
+              reason: 'pin',
+              adminUserId,
+              targetName: String(user.displayName || ''),
+            });
+          }
           return send(res, 200, null, corsOrigin);
         }
-        if (
-          lanLoginRequiresPairingCode({
-            requirePairing,
-            loopback: isLoopback(remoteIp),
-            role: user.role,
-          })
-        ) {
-          const code = await getOrCreatePairingCode();
-          if (!pairingCodesMatch(pairingCode, code)) {
-            return send(
-              res,
-              403,
-              { error: 'pairing code required' },
-              corsOrigin,
-            );
-          }
-        }
+        if (!loopback) clearLanLoginFailures(remoteIp);
         const token = await issueToken(secret, {
           userId: user.id,
           role: String(user.role || '').toUpperCase(),
@@ -1734,25 +1886,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               sanitizedTableLabel,
             ).catch(() => null);
 
-            try {
-              await prisma.ticketLog.create({
-                data: {
-                  userId: Number(userId),
-                  area: sanitizedArea,
-                  tableLabel: sanitizedTableLabel,
-                  covers: sanitizedCovers,
-                  itemsJson: items ?? [],
-                  note: sanitizedNote,
-                  ...(idempotencyKey ? { idempotencyKey } : {}),
-                  ...(sessionKey ? { sessionKey } : {}),
-                } as any,
-              });
-            } catch (e: any) {
-              if (e?.code === 'P2002' && idempotencyKey) {
-                return { ok: true as const };
-              }
-              throw e;
-            }
+            // Same write as the till, including the low-stock count-down
+            // the phone route used to skip.
+            const outcome = await writeTicketSnapshot({
+              userId: Number(userId),
+              area: sanitizedArea,
+              tableLabel: sanitizedTableLabel,
+              covers: sanitizedCovers,
+              items: items ?? [],
+              note: sanitizedNote,
+              idempotencyKey,
+              sessionKey,
+              stockConsumeLines: stockLinesFromPayload(body?.stockConsumeLines),
+            });
+            if (outcome === 'duplicate') return { ok: true as const };
             return {
               ok: true as const,
               written: true as const,
@@ -2391,6 +2538,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             const meta: any = payload?.meta || {};
             const kind = String(meta?.kind || '').toUpperCase();
             if (kind === 'PAYMENT') {
+              await notifyPaymentDiscount({
+                area: String(payload.area || ''),
+                tableLabel: String(payload.tableLabel || ''),
+                meta,
+              }).catch(() => undefined);
               const k = `${payload.area}:${payload.tableLabel}`;
               const payRow = await prisma.syncState
                 .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
@@ -2718,6 +2870,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             corsOrigin,
           );
         }
+        if (
+          await phoneVoidBlockedByOwnership({
+            secret,
+            auth,
+            userId: Number(userId),
+            area: String(area),
+            tableLabel: String(tableLabel),
+            approvedByAdminId,
+            approvedByAdminToken,
+          })
+        ) {
+          return send(
+            res,
+            403,
+            {
+              error: 'forbidden',
+              code: 'TABLE_OWNED_BY_OTHER',
+              permanent: true,
+            },
+            corsOrigin,
+          );
+        }
 
         // Settled money is beyond a waiter's reach — only an admin
         // correction can undo a paid (and filed) line. Refuse before the
@@ -2733,11 +2907,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
 
         const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
-        await prisma.notification
-          .create({
-            data: { userId: Number(userId), type: 'OTHER' as any, message },
-          })
-          .catch(() => {});
+        await notifyAdminsAndActor({
+          message,
+          actorUserId: Number(userId),
+        });
         if (last && plan.outcome === 'ok') {
           const items = (last.itemsJson as any[]) || [];
           items[plan.index] = { ...items[plan.index], voided: true };
@@ -2849,6 +3022,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             corsOrigin,
           );
         }
+        if (
+          await phoneVoidBlockedByOwnership({
+            secret,
+            auth,
+            userId: Number(userId),
+            area: String(area),
+            tableLabel: String(tableLabel),
+            approvedByAdminId,
+            approvedByAdminToken,
+          })
+        ) {
+          return send(
+            res,
+            403,
+            {
+              error: 'forbidden',
+              code: 'TABLE_OWNED_BY_OTHER',
+              permanent: true,
+            },
+            corsOrigin,
+          );
+        }
 
         // Paid lines stay on the ticket. When they are all that is left,
         // this sitting is settled and only an admin correction can reverse
@@ -2863,11 +3058,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
 
         const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
-        await prisma.notification
-          .create({
-            data: { userId: Number(userId), type: 'OTHER' as any, message },
-          })
-          .catch(() => {});
+        await notifyAdminsAndActor({
+          message,
+          actorUserId: Number(userId),
+        });
         if (last) {
           await prisma.ticketLog.update({
             where: { id: last.id },
@@ -2983,30 +3177,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (!id || !ownerId) return send(res, 400, 'invalid', corsOrigin);
         if (auth && Number(ownerId) !== auth.userId && auth.role !== 'ADMIN')
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        await prisma.ticketRequest.updateMany({
-          where: {
-            id: Number(id),
-            ownerId: Number(ownerId),
-            status: 'PENDING' as any,
-          },
-          data: { status: 'APPROVED' as any, decidedAt: new Date() },
+        // Status only, shared with the till (see `ticketRequests.ts`).
+        const decided = await decideTicketRequest({
+          id: Number(id),
+          ownerId: Number(ownerId),
+          decision: 'APPROVED',
         });
-        return send(res, 200, true, corsOrigin);
+        return send(res, 200, decided, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/requests/reject') {
         const { id, ownerId } = await parseJson(req);
         if (!id || !ownerId) return send(res, 400, 'invalid', corsOrigin);
         if (auth && Number(ownerId) !== auth.userId && auth.role !== 'ADMIN')
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        await prisma.ticketRequest.updateMany({
-          where: {
-            id: Number(id),
-            ownerId: Number(ownerId),
-            status: 'PENDING' as any,
-          },
-          data: { status: 'REJECTED' as any, decidedAt: new Date() },
+        // Status only, shared with the till (see `ticketRequests.ts`).
+        const decided = await decideTicketRequest({
+          id: Number(id),
+          ownerId: Number(ownerId),
+          decision: 'REJECTED',
         });
-        return send(res, 200, true, corsOrigin);
+        return send(res, 200, decided, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/requests/poll-approved') {
         const ownerId = Number(parsed.query.ownerId || 0);
@@ -3050,7 +3240,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const { area, label, open } = body || {};
         const areaTrim = String(area || '').trim();
         const labelTrim = String(label || '').trim();
-        const intentAt = Number(body?.intentAt);
         if (!areaTrim || !labelTrim)
           return send(res, 400, 'invalid', corsOrigin);
         if (!allowStoreCounterArea(areaTrim, res, corsOrigin)) return;
@@ -3059,8 +3248,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           labelTrim,
           Boolean(open),
           {
-            intentAt:
-              Number.isFinite(intentAt) && intentAt > 0 ? intentAt : undefined,
+            intentAt: resolveHostIntent(body || {}),
           },
         );
         if (!ok) return send(res, 400, 'invalid', corsOrigin);
@@ -3118,7 +3306,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           toLabel,
           toUserId,
           actorUserId,
-          actorRole: auth?.role,
           idempotencyKey:
             String(body?.idempotencyKey ?? '').trim() || undefined,
         } as any).catch((e: any) => ({

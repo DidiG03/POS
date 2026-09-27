@@ -207,6 +207,9 @@ export async function writeSettledSale(
             idempotencyKey: key,
             fiscalNslf: String(meta.fiscalNslf || '').trim() || null,
             fiscalNivf: String(meta.fiscalNivf || '').trim() || null,
+            // An admin cancel/corrective of an e-invoice (P10/P9) must
+            // reference its EIC; without it the reversal is filed wrong.
+            fiscalEic: String(meta.fiscalEic || '').trim() || null,
             metaJson: meta,
           },
         },

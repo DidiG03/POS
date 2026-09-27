@@ -219,9 +219,17 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.70"
-            echo "- The till no longer asks for a device passphrase. It opens with the Windows or Mac login, and the recovery key is the backup."
-            echo "- Tables no longer turn occupied with an empty ticket and only a sitting timer."
+            echo "### Changes in v0.2.71"
+            echo "- Security: repeated wrong PINs over Wi-Fi now lock that device for a few minutes, and admin sign-in over Wi-Fi locks after too many misses. Sign-in at the till is never locked."
+            echo "- Security: deactivating a staff member, changing their role, or resetting their PIN now signs them out on phones and tablets immediately."
+            echo "- Security: a waiter can no longer move another waiter's table by sending a fake admin role."
+            echo "- Moving a table is safe during a rush: it waits for a Send or payment in progress and never brings back an old paid bill."
+            echo "- Approving a colleague's add-items request no longer drops paid or voided marks from the bill."
+            echo "- Orders sent from phones now count down low stock."
+            echo "- Cancelling or correcting an electronic invoice now sends its EIC, including for older sales."
+            echo "- Phone voids check who owns the table and notify admins; discounts from phones notify admins too."
+            echo "- Opening a table no longer depends on the phone's clock being correct."
+            echo "- macOS: a failed update now reopens the till instead of leaving it closed."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

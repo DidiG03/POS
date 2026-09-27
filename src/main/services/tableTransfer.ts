@@ -5,7 +5,11 @@ import {
   broadcastTicketsChanged,
 } from './realtime';
 import { moveCoveringReservationForTableTransfer } from './reservations';
-import { buildTableSessionKey } from './tableSession';
+import { withTablesLocked } from './core';
+import {
+  buildTableSessionKey,
+  findLatestTicketLogForCurrentSession,
+} from './tableSession';
 import { compactTicketLogSession } from './ticketLogCompact';
 import {
   DestinationTableOccupiedError,
@@ -23,10 +27,9 @@ export type TransferTableInput = {
   toLabel?: string | null;
   // Optional ownership transfer
   toUserId?: number | null;
-  // Actor initiating the transfer (required for authorization)
+  // Actor initiating the transfer (required for authorization). Callers bind
+  // this to the authenticated session; the role is always read from the DB.
   actorUserId: number;
-  /** When in cloud mode, actor may not exist in local DB; pass role from session to bypass lookup */
-  actorRole?: string;
   /** Dedupes double-submit / offline retries (stored on the new destination TicketLog row). */
   idempotencyKey?: string | null;
 };
@@ -271,7 +274,34 @@ export function parseTransferTag(
   return null;
 }
 
+/**
+ * Move a sitting to another table and/or hand it to another waiter.
+ *
+ * Holds the lock on both tables for the whole transfer, the same lock a
+ * Send, Pay or void takes. Without it a Send landing mid-move reopened the
+ * source table or left its items off the moved bill, and two moves racing
+ * for one destination could both pass the "destination is free" check.
+ */
 export async function transferTableLocal(
+  input: TransferTableInput,
+): Promise<TransferTableResult> {
+  const fromArea = norm(input.fromArea);
+  const fromLabel = norm(input.fromLabel);
+  const toArea = norm(input.toArea || fromArea);
+  const toLabel = norm(input.toLabel || fromLabel);
+  if (!fromArea || !fromLabel || !toArea || !toLabel) {
+    return transferTableUnderLock(input);
+  }
+  return withTablesLocked(
+    [
+      { area: fromArea, label: fromLabel },
+      { area: toArea, label: toLabel },
+    ],
+    () => transferTableUnderLock(input),
+  );
+}
+
+async function transferTableUnderLock(
   input: TransferTableInput,
 ): Promise<TransferTableResult> {
   const fromArea = norm(input.fromArea);
@@ -289,27 +319,19 @@ export async function transferTableLocal(
   if (toUserId != null && !toUserId)
     return { ok: false, error: 'Invalid destination user' };
 
+  // The bill being moved is the current sitting's. The newest row ever
+  // written at this table (by `createdAt`, which is not a reliable order
+  // here) could be a previous party's paid bill, and moving it resurrected
+  // that bill on the destination. A table with no open sitting has nothing
+  // to move.
   const [actor, last] = await Promise.all([
     prisma.user.findUnique({ where: { id: actorUserId } }).catch(() => null),
-    prisma.ticketLog
-      .findFirst({
-        where: { area: fromArea, tableLabel: fromLabel },
-        orderBy: { createdAt: 'desc' },
-      })
-      .catch(() => null),
+    findLatestTicketLogForCurrentSession(fromArea, fromLabel).catch(() => null),
   ]);
 
-  // In cloud mode, actor may not exist in local DB; use actorRole from session when provided
-  const actorRoleFromSession = String(input.actorRole || '').trim();
-  const effectiveActor =
-    actor && actor.active !== false
-      ? actor
-      : actorRoleFromSession
-        ? ({ role: actorRoleFromSession, active: true } as {
-            role: string;
-            active: boolean;
-          })
-        : null;
+  // The role must come from this database. A caller-supplied role let a
+  // made-up actor id claim ADMIN and take any table.
+  const effectiveActor = actor && actor.active !== false ? actor : null;
 
   if (!effectiveActor) return { ok: false, error: 'Actor not found' };
   if (!last)
@@ -417,6 +439,19 @@ export async function transferTableLocal(
     toLabel,
     movingTable ? toAt : fromAt || toAt,
   );
+  // Occupancy first. If the destination is taken, nothing has been written
+  // yet; writing the ticket first left an orphan bill on a table this move
+  // never got.
+  if (movingTable) {
+    try {
+      await moveTableOccupancy(fromArea, fromLabel, toArea, toLabel);
+    } catch (e) {
+      if (e instanceof DestinationTableOccupiedError) {
+        return { ok: false, error: e.message };
+      }
+      throw e;
+    }
+  }
   try {
     createdLog = await prisma.ticketLog.create({
       data: {
@@ -432,6 +467,12 @@ export async function transferTableLocal(
     });
   } catch (e: any) {
     if (e?.code === 'P2002' && transferIdem) return { ok: true };
+    // The bill did not move, so the sitting must not either.
+    if (movingTable) {
+      await moveTableOccupancy(toArea, toLabel, fromArea, fromLabel).catch(
+        () => undefined,
+      );
+    }
     throw e;
   }
   await compactTicketLogSession(destinationSessionKey);
@@ -475,17 +516,8 @@ export async function transferTableLocal(
     }
   };
 
-  // Update occupancy rows (one row per table — not a shared JSON map).
+  // Occupancy already moved above, before the destination row was written.
   if (movingTable) {
-    try {
-      await moveTableOccupancy(fromArea, fromLabel, toArea, toLabel);
-    } catch (e) {
-      if (e instanceof DestinationTableOccupiedError) {
-        return { ok: false, error: e.message };
-      }
-      throw e;
-    }
-
     await prependMovedOutToPriorSessionRows();
 
     // Mirror guest count into the `Covers` table so `covers:getLast` (used by

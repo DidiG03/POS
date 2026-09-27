@@ -33,3 +33,7 @@ android/app/debug
 android/captures
 android/.idea
 dist-android
+
+# SQLite write-ahead log / shared-memory files next to any local database.
+*.db-wal
+*.db-shm

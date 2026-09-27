@@ -12,11 +12,21 @@
  * - AUTO_UPDATE_ENABLED: Set to "false" to disable auto-updates (default: true)
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
 import { allowNextQuit } from './services/hostRuntime';
 import { isUnpackagedElectron } from './services/electronDev';
+import {
+  canReplaceMacBundle,
+  launchMacBundleSwap,
+  macBundlePathFromExec,
+  pendingUpdateZip,
+  readMacSignatureKind,
+  updaterCacheDirNameFromYml,
+} from './services/macBundleUpdate';
 import { resolveUpdateFeed } from './services/updateFeed';
 import {
   isMissingUpdateFeedError,
@@ -176,15 +186,83 @@ function beginDownload(): Promise<UpdateActionResult> {
  * from the zip and relaunches. Always confirm quit so the tray host does
  * not intercept the restart.
  */
-function quitAndInstallUpdate(): void {
+function macAppIsDeveloperIdSigned(): boolean {
+  if (process.platform !== 'darwin') return false;
+  const bundle = macBundlePathFromExec(process.execPath);
+  if (!bundle) return false;
+  return readMacSignatureKind(bundle) === 'developer-id';
+}
+
+function downloadedMacZip(): string | null {
+  let cacheName = '';
+  try {
+    const yml = fs.readFileSync(
+      path.join(process.resourcesPath, 'app-update.yml'),
+      'utf8',
+    );
+    cacheName = updaterCacheDirNameFromYml(yml) || '';
+  } catch {
+    cacheName = '';
+  }
+  if (!cacheName) cacheName = `${app.getName()}-updater`;
+  const pendingDir = path.join(
+    app.getPath('home'),
+    'Library',
+    'Caches',
+    cacheName,
+    'pending',
+  );
+  let info = '';
+  try {
+    info = fs.readFileSync(path.join(pendingDir, 'update-info.json'), 'utf8');
+  } catch {
+    return null;
+  }
+  const zip = pendingUpdateZip(pendingDir, info);
+  if (!zip || !fs.existsSync(zip)) return null;
+  return zip;
+}
+
+function prepareToQuit(): void {
   allowNextQuit();
   try {
     app.releaseSingleInstanceLock();
   } catch {
     // ignore
   }
+}
+
+/**
+ * Quit and install. Returns an error instead of quitting when the install
+ * cannot work: a till that quits for an update it cannot apply takes every
+ * tablet down with it until someone reopens it by hand.
+ */
+function quitAndInstallUpdate(): { ok: true } | { error: string } {
+  // Squirrel.Mac rejects a zip that is not signed with the same Developer ID.
+  // Published Mac builds are ad-hoc signed, so replace the .app after quit.
+  if (process.platform === 'darwin' && !macAppIsDeveloperIdSigned()) {
+    const bundle = macBundlePathFromExec(process.execPath);
+    const zip = downloadedMacZip();
+    if (!bundle || !zip) {
+      return {
+        error:
+          'The downloaded update could not be found. Check for updates again.',
+      };
+    }
+    if (!canReplaceMacBundle(bundle)) {
+      return {
+        error: `This Mac user cannot replace ${bundle}. Install the update from the downloaded DMG, or sign in as an administrator.`,
+      };
+    }
+    prepareToQuit();
+    launchMacBundleSwap({ pid: process.pid, bundlePath: bundle, zipPath: zip });
+    app.quit();
+    return { ok: true };
+  }
+  prepareToQuit();
   const silent = process.platform === 'win32';
   autoUpdater.quitAndInstall(silent, true);
+  return { ok: true };
 }
 
 async function performCheck(): Promise<UpdateCheckResult> {
@@ -311,7 +389,8 @@ export const updaterHandlers = {
     }
     clearAutoInstallTimer();
     addBreadcrumb('Installing update and restarting', 'updater', 'info');
-    quitAndInstallUpdate();
+    const installed = quitAndInstallUpdate();
+    if ('error' in installed) return { error: installed.error };
     return { success: true };
   },
   /**
@@ -381,7 +460,10 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
     autoUpdater.logger = console;
     // Configuration
     autoUpdater.autoDownload = Boolean(options?.autoDownload); // KDS: true; POS: false (manual)
-    autoUpdater.autoInstallOnAppQuit = true; // Auto-install on quit if downloaded
+    // On an ad-hoc Mac build, leaving this on makes Squirrel reject the zip
+    // during download and the update looks like it failed.
+    autoUpdater.autoInstallOnAppQuit =
+      process.platform !== 'darwin' || macAppIsDeveloperIdSigned();
     autoUpdater.allowDowngrade = false;
     autoUpdater.allowPrerelease = false; // Only stable releases
     // Windows blockmaps were missing from older GitHub releases; a failed
@@ -499,7 +581,12 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
             'info',
           );
           try {
-            quitAndInstallUpdate();
+            const installed = quitAndInstallUpdate();
+            if ('error' in installed) {
+              captureException(new Error(installed.error), {
+                context: 'updater:autoInstall',
+              });
+            }
           } catch (error) {
             captureException(
               error instanceof Error ? error : new Error(String(error)),

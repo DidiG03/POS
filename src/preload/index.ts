@@ -247,8 +247,13 @@ const api: Api = {
       ipcRenderer.invoke('print:cancelRetry', { id }),
   },
   tables: {
-    setOpen: (area: string, label: string, open: boolean, intentAt?: number) =>
-      ipcRenderer.invoke('tables:setOpen', { area, label, open, intentAt }),
+    setOpen: (
+      area: string,
+      label: string,
+      open: boolean,
+      intentAgeMs?: number,
+    ) =>
+      ipcRenderer.invoke('tables:setOpen', { area, label, open, intentAgeMs }),
     listOpen: () => ipcRenderer.invoke('tables:listOpen'),
     getFloorSnapshot: (area?: string) =>
       ipcRenderer.invoke('tables:getFloorSnapshot', { area }),

@@ -10,15 +10,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   listOccupiedTables,
   setTableOccupied,
+  getOpenedAt,
   findLatest,
   findMany,
   broadcast,
+  withTableLock,
 } = vi.hoisted(() => ({
   listOccupiedTables: vi.fn(),
   setTableOccupied: vi.fn(async () => true),
+  getOpenedAt: vi.fn(async (): Promise<Date | null> => null),
   findLatest: vi.fn(async (): Promise<unknown> => null),
   findMany: vi.fn(async (): Promise<unknown[]> => []),
   broadcast: vi.fn(),
+  withTableLock: vi.fn(
+    async (_area: string, _label: string, fn: () => Promise<unknown>) => fn(),
+  ),
 }));
 
 vi.mock('@db/client', () => ({
@@ -27,6 +33,10 @@ vi.mock('@db/client', () => ({
 vi.mock('./tableOccupancy', () => ({
   listOccupiedTables,
   setTableOccupied,
+  getOpenedAt,
+}));
+vi.mock('./core', () => ({
+  withTableLock,
 }));
 vi.mock('./tableSession', () => ({
   findLatestTicketLogForCurrentSession: findLatest,
@@ -95,6 +105,12 @@ describe('releaseBareOccupancy', () => {
     listOccupiedTables.mockReset();
     setTableOccupied.mockReset();
     setTableOccupied.mockResolvedValue(true);
+    getOpenedAt.mockReset();
+    getOpenedAt.mockResolvedValue(new Date(NOW - 60_000));
+    withTableLock.mockReset();
+    withTableLock.mockImplementation(
+      async (_area: string, _label: string, fn: () => Promise<unknown>) => fn(),
+    );
     findLatest.mockReset();
     findLatest.mockResolvedValue(null);
     findMany.mockReset();
@@ -158,6 +174,26 @@ describe('releaseBareOccupancy', () => {
     listOccupiedTables.mockResolvedValue([
       { area: 'Salla', label: 'T21', openedAt: new Date(NOW - 2_000) },
     ]);
+
+    expect(await releaseBareOccupancy(NOW)).toEqual([]);
+    expect(setTableOccupied).not.toHaveBeenCalled();
+  });
+
+  it('does not free a sitting that was reopened before the lock was granted', async () => {
+    listOccupiedTables.mockResolvedValue([
+      { area: 'Salla', label: 'T5', openedAt: new Date(NOW - 60_000) },
+    ]);
+    getOpenedAt.mockResolvedValue(new Date(NOW - 1_000));
+
+    expect(await releaseBareOccupancy(NOW)).toEqual([]);
+    expect(setTableOccupied).not.toHaveBeenCalled();
+  });
+
+  it('leaves the table alone when a Send already holds the lock', async () => {
+    listOccupiedTables.mockResolvedValue([
+      { area: 'Salla', label: 'T8', openedAt: new Date(NOW - 60_000) },
+    ]);
+    withTableLock.mockRejectedValue(new Error('Table Salla:T8 is busy'));
 
     expect(await releaseBareOccupancy(NOW)).toEqual([]);
     expect(setTableOccupied).not.toHaveBeenCalled();

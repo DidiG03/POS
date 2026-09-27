@@ -24,11 +24,11 @@
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import { notifyAdminsAndActor } from './adminAlerts';
-import { flagFiscalCorrectionRequired } from './fiscal/claims';
+import { flagFiscalCorrectionRequired, readFiscalClaim } from './fiscal/claims';
 import { cancelInvoice } from './fiscal/cancel';
 import { registerCorrectiveInvoice } from './fiscal/corrective';
 import { isFiscalEnabled } from './fiscal';
-import { newDocId } from './fiscal/docId';
+import { docIdFromKey, newDocId } from './fiscal/docId';
 import { assertVatCode } from './fiscal/vatConfig';
 import { mapPaymentMethod } from './fiscal/paymentMethod';
 import { roundMoney } from '@shared/pricing';
@@ -453,6 +453,31 @@ async function fileCorrective(input: {
   }
 }
 
+/**
+ * The EIC of the invoice being reversed. A P10 cancellation or P9 corrective
+ * of an electronic invoice must reference it.
+ *
+ * Sales settled before the ledger stored `Payment.fiscalEic` only have it on
+ * their fiscal claim, which was written when the invoice was filed, so fall
+ * back to that rather than filing the reversal without it.
+ */
+async function resolveOriginalEic(
+  payment: any,
+  idempotencyKey: string,
+): Promise<string | undefined> {
+  const stored = String(payment?.fiscalEic || '').trim();
+  if (stored) return stored;
+  if (!idempotencyKey) return undefined;
+  try {
+    const claim = await readFiscalClaim(
+      docIdFromKey(idempotencyKey, 'invoice'),
+    );
+    return String(claim?.result?.eic || '').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function applySaleCorrection(input: {
   orderId: number;
   kind: SaleCorrectionKind;
@@ -554,6 +579,7 @@ export async function applySaleCorrection(input: {
       String(payment?.fiscalNivf || '').trim(),
   );
   const docId = String(payment?.idempotencyKey || '').trim();
+  const originalEic = await resolveOriginalEic(payment, docId);
   const what =
     plan.kind === 'CANCEL'
       ? 'Cancellation invoice required'
@@ -576,7 +602,7 @@ export async function applySaleCorrection(input: {
         orderId,
         originalDocId: docId,
         iic,
-        eic: String(payment?.fiscalEic || '').trim() || undefined,
+        eic: originalEic,
         issueDateTime: iso(payment?.paidAt) || undefined,
       });
     } else if (!plan.cancelsSale && iic && isFiscalEnabled(settings)) {
@@ -596,7 +622,7 @@ export async function applySaleCorrection(input: {
         correctionId,
         originalDocId: docId,
         iic,
-        eic: String(payment?.fiscalEic || '').trim() || undefined,
+        eic: originalEic,
         issueDateTime: iso(payment?.paidAt) || undefined,
         remaining,
         nextTotal: plan.nextTotal,
@@ -630,7 +656,7 @@ export async function applySaleCorrection(input: {
         result: {
           nslf: iic || undefined,
           nivf: String(payment?.fiscalNivf || '').trim() || undefined,
-          eic: String(payment?.fiscalEic || '').trim() || undefined,
+          eic: originalEic,
         },
       }).catch(() => false);
     }

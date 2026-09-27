@@ -112,11 +112,14 @@ vi.mock('./adminAlerts', () => ({
   }),
 }));
 
+const { claims } = vi.hoisted(() => ({ claims: new Map<string, any>() }));
+
 vi.mock('./fiscal/claims', () => ({
   flagFiscalCorrectionRequired: vi.fn(async (input: any) => {
     flagged.push(input);
     return true;
   }),
+  readFiscalClaim: vi.fn(async (key: string) => claims.get(key) ?? null),
 }));
 
 vi.mock('./fiscal/cancel', () => ({
@@ -191,6 +194,7 @@ beforeEach(() => {
   db.nextCorrectionId = 1;
   flagged.length = 0;
   notified.length = 0;
+  claims.clear();
   registerCorrectiveInvoice.mockClear();
 });
 
@@ -265,6 +269,66 @@ describe('applySaleCorrection — cancellation', () => {
     expect(flagged).toHaveLength(0);
     expect(notified).toHaveLength(1);
     expect(notified[0].message).toContain('reversed');
+  });
+
+  it('files an e-invoice cancellation with the EIC saved on the payment', async () => {
+    seedSale();
+    db.orders.get(1).payment.fiscalEic = 'EIC-PAY';
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true },
+    } as any);
+    vi.mocked(cancelInvoice).mockClear();
+
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Guest never served',
+    });
+
+    const call = vi.mocked(cancelInvoice).mock.calls[0][1] as any;
+    expect(call.target.eic).toBe('EIC-PAY');
+    expect(call.electronic).toBe(true);
+  });
+
+  it('recovers the EIC from the fiscal claim for sales saved before it was stored', async () => {
+    seedSale();
+    claims.set('doc-1', { state: 'REGISTERED', result: { eic: 'EIC-CLAIM' } });
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true },
+    } as any);
+    vi.mocked(cancelInvoice).mockClear();
+
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Guest never served',
+    });
+
+    const call = vi.mocked(cancelInvoice).mock.calls[0][1] as any;
+    expect(call.target.eic).toBe('EIC-CLAIM');
+    expect(call.electronic).toBe(true);
+    expect(flagged[0]?.result?.eic).toBe('EIC-CLAIM');
+  });
+
+  it('keeps an ordinary invoice non-electronic', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true },
+    } as any);
+    vi.mocked(cancelInvoice).mockClear();
+
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Guest never served',
+    });
+
+    const call = vi.mocked(cancelInvoice).mock.calls[0][1] as any;
+    expect(call.target.eic).toBeUndefined();
+    expect(call.electronic).toBe(false);
   });
 
   it('stamps the cancellation IIC once CIS accepts it', async () => {

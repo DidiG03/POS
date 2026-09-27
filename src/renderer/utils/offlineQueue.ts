@@ -30,6 +30,8 @@
  *     without polling.
  */
 
+import { ageSinceTap } from '@shared/tableIntent';
+
 export type OfflineOp =
   | 'tickets.log'
   | 'tickets.print'
@@ -501,7 +503,7 @@ export async function dispatchTicketLog(
         String(a.area),
         String(a.tableLabel),
         true,
-        Date.now(),
+        0,
       );
       rejection = await send();
     } catch {
@@ -532,15 +534,29 @@ export async function dispatchTicketLog(
  * when a queued order is a real send.
  */
 export async function applyQueuedTableOpen(
-  a: { area?: string; label?: string; open?: boolean; intentAt?: number },
+  a: {
+    area?: string;
+    label?: string;
+    open?: boolean;
+    /** Phone clock when the waiter tapped. Not sent to the till. */
+    tappedAt?: number;
+    /** Older queued items stored the phone clock under this name. */
+    intentAt?: number;
+  },
   ctx: DispatchContext,
 ): Promise<void> {
   const area = String(a.area || '');
   const label = String(a.label || '');
   const open = Boolean(a.open);
-  const intentRaw = Number(a.intentAt);
-  const intentAt =
-    Number.isFinite(intentRaw) && intentRaw > 0 ? intentRaw : undefined;
+  const tappedRaw = Number(a.tappedAt);
+  const legacyTap = Number(a.intentAt);
+  const tappedAt =
+    Number.isFinite(tappedRaw) && tappedRaw > 0
+      ? tappedRaw
+      : Number.isFinite(legacyTap) && legacyTap > 0
+        ? legacyTap
+        : Date.now();
+  const intentAgeMs = ageSinceTap(tappedAt);
   if (open && ctx.attempt > 0) {
     try {
       const listed = await window.api.tables.listOpen();
@@ -553,10 +569,10 @@ export async function applyQueuedTableOpen(
       }
     } catch {
       // Can't see the floor. The host still drops this if a newer
-      // close already landed (`intentAt`).
+      // close already landed.
     }
   }
-  await window.api.tables.setOpen(area, label, open, intentAt);
+  await window.api.tables.setOpen(area, label, open, intentAgeMs);
 }
 
 /**
@@ -1287,9 +1303,13 @@ export async function tryOrQueue<T = unknown>(
   options?: { dedupeKey?: string },
 ): Promise<{ queued: boolean; result?: T; error?: string }> {
   if (op === 'tables.setOpen') {
-    const intentAt = Number(args?.intentAt);
-    if (!Number.isFinite(intentAt) || intentAt <= 0) {
-      args = { ...args, intentAt: Date.now() };
+    const tappedAt = Number(args?.tappedAt);
+    const legacyTap = Number(args?.intentAt);
+    if (
+      !(Number.isFinite(tappedAt) && tappedAt > 0) &&
+      !(Number.isFinite(legacyTap) && legacyTap > 0)
+    ) {
+      args = { ...args, tappedAt: Date.now() };
     }
   }
   const dispatcher = dispatchers[op];

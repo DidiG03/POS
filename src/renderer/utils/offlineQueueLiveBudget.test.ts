@@ -110,6 +110,9 @@ describe('live-attempt budget', () => {
       false,
       expect.any(Number),
     );
+    const age = Number((setOpen.mock.calls as unknown[][])[0]?.[3]);
+    expect(age).toBeGreaterThanOrEqual(0);
+    expect(age).toBeLessThan(5_000);
   });
 
   it('does NOT cut short a payment — money waits for a definite answer', async () => {

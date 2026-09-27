@@ -26,6 +26,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@db/client';
+import { revokeLanTokensForUser } from './lanAuth';
 
 /**
  * Which shell a `webContents` is running. Used to grant the kiosk surfaces
@@ -256,6 +257,8 @@ export async function revokeSessionsForUser(userId: number): Promise<void> {
       .delete({ where: { key: (row as any).key } })
       .catch(() => undefined);
   }
+  // Phones and tablets hold LAN bearer tokens, not IPC sessions.
+  await revokeLanTokensForUser(target);
 }
 
 /**

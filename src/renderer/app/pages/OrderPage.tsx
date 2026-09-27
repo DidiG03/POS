@@ -2485,7 +2485,7 @@ export default function OrderPage() {
             selectedTable.area,
             selectedTable.label,
             true,
-            Date.now(),
+            0,
           );
         } catch (e: unknown) {
           reportAppError(e, {

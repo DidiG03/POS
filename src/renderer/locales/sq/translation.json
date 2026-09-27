@@ -305,6 +305,7 @@
     "useAdminApp": "Hap panelin admin nga aplikacioni OneTap Admin.",
     "invalidPin": "PIN i pasaktë. Provo sërish.",
     "loginFailed": "Hyrja dështoi",
+    "tooManyAttempts": "Shumë përpjekje të gabuara nga kjo pajisje. Prit disa minuta, ose hyr te kasa.",
     "loginFailedDetail": "Hyrja dështoi: {{detail}}",
     "lanDisabled": "Hyrja nga tabletat është e fikur te kasa (Admin → Cilësimet → LAN / Tabletat).",
     "webAccessDisabled": "Hyrja nga webi është e fikur te kasa.",

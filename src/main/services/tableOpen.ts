@@ -7,8 +7,9 @@ export type SetTableOpenOptions = {
   /** When true, skip SSE/IPC fan-out (rare — caller broadcasts separately). */
   skipBroadcast?: boolean;
   /**
-   * Waiter tap time. Older than the last open/close that landed means this
-   * request lost the race (usually a slow `open: true` after Pay).
+   * Tap time on the till's clock. Older than the last open/close that
+   * landed means this request lost the race (usually a slow `open: true`
+   * after Pay).
    */
   intentAt?: number | null;
 };

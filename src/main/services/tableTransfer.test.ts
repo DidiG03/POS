@@ -33,6 +33,12 @@ const occupancyIsOpen = vi.fn();
 const occupancyOpenedAt = vi.fn();
 const occupancyMove = vi.fn();
 const occupancySet = vi.fn();
+const sessionTicket = vi.fn();
+
+vi.mock('./tableSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./tableSession')>()),
+  findLatestTicketLogForCurrentSession: (...a: any[]) => sessionTicket(...a),
+}));
 
 vi.mock('./realtime', () => ({
   broadcastTableStatusChanged: (...a: any[]) =>
@@ -99,6 +105,8 @@ import {
   transferTableLocal,
   TRANSFERRED_OUT_TAG_PREFIX,
 } from './tableTransfer';
+import { withTableLock, withTablesLocked } from './core';
+import { DestinationTableOccupiedError } from './tableOccupancy';
 
 describe('parseTransferTag', () => {
   it('returns null for empty / non-transfer notes', () => {
@@ -288,7 +296,8 @@ describe('transferTableLocal — on-shift requirement', () => {
       if (where.id === FROM_OWNER.id) return Promise.resolve(FROM_OWNER);
       return Promise.resolve(null);
     });
-    ticketLogFindFirst.mockResolvedValue(LAST_TICKET);
+    ticketLogFindFirst.mockResolvedValue(null);
+    sessionTicket.mockResolvedValue(LAST_TICKET);
     ticketLogFindMany.mockResolvedValue([]);
     ticketLogCreate.mockResolvedValue({ id: 100 });
     ticketLogUpdate.mockResolvedValue({});
@@ -464,5 +473,150 @@ describe('transferTableLocal — on-shift requirement', () => {
     if (result.ok === false) {
       expect(result.error).toMatch(/not on shift/i);
     }
+  });
+
+  it('refuses an actor that is not in the database, whatever role it claims', async () => {
+    dayShiftFindFirst.mockResolvedValue({ id: 5 });
+    const result = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toUserId: TARGET.id,
+      actorUserId: 999,
+      // A stale client may still send this; it must not grant anything.
+      ...({ actorRole: 'ADMIN' } as object),
+    } as Parameters<typeof transferTableLocal>[0]);
+    expect(result).toEqual({ ok: false, error: 'Actor not found' });
+    expect(ticketLogCreate).not.toHaveBeenCalled();
+  });
+
+  it('refuses a deactivated actor', async () => {
+    userFindUnique.mockImplementation(({ where }: any) => {
+      if (where.id === ACTOR.id)
+        return Promise.resolve({ ...ACTOR, active: false });
+      if (where.id === TARGET.id) return Promise.resolve(TARGET);
+      return Promise.resolve(null);
+    });
+    dayShiftFindFirst.mockResolvedValue({ id: 5 });
+    const result = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toUserId: TARGET.id,
+      actorUserId: ACTOR.id,
+    });
+    expect(result).toEqual({ ok: false, error: 'Actor not found' });
+    expect(ticketLogCreate).not.toHaveBeenCalled();
+  });
+
+  it('refuses a table with no open sitting instead of moving an old bill', async () => {
+    sessionTicket.mockResolvedValue(null);
+    // An old, paid bill still exists at this table.
+    ticketLogFindFirst.mockResolvedValue(LAST_TICKET);
+    const result = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toArea: 'Sallon',
+      toLabel: 'T2',
+      actorUserId: ACTOR.id,
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: 'No active ticket found for this table',
+    });
+    expect(occupancyMove).not.toHaveBeenCalled();
+    expect(ticketLogCreate).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when the destination turns out to be taken', async () => {
+    occupancyMove.mockRejectedValue(
+      new DestinationTableOccupiedError('Sallon', 'T2'),
+    );
+    const result = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toArea: 'Sallon',
+      toLabel: 'T2',
+      actorUserId: ACTOR.id,
+    });
+    expect(result.ok).toBe(false);
+    expect(ticketLogCreate).not.toHaveBeenCalled();
+  });
+
+  it('moves the sitting back when the bill cannot be written', async () => {
+    ticketLogCreate.mockRejectedValue(new Error('disk full'));
+    await expect(
+      transferTableLocal({
+        fromArea: 'Sallon',
+        fromLabel: 'T1',
+        toArea: 'Sallon',
+        toLabel: 'T2',
+        actorUserId: ACTOR.id,
+      }),
+    ).rejects.toThrow('disk full');
+    expect(occupancyMove.mock.calls).toEqual([
+      ['Sallon', 'T1', 'Sallon', 'T2'],
+      ['Sallon', 'T2', 'Sallon', 'T1'],
+    ]);
+  });
+
+  it('waits for a Send in progress on the source table', async () => {
+    let release!: () => void;
+    const held = withTableLock(
+      'Sallon',
+      'T1',
+      () => new Promise<void>((resolve) => (release = resolve)),
+    );
+    const moving = transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toArea: 'Sallon',
+      toLabel: 'T2',
+      actorUserId: ACTOR.id,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sessionTicket).not.toHaveBeenCalled();
+    expect(ticketLogCreate).not.toHaveBeenCalled();
+    release();
+    await held;
+    expect((await moving).ok).toBe(true);
+    expect(ticketLogCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('withTablesLocked', () => {
+  it('does not deadlock two moves in opposite directions', async () => {
+    const order: string[] = [];
+    const a = withTablesLocked(
+      [
+        { area: 'Sallon', label: 'T1' },
+        { area: 'Sallon', label: 'T2' },
+      ],
+      async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        order.push('T1->T2');
+      },
+    );
+    const b = withTablesLocked(
+      [
+        { area: 'Sallon', label: 'T2' },
+        { area: 'Sallon', label: 'T1' },
+      ],
+      async () => {
+        order.push('T2->T1');
+      },
+    );
+    await Promise.all([a, b]);
+    expect(order).toEqual(['T1->T2', 'T2->T1']);
+  });
+
+  it('takes one lock when both entries are the same table', async () => {
+    await expect(
+      withTablesLocked(
+        [
+          { area: 'Sallon', label: 'T1' },
+          { area: 'Sallon', label: 'T1' },
+        ],
+        async () => 'done',
+      ),
+    ).resolves.toBe('done');
   });
 });

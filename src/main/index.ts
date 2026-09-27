@@ -30,6 +30,7 @@ import {
   addBreadcrumb,
 } from './services/sentry';
 initSentry();
+import { resolveHostIntent } from '@shared/tableIntent';
 import { coreServices, withTableLock } from './services/core';
 import { syncTableAreasToDb } from './services/tableAreasSync';
 import { presentSettingsForClient } from './services/settingsPresent';
@@ -60,10 +61,6 @@ import {
   broadcastUsersChanged,
 } from './services/realtime';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
-import {
-  latestRowPerSession,
-  sumTicketLinesNetVat,
-} from '@shared/ticketRevenue';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import {
   isApprovalValidFor,
@@ -104,7 +101,6 @@ import {
   setUnpackagedDevEdition,
   storePlanBlocksKds,
   storePlanBlocksReservations,
-  storePlanBlocksTables,
   withLicenseEdition,
 } from './services/license';
 import { licenseStatusForRenderer } from './services/licenseStatus';
@@ -128,7 +124,10 @@ import {
 import { normalizePin } from '@shared/staffPin';
 import { ipcHandle } from './services/ipcGuard';
 import { authorizeCreateUser } from './services/createUserAuth';
-import { reportAuditWriteFailure } from './services/adminAlerts';
+import {
+  notifyPaymentDiscount,
+  reportAuditWriteFailure,
+} from './services/adminAlerts';
 import {
   createSession,
   getSession,
@@ -153,7 +152,6 @@ import {
   unlockVault,
 } from './services/vault/lifecycle';
 import type { Prisma } from '@prisma/client';
-import { consumeMenuStockForTicketLines } from './services/menuStock';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import type * as http from 'node:http';
@@ -303,6 +301,12 @@ import {
   getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
+import { voidBlockedByOtherOwner } from './services/voidOwnership';
+import { decideTicketRequest } from './services/ticketRequests';
+import {
+  stockLinesFromPayload,
+  writeTicketSnapshot,
+} from './services/ticketLogWrite';
 import {
   asTicketLogItems,
   rowIsInOpenSession,
@@ -2772,62 +2776,10 @@ ipcHandle('tickets:print', async (_e, input) => {
       });
     }
 
-    // If this is a payment receipt and includes a discount, add an admin-visible notification entry.
-    // (Admin UI lists all notifications, grouped by userName, so we store it against the waiter userId.)
-    // Skip on Reports reprints — the sale was already recorded.
+    // A discounted payment is an admin-visible notice on the till and on a
+    // phone. Skip Reports reprints — that sale was already recorded.
     try {
-      const kind = String(meta?.kind || '');
-      const userId = Number(meta?.userId || 0);
-      const discountAmt = Number(meta?.discountAmount || 0);
-      if (
-        kind === 'PAYMENT' &&
-        !isPaymentReprint(meta) &&
-        userId &&
-        Number.isFinite(discountAmt) &&
-        discountAmt > 0
-      ) {
-        const before = Number(meta?.totalBefore ?? meta?.total ?? 0);
-        const after = Number(
-          meta?.totalAfter ?? Math.max(0, before - discountAmt),
-        );
-        const dtype = String(meta?.discountType || '').toUpperCase();
-        const dval = meta?.discountValue;
-        const dLabel =
-          dtype === 'PERCENT' && Number.isFinite(Number(dval))
-            ? `${Number(dval)}%`
-            : dtype === 'AMOUNT' && Number.isFinite(Number(dval))
-              ? `${Number(dval).toFixed(2)}`
-              : 'custom';
-        const reason = String(meta?.discountReason || '').trim();
-        const approvedBy = String(meta?.managerApprovedByName || '').trim();
-        const msg =
-          `Discount applied (${dLabel}) on ${area} Table ${tableLabel}: -${discountAmt.toFixed(2)} ` +
-          `(total ${before.toFixed(2)} → ${after.toFixed(2)})` +
-          `${meta?.method ? ` · method ${String(meta.method)}` : ''}` +
-          `${reason ? ` · reason: ${reason}` : ''}` +
-          `${approvedBy ? ` · approved by: ${approvedBy}` : ' · NO MANAGER APPROVAL'}`;
-        // Notify actor + all admins
-        await prisma.notification.create({
-          data: { userId, type: 'OTHER' as any, message: msg } as any,
-        });
-        const admins = await prisma.user
-          .findMany({
-            where: { role: 'ADMIN', active: true },
-            select: { id: true },
-          } as any)
-          .catch(() => []);
-        for (const a of admins as any[]) {
-          await prisma.notification
-            .create({
-              data: {
-                userId: Number(a.id),
-                type: 'OTHER' as any,
-                message: msg,
-              } as any,
-            })
-            .catch(() => {});
-        }
-      }
+      await notifyPaymentDiscount({ area, tableLabel, meta });
     } catch {
       // do not block printing/logging
     }
@@ -3087,10 +3039,9 @@ ipcHandle('tables:setOpen', async (_e, input) => {
   const area = String(input?.area || '');
   const label = String(input?.label || '');
   const open = Boolean(input?.open);
-  const intentAt = Number(input?.intentAt);
   assertStoreCounterAllowed(area);
   return setTableOpenWithSideEffects(area, label, open, {
-    intentAt: Number.isFinite(intentAt) && intentAt > 0 ? intentAt : undefined,
+    intentAt: resolveHostIntent(input || {}),
   });
 });
 
@@ -3106,11 +3057,24 @@ ipcHandle('tables:getFloorSnapshot', async (_e, input) => {
 });
 
 // Local-first: always use local transfer
-ipcHandle('tables:transfer', async (_e, payload) => {
+ipcHandle('tables:transfer', async (_e, payload, ctx) => {
   try {
     assertDiningFloorEnabled();
     const input = TransferTableInputSchema.parse(payload);
-    return await transferTableLocal(input as any);
+    // The payload's actor is a claim. A waiter may only act as themselves;
+    // the actor's role is read from the DB inside `transferTableLocal`.
+    if (!actorIdentityAllows(ctx, input.actorUserId)) {
+      return { ok: false, error: 'forbidden' };
+    }
+    return await transferTableLocal({
+      fromArea: input.fromArea,
+      fromLabel: input.fromLabel,
+      toArea: input.toArea,
+      toLabel: input.toLabel,
+      toUserId: input.toUserId,
+      actorUserId: resolveActorUserId(ctx, input.actorUserId),
+      idempotencyKey: input.idempotencyKey,
+    });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Transfer failed') };
   }
@@ -3569,14 +3533,6 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
         }
 
         // Local-first: always use local DB for tickets
-        const stockConsumeLines = Array.isArray(
-          (payload as any)?.stockConsumeLines,
-        )
-          ? ((payload as any).stockConsumeLines as {
-              sku?: string;
-              qty?: number;
-            }[])
-          : [];
         const kdsFireItems = Array.isArray((payload as any)?.kdsFireItems)
           ? ((payload as any).kdsFireItems as any[])
           : undefined;
@@ -3586,31 +3542,21 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
           sanitizedTableLabel,
         ).catch(() => null);
 
-        try {
-          await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-            await tx.ticketLog.create({
-              data: {
-                userId: Number(userId),
-                area: sanitizedArea,
-                tableLabel: sanitizedTableLabel,
-                covers: sanitizedCovers,
-                itemsJson: items ?? [],
-                note: sanitizedNote,
-                ...(idempotencyKey ? { idempotencyKey } : {}),
-                ...(sessionKey ? { sessionKey } : {}),
-              } as any,
-            });
-            await consumeMenuStockForTicketLines(
-              tx,
-              stockConsumeLines,
-              storePlanBlocksTables() ? 'onHand' : 'daily',
-            );
-          });
-        } catch (e: any) {
-          if (e?.code === 'P2002' && idempotencyKey)
-            return { ok: true as const };
-          throw e;
-        }
+        // Same write (and stock count-down) as the phone route.
+        const outcome = await writeTicketSnapshot({
+          userId: Number(userId),
+          area: sanitizedArea,
+          tableLabel: sanitizedTableLabel,
+          covers: sanitizedCovers,
+          items: items ?? [],
+          note: sanitizedNote,
+          idempotencyKey,
+          sessionKey,
+          stockConsumeLines: stockLinesFromPayload(
+            (payload as any)?.stockConsumeLines,
+          ),
+        });
+        if (outcome === 'duplicate') return { ok: true as const };
         return {
           ok: true as const,
           written: true as const,
@@ -4097,15 +4043,23 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   // trail. Admin PIN approval still works as the override path.
   // Only a verified approval may lift the ownership guard; an unbacked
   // `approvedByAdminId` must not be enough to void another waiter's table.
+  const approvalLifts = isApprovalValidFor(
+    approvedByAdminToken,
+    approvedByAdminId,
+  );
+  const ownerId =
+    actorIsAdmin || approvalLifts
+      ? null
+      : await getCurrentSessionOwnerId(area, tableLabel);
   if (
-    !actorIsAdmin &&
-    !isApprovalValidFor(approvedByAdminToken, approvedByAdminId)
+    voidBlockedByOtherOwner({
+      actorIsAdmin,
+      actorUserId: userId,
+      ownerId,
+      approvalLifts,
+    })
   ) {
-    // Scope to the current session — see `getCurrentSessionOwnerId`.
-    const ownerId = await getCurrentSessionOwnerId(area, tableLabel);
-    if (ownerId !== null && ownerId !== Number(userId)) {
-      return false;
-    }
+    return false;
   }
   // A paid line is settled money and, with fiskalizimi on, a filed invoice.
   // Only an admin correction can undo that, so refuse here before anything
@@ -4224,14 +4178,23 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   // Scoped to the current session via `getCurrentSessionOwnerId`.
   // Only a verified approval may lift the ownership guard; an unbacked
   // `approvedByAdminId` must not be enough to void another waiter's table.
+  const approvalLifts = isApprovalValidFor(
+    approvedByAdminToken,
+    approvedByAdminId,
+  );
+  const ownerId =
+    actorIsAdmin || approvalLifts
+      ? null
+      : await getCurrentSessionOwnerId(area, tableLabel);
   if (
-    !actorIsAdmin &&
-    !isApprovalValidFor(approvedByAdminToken, approvedByAdminId)
+    voidBlockedByOtherOwner({
+      actorIsAdmin,
+      actorUserId: userId,
+      ownerId,
+      approvalLifts,
+    })
   ) {
-    const ownerId = await getCurrentSessionOwnerId(area, tableLabel);
-    if (ownerId !== null && ownerId !== Number(userId)) {
-      return false;
-    }
+    return false;
   }
   // Paid lines survive a ticket void: the money is taken and an invoice is
   // filed against them. If that is all this sitting has left, there is
@@ -4759,110 +4722,23 @@ ipcHandle('requests:listForOwner', async (_e, input, ctx) => {
   }));
 });
 
-// Approve or reject
+// Approve or reject. Status only — the owner's order screen adds the items
+// (see `services/ticketRequests.ts`).
 ipcHandle('requests:approve', async (_e, input, ctx) => {
-  const id = Number(input?.id);
   // Deciding a request addressed to a colleague adds items to their check.
-  const ownerId = resolveActorUserId(ctx, input?.ownerId);
-  if (!id || !ownerId) return false;
-  const r = await prisma.ticketRequest.findUnique({ where: { id } });
-  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
-    return false;
-  await prisma.ticketRequest.update({
-    where: { id },
-    data: { status: 'APPROVED' as any, decidedAt: new Date() },
+  return decideTicketRequest({
+    id: Number(input?.id),
+    ownerId: resolveActorUserId(ctx, input?.ownerId),
+    decision: 'APPROVED',
   });
-  // Persist the approval by appending items to the latest ticket log snapshot
-  try {
-    const last = await prisma.ticketLog.findFirst({
-      where: { area: r.area, tableLabel: r.tableLabel },
-      orderBy: { createdAt: 'desc' },
-    });
-    const baseItems = ((last?.itemsJson as any[]) || []).map((it: any) => ({
-      name: String(it.name || 'Item'),
-      qty: Number(it.qty || 1),
-      unitPrice: Number(it.unitPrice || 0),
-      vatRate: Number(it.vatRate || 0),
-      note: it.note ?? null,
-    }));
-    const incoming = ((r.itemsJson as any[]) || []).map((it: any) => ({
-      name: String(it.name || 'Item'),
-      qty: Number(it.qty || 1),
-      unitPrice: Number(it.unitPrice || 0),
-      vatRate: Number(it.vatRate || 0),
-      note: it.note ?? null,
-    }));
-    const map = new Map<string, any>();
-    for (const it of baseItems) {
-      map.set(it.name, { ...it });
-    }
-    for (const it of incoming) {
-      const existing = map.get(it.name);
-      if (existing) {
-        map.set(it.name, {
-          ...existing,
-          qty: Number(existing.qty || 0) + Number(it.qty || 1),
-        });
-      } else {
-        map.set(it.name, { ...it });
-      }
-    }
-    const merged = Array.from(map.values());
-    // Approving a colleague's add-items request extends the open ticket, so
-    // the appended snapshot has to join the session rather than read as a
-    // second sale on the same table.
-    const sessionKey = await getCurrentTableSessionKey(
-      r.area,
-      r.tableLabel,
-    ).catch(() => null);
-    await prisma.ticketLog.create({
-      data: {
-        userId: r.ownerId,
-        area: r.area,
-        tableLabel: r.tableLabel,
-        covers: last?.covers ?? null,
-        itemsJson: merged,
-        note: last?.note ?? null,
-        ...(sessionKey ? { sessionKey } : {}),
-      } as any,
-    });
-    await compactTicketLogSession(sessionKey);
-  } catch {
-    // ignore
-  }
-  await prisma.notification
-    .create({
-      data: {
-        userId: r.requesterId,
-        type: 'OTHER' as any,
-        message: `Your request #${id} on ${r.area} ${r.tableLabel} was approved`,
-      },
-    })
-    .catch(() => {});
-  return true;
 });
 
 ipcHandle('requests:reject', async (_e, input, ctx) => {
-  const id = Number(input?.id);
-  const ownerId = resolveActorUserId(ctx, input?.ownerId);
-  if (!id || !ownerId) return false;
-  const r = await prisma.ticketRequest.findUnique({ where: { id } });
-  if (!r || r.ownerId !== ownerId || r.status !== ('PENDING' as any))
-    return false;
-  await prisma.ticketRequest.update({
-    where: { id },
-    data: { status: 'REJECTED' as any, decidedAt: new Date() },
+  return decideTicketRequest({
+    id: Number(input?.id),
+    ownerId: resolveActorUserId(ctx, input?.ownerId),
+    decision: 'REJECTED',
   });
-  await prisma.notification
-    .create({
-      data: {
-        userId: r.requesterId,
-        type: 'OTHER' as any,
-        message: `Your request #${id} on ${r.area} ${r.tableLabel} was rejected`,
-      },
-    })
-    .catch(() => {});
-  return true;
 });
 
 // Owner's OrderPage polls approved requests for current table

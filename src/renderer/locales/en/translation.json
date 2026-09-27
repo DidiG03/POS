@@ -305,6 +305,7 @@
     "useAdminApp": "Use the OneTap Admin app to open the admin panel.",
     "invalidPin": "That PIN is incorrect. Try again.",
     "loginFailed": "Login failed",
+    "tooManyAttempts": "Too many wrong attempts from this device. Wait a few minutes, or sign in at the till.",
     "loginFailedDetail": "Login failed: {{detail}}",
     "lanDisabled": "Tablet access is turned off on the till (Admin → Settings → LAN / Tablets).",
     "webAccessDisabled": "Web access is turned off on the till.",
