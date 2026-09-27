@@ -123,21 +123,24 @@ if [ -n "$APK" ]; then
   TARGET_VERSION="$(basename "$APK" | sed -n 's/.*-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\.apk$/\1/p')"
 else
   say "Looking up the latest OneTap Waiter release..."
-  release_json="$(curl -fsSL --retry 3 \
-    -H 'Accept: application/vnd.github+json' \
-    "https://api.github.com/repos/${REPO}/releases/latest")" ||
+  # The releases page redirects to the newest tag. Unlike the GitHub API it
+  # has no 60-requests-an-hour limit, which shared venue connections hit.
+  latest="$(curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' \
+    "https://github.com/${REPO}/releases/latest")" ||
     fail "could not reach GitHub"
-  url="$(printf '%s\n' "$release_json" |
-    grep -o '"browser_download_url": *"[^"]*OneTap-Waiter-[0-9.]*\.apk"' |
-    head -n 1 | sed 's/.*"\(https[^"]*\)"$/\1/')"
-  [ -n "$url" ] || fail "the latest release has no Waiter APK yet"
-  name="$(basename "$url")"
-  TARGET_VERSION="$(printf '%s\n' "$name" | sed -n 's/^OneTap-Waiter-\(.*\)\.apk$/\1/p')"
+  TARGET_VERSION="$(printf '%s\n' "$latest" |
+    sed -n 's#.*/releases/tag/v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p')"
+  [ -n "$TARGET_VERSION" ] || fail "could not find the latest release"
+  name="OneTap-Waiter-${TARGET_VERSION}.apk"
+  url="https://github.com/${REPO}/releases/download/v${TARGET_VERSION}/${name}"
   mkdir -p "${SUPPORT_DIR}/apk" || fail "cannot create ${SUPPORT_DIR}/apk"
   APK="${SUPPORT_DIR}/apk/${name}"
   if [ ! -s "$APK" ]; then
     say "Downloading ${name}..."
-    curl -fL --retry 3 -o "${APK}.part" "$url" || fail "APK download failed"
+    if ! curl -fL --retry 3 -o "${APK}.part" "$url"; then
+      rm -f "${APK}.part"
+      fail "could not download ${name} (the latest release may not have a Waiter APK yet)"
+    fi
     mv "${APK}.part" "$APK"
   fi
 fi

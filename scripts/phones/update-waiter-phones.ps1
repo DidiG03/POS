@@ -88,7 +88,24 @@ function Invoke-Adb {
   return (($out -join "`n") -replace "`r", '')
 }
 
-Invoke-Adb start-server | Out-Null
+# Start adb's background service on its own, with its output in a log file.
+# If it were started through a captured pipe (as Invoke-Adb does), the
+# long-lived service would inherit that pipe and Windows PowerShell would
+# wait for it to close forever. WaitForExit, not -Wait: -Wait also waits for
+# the service it leaves running.
+function Start-AdbServer {
+  if ($env:OS -ne 'Windows_NT') {
+    Invoke-Adb start-server | Out-Null
+    return
+  }
+  New-Item -ItemType Directory -Force -Path $SupportDir | Out-Null
+  $log = Join-Path $SupportDir 'adb-start.log'
+  $p = Start-Process -FilePath $Adb -ArgumentList 'start-server' -WindowStyle Hidden `
+    -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
+  if (-not $p.WaitForExit(30000)) { Fail 'adb did not start within 30 seconds' }
+}
+
+Start-AdbServer
 
 if ($Pair) {
   if (-not $Code) { Fail '-Pair needs -Code with the six-digit pairing code' }
@@ -112,29 +129,37 @@ if ($Apk) {
   }
 } else {
   Write-Host 'Looking up the latest OneTap Waiter release...'
+  # The releases page redirects to the newest tag. Unlike the GitHub API it
+  # has no 60-requests-an-hour limit, which shared venue connections hit.
   try {
-    $release = Invoke-RestMethod -UseBasicParsing `
-      -Headers @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'OneTap' } `
-      -Uri "https://api.github.com/repos/$Repo/releases/latest"
+    $page = Invoke-WebRequest -UseBasicParsing -Headers @{ 'User-Agent' = 'OneTap' } `
+      -Uri "https://github.com/$Repo/releases/latest"
   } catch {
     Fail "could not reach GitHub: $($_.Exception.Message)"
   }
-  $asset = $release.assets |
-    Where-Object { $_.name -match '^OneTap-Waiter-(\d+\.\d+\.\d+)\.apk$' } |
-    Select-Object -First 1
-  if (-not $asset) { Fail 'the latest release has no Waiter APK yet' }
-  $null = $asset.name -match '^OneTap-Waiter-(\d+\.\d+\.\d+)\.apk$'
+  $final = $null
+  if ($page.BaseResponse.ResponseUri) {
+    $final = $page.BaseResponse.ResponseUri.AbsoluteUri              # Windows PowerShell 5.1
+  } elseif ($page.BaseResponse.RequestMessage) {
+    $final = $page.BaseResponse.RequestMessage.RequestUri.AbsoluteUri # PowerShell 7
+  }
+  if ("$final" -notmatch '/releases/tag/v(\d+\.\d+\.\d+)$') {
+    Fail 'could not find the latest release'
+  }
   $TargetVersion = $Matches[1]
+  $apkName = "OneTap-Waiter-$TargetVersion.apk"
+  $apkUrl = "https://github.com/$Repo/releases/download/v$TargetVersion/$apkName"
   $apkDir = Join-Path $SupportDir 'apk'
   New-Item -ItemType Directory -Force -Path $apkDir | Out-Null
-  $Apk = Join-Path $apkDir $asset.name
+  $Apk = Join-Path $apkDir $apkName
   if (-not (Test-Path $Apk) -or (Get-Item $Apk).Length -eq 0) {
-    Write-Host "Downloading $($asset.name)..."
+    Write-Host "Downloading $apkName..."
     $part = "$Apk.part"
     try {
-      Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -OutFile $part
+      Invoke-WebRequest -UseBasicParsing -Uri $apkUrl -OutFile $part
     } catch {
-      Fail "APK download failed: $($_.Exception.Message)"
+      if (Test-Path $part) { Remove-Item -Force $part }
+      Fail "could not download $apkName (the latest release may not have a Waiter APK yet): $($_.Exception.Message)"
     }
     Move-Item -Force $part $Apk
   }
