@@ -24,6 +24,7 @@ import { reportAppError } from '../utils/reportAppError';
 import {
   getFailedSyncItems,
   getOfflineQueueCount,
+  getQueuedCountForOwner,
 } from '../utils/offlineQueue';
 import { isHostUnreachable } from '../utils/netQuality';
 import { Button } from '../components/ui/Button';
@@ -695,7 +696,18 @@ export default function AppLayout() {
           {user && (
             <button
               className="pos-ticket-iconbtn pos-ticket-iconbtn--bare hover:!text-rose-400"
-              onClick={() => {
+              onClick={async () => {
+                // Orders this waiter queued offline cannot be sent by the
+                // next person who signs in here, so say so before leaving.
+                const unsent = await getQueuedCountForOwner(Number(user.id));
+                if (
+                  unsent > 0 &&
+                  !window.confirm(
+                    t('layout.unsentOrdersLogout', { count: unsent }),
+                  )
+                ) {
+                  return;
+                }
                 forceLogout(t('common.loggedOut'));
               }}
               type="button"

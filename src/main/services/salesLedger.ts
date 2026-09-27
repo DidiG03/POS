@@ -22,6 +22,7 @@ import {
 } from './menuStock';
 import { storePlanBlocksTables } from './license';
 import { isPaymentReprint } from './paymentSettle';
+import { printJobWasErased, readLedgerErasedThroughId } from './ledgerErase';
 
 type Db = {
   order: any;
@@ -334,6 +335,13 @@ export async function ensureSettledSaleFromPrintJob(
   if (Number(job?.attempts || 0) > 0) return null;
   const payload = job?.payloadJson;
   if (!isPaymentPayload(payload)) return null;
+  // A replay of a sale the admin erased: the job still dedupes the
+  // payment, but the sale must stay erased.
+  if (
+    printJobWasErased(job?.id, await readLedgerErasedThroughId(prisma as any))
+  ) {
+    return null;
+  }
   return writeSettledSale(prisma as any, {
     payload,
     printJobId: job.id,
@@ -352,7 +360,10 @@ export async function backfillSalesLedgerFromPrintJobs(opts?: {
 }): Promise<{ scanned: number; written: number }> {
   const batchSize = Math.min(500, Math.max(50, Number(opts?.batchSize || 200)));
   const settings = await coreServices.readSettings().catch(() => ({}));
-  let cursor: number | undefined;
+  // Jobs up to the last "Erase tickets" belong to sales that were erased.
+  const erasedThrough = await readLedgerErasedThroughId(prisma as any);
+  let cursor: number | undefined =
+    erasedThrough > 0 ? erasedThrough : undefined;
   let scanned = 0;
   let written = 0;
   for (;;) {

@@ -1,6 +1,7 @@
 import { prisma } from '@db/client';
 import { invalidateFloorSnapshotCache } from './floorSnapshot';
 import { broadcastTableStatusChanged } from './realtime';
+import { LEDGER_ERASED_THROUGH_KEY } from './ledgerErase';
 
 /** Typed into the Disk protection confirm field. Same in every locale. */
 export const ERASE_TICKETS_CONFIRM = 'ERASE';
@@ -34,8 +35,12 @@ type EraseClient = {
     ) => Promise<Array<{ area: string; label: string }>>;
     deleteMany: (args?: object) => Promise<CountResult>;
   };
+  printJob: {
+    findFirst: (args: object) => Promise<{ id: number } | null>;
+  };
   syncState: {
     deleteMany: (args: object) => Promise<CountResult>;
+    upsert: (args: object) => Promise<unknown>;
   };
   $transaction?: <T>(fn: (tx: EraseClient) => Promise<T>) => Promise<T>;
 };
@@ -65,6 +70,24 @@ async function wipeTicketRows(tx: EraseClient): Promise<EraseTicketsResult> {
   await tx.syncState.deleteMany({
     where: { key: { in: ['tables:open', 'tables:openAt'] } },
   });
+  // PrintJob rows stay (their idempotency keys still block a replayed
+  // payment), but they must not rebuild the sales erased above.
+  const newestJob = await tx.printJob.findFirst({
+    orderBy: { id: 'desc' },
+    select: { id: true },
+  });
+  const erasedThrough = Number(newestJob?.id || 0);
+  if (erasedThrough > 0) {
+    const valueJson = {
+      printJobId: erasedThrough,
+      erasedAt: new Date().toISOString(),
+    };
+    await tx.syncState.upsert({
+      where: { key: LEDGER_ERASED_THROUGH_KEY },
+      create: { key: LEDGER_ERASED_THROUGH_KEY, valueJson },
+      update: { valueJson },
+    });
+  }
   return {
     ok: true,
     ticketLogs: Number(ticketLogs?.count || 0),

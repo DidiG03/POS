@@ -164,9 +164,91 @@ export function isSaleAlreadySettled(e: any): boolean {
   return SALE_ALREADY_SETTLED_CODES.has(String(e?.code || ''));
 }
 
-/** True when retrying cannot change the outcome. */
+/**
+ * True when retrying cannot change the outcome.
+ *
+ * An HTTP 403 from the host is one of those: the signed-in waiter is not
+ * allowed to do this (another waiter's table, a role that cannot). Retrying
+ * it forever as a money op left orders stuck on the phone with no way to see
+ * them; it belongs on the failed-sync panel instead. Orders queued by a
+ * different waiter never get this far — see {@link isHeldForOwner}.
+ */
 export function isPermanentFailure(e: any): boolean {
-  return e?.permanent === true || needsManualReconciliation(e);
+  return (
+    e?.permanent === true ||
+    needsManualReconciliation(e) ||
+    Number(e?.status || 0) === 403
+  );
+}
+
+/**
+ * Writes the host only accepts from the waiter who made them: it checks the
+ * payload's user against the signed-in token and answers 403 otherwise.
+ * Payments and table state are not here — any signed-in staff member may
+ * deliver those, and a payment must not wait on one particular person.
+ */
+const USER_BOUND_OPS = new Set<OfflineOp>([
+  'tickets.log',
+  'tickets.voidItem',
+  'tickets.voidTicket',
+  'tables.transfer',
+]);
+
+/** The waiter a queued write belongs to, or null when it names nobody. */
+export function queuedItemOwnerId(item: {
+  op: OfflineOp;
+  args?: any;
+}): number | null {
+  if (!USER_BOUND_OPS.has(item.op)) return null;
+  const id = Number(item.args?.userId || item.args?.actorUserId || 0);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/** Who is signed in on this device, as far as the queue needs to know. */
+export type QueueSignedInUser = { id: number; role?: string | null } | null;
+
+/**
+ * True when this write must wait for its own waiter to sign in again.
+ *
+ * Phones are shared. When waiter A queued an order offline and waiter B is
+ * now signed in, sending it with B's token is refused, and retrying that
+ * forever is how orders got stuck. It stays queued, untouched, until A is
+ * back (a sign-in triggers a sync). An admin may deliver it too — the host
+ * lets an admin act for staff — which is the way out when A has gone home.
+ */
+export function isHeldForOwner(
+  item: { op: OfflineOp; args?: any },
+  /** `undefined` = this device never said who is signed in; hold nothing. */
+  signedIn: QueueSignedInUser | undefined,
+): boolean {
+  const owner = queuedItemOwnerId(item);
+  if (owner == null || signedIn === undefined) return false;
+  if (!signedIn) return true;
+  if (String(signedIn.role || '').toUpperCase() === 'ADMIN') return false;
+  return Number(signedIn.id) !== owner;
+}
+
+let resolveSignedInUser: (() => QueueSignedInUser) | null = null;
+
+/**
+ * Tell the queue who is signed in on this device. Registered once at boot so
+ * this module does not depend on the session store.
+ */
+export function setOfflineQueueUserResolver(fn: () => QueueSignedInUser): void {
+  resolveSignedInUser = fn;
+}
+
+function signedInUser(): QueueSignedInUser | undefined {
+  if (!resolveSignedInUser) return undefined;
+  try {
+    const u = resolveSignedInUser();
+    const id = Number(u?.id || 0);
+    return Number.isInteger(id) && id > 0
+      ? { id, role: u?.role ?? null }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -817,6 +899,16 @@ class OfflineQueue {
     return items.length;
   }
 
+  /** Queued writes that only this waiter (or an admin) can deliver. */
+  async countOwnedBy(userId: number): Promise<number> {
+    const id = Number(userId);
+    if (!Number.isInteger(id) || id <= 0) return 0;
+    const items = (await this.getAll())
+      .map(this.normalize)
+      .filter((it): it is OfflineQueueItem => it !== null);
+    return items.filter((it) => queuedItemOwnerId(it) === id).length;
+  }
+
   /**
    * Drop queued writes for a target that a newer write has already delivered.
    *
@@ -865,9 +957,13 @@ class OfflineQueue {
       >();
       let touched = false;
 
+      const signedIn = signedInUser();
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
         if (it.nextAttemptAt && it.nextAttemptAt > now) continue;
+        // Another waiter's order: leave it exactly as it is until they sign
+        // in. Sending it now would only be refused.
+        if (isHeldForOwner(it, signedIn)) continue;
 
         const dispatcher = dispatchers[it.op];
         if (!dispatcher) {
@@ -971,7 +1067,8 @@ class OfflineQueue {
       const leftover = (await this.getAll())
         .map(this.normalize)
         .filter((it): it is OfflineQueueItem => it !== null);
-      this.armWake(leftover);
+      // Held items need a sign-in, not a timer.
+      this.armWake(leftover.filter((it) => !isHeldForOwner(it, signedIn)));
       return { sent, remaining: leftover.length };
     } finally {
       this.syncing = false;
@@ -1375,6 +1472,15 @@ export async function tryOrQueue<T = unknown>(
     }
     throw e;
   }
+}
+
+/**
+ * Orders and voids this waiter queued that have not reached the till yet.
+ * After they sign out these wait for them (or an admin) to sign in again on
+ * this device, so logout asks first.
+ */
+export async function getQueuedCountForOwner(userId: number): Promise<number> {
+  return offlineQueue.countOwnedBy(userId).catch(() => 0);
 }
 
 /** Cheap accessor for badges / status indicators. */

@@ -258,6 +258,8 @@
     "clockOutOpenTables": "Ende ke tavolina të hapura. Mbylli ose transferoji së pari.",
     "clockOutOpenSale": "Ende ke një shitje të hapur. Përfundoje ose anuloje së pari.",
     "clockOutFailed": "Nuk u mbyll turni.",
+    "unsentOrdersLogout_one": "{{count}} porosi nuk ka arritur ende në kasë. Do të dërgohet kur të hyni sërish në këtë telefon (ose kur hyn një administrator). Të dilni gjithsesi?",
+    "unsentOrdersLogout_other": "{{count}} porosi nuk kanë arritur ende në kasë. Do të dërgohen kur të hyni sërish në këtë telefon (ose kur hyn një administrator). Të dilni gjithsesi?",
     "clockInFailed": "Nuk u hap turni.",
     "shiftReopenBlocked": "Turni është mbyllur. Mund të hysh përsëri pas {{when}}.",
     "requestDecideFailed": "Nuk u përditësua kërkesa.",

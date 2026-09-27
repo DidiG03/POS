@@ -12,6 +12,7 @@ import {
   assertPrintAccepted,
   isDurableOp,
   isFiscalSaleBlocked,
+  isHeldForOwner,
   isMoneyOp,
   isPermanentFailure,
   isSaleAlreadySettled,
@@ -20,6 +21,7 @@ import {
   OFFLINE_WAKE_MAX_MS,
   OFFLINE_WAKE_OFFLINE_MS,
   planEviction,
+  queuedItemOwnerId,
   shouldEnqueueWithoutLiveAttempt,
   type OfflineOp,
 } from './offlineQueue';
@@ -331,5 +333,57 @@ describe('nextOfflineWakeDelayMs', () => {
     expect(nextOfflineWakeDelayMs([{ nextAttemptAt: now - 1 }], now)).toBe(
       OFFLINE_WAKE_OFFLINE_MS,
     );
+  });
+});
+
+describe('orders queued by another waiter', () => {
+  const order = { op: 'tickets.log' as const, args: { userId: 7 } };
+  const transfer = { op: 'tables.transfer' as const, args: { actorUserId: 7 } };
+  const payment = {
+    op: 'payments.record' as const,
+    args: { meta: { userId: 7 } },
+  };
+
+  it('knows whose order it is', () => {
+    expect(queuedItemOwnerId(order)).toBe(7);
+    expect(queuedItemOwnerId(transfer)).toBe(7);
+    expect(
+      queuedItemOwnerId({ op: 'tickets.voidItem', args: { userId: 7 } }),
+    ).toBe(7);
+    // Anyone signed in may deliver a payment or a table close.
+    expect(queuedItemOwnerId(payment)).toBeNull();
+    expect(
+      queuedItemOwnerId({ op: 'tables.setOpen', args: { userId: 7 } }),
+    ).toBeNull();
+  });
+
+  it('holds it while someone else is signed in, instead of retrying a 403 forever', () => {
+    expect(isHeldForOwner(order, { id: 9, role: 'WAITER' })).toBe(true);
+    expect(isHeldForOwner(order, null)).toBe(true);
+  });
+
+  it('sends it once its waiter, or an admin, is back', () => {
+    expect(isHeldForOwner(order, { id: 7, role: 'WAITER' })).toBe(false);
+    expect(isHeldForOwner(order, { id: 1, role: 'ADMIN' })).toBe(false);
+  });
+
+  it('never holds payments', () => {
+    expect(isHeldForOwner(payment, { id: 9, role: 'WAITER' })).toBe(false);
+    expect(isHeldForOwner(payment, null)).toBe(false);
+  });
+
+  it('holds nothing when the device never said who is signed in', () => {
+    expect(isHeldForOwner(order, undefined)).toBe(false);
+  });
+
+  it('parks a 403 on the failed surface rather than retrying it', () => {
+    expect(isPermanentFailure({ status: 403, message: 'forbidden' })).toBe(
+      true,
+    );
+    // Signed out / expired token: signing in again fixes it, so keep retrying.
+    expect(isPermanentFailure({ status: 401, message: 'unauthorized' })).toBe(
+      false,
+    );
+    expect(isPermanentFailure({ status: 500 })).toBe(false);
   });
 });

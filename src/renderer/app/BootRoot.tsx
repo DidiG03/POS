@@ -2,7 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { RouterProvider, createHashRouter } from 'react-router-dom';
 import { I18nextProvider, useTranslation } from 'react-i18next';
 import { routes } from '../routes';
-import { offlineQueue } from '../utils/offlineQueue';
+import {
+  offlineQueue,
+  setOfflineQueueUserResolver,
+} from '../utils/offlineQueue';
 import { useSessionStore } from '../stores/session';
 import { useAdminSessionStore } from '../stores/adminSession';
 import { useReservationSessionStore } from '../stores/reservationSession';
@@ -35,6 +38,22 @@ import { syncTabletToHostVersion } from '../utils/syncTabletToHostVersion';
 import { bootTrace } from '@shared/bootTrace';
 
 const router = createHashRouter(routes);
+
+// The offline queue holds a waiter's queued orders while someone else is
+// signed in on this device, so it needs to know who that is, and a sign-in
+// is the moment those held orders can finally go.
+setOfflineQueueUserResolver(() => {
+  const u = useSessionStore.getState().user;
+  return u ? { id: Number(u.id), role: u.role } : null;
+});
+{
+  const g = globalThis as { __OFFLINE_QUEUE_SIGNIN_SYNC__?: () => void };
+  g.__OFFLINE_QUEUE_SIGNIN_SYNC__?.();
+  g.__OFFLINE_QUEUE_SIGNIN_SYNC__ = useSessionStore.subscribe((state, prev) => {
+    const id = state.user?.id;
+    if (id && id !== prev.user?.id) void offlineQueue.sync().catch(() => {});
+  });
+}
 
 const LicenseGate = React.lazy(() => import('./components/LicenseGate'));
 const UpdateNotification = React.lazy(() =>

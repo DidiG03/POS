@@ -258,6 +258,8 @@
     "clockOutOpenTables": "You still have open tables. Close or transfer them first.",
     "clockOutOpenSale": "You still have an open sale. Finish or void it first.",
     "clockOutFailed": "Could not clock out.",
+    "unsentOrdersLogout_one": "{{count}} order hasn't reached the till yet. It will send when you sign in again on this phone (or an admin does). Log out anyway?",
+    "unsentOrdersLogout_other": "{{count}} orders haven't reached the till yet. They will send when you sign in again on this phone (or an admin does). Log out anyway?",
     "clockInFailed": "Could not clock in.",
     "shiftReopenBlocked": "This shift is closed. You can clock in again after {{when}}.",
     "requestDecideFailed": "Could not update that request.",

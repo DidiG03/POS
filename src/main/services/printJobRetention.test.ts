@@ -116,6 +116,54 @@ describe('shouldPurgePrintJob', () => {
   });
 });
 
+describe('erased sales', () => {
+  const payment = (id: number) =>
+    job({
+      id,
+      status: 'SENT',
+      attempts: 0,
+      payloadJson: { meta: { kind: 'PAYMENT' } },
+    });
+
+  it('lets a receipt from before "Erase tickets" go, keeps later ones', () => {
+    expect(
+      shouldPurgePrintJob(payment(6), {
+        cutoff,
+        linked: emptyLinked,
+        erasedThroughId: 6,
+      }),
+    ).toBe(true);
+    expect(
+      shouldPurgePrintJob(payment(7), {
+        cutoff,
+        linked: emptyLinked,
+        erasedThroughId: 6,
+      }),
+    ).toBe(false);
+  });
+
+  it('reads the erase mark from the database', async () => {
+    const deleted: any[] = [];
+    const client = {
+      syncState: {
+        findUnique: async () => ({ valueJson: { printJobId: 30 } }),
+      },
+      printJob: {
+        findMany: async () => [payment(30), payment(31)],
+        deleteMany: async (args: any) => {
+          deleted.push(args);
+          return { count: args.where.id.in.length };
+        },
+      },
+      order: { findMany: async () => [] },
+    };
+    await expect(
+      purgeSettledPrintJobs(client, { days: PRINT_JOB_KEEP_DAYS, now }),
+    ).resolves.toBe(1);
+    expect(deleted[0]).toMatchObject({ where: { id: { in: [30] } } });
+  });
+});
+
 describe('printJobIdsToPurge', () => {
   it('returns only eligible ids', () => {
     expect(

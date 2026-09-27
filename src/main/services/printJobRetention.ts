@@ -7,10 +7,12 @@
  *
  * QUEUED and RETRY stay — those still need a printer. First-print PAYMENT
  * receipts (attempts = 0) with no Order stay — boot backfill still
- * reconstructs the sale from them. Exhausted retries are just extra JSON.
+ * reconstructs the sale from them — unless "Erase tickets" removed that
+ * sale on purpose. Exhausted retries are just extra JSON.
  */
 import type { PrismaClient } from '@prisma/client';
 import { isPaymentPayload } from '@shared/salesLedger';
+import { printJobWasErased, readLedgerErasedThroughId } from './ledgerErase';
 
 export const PRINT_JOB_KEEP_DAYS = 7;
 export const PRINT_JOB_PURGE_BATCH = 500;
@@ -69,7 +71,12 @@ export function isSalesLedgerBackfillSource(
  */
 export function shouldPurgePrintJob(
   job: PrintJobPurgeCandidate,
-  args: { cutoff: Date; linked: PrintJobLedgerLinks },
+  args: {
+    cutoff: Date;
+    linked: PrintJobLedgerLinks;
+    /** Newest job covered by "Erase tickets"; its sale is gone on purpose. */
+    erasedThroughId?: number;
+  },
 ): boolean {
   const status = String(job.status || '').toUpperCase();
   if (ACTIVE_STATUS.has(status)) return false;
@@ -78,7 +85,8 @@ export function shouldPurgePrintJob(
   if (!Number.isFinite(t) || t >= args.cutoff.getTime()) return false;
   if (
     isSalesLedgerBackfillSource(job) &&
-    !printJobHasLedgerRow(job, args.linked)
+    !printJobHasLedgerRow(job, args.linked) &&
+    !printJobWasErased(job.id, Number(args.erasedThroughId || 0))
   ) {
     return false;
   }
@@ -89,10 +97,12 @@ export function printJobIdsToPurge(
   jobs: PrintJobPurgeCandidate[],
   linked: PrintJobLedgerLinks,
   cutoff: Date,
+  erasedThroughId = 0,
 ): number[] {
   const out: number[] = [];
   for (const job of jobs) {
-    if (!shouldPurgePrintJob(job, { cutoff, linked })) continue;
+    if (!shouldPurgePrintJob(job, { cutoff, linked, erasedThroughId }))
+      continue;
     const id = Number(job.id);
     if (Number.isInteger(id) && id > 0) out.push(id);
   }
@@ -100,6 +110,9 @@ export function printJobIdsToPurge(
 }
 
 type RetentionClient = {
+  syncState?: {
+    findUnique: (args: any) => Promise<{ valueJson?: unknown } | null>;
+  };
   printJob: {
     findMany: (args: unknown) => Promise<PrintJobPurgeCandidate[]>;
     deleteMany: (args: unknown) => Promise<{ count: number }>;
@@ -162,6 +175,7 @@ export async function purgeSettledPrintJobs(
     Math.max(50, Number(opts.batchSize) || PRINT_JOB_PURGE_BATCH),
   );
 
+  const erasedThroughId = await readLedgerErasedThroughId(client);
   let purged = 0;
   let cursor = 0;
   for (let i = 0; i < 20; i++) {
@@ -190,6 +204,7 @@ export async function purgeSettledPrintJobs(
       jobs,
       await ledgerLinksFor(client, jobs),
       cutoff,
+      erasedThroughId,
     );
     if (ids.length > 0) {
       const res = await client.printJob.deleteMany({

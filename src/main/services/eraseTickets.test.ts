@@ -15,9 +15,11 @@ import {
   eraseAllTickets,
   eraseTicketsConfirmMatches,
 } from './eraseTickets';
+import { LEDGER_ERASED_THROUGH_KEY } from './ledgerErase';
 
-function fakeClient() {
+function fakeClient(newestJobId = 0) {
   const calls: string[] = [];
+  const upserts: any[] = [];
   const count = (name: string, n = 0) => ({
     deleteMany: async () => {
       calls.push(name);
@@ -26,6 +28,7 @@ function fakeClient() {
   });
   return {
     calls,
+    upserts,
     kdsTicketStation: count('kdsTicketStation'),
     kdsTicket: count('kdsTicket'),
     kdsOrder: count('kdsOrder', 2),
@@ -45,10 +48,17 @@ function fakeClient() {
         return { count: 1 };
       },
     },
+    printJob: {
+      findFirst: async () => (newestJobId ? { id: newestJobId } : null),
+    },
     syncState: {
       deleteMany: async () => {
         calls.push('syncState');
         return { count: 0 };
+      },
+      upsert: async (args: any) => {
+        upserts.push(args);
+        return {};
       },
     },
   };
@@ -100,5 +110,21 @@ describe('eraseAllTickets', () => {
       label: 'T15',
       open: false,
     });
+  });
+
+  it('marks existing print jobs so boot cannot rebuild the erased sales', async () => {
+    const client = fakeClient(42);
+    await eraseAllTickets(client as any);
+    expect(client.upserts).toHaveLength(1);
+    expect(client.upserts[0]).toMatchObject({
+      where: { key: LEDGER_ERASED_THROUGH_KEY },
+      update: { valueJson: { printJobId: 42 } },
+    });
+  });
+
+  it('writes no mark when there are no print jobs', async () => {
+    const client = fakeClient(0);
+    await eraseAllTickets(client as any);
+    expect(client.upserts).toHaveLength(0);
   });
 });
