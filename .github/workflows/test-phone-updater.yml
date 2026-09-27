@@ -10,6 +10,8 @@ on:
     branches: [main]
     paths:
       - 'scripts/phones/**'
+      - '.github/workflows/test-phone-updater.yml'
+      - '.github/scripts/run-phone-updater.ps1'
 
 permissions:
   contents: read
@@ -35,7 +37,7 @@ jobs:
           if ($errors) { $errors; throw 'parse errors' }
 
       - name: Fresh till downloads adb and the latest APK
-        timeout-minutes: 5
+        timeout-minutes: 8
         shell: powershell
         env:
           LOCALAPPDATA: ${{ runner.temp }}\appdata
@@ -47,12 +49,10 @@ jobs:
             Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'adb.exe')) }) -join ';'
           if (Get-Command adb.exe -ErrorAction SilentlyContinue) { throw 'adb still on PATH' }
 
-          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File scripts\phones\update-waiter-phones.ps1 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          $out
-          if ($code -ne 1) { throw "expected exit 1 (no phones), got $code" }
-          if ($out -notmatch 'No phones found') { throw 'expected "No phones found"' }
+          . .github\scripts\run-phone-updater.ps1
+          $r = Invoke-PhoneUpdater @()
+          if ($r.Code -ne 1) { throw "expected exit 1 (no phones), got $($r.Code)" }
+          if ($r.Output -notmatch 'No phones found') { throw 'expected "No phones found"' }
           if (-not (Test-Path "$env:LOCALAPPDATA\OneTap\platform-tools\adb.exe")) {
             throw 'adb was not downloaded'
           }
@@ -62,15 +62,16 @@ jobs:
 
       - name: Double-click launcher reuses the download
         timeout-minutes: 5
-        shell: cmd
+        shell: powershell
         env:
           LOCALAPPDATA: ${{ runner.temp }}\appdata
         run: |
-          echo.| scripts\phones\update-waiter-phones.cmd > "%RUNNER_TEMP%\cmd-out.txt" 2>&1
-          type "%RUNNER_TEMP%\cmd-out.txt"
-          findstr /C:"No phones found" "%RUNNER_TEMP%\cmd-out.txt" || exit /b 1
-          findstr /C:"Downloading OneTap-Waiter" "%RUNNER_TEMP%\cmd-out.txt" && exit /b 1
-          exit /b 0
+          $ErrorActionPreference = 'Continue'
+          . .github\scripts\run-phone-updater.ps1
+          # `echo.|` answers the launcher's closing "pause".
+          $r = Invoke-PhoneUpdater @() -ViaCmd
+          if ($r.Output -notmatch 'No phones found') { throw 'expected "No phones found"' }
+          if ($r.Output -match 'Downloading OneTap-Waiter') { throw 'downloaded the APK again' }
 
       - name: Errors are reported, not hidden
         timeout-minutes: 5
@@ -79,20 +80,27 @@ jobs:
           LOCALAPPDATA: ${{ runner.temp }}\appdata
         run: |
           $ErrorActionPreference = 'Continue'
-          $script = 'scripts\phones\update-waiter-phones.ps1'
+          . .github\scripts\run-phone-updater.ps1
           $cases = @(
             @{ Args = @('-Pair', '127.0.0.1:1', '-Code', '123456'); Expect = 'pairing failed' },
             @{ Args = @('-Pair', '127.0.0.1:1'); Expect = 'needs -Code' },
             @{ Args = @('-Apk', 'C:\missing\OneTap-Waiter-9.9.9.apk'); Expect = 'APK not found' }
           )
           foreach ($c in $cases) {
-            $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script @($c.Args) 2>&1 | Out-String
-            $code = $LASTEXITCODE
-            "--- $($c.Args -join ' ') -> exit $code"
-            $out
-            if ($code -ne 1) { throw "expected exit 1 for $($c.Args -join ' ')" }
-            if ($out -notmatch [regex]::Escape($c.Expect)) { throw "expected '$($c.Expect)'" }
+            $r = Invoke-PhoneUpdater $c.Args
+            if ($r.Code -ne 1) { throw "expected exit 1 for $($c.Args -join ' ')" }
+            if ($r.Output -notmatch [regex]::Escape($c.Expect)) { throw "expected '$($c.Expect)'" }
           }
+
+      - name: Stop adb
+        if: always()
+        shell: powershell
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}\appdata
+        run: |
+          $adb = "$env:LOCALAPPDATA\OneTap\platform-tools\adb.exe"
+          if (Test-Path $adb) { & $adb kill-server 2>$null | Out-Null }
+          exit 0
 
   macos:
     name: Mac till (/bin/bash 3.2)

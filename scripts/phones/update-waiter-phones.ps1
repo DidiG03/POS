@@ -30,6 +30,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 redraws a progress bar for every chunk it downloads,
+# which turns the 15 MB platform-tools download into many minutes.
+$ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Repo = 'DidiG03/POS'
