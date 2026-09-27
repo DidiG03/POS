@@ -125,15 +125,20 @@ export function captureException(
 export function captureMessage(
   message: string,
   level: Sentry.SeverityLevel = 'info',
+  context?: Record<string, any>,
 ): void {
   if (!enabled) {
     if (IS_DEV) {
-      console.log(`[${level.toUpperCase()} (Sentry disabled)]`, message);
+      console.log(
+        `[${level.toUpperCase()} (Sentry disabled)]`,
+        message,
+        context,
+      );
     }
     return;
   }
   try {
-    Sentry.captureMessage(message, level);
+    Sentry.captureMessage(message, { level, extra: context });
   } catch (error) {
     console.error('[Sentry] Failed to capture message', error);
   }

@@ -2,7 +2,14 @@
  * Access decisions for guarded IPC channels.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// `ipcGuard.ts` reports unexpected handler errors to Sentry, whose module
+// touches `app` from `electron` at import time — real outside a packaged
+// Electron process. Nothing here exercises that path (only the pure
+// `decideAccess`/`skipResumeRateLimit` helpers), so stub it out.
+vi.mock('./sentry', () => ({ captureException: () => undefined }));
+
 import { decideAccess, skipResumeRateLimit } from './ipcGuard';
 import type { IpcCallContext } from './ipcGuard';
 import type { IpcSession } from './ipcSession';

@@ -122,7 +122,7 @@ import {
   getSecurityLog,
 } from './services/security';
 import { normalizePin } from '@shared/staffPin';
-import { ipcHandle } from './services/ipcGuard';
+import { IpcAuthorizationError, ipcHandle } from './services/ipcGuard';
 import { authorizeCreateUser } from './services/createUserAuth';
 import {
   notifyPaymentDiscount,
@@ -471,7 +471,7 @@ async function assertMaySaveSettings(
     reason: 'not_admin',
     keys: Object.keys(patch),
   });
-  throw new Error('forbidden');
+  throw new IpcAuthorizationError('forbidden');
 }
 
 const pinFailuresBySender = new Map<number, number>();
@@ -1959,7 +1959,7 @@ ipcHandle('auth:createUser', async (_e, payload) => {
         reason: 'not_admin',
       });
     }
-    throw new Error('forbidden');
+    throw new IpcAuthorizationError('forbidden');
   }
 
   assertStaffRoleAllowed(input.role);
@@ -4656,7 +4656,7 @@ ipcHandle('layout:save', async (_e, { area, nodes }) => {
   // the payload, which meant anyone could claim to be an admin by passing an
   // admin's id. The session is the only trustworthy source.
   if (getSession(_e.sender.id)?.role !== 'ADMIN') {
-    throw new Error('forbidden');
+    throw new IpcAuthorizationError('forbidden');
   }
   await prisma.syncState.upsert({
     where: { key: globalLayoutKey(a) },

@@ -35,9 +35,12 @@ function wantsLiteNetwork(): boolean {
         connection?: { saveData?: boolean; effectiveType?: string };
       }
     ).connection;
-    if (!c) return false;
-    if (c.saveData) return true;
-    return c.effectiveType === 'slow-2g' || c.effectiveType === '2g';
+    // Only the explicit Data Saver opt-in skips loading the SDK. This used
+    // to also skip on a `slow-2g`/`2g` `effectiveType`, but restaurant Wi-Fi
+    // self-reports that way under ordinary rush-hour congestion — exactly
+    // when errors are most likely and most costly to lose — which silently
+    // disabled error reporting for the rest of that session with no retry.
+    return Boolean(c?.saveData);
   } catch {
     return false;
   }
