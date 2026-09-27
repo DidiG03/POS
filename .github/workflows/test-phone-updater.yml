@@ -1,0 +1,128 @@
+name: Test phone updater
+
+# Runs scripts/phones/update-waiter-phones.* the way a venue runs them: on a
+# till with no Android SDK, against the latest GitHub release. Windows uses
+# the built-in Windows PowerShell 5.1 (not pwsh 7); macOS uses /bin/bash 3.2.
+# No phone is attached, so each run must end at "No phones found".
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/phones/**'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows till (PowerShell 5.1)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Windows PowerShell 5.1 parses the script
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'expected Windows PowerShell 5.1' }
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts\phones\update-waiter-phones.ps1).Path,
+            [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors; throw 'parse errors' }
+
+      - name: Fresh till downloads adb and the latest APK
+        shell: powershell
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}\appdata
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          # A till has no Android SDK: hide the runner's adb.
+          $env:PATH = ($env:PATH -split ';' |
+            Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'adb.exe')) }) -join ';'
+          if (Get-Command adb.exe -ErrorAction SilentlyContinue) { throw 'adb still on PATH' }
+
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File scripts\phones\update-waiter-phones.ps1 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          $out
+          if ($code -ne 1) { throw "expected exit 1 (no phones), got $code" }
+          if ($out -notmatch 'No phones found') { throw 'expected "No phones found"' }
+          if (-not (Test-Path "$env:LOCALAPPDATA\OneTap\platform-tools\adb.exe")) {
+            throw 'adb was not downloaded'
+          }
+          $apk = Get-ChildItem "$env:LOCALAPPDATA\OneTap\apk\OneTap-Waiter-*.apk"
+          if (-not $apk -or $apk.Length -lt 1MB) { throw 'APK was not downloaded' }
+          "Downloaded $($apk.Name), $([math]::Round($apk.Length / 1MB, 1)) MB"
+
+      - name: Double-click launcher reuses the download
+        shell: cmd
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}\appdata
+        run: |
+          echo.| scripts\phones\update-waiter-phones.cmd > "%RUNNER_TEMP%\cmd-out.txt" 2>&1
+          type "%RUNNER_TEMP%\cmd-out.txt"
+          findstr /C:"No phones found" "%RUNNER_TEMP%\cmd-out.txt" || exit /b 1
+          findstr /C:"Downloading OneTap-Waiter" "%RUNNER_TEMP%\cmd-out.txt" && exit /b 1
+          exit /b 0
+
+      - name: Errors are reported, not hidden
+        shell: powershell
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}\appdata
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script = 'scripts\phones\update-waiter-phones.ps1'
+          $cases = @(
+            @{ Args = @('-Pair', '127.0.0.1:1', '-Code', '123456'); Expect = 'pairing failed' },
+            @{ Args = @('-Pair', '127.0.0.1:1'); Expect = 'needs -Code' },
+            @{ Args = @('-Apk', 'C:\missing\OneTap-Waiter-9.9.9.apk'); Expect = 'APK not found' }
+          )
+          foreach ($c in $cases) {
+            $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script @($c.Args) 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            "--- $($c.Args -join ' ') -> exit $code"
+            $out
+            if ($code -ne 1) { throw "expected exit 1 for $($c.Args -join ' ')" }
+            if ($out -notmatch [regex]::Escape($c.Expect)) { throw "expected '$($c.Expect)'" }
+          }
+
+  macos:
+    name: Mac till (/bin/bash 3.2)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fresh till downloads adb and the latest APK
+        run: |
+          set -u
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          # A till has no Android SDK: keep only system paths.
+          export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+          if command -v adb >/dev/null; then echo "adb still on PATH"; exit 1; fi
+          /bin/bash --version | head -n 1
+
+          set +e
+          out="$(/bin/bash scripts/phones/update-waiter-phones.sh 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          [ "$code" -eq 1 ] || { echo "expected exit 1, got $code"; exit 1; }
+          printf '%s' "$out" | grep -q 'No phones found'
+          [ -x "$HOME/Library/Application Support/OneTap/platform-tools/adb" ]
+          ls -la "$HOME/Library/Application Support/OneTap/apk/"
+          find "$HOME/Library/Application Support/OneTap/apk" -name 'OneTap-Waiter-*.apk' -size +1000k | grep -q .
+
+          set +e
+          out="$(/bin/bash scripts/phones/update-waiter-phones.sh --apk /missing/OneTap-Waiter-9.9.9.apk 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          [ "$code" -eq 1 ] && printf '%s' "$out" | grep -q 'APK not found'

@@ -219,11 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.72"
-            echo "- Erased tickets now stay erased: restarting the till no longer brings old sales back into reports."
-            echo "- Phones shared between waiters: an order a waiter queued offline now waits for them (or an admin) to sign in again, instead of getting stuck while someone else is signed in."
-            echo "- A write the till refuses no longer retries forever; it shows on the failed-sync panel."
-            echo "- Logging out warns when you still have orders that have not reached the till."
+            echo "### Changes in v0.2.73"
+            echo "- Waiter phones can now be updated from the till PC over Wi-Fi: download update-waiter-phones.cmd and update-waiter-phones.ps1 from this release (Mac tills: update-waiter-phones.sh). The signed Android app (OneTap-Waiter-0.2.73.apk) is attached too."
+            echo "- Crash and error reports now reach us from the tablet connection, the kitchen display and Admin apps, and before sign-in, so problems at a venue are seen without anyone reporting them."
+            echo "- Expected refusals (a waiter trying something they are not allowed to) are no longer reported as errors."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
