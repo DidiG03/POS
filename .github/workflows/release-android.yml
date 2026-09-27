@@ -1,6 +1,8 @@
 name: Release Android Waiter
 
-# Builds the signed OneTap Waiter Android App Bundle (.aab) for Google Play.
+# Builds the signed OneTap Waiter Android App Bundle (.aab) for Google Play,
+# plus a signed .apk of the same build for updating phones over wireless
+# debugging (scripts/phones/update-waiter-phones.*, attached to the release).
 # Trigger:
 #   - Push `v*` (same tag as POS) so the .aab lands on that GitHub Release.
 #   - Push `android-v*` for an Android-only rebuild.
@@ -32,7 +34,7 @@ permissions:
 
 jobs:
   build:
-    name: Build signed .aab
+    name: Build signed .aab and .apk
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -89,9 +91,9 @@ jobs:
           keytool -list -keystore android/release.keystore \
             -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
 
-      - name: Build release bundle
+      - name: Build release bundle and APK
         working-directory: android
-        run: ./gradlew --no-daemon bundleRelease
+        run: ./gradlew --no-daemon bundleRelease assembleRelease
 
       - name: Verify signature and rename
         run: |
@@ -102,17 +104,31 @@ jobs:
           grep -q 'jar verified' /tmp/verify.txt
           mkdir -p dist-android
           cp "$SRC" "dist-android/OneTap-Waiter-${VERSION}.aab"
+
+          # Phones updated with `adb install -r` refuse an APK signed with a
+          # different key, so an unsigned or debug-signed APK must never ship.
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
+          "$APKSIGNER" verify --print-certs "$APK" | tee /tmp/apk-verify.txt
+          if grep -qi 'CN=Android Debug' /tmp/apk-verify.txt; then
+            echo "::error::APK is signed with the debug key"
+            exit 1
+          fi
+          cp "$APK" "dist-android/OneTap-Waiter-${VERSION}.apk"
+          cp scripts/phones/update-waiter-phones.ps1 \
+            scripts/phones/update-waiter-phones.cmd \
+            scripts/phones/update-waiter-phones.sh dist-android/
           ls -la dist-android
 
       - name: Remove signing material
         if: always()
         run: rm -f android/release.keystore android/keystore.properties
 
-      - name: Upload .aab as workflow artifact
+      - name: Upload Android build as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-waiter-aab
-          path: dist-android/*.aab
+          path: dist-android/*
           if-no-files-found: error
           retention-days: 30
 
@@ -129,7 +145,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download .aab
+      - name: Download Android build
         uses: actions/download-artifact@v4
         with:
           name: android-waiter-aab
@@ -145,5 +161,5 @@ jobs:
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
           gh_ensure_release "$TAG" "${VERSION}" \
             "OneTap ${VERSION}."
-          gh_upload_with_retry "$TAG" dist-android/*.aab
-          echo "Attached Android bundle to https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          gh_upload_with_retry "$TAG" dist-android/*
+          echo "Attached Android bundle, APK and phone update scripts to https://github.com/${{ github.repository }}/releases/tag/${TAG}"
