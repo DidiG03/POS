@@ -23,6 +23,7 @@ import {
   shouldRetryFailedLoad,
 } from '@shared/wakeRecovery';
 import { withTimeout } from './withTimeout';
+import { captureMessage } from './sentry';
 
 const recoveringIds = new Set<number>();
 const tracked = new Set<BrowserWindow>();
@@ -157,6 +158,18 @@ export function attachWindowRecovery(win: BrowserWindow): void {
     if (isLoading(wc)) return;
     if (!shouldReloadAfterRenderGone(details?.reason)) return;
     console.error('Renderer process gone', details);
+    // A renderer crash (OOM, GPU death, native crash) never runs any JS, so
+    // the browser-side Sentry SDK cannot report it — this main-process event
+    // is the only place it is ever observable.
+    captureMessage(
+      `Renderer process gone: ${details?.reason || 'unknown'}`,
+      'error',
+      {
+        type: 'render_process_gone',
+        reason: details?.reason,
+        exitCode: details?.exitCode,
+      },
+    );
     reloadWindowContents(win);
   });
 
@@ -165,6 +178,12 @@ export function attachWindowRecovery(win: BrowserWindow): void {
     (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!shouldRetryFailedLoad(errorCode, isMainFrame !== false)) return;
       console.error('Renderer failed load', {
+        errorCode,
+        errorDescription,
+        validatedURL,
+      });
+      captureMessage(`Renderer failed to load: ${errorDescription}`, 'error', {
+        type: 'did_fail_load',
         errorCode,
         errorDescription,
         validatedURL,

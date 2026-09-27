@@ -19,6 +19,7 @@ import { policyFor } from './ipcPolicy';
 import type { IpcPolicy } from './ipcPolicy';
 import { getSession, senderHoldsToken, windowKindFor } from './ipcSession';
 import type { IpcSession } from './ipcSession';
+import { captureException } from './sentry';
 
 export class IpcAuthorizationError extends Error {
   readonly code: string;
@@ -148,6 +149,26 @@ export function ipcHandle<T>(channel: string, listener: GuardedListener<T>) {
     const t0 = Date.now();
     try {
       return await listener(event, payload, ctx);
+    } catch (error) {
+      // A handler throwing here is exactly what a waiter/admin/host sees as
+      // "the app broke" — Electron relays the rejection to the renderer as a
+      // handled IPC error, so it never surfaces as an `unhandledRejection`
+      // and would otherwise never reach Sentry. Denials are already recorded
+      // via `logSecurityEvent` above, so only report genuine failures.
+      if (!(error instanceof IpcAuthorizationError)) {
+        captureException(
+          error instanceof Error ? error : new Error(String(error)),
+          {
+            type: 'ipc_handler',
+            channel,
+            senderId,
+            windowKind,
+            userId: ctx.session?.userId ?? null,
+            role: ctx.session?.role ?? null,
+          },
+        );
+      }
+      throw error;
     } finally {
       const ms = Date.now() - t0;
       if (ms >= 50) console.log(`[boot] ipc ${channel} ${ms}ms`);

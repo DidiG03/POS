@@ -40,6 +40,7 @@ import {
   reportAuditWriteFailure,
 } from './services/adminAlerts';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
+import { captureException } from './services/sentry';
 import * as reservationsService from './services/reservations';
 import {
   assertDiningFloorEnabled,
@@ -4361,6 +4362,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, code, { error: message, code: errCode || undefined });
       }
       console.error('API error', e);
+      // These are the failures LAN clients (waiter tablets, KDS, Admin
+      // companion apps) actually hit — the main-process equivalent of an
+      // IPC handler throwing. Unlike the 4xx branches above (expected,
+      // business-rule outcomes), anything landing here is unexpected and
+      // must reach Sentry the same way a desktop-window error would.
+      captureException(e instanceof Error ? e : new Error(String(e)), {
+        type: 'lan_api_handler',
+        method: req.method,
+        path: String(req.url || '').split('?')[0],
+      });
       return send(res, 500, 'error');
     }
   };

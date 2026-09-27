@@ -25,7 +25,7 @@ import {
   installOsResumeRecovery,
 } from '../services/windowRecovery';
 import { parseKdsStation, type KdsStation } from '@shared/kdsStations';
-import { initSentry } from '../services/sentry';
+import { captureException, initSentry } from '../services/sentry';
 import {
   cleanup as cleanupUpdater,
   registerUpdateListener,
@@ -36,6 +36,23 @@ import { registerCompanionLanIpc } from '../services/companionLanProxy';
 
 app.setName('OneTap KDS');
 initSentry();
+
+// The POS main process installs these (see src/main/index.ts); this
+// standalone kiosk app never did, so an uncaught error in it was only ever
+// a `console.error` on a screen nobody is watching.
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  captureException(error, { type: 'uncaughtException' });
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+  captureException(
+    reason instanceof Error ? reason : new Error(String(reason)),
+    {
+      type: 'unhandledRejection',
+    },
+  );
+});
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);

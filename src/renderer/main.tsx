@@ -9,6 +9,7 @@ import { BootRoot } from './app/BootRoot';
 import { installPosReadCache } from './utils/posReadCache';
 import { installWakeUiRecovery } from './utils/wakeUiRecovery';
 import { installUnhandledErrorToasts } from './utils/reportAppError';
+import { initRendererSentry } from './utils/sentryBrowser';
 import { bootTrace } from '@shared/bootTrace';
 import { bootAdminMobileShell } from './utils/adminMobileBoot';
 // PWA registration disabled for desktop build
@@ -76,7 +77,14 @@ async function startRenderer() {
       bootTrace('renderer:modules');
       installWakeUiRecovery();
       installUnhandledErrorToasts();
+      // Previously only wired up once an authenticated layout mounted
+      // (AppLayout/AdminLayout/ReservationsLayout/KdsPage), so anything
+      // reported from the PIN/login screen via `captureRendererException`
+      // sat in its pre-init queue and was dropped if the user never got
+      // past login. Off the critical path (same as the imports below) so
+      // the PIN screen still paints first.
       scheduleIdle(() => {
+        initRendererSentry();
         void import('./utils/remoteAppUpdate').then((m) =>
           m.installRemoteAppUpdateListener(),
         );
