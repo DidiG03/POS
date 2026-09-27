@@ -20,6 +20,7 @@ import type { IpcPolicy } from './ipcPolicy';
 import { getSession, senderHoldsToken, windowKindFor } from './ipcSession';
 import type { IpcSession } from './ipcSession';
 import { captureException } from './sentry';
+import { ZodError } from 'zod';
 
 export class IpcAuthorizationError extends Error {
   readonly code: string;
@@ -154,8 +155,13 @@ export function ipcHandle<T>(channel: string, listener: GuardedListener<T>) {
       // "the app broke" — Electron relays the rejection to the renderer as a
       // handled IPC error, so it never surfaces as an `unhandledRejection`
       // and would otherwise never reach Sentry. Denials are already recorded
-      // via `logSecurityEvent` above, so only report genuine failures.
-      if (!(error instanceof IpcAuthorizationError)) {
+      // via `logSecurityEvent` above, and a `ZodError` is just a caller
+      // sending a payload that fails input validation — neither is a code
+      // bug, so only report genuine failures.
+      if (
+        !(error instanceof IpcAuthorizationError) &&
+        !(error instanceof ZodError)
+      ) {
         captureException(
           error instanceof Error ? error : new Error(String(error)),
           {
