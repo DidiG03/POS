@@ -219,11 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.75 (fiskalizimi)"
-            echo "- Fixed: a table can no longer be invoiced twice. If the till lost power after the invoice was sent, paying again reuses that invoice; if the bill changed, the payment is held and admins are told to check easyPos first."
-            echo "- Fixed: cancelling or correcting a sale taken while easyPos was offline now withdraws (or replaces) its waiting invoice, so a cancelled sale is never sent later."
-            echo "- Admins are now alerted when a table left open for 12 hours is cleared automatically, with the unpaid value that was never reported."
-            echo "- Switching fiskalizimi off or on is now recorded and alerted to admins, including how many sales were taken while it was off."
+            echo "### Changes in v0.2.76 (fiskalizimi)"
+            echo "- Every payment is now priced from the till's own menu. If a phone sends a wrong price or VAT rate (an old app version or tampering), the receipt and the invoice sent to the tax office use the menu price, and admins are alerted."
+            echo "- Tables that ordered before an admin changed a menu price still pay the price they were shown."
+            echo "- Lines with a zero or negative quantity are removed from the payment and reported."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

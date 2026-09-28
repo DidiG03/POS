@@ -2807,7 +2807,7 @@ ipcHandle('tickets:print', async (_e, input) => {
       broadcastPrinterEvent({
         level: 'warn',
         kind: 'totals',
-        message: 'Payment total was recalculated from the ticket items.',
+        message: 'Payment was corrected from the menu and the ticket items.',
         detail: enforcedTotals.mismatch,
         at: Date.now(),
         context: { area, tableLabel, kind: 'PAYMENT' },

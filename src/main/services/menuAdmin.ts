@@ -11,6 +11,7 @@ import {
 } from '@shared/itemCost';
 import { menuItemSoldByKg } from '@shared/menuItemKg';
 import { storePlanBlocksTables } from './license';
+import { recordMenuPriceChange } from './menuPriceHistory';
 import {
   applyDailyStockPatch,
   applyOnHandStockPatch,
@@ -308,5 +309,14 @@ export async function updateMenuItemFromInput(payload: unknown) {
     where: { id: input.id },
     data: data as any,
   });
+  // Tables that ordered at the old price are still charged it.
+  await recordMenuPriceChange(
+    {
+      sku: existing.sku,
+      price: Number(existing.price),
+      vatRate: Number(existing.vatRate),
+    },
+    { sku: data.sku, price: data.price, vatRate: data.vatRate },
+  );
   return true;
 }
