@@ -40,3 +40,19 @@ export function printJobWasErased(
   const id = Number(printJobId);
   return erasedThroughId > 0 && Number.isInteger(id) && id <= erasedThroughId;
 }
+
+/**
+ * When the last "Erase tickets" ran, or null. Fiscal claims older than this
+ * belong to sales that were erased on purpose, so they must not be reported
+ * as invoices with no recorded sale.
+ */
+export async function readLedgerErasedAt(
+  client: SyncStateReader,
+): Promise<Date | null> {
+  if (!client?.syncState?.findUnique) return null;
+  const row = await client.syncState
+    .findUnique({ where: { key: LEDGER_ERASED_THROUGH_KEY } })
+    .catch(() => null);
+  const at = Date.parse(String((row?.valueJson as any)?.erasedAt || ''));
+  return Number.isFinite(at) ? new Date(at) : null;
+}

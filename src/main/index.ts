@@ -170,6 +170,7 @@ import {
 } from './services/printDispatcher';
 import {
   fiscalizePaymentOnce,
+  sittingFiscalGate,
   flagVoidAfterFiscalization,
   testFiscalConnection,
   getFiscalTokenHint,
@@ -301,6 +302,11 @@ import {
   getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
+import { notifyAutoVoidedTable } from './services/autoVoidAlert';
+import {
+  auditFiscalToggle,
+  fiscalEnabledOf,
+} from './services/fiscalToggleAudit';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import { decideTicketRequest } from './services/ticketRequests';
 import {
@@ -861,14 +867,20 @@ function startAutoVoidStaleTicketsLoop() {
         if (!parsed) continue;
         const { area, label: tableLabel } = parsed;
 
-        // Find an actor userId for local mirroring/audit (use last ticket owner if possible).
-        const last = await prisma.ticketLog
-          .findFirst({
-            where: { area, tableLabel },
-            orderBy: { createdAt: 'desc' },
-          })
-          .catch(() => null as any);
+        // The ticket of THIS sitting (read before the occupancy is closed,
+        // which clears the sitting). An older sitting's ticket is already
+        // settled and says nothing about what is being voided now.
+        const openedAt =
+          occupied.find((t) => t.area === area && t.label === tableLabel)
+            ?.openedAt ?? null;
+        const last = (await findLatestTicketLogForCurrentSession(
+          area,
+          tableLabel,
+        ).catch(() => null)) as any;
         const actorUserId = Number(last?.userId || 0) || 0;
+        const unpaidItems = Array.isArray(last?.itemsJson)
+          ? (last.itemsJson as unknown[])
+          : [];
 
         // Local-first: cancel pending/approved requests for this stale table.
         try {
@@ -968,10 +980,29 @@ function startAutoVoidStaleTicketsLoop() {
           // ignore
         }
 
-        // Local notifications:
-        // - In local mode this is the admin panel feed.
-        // - In cloud mode the admin panel feed is cloud-backed, but the void-ticket API call will create a notification there.
-        if (actorUserId) {
+        // Admins must see what an auto-void erased: an unpaid ticket is money
+        // that never reached fiskalizimi. The owning waiter is told too.
+        const alerted = await (async () => {
+          const settings = await coreServices.readSettings().catch(() => null);
+          const waiter = actorUserId
+            ? await prisma.user
+                .findUnique({
+                  where: { id: actorUserId },
+                  select: { displayName: true },
+                })
+                .catch(() => null)
+            : null;
+          return notifyAutoVoidedTable({
+            area,
+            tableLabel,
+            items: unpaidItems,
+            currency: String((settings as any)?.currency || 'ALL'),
+            actorUserId: actorUserId || undefined,
+            waiterName: waiter?.displayName || null,
+            openedAt,
+          });
+        })().catch(() => false);
+        if (!alerted && actorUserId) {
           const msg = `Auto-voided ticket on ${area} ${tableLabel}: exceeded 12 hours`;
           await prisma.notification
             .create({
@@ -2386,8 +2417,15 @@ ipcHandle('settings:get', async (_e) => {
 
 ipcHandle('settings:update', async (_e, input) => {
   await assertMaySaveSettings(_e.sender.id, input);
+  const fiscalWasEnabled = fiscalEnabledOf(await coreServices.readSettings());
   // Merge and persist in SyncState, so admin changes survive restarts
   const merged = await coreServices.updateSettings(input);
+  await auditFiscalToggle({
+    wasEnabled: fiscalWasEnabled,
+    settings: merged,
+    actorUserId: getSession(_e.sender.id)?.userId,
+    source: 'till',
+  });
   if (
     (input as any)?.host &&
     Object.prototype.hasOwnProperty.call((input as any).host, 'openAtLogin')
@@ -2789,8 +2827,34 @@ ipcHandle('tickets:print', async (_e, input) => {
       if (!(await tableIsOpenForPayment(area, tableLabel))) {
         return tableAlreadyPaidResult();
       }
+      // A second Pay tap for this sitting gets a new docId, so an invoice
+      // left behind by an interrupted attempt must be found here.
+      const sitting = await sittingFiscalGate({
+        settings,
+        area,
+        tableLabel,
+        meta,
+        idempotencyKey,
+      });
+      if (sitting.kind === 'blocked') {
+        broadcastPrinterEvent({
+          level: 'error',
+          kind: 'fiscal',
+          message: sitting.message,
+          detail: sitting.message,
+          at: Date.now(),
+          context: { area, tableLabel, kind: 'PAYMENT' },
+        });
+        return {
+          ok: false,
+          code: sitting.code,
+          error: sitting.message,
+          ...(sitting.retryable ? {} : { permanent: true }),
+        };
+      }
       const outcome = await fiscalizePaymentOnce(payload, settings as any, {
         idempotencyKey: idempotencyKey || undefined,
+        adoptDocId: sitting.adoptDocId,
       });
       if (outcome.kind === 'needs-review') {
         broadcastPrinterEvent({

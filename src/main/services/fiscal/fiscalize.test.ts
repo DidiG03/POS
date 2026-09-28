@@ -512,3 +512,66 @@ describe('the opening cash balance', () => {
     expect(createSale).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('fiscalizePaymentOnce — one invoice per sale', () => {
+  it('reuses an invoice filed by an interrupted attempt without filing again', async () => {
+    store.set('fiscal:claim:pay-lost', {
+      valueJson: {
+        state: 'REGISTERED',
+        attemptId: 'a',
+        attempts: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        context: { area: 'Bar', tableLabel: '4', total: 300 },
+        result: { nslf: 'NSLF-OLD', nivf: 'NIVF-OLD', status: 'accepted' },
+      },
+      updatedAt: new Date(),
+    });
+    const out = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: 'pay-new',
+      adoptDocId: 'pay-lost',
+    });
+    expect(out.kind).toBe('ok');
+    if (out.kind !== 'ok') throw new Error('unreachable');
+    expect(out.replayed).toBe(true);
+    expect(out.payload.meta).toMatchObject({
+      fiscalNslf: 'NSLF-OLD',
+      fiscalNivf: 'NIVF-OLD',
+    });
+    expect(createSale).not.toHaveBeenCalled();
+    expect(await readFiscalClaim('pay-new')).toBeNull();
+  });
+
+  it('records which sale a new invoice belongs to', async () => {
+    createSale.mockResolvedValue({
+      nslf: 'N',
+      nivf: 'F',
+      link: '',
+      status: 'accepted',
+    });
+    await fiscalizePaymentOnce(payment(), settings, { idempotencyKey: KEY });
+    expect((await readFiscalClaim(KEY))?.context).toMatchObject({
+      saleKey: KEY,
+      method: 'CARD',
+    });
+  });
+
+  it('files once when the same payment arrives twice at the same moment', async () => {
+    let finish!: (v: unknown) => void;
+    createSale.mockImplementation(
+      () => new Promise((resolve) => (finish = resolve)),
+    );
+    const a = fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    const b = fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    finish({ nslf: 'N', nivf: 'F', link: '', status: 'accepted' });
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(createSale).toHaveBeenCalledTimes(1);
+    expect(ra.kind).toBe('ok');
+    expect(rb.kind).toBe('ok');
+  });
+});

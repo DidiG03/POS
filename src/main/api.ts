@@ -29,6 +29,7 @@ import {
 } from './services/printDispatcher';
 import {
   fiscalizePaymentOnce,
+  sittingFiscalGate,
   flagVoidAfterFiscalization,
   getFiscalTokenHint,
   testFiscalConnection,
@@ -89,6 +90,10 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { shiftReopenBlockedUntil } from '@shared/shiftReopen';
 import { settingsChangeFromHost } from '@shared/settingsChange';
+import {
+  auditFiscalToggle,
+  fiscalEnabledOf,
+} from './services/fiscalToggleAudit';
 import { authorizeLanRoute } from './services/lanPolicy';
 import {
   authorizeCreateUser,
@@ -2670,11 +2675,34 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             ) {
               return send(res, 409, tableAlreadyPaidResult(), corsOrigin);
             }
+            // Same guard as the till: an invoice left by an interrupted
+            // attempt for this sitting must not get a sibling.
+            const sitting = await sittingFiscalGate({
+              settings,
+              area: payload.area,
+              tableLabel: payload.tableLabel,
+              meta: payload?.meta,
+              idempotencyKey: printIdempotencyKey,
+            });
+            if (sitting.kind === 'blocked') {
+              return send(
+                res,
+                409,
+                {
+                  ok: false,
+                  code: sitting.code,
+                  error: sitting.message,
+                  ...(sitting.retryable ? {} : { permanent: true }),
+                },
+                corsOrigin,
+              );
+            }
             const outcome = await fiscalizePaymentOnce(
               payload,
               settings as any,
               {
                 idempotencyKey: printIdempotencyKey || undefined,
+                adoptDocId: sitting.adoptDocId,
               },
             );
             if (outcome.kind === 'needs-review') {
@@ -3676,7 +3704,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/settings/update') {
         try {
           const input = await parseJson(req);
+          const fiscalWasEnabled = fiscalEnabledOf(
+            await coreServices.readSettings(),
+          );
           const merged = await coreServices.updateSettings(input);
+          await auditFiscalToggle({
+            wasEnabled: fiscalWasEnabled,
+            settings: merged,
+            actorUserId: auth?.userId,
+            source: 'lan',
+          });
           if (Array.isArray(input?.tableAreas)) {
             await syncTableAreasToDb(input.tableAreas);
           }

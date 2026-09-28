@@ -456,3 +456,89 @@ describe('pruneFiscalClaims', () => {
     expect(await readFiscalClaim(KEY)).toBeNull();
   });
 });
+
+describe('claim lock and withdrawal', () => {
+  it('runs sequences for one claim one at a time, others in parallel', async () => {
+    const { withFiscalClaimLock } = await import('./claims');
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const first = withFiscalClaimLock('doc-1', async () => {
+      order.push('a:start');
+      await new Promise<void>((r) => (releaseFirst = r));
+      order.push('a:end');
+    });
+    const second = withFiscalClaimLock('doc-1', async () => {
+      order.push('b');
+    });
+    const other = withFiscalClaimLock('doc-2', async () => {
+      order.push('other');
+    });
+    await other;
+    expect(order).toEqual(['a:start', 'other']);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(['a:start', 'other', 'a:end', 'b']);
+  });
+
+  it('gives up waiting with a busy error and keeps the queue moving', async () => {
+    const { withFiscalClaimLock, FiscalClaimBusyError } = await import(
+      './claims'
+    );
+    let release!: () => void;
+    const holder = withFiscalClaimLock(
+      'doc-3',
+      () => new Promise<void>((r) => (release = r)),
+    );
+    await expect(
+      withFiscalClaimLock('doc-3', async () => 'never', 10),
+    ).rejects.toBeInstanceOf(FiscalClaimBusyError);
+    const after = withFiscalClaimLock('doc-3', async () => 'ran');
+    release();
+    await holder;
+    await expect(after).resolves.toBe('ran');
+  });
+
+  it('never withdraws an invoice that may have been sent', async () => {
+    const first = await claimFiscalRegistration(KEY);
+    if (first.outcome !== 'proceed') throw new Error('expected proceed');
+    // PENDING: being sent right now, or interrupted mid-send.
+    expect(await abandonUnsentFiscalClaim(KEY, 'voided')).toBe(false);
+    expect((await readFiscalClaim(KEY))?.state).toBe('PENDING');
+    await settleFiscalClaimUnknown(KEY, first.attemptId, 'timeout');
+    expect(await abandonUnsentFiscalClaim(KEY, 'voided')).toBe(false);
+    expect((await readFiscalClaim(KEY))?.state).toBe('UNKNOWN');
+  });
+
+  it('treats a send started before this process as interrupted at once', async () => {
+    const { PROCESS_STARTED_AT, isDeadPendingClaim } = await import('./claims');
+    await claimFiscalRegistration(KEY);
+    const row = store.get(fiscalClaimKey(KEY))!;
+    const beforeStart = new Date(PROCESS_STARTED_AT - 1_000).toISOString();
+    store.set(fiscalClaimKey(KEY), {
+      ...row,
+      valueJson: {
+        ...row.valueJson,
+        createdAt: beforeStart,
+        updatedAt: beforeStart,
+      },
+    });
+    expect(isDeadPendingClaim((await readFiscalClaim(KEY))!)).toBe(true);
+    const decision = await claimFiscalRegistration(KEY);
+    expect(decision.outcome).toBe('needs-review');
+  });
+
+  it('keeps a filed invoice with no saved sale through pruning', async () => {
+    await claimFiscalRegistration(KEY);
+    const row = store.get(fiscalClaimKey(KEY))!;
+    store.set(fiscalClaimKey(KEY), {
+      valueJson: {
+        ...row.valueJson,
+        state: 'REGISTERED',
+        orphanDetectedAt: new Date().toISOString(),
+      },
+      updatedAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000),
+    });
+    await pruneFiscalClaims({ force: true });
+    expect(await readFiscalClaim(KEY)).not.toBeNull();
+  });
+});

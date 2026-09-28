@@ -15,7 +15,9 @@ export async function listFiscalReviewsForAdmin() {
     kind:
       record.state === 'CORRECTION_REQUIRED'
         ? ('correction-required' as const)
-        : ('unknown-outcome' as const),
+        : record.state === 'REGISTERED'
+          ? ('unrecorded' as const)
+          : ('unknown-outcome' as const),
     area: record.context?.area ?? null,
     tableLabel: record.context?.tableLabel ?? null,
     total: record.context?.total ?? null,

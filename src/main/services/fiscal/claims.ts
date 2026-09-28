@@ -38,6 +38,15 @@ const KEY_PREFIX = 'fiscal:claim:';
  */
 export const STALE_PENDING_MS = 5 * 60_000;
 
+/**
+ * When this process started. A PENDING claim last touched before it belongs
+ * to an attempt from an earlier run: that attempt is gone (crash, power cut,
+ * restart), so the claim is dead however young it is. Waiting out
+ * `STALE_PENDING_MS` for it after a quick reboot is exactly the window in
+ * which a waiter pays the same table again.
+ */
+export const PROCESS_STARTED_AT = Date.now();
+
 /** Settled claims are audit trail, but not forever. */
 const CLAIM_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -119,7 +128,20 @@ export interface FiscalClaimRecord {
   attempts: number;
   createdAt: string;
   updatedAt: string;
-  context?: { area?: string; tableLabel?: string; total?: number };
+  context?: {
+    area?: string;
+    tableLabel?: string;
+    total?: number;
+    /**
+     * The payment's idempotency key — what `PrintJob` and `Payment` are
+     * stored under. Usually identical to the claim key, but not after a
+     * payment reuses an invoice filed by an interrupted attempt, or after a
+     * correction restates a deferred invoice under a new docId.
+     */
+    saleKey?: string;
+    /** Fiscal payment type the invoice was filed with (CASH, CARD, …). */
+    method?: string;
+  };
   result?: StoredFiscalResult;
   lastError?: string;
   /** Frozen invoice body for a deferred transmit. Byte-identical on replay. */
@@ -128,6 +150,16 @@ export interface FiscalClaimRecord {
   nextAttemptAt?: string;
   /** Last 48h-window alert that was sent, so we do not spam. */
   lastAlertKey?: string;
+  /**
+   * Set when an invoice was filed but no sale was ever saved for it (the
+   * till died between the two). Cleared when a sale is recorded against it.
+   */
+  orphanDetectedAt?: string;
+  /**
+   * On an ABANDONED claim: the docId of the invoice that replaced it, when a
+   * correction restated an unsent invoice instead of just withdrawing it.
+   */
+  replacedBy?: string;
 }
 
 export type FiscalClaimDecision =
@@ -179,7 +211,102 @@ function parseRecord(valueJson: unknown): FiscalClaimRecord | null {
     draft: raw.draft !== undefined ? raw.draft : undefined,
     nextAttemptAt: raw.nextAttemptAt ? String(raw.nextAttemptAt) : undefined,
     lastAlertKey: raw.lastAlertKey ? String(raw.lastAlertKey) : undefined,
+    orphanDetectedAt: raw.orphanDetectedAt
+      ? String(raw.orphanDetectedAt)
+      : undefined,
+    replacedBy: raw.replacedBy ? String(raw.replacedBy) : undefined,
   };
+}
+
+/**
+ * Serialise everything that moves one claim between states.
+ *
+ * The claim is read, decided on and rewritten in several steps, and three
+ * independent actors do that: a payment (and its replays), the deferred
+ * transmit loop, and a void or admin reversal withdrawing an unsent invoice.
+ * Interleaved, a reversal could mark a claim ABANDONED while the loop was
+ * already sending it — and the loop's settle would then record the invoice
+ * as filed for a sale that had been cancelled. Every such sequence runs
+ * under this per-claim lock. It is not re-entrant: never call it for a key
+ * from inside a section already holding that key.
+ */
+const claimLocks = new Map<string, Promise<void>>();
+
+/** Long enough for a full recovery sequence (90s) plus request timeouts. */
+export const CLAIM_LOCK_WAIT_MS = 150_000;
+
+export class FiscalClaimBusyError extends Error {
+  readonly code = 'FISCAL_CLAIM_BUSY';
+  constructor(idempotencyKey: string) {
+    super(
+      `The invoice for docId ${idempotencyKey} is being sent to fiskalizimi right now. Try again in a minute.`,
+    );
+  }
+}
+
+export function withFiscalClaimLock<T>(
+  idempotencyKey: string,
+  fn: () => Promise<T>,
+  waitMs: number = CLAIM_LOCK_WAIT_MS,
+): Promise<T> {
+  const key = String(idempotencyKey || '');
+  const previous = claimLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => mine);
+  claimLocks.set(key, tail);
+  void tail.then(() => {
+    if (claimLocks.get(key) === tail) claimLocks.delete(key);
+  });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const acquired = new Promise<void>((resolve, reject) => {
+    void previous.then(() => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        release();
+        return;
+      }
+      resolve();
+    });
+    if (waitMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new FiscalClaimBusyError(key));
+      }, waitMs);
+    }
+  });
+
+  return acquired.then(async () => {
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  });
+}
+
+/** True while some sequence holds the lock for this claim. */
+export function isFiscalClaimLocked(idempotencyKey: string): boolean {
+  return claimLocks.has(String(idempotencyKey || ''));
+}
+
+/**
+ * A PENDING claim whose attempt can no longer be running: it was started by
+ * an earlier process, or it has outlived the longest a registration can
+ * take. Its invoice may or may not exist upstream.
+ */
+export function isDeadPendingClaim(
+  record: Pick<FiscalClaimRecord, 'state' | 'updatedAt' | 'createdAt'>,
+  now: number = Date.now(),
+): boolean {
+  if (record.state !== 'PENDING') return false;
+  const touched = Date.parse(record.updatedAt || record.createdAt);
+  if (!Number.isFinite(touched)) return true;
+  return touched < PROCESS_STARTED_AT || now - touched >= STALE_PENDING_MS;
 }
 
 export async function readFiscalClaim(
@@ -277,9 +404,7 @@ export async function claimFiscalRegistration(
   }
 
   if (existing.state === 'PENDING') {
-    const startedAt = Date.parse(existing.updatedAt || existing.createdAt);
-    const age = Number.isFinite(startedAt) ? Date.now() - startedAt : Infinity;
-    if (age < STALE_PENDING_MS) {
+    if (!isDeadPendingClaim(existing)) {
       return { outcome: 'in-flight' };
     }
     // Nothing settled this claim within the provider's whole budget, so the
@@ -388,13 +513,29 @@ export async function abandonUnsentFiscalClaim(
   idempotencyKey: string,
   reason: string,
 ): Promise<boolean> {
+  return withFiscalClaimLock(idempotencyKey, () =>
+    abandonUnsentFiscalClaimUnlocked(idempotencyKey, reason),
+  );
+}
+
+/**
+ * The body of {@link abandonUnsentFiscalClaim}, for callers that already
+ * hold the claim lock.
+ *
+ * Only DEFERRED and FAILED are provably unsent. A PENDING claim is either
+ * being sent right now or was interrupted mid-send, and in both cases the
+ * invoice may exist — marking it ABANDONED would hide a filed invoice for a
+ * cancelled sale. Those are left for {@link markDeadPendingUnknown} and the
+ * review queue instead.
+ */
+export async function abandonUnsentFiscalClaimUnlocked(
+  idempotencyKey: string,
+  reason: string,
+  options?: { replacedBy?: string },
+): Promise<boolean> {
   const existing = await readFiscalClaim(idempotencyKey);
   if (!existing) return false;
-  if (
-    existing.state === 'REGISTERED' ||
-    existing.state === 'CORRECTION_REQUIRED' ||
-    existing.state === 'CORRECTED'
-  ) {
+  if (existing.state !== 'DEFERRED' && existing.state !== 'FAILED') {
     return false;
   }
   await writeClaim(idempotencyKey, {
@@ -404,8 +545,103 @@ export async function abandonUnsentFiscalClaim(
     lastError: reason,
     draft: undefined,
     nextAttemptAt: undefined,
+    ...(options?.replacedBy ? { replacedBy: options.replacedBy } : {}),
   });
   return true;
+}
+
+/**
+ * Move an interrupted (dead) PENDING claim to UNKNOWN so it reaches the
+ * review queue. Returns true when it did. Caller must hold the claim lock.
+ */
+export async function markDeadPendingUnknownUnlocked(
+  idempotencyKey: string,
+  note?: string,
+): Promise<boolean> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing || !isDeadPendingClaim(existing)) return false;
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    state: 'UNKNOWN',
+    updatedAt: nowIso(),
+    lastError:
+      note ||
+      'Fiscalization was interrupted (the till closed or lost power mid-send); easyPos never confirmed whether the invoice was filed.',
+  });
+  return true;
+}
+
+/** Record extra context on a claim without changing its state. */
+export async function annotateFiscalClaimUnlocked(
+  idempotencyKey: string,
+  patch: Partial<Pick<FiscalClaimRecord, 'lastError' | 'orphanDetectedAt'>> & {
+    saleKey?: string;
+  },
+): Promise<void> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing) return;
+  const { saleKey, ...rest } = patch;
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    ...rest,
+    ...(saleKey ? { context: { ...(existing.context || {}), saleKey } } : {}),
+    updatedAt: nowIso(),
+  });
+}
+
+/** Write a brand-new claim (a restated invoice replacing an unsent one). */
+export async function createDeferredFiscalClaim(
+  idempotencyKey: string,
+  input: {
+    context: FiscalClaimRecord['context'];
+    draft: unknown;
+    reason: string;
+    /**
+     * When the sale happened. The 48-hour transmit window runs from the
+     * sale, not from when a correction restated its invoice.
+     */
+    createdAt?: string;
+  },
+): Promise<void> {
+  const at = nowIso();
+  await prisma.syncState.create({
+    data: {
+      key: fiscalClaimKey(idempotencyKey),
+      valueJson: {
+        state: 'DEFERRED',
+        attemptId: newAttemptId(),
+        attempts: 0,
+        createdAt: input.createdAt || at,
+        updatedAt: at,
+        context: input.context,
+        draft: input.draft,
+        nextAttemptAt: at,
+        lastError: input.reason,
+      } satisfies FiscalClaimRecord as any,
+    },
+  });
+}
+
+/** Every claim touched at or after `since`, parsed. */
+export async function listFiscalClaimsUpdatedSince(
+  since: Date,
+): Promise<Array<{ idempotencyKey: string; record: FiscalClaimRecord }>> {
+  const rows = await prisma.syncState
+    .findMany({
+      where: { key: { startsWith: KEY_PREFIX }, updatedAt: { gte: since } },
+    })
+    .catch(() => [] as any[]);
+  const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
+  for (const row of rows as any[]) {
+    const record = parseRecord(row?.valueJson);
+    if (record) {
+      out.push({
+        idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
+        record,
+      });
+    }
+  }
+  return out;
 }
 
 /** We cannot tell whether the invoice registered. Block automatic retries. */
@@ -529,6 +765,10 @@ export async function pruneFiscalClaims(options?: {
   const expired = (stale as any[])
     .filter((row) => {
       const record = parseRecord(row?.valueJson);
+      // A filed invoice nobody has matched to a sale is still owed a decision.
+      if (record?.orphanDetectedAt && record.state === 'REGISTERED') {
+        return false;
+      }
       return !record || !KEEP_FROM_PRUNE.has(record.state);
     })
     .map((row) => String(row.key));
@@ -665,7 +905,11 @@ export async function listFiscalClaimsNeedingReview(): Promise<
   const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
   for (const row of rows as any[]) {
     const record = parseRecord(row?.valueJson);
-    if (record && REVIEW_STATES.has(record.state)) {
+    if (
+      record &&
+      (REVIEW_STATES.has(record.state) ||
+        (record.state === 'REGISTERED' && record.orphanDetectedAt))
+    ) {
       out.push({
         idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
         record,

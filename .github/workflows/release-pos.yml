@@ -219,9 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.74"
-            echo "- Fixed: the till now saves its key in Windows or the Mac Keychain. Tills that kept asking for the passphrase on every start ask one last time after this update, then open by themselves."
-            echo "- Fixed: a new till can be encrypted again (it showed \"This computer cannot store the till key\")."
+            echo "### Changes in v0.2.75 (fiskalizimi)"
+            echo "- Fixed: a table can no longer be invoiced twice. If the till lost power after the invoice was sent, paying again reuses that invoice; if the bill changed, the payment is held and admins are told to check easyPos first."
+            echo "- Fixed: cancelling or correcting a sale taken while easyPos was offline now withdraws (or replaces) its waiting invoice, so a cancelled sale is never sent later."
+            echo "- Admins are now alerted when a table left open for 12 hours is cleared automatically, with the unpaid value that was never reported."
+            echo "- Switching fiskalizimi off or on is now recorded and alerted to admins, including how many sales were taken while it was off."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

@@ -19,7 +19,10 @@ import {
   settleFiscalClaimFailed,
   settleFiscalClaimRegistered,
   settleFiscalClaimUnknown,
+  withFiscalClaimLock,
+  FiscalClaimBusyError,
 } from './claims';
+import { sweepFiscalClaims } from './sitting';
 import {
   createEasyPosSale,
   fiscalOutcomeOf,
@@ -73,6 +76,8 @@ async function stampFiscalIdentifiersOnSale(
   const job = await prisma.printJob
     .findUnique({ where: { idempotencyKey } })
     .catch(() => null);
+  // `idempotencyKey` here is the sale's key (see the caller), which is the
+  // claim key unless a correction restated the invoice under a new docId.
   if (job) {
     const payload = (job as any).payloadJson || {};
     const meta = { ...(payload.meta || {}) };
@@ -182,76 +187,112 @@ export async function transmitDueDeferredInvoices(
       continue;
     }
 
-    let decision: Awaited<ReturnType<typeof claimFiscalRegistration>>;
+    // One claim at a time, under the lock a reversal also takes: a sale
+    // cancelled while it waits here is seen as ABANDONED below and never
+    // sent, and one cancelled while it is being sent waits for the outcome.
     try {
-      decision = await claimFiscalRegistration(idempotencyKey, record.context);
-    } catch {
-      continue;
-    }
-    if (decision.outcome !== 'proceed') continue;
-
-    const latest = await readFiscalClaim(idempotencyKey);
-    if (!latest || latest.state === 'ABANDONED') continue;
-
-    try {
-      const result = await createEasyPosSale(settings, draft as any);
-      await settleFiscalClaimRegistered(idempotencyKey, decision.attemptId, {
-        nslf: result.nslf || undefined,
-        nivf: result.nivf || undefined,
-        eic: result.eic || undefined,
-        link: result.link || undefined,
-        qrCode: result.qrCode || undefined,
-        status: result.status,
-      }).catch(() => undefined);
-      await stampFiscalIdentifiersOnSale(idempotencyKey, result).catch(
-        () => undefined,
-      );
-      registered += 1;
-    } catch (e: any) {
-      const message = String(e?.message || e);
-      if (fiscalOutcomeOf(e) === 'not-registered' && isFiscalRetryable(e)) {
-        const nextAttemptAt = new Date(
-          now + backoffDelayMs(Math.max(1, (latest.attempts || 1) + 1)),
-        ).toISOString();
-        await settleFiscalClaimDeferred(
-          idempotencyKey,
-          decision.attemptId,
-          message,
-          cloneJson(draft),
-          nextAttemptAt,
-        ).catch(() => undefined);
-        await noticeOutage(message);
-        continue;
-      }
-      if (fiscalOutcomeOf(e) === 'not-registered') {
-        await settleFiscalClaimFailed(
-          idempotencyKey,
-          decision.attemptId,
-          message,
-        ).catch(() => undefined);
-        await notifyAdminsAndActor({
-          message: `Deferred fiskalizimi is now refused${whereLabel(latest) ? ` on ${whereLabel(latest)}` : ''} · docId ${idempotencyKey}: ${message}`,
-          type: 'SECURITY',
-        }).catch(() => undefined);
-        continue;
-      }
-      await settleFiscalClaimUnknown(
+      const sent = await withFiscalClaimLock(
         idempotencyKey,
-        decision.attemptId,
-        message,
-      ).catch(() => undefined);
+        () => transmitOne(settings, idempotencyKey, record, draft, now),
+        1_000,
+      );
+      if (sent) registered += 1;
+    } catch (e) {
+      if (e instanceof FiscalClaimBusyError) continue;
+      console.warn(`[fiscal-defer] docId ${idempotencyKey} failed:`, e);
     }
   }
 
   return { attempted, registered };
 }
 
+async function transmitOne(
+  settings: SettingsDTO,
+  idempotencyKey: string,
+  record: Awaited<
+    ReturnType<typeof listFiscalClaimsDeferred>
+  >[number]['record'],
+  draft: unknown,
+  now: number,
+): Promise<boolean> {
+  const current = await readFiscalClaim(idempotencyKey);
+  if (!current || current.state !== 'DEFERRED') return false;
+
+  let decision: Awaited<ReturnType<typeof claimFiscalRegistration>>;
+  try {
+    decision = await claimFiscalRegistration(idempotencyKey, record.context);
+  } catch {
+    return false;
+  }
+  if (decision.outcome !== 'proceed') return false;
+
+  const latest = await readFiscalClaim(idempotencyKey);
+  if (!latest || latest.state === 'ABANDONED') return false;
+  const saleKey =
+    String(latest.context?.saleKey || '').trim() || idempotencyKey;
+
+  try {
+    const result = await createEasyPosSale(settings, draft as any);
+    await settleFiscalClaimRegistered(idempotencyKey, decision.attemptId, {
+      nslf: result.nslf || undefined,
+      nivf: result.nivf || undefined,
+      eic: result.eic || undefined,
+      link: result.link || undefined,
+      qrCode: result.qrCode || undefined,
+      status: result.status,
+    }).catch(() => undefined);
+    await stampFiscalIdentifiersOnSale(saleKey, result).catch(() => undefined);
+    return true;
+  } catch (e: any) {
+    const message = String(e?.message || e);
+    if (fiscalOutcomeOf(e) === 'not-registered' && isFiscalRetryable(e)) {
+      const nextAttemptAt = new Date(
+        now + backoffDelayMs(Math.max(1, (latest.attempts || 1) + 1)),
+      ).toISOString();
+      await settleFiscalClaimDeferred(
+        idempotencyKey,
+        decision.attemptId,
+        message,
+        cloneJson(draft),
+        nextAttemptAt,
+      ).catch(() => undefined);
+      await noticeOutage(message);
+      return false;
+    }
+    if (fiscalOutcomeOf(e) === 'not-registered') {
+      await settleFiscalClaimFailed(
+        idempotencyKey,
+        decision.attemptId,
+        message,
+      ).catch(() => undefined);
+      await notifyAdminsAndActor({
+        message: `Deferred fiskalizimi is now refused${whereLabel(latest) ? ` on ${whereLabel(latest)}` : ''} · docId ${idempotencyKey}: ${message}`,
+        type: 'SECURITY',
+      }).catch(() => undefined);
+      return false;
+    }
+    await settleFiscalClaimUnknown(
+      idempotencyKey,
+      decision.attemptId,
+      message,
+    ).catch(() => undefined);
+    return false;
+  }
+}
+
 export function startFiscalDeferLoop(): void {
   if (timer) return;
+  let firstRun = true;
   const runOnce = async () => {
     if (running) return;
     running = true;
     try {
+      // Interrupted sends and invoices with no saved sale still need a
+      // human after fiscalization is switched off, so this runs regardless.
+      await sweepFiscalClaims({ force: firstRun }).catch((e) =>
+        console.warn('[fiscal-sweep] failed:', e),
+      );
+      firstRun = false;
       const { coreServices } = await import('../core');
       const settings = (await coreServices
         .readSettings()

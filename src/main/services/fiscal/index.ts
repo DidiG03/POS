@@ -30,7 +30,12 @@ import {
   settleFiscalClaimDeferred,
   settleFiscalClaimRegistered,
   settleFiscalClaimUnknown,
-  abandonUnsentFiscalClaim,
+  abandonUnsentFiscalClaimUnlocked,
+  isDeadPendingClaim,
+  markDeadPendingUnknownUnlocked,
+  readFiscalClaim,
+  withFiscalClaimLock,
+  FiscalClaimBusyError,
   type StoredFiscalResult,
 } from './claims';
 
@@ -49,6 +54,80 @@ export {
 
 export function isFiscalEnabled(settings: SettingsDTO): boolean {
   return (settings as any)?.fiscal?.enabled === true;
+}
+
+export type SittingGateResult =
+  | { kind: 'proceed'; adoptDocId?: string }
+  | {
+      kind: 'blocked';
+      code: 'FISCAL_SITTING_UNRESOLVED' | 'FISCAL_SITTING_BUSY';
+      message: string;
+      /** False: hold the payment for an admin. True: waiting resolves it. */
+      retryable: boolean;
+    };
+
+/**
+ * The per-sitting duplicate-invoice check, shared by the till (IPC) and the
+ * phones (LAN) so the two cannot drift. Call it inside the table's payment
+ * lock, after the table-open check, for a PAYMENT that is not a reprint.
+ *
+ * If the check itself cannot run, the payment is held (retryable) rather
+ * than filed unchecked — that is the one situation it exists to prevent.
+ */
+export async function sittingFiscalGate(input: {
+  settings: SettingsDTO;
+  area: string;
+  tableLabel: string;
+  meta: any;
+  idempotencyKey: string;
+}): Promise<SittingGateResult> {
+  if (!isFiscalEnabled(input.settings)) return { kind: 'proceed' };
+  const key = String(input.idempotencyKey || '').trim();
+  // No key: fiscalizePaymentOnce refuses the payment on its own.
+  if (!key) return { kind: 'proceed' };
+  try {
+    const { checkSittingBeforePayment, adoptFiscalInvoice } = await import(
+      './sitting'
+    );
+    const check = await checkSittingBeforePayment({
+      area: input.area,
+      tableLabel: input.tableLabel,
+      total: Number(input.meta?.totalAfter),
+      method: mapPaymentMethod(
+        String(input.meta?.method || input.meta?.paymentMethod || 'CASH'),
+      ),
+      idempotencyKey: key,
+    });
+    if (check.kind === 'blocked') {
+      return {
+        kind: 'blocked',
+        code: check.code,
+        message: check.message,
+        retryable: check.retryable,
+      };
+    }
+    if (check.kind === 'adopt') {
+      await adoptFiscalInvoice({
+        docId: check.docId,
+        saleKey: key,
+        area: input.area,
+        tableLabel: input.tableLabel,
+        nivf: check.nivf,
+        actorUserId: Number(input.meta?.userId || 0) || undefined,
+      });
+      return { kind: 'proceed', adoptDocId: check.docId };
+    }
+    return { kind: 'proceed' };
+  } catch (e: any) {
+    return {
+      kind: 'blocked',
+      code: 'FISCAL_SITTING_BUSY',
+      message: `Could not check this table's earlier invoices, so the payment was not sent: ${String(
+        e?.message || e,
+      )}. Try again.`,
+      retryable: true,
+    };
+  }
 }
 
 export type FiscalizeOutcome =
@@ -220,7 +299,16 @@ async function ensureCashBalanceDeclared(
 export async function fiscalizePaymentOnce(
   payload: TicketPrintPayload,
   settings: SettingsDTO,
-  options?: { idempotencyKey?: string },
+  options?: {
+    idempotencyKey?: string;
+    /**
+     * File under this existing docId instead of the one derived from the
+     * idempotency key. Set only when `checkSittingBeforePayment` found an
+     * invoice for this exact sale that was filed but never saved: the claim
+     * is REGISTERED, so this replays its identifiers and files nothing.
+     */
+    adoptDocId?: string;
+  },
 ): Promise<FiscalizeOutcome> {
   const kind = String(payload.meta?.kind || '').toUpperCase();
   if (kind !== 'PAYMENT' || !isFiscalEnabled(settings)) {
@@ -255,7 +343,9 @@ export async function fiscalizePaymentOnce(
         'This payment arrived without an idempotency key, so a repeat of it could not be told apart from a new sale. Fiskalizimi was not attempted rather than risk filing the invoice twice — the client must send an idempotencyKey generated once per payment.',
       );
     }
-    docId = docIdFromKey(idempotencyKey, 'invoice');
+    docId = options?.adoptDocId
+      ? String(options.adoptDocId).trim()
+      : docIdFromKey(idempotencyKey, 'invoice');
   } catch (e: any) {
     return { kind: 'rejected', message: String(e?.message || e) };
   }
@@ -319,6 +409,47 @@ export async function fiscalizePaymentOnce(
    */
   Object.freeze(draft);
 
+  // Claim, send and settle as one step per docId: the deferred-transmit loop
+  // and a reversal withdrawing an unsent invoice take the same lock, so none
+  // of them can act on a claim another is halfway through.
+  try {
+    return await withFiscalClaimLock(docId, () =>
+      registerUnderClaim({
+        docId,
+        draft,
+        settings,
+        payload,
+        meta,
+        area,
+        tableLabel,
+        saleKey: idempotencyKey,
+        review,
+      }),
+    );
+  } catch (e: any) {
+    if (e instanceof FiscalClaimBusyError) {
+      return { kind: 'retryable', message: e.message };
+    }
+    throw e;
+  }
+}
+
+async function registerUnderClaim(input: {
+  docId: string;
+  draft: ReturnType<typeof buildEasyPosInvoiceDraft>;
+  settings: SettingsDTO;
+  payload: TicketPrintPayload;
+  meta: any;
+  area?: string;
+  tableLabel?: string;
+  saleKey: string;
+  review: (
+    message: string,
+    alreadyReported?: boolean,
+  ) => Promise<FiscalizeOutcome>;
+}): Promise<FiscalizeOutcome> {
+  const { docId, draft, settings, payload, meta, area, tableLabel, review } =
+    input;
   let decision: Awaited<ReturnType<typeof claimFiscalRegistration>>;
   try {
     decision = await claimFiscalRegistration(docId, {
@@ -327,6 +458,10 @@ export async function fiscalizePaymentOnce(
       total: Number.isFinite(Number(meta.totalAfter))
         ? Number(meta.totalAfter)
         : undefined,
+      saleKey: input.saleKey,
+      method: mapPaymentMethod(
+        String(meta.method || meta.paymentMethod || 'CASH'),
+      ),
     });
   } catch (e: any) {
     // No durable claim means nothing would stop a retry from filing a
@@ -464,10 +599,48 @@ export async function flagVoidAfterFiscalization(input: {
       since,
     });
     if (unsent) {
-      return await abandonUnsentFiscalClaim(
-        unsent.idempotencyKey,
-        input.reason,
-      );
+      const key = unsent.idempotencyKey;
+      // Decided under the claim lock: the deferred loop may be sending this
+      // very invoice, and "unsent" can only be trusted while nothing can
+      // send it.
+      const outcome = await withFiscalClaimLock(key, async () => {
+        if (await abandonUnsentFiscalClaimUnlocked(key, input.reason)) {
+          return 'abandoned' as const;
+        }
+        const latest = await readFiscalClaim(key);
+        if (latest && isDeadPendingClaim(latest)) {
+          await markDeadPendingUnknownUnlocked(
+            key,
+            `The ticket was voided (${input.reason}) while its invoice was mid-send; it is not known whether that invoice was filed. If easyPos has it, cancel it there.`,
+          );
+          return 'unknown' as const;
+        }
+        if (latest?.state === 'REGISTERED') return 'registered' as const;
+        return 'other' as const;
+      });
+      if (outcome === 'abandoned') return true;
+      if (outcome === 'unknown') {
+        await notifyFiscalReviewNeeded({
+          idempotencyKey: key,
+          area: input.area,
+          tableLabel: input.tableLabel,
+          actorUserId: input.actorUserId,
+          message: `A ticket was voided while its invoice was being sent (${input.reason}).`,
+        }).catch(() => undefined);
+        return true;
+      }
+      if (outcome === 'registered') {
+        // It went out while the void waited for the lock: now it needs a
+        // cancellation like any other filed invoice.
+        const latest = await readFiscalClaim(key);
+        return await flagFiscalCorrectionRequired({
+          idempotencyKey: key,
+          reason: input.reason,
+          actorUserId: input.actorUserId,
+          context: latest?.context,
+          result: latest?.result,
+        });
+      }
     }
     const found = await findRegisteredClaimForTable({
       area: input.area,

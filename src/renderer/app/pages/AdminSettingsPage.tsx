@@ -1944,7 +1944,9 @@ function FiscalReviewPanel() {
                     ? t('fiscal.reviewKindCorrection')
                     : row.kind === 'deferred'
                       ? t('fiscal.reviewKindDeferred')
-                      : t('fiscal.reviewKindUnknown')}
+                      : row.kind === 'unrecorded'
+                        ? t('fiscal.reviewKindUnrecorded')
+                        : t('fiscal.reviewKindUnknown')}
                 </span>
                 {row.total != null ? (
                   <span>{Math.round(Number(row.total))}</span>
@@ -1992,6 +1994,24 @@ function FiscalReviewPanel() {
                       </div>
                     );
                   })()}
+                </div>
+              ) : row.kind === 'unrecorded' ? (
+                <div className="mt-2 flex flex-col gap-2 border-t border-gray-700 pt-2">
+                  <div className="opacity-80">
+                    {t('fiscal.reviewUnrecordedHelp')}
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50"
+                      onClick={() =>
+                        void resolve(row.idempotencyKey, 'corrected')
+                      }
+                    >
+                      {t('fiscal.reviewConfirmCancelled')}
+                    </button>
+                  </div>
                 </div>
               ) : row.kind === 'correction-required' ? (
                 <div className="mt-2 flex flex-col gap-2 border-t border-gray-700 pt-2">

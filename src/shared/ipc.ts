@@ -1727,8 +1727,11 @@ export interface FiscalReviewDTO {
    * `unknown-outcome`: we never learned whether the invoice was filed.
    * `correction-required`: it was filed, then the ticket was voided.
    * `deferred`: sale taken offline; host is still transmitting (48h window).
+   * `unrecorded`: filed with the tax service, but the till never saved the
+   *   sale (it closed mid-payment). A payment of the same amount on that
+   *   table reuses it; otherwise it must be cancelled in easyPos.
    */
-  kind: 'unknown-outcome' | 'correction-required' | 'deferred';
+  kind: 'unknown-outcome' | 'correction-required' | 'deferred' | 'unrecorded';
   area: string | null;
   tableLabel: string | null;
   total: number | null;

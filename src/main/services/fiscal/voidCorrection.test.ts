@@ -194,9 +194,11 @@ describe('flagVoidAfterFiscalization', () => {
   it('never lets a bookkeeping failure block the void', async () => {
     await fiscalizeSale();
     const { prisma } = await import('@db/client');
-    vi.mocked(prisma.syncState.findMany).mockRejectedValue(
-      new Error('disk full'),
-    );
+    // Both lookups fail — and only these two, so later tests get the
+    // working store back.
+    vi.mocked(prisma.syncState.findMany)
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockRejectedValueOnce(new Error('disk full'));
 
     await expect(
       flagVoidAfterFiscalization({
@@ -205,5 +207,63 @@ describe('flagVoidAfterFiscalization', () => {
         reason: 'voided',
       }),
     ).resolves.toBe(false);
+  });
+});
+
+describe('flagVoidAfterFiscalization — invoices not yet sent', () => {
+  it('withdraws a deferred invoice instead of letting it go out', async () => {
+    openAt.value = new Date(Date.now() - 60_000).toISOString();
+    const c = await claimFiscalRegistration(KEY, {
+      area: 'Bar',
+      tableLabel: '4',
+      total: 300,
+    });
+    if (c.outcome !== 'proceed') throw new Error('expected proceed');
+    const { settleFiscalClaimDeferred } = await import('./claims');
+    await settleFiscalClaimDeferred(
+      KEY,
+      c.attemptId,
+      'offline',
+      { docId: KEY },
+      new Date().toISOString(),
+    );
+    expect(
+      await flagVoidAfterFiscalization({
+        area: 'Bar',
+        tableLabel: '4',
+        reason: 'voided',
+      }),
+    ).toBe(true);
+    expect((await readFiscalClaim(KEY))?.state).toBe('ABANDONED');
+  });
+
+  it('sends an invoice interrupted mid-send to review, never withdraws it', async () => {
+    openAt.value = new Date(Date.now() - 60 * 60_000).toISOString();
+    await claimFiscalRegistration(KEY, {
+      area: 'Bar',
+      tableLabel: '4',
+      total: 300,
+    });
+    // Started by an earlier run of the till: it cannot still be sending.
+    const { PROCESS_STARTED_AT } = await import('./claims');
+    const full = fiscalClaimKey(KEY);
+    const row = store.get(full)!;
+    const before = new Date(PROCESS_STARTED_AT - 1_000).toISOString();
+    store.set(full, {
+      ...row,
+      valueJson: { ...row.valueJson, createdAt: before, updatedAt: before },
+    });
+
+    expect(
+      await flagVoidAfterFiscalization({
+        area: 'Bar',
+        tableLabel: '4',
+        reason: 'voided',
+      }),
+    ).toBe(true);
+    const claim = await readFiscalClaim(KEY);
+    expect(claim?.state).toBe('UNKNOWN');
+    expect(claim?.lastError).toMatch(/voided/);
+    expect(notifications.some((n) => n.message.includes(KEY))).toBe(true);
   });
 });
