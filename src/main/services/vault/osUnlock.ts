@@ -6,7 +6,7 @@
  * against a thief who can boot the stolen PC as the same user.
  */
 
-import { createRequire } from 'node:module';
+import * as electron from 'electron';
 import { dekToEncryptionKey } from './crypto';
 
 export type OsVaultCrypto = {
@@ -15,24 +15,37 @@ export type OsVaultCrypto = {
   decrypt(blob: string): string | null;
 };
 
-const requireFromHere = createRequire(import.meta.url);
-
 let injected: OsVaultCrypto | null = null;
 
 export function setOsVaultCryptoForTests(crypto: OsVaultCrypto | null): void {
   injected = crypto;
 }
 
+type SafeStorageLike = {
+  isEncryptionAvailable?: () => boolean;
+  encryptString?: (plain: string) => Buffer;
+  decryptString?: (blob: Buffer) => string;
+};
+
+/**
+ * Electron's `safeStorage`, through the same ESM import the rest of the main
+ * process uses. It used to come from `createRequire(import.meta.url)`, which
+ * in the packaged app did not hand back Electron's module: every till then
+ * reported "cannot store the till key", kept asking for the passphrase on
+ * each start, and a fresh till could not be encrypted at all. Tests inject a
+ * fake instead, which is why they never saw it.
+ */
+function electronSafeStorage(): SafeStorageLike | undefined {
+  const mod = electron as unknown as {
+    safeStorage?: SafeStorageLike;
+    default?: { safeStorage?: SafeStorageLike };
+  };
+  return mod?.safeStorage ?? mod?.default?.safeStorage;
+}
+
 function electronCrypto(): OsVaultCrypto | null {
   try {
-    const electron = requireFromHere('electron') as {
-      safeStorage?: {
-        isEncryptionAvailable?: () => boolean;
-        encryptString?: (plain: string) => Buffer;
-        decryptString?: (blob: Buffer) => string;
-      };
-    };
-    const safe = electron?.safeStorage;
+    const safe = electronSafeStorage();
     if (
       !safe?.isEncryptionAvailable ||
       !safe.encryptString ||
