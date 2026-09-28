@@ -35,12 +35,14 @@ import {
   withFiscalClaimLock,
   type FiscalClaimRecord,
 } from './fiscal/claims';
-import { buildEasyPosInvoiceDraft } from './fiscal/mapInvoice';
+import {
+  buildEasyPosInvoiceDraft,
+  buildRestatedInvoiceLines,
+} from './fiscal/mapInvoice';
 import { cancelInvoice } from './fiscal/cancel';
 import { registerCorrectiveInvoice } from './fiscal/corrective';
 import { isFiscalEnabled } from './fiscal';
 import { docIdFromKey, newDocId } from './fiscal/docId';
-import { assertVatCode } from './fiscal/vatConfig';
 import { mapPaymentMethod } from './fiscal/paymentMethod';
 import { roundMoney } from '@shared/pricing';
 import {
@@ -382,6 +384,9 @@ async function fileCorrective(input: {
     vatRate: number;
   }>;
   nextTotal: number;
+  /** The sale's service charge and discount, carried over whole. */
+  serviceChargeAmount: number;
+  discountAmount: number;
   method: string;
 }): Promise<FiledCancellation> {
   const key = CORRECTIVE_DOC_KEY(input.orderId, input.correctionId);
@@ -392,41 +397,34 @@ async function fileCorrective(input: {
   }
 
   try {
-    const soldIn =
-      String(input.settings?.fiscal?.defaultSoldIn || 'XPP').trim() || 'XPP';
-    const articles = input.remaining
-      .filter((it) => Number.isFinite(it.qty) && it.qty > 0)
-      .map((it) => ({
-        articleId:
-          String(it.sku || '').trim() || `ITEM-${it.name.slice(0, 24)}`,
-        vatCode: assertVatCode(input.settings, {
-          vatRate: it.vatRate,
-          articleName: it.name,
-        }),
-        name: String(it.name || 'Item').slice(0, 100),
-        soldIn,
-        price: Number(it.unitPrice),
-        units: Number(it.qty),
-      }));
-    if (articles.length === 0) {
+    const remaining = input.remaining.filter(
+      (it) => Number.isFinite(it.qty) && it.qty > 0,
+    );
+    if (remaining.length === 0) {
       return {
         state: 'NOT_FILED',
         docId,
         detail: 'Corrective invoice has no remaining lines to file.',
       };
     }
-    const lineSum = roundMoney(
-      articles.reduce((sum, a) => sum + a.price * a.units, 0),
-    );
+    // Same article IDs, service charge line and discount as the original
+    // invoice, balanced to the restated total — easyPos refuses a document
+    // whose lines and payment disagree.
     const nextTotal = roundMoney(input.nextTotal);
-    const rebateGap = roundMoney(lineSum - nextTotal);
-    const invoiceRebate =
-      rebateGap >= 0.01 ? { inValue: rebateGap } : undefined;
+    const { articles, invoiceRebate, amount } = buildRestatedInvoiceLines(
+      {
+        items: remaining,
+        serviceChargeAmount: input.serviceChargeAmount,
+        discountAmount: input.discountAmount,
+        total: nextTotal,
+      },
+      input.settings,
+    );
     const method = mapPaymentMethod(input.method || 'CASH');
     const outcome = await registerCorrectiveInvoice(input.settings, {
       docId,
       articles,
-      payment: [{ type: method as any, amount: nextTotal }],
+      payment: [{ type: method as any, amount }],
       invoiceRebate,
       original: {
         iic: input.iic,
@@ -573,6 +571,9 @@ async function reverseUnsentInvoice(input: {
     vatRate: number;
   }>;
   nextTotal: number;
+  /** The sale's service charge and discount, carried over whole. */
+  serviceChargeAmount: number;
+  discountAmount: number;
   method: string;
 }): Promise<UnsentInvoiceOutcome | null> {
   return withFiscalClaimLock(input.claimKey, async () => {
@@ -643,6 +644,16 @@ async function reverseUnsentInvoice(input: {
                 kind: 'PAYMENT',
                 method: input.method,
                 totalAfter: roundMoney(input.nextTotal),
+                // Named on the restated invoice as they were on the one
+                // it replaces, not folded into a balancing line.
+                serviceChargeAmount: roundMoney(input.serviceChargeAmount),
+                discountAmount: Math.min(
+                  roundMoney(input.discountAmount),
+                  roundMoney(
+                    remaining.reduce((t, it) => t + it.qty * it.unitPrice, 0) +
+                      input.serviceChargeAmount,
+                  ),
+                ),
               },
             } as any,
             input.settings,
@@ -817,6 +828,8 @@ export async function applySaleCorrection(input: {
               vatRate: num(it.vatRate),
             })),
           nextTotal: plan.nextTotal,
+          serviceChargeAmount: num((order as any).serviceChargeAmount),
+          discountAmount: num((order as any).discountAmount),
           method: String(payment?.method || 'CASH'),
         });
       } catch (e: any) {
@@ -885,6 +898,8 @@ export async function applySaleCorrection(input: {
         issueDateTime: iso(payment?.paidAt) || undefined,
         remaining,
         nextTotal: plan.nextTotal,
+        serviceChargeAmount: num((order as any).serviceChargeAmount),
+        discountAmount: num((order as any).discountAmount),
         method: String(payment?.method || 'CASH'),
       });
     }

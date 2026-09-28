@@ -219,10 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.76 (fiskalizimi)"
-            echo "- Every payment is now priced from the till's own menu. If a phone sends a wrong price or VAT rate (an old app version or tampering), the receipt and the invoice sent to the tax office use the menu price, and admins are alerted."
-            echo "- Tables that ordered before an admin changed a menu price still pay the price they were shown."
-            echo "- Lines with a zero or negative quantity are removed from the payment and reported."
+            echo "### Changes in v0.2.77 (fiskalizimi)"
+            echo "- Fixed: corrective invoices for bills with a service charge were rejected by easyPos (the service charge was left out, so the lines did not add up to the amount paid). They now carry the service charge and discount exactly like the original invoice."
+            echo "- Corrective invoices now use the same product codes as the original invoice, including the fallback code set in Admin > Fiskalizimi."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

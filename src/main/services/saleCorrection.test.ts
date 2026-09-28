@@ -438,6 +438,44 @@ describe('applySaleCorrection — corrective', () => {
   });
 });
 
+describe('applySaleCorrection — corrective with a service charge', () => {
+  it('files lines that add up to what it says was paid', async () => {
+    // 1000 + 500 plus a 150 service charge. easyPos refused the old
+    // corrective: its lines came to 1000 while its payment said 1150.
+    seedSale();
+    Object.assign(db.orders.get(1), { total: 1650, serviceChargeAmount: 150 });
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+    } as any);
+    registerCorrectiveInvoice.mockResolvedValueOnce({
+      kind: 'complete',
+      docId: 'corr-sc',
+      identifiers: { fic: 'NIVF-SC' },
+    } as never);
+
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee charged twice',
+    });
+
+    const sent = (registerCorrectiveInvoice.mock.calls as any)[0][1] as {
+      articles: Array<{ name: string; price: number; units: number }>;
+      payment: Array<{ amount: number }>;
+      invoiceRebate?: { inValue?: number };
+    };
+    expect(sent.articles.map((a) => a.name)).toEqual([
+      'Tavë kosi',
+      'Service charge',
+    ]);
+    const lines = sent.articles.reduce((t, a) => t + a.price * a.units, 0);
+    expect(lines - (sent.invoiceRebate?.inValue ?? 0)).toBe(1150);
+    expect(sent.payment[0].amount).toBe(1150);
+  });
+});
+
 describe('applySaleCorrection — guards', () => {
   it('refuses a sale already reversed', async () => {
     seedSale({ status: 'VOID' });

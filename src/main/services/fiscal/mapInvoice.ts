@@ -283,6 +283,70 @@ function ensureDocId(options?: { docId?: string }): string {
   return assertValidDocId(existing);
 }
 
+/**
+ * The lines of a restated sale — a corrective invoice, or a queued invoice
+ * replaced after an admin struck some of its lines.
+ *
+ * Built exactly like the original invoice (same article IDs, service charge
+ * line, discount rebate) and reconciled to the amount the sale now totals,
+ * because easyPos rejects any document whose lines and payment differ. The
+ * restated total keeps the original service charge and discount — striking
+ * a line takes only that line's gross off — so they are carried over whole,
+ * the discount capped at what is left to discount.
+ */
+export function buildRestatedInvoiceLines(
+  input: {
+    items: Array<{
+      sku?: string;
+      name: string;
+      qty: number;
+      unitPrice: number;
+      vatRate: number;
+    }>;
+    serviceChargeAmount?: number | null;
+    discountAmount?: number | null;
+    total: number;
+  },
+  settings: SettingsDTO,
+  options?: { onAdjustment?: (info: DraftAdjustment) => void },
+): {
+  articles: EasyPosInvoiceDraft['articles'];
+  invoiceRebate?: Rebate;
+  amount: number;
+} {
+  const positive = (v: unknown) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? roundMoney(n) : 0;
+  };
+  const serviceChargeAmount = positive(input.serviceChargeAmount);
+  const payload = {
+    items: input.items,
+    meta: { serviceChargeAmount },
+  } as unknown as TicketPrintPayload;
+  let articles = buildArticles(payload, settings);
+  if (articles.length === 0) {
+    throw new Error('Cannot fiscalize an empty ticket.');
+  }
+  const gross = invoiceTotalOf(articles);
+  const discount = Math.min(positive(input.discountAmount), gross);
+  let invoiceRebate: Rebate | undefined =
+    discount > 0 ? { inValue: discount } : undefined;
+  const reconciled = reconcileToChargedTotal(
+    articles,
+    invoiceRebate,
+    roundMoney(Math.max(0, Number(input.total) || 0)),
+    settings,
+    options?.onAdjustment,
+  );
+  articles = reconciled.articles;
+  invoiceRebate = reconciled.invoiceRebate;
+  return {
+    articles,
+    ...(invoiceRebate ? { invoiceRebate } : {}),
+    amount: invoiceTotalOf(articles, invoiceRebate),
+  };
+}
+
 export function buildEasyPosCloudInvoiceDraft(
   payload: TicketPrintPayload,
   settings: SettingsDTO,

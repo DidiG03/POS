@@ -9,7 +9,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SettingsDTO } from '@shared/ipc';
 import { roundMoney } from '@shared/pricing';
-import { buildEasyPosCloudInvoiceDraft } from './mapInvoice';
+import {
+  buildEasyPosCloudInvoiceDraft,
+  buildRestatedInvoiceLines,
+} from './mapInvoice';
 
 const settings = {
   currency: 'ALL',
@@ -140,5 +143,121 @@ describe('article IDs', () => {
     );
     expect(draft.articles[0].articleId).toBe('ESP');
     expect(draft.operatorCode).toBe('gh537ez280');
+  });
+});
+
+describe('buildRestatedInvoiceLines', () => {
+  const restate = (
+    input: Parameters<typeof buildRestatedInvoiceLines>[0],
+    s: SettingsDTO = settings,
+  ) => {
+    const onAdjustment = vi.fn();
+    const out = buildRestatedInvoiceLines(input, s, { onAdjustment });
+    return { ...out, onAdjustment };
+  };
+
+  it('keeps the service charge a corrective invoice used to leave out', () => {
+    // 1000 + 500 with a 150 service charge was 1650; the 500 is struck.
+    const r = restate({
+      items: [
+        {
+          sku: 'TAVE',
+          name: 'Tavë kosi',
+          qty: 2,
+          unitPrice: 500,
+          vatRate: 0.2,
+        },
+      ],
+      serviceChargeAmount: 150,
+      total: 1150,
+    });
+    expect(r.articles.map((a) => [a.name, a.price * a.units])).toEqual([
+      ['Tavë kosi', 1000],
+      ['Service charge', 150],
+    ]);
+    expect(r.amount).toBe(1150);
+    expect(r.invoiceRebate).toBeUndefined();
+    expect(r.onAdjustment).not.toHaveBeenCalled();
+  });
+
+  it('carries the discount over as the same rebate', () => {
+    const r = restate({
+      items: [
+        {
+          sku: 'TAVE',
+          name: 'Tavë kosi',
+          qty: 2,
+          unitPrice: 500,
+          vatRate: 0.2,
+        },
+      ],
+      discountAmount: 150,
+      total: 850,
+    });
+    expect(r.invoiceRebate).toEqual({ inValue: 150 });
+    expect(r.amount).toBe(850);
+    expect(r.onAdjustment).not.toHaveBeenCalled();
+  });
+
+  it('never lets the discount exceed what is left on the invoice', () => {
+    const r = restate({
+      items: [
+        { sku: 'KAFE', name: 'Kafe', qty: 1, unitPrice: 500, vatRate: 0.2 },
+      ],
+      discountAmount: 1200,
+      total: 0,
+    });
+    expect(r.amount).toBe(0);
+    expect(r.articles.every((a) => a.price >= 0)).toBe(true);
+  });
+
+  it('always balances the lines against the restated total', () => {
+    // An order saved before its service charge was recorded.
+    const r = restate({
+      items: [
+        {
+          sku: 'TAVE',
+          name: 'Tavë kosi',
+          qty: 2,
+          unitPrice: 500,
+          vatRate: 0.2,
+        },
+      ],
+      total: 1150,
+    });
+    expect(r.amount).toBe(1150);
+    expect(r.onAdjustment).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the same article ids as the original invoice', () => {
+    const withFallback = {
+      ...settings,
+      fiscal: {
+        ...(settings as any).fiscal,
+        cloudFallbackArticleId: 'PROD001',
+      },
+    } as unknown as SettingsDTO;
+    const r = restate(
+      {
+        items: [
+          {
+            sku: 'TAVE',
+            name: 'Tavë kosi',
+            qty: 1,
+            unitPrice: 500,
+            vatRate: 0.2,
+          },
+          { sku: '', name: 'Pa kod', qty: 1, unitPrice: 100, vatRate: 0.2 },
+        ],
+        serviceChargeAmount: 60,
+        total: 660,
+      },
+      withFallback,
+    );
+    expect(r.articles.map((a) => a.articleId)).toEqual([
+      'TAVE',
+      'PROD001',
+      'PROD001',
+    ]);
   });
 });

@@ -265,6 +265,19 @@ describe('reversing a sale whose invoice is still waiting to be sent', () => {
     ]);
   });
 
+  it('names the service charge on the replacement invoice', async () => {
+    seedDeferredSale();
+    Object.assign(db.orders.get(1), { total: 1650, serviceChargeAmount: 150 });
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee returned',
+    });
+    const meta = (buildDraft.mock.calls as any).at(-1)[0].meta;
+    expect(meta).toMatchObject({ totalAfter: 1150, serviceChargeAmount: 150 });
+  });
+
   it('follows the replacement on a second correction', async () => {
     seedDeferredSale();
     await applySaleCorrection({
