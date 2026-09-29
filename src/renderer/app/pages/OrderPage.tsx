@@ -1345,6 +1345,9 @@ export default function OrderPage() {
       setPaySeatId(null);
     }
     setShowPayment(true);
+    // Let the host open its fiskalizimi connection while the tender is
+    // entered. Fire-and-forget: it can only make the payment faster.
+    void window.api.tickets.preparePayment?.()?.catch(() => undefined);
   }, [
     serviceChargeCfg.enabled,
     serviceChargeCfg.mode,

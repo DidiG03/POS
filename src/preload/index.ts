@@ -240,6 +240,7 @@ const api: Api = {
     listPaidTables: (input: { dateIso: string }) =>
       ipcRenderer.invoke('tickets:listPaidTables', input),
     print: (payload: any) => ipcRenderer.invoke('tickets:print', payload),
+    preparePayment: () => ipcRenderer.invoke('tickets:preparePayment'),
   },
   print: {
     listRetries: () => ipcRenderer.invoke('print:listRetries'),

@@ -175,6 +175,7 @@ import {
   testFiscalConnection,
   getFiscalTokenHint,
   testMinimalCloudInvoice,
+  warmFiscalConnection,
 } from './services/fiscal';
 import {
   startFiscalDeferLoop,
@@ -2661,7 +2662,7 @@ ipcHandle('billing:getStatus', async () => {
 });
 
 ipcHandle('billing:getStatusLive', async () => {
-  return licenseToBillingDto(await getLicenseStatus());
+  return licenseToBillingDto(await getLicenseStatus({ live: true }));
 });
 
 ipcHandle('billing:createCheckoutSession', async () => {
@@ -2736,6 +2737,16 @@ ipcHandle('license:createPortalSession', async () => {
   const url = await openStripeHostedUrl(r.url);
   if (!url) return { error: 'Could not open billing portal' };
   return { url };
+});
+
+// The payment screen opened: open the easyPos connection while the waiter
+// enters the tender, so the invoice does not wait on a TLS handshake.
+ipcHandle('tickets:preparePayment', async () => {
+  void coreServices
+    .readSettings()
+    .then((settings) => warmFiscalConnection(settings as any))
+    .catch(() => undefined);
+  return true;
 });
 
 // Print ticket over ESC/POS

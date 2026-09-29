@@ -34,6 +34,7 @@ import {
   getFiscalTokenHint,
   testFiscalConnection,
   testMinimalCloudInvoice,
+  warmFiscalConnection,
 } from './services/fiscal';
 import {
   notifyAdminsAndActor,
@@ -2470,6 +2471,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           });
         }
         return send(res, 200, result, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/tickets/prepare-payment') {
+        // A phone opened the payment screen. See `tickets:preparePayment`.
+        void coreServices
+          .readSettings()
+          .then((settings) => warmFiscalConnection(settings as any))
+          .catch(() => undefined);
+        return send(res, 200, { ok: true }, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/print/ticket') {
         const body = await parseJson(req);

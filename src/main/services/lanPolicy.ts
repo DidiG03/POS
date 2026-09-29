@@ -143,6 +143,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /print/list': { allow: ADMIN },
   'GET /print/serial-ports': { allow: ADMIN },
   'POST /print/ticket': { allow: POS },
+  'POST /tickets/prepare-payment': { allow: POS },
 
   'GET /network/ips': { allow: ADMIN },
   'GET /backups': { allow: ADMIN },

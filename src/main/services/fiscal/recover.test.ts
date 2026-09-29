@@ -11,6 +11,13 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The pooled easyPos transport, routed through the fetch these tests stub.
+vi.mock('./transport', () => ({
+  easyPosFetch: (url: string, init: unknown) =>
+    (globalThis as any).fetch(url, init),
+  warmEasyPosConnection: async () => undefined,
+}));
 import type { SettingsDTO } from '@shared/ipc';
 import { __resetDocIdLocks, FISCAL_ROUTES } from './client';
 import { registerInvoiceWithRecovery } from './recover';

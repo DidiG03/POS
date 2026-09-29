@@ -24,6 +24,8 @@ import { prisma } from '@db/client';
 import { notifyAdminsAndActor } from '../adminAlerts';
 
 const KEY_PREFIX = 'fiscal:claim:';
+/** First key past every claim — `;` sorts right after `:`. */
+const KEY_END = 'fiscal:claim;';
 
 /**
  * How long a PENDING claim can sit before we stop believing another
@@ -324,6 +326,7 @@ async function writeClaim(
   record: FiscalClaimRecord,
 ): Promise<void> {
   const key = fiscalClaimKey(idempotencyKey);
+  if (record.state === 'DEFERRED') noteDeferredClaimWritten();
   await prisma.syncState.upsert({
     where: { key },
     create: { key, valueJson: record as any },
@@ -604,6 +607,7 @@ export async function createDeferredFiscalClaim(
   },
 ): Promise<void> {
   const at = nowIso();
+  noteDeferredClaimWritten();
   await prisma.syncState.create({
     data: {
       key: fiscalClaimKey(idempotencyKey),
@@ -895,46 +899,120 @@ export async function markFiscalDeferAlert(
   });
 }
 
+/**
+ * SQL for the claims in some states, filtered inside SQLite.
+ *
+ * The claim rows hold every sale for 90 days. Loading all of them to find
+ * the few still waiting — which the deferred loop did every 20 seconds —
+ * took ~370ms on a busy till's ledger, much of it blocking the main process
+ * on the encrypted ledger. A key range (the primary key index) and a JSON
+ * filter bring that to ~17ms. The filter is only ever looser than the
+ * caller's own check on the parsed record, never stricter.
+ */
+export function claimStateQuery(
+  states: readonly FiscalClaimState[],
+  options?: { orphanedRegistered?: boolean },
+): { sql: string; args: string[] } {
+  const state = `(CASE WHEN json_valid("valueJson") THEN json_extract("valueJson", '$.state') END)`;
+  const orphaned = options?.orphanedRegistered
+    ? ` OR (${state} = 'REGISTERED' AND json_extract("valueJson", '$.orphanDetectedAt') IS NOT NULL)`
+    : '';
+  return {
+    sql:
+      `SELECT "key", "valueJson" FROM "SyncState" ` +
+      `WHERE "key" >= ? AND "key" < ? ` +
+      `AND (${state} IN (${states.map(() => '?').join(', ')})${orphaned})`,
+    args: [KEY_PREFIX, KEY_END, ...states],
+  };
+}
+
+async function listClaimsWhere(
+  states: readonly FiscalClaimState[],
+  keep: (record: FiscalClaimRecord) => boolean,
+  options?: { orphanedRegistered?: boolean },
+): Promise<Array<{ idempotencyKey: string; record: FiscalClaimRecord }>> {
+  let rows: any[];
+  try {
+    const { sql, args } = claimStateQuery(states, options);
+    rows = (await prisma.$queryRawUnsafe(sql, ...args)) as any[];
+  } catch (e) {
+    // Never lose a deferred invoice over a query: fall back to the full scan.
+    console.warn('[fiscal] filtered claim query failed, scanning all:', e);
+    rows = await prisma.syncState
+      .findMany({ where: { key: { startsWith: KEY_PREFIX } } })
+      .catch(() => [] as any[]);
+  }
+  const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
+  for (const row of rows) {
+    const key = String(row?.key || '');
+    if (!key.startsWith(KEY_PREFIX)) continue;
+    let value = row?.valueJson;
+    if (typeof value === 'string') {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        continue;
+      }
+    }
+    const record = parseRecord(value);
+    if (record && keep(record)) {
+      out.push({ idempotencyKey: key.slice(KEY_PREFIX.length), record });
+    }
+  }
+  return out;
+}
+
 /** Every claim awaiting human reconciliation. */
 export async function listFiscalClaimsNeedingReview(): Promise<
   Array<{ idempotencyKey: string; record: FiscalClaimRecord }>
 > {
-  const rows = await prisma.syncState
-    .findMany({ where: { key: { startsWith: KEY_PREFIX } } })
-    .catch(() => [] as any[]);
-  const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
-  for (const row of rows as any[]) {
-    const record = parseRecord(row?.valueJson);
-    if (
-      record &&
-      (REVIEW_STATES.has(record.state) ||
-        (record.state === 'REGISTERED' && record.orphanDetectedAt))
-    ) {
-      out.push({
-        idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
-        record,
-      });
-    }
-  }
-  return out;
+  return listClaimsWhere(
+    [...REVIEW_STATES],
+    (record) =>
+      REVIEW_STATES.has(record.state) ||
+      (record.state === 'REGISTERED' && Boolean(record.orphanDetectedAt)),
+    { orphanedRegistered: true },
+  );
+}
+
+/**
+ * Whether the deferred loop needs to look at all.
+ *
+ * Every DEFERRED claim is written in this process, and each write clears
+ * the "nothing waiting" note, so while no sale has been taken offline the
+ * loop skips the query entirely. It still looks every couple of minutes in
+ * case something was written another way.
+ */
+const DEFERRED_RECHECK_MS = 2 * 60_000;
+let deferredEmptySince = 0;
+let deferredWrites = 0;
+
+function noteDeferredClaimWritten(): void {
+  deferredWrites += 1;
+  deferredEmptySince = 0;
+}
+
+export function fiscalDeferredWorkMayExist(now = Date.now()): boolean {
+  return !deferredEmptySince || now - deferredEmptySince >= DEFERRED_RECHECK_MS;
+}
+
+/** @internal vitest */
+export function resetFiscalDeferredHint(): void {
+  deferredEmptySince = 0;
 }
 
 /** Sales taken while CIS was unreachable — the host must still transmit them. */
 export async function listFiscalClaimsDeferred(): Promise<
   Array<{ idempotencyKey: string; record: FiscalClaimRecord }>
 > {
-  const rows = await prisma.syncState
-    .findMany({ where: { key: { startsWith: KEY_PREFIX } } })
-    .catch(() => [] as any[]);
-  const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
-  for (const row of rows as any[]) {
-    const record = parseRecord(row?.valueJson);
-    if (record?.state === 'DEFERRED') {
-      out.push({
-        idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
-        record,
-      });
-    }
-  }
+  const writesBefore = deferredWrites;
+  const out = await listClaimsWhere(
+    ['DEFERRED'],
+    (record) => record.state === 'DEFERRED',
+  );
+  // A claim deferred while this query ran may not be in `out`; only note
+  // "nothing waiting" when no such write happened.
+  if (out.length > 0) deferredEmptySince = 0;
+  else if (deferredWrites === writesBefore) deferredEmptySince = Date.now();
   return out;
 }

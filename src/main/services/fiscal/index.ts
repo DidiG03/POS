@@ -16,6 +16,7 @@ import {
   markDailyBalanceAlerted,
 } from './balance';
 import { fiscalConfig } from './config';
+import { warmEasyPosConnection } from './transport';
 import { mapPaymentMethod } from './paymentMethod';
 import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import { notifyAdminsAndActor } from '../adminAlerts';
@@ -54,6 +55,17 @@ export {
 
 export function isFiscalEnabled(settings: SettingsDTO): boolean {
   return (settings as any)?.fiscal?.enabled === true;
+}
+
+/**
+ * A payment is about to be taken: open the connection to easyPos now so
+ * the invoice does not wait on a handshake. Cloud API only; best-effort.
+ */
+export function warmFiscalConnection(settings: SettingsDTO): Promise<void> {
+  if (!isFiscalEnabled(settings)) return Promise.resolve();
+  const config = fiscalConfig(settings);
+  if (!config.cloud || !config.baseUrl) return Promise.resolve();
+  return warmEasyPosConnection(config.baseUrl);
 }
 
 export type SittingGateResult =

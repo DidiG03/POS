@@ -1714,6 +1714,11 @@ export interface ApiTickets {
     dateIso: string;
   }): Promise<{ area: string; label: string; paidAt: string }[]>;
   print(input: PrintTicketInput): Promise<boolean | PrintRejection>;
+  /**
+   * The payment screen opened. Lets the host connect to the fiscal provider
+   * while the tender is entered. Best-effort; never fails the caller.
+   */
+  preparePayment(): Promise<boolean>;
 }
 
 /**

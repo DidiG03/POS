@@ -17,6 +17,26 @@ const { store, payments, createSale } = vi.hoisted(() => ({
 
 vi.mock('@db/client', () => ({
   prisma: {
+    // The claim listings' SQL, over the in-memory rows: key range, then the
+    // states passed as parameters (plus orphaned REGISTERED when asked).
+    $queryRawUnsafe: vi.fn(
+      async (sql: string, from: string, to: string, ...states: string[]) =>
+        [...store.entries()]
+          .filter(([key, row]) => {
+            if (!(key >= from && key < to)) return false;
+            const v = row.valueJson || {};
+            return (
+              states.includes(v.state) ||
+              (sql.includes('orphanDetectedAt') &&
+                v.state === 'REGISTERED' &&
+                v.orphanDetectedAt != null)
+            );
+          })
+          .map(([key, row]) => ({
+            key,
+            valueJson: JSON.stringify(row.valueJson),
+          })),
+    ),
     syncState: {
       create: vi.fn(async ({ data }: any) => {
         if (store.has(data.key)) {
@@ -77,7 +97,12 @@ vi.mock('./easypos', async (importActual) => {
 });
 
 import { transmitDueDeferredInvoices } from './deferred';
-import { fiscalClaimKey, readFiscalClaim, withFiscalClaimLock } from './claims';
+import {
+  fiscalClaimKey,
+  readFiscalClaim,
+  resetFiscalDeferredHint,
+  withFiscalClaimLock,
+} from './claims';
 
 const settings = { fiscal: { enabled: true } } as unknown as SettingsDTO;
 const PAST = new Date(Date.now() - 60_000).toISOString();
@@ -100,6 +125,7 @@ function deferred(key: string, extra: Record<string, any> = {}) {
 }
 
 beforeEach(() => {
+  resetFiscalDeferredHint();
   store.clear();
   payments.clear();
   createSale.mockReset();
@@ -170,5 +196,51 @@ describe('transmitDueDeferredInvoices', () => {
     await Promise.all([reversal, loop]);
     expect(createSale).not.toHaveBeenCalled();
     expect((await readFiscalClaim('pay-4'))?.state).toBe('ABANDONED');
+  });
+});
+
+describe('deferred loop when nothing is waiting', () => {
+  it('stops querying until a sale is actually deferred', async () => {
+    const { prisma } = await import('@db/client');
+    const query = vi.mocked((prisma as any).$queryRawUnsafe);
+
+    await transmitDueDeferredInvoices(settings);
+    const afterFirst = query.mock.calls.length;
+    await transmitDueDeferredInvoices(settings);
+    await transmitDueDeferredInvoices(settings);
+    expect(query.mock.calls.length).toBe(afterFirst);
+
+    // Deferring a sale goes through the claim writers, which re-arm it.
+    const { claimFiscalRegistration, settleFiscalClaimDeferred } = await import(
+      './claims'
+    );
+    const c = await claimFiscalRegistration('pay-9', {
+      area: 'Bar',
+      tableLabel: '4',
+      total: 300,
+    });
+    if (c.outcome !== 'proceed') throw new Error('expected proceed');
+    await settleFiscalClaimDeferred(
+      'pay-9',
+      c.attemptId,
+      'offline',
+      {
+        docId: 'pay-9',
+        articles: [],
+        payment: [],
+      },
+      PAST,
+    );
+
+    const r = await transmitDueDeferredInvoices(settings);
+    expect(r).toEqual({ attempted: 1, registered: 1 });
+  });
+
+  it('still looks again after a couple of minutes', async () => {
+    const { fiscalDeferredWorkMayExist, listFiscalClaimsDeferred } =
+      await import('./claims');
+    await listFiscalClaimsDeferred();
+    expect(fiscalDeferredWorkMayExist()).toBe(false);
+    expect(fiscalDeferredWorkMayExist(Date.now() + 2 * 60_000)).toBe(true);
   });
 });

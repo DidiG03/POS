@@ -18,6 +18,7 @@
  */
 
 import type { SettingsDTO } from '@shared/ipc';
+import { easyPosFetch } from './transport';
 import {
   assertFiscalConfigured,
   authHeader,
@@ -174,12 +175,12 @@ export async function postFiscal(
     if (config.cloud && config.integrationApp) {
       headers['integration-app'] = config.integrationApp;
     }
-    const res = await fetch(url, {
+    const res = await easyPosFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body ?? {}),
       signal: controller.signal,
-    } as any);
+    });
     const data = await res.json().catch(() => null);
     return {
       ok: res.ok,

@@ -1285,6 +1285,18 @@ export function installBrowserLanApi(): void {
         const dateIso = encodeURIComponent(String(input?.dateIso || ''));
         return await goLan(`/tickets/paid-tables?dateIso=${dateIso}`);
       },
+      async preparePayment() {
+        // Best-effort hint; a till without the route answers 404.
+        try {
+          await goLan('/tickets/prepare-payment', {
+            method: 'POST',
+            body: '{}',
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      },
       async print(input: any) {
         const r = await goLan('/print/ticket', {
           method: 'POST',

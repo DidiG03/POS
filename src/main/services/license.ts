@@ -24,6 +24,11 @@ export interface StoredLicense {
   currentPeriodEnd: string | null;
   lastValidatedAt: number;
   edition?: LicenseEdition;
+  /**
+   * The billing server's verdict at `lastValidatedAt`. Missing on files
+   * written before it was recorded; those were only ever saved as valid.
+   */
+  valid?: boolean;
 }
 
 export interface LicensePlanQuote {
@@ -54,6 +59,14 @@ export interface LicensePublicStatus {
 }
 
 const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * How long a successful check answers for the subscription before the
+ * billing server is asked again. Until then the saved result is returned at
+ * once: the till used to call the billing server on every status read — at
+ * startup before the tablets' server could start, and every 30s while
+ * signed in — each waiting up to 30s on a poor connection.
+ */
+export const LICENSE_REVALIDATE_MS = 15 * 60 * 1000;
 const PROTOCOL = 'codeorbit-pos';
 
 function isUnpackagedDev(): boolean {
@@ -204,6 +217,7 @@ function persistFromRemote(
     currentPeriodEnd: r.currentPeriodEnd ? String(r.currentPeriodEnd) : null,
     lastValidatedAt: Date.now(),
     edition: resolved.edition,
+    valid: true,
   };
   if (!stored.key)
     throw new Error('Billing server did not return a license key');
@@ -214,7 +228,16 @@ function persistFromRemote(
   return stored;
 }
 
-export async function getLicenseStatus(): Promise<LicensePublicStatus> {
+/**
+ * Subscription status.
+ *
+ * Answered from the saved check while it is recent and was an active,
+ * valid subscription; a check older than `LICENSE_REVALIDATE_MS` is
+ * refreshed in the background. `live` always asks the billing server.
+ */
+export async function getLicenseStatus(options?: {
+  live?: boolean;
+}): Promise<LicensePublicStatus> {
   const required = isLicenseRequired();
   const configured = Boolean(billingBase());
   if (!required) {
@@ -236,6 +259,66 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
       ...unpackagedSwitch(),
     };
   }
+  const stored = readStoredLicense();
+  if (!stored?.key) {
+    return {
+      required: true,
+      licensed: false,
+      billingConfigured: true,
+      message: 'Subscribe to unlock this POS.',
+      edition: getActiveLicenseEdition(),
+      ...unpackagedSwitch(),
+    };
+  }
+  const age = Date.now() - Number(stored.lastValidatedAt || 0);
+  const trusted =
+    stored.status === 'ACTIVE' &&
+    stored.valid !== false &&
+    Number.isFinite(age) &&
+    age >= 0 &&
+    age < OFFLINE_GRACE_MS;
+  if (!options?.live && trusted && age < LICENSE_REVALIDATE_MS) {
+    return statusFromStored(stored, null);
+  }
+  if (!options?.live && trusted) {
+    // Stale but still within the offline grace: answer now, refresh behind.
+    void validateStoredLicense().catch(() => undefined);
+    return statusFromStored(stored, null);
+  }
+  return validateStoredLicense();
+}
+
+function statusFromStored(
+  stored: StoredLicense,
+  message: string | null,
+): LicensePublicStatus {
+  return {
+    required: true,
+    licensed: true,
+    email: stored.email,
+    key: stored.key,
+    status: stored.status,
+    currentPeriodEnd: stored.currentPeriodEnd,
+    billingConfigured: true,
+    edition: getActiveLicenseEdition(),
+    ...unpackagedSwitch(),
+    message,
+  };
+}
+
+let validationInflight: Promise<LicensePublicStatus> | null = null;
+
+/** Ask the billing server. Concurrent callers share one request. */
+function validateStoredLicense(): Promise<LicensePublicStatus> {
+  if (!validationInflight) {
+    validationInflight = validateStoredLicenseNow().finally(() => {
+      validationInflight = null;
+    });
+  }
+  return validationInflight;
+}
+
+async function validateStoredLicenseNow(): Promise<LicensePublicStatus> {
   const stored = readStoredLicense();
   if (!stored?.key) {
     return {
@@ -273,6 +356,7 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
         : stored.currentPeriodEnd,
       lastValidatedAt: Date.now(),
       edition: resolved.edition || stored.edition,
+      valid: Boolean(remote.valid),
     };
     writeStoredLicense(next);
     const licensed = Boolean(remote.valid) && status === 'ACTIVE';
@@ -294,6 +378,7 @@ export async function getLicenseStatus(): Promise<LicensePublicStatus> {
     const age = Date.now() - Number(stored.lastValidatedAt || 0);
     const offlineOk =
       stored.status === 'ACTIVE' &&
+      stored.valid !== false &&
       Number.isFinite(age) &&
       age >= 0 &&
       age < OFFLINE_GRACE_MS;

@@ -219,9 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.77 (fiskalizimi)"
-            echo "- Fixed: corrective invoices for bills with a service charge were rejected by easyPos (the service charge was left out, so the lines did not add up to the amount paid). They now carry the service charge and discount exactly like the original invoice."
-            echo "- Corrective invoices now use the same product codes as the original invoice, including the fallback code set in Admin > Fiskalizimi."
+            echo "### Changes in v0.2.78 (speed)"
+            echo "- Fixed: on encrypted tills, sales recorded before encryption were missing from date-range reports and could be cleaned up too early. Dates are repaired automatically on the first start after this update."
+            echo "- The fiskalizimi background check is about 20x lighter, so the till and phones no longer stall briefly every 20 seconds on busy venues."
+            echo "- The till no longer waits on the internet to check the subscription at startup or during service."
+            echo "- Payments reach easyPos faster: the connection is kept open between payments and opened as soon as the payment screen appears."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

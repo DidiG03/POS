@@ -10,6 +10,7 @@ import path from 'node:path';
 import { createClient, type Client, type InValue } from '@libsql/client';
 import { SQLITE_BUSY_TIMEOUT_MS } from '@db/sqliteBusy';
 import { sqliteFileUrl } from '@db/sqliteUrl';
+import { normalizeDatetimeStorage, type SqlRunner } from '@db/datetimeText';
 
 const SQLITE_MAGIC = Buffer.from('SQLite format 3\0');
 
@@ -94,6 +95,17 @@ async function copyTablePaged(
   }
 }
 
+function libsqlRunner(client: Client): SqlRunner {
+  return {
+    query: async (sql, args = []) =>
+      (await client.execute({ sql, args: args as InValue[] })).rows as Array<
+        Record<string, unknown>
+      >,
+    exec: async (sql, args = []) =>
+      (await client.execute({ sql, args: args as InValue[] })).rowsAffected,
+  };
+}
+
 export function openLibsql(file: string, encryptionKey?: string): Client {
   return createClient({
     url: sqliteFileUrl(file),
@@ -171,6 +183,10 @@ export async function encryptPlaintextSqlite(opts: {
     } catch {
       // no sqlite_sequence
     }
+
+    // The plain ledger's integer DateTimes would never match the encrypted
+    // ledger's TEXT comparisons. Store them the way the adapter does.
+    await normalizeDatetimeStorage(libsqlRunner(dst));
   } finally {
     await closeQuietly(dst);
     await closeQuietly(src);

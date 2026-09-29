@@ -283,6 +283,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // a runaway loop, not to pace normal service.
   'tickets:log': { allow: POS, rateLimit: { maxAttempts: 100 } },
   'tickets:print': { allow: POS },
+  'tickets:preparePayment': { allow: POS },
   'tickets:voidItem': { allow: POS },
   'tickets:voidTicket': { allow: POS },
 

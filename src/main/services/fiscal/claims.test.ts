@@ -17,6 +17,26 @@ const { store, notifications } = vi.hoisted(() => ({
 
 vi.mock('@db/client', () => ({
   prisma: {
+    // The claim listings' SQL, over the in-memory rows: key range, then the
+    // states passed as parameters (plus orphaned REGISTERED when asked).
+    $queryRawUnsafe: vi.fn(
+      async (sql: string, from: string, to: string, ...states: string[]) =>
+        [...store.entries()]
+          .filter(([key, row]) => {
+            if (!(key >= from && key < to)) return false;
+            const v = row.valueJson || {};
+            return (
+              states.includes(v.state) ||
+              (sql.includes('orphanDetectedAt') &&
+                v.state === 'REGISTERED' &&
+                v.orphanDetectedAt != null)
+            );
+          })
+          .map(([key, row]) => ({
+            key,
+            valueJson: JSON.stringify(row.valueJson),
+          })),
+    ),
     syncState: {
       create: vi.fn(async ({ data }: any) => {
         if (store.has(data.key)) {

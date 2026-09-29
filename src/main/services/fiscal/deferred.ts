@@ -12,6 +12,7 @@ import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import { backoffDelayMs } from './backoff';
 import {
   claimFiscalRegistration,
+  fiscalDeferredWorkMayExist,
   listFiscalClaimsDeferred,
   markFiscalDeferAlert,
   readFiscalClaim,
@@ -169,6 +170,7 @@ export async function transmitDueDeferredInvoices(
     return { attempted: 0, registered: 0 };
   }
   const now = options?.now ?? Date.now();
+  if (!fiscalDeferredWorkMayExist()) return { attempted: 0, registered: 0 };
   const rows = await listFiscalClaimsDeferred();
   let attempted = 0;
   let registered = 0;

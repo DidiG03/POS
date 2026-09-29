@@ -9,6 +9,7 @@ import {
   withSqliteTransactionOptions,
 } from './sqliteBusy';
 import { sqliteConnectionUrl, sqliteFileUrl } from './sqliteUrl';
+import { normalizeDatetimeStorage, type SqlRunner } from './datetimeText';
 import { isSqliteWriteOperation } from './sqliteWrite';
 
 const { PrismaClient } = pkg as unknown as {
@@ -235,6 +236,29 @@ export async function openEncryptedSqlite(
   process.env.POS_VAULT_LOCK = '';
   attachClient(createEncryptedClient(file, encryptionKey), 'encrypted');
   await configureSqlite();
+  // Rows copied from a plain ledger keep the native engine's integer
+  // DateTimes, which the adapter's TEXT comparisons never match.
+  try {
+    const result = await normalizeDatetimeStorage(prismaSqlRunner(inner));
+    if (!result.skipped) {
+      console.log(
+        `[sqlite] DateTime values rewritten for the encrypted ledger: ${result.updated}`,
+      );
+    }
+  } catch (e) {
+    console.error('[sqlite] could not normalize DateTime storage:', e);
+  }
+}
+
+function prismaSqlRunner(client: any): SqlRunner {
+  return {
+    query: async (sql, args = []) =>
+      (await client.$queryRawUnsafe(sql, ...args)) as Array<
+        Record<string, unknown>
+      >,
+    exec: async (sql, args = []) =>
+      Number(await client.$executeRawUnsafe(sql, ...args)) || 0,
+  };
 }
 
 export const prisma = new Proxy(
