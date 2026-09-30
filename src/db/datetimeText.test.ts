@@ -74,12 +74,14 @@ describe('normalizeDatetimeStorage', () => {
     for (let i = 0; i < 2000; i++) {
       samples.push(Math.floor(Math.random() * 4_102_444_800_000));
     }
-    for (const [i, ms] of samples.entries()) {
-      await client.execute({
+    // One transaction: a commit (and disk sync) per row took 30s+ on CI.
+    await client.batch(
+      samples.map((ms, i) => ({
         sql: 'INSERT INTO "Order" ("id", "createdAt") VALUES (?, ?)',
         args: [i + 1, ms],
-      });
-    }
+      })),
+      'write',
+    );
 
     await normalizeDatetimeStorage(db);
 
