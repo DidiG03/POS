@@ -4,8 +4,11 @@ const isTableOpen = vi.fn();
 const setTableOpen = vi.fn();
 const broadcastTableStatusChanged = vi.fn();
 const seatCoveringReservationForOpenTable = vi.fn();
+const completeSeatedReservationForClosedTable = vi.fn();
 
-vi.mock('@db/client', () => ({ prisma: {} }));
+vi.mock('@db/client', () => ({
+  prisma: { kdsOrder: { findFirst: vi.fn(async () => null) } },
+}));
 vi.mock('./core', () => ({
   coreServices: {
     isTableOpen: (...a: any[]) => isTableOpen(...a),
@@ -20,9 +23,11 @@ vi.mock('./realtime', () => ({
 vi.mock('./reservations', () => ({
   seatCoveringReservationForOpenTable: (...a: any[]) =>
     seatCoveringReservationForOpenTable(...a),
+  completeSeatedReservationForClosedTable: (...a: any[]) =>
+    completeSeatedReservationForClosedTable(...a),
 }));
 
-import { ensureOccupiedForTicketWrite } from './tableOpen';
+import { applyTableOpenState, ensureOccupiedForTicketWrite } from './tableOpen';
 
 describe('ensureOccupiedForTicketWrite', () => {
   beforeEach(() => {
@@ -48,5 +53,26 @@ describe('ensureOccupiedForTicketWrite', () => {
       label: '1',
       open: true,
     });
+  });
+});
+
+describe('applyTableOpenState — close', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setTableOpen.mockResolvedValue(true);
+  });
+
+  it('ends the reservation seated at a table the till closes', async () => {
+    await applyTableOpenState('Salla', '5', false);
+    expect(completeSeatedReservationForClosedTable).toHaveBeenCalledWith(
+      'Salla',
+      '5',
+    );
+  });
+
+  it('leaves reservations alone when the close was stale', async () => {
+    setTableOpen.mockResolvedValue(false);
+    await applyTableOpenState('Salla', '5', false);
+    expect(completeSeatedReservationForClosedTable).not.toHaveBeenCalled();
   });
 });

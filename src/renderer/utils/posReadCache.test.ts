@@ -234,6 +234,45 @@ describe('ingestFloorSnapshot', () => {
     expect(peekLatestTicket('Salla', 'T7')?.items?.[0]?.name).toBe('Byrek');
   });
 
+  it('drops bills saved before a restart for tables the host says are free', () => {
+    // Left in storage from the last session; no floor snapshot in memory.
+    cacheLatestTicket('Salla', 'T3', {
+      items: [{ name: 'Tavë kosi', qty: 1, unitPrice: 900 }],
+    });
+    cacheLatestTicket('Salla', 'T7', {
+      items: [{ name: 'Byrek', qty: 1, unitPrice: 300 }],
+    });
+    cacheLatestTicket('Veranda', 'V1', {
+      items: [{ name: 'Kafe', qty: 1, unitPrice: 100 }],
+    });
+
+    ingestFloorSnapshot(
+      {
+        tables: [
+          {
+            area: 'Salla',
+            label: 'T7',
+            openedAt: '2026-09-30T10:00:00.000Z',
+            userId: 1,
+            covers: 2,
+            total: 300,
+            items: [],
+            note: null,
+          },
+        ],
+      },
+      { area: 'Salla' },
+    );
+
+    expect(peekLatestTicket('Salla', 'T3')).toBeUndefined();
+    expect(peekLatestTicket('Salla', 'T7')?.items?.[0]?.name).toBe('Byrek');
+    // Another area's floor says nothing about Veranda.
+    expect(peekLatestTicket('Veranda', 'V1')?.items?.[0]?.name).toBe('Kafe');
+
+    ingestFloorSnapshot({ tables: [] }, { area: '' });
+    expect(peekLatestTicket('Veranda', 'V1')).toBeUndefined();
+  });
+
   it('skips rewriting the same snapshot object (table-tap must not re-parse the floor)', () => {
     const snap = {
       tables: [

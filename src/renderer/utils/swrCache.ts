@@ -31,9 +31,13 @@ function load(): void {
     if (!raw) return;
     const parsed = JSON.parse(raw) as Store;
     if (!parsed || typeof parsed !== 'object') return;
+    const now = Date.now();
     for (const [k, v] of Object.entries(parsed)) {
       if (!v || typeof v !== 'object') continue;
       if (typeof v.at !== 'number') continue;
+      // Blobs saved by older builds still hold occupancy; never revive it.
+      if (!shouldPersistCacheKey(k)) continue;
+      if (persistedEntryExpired(k, v.at, now)) continue;
       mem[k] = v;
     }
   } catch {
@@ -50,9 +54,32 @@ function persistableStore(): Store {
   return out;
 }
 
-/** Floor occupancy is memory-only so a busy floor cannot evict the menu blob. */
+/**
+ * Occupancy is memory-only. A floor or open-table list read back after a
+ * restart describes the last session: a phone that was off while tables
+ * were paid painted them red again — for the whole shift if it could not
+ * reach the host. (The floor was also too big: it evicted the menu blob.)
+ */
 export function shouldPersistCacheKey(key: string): boolean {
-  return !key.startsWith('pos:floor:');
+  return !key.startsWith('pos:floor:') && key !== 'pos:open-tables';
+}
+
+/** No sitting outlives this: the host voids tables left open for 12h. */
+const TICKET_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+/** A saved bill older than any sitting belongs to a table long since paid. */
+export function persistedEntryExpired(
+  key: string,
+  at: number,
+  now = Date.now(),
+): boolean {
+  return key.startsWith('pos:ticket:') && now - at > TICKET_CACHE_MAX_AGE_MS;
+}
+
+/** Keys currently cached under `prefix`. */
+export function cacheKeysWithPrefix(prefix: string): string[] {
+  load();
+  return Object.keys(mem).filter((k) => k.startsWith(prefix));
 }
 
 function schedulePersist(): void {

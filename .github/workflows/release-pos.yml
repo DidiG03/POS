@@ -219,11 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.78 (speed)"
-            echo "- Fixed: on encrypted tills, sales recorded before encryption were missing from date-range reports and could be cleaned up too early. Dates are repaired automatically on the first start after this update."
-            echo "- The fiskalizimi background check is about 20x lighter, so the till and phones no longer stall briefly every 20 seconds on busy venues."
-            echo "- The till no longer waits on the internet to check the subscription at startup or during service."
-            echo "- Payments reach easyPos faster: the connection is kept open between payments and opened as soon as the payment screen appears."
+            echo "### Changes in v0.2.79 (ghost tables)"
+            echo "- Fixed: after a phone restarted, tables paid while it was off could show as open again. Phones no longer keep the list of open tables between restarts; they ask the till."
+            echo "- Fixed: old bills saved on phones for tables that are now free are cleared, so a reopened table never shows a previous party's items."
+            echo "- Fixed: on the Reservations floor, a seated party now ends when its table is paid, voided or freed, so the table no longer stays busy."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

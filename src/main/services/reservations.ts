@@ -501,6 +501,53 @@ export async function seatCoveringReservationForOpenTable(
 }
 
 /**
+ * The till closed this table — paid, voided or freed — so the party seated
+ * there has left. Without this the Reservations floor kept the table busy
+ * until the booked stay ran out, then asked the host to free a table nobody
+ * was sitting at.
+ */
+export async function completeSeatedReservationForClosedTable(
+  area: string,
+  tableLabel: string,
+): Promise<void> {
+  try {
+    const a = String(area || '').trim();
+    const label = String(tableLabel || '').trim();
+    if (!a || !label) return;
+    const now = new Date();
+    const rows = await prisma.reservation.findMany({
+      where: {
+        area: a,
+        tableLabel: label,
+        status: 'SEATED',
+        startsAt: { lte: now },
+      },
+      take: 20,
+    });
+    for (const row of rows as any[]) {
+      try {
+        const updated = await prisma.reservation.update({
+          where: { id: row.id },
+          data: { status: 'COMPLETED' },
+        });
+        const dto = await withCreatedByName(updated);
+        broadcastReservationsChanged({
+          kind: 'status',
+          id: dto.id,
+          dateIso: dto.startsAt,
+          area: dto.area,
+          status: dto.status,
+        });
+      } catch {
+        // one bad row must not keep the others seated
+      }
+    }
+  } catch {
+    // never block closing a table
+  }
+}
+
+/**
  * Follow a covering live reservation when the waiter moves the ticket.
  * Skip if the destination already has an occupying sitting.
  */

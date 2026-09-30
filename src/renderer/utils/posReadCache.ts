@@ -19,6 +19,7 @@ import {
   withSoldByKgFlags,
 } from '@shared/menuItemKg';
 import {
+  cacheKeysWithPrefix,
   invalidateCache,
   invalidateCachePrefix,
   patchCacheValue,
@@ -126,16 +127,16 @@ export function ingestFloorSnapshot(
   lastIngestedOpts = ingestOptsKey(opts);
   const scopeArea = opts && 'area' in opts ? String(opts.area || '') : '';
   if (opts && 'area' in opts) {
-    const prevSnap = peekFloorSnapshot(scopeArea);
-    const nextKeys = new Set(
-      snap.tables.map((row) => `${row.area}:${row.label}`),
+    // The host's floor is the truth about which tables are open. A saved
+    // bill for any table in scope that is not on it is from a sitting that
+    // has ended — including ones saved before a restart, which no previous
+    // (memory-only) snapshot could have told us about.
+    const open = new Set(
+      snap.tables.map((row) => POS_CACHE.ticket(row.area, row.label)),
     );
-    if (prevSnap && Array.isArray(prevSnap.tables)) {
-      for (const row of prevSnap.tables) {
-        if (!nextKeys.has(`${row.area}:${row.label}`)) {
-          invalidateCache(POS_CACHE.ticket(row.area, row.label));
-        }
-      }
+    const scope = scopeArea ? POS_CACHE.ticket(scopeArea, '') : 'pos:ticket:';
+    for (const key of cacheKeysWithPrefix(scope)) {
+      if (!open.has(key)) invalidateCache(key);
     }
     writeCache(POS_CACHE.floor(scopeArea), snap);
   }
