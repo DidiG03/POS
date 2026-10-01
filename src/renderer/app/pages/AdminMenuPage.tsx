@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type ParsedMenuRow, parseMenuWorkbook } from '../../utils/menuImport';
 import { type KdsStation } from '@shared/kdsStations';
+import { normalizeProductCode } from '@shared/barcodeScan';
 import { PageSpinner } from '../../components/PageSpinner';
 import { reportAppError } from '../../utils/reportAppError';
 import {
@@ -803,6 +804,7 @@ export default function AdminMenuPage() {
         <MenuImportModal
           categories={cats}
           disabled={billingPaused}
+          showBarcode={!hasTables}
           onClose={() => setShowImport(false)}
           onImported={reload}
         />
@@ -824,11 +826,21 @@ function buildImportPlan(
   const catByName = new Map<string, MenuCategory>();
   for (const c of categories) catByName.set(norm(c.name), c);
   const itemByKey = new Map<string, number>();
+  const itemByBarcode = new Map<string, number>();
   for (const c of categories)
-    for (const it of c.items) itemByKey.set(`${c.id}||${norm(it.name)}`, it.id);
+    for (const it of c.items) {
+      itemByKey.set(`${c.id}||${norm(it.name)}`, it.id);
+      const code = normalizeProductCode(String(it.sku || ''));
+      if (code) itemByBarcode.set(code, it.id);
+    }
 
   const newCategorySet = new Set<string>();
   const plan: ImportPlanRow[] = rows.map((r) => {
+    // Shops: the barcode identifies the product even if it was renamed.
+    const byBarcode = r.sku ? itemByBarcode.get(r.sku) : undefined;
+    if (byBarcode != null) {
+      return { ...r, status: 'update', existingItemId: byBarcode };
+    }
     const cat = catByName.get(norm(r.category));
     if (!cat) {
       newCategorySet.add(r.category);
@@ -845,11 +857,14 @@ function buildImportPlan(
 function MenuImportModal({
   categories,
   disabled,
+  showBarcode,
   onClose,
   onImported,
 }: {
   categories: MenuCategory[];
   disabled: boolean;
+  /** Shop mode: barcodes are how products are scanned at the till. */
+  showBarcode: boolean;
   onClose: () => void;
   onImported: () => Promise<void> | void;
 }) {
@@ -871,6 +886,8 @@ function MenuImportModal({
     created: number;
     updated: number;
     skipped: number;
+    barcodes: number;
+    problems: string[];
   } | null>(null);
 
   useEffect(() => {
@@ -885,6 +902,8 @@ function MenuImportModal({
     () => buildImportPlan(rows, categories),
     [rows, categories],
   );
+
+  const barcodeColumn = showBarcode || rows.some((r) => Boolean(r.sku));
 
   const counts = useMemo(() => {
     let create = 0;
@@ -922,13 +941,20 @@ function MenuImportModal({
   async function downloadTemplate() {
     try {
       const XLSX = await import('xlsx');
-      const data = [
-        ['Category', 'Name', 'Price', 'VAT', 'Kg', 'Station'],
-        ['Drinks', 'Espresso', 1.5, 20, 'No', 'BAR'],
-        ['Drinks', 'Cappuccino', 2, 20, 'No', 'BAR'],
-        ['Food', 'Margherita Pizza', 6.5, 20, 'No', 'KITCHEN'],
-        ['Food', 'Prosciutto (per kg)', 18, 20, 'Yes', 'KITCHEN'],
-      ];
+      const data = showBarcode
+        ? [
+            ['Category', 'Name', 'Price', 'VAT', 'Kg', 'Barcode'],
+            ['Drinks', 'Coca-Cola 330ml', 100, 20, 'No', 5449000000996],
+            ['Beer', 'Peroni 330ml', 150, 20, 'No', 80067955],
+            ['Deli', 'Prosciutto (per kg)', 1800, 20, 'Yes', ''],
+          ]
+        : [
+            ['Category', 'Name', 'Price', 'VAT', 'Kg', 'Station'],
+            ['Drinks', 'Espresso', 1.5, 20, 'No', 'BAR'],
+            ['Drinks', 'Cappuccino', 2, 20, 'No', 'BAR'],
+            ['Food', 'Margherita Pizza', 6.5, 20, 'No', 'KITCHEN'],
+            ['Food', 'Prosciutto (per kg)', 18, 20, 'Yes', 'KITCHEN'],
+          ];
       const ws = XLSX.utils.aoa_to_sheet(data);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Menu');
@@ -951,9 +977,13 @@ function MenuImportModal({
       const catIdByName = new Map<string, number>();
       for (const c of fresh) catIdByName.set(normName(c.name), c.id);
       const itemIdByKey = new Map<string, number>();
+      const itemIdByBarcode = new Map<string, number>();
       for (const c of fresh)
-        for (const it of c.items || [])
+        for (const it of c.items || []) {
           itemIdByKey.set(`${c.id}||${normName(it.name)}`, it.id);
+          const code = normalizeProductCode(String(it.sku || ''));
+          if (code) itemIdByBarcode.set(code, it.id);
+        }
 
       let createdCategories = 0;
       const neededCats = Array.from(
@@ -975,50 +1005,96 @@ function MenuImportModal({
       let created = 0;
       let updated = 0;
       let skipped = 0;
+      let barcodes = 0;
+      const problems: string[] = [];
       setProgress({ done: 0, total: rows.length });
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
         const catId = catIdByName.get(normName(r.category));
-        const existingId = catId
-          ? itemIdByKey.get(`${catId}||${normName(r.name)}`)
-          : undefined;
-        if (!catId) {
-          skipped++;
-        } else if (existingId != null) {
-          if (updateExisting) {
-            await window.api.menu.updateItem({
-              id: existingId,
+        const byBarcode = r.sku ? itemIdByBarcode.get(r.sku) : undefined;
+        const existingId =
+          byBarcode ??
+          (catId
+            ? itemIdByKey.get(`${catId}||${normName(r.name)}`)
+            : undefined);
+        // A barcode already on a different product stays there; this row is
+        // imported without it rather than stopping the whole import.
+        let sku = r.sku;
+        if (sku) {
+          const owner = itemIdByBarcode.get(sku);
+          if (owner != null && owner !== existingId) {
+            problems.push(
+              t('adminMenu.importBarcodeTaken', { name: r.name, code: sku }),
+            );
+            sku = undefined;
+          }
+        }
+        try {
+          if (existingId != null) {
+            if (!updateExisting) {
+              skipped++;
+            } else {
+              await window.api.menu.updateItem({
+                id: existingId,
+                price: r.price,
+                // Found by barcode: the file's name and category win.
+                ...(byBarcode != null
+                  ? { name: r.name, ...(catId ? { categoryId: catId } : {}) }
+                  : {}),
+                ...(r.vatRate != null ? { vatRate: r.vatRate } : {}),
+                ...(r.isKg != null ? { isKg: r.isKg } : {}),
+                ...(r.station ? { station: r.station } : {}),
+                ...(sku ? { sku } : {}),
+              } as any);
+              if (sku) {
+                itemIdByBarcode.set(sku, existingId);
+                barcodes++;
+              }
+              updated++;
+            }
+          } else if (!catId) {
+            skipped++;
+          } else {
+            const resp = await window.api.menu.createItem({
+              categoryId: catId,
+              name: r.name,
               price: r.price,
+              active: true,
               ...(r.vatRate != null ? { vatRate: r.vatRate } : {}),
               ...(r.isKg != null ? { isKg: r.isKg } : {}),
               ...(r.station ? { station: r.station } : {}),
-              ...(r.sku ? { sku: r.sku } : {}),
+              ...(sku ? { sku } : {}),
             } as any);
-            updated++;
-          } else {
-            skipped++;
+            // Track the new item so a duplicate row later in the same file
+            // updates it rather than colliding.
+            const newId = Number((resp as any)?.id || 0);
+            if (newId) {
+              itemIdByKey.set(`${catId}||${normName(r.name)}`, newId);
+              if (sku) itemIdByBarcode.set(sku, newId);
+            }
+            if (sku) barcodes++;
+            created++;
           }
-        } else {
-          const resp = await window.api.menu.createItem({
-            categoryId: catId,
-            name: r.name,
-            price: r.price,
-            active: true,
-            ...(r.vatRate != null ? { vatRate: r.vatRate } : {}),
-            ...(r.isKg != null ? { isKg: r.isKg } : {}),
-            ...(r.station ? { station: r.station } : {}),
-            ...(r.sku ? { sku: r.sku } : {}),
-          } as any);
-          // Track the new item so a duplicate row later in the same file
-          // updates it rather than colliding.
-          const newId = Number((resp as any)?.id || 0);
-          if (newId) itemIdByKey.set(`${catId}||${normName(r.name)}`, newId);
-          created++;
+        } catch (e: any) {
+          skipped++;
+          problems.push(
+            t('adminMenu.importRowFailed', {
+              name: r.name,
+              reason: e?.message || t('adminMenu.importFailed'),
+            }),
+          );
         }
         setProgress({ done: i + 1, total: rows.length });
       }
 
-      setResult({ createdCategories, created, updated, skipped });
+      setResult({
+        createdCategories,
+        created,
+        updated,
+        skipped,
+        barcodes,
+        problems,
+      });
       await onImported();
     } catch (e: any) {
       setError(e?.message || t('adminMenu.importFailed'));
@@ -1130,7 +1206,21 @@ function MenuImportModal({
                     {t('adminMenu.skippedItems', { count: result.skipped })}
                   </li>
                 ) : null}
+                {barcodeColumn ? (
+                  <li>
+                    {t('adminMenu.importedBarcodes', {
+                      count: result.barcodes,
+                    })}
+                  </li>
+                ) : null}
               </ul>
+              {result.problems.length ? (
+                <div className="mt-2 max-h-32 space-y-1 overflow-auto text-xs text-amber-200">
+                  {result.problems.map((p, i) => (
+                    <div key={i}>• {p}</div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -1183,6 +1273,11 @@ function MenuImportModal({
                         <th className="px-3 py-2 text-right">
                           {t('adminMenu.colVat')}
                         </th>
+                        {barcodeColumn ? (
+                          <th className="px-3 py-2">
+                            {t('adminMenu.barcode')}
+                          </th>
+                        ) : null}
                         <th className="px-3 py-2">
                           {t('adminMenu.colStatus')}
                         </th>
@@ -1213,6 +1308,11 @@ function MenuImportModal({
                               ? `${Math.round(r.vatRate * 100)}%`
                               : '—'}
                           </td>
+                          {barcodeColumn ? (
+                            <td className="px-3 py-1.5 font-mono text-xs tabular-nums opacity-80">
+                              {r.sku || '—'}
+                            </td>
+                          ) : null}
                           <td className="px-3 py-1.5">
                             {r.status === 'update' ? (
                               <span className="text-amber-300">

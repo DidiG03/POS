@@ -10,9 +10,14 @@
  *  - Parses EU ("1.200,50") and US ("1,200.50") number formats and strips
  *    currency symbols.
  *
+ *  - Reads a "Barcode" column (shop mode stores it as the item's sku) from
+ *    the cell's real value, not Excel's "8.7148E+12" display text.
+ *
  * The heavy `xlsx` dependency is imported lazily by the caller so it only
  * loads when the admin actually opens the importer.
  */
+
+import { normalizeProductCode } from '@shared/barcodeScan';
 
 export type ParsedMenuRow = {
   category: string;
@@ -235,6 +240,35 @@ function parseStation(
   return undefined;
 }
 
+/**
+ * Read a barcode cell. Excel keeps barcodes as numbers and shows long ones as
+ * "8.7148E+12"; the number itself is exact, so use it. Text that is already
+ * in that rounded form (e.g. from a CSV saved by Excel) has lost digits and
+ * is dropped with a warning instead of saving a wrong code.
+ */
+export function parseBarcode(
+  value: unknown,
+  onProblem?: (message: string) => void,
+): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return undefined;
+    if (!Number.isInteger(value) || !Number.isSafeInteger(value)) {
+      onProblem?.('is not a whole number');
+      return undefined;
+    }
+    return String(value);
+  }
+  const text = String(value).trim();
+  if (!text) return undefined;
+  if (/^\d+(?:[.,]\d+)?e\+?\d+$/i.test(text)) {
+    onProblem?.(`"${text}" was rounded by Excel`);
+    return undefined;
+  }
+  const code = normalizeProductCode(text);
+  return code || undefined;
+}
+
 function cleanName(value: unknown): string {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
@@ -291,7 +325,13 @@ export function rowsFromSheet(
         station:
           cols.station != null ? parseStation(row[cols.station]) : undefined,
         sku:
-          cols.sku != null ? cleanName(row[cols.sku]) || undefined : undefined,
+          cols.sku != null
+            ? parseBarcode(row[cols.sku], (problem) =>
+                warnings.push(
+                  `${sheetName}: "${name}" — barcode ${problem}; imported without it.`,
+                ),
+              )
+            : undefined,
       });
     }
     return out;
@@ -365,6 +405,22 @@ export function parseMenuWorkbook(
     } else {
       seen.set(key, deduped.length);
       deduped.push(row);
+    }
+  }
+
+  // One barcode can only belong to one product (the till refuses a second
+  // one). Keep it on the first row and import the others without it.
+  const barcodeOwner = new Map<string, ParsedMenuRow>();
+  for (const row of deduped) {
+    if (!row.sku) continue;
+    const owner = barcodeOwner.get(row.sku);
+    if (owner) {
+      warnings.push(
+        `Barcode ${row.sku} is on both "${owner.name}" and "${row.name}" — kept on "${owner.name}"; "${row.name}" is imported without a barcode.`,
+      );
+      row.sku = undefined;
+    } else {
+      barcodeOwner.set(row.sku, row);
     }
   }
 

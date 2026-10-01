@@ -219,10 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.79 (ghost tables)"
-            echo "- Fixed: after a phone restarted, tables paid while it was off could show as open again. Phones no longer keep the list of open tables between restarts; they ask the till."
-            echo "- Fixed: old bills saved on phones for tables that are now free are cleared, so a reopened table never shows a previous party's items."
-            echo "- Fixed: on the Reservations floor, a seated party now ends when its table is paid, voided or freed, so the table no longer stays busy."
+            echo "### Changes in v0.2.80 (shop menu import)"
+            echo "- Shop mode: the Excel menu import now shows and saves barcodes. Long barcodes that Excel displays as 8.7148E+12 are read in full."
+            echo "- One bad row (for example a barcode used on two products) no longer stops the import; it is listed at the end and everything else is imported."
+            echo "- Re-importing a file updates products by barcode, so renamed products are updated instead of duplicated."
+            echo "- Admin iPhone app: finds the till on any Wi-Fi network and accepts IP addresses typed with commas (192,168,...)."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

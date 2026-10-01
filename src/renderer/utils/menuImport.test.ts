@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parseMoney, parseVatRate, rowsFromSheet } from './menuImport';
+import * as XLSX from 'xlsx';
+import {
+  parseBarcode,
+  parseMenuWorkbook,
+  parseMoney,
+  parseVatRate,
+  rowsFromSheet,
+} from './menuImport';
 
 describe('parseMoney', () => {
   it('passes through finite numbers', () => {
@@ -138,5 +145,57 @@ describe('rowsFromSheet — category parsing', () => {
         sku: undefined,
       },
     ]);
+  });
+});
+
+describe('barcodes (shop mode)', () => {
+  it('keeps the exact number behind Excel\'s "8.7148E+12" display', () => {
+    expect(parseBarcode(8714800003124)).toBe('8714800003124');
+    expect(parseBarcode(80067955)).toBe('80067955');
+    expect(parseBarcode(' 871-480 0003124 ')).toBe('8714800003124');
+  });
+
+  it('drops codes Excel already rounded, with a reason', () => {
+    const problems: string[] = [];
+    expect(parseBarcode('8.7148E+12', (p) => problems.push(p))).toBeUndefined();
+    expect(parseBarcode(12.5, (p) => problems.push(p))).toBeUndefined();
+    expect(problems).toHaveLength(2);
+    expect(parseBarcode('')).toBeUndefined();
+    expect(parseBarcode(null)).toBeUndefined();
+  });
+
+  it('reads the Kategoria / Emri / Çmimi / Barcode layout', () => {
+    const warnings: string[] = [];
+    const rows = rowsFromSheet(
+      'Menu',
+      [
+        ['Kategoria', 'Emri', 'Çmimi (Lekë)', 'Barcode'],
+        ['Birra'],
+        ['Birra', 'Bavaria 33ml', 100, 8714800003216],
+        ['Birra', 'Peroni', 150, 80067955],
+        ['Birra', 'Draft', 200, null],
+      ],
+      warnings,
+    );
+    expect(rows.map((r) => [r.name, r.price, r.sku])).toEqual([
+      ['Bavaria 33ml', 100, '8714800003216'],
+      ['Peroni', 150, '80067955'],
+      ['Draft', 200, undefined],
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('keeps a shared barcode on the first product only', () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Kategoria', 'Emri', 'Çmimi', 'Barcode'],
+      ['Patatina', 'Doritos Nacho', 150, 8606017379393],
+      ['Patatina', 'Doritos Nacho F1', 150, 8606017379393],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Menu');
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+    const { rows, warnings } = parseMenuWorkbook(XLSX, buf);
+    expect(rows.map((r) => r.sku)).toEqual(['8606017379393', undefined]);
+    expect(warnings.join(' ')).toContain('8606017379393');
   });
 });
