@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  isPrivateIpv4,
+  parseTypedPosHost,
   type DiscoveredPosHost,
 } from '@shared/posHostDiscovery';
 import { Button, Field, Input } from '../../components/ui';
@@ -96,13 +96,14 @@ export function PosServerScanPanel({
   );
 
   const connectManual = useCallback(async () => {
-    const host = manualHost.trim();
     setManualError(null);
-    if (!isPrivateIpv4(host)) {
+    const typed = parseTypedPosHost(manualHost);
+    if (!typed) {
       setManualError(t('boot.invalidHost'));
       return;
     }
-    const port = Number(resolveBackendHost().httpPort) || 3333;
+    const host = typed.host;
+    const port = typed.port ?? (Number(resolveBackendHost().httpPort) || 3333);
     setBusyHost(host);
     try {
       const hit = await probePosHttp(host, port, 2500);
@@ -143,7 +144,8 @@ export function PosServerScanPanel({
           value={manualHost}
           disabled={scanning || Boolean(busyHost)}
           onChange={(e) => {
-            setManualHost(e.target.value);
+            // Decimal keypads in comma regions type "192,168,…".
+            setManualHost(e.target.value.replace(/,/g, '.'));
             setManualError(null);
           }}
           onKeyDown={(e) => {

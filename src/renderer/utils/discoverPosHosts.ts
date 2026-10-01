@@ -9,6 +9,7 @@ import {
   dropLoopbackIfLanSelfPresent,
   type DiscoveredPosHost,
 } from '@shared/posHostDiscovery';
+import { nativeBonjourPosHosts, nativeLocalIpv4s } from './nativePosDiscovery';
 
 const HTTP_TIMEOUT_MS = 350;
 const HTTP_CONCURRENCY = 40;
@@ -126,6 +127,10 @@ export async function discoverPosHostsInBrowser(opts?: {
     ? native.discover().catch(() => [] as DiscoveredPosHost[])
     : Promise.resolve([] as DiscoveredPosHost[]);
 
+  // iPhone Admin app: Bonjour runs alongside the probes, and its answers
+  // (checked over HTTP below) also tell the probes which subnet to scan.
+  const bonjourPromise = nativeBonjourPosHosts();
+
   const port = Number(opts?.httpPort) || POS_LAN_HTTP_PORT;
   const seeds = [...new Set((opts?.seeds || []).map((s) => s.trim()))].filter(
     isPrivateIpv4,
@@ -138,7 +143,11 @@ export async function discoverPosHostsInBrowser(opts?: {
     seeds.map((host) => probePosHttp(host, port, SEED_TIMEOUT_MS)),
   );
 
-  const localIps = await guessLocalIpv4s();
+  const [webIps, nativeIps] = await Promise.all([
+    guessLocalIpv4s(),
+    nativeLocalIpv4s(),
+  ]);
+  const localIps = [...new Set([...nativeIps, ...webIps])];
   const seedSet = new Set(seeds);
   const rest = scanTargets(localIps, seeds).filter((h) => !seedSet.has(h));
   const httpHits = await mapPool(rest, HTTP_CONCURRENCY, (host) =>
@@ -148,6 +157,18 @@ export async function discoverPosHostsInBrowser(opts?: {
     Boolean(h),
   );
   const mdns = await nativePromise;
-  const merged = mergeDiscoveredPosHosts([...mdns, ...http]);
+  const bonjour = await bonjourPromise;
+  // Bonjour can list an old address; only keep tills that answer.
+  const seen = new Set(http.map((h) => `${h.host}:${h.httpPort}`));
+  const bonjourChecked = await Promise.all(
+    bonjour
+      .filter((h) => !seen.has(`${h.host}:${h.httpPort}`))
+      .map((h) => probePosHttp(h.host, h.httpPort, SEED_TIMEOUT_MS)),
+  );
+  const merged = mergeDiscoveredPosHosts([
+    ...mdns,
+    ...http,
+    ...bonjourChecked.filter((h): h is DiscoveredPosHost => Boolean(h)),
+  ]);
   return dropLoopbackIfLanSelfPresent(merged, localIps);
 }

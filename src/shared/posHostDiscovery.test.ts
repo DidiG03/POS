@@ -7,6 +7,7 @@ import {
   isPosDebugBody,
   isPrivateIpv4,
   mergeDiscoveredPosHosts,
+  parseTypedPosHost,
 } from './posHostDiscovery';
 
 describe('hostsInSlash24', () => {
@@ -107,5 +108,32 @@ describe('collectLanScanHosts', () => {
     expect(hosts).toContain('192.168.1.1');
     expect(hosts).toContain('192.168.10.16');
     expect(hosts).toContain('10.0.0.1');
+  });
+});
+
+describe('parseTypedPosHost', () => {
+  it('turns a decimal-comma keypad address into dots', () => {
+    expect(parseTypedPosHost('192,168,33,250')).toEqual({
+      host: '192.168.33.250',
+      port: null,
+    });
+  });
+
+  it('accepts spaces, http:// and a port', () => {
+    expect(parseTypedPosHost(' http://192.168.33.250:3333/ ')).toEqual({
+      host: '192.168.33.250',
+      port: 3333,
+    });
+    expect(parseTypedPosHost('192, 168, 33, 250')).toEqual({
+      host: '192.168.33.250',
+      port: null,
+    });
+  });
+
+  it('rejects public, partial and out-of-range addresses', () => {
+    expect(parseTypedPosHost('8.8.8.8')).toBeNull();
+    expect(parseTypedPosHost('192.168.33')).toBeNull();
+    expect(parseTypedPosHost('192.168.33.250:70000')).toBeNull();
+    expect(parseTypedPosHost('')).toBeNull();
   });
 });

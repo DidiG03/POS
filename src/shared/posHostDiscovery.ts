@@ -32,6 +32,29 @@ export function isPrivateIpv4(ip: string): boolean {
 }
 
 /** Other hosts on the same /24. Caps work to 254 probes. */
+/**
+ * Read a till address typed on a phone. Number keypads in regions that use
+ * a decimal comma (Albania, most of Europe) type "192,168,33,250", so commas
+ * become dots; "http://" and an optional ":port" are accepted too.
+ */
+export function parseTypedPosHost(
+  raw: string,
+): { host: string; port: number | null } | null {
+  let text = String(raw || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '')
+    .replace(/[,\s]+/g, (m) => (m.includes(',') ? '.' : ''));
+  let port: number | null = null;
+  const withPort = text.match(/^(.+):(\d{1,5})$/);
+  if (withPort) {
+    text = withPort[1];
+    port = Number(withPort[2]);
+    if (port < 1 || port > 65535) return null;
+  }
+  return isPrivateIpv4(text) ? { host: text, port } : null;
+}
+
 export function hostsInSlash24(address: string, skipSelf?: string): string[] {
   if (!isPrivateIpv4(address)) return [];
   const parts = String(address)
