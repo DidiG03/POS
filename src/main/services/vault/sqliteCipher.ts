@@ -169,6 +169,10 @@ export async function copySqliteDatabase(opts: {
   const src = openLibsql(source, opts.sourceKey);
   const dst = openLibsql(dest, opts.destKey);
   try {
+    // libSQL enforces foreign keys by default, and tables are copied in name
+    // order: a row pointing at "User" would be refused before "User" exists.
+    // The rows are copied exactly as they are, so nothing is checked here.
+    await dst.execute('PRAGMA foreign_keys=OFF');
     await src.execute('PRAGMA busy_timeout=8000');
     try {
       await src.execute('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -188,16 +192,13 @@ export async function copySqliteDatabase(opts: {
        END, name`,
     );
 
-    for (const row of objects.rows) {
-      const type = String(row.type || '');
-      const name = String(row.name || '');
-      const sql = String(row.sql || '');
-      if (!name || !sql) continue;
-      if (type === 'table') {
-        await dst.execute(sql);
-        const ident = quoteIdent(name);
-        await copyTablePaged(src, dst, ident);
-      }
+    const tables = objects.rows.filter(
+      (row) =>
+        String(row.type || '') === 'table' && row.name != null && row.sql,
+    );
+    for (const row of tables) await dst.execute(String(row.sql));
+    for (const row of tables) {
+      await copyTablePaged(src, dst, quoteIdent(String(row.name)));
     }
 
     for (const row of objects.rows) {

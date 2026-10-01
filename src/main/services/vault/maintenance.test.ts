@@ -60,6 +60,18 @@ async function encryptedTill() {
   await src.execute(
     'CREATE TABLE "SyncState" ("key" TEXT PRIMARY KEY, "valueJson" TEXT, "updatedAt" DATETIME)',
   );
+  // Named before "User" and pointing at it, like the real ledger's tables:
+  // the copy must not trip over foreign keys (libSQL enforces them).
+  await src.execute(
+    'CREATE TABLE "AuditLog" (id INTEGER PRIMARY KEY, "userId" INTEGER NOT NULL REFERENCES "User"(id))',
+  );
+  await src.execute(
+    'CREATE TABLE "User" (id INTEGER PRIMARY KEY, "displayName" TEXT)',
+  );
+  await src.execute(
+    `INSERT INTO "User" (id, "displayName") VALUES (1, 'Juxhin')`,
+  );
+  await src.execute('INSERT INTO "AuditLog" ("userId") VALUES (1)');
   await src.execute(
     'CREATE TABLE "Sale" (id INTEGER PRIMARY KEY AUTOINCREMENT, total REAL, "paidAt" DATETIME)',
   );
@@ -86,7 +98,7 @@ describe('repairLedger', () => {
     const { dir, dbFile } = await encryptedTill();
 
     const r = await repairLedger({ dbFile });
-    expect(r).toMatchObject({ ok: true, issuesFound: false, rows: 251 });
+    expect(r).toMatchObject({ ok: true, issuesFound: false, rows: 253 });
     if (!r.ok) return;
 
     expect(getOpenSqliteMode()).toBe('encrypted');
@@ -122,7 +134,7 @@ describe('disableDiskProtection', () => {
     const { dir, dbFile } = await encryptedTill();
 
     const r = await disableDiskProtection({ userData: dir, dbFile });
-    expect(r).toMatchObject({ ok: true, rows: 251 });
+    expect(r).toMatchObject({ ok: true, rows: 253 });
     if (!r.ok) return;
 
     expect(isPlaintextSqlite(dbFile)).toBe(true);
