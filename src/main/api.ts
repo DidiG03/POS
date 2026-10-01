@@ -3745,12 +3745,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             // tablets still pick this up on the next catchup
           }
           return send(res, 200, result, corsOrigin);
-        } catch (e) {
-          void e;
+        } catch (e: any) {
+          // Report the cause: a bare "failed to update settings" left owners
+          // (and us) with nothing to go on.
+          console.error('settings update failed', e);
+          captureException(e instanceof Error ? e : new Error(String(e)), {
+            type: 'lan_api_handler',
+            method: req.method,
+            path: '/settings/update',
+          });
+          const reason = String(e?.message || '')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .pop();
           return send(
             res,
             500,
-            { error: 'failed to update settings' },
+            {
+              error: reason
+                ? `failed to update settings: ${reason.slice(0, 200)}`
+                : 'failed to update settings',
+            },
             corsOrigin,
           );
         }
