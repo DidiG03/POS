@@ -219,8 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.81"
-            echo "- When saving settings from the Admin app fails, the error now says why (and is reported to us), instead of only \"failed to update settings\"."
+            echo "### Changes in v0.2.82 (change calculator)"
+            echo "- Cash payments: type what the customer gave (or tap Exact / a round amount) and the payment screen shows the change, or how much is still to pay."
+            echo "- On Lek tills with a euro rate, the amount given can be entered in euros; the change is shown in Lek with the euro value."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

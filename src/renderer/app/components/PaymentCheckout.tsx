@@ -9,6 +9,11 @@ import {
   IconPrinter,
 } from '../../components/icons';
 import { formatEur } from '../../utils/format';
+import {
+  cashChange,
+  parseCashInput,
+  quickCashAmounts,
+} from '../../utils/cashChange';
 
 type PayLine = {
   id: string;
@@ -358,6 +363,16 @@ export function PaymentCheckout({
             </section>
           ) : null}
 
+          {paymentMethod === 'CASH' && totalDue > 0 ? (
+            <CashChangeCalculator
+              key={open ? 'open' : 'closed'}
+              totalDue={totalDue}
+              posCurrency={posCurrency}
+              eurExchangeRate={eurExchangeRate}
+              formatAmount={formatAmount}
+            />
+          ) : null}
+
           <details
             className="pos-pay-card"
             open={itemsOpen}
@@ -520,6 +535,138 @@ export function PaymentCheckout({
       </footer>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * "Customer gave 1000, total 500 → change 500". Display only: nothing typed
+ * here is stored or changes the payment. On a Lek till with a euro rate the
+ * cashier can also enter euros; the change is still given in Lek.
+ */
+function CashChangeCalculator({
+  totalDue,
+  posCurrency,
+  eurExchangeRate,
+  formatAmount,
+}: {
+  totalDue: number;
+  posCurrency: string;
+  eurExchangeRate: number | null;
+  formatAmount: (n: number) => string;
+}) {
+  const { t } = useTranslation();
+  const [raw, setRaw] = useState('');
+  const [inEur, setInEur] = useState(false);
+
+  const currency = String(posCurrency || '').toUpperCase();
+  const lekTill = currency === 'ALL' || currency === 'LEK';
+  const rate =
+    lekTill && eurExchangeRate != null && eurExchangeRate > 0
+      ? eurExchangeRate
+      : null;
+  const payInEur = inEur && rate != null;
+
+  const typed = parseCashInput(raw);
+  const receivedInTill =
+    typed == null ? null : payInEur ? typed * rate! : typed;
+  const result = cashChange(totalDue, receivedInTill);
+  const dueInInput = payInEur ? totalDue / rate! : totalDue;
+  const quick = quickCashAmounts(
+    dueInInput,
+    payInEur || currency === 'EUR' ? 'EUR' : 'ALL',
+  );
+  const showAmount = (n: number) => (payInEur ? formatEur(n) : formatAmount(n));
+
+  return (
+    <section className="pos-pay-card space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[13px] font-semibold">
+          {t('order.cashReceived')}
+        </div>
+        {rate != null ? (
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              className={`pos-pay-chip flex-none px-3 ${!payInEur ? 'pos-pay-chip--active' : ''}`}
+              onClick={() => {
+                setInEur(false);
+                setRaw('');
+              }}
+            >
+              Lek
+            </button>
+            <button
+              type="button"
+              className={`pos-pay-chip flex-none px-3 ${payInEur ? 'pos-pay-chip--active' : ''}`}
+              onClick={() => {
+                setInEur(true);
+                setRaw('');
+              }}
+            >
+              €
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <input
+        className="pos-pay-input"
+        inputMode="decimal"
+        autoComplete="off"
+        placeholder={t('order.cashReceivedPlaceholder')}
+        value={raw}
+        onChange={(e) => setRaw(e.target.value)}
+        aria-label={t('order.cashReceived')}
+      />
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          className="pos-pay-chip flex-none px-3"
+          onClick={() => setRaw(String(Math.round(dueInInput * 100) / 100))}
+        >
+          {t('order.exactAmount')}
+        </button>
+        {quick.map((amount) => (
+          <button
+            key={amount}
+            type="button"
+            className="pos-pay-chip flex-none px-3 tabular-nums"
+            onClick={() => setRaw(String(amount))}
+          >
+            {showAmount(amount)}
+          </button>
+        ))}
+      </div>
+      {result ? (
+        result.short > 0 ? (
+          <div className="flex items-baseline justify-between gap-3 text-rose-500">
+            <span className="text-[13px] font-semibold">
+              {t('order.cashStillDue')}
+            </span>
+            <span className="text-xl font-bold tabular-nums">
+              {formatAmount(result.short)}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-[13px] font-semibold">
+              {t('order.changeDue')}
+            </span>
+            <span className="text-right">
+              <span className="block text-2xl font-bold tabular-nums text-emerald-600">
+                {formatAmount(result.change)}
+              </span>
+              {payInEur && result.change > 0 ? (
+                <span className="pos-pay-fx block text-[12px] tabular-nums">
+                  {t('order.inEur', {
+                    amount: formatEur(result.change / rate!),
+                  })}
+                </span>
+              ) : null}
+            </span>
+          </div>
+        )
+      ) : null}
+    </section>
   );
 }
 

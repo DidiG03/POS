@@ -1064,6 +1064,7 @@
     "cashReceived": "Cash received",
     "cashReceivedPlaceholder": "Amount given",
     "changeDue": "Change",
+    "cashStillDue": "Still to pay",
     "exactAmount": "Exact",
     "paymentMethods": "Payment methods",
     "cards": "Cards",
