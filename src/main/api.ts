@@ -102,7 +102,14 @@ import {
 } from './services/createUserAuth';
 import { syncTableAreasToDb } from './services/tableAreasSync';
 import { presentSettingsForClient } from './services/settingsPresent';
-import { getVaultPrefs, setVaultUnlockMode } from './services/vault/lifecycle';
+import {
+  disableDiskProtection,
+  enableDiskProtectionOnRestart,
+  getVaultPrefs,
+  repairLedger,
+  setVaultUnlockMode,
+} from './services/vault/lifecycle';
+import { relaunchTillSoon } from './services/vault/relaunch';
 import {
   createMenuItemFromInput,
   listMenuCategoriesForClient,
@@ -2431,6 +2438,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           return send(res, 200, result, corsOrigin);
         }
         return send(res, 200, { ok: true, ...getVaultPrefs() }, corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/vault/repair') {
+        await parseJson(req);
+        return send(res, 200, await repairLedger(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/vault/disable') {
+        await parseJson(req);
+        return send(res, 200, await disableDiskProtection(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/vault/enable') {
+        await parseJson(req);
+        const result = enableDiskProtectionOnRestart();
+        relaunchTillSoon();
+        return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/settings/fiscal-token-hint') {
         const settings = await coreServices.readSettings();

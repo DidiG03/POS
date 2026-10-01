@@ -798,10 +798,20 @@ export function installBrowserLanApi(): void {
     }
   }
 
+  const VAULT_MAINTENANCE_PATHS = new Set([
+    '/vault/repair',
+    '/vault/disable',
+    '/vault/enable',
+  ]);
+
   function lanRequestTimeoutMs(path: string, method: string): number {
     const pathname = String(path || '').split('?')[0];
     if (pathname === '/auth/login' || pathname === '/pairing/verify') {
       return IS_NATIVE_SHELL ? 12_000 : 6_000;
+    }
+    if (VAULT_MAINTENANCE_PATHS.has(pathname)) {
+      // Rebuilding the ledger copies every row; a busy till takes a while.
+      return 180_000;
     }
     if (pathname.startsWith('/admin/updates/')) {
       // Check/download start work on the till and return; still allow GitHub
@@ -816,6 +826,8 @@ export function installBrowserLanApi(): void {
   function lanRequestAttempts(path: string, method: string): number {
     const pathname = String(path || '').split('?')[0];
     if (pathname === '/auth/login' || pathname === '/pairing/verify') return 1;
+    // Never repeat a ledger rebuild: the second run would report a failure.
+    if (VAULT_MAINTENANCE_PATHS.has(pathname)) return 1;
     if (method === 'GET' || method === 'HEAD') return readRetryAttempts();
     return 2;
   }
@@ -1418,6 +1430,24 @@ export function installBrowserLanApi(): void {
       },
       async setUnlockMode() {
         return await goLan('/vault/prefs', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      },
+      async repair() {
+        return await goLan('/vault/repair', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      },
+      async disableProtection() {
+        return await goLan('/vault/disable', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      },
+      async enableProtection() {
+        return await goLan('/vault/enable', {
           method: 'POST',
           body: JSON.stringify({}),
         });

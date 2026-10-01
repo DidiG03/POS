@@ -319,6 +319,9 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'vault:ackRecovery': { allow: 'public' },
   'vault:getPrefs': { allow: ADMIN },
   'vault:setUnlockMode': { allow: ADMIN, rateLimit: { maxAttempts: 20 } },
+  'vault:repair': { allow: ADMIN, rateLimit: { maxAttempts: 10 } },
+  'vault:disableProtection': { allow: ADMIN, rateLimit: { maxAttempts: 5 } },
+  'vault:enableProtection': { allow: ADMIN, rateLimit: { maxAttempts: 5 } },
 };
 
 export function policyFor(channel: string): IpcPolicy | undefined {

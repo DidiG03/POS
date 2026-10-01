@@ -2,6 +2,7 @@ import { app } from 'electron';
 import fs from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { getOpenSqliteMode, prisma } from '@db/client';
+import { looksLikeSqliteCiphertext } from './vault/sqliteCipher';
 
 export async function getSqliteDbFilePath(): Promise<string | null> {
   try {
@@ -133,11 +134,27 @@ export async function restoreDbBackup(
   if (!fs.existsSync(src)) return { ok: false, error: 'Backup not found' };
   const dbPath = await getSqliteDbFilePath();
   if (!dbPath) return { ok: false, error: 'Could not locate database file' };
+  // An encrypted backup cannot be opened once Disk protection is off.
+  if (getOpenSqliteMode() === 'plain' && looksLikeSqliteCiphertext(src)) {
+    return {
+      ok: false,
+      error:
+        'This backup was made while Disk protection was on. Turn Disk protection on again to restore it.',
+    };
+  }
 
   try {
     await createDbBackupNow().catch(() => null);
     await prisma.$disconnect().catch(() => null);
     fs.copyFileSync(src, dbPath);
+    // The old ledger's -wal/-shm must not be replayed onto the restored file.
+    for (const side of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+      try {
+        fs.unlinkSync(side);
+      } catch {
+        // not there
+      }
+    }
     if (app.isPackaged) {
       app.relaunch();
       app.exit(0);

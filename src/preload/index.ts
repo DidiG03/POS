@@ -321,6 +321,9 @@ const api: Api = {
     unlock: (input) => ipcRenderer.invoke('vault:unlock', input),
     ackRecovery: () => ipcRenderer.invoke('vault:ackRecovery'),
     setUnlockMode: () => ipcRenderer.invoke('vault:setUnlockMode'),
+    repair: () => ipcRenderer.invoke('vault:repair'),
+    disableProtection: () => ipcRenderer.invoke('vault:disableProtection'),
+    enableProtection: () => ipcRenderer.invoke('vault:enableProtection'),
   },
 };
 

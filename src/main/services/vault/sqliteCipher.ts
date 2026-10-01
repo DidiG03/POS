@@ -10,7 +10,12 @@ import path from 'node:path';
 import { createClient, type Client, type InValue } from '@libsql/client';
 import { SQLITE_BUSY_TIMEOUT_MS } from '@db/sqliteBusy';
 import { sqliteFileUrl } from '@db/sqliteUrl';
-import { normalizeDatetimeStorage, type SqlRunner } from '@db/datetimeText';
+import {
+  DATETIME_TEXT_MARKER_KEY,
+  datetimeToIntegerStorage,
+  normalizeDatetimeStorage,
+  type SqlRunner,
+} from '@db/datetimeText';
 
 const SQLITE_MAGIC = Buffer.from('SQLite format 3\0');
 
@@ -50,6 +55,8 @@ const COPY_PAGE = 200;
 function bindValue(value: unknown): InValue {
   if (value == null) return null;
   if (value instanceof Date) return value;
+  // libSQL returns BLOBs as ArrayBuffer; JSON.stringify would turn them into "{}".
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (
     typeof value === 'object' &&
     !Buffer.isBuffer(value) &&
@@ -123,16 +130,44 @@ export async function encryptPlaintextSqlite(opts: {
   destFile: string;
   encryptionKey: string;
 }): Promise<void> {
+  await copySqliteDatabase({
+    sourceFile: opts.sourceFile,
+    destFile: opts.destFile,
+    destKey: opts.encryptionKey,
+  });
+  if (!looksLikeSqliteCiphertext(opts.destFile)) {
+    throw new Error('Encrypted database was not written');
+  }
+}
+
+/**
+ * Copy every table, index, trigger and AUTOINCREMENT counter of one SQLite
+ * file into a new file, row by row. Either side may be encrypted (pass its
+ * key) or plain. Rebuilding this way also drops any damage in the file's
+ * page layout that does not affect the rows themselves.
+ *
+ * DateTimes are stored the way the destination's engine expects: TEXT for
+ * an encrypted ledger (libSQL adapter), INTEGER milliseconds for a plain one
+ * (Prisma's native engine).
+ */
+export async function copySqliteDatabase(opts: {
+  sourceFile: string;
+  sourceKey?: string;
+  destFile: string;
+  destKey?: string;
+}): Promise<void> {
   const source = path.resolve(opts.sourceFile);
   const dest = path.resolve(opts.destFile);
   if (source === dest) {
-    throw new Error('Cannot encrypt a database onto itself');
+    throw new Error('Cannot copy a database onto itself');
   }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  if (fs.existsSync(dest)) fs.unlinkSync(dest);
+  for (const f of [dest, `${dest}-wal`, `${dest}-shm`]) {
+    if (fs.existsSync(f)) fs.unlinkSync(f);
+  }
 
-  const src = openLibsql(source);
-  const dst = openLibsql(dest, opts.encryptionKey);
+  const src = openLibsql(source, opts.sourceKey);
+  const dst = openLibsql(dest, opts.destKey);
   try {
     await src.execute('PRAGMA busy_timeout=8000');
     try {
@@ -184,16 +219,67 @@ export async function encryptPlaintextSqlite(opts: {
       // no sqlite_sequence
     }
 
-    // The plain ledger's integer DateTimes would never match the encrypted
-    // ledger's TEXT comparisons. Store them the way the adapter does.
-    await normalizeDatetimeStorage(libsqlRunner(dst));
+    if (opts.destKey) {
+      // The plain ledger's integer DateTimes would never match the encrypted
+      // ledger's TEXT comparisons. Store them the way the adapter does.
+      await normalizeDatetimeStorage(libsqlRunner(dst), { force: true });
+    } else {
+      await datetimeToIntegerStorage(libsqlRunner(dst));
+    }
+    try {
+      await dst.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      // not in WAL mode
+    }
   } finally {
     await closeQuietly(dst);
     await closeQuietly(src);
   }
+}
 
-  if (!looksLikeSqliteCiphertext(dest)) {
-    throw new Error('Encrypted database was not written');
+/** `PRAGMA integrity_check` lines; `['ok']` when the file is healthy. */
+export async function sqliteIntegrityCheck(
+  file: string,
+  encryptionKey?: string,
+): Promise<string[]> {
+  const client = openLibsql(file, encryptionKey);
+  try {
+    const result = await client.execute('PRAGMA integrity_check(50)');
+    return result.rows.map((r) => String(Object.values(r)[0] ?? ''));
+  } finally {
+    await closeQuietly(client);
+  }
+}
+
+/** Row count of every user table, to prove a copy kept everything. */
+export async function sqliteRowCounts(
+  file: string,
+  encryptionKey?: string,
+): Promise<Record<string, number>> {
+  const client = openLibsql(file, encryptionKey);
+  try {
+    const tables = await client.execute(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+    );
+    const out: Record<string, number> = {};
+    for (const row of tables.rows) {
+      const name = String(row.name || '');
+      if (!name) continue;
+      // The DateTime-format marker is bookkeeping that a decrypted copy drops
+      // on purpose; it is not a record.
+      const r = await client.execute(
+        name === 'SyncState'
+          ? {
+              sql: `SELECT COUNT(*) AS n FROM "SyncState" WHERE "key" != ?`,
+              args: [DATETIME_TEXT_MARKER_KEY],
+            }
+          : `SELECT COUNT(*) AS n FROM ${quoteIdent(name)}`,
+      );
+      out[name] = Number(r.rows[0]?.n ?? 0);
+    }
+    return out;
+  } finally {
+    await closeQuietly(client);
   }
 }
 

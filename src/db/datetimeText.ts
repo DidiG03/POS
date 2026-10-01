@@ -112,3 +112,38 @@ export async function normalizeDatetimeStorage(
   }
   return { skipped: false, updated };
 }
+
+/** Matches the adapter's TEXT DateTime and SQLite's `CURRENT_TIMESTAMP` text. */
+const DATETIME_TEXT_GLOB =
+  '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9]:[0-9][0-9]*';
+
+/**
+ * The reverse of `normalizeDatetimeStorage`, for an encrypted ledger copied
+ * back to a plain file: Prisma's native engine stores and compares DateTime
+ * as INTEGER milliseconds. Exact to the millisecond. Drops the TEXT marker so
+ * re-encrypting later converts again.
+ */
+export async function datetimeToIntegerStorage(
+  db: SqlRunner,
+): Promise<{ updated: number }> {
+  let updated = 0;
+  for (const { table, columns } of await listDatetimeColumns(db)) {
+    const t = quoteIdent(table);
+    for (const column of columns) {
+      const c = quoteIdent(column);
+      updated += await db.exec(
+        `UPDATE ${t} SET ${c} = ` +
+          `CAST(strftime('%s', ${c}) AS INTEGER) * 1000 + ` +
+          `CAST(ROUND(strftime('%f', ${c}) * 1000) AS INTEGER) % 1000 ` +
+          `WHERE typeof(${c}) = 'text' AND ${c} GLOB '${DATETIME_TEXT_GLOB}' ` +
+          `AND strftime('%s', ${c}) IS NOT NULL`,
+      );
+    }
+  }
+  if (await tableExists(db, 'SyncState')) {
+    await db.exec(`DELETE FROM "SyncState" WHERE "key" = ?`, [
+      DATETIME_TEXT_MARKER_KEY,
+    ]);
+  }
+  return { updated };
+}

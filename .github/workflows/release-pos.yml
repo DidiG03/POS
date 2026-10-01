@@ -219,9 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.82 (change calculator)"
-            echo "- Cash payments: type what the customer gave (or tap Exact / a round amount) and the payment screen shows the change, or how much is still to pay."
-            echo "- On Lek tills with a euro rate, the amount given can be entered in euros; the change is shown in Lek with the euro value."
+            echo "### Changes in v0.2.83 (database repair)"
+            echo "- Admin > Settings > Disk protection: new \"Check & repair\" rebuilds the till database into a fresh file (every record copied and checked; the old file is kept)."
+            echo "- New \"Turn off Disk protection\" for computers where the encrypted database fails with \"disk I/O error\" (for example when saving settings). The till switches to a normal database after checking the copy; the encrypted file is kept as a backup. It can be turned back on from the same page."
+            echo "- Restoring a backup no longer leaves the previous database's temporary files next to it."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

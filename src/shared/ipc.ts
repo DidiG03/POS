@@ -807,6 +807,8 @@ export interface ApiVault {
     state: 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
     unlockMode: 'os' | 'disabled';
     osAvailable: boolean;
+    protectionOff?: boolean;
+    ledger?: 'plain' | 'encrypted' | 'none';
   }>;
   setup(): Promise<{ ok: boolean; recoveryKey?: string; error?: string }>;
   unlock(input: { secret: string }): Promise<{ ok: boolean; error?: string }>;
@@ -818,7 +820,23 @@ export interface ApiVault {
     unlockMode?: 'os' | 'disabled';
     osAvailable?: boolean;
   }>;
+  /** Check the ledger and rebuild it into a fresh file (keeps the old one). */
+  repair?(): Promise<VaultMaintenanceResult>;
+  /** Decrypt the ledger and keep Disk protection off across restarts. */
+  disableProtection?(): Promise<VaultMaintenanceResult>;
+  /** Turn Disk protection back on; the till restarts into its setup screen. */
+  enableProtection?(): Promise<{ ok: boolean; restartRequired?: boolean }>;
 }
+
+export type VaultMaintenanceResult =
+  | {
+      ok: true;
+      issuesFound: boolean;
+      issues: string[];
+      rows: number;
+      backupFile: string;
+    }
+  | { ok: false; error: string; detail?: string; issues?: string[] };
 
 export interface Api {
   auth: ApiAuth;

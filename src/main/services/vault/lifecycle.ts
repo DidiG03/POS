@@ -1,6 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { openEncryptedSqlite, resolveSqliteFilePath } from '@db/client';
+import {
+  disconnectPrisma,
+  getOpenSqliteMode,
+  openEncryptedSqlite,
+  openPlainSqlite,
+  resolveSqliteFilePath,
+} from '@db/client';
 import {
   DEFAULT_KDF,
   dekToEncryptionKey,
@@ -22,12 +28,20 @@ import {
   type VaultFile,
 } from './store';
 import {
+  copySqliteDatabase,
   encryptPlaintextSqlite,
   isPlaintextSqlite,
   looksLikeSqliteCiphertext,
   openLibsql,
+  sqliteIntegrityCheck,
+  sqliteRowCounts,
   verifyEncryptedSqlite,
 } from './sqliteCipher';
+import {
+  clearDiskProtectionOff,
+  isDiskProtectionOff,
+  writeDiskProtectionOff,
+} from './protectionOff';
 import { replaceFile } from './replaceFile';
 
 export type VaultState = 'disabled' | 'setup' | 'locked' | 'open' | 'broken';
@@ -43,6 +57,10 @@ export type VaultPrefs = {
   state: VaultState;
   unlockMode: 'os' | 'disabled';
   osAvailable: boolean;
+  /** The owner turned Disk protection off (kept off across restarts). */
+  protectionOff: boolean;
+  /** Which engine has the ledger open right now. */
+  ledger: 'plain' | 'encrypted' | 'none';
 };
 
 export type VaultActionResult =
@@ -96,6 +114,8 @@ export function getVaultPrefs(opts?: {
     state: status.state,
     unlockMode: status.unlockMode || 'disabled',
     osAvailable: Boolean(status.osAvailable),
+    protectionOff: isDiskProtectionOff(opts?.userData ?? vaultUserData()),
+    ledger: getOpenSqliteMode(),
   };
 }
 
@@ -444,4 +464,275 @@ function shredPlaintextSidecars(userData: string, dbFile: string): void {
     if (path.resolve(leftover) === current) continue;
     if (isPlaintextSqlite(leftover)) secureDeleteSqliteGroup(leftover);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Ledger maintenance: "Check & repair" and "Turn off Disk protection".
+//
+// Both rebuild the ledger row by row into a new file with the live
+// connection closed, prove the copy (integrity check + identical row counts
+// per table) and only then swap it in. The old file is kept next to it.
+
+export type LedgerMaintenanceResult =
+  | {
+      ok: true;
+      /** integrity_check on the old file found problems (now rebuilt away). */
+      issuesFound: boolean;
+      issues: string[];
+      rows: number;
+      backupFile: string;
+    }
+  | { ok: false; error: string; detail?: string; issues?: string[] };
+
+function fileStamp(now = new Date()): string {
+  return now.toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
+}
+
+/** Move a SQLite file and its -wal/-shm next to it under a new name. */
+function moveSqliteGroup(from: string, to: string): void {
+  for (const suffix of ['', '-wal', '-shm']) {
+    const src = `${from}${suffix}`;
+    if (!fs.existsSync(src)) continue;
+    const dest = `${to}${suffix}`;
+    try {
+      fs.renameSync(src, dest);
+    } catch {
+      fs.copyFileSync(src, dest);
+      try {
+        fs.unlinkSync(src);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function removeSqliteGroup(file: string): void {
+  for (const suffix of ['', '-wal', '-shm']) {
+    try {
+      fs.unlinkSync(`${file}${suffix}`);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function reopenLedger(
+  dbFile: string,
+  encryptionKey: string | undefined,
+): Promise<void> {
+  if (encryptionKey) {
+    await openEncryptedSqlite(dbFile, encryptionKey);
+  } else {
+    process.env.POS_VAULT_LOCK = '';
+    await openPlainSqlite();
+  }
+}
+
+function describeError(e: unknown): string {
+  return String((e as Error)?.message || e || 'unknown error')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-1)[0]
+    .slice(0, 300);
+}
+
+async function proveCopy(
+  source: string,
+  sourceKey: string | undefined,
+  copy: string,
+  copyKey: string | undefined,
+): Promise<number> {
+  const check = await sqliteIntegrityCheck(copy, copyKey);
+  if (check.length !== 1 || check[0] !== 'ok') {
+    throw new Error(`the new copy failed its check: ${check[0] || 'unknown'}`);
+  }
+  const [before, after] = await Promise.all([
+    sqliteRowCounts(source, sourceKey),
+    sqliteRowCounts(copy, copyKey),
+  ]);
+  let rows = 0;
+  for (const [table, n] of Object.entries(before)) {
+    if (after[table] !== n) {
+      throw new Error(
+        `the new copy has ${after[table] ?? 0} rows in ${table}, expected ${n}`,
+      );
+    }
+    rows += n;
+  }
+  return rows;
+}
+
+export async function repairLedger(opts?: {
+  dbFile?: string;
+}): Promise<LedgerMaintenanceResult> {
+  return withVaultOp(() => repairLedgerOp(opts));
+}
+
+async function repairLedgerOp(opts?: {
+  dbFile?: string;
+}): Promise<LedgerMaintenanceResult> {
+  const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
+  const mode = getOpenSqliteMode();
+  if (mode === 'none') return { ok: false, error: 'locked' };
+  const key =
+    mode === 'encrypted'
+      ? unlockedDek
+        ? dekToEncryptionKey(unlockedDek)
+        : null
+      : undefined;
+  if (key === null) return { ok: false, error: 'locked' };
+
+  const rebuilt = `${dbFile}.repair-new`;
+  let issues: string[] = [];
+  // Requests that arrive meanwhile get POS_DB_LOCKED instead of opening the
+  // file with the wrong engine.
+  process.env.POS_VAULT_LOCK = '1';
+  await disconnectPrisma();
+  try {
+    try {
+      issues = await sqliteIntegrityCheck(dbFile, key);
+    } catch (e) {
+      issues = [describeError(e)];
+    }
+    await copySqliteDatabase({
+      sourceFile: dbFile,
+      sourceKey: key,
+      destFile: rebuilt,
+      destKey: key,
+    });
+    const rows = await proveCopy(dbFile, key, rebuilt, key);
+
+    const backup = `${dbFile}.before-repair-${fileStamp()}`;
+    moveSqliteGroup(dbFile, backup);
+    replaceFile(rebuilt, dbFile);
+    await reopenLedger(dbFile, key);
+    const issuesFound = !(issues.length === 1 && issues[0] === 'ok');
+    console.log(
+      `[vault] ledger rebuilt (${rows} rows, issues found: ${issuesFound}); old file kept as ${backup}`,
+    );
+    return {
+      ok: true,
+      issuesFound,
+      issues: issuesFound ? issues.slice(0, 5) : [],
+      rows,
+      backupFile: path.basename(backup),
+    };
+  } catch (e) {
+    console.error('[vault] ledger repair failed:', e);
+    removeSqliteGroup(rebuilt);
+    try {
+      await reopenLedger(dbFile, key);
+    } catch (reopenErr) {
+      console.error('[vault] reopen after failed repair:', reopenErr);
+    }
+    return {
+      ok: false,
+      error: 'repair_failed',
+      detail: describeError(e),
+      issues: issues.slice(0, 5),
+    };
+  }
+}
+
+export async function disableDiskProtection(opts?: {
+  userData?: string;
+  dbFile?: string;
+}): Promise<LedgerMaintenanceResult> {
+  return withVaultOp(() => disableDiskProtectionOp(opts));
+}
+
+async function disableDiskProtectionOp(opts?: {
+  userData?: string;
+  dbFile?: string;
+}): Promise<LedgerMaintenanceResult> {
+  const userData = opts?.userData ?? vaultUserData();
+  const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
+  if (getOpenSqliteMode() !== 'encrypted' || !unlockedDek) {
+    return { ok: false, error: 'not_encrypted' };
+  }
+  const key = dekToEncryptionKey(unlockedDek);
+  const plainNew = `${dbFile}.plain-new`;
+  let issues: string[] = [];
+  process.env.POS_VAULT_LOCK = '1';
+  await disconnectPrisma();
+  try {
+    try {
+      issues = await sqliteIntegrityCheck(dbFile, key);
+    } catch (e) {
+      issues = [describeError(e)];
+    }
+    await copySqliteDatabase({
+      sourceFile: dbFile,
+      sourceKey: key,
+      destFile: plainNew,
+    });
+    if (!isPlaintextSqlite(plainNew)) {
+      throw new Error('the unencrypted copy was not written');
+    }
+    const rows = await proveCopy(dbFile, key, plainNew, undefined);
+
+    const stamp = fileStamp();
+    // Kept encrypted: it can still be opened with the recovery key and the
+    // vault file saved beside it.
+    const encryptedBackup = `${dbFile}.encrypted-backup-${stamp}`;
+    moveSqliteGroup(dbFile, encryptedBackup);
+    replaceFile(plainNew, dbFile);
+    const vaultBackup = path.join(userData, `vault-backup-${stamp}.json`);
+    writeDiskProtectionOff(userData, {
+      at: new Date().toISOString(),
+      encryptedBackup: path.basename(encryptedBackup),
+      vaultBackup: path.basename(vaultBackup),
+    });
+    try {
+      if (fs.existsSync(vaultFilePath(userData))) {
+        fs.renameSync(vaultFilePath(userData), vaultBackup);
+      }
+    } catch (e) {
+      console.error('[vault] could not set vault.json aside:', e);
+    }
+
+    process.env.POS_VAULT = '0';
+    unlockedDek = null;
+    pendingRecoveryKey = null;
+    await reopenLedger(dbFile, undefined);
+    console.log(
+      `[vault] Disk protection turned off (${rows} rows); encrypted copy kept as ${encryptedBackup}`,
+    );
+    const issuesFound = !(issues.length === 1 && issues[0] === 'ok');
+    return {
+      ok: true,
+      issuesFound,
+      issues: issuesFound ? issues.slice(0, 5) : [],
+      rows,
+      backupFile: path.basename(encryptedBackup),
+    };
+  } catch (e) {
+    console.error('[vault] turning Disk protection off failed:', e);
+    removeSqliteGroup(plainNew);
+    try {
+      await reopenLedger(dbFile, key);
+    } catch (reopenErr) {
+      console.error('[vault] reopen after failed disable:', reopenErr);
+    }
+    return {
+      ok: false,
+      error: 'disable_failed',
+      detail: describeError(e),
+      issues: issues.slice(0, 5),
+    };
+  }
+}
+
+/**
+ * Turn Disk protection back on: the till shows its encryption setup screen
+ * (with a new recovery key) on the next start.
+ */
+export function enableDiskProtectionOnRestart(opts?: { userData?: string }): {
+  ok: true;
+  restartRequired: true;
+} {
+  clearDiskProtectionOff(opts?.userData ?? vaultUserData());
+  return { ok: true, restartRequired: true };
 }

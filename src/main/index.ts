@@ -144,13 +144,17 @@ import { bootStep, bootTrace } from '@shared/bootTrace';
 import {
   ackPendingRecoveryKey,
   bootstrapVault,
+  disableDiskProtection,
+  enableDiskProtectionOnRestart,
   getVaultPrefs,
   getVaultStatus,
   isVaultRequired,
+  repairLedger,
   setVaultUnlockMode,
   setupVaultWithOs,
   unlockVault,
 } from './services/vault/lifecycle';
+import { relaunchTillSoon } from './services/vault/relaunch';
 import type { Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
@@ -1720,6 +1724,16 @@ ipcHandle('vault:setUnlockMode', async () => {
   const result = await setVaultUnlockMode();
   if (!result.ok) return result;
   return { ok: true, ...getVaultPrefs() };
+});
+
+ipcHandle('vault:repair', async () => repairLedger());
+
+ipcHandle('vault:disableProtection', async () => disableDiskProtection());
+
+ipcHandle('vault:enableProtection', async () => {
+  const result = enableDiskProtectionOnRestart();
+  relaunchTillSoon();
+  return result;
 });
 
 // Updater IPC handlers

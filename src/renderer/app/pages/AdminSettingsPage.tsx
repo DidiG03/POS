@@ -2117,6 +2117,16 @@ function DiskProtectionSettings() {
     state: string;
     unlockMode: 'os' | 'disabled';
     osAvailable: boolean;
+    protectionOff: boolean;
+    ledger: 'plain' | 'encrypted' | 'none';
+  } | null>(null);
+  const [ledgerAction, setLedgerAction] = useState<
+    'repair' | 'disable' | 'enable' | null
+  >(null);
+  const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [ledgerResult, setLedgerResult] = useState<{
+    tone: 'ok' | 'error';
+    lines: string[];
   } | null>(null);
   const [eraseOpen, setEraseOpen] = useState(false);
   const [eraseTyped, setEraseTyped] = useState('');
@@ -2138,6 +2148,11 @@ function DiskProtectionSettings() {
           state: String(next.state || 'disabled'),
           unlockMode: (next.unlockMode || 'disabled') as 'os' | 'disabled',
           osAvailable: Boolean(next.osAvailable),
+          protectionOff: Boolean((next as any).protectionOff),
+          ledger: ((next as any).ledger || 'none') as
+            | 'plain'
+            | 'encrypted'
+            | 'none',
         });
       } else {
         setPrefs(null);
@@ -2152,6 +2167,61 @@ function DiskProtectionSettings() {
   useEffect(() => {
     void reload();
   }, []);
+
+  async function runLedgerAction() {
+    const action = ledgerAction;
+    const api = window.api.vault;
+    if (!action || !api) return;
+    setLedgerBusy(true);
+    setLedgerResult(null);
+    try {
+      if (action === 'enable') {
+        await api.enableProtection?.();
+        setLedgerAction(null);
+        setStatus(t('settingsVault.enableRestarting'));
+        return;
+      }
+      const r =
+        action === 'repair'
+          ? await api.repair?.()
+          : await api.disableProtection?.();
+      if (!r) throw new Error('not supported');
+      if (r.ok) {
+        const lines = [
+          action === 'repair'
+            ? r.issuesFound
+              ? t('settingsVault.repairFixed', { rows: r.rows })
+              : t('settingsVault.repairHealthy', { rows: r.rows })
+            : t('settingsVault.disableDone', { rows: r.rows }),
+          ...r.issues,
+          t('settingsVault.oldFileKept', { file: r.backupFile }),
+        ];
+        setLedgerResult({ tone: 'ok', lines });
+        setStatus(lines[0]);
+      } else {
+        const lines = [
+          action === 'repair'
+            ? t('settingsVault.repairFailed')
+            : t('settingsVault.disableFailed'),
+          ...(r.detail ? [r.detail] : []),
+          ...(r.issues || []).filter((x) => x !== 'ok'),
+        ];
+        setLedgerResult({ tone: 'error', lines });
+        setStatus(lines[0], 'error');
+      }
+      setLedgerAction(null);
+      await reload();
+    } catch (e: any) {
+      const msg = String(e?.message || e || '');
+      setLedgerResult({
+        tone: 'error',
+        lines: [t('settingsVault.actionFailed'), msg].filter(Boolean),
+      });
+      setLedgerAction(null);
+    } finally {
+      setLedgerBusy(false);
+    }
+  }
 
   async function eraseAll() {
     if (eraseTyped.trim().toUpperCase() !== erasePhrase.toUpperCase()) return;
@@ -2181,6 +2251,18 @@ function DiskProtectionSettings() {
       <SettingsCard>
         {loading ? (
           <div className="text-[13px] text-gray-400">{t('common.loading')}</div>
+        ) : prefs?.protectionOff && prefs.state === 'disabled' ? (
+          <div className="space-y-3">
+            <p className="text-[13px] leading-relaxed text-gray-400">
+              {t('settingsVault.statusTurnedOff')}
+            </p>
+            <Button
+              disabled={ledgerBusy}
+              onClick={() => setLedgerAction('enable')}
+            >
+              {t('settingsVault.enableButton')}
+            </Button>
+          </div>
         ) : !prefs || prefs.state === 'disabled' ? (
           <p className="text-[13px] leading-relaxed text-gray-400">
             {t('settingsVault.statusOff')}
@@ -2206,6 +2288,103 @@ function DiskProtectionSettings() {
           </div>
         )}
       </SettingsCard>
+
+      {prefs && prefs.ledger !== 'none' ? (
+        <div className="mt-5">
+          <SettingsCard
+            title={t('settingsVault.repairTitle')}
+            description={t('settingsVault.repairHelp')}
+          >
+            <Button
+              disabled={ledgerBusy || loading}
+              onClick={() => setLedgerAction('repair')}
+            >
+              {t('settingsVault.repairButton')}
+            </Button>
+          </SettingsCard>
+        </div>
+      ) : null}
+
+      {prefs?.state === 'open' && prefs.ledger === 'encrypted' ? (
+        <div className="mt-5">
+          <SettingsCard
+            title={t('settingsVault.disableTitle')}
+            description={t('settingsVault.disableHelp')}
+          >
+            <Button
+              variant="danger"
+              disabled={ledgerBusy || loading}
+              onClick={() => setLedgerAction('disable')}
+            >
+              {t('settingsVault.disableButton')}
+            </Button>
+          </SettingsCard>
+        </div>
+      ) : null}
+
+      {ledgerResult ? (
+        <div
+          className={`mt-5 rounded-lg border px-4 py-3 text-[13px] leading-relaxed ${
+            ledgerResult.tone === 'ok'
+              ? 'border-emerald-700/60 bg-emerald-900/25 text-emerald-100'
+              : 'border-rose-700/60 bg-rose-900/30 text-rose-100'
+          }`}
+        >
+          {ledgerResult.lines.map((line, i) => (
+            <div key={i} className={i === 0 ? 'font-semibold' : 'opacity-90'}>
+              {line}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <Modal
+        open={ledgerAction != null}
+        onClose={() => {
+          if (ledgerBusy) return;
+          setLedgerAction(null);
+        }}
+        title={
+          ledgerAction === 'repair'
+            ? t('settingsVault.repairConfirmTitle')
+            : ledgerAction === 'disable'
+              ? t('settingsVault.disableConfirmTitle')
+              : t('settingsVault.enableConfirmTitle')
+        }
+        size="sm"
+        footer={
+          <>
+            <Button
+              disabled={ledgerBusy}
+              onClick={() => setLedgerAction(null)}
+              className="max-sm:flex-1"
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant={ledgerAction === 'disable' ? 'danger' : 'primary'}
+              loading={ledgerBusy}
+              disabled={ledgerBusy}
+              className="max-sm:flex-1"
+              onClick={() => void runLedgerAction()}
+            >
+              {ledgerAction === 'repair'
+                ? t('settingsVault.repairButton')
+                : ledgerAction === 'disable'
+                  ? t('settingsVault.disableButton')
+                  : t('settingsVault.enableButton')}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13px] leading-relaxed text-gray-300">
+          {ledgerAction === 'repair'
+            ? t('settingsVault.repairConfirmBody')
+            : ledgerAction === 'disable'
+              ? t('settingsVault.disableConfirmBody')
+              : t('settingsVault.enableConfirmBody')}
+        </p>
+      </Modal>
 
       <div className="mt-5">
         <SettingsCard

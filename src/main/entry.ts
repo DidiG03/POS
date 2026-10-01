@@ -6,6 +6,7 @@ import {
   copySqliteGroup,
   resolvePackagedSqliteSource,
 } from './services/packagedSqlite';
+import { isDiskProtectionOff } from './services/vault/protectionOff';
 
 app.setName('OneTap POS');
 process.title = 'OneTap POS';
@@ -75,11 +76,9 @@ function ensureSqliteDbFile() {
     fs.mkdirSync(dbDir, { recursive: true });
     const targetFile = path.join(dbDir, 'pos.db');
     const appData = app.getPath('appData');
-    const legacyFiles = [
-      'one-tap-pos',
-      'OneTap POS',
-      'one-tap-pos',
-    ].map((folder) => path.join(appData, folder, 'db', 'pos.db'));
+    const legacyFiles = ['one-tap-pos', 'OneTap POS', 'one-tap-pos'].map(
+      (folder) => path.join(appData, folder, 'db', 'pos.db'),
+    );
     const seedFile = path.join(process.resourcesPath, 'seed.db');
     const source = resolvePackagedSqliteSource(targetFile, legacyFiles, {
       seedFile,
@@ -146,6 +145,18 @@ function ensurePackagedDefaults() {
 ensurePackagedDefaults();
 ensureSqliteDbFile();
 ensurePrismaModulePath();
+// The owner turned Disk protection off in Admin (see vault/protectionOff).
+try {
+  if (
+    app.isPackaged &&
+    !String(process.env.POS_VAULT || '').trim() &&
+    isDiskProtectionOff(app.getPath('userData'))
+  ) {
+    process.env.POS_VAULT = '0';
+  }
+} catch {
+  // ignore — protection stays on
+}
 if (app.isPackaged && String(process.env.POS_VAULT || '').trim() !== '0') {
   if (!String(process.env.POS_VAULT || '').trim()) {
     process.env.POS_VAULT = '1';
