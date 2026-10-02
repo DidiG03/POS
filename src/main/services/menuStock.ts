@@ -107,6 +107,37 @@ export async function consumeMenuStockForTicketLines(
   }
 }
 
+/**
+ * Put store stock back for lines of a sale that was voided or corrected:
+ * the goods never left the shop. Only items that keep an on-hand count.
+ * Units are counted the same way the sale took them (`consumeUnits`).
+ */
+export async function restockMenuStockForLines(
+  db: DbClient,
+  lines: StockConsumeLine[],
+): Promise<number> {
+  let restocked = 0;
+  for (const line of Array.isArray(lines) ? lines : []) {
+    const sku = String(line?.sku || '').trim();
+    if (!sku) continue;
+    const row = await db.menuItem.findUnique({ where: { sku } });
+    if (!row || row.stockRemaining == null) continue;
+    const units = consumeUnits(line?.qty);
+    await db.menuItem.updateMany({
+      where: { id: row.id, stockRemaining: { not: null } },
+      data: { stockRemaining: { increment: units } },
+    });
+    const after = await db.menuItem.findUnique({ where: { id: row.id } });
+    if (!after || after.stockRemaining == null) continue;
+    await db.menuItem.update({
+      where: { id: row.id },
+      data: storeOnHandWrite(Number(after.stockRemaining)),
+    });
+    restocked += units;
+  }
+  return restocked;
+}
+
 export function applyDailyStockPatch(input: {
   nextLevel: 'OK' | 'LOW' | 'OUT';
   stockRemainingIn?: number | null;

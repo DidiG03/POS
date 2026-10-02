@@ -798,7 +798,10 @@ export function installBrowserLanApi(): void {
     }
   }
 
+  // Writes that must never be sent twice (a retried void or ledger rebuild
+  // would report a failure) and may take a while on the till.
   const VAULT_MAINTENANCE_PATHS = new Set([
+    '/admin/correct-sale',
     '/vault/repair',
     '/vault/disable',
     '/vault/enable',
@@ -1477,6 +1480,19 @@ export function installBrowserLanApi(): void {
         const suffix = q.toString() ? `?${q.toString()}` : '';
         const rows = await goLan('/admin/ticket-counts' + suffix);
         return Array.isArray(rows) ? rows : [];
+      },
+      async correctSale(input: {
+        orderId: number;
+        kind: 'CANCEL' | 'CORRECTIVE';
+        itemIds?: number[];
+        reason: string;
+        approvedByAdminId: number;
+        approvedByAdminToken: string;
+      }) {
+        return await goLan('/admin/correct-sale', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
       },
       async eraseTickets(input: { confirm: string }) {
         return await goLan('/admin/erase-tickets', {

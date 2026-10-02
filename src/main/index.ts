@@ -101,6 +101,7 @@ import {
   setUnpackagedDevEdition,
   storePlanBlocksKds,
   storePlanBlocksReservations,
+  storePlanBlocksTables,
   withLicenseEdition,
 } from './services/license';
 import { licenseStatusForRenderer } from './services/licenseStatus';
@@ -4415,6 +4416,7 @@ ipcHandle('admin:correctSale', async (_e, input, ctx) => {
     reason,
     actorUserId: resolveActorUserId(ctx, approvedByAdminId),
     approvedById: approvedByAdminId,
+    restockStore: storePlanBlocksTables(),
   });
 });
 

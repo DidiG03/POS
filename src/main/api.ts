@@ -162,6 +162,7 @@ import {
 import { normalizePin } from '@shared/staffPin';
 import { allowLanCorsOrigin, isTrustedLanClient } from './services/lanCors';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
+import { applySaleCorrection } from './services/saleCorrection';
 import {
   gzipBodyIfAccepted,
   gzipHtmlIfAccepted,
@@ -3921,6 +3922,67 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }),
           corsOrigin,
         );
+      }
+      // Admin app (LAN): void or correct a settled sale. Same rule as the
+      // till's `admin:correctSale`: an ADMIN session for the screen, plus a
+      // fresh admin PIN approval for the write.
+      if (req.method === 'POST' && pathname === '/admin/correct-sale') {
+        const body = await parseJson(req);
+        const kind = String(body?.kind || '').toUpperCase();
+        if (kind !== 'CANCEL' && kind !== 'CORRECTIVE') {
+          return send(
+            res,
+            200,
+            { ok: false, error: 'invalid-kind' },
+            corsOrigin,
+          );
+        }
+        const aid = Number(body?.approvedByAdminId) || 0;
+        const tok = String(body?.approvedByAdminToken || '').trim();
+        const approved = tok ? await verifyApprovalToken(secret, tok) : null;
+        if (
+          !aid ||
+          !approved ||
+          approved.userId !== aid ||
+          String((approved as any).role || '').toUpperCase() !== 'ADMIN'
+        ) {
+          return send(
+            res,
+            200,
+            { ok: false, error: 'approval-required' },
+            corsOrigin,
+          );
+        }
+        const approver = await prisma.user
+          .findUnique({ where: { id: aid } })
+          .catch(() => null);
+        if (
+          !approver ||
+          (approver as any).active === false ||
+          String((approver as any).role || '').toUpperCase() !== 'ADMIN'
+        ) {
+          return send(
+            res,
+            200,
+            { ok: false, error: 'approval-required' },
+            corsOrigin,
+          );
+        }
+        const itemIds = Array.isArray(body?.itemIds)
+          ? body.itemIds
+              .map((id: unknown) => Number(id))
+              .filter(Number.isFinite)
+          : undefined;
+        const result = await applySaleCorrection({
+          orderId: Number(body?.orderId),
+          kind: kind as 'CANCEL' | 'CORRECTIVE',
+          itemIds,
+          reason: String(body?.reason || ''),
+          actorUserId: auth?.userId ?? aid,
+          approvedById: aid,
+          restockStore: storePlanBlocksTables(),
+        });
+        return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/admin/erase-tickets') {
         const body = await parseJson(req);

@@ -8,6 +8,7 @@ import {
 import { FiscalVerifyQr } from '../../components/FiscalVerifyQr';
 import { Badge, Button, Field, Input } from '../../components/ui';
 import { toast } from '../../stores/toasts';
+import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 
 function fmtAmount(n: number): string {
   const v = Number(n || 0);
@@ -24,12 +25,16 @@ function fmtAmount(n: number): string {
 export function TicketSalePanel({
   sale,
   onCorrected,
+  startVoid = false,
 }: {
   sale: FiscalSaleDTO | null | undefined;
   onCorrected?: () => void;
+  /** Open straight on the shop "Void sale" form (from the card's Void button). */
+  startVoid?: boolean;
 }) {
   const { t } = useTranslation();
-  const [openForm, setOpenForm] = useState(false);
+  const hasTables = useLicenseCapabilities((s) => s.hasTables);
+  const [openForm, setOpenForm] = useState(startVoid);
   const [picked, setPicked] = useState<number[]>([]);
   const [reason, setReason] = useState('');
   const [pin, setPin] = useState('');
@@ -47,6 +52,9 @@ export function TicketSalePanel({
   }
 
   const voided = sale.status.toUpperCase() === 'VOID';
+  // Shops: a ticket that never reached the tax service (e.g. printed by
+  // mistake) is simply voided — out of revenue and reports, stock returned.
+  const shopVoid = !hasTables && !sale.fiscalNivf && !sale.fiscalNslf;
   const cancelFiled = sale.corrections.some(
     (c) => c.kind === 'CANCEL' && c.correctionNslf,
   );
@@ -84,9 +92,11 @@ export function TicketSalePanel({
         return;
       }
       toast.success(
-        result.needsFiling
-          ? t('fiscal.salesDoneNeedsFiling')
-          : t('fiscal.salesDone'),
+        shopVoid
+          ? t('fiscal.shopVoidDone')
+          : result.needsFiling
+            ? t('fiscal.salesDoneNeedsFiling')
+            : t('fiscal.salesDone'),
       );
       resetForm();
       onCorrected?.();
@@ -100,7 +110,9 @@ export function TicketSalePanel({
 
   return (
     <div className="space-y-3 text-[12px]">
-      <p className="leading-relaxed text-gray-400">{t('fiscal.salesHelp')}</p>
+      <p className="leading-relaxed text-gray-400">
+        {shopVoid ? t('fiscal.shopVoidHelp') : t('fiscal.salesHelp')}
+      </p>
 
       <dl className="grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
         {sale.userName ? (
@@ -193,7 +205,80 @@ export function TicketSalePanel({
         </div>
       ) : null}
 
-      {voided || !canCorrect ? null : openForm ? (
+      {voided || !canCorrect ? null : shopVoid ? (
+        openForm ? (
+          <div className="space-y-3 border-t border-white/7 pt-3">
+            <Field label={t('fiscal.salesReason')}>
+              <Input
+                autoFocus={!pending}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder={t('fiscal.shopVoidReasonHint')}
+              />
+            </Field>
+            {pending ? (
+              <div className="space-y-2 rounded-lg border border-white/7 bg-gray-900/50 p-3">
+                <p className="text-gray-300">
+                  {t('fiscal.shopVoidConfirm', {
+                    total: fmtAmount(sale.total),
+                  })}
+                </p>
+                <Field label={t('fiscal.shopVoidPin')}>
+                  <Input
+                    type="password"
+                    inputMode="numeric"
+                    autoFocus
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void submit();
+                    }}
+                  />
+                </Field>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    disabled={busy || !pin.trim()}
+                    loading={busy}
+                    onClick={() => void submit()}
+                  >
+                    {t('fiscal.shopVoidAction')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setPending(null);
+                      setPin('');
+                    }}
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="danger"
+                  size="sm"
+                  disabled={busy || reason.trim().length < 3}
+                  onClick={() => setPending('CANCEL')}
+                >
+                  {t('fiscal.shopVoidAction')}
+                </Button>
+                <Button size="sm" disabled={busy} onClick={resetForm}>
+                  {t('common.cancel')}
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <Button variant="danger" size="sm" onClick={() => setOpenForm(true)}>
+            {t('fiscal.shopVoidAction')}
+          </Button>
+        )
+      ) : openForm ? (
         <div className="space-y-3 border-t border-white/7 pt-3">
           <div className="space-y-1.5">
             {live.map((it) => (

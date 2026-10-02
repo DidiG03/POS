@@ -801,6 +801,13 @@
     "noLayoutYet": "No layout yet — ask an admin to set up this area in Settings → Table Areas."
   },
   "fiscal": {
+    "shopVoidAction": "Void sale",
+    "shopVoidHelp": "This sale was not fiscalized. Voiding removes it from revenue, reports and the sales list, and puts its items back in stock. Only an admin can void, with the admin PIN.",
+    "shopVoidReasonHint": "e.g. printed by mistake",
+    "shopVoidConfirm": "Void this sale of {{total}}? It disappears from revenue and the sales list.",
+    "shopVoidPin": "Admin PIN",
+    "shopVoidDone": "Sale voided. It no longer counts in revenue or reports.",
+    "shopVoidShort": "Void",
     "title": "Fiskalizimi",
     "enableTitle": "Enable fiskalizimi",
     "enableHelp": "When enabled, payment receipts are submitted to certified fiscal middleware before printing, and VAT is added on tickets and in admin statistics. When disabled, receipts print normally with no VAT on prices.",

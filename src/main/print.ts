@@ -33,6 +33,8 @@ import {
   escposQrCode,
   formatTwoCol,
   layoutFromSettings,
+  padLeft,
+  padRight,
   wrapEscposText,
   type ReceiptLayout,
 } from './escposEncode';
@@ -105,6 +107,48 @@ function kitchenItemLayout(layout: ReceiptLayout): ReceiptLayout {
     nameCols: Math.max(8, cols - priceCols),
     sep: '-'.repeat(cols),
   };
+}
+
+/** Two short texts on one line (left and right edge), or stacked. */
+function sideBySide(left: string, right: string, cols: number): string[] {
+  const l = left.trim();
+  const r = right.trim();
+  if (!l || !r) return [l || r].filter(Boolean);
+  if (l.length + 1 + r.length <= cols) {
+    return [l + ' '.repeat(cols - l.length - r.length) + r];
+  }
+  return [...wrapEscposText(l, cols), padLeft(r, cols)];
+}
+
+/**
+ * Restaurant guest slip item row. 80mm: name | qty | price | amount;
+ * 58mm is too narrow for four columns, so the unit price goes underneath.
+ */
+function guestItemRow(
+  name: string,
+  qty: string,
+  price: string,
+  amount: string,
+  layout: ReceiptLayout,
+): string[] {
+  if (layout.cols >= 48) {
+    const qtyW = 6;
+    const priceW = 9;
+    const amountW = 10;
+    const nameW = layout.cols - qtyW - priceW - amountW;
+    const names = wrapEscposText(name, nameW);
+    return (names.length ? names : ['']).map((ln, i) =>
+      i === 0
+        ? padRight(ln, nameW) +
+          padLeft(qty, qtyW) +
+          padLeft(price, priceW) +
+          padLeft(amount, amountW)
+        : ln,
+    );
+  }
+  const rows = formatTwoCol(name, amount, layout).split('\n');
+  if (qty !== '1' && /\d/.test(price)) rows.push(`  ${qty} x ${price}`);
+  return rows;
 }
 
 function twoCol(left: string, right: string, layout: ReceiptLayout): Buffer[] {
@@ -316,7 +360,12 @@ export function buildEscposTicket(
   const hidePrices = Boolean(meta?.hidePrices) || kind === 'ORDER';
   // Guest bills/receipts need readable body text; kitchen ORDER stays as-is.
   const customerReceipt = kind !== 'ORDER';
-  const bodySize = customerReceipt ? 'md' : 'normal';
+  const diningFloor = receiptDiningFloor(payload.area);
+  // Restaurant guest bills print like a classic receipt: normal-size text,
+  // an item table, only the name and the total enlarged. Shops keep the
+  // double-height body.
+  const guestSlip = customerReceipt && diningFloor;
+  const bodySize = customerReceipt && !guestSlip ? 'md' : 'normal';
   const itemsToPrint: TicketPrintItem[] = hidePrices
     ? payload.items || []
     : aggregateTicketItems(payload.items || []);
@@ -326,8 +375,11 @@ export function buildEscposTicket(
   if (kind !== 'ORDER') {
     lines.push(cmdAlign('center'));
     lines.push(cmdBold(true));
-    lines.push(cmdTextSize('lg'));
-    for (const ln of wrapEscposText(restaurant, layout.doubleWidthCols)) {
+    lines.push(cmdTextSize(guestSlip ? 'md' : 'lg'));
+    for (const ln of wrapEscposText(
+      guestSlip ? restaurant.toUpperCase() : restaurant,
+      guestSlip ? layout.cols : layout.doubleWidthCols,
+    )) {
       lines.push(escposText(`${ln}\n`));
     }
     lines.push(cmdTextSize(bodySize));
@@ -347,14 +399,46 @@ export function buildEscposTicket(
   }
   lines.push(cmdAlign('left'));
   // Avoid Unicode bullets / fancy separators (often render as garbage on ESC/POS)
-  const diningFloor = receiptDiningFloor(payload.area);
   const tableInfo = formatSaleLocation({
     diningFloor,
     area: payload.area,
     tableLabel: payload.tableLabel,
     emptyLabel: copy.sale,
   });
-  if (kind !== 'ORDER') {
+  if (guestSlip) {
+    const coversText = payload.covers
+      ? `${copy.covers}: ${payload.covers}`
+      : '';
+    for (const ln of sideBySide(tableInfo, coversText, layout.cols)) {
+      lines.push(escposText(`${ln}\n`));
+    }
+    const seatLabel = String(meta?.seatLabel || '').trim();
+    if (seatLabel) {
+      lines.push(cmdBold(true));
+      lines.push(escposText(`${seatLabel.toUpperCase()}\n`));
+      lines.push(cmdBold(false));
+    }
+    const staff = payload.userName
+      ? `${receiptStaffLabel(diningFloor, lang)}: ${payload.userName}`
+      : '';
+    for (const ln of sideBySide(staff, nowStr, layout.cols)) {
+      lines.push(escposText(`${ln}\n`));
+    }
+    lines.push(escposText(`${layout.sep}\n`));
+    if (!hidePrices) {
+      lines.push(cmdBold(true));
+      for (const ln of guestItemRow(
+        copy.colItem,
+        copy.colQty,
+        copy.colPrice,
+        copy.colAmount,
+        layout,
+      )) {
+        lines.push(escposText(`${ln}\n`));
+      }
+      lines.push(cmdBold(false));
+    }
+  } else if (kind !== 'ORDER') {
     lines.push(escposText(`${tableInfo}\n`));
     if (diningFloor && payload.covers)
       lines.push(escposText(`${copy.covers}: ${payload.covers}\n`));
@@ -432,6 +516,16 @@ export function buildEscposTicket(
         lines.push(cmdTextSize('lg'));
         lines.push(cmdBold(true));
       }
+    } else if (guestSlip && !hidePrices) {
+      for (const ln of guestItemRow(
+        String(it.name || ''),
+        String(qty),
+        formatMoneyEscpos(Number(it.unitPrice || 0)),
+        formatMoneyEscpos(linePrice),
+        layout,
+      )) {
+        lines.push(escposText(`${ln}\n`));
+      }
     } else {
       const left = `${qty} x ${String(it.name || '')}`;
       const right = hidePrices ? '' : formatMoneyEscpos(linePrice);
@@ -489,7 +583,9 @@ export function buildEscposTicket(
       );
     }
     lines.push(cmdBold(true));
-    lines.push(cmdTextSize(customerReceipt ? 'lg' : 'md'));
+    // Double height only on restaurant slips, so TOTAL and the amount stay
+    // on one line of the normal column grid.
+    lines.push(cmdTextSize(customerReceipt && !guestSlip ? 'lg' : 'md'));
     lines.push(...twoCol(copy.total, formatMoneyEscpos(totalFinal), layout));
     lines.push(cmdTextSize(bodySize));
     lines.push(cmdBold(false));
@@ -578,10 +674,11 @@ export function buildEscposTicket(
         }
       }
       if (qr) {
-        lines.push(escposText('\n\n'));
+        // Restaurant slips: the footer already starts with a blank line.
+        lines.push(escposText(guestSlip ? '\n' : '\n\n'));
         lines.push(cmdAlign('center'));
         lines.push(escposQrCode(qr, { paperMm: layout.paperMm }));
-        lines.push(escposText('\n\n'));
+        if (!guestSlip) lines.push(escposText('\n\n'));
       }
       lines.push(cmdAlign('left'));
     }

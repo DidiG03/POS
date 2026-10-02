@@ -51,6 +51,7 @@ import {
   type SaleCorrectionKind,
 } from '@shared/saleCorrection';
 import { tinFromVerifyUrl } from '@shared/fiscalReceipt';
+import { restockMenuStockForLines } from './menuStock';
 
 export type FiscalSaleRow = {
   orderId: number;
@@ -702,6 +703,11 @@ export async function applySaleCorrection(input: {
   reason: string;
   actorUserId?: number | null;
   approvedById?: number | null;
+  /**
+   * Shops: put the struck lines back on the shelf count. A voided shop
+   * ticket (e.g. printed by mistake) never sold its goods.
+   */
+  restockStore?: boolean;
 }): Promise<ApplyCorrectionResult> {
   const orderId = Number(input.orderId);
   if (!Number.isFinite(orderId) || orderId <= 0) {
@@ -751,6 +757,18 @@ export async function applySaleCorrection(input: {
         where: { id: { in: plan.struckItemIds }, orderId },
         data: { voidedAt: now },
       });
+      if (input.restockStore) {
+        const struck = new Set(plan.struckItemIds);
+        await restockMenuStockForLines(
+          tx,
+          ((order as any).items || [])
+            .filter((it: any) => struck.has(Number(it.id)))
+            .map((it: any) => ({
+              sku: String(it.sku || ''),
+              qty: num(it.qty),
+            })),
+        );
+      }
     }
     if (plan.cancelsSale) {
       // The filed figures are left alone: VOID is what excludes the sale, and

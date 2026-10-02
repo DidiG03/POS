@@ -219,8 +219,9 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.84"
-            echo "- Fixed: \"Check & repair\" and \"Turn off Disk protection\" stopped with \"no such table: main.User\" on real tills. Nothing was changed when it happened; both now complete."
+            echo "### Changes in v0.2.85"
+            echo "- Shops: an admin can void a ticket that was not fiscalized (Admin > Tickets > Void, with a reason and the admin PIN). The sale leaves revenue and reports, its items go back into stock, and it only shows under the Voided filter."
+            echo "- Restaurants: the customer receipt now looks like a classic receipt: normal-size text, an item table (item, quantity, price, amount), and TOTAL with its amount on one line."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

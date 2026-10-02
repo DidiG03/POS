@@ -79,14 +79,20 @@ describe('buildEscposTicket width', () => {
     meta: { kind: 'PAYMENT' as const, method: 'CASH', totalAfter: 2400 },
   };
 
-  it('prints customer receipt body at double height for readability', () => {
+  it('prints restaurant receipts in normal text with an item table', () => {
     const payment = buildEscposTicket(payload, {
       restaurantName: 'Test',
       currency: 'EUR',
     } as any);
-    // GS ! n — body uses double-height (0x01); TOTAL uses double width+height (0x11)
+    // GS ! n — only the name and TOTAL are double height (0x01); nothing
+    // is double width (0x11), so TOTAL and its amount share one line.
     expect(payment.includes(Buffer.from([0x1d, 0x21, 0x01]))).toBe(true);
-    expect(payment.includes(Buffer.from([0x1d, 0x21, 0x11]))).toBe(true);
+    expect(payment.includes(Buffer.from([0x1d, 0x21, 0x11]))).toBe(false);
+    const text = payment.toString('latin1');
+    expect(text).toMatch(/Item +Qty +Price +Amount\n/);
+    expect(text).toMatch(/Antipast. e sht.pis. +2 +1200 +2400\n/);
+    expect(text).toMatch(/TOTAL +2400\n/);
+    expect(text).toMatch(/Salla Brenda - T1 +Covers: 2\n/);
 
     const kitchen = buildEscposTicket(
       {
@@ -97,8 +103,7 @@ describe('buildEscposTicket width', () => {
     );
     // Kitchen body stays large for items; it should not switch into the
     // customer double-height-only body mode after a brand header.
-    const text = kitchen.toString('latin1');
-    expect(text).not.toContain('Waiter:');
+    expect(kitchen.toString('latin1')).not.toContain('Waiter:');
   });
 
   it('prints a 48-char rule on 80mm paper', () => {

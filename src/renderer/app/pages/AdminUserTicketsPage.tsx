@@ -326,6 +326,17 @@ function TicketCard({
   const { t } = useTranslation();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [moreOpen, setMoreOpen] = useState(Boolean(autoOpen));
+  const [voidOpen, setVoidOpen] = useState(false);
+  // Shops: an unfiscalized paid sale (e.g. printed by mistake) can be voided
+  // straight from the list. Fiscalized sales go through "Reverse this sale".
+  const canShopVoid =
+    !hasTables &&
+    ((ticket.status as TicketStatus) || 'PAID') === 'PAID' &&
+    Boolean(ticket.sale) &&
+    String(ticket.sale?.status || '').toUpperCase() !== 'VOID' &&
+    !ticket.sale?.fiscalNivf &&
+    !ticket.sale?.fiscalNslf &&
+    Boolean(window.api.admin.correctSale);
   const liveItems = ticket.items.filter((it) => !it.voided);
   const voidedItems = ticket.items.filter((it) => it.voided);
   const visibleLive = mode === 'grid' ? liveItems.slice(0, 8) : liveItems;
@@ -368,11 +379,26 @@ function TicketCard({
             ) : null}
           </div>
         </div>
-        <div className="flex shrink-0 items-start sm:justify-end">
+        <div className="flex shrink-0 items-start gap-1 sm:justify-end">
+          {canShopVoid ? (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                setVoidOpen(true);
+                setMoreOpen(true);
+              }}
+            >
+              {t('fiscal.shopVoidShort')}
+            </Button>
+          ) : null}
           <IconButton
             icon={<IconMoreVertical />}
             label={t('common.viewMore')}
-            onClick={() => setMoreOpen(true)}
+            onClick={() => {
+              setVoidOpen(false);
+              setMoreOpen(true);
+            }}
           />
         </div>
       </div>
@@ -482,12 +508,15 @@ function TicketCard({
         open={moreOpen}
         onClose={() => setMoreOpen(false)}
         title={table || (hasTables ? 'Table —' : 'Sale')}
-        description={t('fiscal.salesTitle')}
+        description={
+          canShopVoid ? t('fiscal.shopVoidAction') : t('fiscal.salesTitle')
+        }
         size="lg"
       >
         {ticket.sale ? (
           <TicketSalePanel
             sale={ticket.sale}
+            startVoid={voidOpen}
             onCorrected={() => {
               setMoreOpen(false);
               onSaleCorrected?.();
@@ -694,17 +723,20 @@ export default function AdminUserTicketsPage() {
 
   const filteredTickets = useMemo(() => {
     return tickets.filter((t) => {
-      if (
-        statusFilter !== 'ALL' &&
-        ((t.status as TicketStatus) || 'PAID') !== statusFilter
-      ) {
+      const status = (t.status as TicketStatus) || 'PAID';
+      if (statusFilter !== 'ALL' && status !== statusFilter) {
+        return false;
+      }
+      // Shops: voided sales leave the normal list. They stay under the
+      // "Voided" filter for the audit trail.
+      if (!hasTables && statusFilter === 'ALL' && status === 'VOIDED') {
         return false;
       }
       if (tableFilter && t.tableLabel !== tableFilter) return false;
       if (areaFilter && t.area !== areaFilter) return false;
       return true;
     });
-  }, [statusFilter, tickets, tableFilter, areaFilter]);
+  }, [statusFilter, tickets, tableFilter, areaFilter, hasTables]);
 
   useEffect(() => {
     if (!shouldOpen || !openTicketId || loading) return;

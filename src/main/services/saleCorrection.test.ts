@@ -12,6 +12,7 @@ const { db, flagged, notified } = vi.hoisted(() => ({
   db: {
     orders: new Map<number, any>(),
     items: new Map<number, any>(),
+    menu: new Map<string, any>(),
     corrections: [] as any[],
     nextCorrectionId: 1,
   },
@@ -79,6 +80,31 @@ vi.mock('@db/client', () => ({
                 Object.assign(item, data);
               }
             }
+          },
+        },
+        menuItem: {
+          findUnique: async ({ where }: any) => {
+            if (where.sku != null)
+              return db.menu.get(String(where.sku)) ?? null;
+            return (
+              [...db.menu.values()].find((m) => m.id === Number(where.id)) ??
+              null
+            );
+          },
+          updateMany: async ({ where, data }: any) => {
+            const row = [...db.menu.values()].find(
+              (m) => m.id === Number(where.id),
+            );
+            if (!row || row.stockRemaining == null) return { count: 0 };
+            row.stockRemaining += Number(data.stockRemaining.increment);
+            return { count: 1 };
+          },
+          update: async ({ where, data }: any) => {
+            const row = [...db.menu.values()].find(
+              (m) => m.id === Number(where.id),
+            );
+            Object.assign(row, data);
+            return row;
           },
         },
         saleCorrection: {
@@ -190,6 +216,7 @@ function seedSale(options?: { fiscalized?: boolean; status?: string }) {
 beforeEach(() => {
   db.orders.clear();
   db.items.clear();
+  db.menu.clear();
   db.corrections.length = 0;
   db.nextCorrectionId = 1;
   flagged.length = 0;
@@ -473,6 +500,58 @@ describe('applySaleCorrection — corrective with a service charge', () => {
     const lines = sent.articles.reduce((t, a) => t + a.price * a.units, 0);
     expect(lines - (sent.invoiceRebate?.inValue ?? 0)).toBe(1150);
     expect(sent.payment[0].amount).toBe(1150);
+  });
+});
+
+describe('applySaleCorrection — shop void', () => {
+  function seedShopStock() {
+    db.items.get(10).sku = 'TAVE';
+    db.items.get(11).sku = 'KAFE';
+    db.menu.set('TAVE', { id: 100, sku: 'TAVE', stockRemaining: 3 });
+    // Not counted (no on-hand number): left alone.
+    db.menu.set('KAFE', { id: 101, sku: 'KAFE', stockRemaining: null });
+  }
+
+  it('voids an unfiscalized ticket and puts its goods back on the shelf', async () => {
+    seedSale({ fiscalized: false });
+    seedShopStock();
+    const r = await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'printed by mistake',
+      restockStore: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(db.orders.get(1).status).toBe('VOID');
+    expect(db.menu.get('TAVE')).toMatchObject({
+      stockRemaining: 5,
+      stockLevel: 'LOW',
+    });
+    expect(db.menu.get('KAFE').stockRemaining).toBeNull();
+  });
+
+  it('returns only the struck lines on a partial correction', async () => {
+    seedSale({ fiscalized: false });
+    seedShopStock();
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [10],
+      reason: 'one dish was a test',
+      restockStore: true,
+    });
+    expect(db.menu.get('TAVE').stockRemaining).toBe(5);
+  });
+
+  it('leaves stock alone for restaurants', async () => {
+    seedSale({ fiscalized: false });
+    seedShopStock();
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'printed by mistake',
+    });
+    expect(db.menu.get('TAVE').stockRemaining).toBe(3);
   });
 });
 

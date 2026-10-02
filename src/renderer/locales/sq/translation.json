@@ -801,6 +801,13 @@
     "noLayoutYet": "Nuk ka plan ende — kërkoji një admin ta ngrerë këtë zonë te Cilësimet → Zonat e tavolinave."
   },
   "fiscal": {
+    "shopVoidAction": "Anulo shitjen",
+    "shopVoidHelp": "Kjo shitje nuk është fiskalizuar. Anulimi e heq nga të ardhurat, raportet dhe lista e shitjeve, dhe i kthen artikujt në stok. Vetëm admini mund të anulojë, me PIN-in e adminit.",
+    "shopVoidReasonHint": "p.sh. u printua gabimisht",
+    "shopVoidConfirm": "Të anulohet kjo shitje prej {{total}}? Ajo zhduket nga të ardhurat dhe lista e shitjeve.",
+    "shopVoidPin": "PIN-i i adminit",
+    "shopVoidDone": "Shitja u anulua. Nuk llogaritet më në të ardhura apo raporte.",
+    "shopVoidShort": "Anulo",
     "title": "Fiskalizimi",
     "enableTitle": "Aktivizo fiskalizimin",
     "enableHelp": "Kur është aktiv, faturat e pagesës dërgohen te middleware-i fiskal para printimit dhe TVSH shtohet në faturat dhe statistikat. Kur është joaktiv, faturat printohen normalisht pa TVSH mbi çmimet.",

@@ -18,6 +18,10 @@ type PrintCopy = {
   waiter: string;
   cashier: string;
   covers: string;
+  colItem: string;
+  colQty: string;
+  colPrice: string;
+  colAmount: string;
   subtotal: string;
   vat: string;
   service: string;
@@ -52,6 +56,10 @@ const EN: PrintCopy = {
   waiter: 'Waiter',
   cashier: 'Cashier',
   covers: 'Covers',
+  colItem: 'Item',
+  colQty: 'Qty',
+  colPrice: 'Price',
+  colAmount: 'Amount',
   subtotal: 'Subtotal',
   vat: 'VAT',
   service: 'Service charge',
@@ -87,6 +95,10 @@ const SQ: PrintCopy = {
   waiter: 'Kamarier',
   cashier: 'Kasier',
   covers: 'Të ftuar',
+  colItem: 'Artikulli',
+  colQty: 'Sasia',
+  colPrice: 'Çmimi',
+  colAmount: 'Vlera',
   subtotal: 'Nëntotali',
   vat: 'TVSH',
   service: 'Shërbimi',
