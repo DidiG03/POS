@@ -87,14 +87,18 @@ export async function closeTableAfterIdempotentPayment(
   label: string,
   kind: string,
   closeTable = true,
+  opts?: { lockHeld?: boolean },
 ): Promise<PrintTicketOk> {
   const isPay = String(kind || '').toUpperCase() === 'PAYMENT';
   if (isPay && closeTable && area && label) {
-    await withPaymentLock(area, label, async () => {
+    const close = async () => {
       if (await tableIsOpenForPayment(area, label)) {
         await closeTableAfterAcceptedPayment(area, label);
       }
-    });
+    };
+    // A caller already holding this table's lock must not take it again.
+    if (opts?.lockHeld) await close();
+    else await withPaymentLock(area, label, close);
   }
   return paymentPrintAccepted(true, isPay && closeTable);
 }

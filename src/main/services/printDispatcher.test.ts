@@ -99,6 +99,10 @@ import {
   pickPrinterProfile,
   printWithProfile,
   paymentPrintWaitsForPrinters,
+  printerRecentlyDown,
+  nextPendingRetryAt,
+  PRINTER_DOWN_HOLD_MS,
+  resetPrinterDownForTests,
   fireDispatchTicket,
   profileMode,
   RETRY_MAX_ATTEMPTS,
@@ -107,6 +111,7 @@ import {
 } from './printDispatcher';
 
 beforeEach(() => {
+  resetPrinterDownForTests();
   findMenuItems.mockReset().mockResolvedValue([]);
   findCategories.mockReset().mockResolvedValue([]);
   printJobCreate.mockReset().mockImplementation(
@@ -1342,5 +1347,102 @@ describe('dispatchTicket retry-queue integration', () => {
     // items list should have 1 entry (pizza), not the original 2.
     expect((data.payloadJson as any).items).toHaveLength(1);
     expect((data.payloadJson as any).items[0].name).toBe('pizza');
+  });
+});
+
+describe('payments skip a receipt printer that just timed out', () => {
+  const settings = {
+    printers: [
+      {
+        id: 'r',
+        name: 'R',
+        enabled: true,
+        mode: 'NETWORK',
+        ip: '10.0.0.1',
+        port: 9100,
+      },
+    ],
+  } as any;
+  const payment = {
+    area: 'A',
+    tableLabel: 'T1',
+    items: [],
+    meta: { kind: 'PAYMENT' },
+  } as any;
+  const opts = {
+    retries: 0,
+    persistRetryOnTransientFailure: true,
+    skipIfPrinterDown: true,
+  };
+
+  it('queues the next receipt without another connect attempt', async () => {
+    sendNetwork.mockImplementation(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'connect ETIMEDOUT',
+    }));
+    const first = await dispatchTicket(payment, settings, opts);
+    expect(first.ok).toBe(false);
+    expect(sendNetwork).toHaveBeenCalledTimes(1);
+    expect(printerRecentlyDown('r')).toBe(true);
+
+    const second = await dispatchTicket(payment, settings, opts);
+    expect(second.ok).toBe(false);
+    expect(sendNetwork).toHaveBeenCalledTimes(1);
+    // Both receipts are on the retry queue.
+    expect(printJobCreate).toHaveBeenCalledTimes(2);
+    expect((printJobCreate.mock.calls[1][0] as any).data.status).toBe('RETRY');
+  });
+
+  it('the retry loop still probes, and a success clears the mark', async () => {
+    sendNetwork.mockImplementationOnce(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'ECONNREFUSED',
+    }));
+    await dispatchTicket(payment, settings, opts);
+    expect(printerRecentlyDown('r')).toBe(true);
+
+    // No skipIfPrinterDown: the station loop's call reaches the printer.
+    const retry = await dispatchTicket(payment, settings, { retries: 0 });
+    expect(retry.ok).toBe(true);
+    expect(printerRecentlyDown('r')).toBe(false);
+    expect((await dispatchTicket(payment, settings, opts)).ok).toBe(true);
+  });
+
+  it('does not mark the printer for errors waiting cannot fix', async () => {
+    sendNetwork.mockImplementation(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'out of paper',
+    }));
+    await dispatchTicket(payment, settings, opts);
+    expect(printerRecentlyDown('r')).toBe(false);
+  });
+
+  it('after the hold, one payment probes while the rest still skip', async () => {
+    sendNetwork.mockImplementation(async (..._args: unknown[]) => ({
+      ok: false,
+      error: 'ECONNREFUSED',
+    }));
+    await dispatchTicket(payment, settings, opts);
+    const later = Date.now() + PRINTER_DOWN_HOLD_MS + 1;
+    expect(printerRecentlyDown('r', later)).toBe(false);
+    expect(printerRecentlyDown('r', later)).toBe(true);
+    expect(printerRecentlyDown('r', later)).toBe(true);
+  });
+});
+
+describe('nextPendingRetryAt', () => {
+  it('reports an overdue backlog so the loop does not nap for 5 minutes', async () => {
+    const overdue = new Date(Date.now() - 60_000);
+    printJobFindFirst.mockResolvedValueOnce({ nextAttemptAt: overdue } as any);
+    expect(await nextPendingRetryAt()).toEqual(overdue);
+    const where = (printJobFindFirst.mock.calls[0] as any[])[0].where;
+    expect(where).toEqual({ status: 'RETRY' });
+  });
+
+  it('treats a row with no time as due now, and no rows as nothing', async () => {
+    printJobFindFirst.mockResolvedValueOnce({ nextAttemptAt: null } as any);
+    expect((await nextPendingRetryAt())!.getTime()).toBe(0);
+    printJobFindFirst.mockResolvedValueOnce(null as any);
+    expect(await nextPendingRetryAt()).toBeNull();
   });
 });

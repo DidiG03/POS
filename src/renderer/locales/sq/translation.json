@@ -1068,6 +1068,7 @@
     "payment": "Pagesa",
     "processingPaymentOverlay": "Duke përpunuar pagesën…",
     "paymentBlocked": "Pagesa nuk u regjistrua",
+    "billChanged": "Dikush shtoi artikuj në këtë tavolinë nga një pajisje tjetër. Hape tavolinën përsëri dhe paguaj totalin e ri.",
     "paymentNotRecorded": "Tavolina mbetet e hapur. Rregullo gabimin dhe paguaj përsëri.",
     "paymentNeedsTill": "Nuk arrin kasën. Tavolina mbetet e hapur — prek Paguaj përsëri.",
     "paymentRecordedPrintQueued": "Pagesa u regjistrua. Fatura printohet kur printeri kthehet.",

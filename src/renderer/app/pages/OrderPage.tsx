@@ -3906,6 +3906,10 @@ export default function OrderPage() {
                 if (String(e?.code || '') === 'TABLE_ALREADY_PAID') {
                   toast.info(t('order.alreadyPaid'));
                   paymentAccepted = true;
+                } else if (String(e?.code || '') === 'BILL_CHANGED') {
+                  toast.error(t('order.billChanged'), {
+                    title: t('order.paymentBlocked'),
+                  });
                 } else {
                   const detail = String(e?.message || '').trim();
                   toast.error(detail || t('order.paymentNotRecorded'), {

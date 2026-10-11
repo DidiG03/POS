@@ -1068,6 +1068,7 @@
     "payment": "Payment",
     "processingPaymentOverlay": "Processing payment…",
     "paymentBlocked": "Payment not recorded",
+    "billChanged": "Someone added items to this table on another device. Open the table again and charge the new total.",
     "paymentNotRecorded": "The table is still open. Fix the error and pay again.",
     "paymentNeedsTill": "Cannot reach the till. The table stays open — tap Pay again.",
     "paymentRecordedPrintQueued": "Payment recorded. Receipt will print when the printer is back.",

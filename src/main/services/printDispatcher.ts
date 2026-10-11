@@ -163,6 +163,55 @@ export function isTransientPrintError(err?: string | null): boolean {
   );
 }
 
+/**
+ * Printers that just failed with a transient error, by profile id.
+ *
+ * A receipt printer that is out of paper or unplugged costs every payment
+ * a 5s connect timeout plus one retry. During a rush that held each waiter
+ * on the pay screen for ~10s, and the table lock with them. Payments skip
+ * a printer marked here; any successful print (usually the retry loop's)
+ * clears the mark. Once the hold runs out, ONE payment probes the printer
+ * while the rest keep skipping — otherwise every waiter paying at that
+ * moment sat through the timeout together.
+ */
+const printerDown = new Map<string, { since: number; probing: boolean }>();
+export const PRINTER_DOWN_HOLD_MS = 60_000;
+
+export function markPrinterResult(
+  profileId: string,
+  ok: boolean,
+  error?: string,
+) {
+  if (!ok && isTransientPrintError(error)) {
+    printerDown.set(profileId, { since: Date.now(), probing: false });
+  } else {
+    // Printed, or answered with an error waiting cannot fix (paper,
+    // cover): either way the printer is reachable.
+    printerDown.delete(profileId);
+  }
+}
+
+/**
+ * Whether a payment should skip this printer. Past the hold the first
+ * caller gets `false` and becomes the probe; its result re-marks or
+ * clears the printer.
+ */
+export function printerRecentlyDown(
+  profileId: string,
+  now: number = Date.now(),
+): boolean {
+  const st = printerDown.get(profileId);
+  if (!st) return false;
+  if (now - st.since <= PRINTER_DOWN_HOLD_MS || st.probing) return true;
+  st.probing = true;
+  return false;
+}
+
+/** Tests only. */
+export function resetPrinterDownForTests(): void {
+  printerDown.clear();
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -538,20 +587,24 @@ export async function loadDuePrintRetries(limit = 10) {
 }
 
 /**
- * Find the timestamp of the next RETRY row that's NOT yet due. The
- * printer-station loop uses this to schedule its next wake-up exactly
- * on time instead of polling blindly.
+ * When the earliest RETRY row is due — in the past when rows are already
+ * overdue. The printer-station loop uses this to schedule its next
+ * wake-up exactly on time instead of polling blindly.
+ *
+ * It used to look only at rows due in the future, so a backlog bigger
+ * than one batch (an outage with 20+ receipts and kitchen chits) left the
+ * overdue remainder to the 5-minute idle nap after each batch.
  */
 export async function nextPendingRetryAt(): Promise<Date | null> {
-  const now = new Date();
   const row = await prisma.printJob
     .findFirst({
-      where: { status: 'RETRY' as any, nextAttemptAt: { gt: now } },
+      where: { status: 'RETRY' as any },
       orderBy: { nextAttemptAt: 'asc' },
       select: { nextAttemptAt: true },
     })
     .catch(() => null);
-  return row?.nextAttemptAt ?? null;
+  if (!row) return null;
+  return row.nextAttemptAt ?? new Date(0);
 }
 
 /**
@@ -580,6 +633,12 @@ export async function nextPendingRetryAt(): Promise<Date | null> {
 export type DispatchTicketOpts = {
   retries?: number;
   persistRetryOnTransientFailure?: boolean;
+  /**
+   * Payments: when the receipt printer failed a moment ago, queue the
+   * receipt for the retry loop instead of waiting on another connect
+   * timeout. The retry loop itself never sets this, so it keeps probing.
+   */
+  skipIfPrinterDown?: boolean;
   /**
    * For the printer-station loop: how many attempts the row already
    * has. Used to compute the next backoff if THIS attempt also
@@ -694,9 +753,21 @@ export async function dispatchTicket(
       ...payload,
       items: await orderPayloadItemsForPrint(payload.items),
     };
+    if (opts.skipIfPrinterDown && printerRecentlyDown(fallback.id)) {
+      // Reads as transient so the receipt joins the retry queue.
+      const error = 'Printer offline (timeout on the last attempt)';
+      await maybePersistRetry(orderedPayload, fallback.id, error);
+      return {
+        ok: false,
+        failures: 1,
+        firstError: error,
+        perPrinter: [{ profileId: fallback.id, ok: false, error }],
+      };
+    }
     const r = await printWithProfile(orderedPayload, settings, fallback, {
       retries,
     });
+    markPrinterResult(fallback.id, r.ok, r.error);
     if (!r.ok) await maybePersistRetry(orderedPayload, fallback.id, r.error);
     return {
       ok: r.ok,
@@ -726,6 +797,7 @@ export async function dispatchTicket(
           const r = await printWithProfile(bucket.payload, settings, prof, {
             retries,
           });
+          markPrinterResult(prof.id, r.ok, r.error);
           if (!r.ok) {
             // Persist THIS bucket only — a routed order whose food slip
             // went through but whose drinks slip didn't should only retry

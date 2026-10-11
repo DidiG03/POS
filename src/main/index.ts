@@ -226,6 +226,7 @@ import {
   tableIsOpenForPayment,
   withPaymentLock,
 } from './services/paymentSettle';
+import { findStaleBillPayment } from './services/staleBill';
 import { getFloorSnapshot } from './services/floorSnapshot';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import {
@@ -2853,6 +2854,14 @@ ipcHandle('tickets:print', async (_e, input) => {
       if (!(await tableIsOpenForPayment(area, tableLabel))) {
         return tableAlreadyPaidResult();
       }
+      if (paymentShouldCloseTable(meta)) {
+        const stale = await findStaleBillPayment({
+          area,
+          tableLabel,
+          items: payload.items,
+        });
+        if (stale) return stale;
+      }
       // A second Pay tap for this sitting gets a new docId, so an invoice
       // left behind by an interrupted attempt must be found here.
       const sitting = await sittingFiscalGate({
@@ -3071,7 +3080,7 @@ ipcHandle('tickets:print', async (_e, input) => {
       const result: DispatchResult = await dispatchTicket(
         payload,
         settings as any,
-        dispatchOpts,
+        { ...dispatchOpts, skipIfPrinterDown: true },
       );
       await reportDispatchFailure(result);
       await persistAudit(result.ok ? 'SENT' : 'FAILED');

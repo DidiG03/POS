@@ -83,6 +83,7 @@ import {
   tableIsOpenForPayment,
   withPaymentLock,
 } from './services/paymentSettle';
+import { findStaleBillPayment } from './services/staleBill';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
@@ -2508,31 +2509,36 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // Mirrors the `tickets:print` IPC guard. Without it a tablet
         // replaying a queued payment after a Wi-Fi drop would print and
         // fiscalize the same receipt twice.
-        if (printIdempotencyKey) {
+        const replyIfAlreadyRecorded = async (
+          lockHeld = false,
+        ): Promise<boolean> => {
+          if (!printIdempotencyKey) return false;
           const existing = await prisma.printJob
             .findFirst({
               where: { idempotencyKey: printIdempotencyKey } as any,
             })
             .catch(() => null);
-          if (existing) {
-            await ensureSettledSaleFromPrintJob(existing as any).catch(
-              () => null,
-            );
-            const closed = await closeTableAfterIdempotentPayment(
-              String(body?.area || ''),
-              String(body?.tableLabel || ''),
-              String(
-                body?.meta?.kind ||
-                  (existing as any)?.payloadJson?.meta?.kind ||
-                  '',
-              ),
-              paymentShouldCloseTable(
-                (existing as any)?.payloadJson?.meta ?? body?.meta,
-              ),
-            );
-            return send(res, 200, closed, corsOrigin);
-          }
-        }
+          if (!existing) return false;
+          await ensureSettledSaleFromPrintJob(existing as any).catch(
+            () => null,
+          );
+          const closed = await closeTableAfterIdempotentPayment(
+            String(body?.area || ''),
+            String(body?.tableLabel || ''),
+            String(
+              body?.meta?.kind ||
+                (existing as any)?.payloadJson?.meta?.kind ||
+                '',
+            ),
+            paymentShouldCloseTable(
+              (existing as any)?.payloadJson?.meta ?? body?.meta,
+            ),
+            { lockHeld },
+          );
+          send(res, 200, closed, corsOrigin);
+          return true;
+        };
+        if (await replyIfAlreadyRecorded()) return;
         const requested = {
           area: String(body?.area || ''),
           tableLabel: String(body?.tableLabel || ''),
@@ -2701,10 +2707,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             | undefined;
           const payKind = String(payload?.meta?.kind || '').toUpperCase();
           if (payKind === 'PAYMENT' && !isPaymentReprint(payload?.meta)) {
+            // A retry of this same payment may have waited on the table lock
+            // while the first attempt recorded it. Answer it like any other
+            // replay instead of "table already paid".
+            if (await replyIfAlreadyRecorded(true)) return;
             if (
               !(await tableIsOpenForPayment(payload.area, payload.tableLabel))
             ) {
               return send(res, 409, tableAlreadyPaidResult(), corsOrigin);
+            }
+            if (paymentShouldCloseTable(payload?.meta)) {
+              const stale = await findStaleBillPayment(payload);
+              if (stale) return send(res, 409, stale, corsOrigin);
             }
             // Same guard as the till: an invoice left by an interrupted
             // attempt for this sitting must not get a sibling.
@@ -2823,11 +2837,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           const dispatchOpts = { persistRetryOnTransientFailure: true };
 
           if (paymentPrintWaitsForPrinters(payKind)) {
-            const r = await dispatchTicket(
-              fiscalPayload,
-              settings as any,
-              dispatchOpts,
-            );
+            const r = await dispatchTicket(fiscalPayload, settings as any, {
+              ...dispatchOpts,
+              skipIfPrinterDown: true,
+            });
             await persistLanAudit(r.ok ? 'SENT' : 'FAILED');
             const closeTable = paymentShouldCloseTable(payload?.meta);
             if (closeTable) {
@@ -2853,13 +2866,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         };
 
         if (payKindHint === 'PAYMENT') {
-          return withPaymentLock(
+          // Awaited so a TABLE_BUSY (or any) rejection reaches the catch
+          // below; returned bare it escaped as an unhandled rejection and
+          // the tablet's request never got an answer.
+          return await withPaymentLock(
             requested.area,
             requested.tableLabel,
             runLanPrint,
           );
         }
-        return runLanPrint();
+        return await runLanPrint();
       }
       if (req.method === 'POST' && pathname === '/tickets/void-item') {
         const {
@@ -4499,6 +4515,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
     } catch (e: any) {
       const code = Number(e?.statusCode || 0);
       if (code === 413) return send(res, 413, 'payload too large');
+      // Another request held this table past the lock wait (e.g. a payment
+      // waiting on a printer). Retryable: not `permanent`, so the tablet
+      // queues it and the replay is deduped by its idempotency key.
+      if (e?.code === 'TABLE_BUSY') {
+        return send(res, 409, {
+          ok: false,
+          code: 'TABLE_BUSY',
+          error: 'This table is busy. Try again in a moment.',
+        });
+      }
       // Service-level errors (e.g. reservations service) attach `statusCode`
       // so we can map them to the right HTTP status without leaking internals.
       if (code === 401 || code === 403 || code === 404 || code === 409) {

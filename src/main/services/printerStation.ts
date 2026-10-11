@@ -9,6 +9,7 @@ import {
   enqueuePrintRetry,
   isTransientPrintError,
   loadDuePrintRetries,
+  markPrinterResult,
   nextPendingRetryAt,
   pickPrinterProfile,
   printWithProfile,
@@ -39,6 +40,15 @@ let stopping = false;
 
 /** Maximum nap when nothing is pending. */
 const IDLE_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Pause before the next pass when rows are due but the last pass could not
+ * act on any (only parked rows left), so the loop does not spin.
+ */
+const DUE_BUT_IDLE_DELAY_MS = 5_000;
+
+/** How long rows wait when their printer just timed out in this pass. */
+const DOWN_PRINTER_DEFER_MS = 5_000;
 
 /**
  * Rows whose chit reached the printer but whose status could not be written
@@ -79,7 +89,12 @@ function broadcast(channel: string, payload: any) {
 async function processRetryRow(
   row: any,
   settings: any,
-): Promise<{ recovered: boolean; permanentlyFailed: boolean }> {
+): Promise<{
+  recovered: boolean;
+  permanentlyFailed: boolean;
+  /** The printer itself looks unreachable (timeout, refused). */
+  printerDown?: boolean;
+}> {
   const payload = (row?.payloadJson as any) || {};
   const profileId = String(row?.printerProfileId || '');
   const profile = pickPrinterProfile(settings, profileId);
@@ -108,6 +123,9 @@ async function processRetryRow(
   const r = await printWithProfile(payload, settings as any, profile, {
     retries: 0,
   });
+  // Keeps the payments' "printer down" mark in step: a success here is
+  // usually the first sign the printer is back.
+  markPrinterResult(profile.id, r.ok, r.error);
   if (r.ok) {
     // The paper is already out of the printer. If we cannot record that, the
     // row stays due and the next tick prints the same chit again — the kitchen
@@ -169,6 +187,7 @@ async function processRetryRow(
   return {
     recovered: false,
     permanentlyFailed: result.status === 'FAILED',
+    printerDown: true,
   };
 }
 
@@ -219,10 +238,29 @@ async function tick(): Promise<{ idle: boolean }> {
     const settings = await coreServices.readSettings();
     let recoveries = 0;
 
+    // One unreachable printer used to cost a connect timeout per due row,
+    // so after an outage the loop spent minutes timing out and receipts
+    // printed long after the printer was back. After the first timeout,
+    // that printer's other rows wait for the next pass without using up
+    // an attempt.
+    const downThisTick = new Set<string>();
     for (const row of dueRetries) {
+      const profileId = String(row?.printerProfileId || '');
+      if (downThisTick.has(profileId)) {
+        await prisma.printJob
+          .update({
+            where: { id: row.id },
+            data: {
+              nextAttemptAt: new Date(Date.now() + DOWN_PRINTER_DEFER_MS),
+            } as any,
+          })
+          .catch(() => {});
+        continue;
+      }
       try {
         const r = await processRetryRow(row, settings);
         if (r.recovered) recoveries++;
+        if (r.printerDown) downThisTick.add(profileId);
       } catch {
         // Row-level failure shouldn't break the whole loop; the next
         // tick will pick the row up again because we leave its status
@@ -266,28 +304,33 @@ async function tick(): Promise<{ idle: boolean }> {
  *   - Else nap for IDLE_INTERVAL_MS (cheap heartbeat in case the
  *     wake-up callback was missed during a Prisma reconnect).
  */
-async function schedule(): Promise<void> {
+async function schedule(lastPassIdle = false): Promise<void> {
   if (stopping) return;
   let delay = IDLE_INTERVAL_MS;
   try {
     const next = await nextPendingRetryAt();
     if (next) {
-      const ms = Math.max(250, next.getTime() - Date.now());
+      const floor = lastPassIdle ? DUE_BUT_IDLE_DELAY_MS : 250;
+      const ms = Math.max(floor, next.getTime() - Date.now());
       delay = Math.min(delay, ms);
     }
   } catch {
     delay = IDLE_INTERVAL_MS;
   }
   if (timer) clearTimeout(timer);
-  timer = setTimeout(() => {
-    void (async () => {
-      try {
-        await tick();
-      } finally {
-        void schedule();
-      }
-    })();
-  }, delay);
+  timer = setTimeout(runPass, delay);
+}
+
+/** One pass, then schedule the next. */
+function runPass(): void {
+  void (async () => {
+    let idle = false;
+    try {
+      idle = (await tick()).idle;
+    } finally {
+      void schedule(idle);
+    }
+  })();
 }
 
 export async function startPrinterStationLoop(): Promise<void> {
@@ -303,25 +346,11 @@ export async function startPrinterStationLoop(): Promise<void> {
     if (stopping) return;
     const wait = Math.max(50, dueAtMs - Date.now());
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      void (async () => {
-        try {
-          await tick();
-        } finally {
-          void schedule();
-        }
-      })();
-    }, wait);
+    timer = setTimeout(runPass, wait);
   });
 
   // First tick + scheduling kick-off.
-  void (async () => {
-    try {
-      await tick();
-    } finally {
-      void schedule();
-    }
-  })();
+  runPass();
 }
 
 export function stopPrinterStationLoop(): void {
@@ -337,3 +366,6 @@ export function stopPrinterStationLoop(): void {
 
 /** Allow callers to check exhaustion bound — used by tests + future UI. */
 export const PRINT_RETRY_MAX_ATTEMPTS = RETRY_MAX_ATTEMPTS;
+
+/** Tests only: one pass of the loop. */
+export const runPrinterStationTickForTests = tick;
