@@ -258,8 +258,7 @@ describe('createEasyPosCancellation', () => {
       docId: 'cancel-doc-1',
       correctiveInvoice: {
         iicRef: 'ORIG-IIC',
-        type: 'CANCELLATION',
-        issueDateTimeRef: '2026-09-10T19:05:13.876Z',
+        issueDateTime: '2026-09-10T19:05:13.876Z',
       },
     });
     expect(out.status).toBe('accepted');

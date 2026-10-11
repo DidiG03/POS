@@ -338,6 +338,14 @@ export function startFiscalDeferLoop(): void {
         .catch(() => null)) as SettingsDTO | null;
       if (!settings || (settings as any)?.fiscal?.enabled !== true) return;
       await transmitDueDeferredInvoices(settings);
+      // Cancellations / correctives that hit an outage. Imported lazily:
+      // saleCorrection depends on this module's neighbours.
+      const { retryQueuedFiscalCorrections } = await import(
+        '../saleCorrection'
+      );
+      await retryQueuedFiscalCorrections(settings).catch((e) =>
+        console.warn('[fiscal-defer] correction retry failed:', e),
+      );
     } catch (e) {
       console.warn('[fiscal-defer] tick failed:', e);
     } finally {

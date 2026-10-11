@@ -32,11 +32,13 @@ import {
   isDeadPendingClaim,
   markDeadPendingUnknownUnlocked,
   readFiscalClaim,
+  resolveFiscalClaim,
   withFiscalClaimLock,
   type FiscalClaimRecord,
 } from './fiscal/claims';
 import {
   buildEasyPosInvoiceDraft,
+  buildCorrectionDifferenceLines,
   buildRestatedInvoiceLines,
 } from './fiscal/mapInvoice';
 import { cancelInvoice } from './fiscal/cancel';
@@ -253,6 +255,12 @@ export interface FiledCancellation {
   /** NIVF of the cancellation document. */
   nivf?: string;
   detail: string;
+  /**
+   * NOT_FILED only: the request never reached easyPos (offline, outage), so
+   * sending the same document again later is safe and will be done
+   * automatically.
+   */
+  retryable?: boolean;
 }
 
 /**
@@ -316,6 +324,7 @@ async function fileCancellation(input: {
       state: 'NOT_FILED',
       docId,
       detail: `Cancellation was not filed: ${outcome.message}`,
+      retryable: outcome.kind === 'not-registered',
     };
   } catch (e: any) {
     return {
@@ -374,6 +383,19 @@ async function writeCancellationDocId(
   await writeDocId(CANCELLATION_DOC_KEY(orderId), docId);
 }
 
+/** Menu SKUs sold by weight. A lookup failure only costs the KGM unit. */
+async function weighedSkus(skus: string[]): Promise<Set<string>> {
+  try {
+    const rows = (await prisma.menuItem.findMany({
+      where: { sku: { in: skus.filter(Boolean) }, isKg: true } as any,
+      select: { sku: true },
+    })) as Array<{ sku: string }>;
+    return new Set(rows.map((m) => m.sku));
+  } catch {
+    return new Set();
+  }
+}
+
 async function fileCorrective(input: {
   settings: any;
   orderId: number;
@@ -382,17 +404,16 @@ async function fileCorrective(input: {
   iic: string;
   eic?: string;
   issueDateTime?: string;
-  remaining: Array<{
+  /** The lines being taken off the sale. */
+  struck: Array<{
     sku?: string;
     name: string;
     qty: number;
     unitPrice: number;
     vatRate: number;
   }>;
-  nextTotal: number;
-  /** The sale's service charge and discount, carried over whole. */
-  serviceChargeAmount: number;
-  discountAmount: number;
+  /** The planned change to the sale total (negative). */
+  amountDelta: number;
   method: string;
 }): Promise<FiledCancellation> {
   const key = CORRECTIVE_DOC_KEY(input.orderId, input.correctionId);
@@ -403,35 +424,41 @@ async function fileCorrective(input: {
   }
 
   try {
-    const remaining = input.remaining.filter(
+    const struck = input.struck.filter(
       (it) => Number.isFinite(it.qty) && it.qty > 0,
     );
-    if (remaining.length === 0) {
+    if (struck.length === 0) {
       return {
         state: 'NOT_FILED',
         docId,
-        detail: 'Corrective invoice has no remaining lines to file.',
+        detail: 'Corrective invoice has no struck lines to file.',
       };
     }
-    // Same article IDs, service charge line and discount as the original
-    // invoice, balanced to the restated total — easyPos refuses a document
-    // whose lines and payment disagree.
-    const nextTotal = roundMoney(input.nextTotal);
-    const { articles, invoiceRebate, amount } = buildRestatedInvoiceLines(
-      {
-        items: remaining,
-        serviceChargeAmount: input.serviceChargeAmount,
-        discountAmount: input.discountAmount,
-        total: nextTotal,
-      },
+    // The difference, not a restatement: filing the remaining lines next to
+    // the original declared both (2,300 + 1,800 for a 1,800 sale). Weighed
+    // lines keep the KGM unit the original was filed in.
+    const kgSkus = await weighedSkus(struck.map((it) => String(it.sku || '')));
+    const { articles, amount } = buildCorrectionDifferenceLines(
+      struck.map((it) => ({
+        ...it,
+        soldByKg: kgSkus.has(String(it.sku || '')),
+      })),
       input.settings,
     );
+    if (Math.abs(roundMoney(amount - input.amountDelta)) >= 0.01) {
+      // Only when the cap on a reversal (it never exceeds the sale total)
+      // bit. Do not guess how to split that; leave it for an admin.
+      return {
+        state: 'NOT_FILED',
+        docId,
+        detail: `Corrective not filed automatically: the struck lines total ${amount.toFixed(2)} but the sale changes by ${input.amountDelta.toFixed(2)}. File it in easyPos.`,
+      };
+    }
     const method = mapPaymentMethod(input.method || 'CASH');
     const outcome = await registerCorrectiveInvoice(input.settings, {
       docId,
       articles,
       payment: [{ type: method as any, amount }],
-      invoiceRebate,
       original: {
         iic: input.iic,
         eic: input.eic,
@@ -458,6 +485,7 @@ async function fileCorrective(input: {
       state: 'NOT_FILED',
       docId,
       detail: `Corrective was not filed: ${outcome.message}`,
+      retryable: outcome.kind === 'not-registered',
     };
   } catch (e: any) {
     return {
@@ -902,15 +930,6 @@ export async function applySaleCorrection(input: {
       });
     } else if (!plan.cancelsSale && iic && isFiscalEnabled(settings)) {
       const struck = new Set(plan.struckItemIds);
-      const remaining = ((order as any).items || [])
-        .filter((it: any) => !struck.has(Number(it.id)) && it.voidedAt == null)
-        .map((it: any) => ({
-          sku: String(it.sku || ''),
-          name: String(it.name || 'Item'),
-          qty: num(it.qty),
-          unitPrice: num(it.unitPrice),
-          vatRate: num(it.vatRate),
-        }));
       corrective = await fileCorrective({
         settings,
         orderId,
@@ -919,10 +938,16 @@ export async function applySaleCorrection(input: {
         iic,
         eic: originalEic,
         issueDateTime: iso(payment?.paidAt) || undefined,
-        remaining,
-        nextTotal: plan.nextTotal,
-        serviceChargeAmount: num((order as any).serviceChargeAmount),
-        discountAmount: num((order as any).discountAmount),
+        struck: ((order as any).items || [])
+          .filter((it: any) => struck.has(Number(it.id)))
+          .map((it: any) => ({
+            sku: String(it.sku || ''),
+            name: String(it.name || 'Item'),
+            qty: num(it.qty),
+            unitPrice: num(it.unitPrice),
+            vatRate: num(it.vatRate),
+          })),
+        amountDelta: plan.amountDelta,
         method: String(payment?.method || 'CASH'),
       });
     }
@@ -935,8 +960,36 @@ export async function applySaleCorrection(input: {
         (cancellation?.state === 'FILED' ? cancellation : corrective)!,
       );
     } else {
+      const attempted = cancellation || corrective;
+      const queued =
+        attempted?.state === 'NOT_FILED' && attempted.retryable === true;
+      if (queued) {
+        await queueCorrectionRetry({
+          orderId,
+          correctionId,
+          originalDocId: docId,
+          kind: plan.cancelsSale ? 'CANCEL' : 'CORRECTIVE',
+          iic: iic!,
+          eic: originalEic,
+          issueDateTime: iso(payment?.paidAt) || undefined,
+          struck: plan.cancelsSale
+            ? []
+            : ((order as any).items || [])
+                .filter((it: any) => plan.struckItemIds.includes(Number(it.id)))
+                .map((it: any) => ({
+                  sku: String(it.sku || ''),
+                  name: String(it.name || 'Item'),
+                  qty: num(it.qty),
+                  unitPrice: num(it.unitPrice),
+                  vatRate: num(it.vatRate),
+                })),
+          amountDelta: plan.amountDelta,
+          method: String(payment?.method || 'CASH'),
+        }).catch(() => undefined);
+      }
       needsFiling = await flagFiscalCorrectionRequired({
         idempotencyKey: docId,
+        queued,
         reason:
           `${what}: ${plan.reason} (${plan.amountDelta})` +
           (cancellation
@@ -989,4 +1042,154 @@ export async function applySaleCorrection(input: {
     ...(cancellation ? { cancellation } : {}),
     ...(corrective ? { corrective } : {}),
   };
+}
+
+/**
+ * Cancellations and correctives that could not reach easyPos.
+ *
+ * A void during an outage used to be filed once, fail, and wait on the
+ * review list for an admin to file it by hand in easyPos, so the tax
+ * service kept the full sale. They are now resent by the fiskalizimi loop
+ * under the docId persisted before the first attempt, which the status
+ * check makes safe to repeat.
+ */
+const CORRECTION_RETRY_PREFIX = 'fiscal:correction-retry:';
+const CORRECTION_RETRY_MAX_MS = 5 * 60_000;
+
+interface QueuedCorrection {
+  orderId: number;
+  correctionId: number;
+  originalDocId: string;
+  kind: 'CANCEL' | 'CORRECTIVE';
+  iic: string;
+  eic?: string;
+  issueDateTime?: string;
+  struck: Array<{
+    sku?: string;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate: number;
+  }>;
+  amountDelta: number;
+  method: string;
+  attempts?: number;
+  nextAttemptAt?: string;
+  createdAt?: string;
+}
+
+async function queueCorrectionRetry(input: QueuedCorrection): Promise<void> {
+  const key = `${CORRECTION_RETRY_PREFIX}${input.orderId}:${input.correctionId}`;
+  const valueJson = {
+    ...input,
+    attempts: 1,
+    createdAt: new Date().toISOString(),
+    nextAttemptAt: new Date(Date.now() + 15_000).toISOString(),
+  } as any;
+  await prisma.syncState.upsert({
+    where: { key },
+    create: { key, valueJson },
+    update: { valueJson },
+  });
+}
+
+let correctionRetryRunning = false;
+
+/** One pass over queued corrections. Called from the fiskalizimi loop. */
+export async function retryQueuedFiscalCorrections(
+  settings: any,
+  now = Date.now(),
+): Promise<{ attempted: number; filed: number }> {
+  if (correctionRetryRunning || !isFiscalEnabled(settings)) {
+    return { attempted: 0, filed: 0 };
+  }
+  correctionRetryRunning = true;
+  let attempted = 0;
+  let filed = 0;
+  try {
+    const rows = (await prisma.syncState
+      .findMany({ where: { key: { startsWith: CORRECTION_RETRY_PREFIX } } })
+      .catch(() => [])) as any[];
+    for (const row of rows) {
+      const raw = row.valueJson;
+      const q: QueuedCorrection =
+        typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (Date.parse(String(q.nextAttemptAt || '')) > now) continue;
+      attempted += 1;
+      const result =
+        q.kind === 'CANCEL'
+          ? await fileCancellation({
+              settings,
+              orderId: q.orderId,
+              originalDocId: q.originalDocId,
+              iic: q.iic,
+              eic: q.eic,
+              issueDateTime: q.issueDateTime,
+            })
+          : await fileCorrective({
+              settings,
+              orderId: q.orderId,
+              correctionId: q.correctionId,
+              originalDocId: q.originalDocId,
+              iic: q.iic,
+              eic: q.eic,
+              issueDateTime: q.issueDateTime,
+              struck: q.struck,
+              amountDelta: q.amountDelta,
+              method: q.method,
+            });
+
+      if (result.state === 'NOT_FILED' && result.retryable) {
+        const attempts = (q.attempts || 1) + 1;
+        const wait = Math.min(
+          CORRECTION_RETRY_MAX_MS,
+          15_000 * 2 ** Math.min(attempts, 6),
+        );
+        await prisma.syncState
+          .update({
+            where: { key: row.key },
+            data: {
+              valueJson: {
+                ...q,
+                attempts,
+                nextAttemptAt: new Date(now + wait).toISOString(),
+              } as any,
+            },
+          })
+          .catch(() => undefined);
+        continue;
+      }
+
+      await prisma.syncState
+        .delete({ where: { key: row.key } })
+        .catch(() => undefined);
+      if (result.state === 'FILED') {
+        filed += 1;
+        await stampFiledCorrection(q.correctionId, result);
+        await resolveFiscalClaim(q.originalDocId, 'corrected').catch(
+          () => false,
+        );
+        await notifyAdminsAndActor({
+          message: `Fiskalizimi: the queued ${q.kind === 'CANCEL' ? 'cancellation' : 'corrective invoice'} for sale #${q.orderId} was sent · ${result.detail}`,
+          type: 'SECURITY',
+        }).catch(() => undefined);
+      } else {
+        // Refused, or the outcome is unknown: that needs a person. The
+        // review entry is still open; give it the latest reason.
+        await annotateCorrectionReview(q.originalDocId, result.detail);
+      }
+    }
+  } finally {
+    correctionRetryRunning = false;
+  }
+  return { attempted, filed };
+}
+
+async function annotateCorrectionReview(
+  docId: string,
+  detail: string,
+): Promise<void> {
+  await withFiscalClaimLock(docId, () =>
+    annotateFiscalClaimUnlocked(docId, { lastError: detail }),
+  ).catch(() => undefined);
 }

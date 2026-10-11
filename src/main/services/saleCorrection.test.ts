@@ -8,7 +8,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { db, flagged, notified } = vi.hoisted(() => ({
+const { db, flagged, notified, kv } = vi.hoisted(() => ({
+  kv: new Map<string, any>(),
   db: {
     orders: new Map<number, any>(),
     items: new Map<number, any>(),
@@ -122,8 +123,31 @@ vi.mock('@db/client', () => ({
       }),
     ),
     syncState: {
-      findUnique: vi.fn(async () => null),
-      upsert: vi.fn(async () => ({})),
+      findUnique: vi.fn(async ({ where }: any) =>
+        kv.has(where.key)
+          ? { key: where.key, valueJson: kv.get(where.key) }
+          : null,
+      ),
+      findMany: vi.fn(async ({ where }: any) =>
+        [...kv.entries()]
+          .filter(([k]) => k.startsWith(where.key.startsWith))
+          .map(([key, valueJson]) => ({ key, valueJson })),
+      ),
+      upsert: vi.fn(async ({ where, create, update }: any) => {
+        kv.set(
+          where.key,
+          kv.has(where.key) ? update.valueJson : create.valueJson,
+        );
+        return {};
+      }),
+      update: vi.fn(async ({ where, data }: any) => {
+        kv.set(where.key, data.valueJson);
+        return {};
+      }),
+      delete: vi.fn(async ({ where }: any) => {
+        kv.delete(where.key);
+        return {};
+      }),
     },
   },
 }));
@@ -146,6 +170,16 @@ vi.mock('./fiscal/claims', () => ({
     return true;
   }),
   readFiscalClaim: vi.fn(async (key: string) => claims.get(key) ?? null),
+  resolveFiscalClaim: vi.fn(async (key: string, resolution: string) => {
+    claims.set(key, {
+      state: resolution === 'corrected' ? 'CORRECTED' : resolution,
+    });
+    return true;
+  }),
+  withFiscalClaimLock: vi.fn(async (_key: string, fn: () => any) => fn()),
+  annotateFiscalClaimUnlocked: vi.fn(async (key: string, patch: any) => {
+    claims.set(key, { ...(claims.get(key) || {}), ...patch });
+  }),
 }));
 
 vi.mock('./fiscal/cancel', () => ({
@@ -168,7 +202,11 @@ vi.mock('./fiscal/corrective', () => ({
   registerCorrectiveInvoice,
 }));
 
-import { applySaleCorrection, mapOrderToFiscalSaleRow } from './saleCorrection';
+import {
+  applySaleCorrection,
+  mapOrderToFiscalSaleRow,
+  retryQueuedFiscalCorrections,
+} from './saleCorrection';
 import { coreServices } from './core';
 import { cancelInvoice } from './fiscal/cancel';
 
@@ -214,6 +252,7 @@ function seedSale(options?: { fiscalized?: boolean; status?: string }) {
 }
 
 beforeEach(() => {
+  kv.clear();
   db.orders.clear();
   db.items.clear();
   db.menu.clear();
@@ -423,7 +462,7 @@ describe('applySaleCorrection — corrective', () => {
     expect(flagged[0].reason).toContain('Corrective invoice required for 1');
   });
 
-  it('files the restated invoice when fiskalizimi is on', async () => {
+  it('files the struck lines as a negative corrective when fiskalizimi is on', async () => {
     seedSale();
     vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
       defaultVatRate: 0.2,
@@ -453,22 +492,24 @@ describe('applySaleCorrection — corrective', () => {
         unknown,
         {
           original: { iic: string };
-          articles: Array<{ name: string }>;
+          articles: Array<{ name: string; units: number; price: number }>;
           payment: Array<{ amount: number }>;
         },
       ]
     >;
     const sent = calls[0][1];
     expect(sent.original.iic).toBe('IIC-1');
-    expect(sent.articles.map((a) => a.name)).toEqual(['Tavë kosi']);
-    expect(sent.payment[0].amount).toBe(1000);
+    // The difference only: CIS nets it against the original. Filing the
+    // remaining Tavë kosi instead declared both invoices as sales.
+    expect(sent.articles.map((a) => [a.name, a.units, a.price])).toEqual([
+      ['Kafe', -1, 500],
+    ]);
+    expect(sent.payment[0].amount).toBe(-500);
   });
 });
 
 describe('applySaleCorrection — corrective with a service charge', () => {
-  it('files lines that add up to what it says was paid', async () => {
-    // 1000 + 500 plus a 150 service charge. easyPos refused the old
-    // corrective: its lines came to 1000 while its payment said 1150.
+  it('takes off only the struck line; the service charge stays on the sale', async () => {
     seedSale();
     Object.assign(db.orders.get(1), { total: 1650, serviceChargeAmount: 150 });
     vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
@@ -481,7 +522,7 @@ describe('applySaleCorrection — corrective with a service charge', () => {
       identifiers: { fic: 'NIVF-SC' },
     } as never);
 
-    await applySaleCorrection({
+    const r = await applySaleCorrection({
       orderId: 1,
       kind: 'CORRECTIVE',
       itemIds: [11],
@@ -491,15 +532,12 @@ describe('applySaleCorrection — corrective with a service charge', () => {
     const sent = (registerCorrectiveInvoice.mock.calls as any)[0][1] as {
       articles: Array<{ name: string; price: number; units: number }>;
       payment: Array<{ amount: number }>;
-      invoiceRebate?: { inValue?: number };
     };
-    expect(sent.articles.map((a) => a.name)).toEqual([
-      'Tavë kosi',
-      'Service charge',
-    ]);
+    expect(sent.articles.map((a) => a.name)).toEqual(['Kafe']);
     const lines = sent.articles.reduce((t, a) => t + a.price * a.units, 0);
-    expect(lines - (sent.invoiceRebate?.inValue ?? 0)).toBe(1150);
-    expect(sent.payment[0].amount).toBe(1150);
+    expect(lines).toBe(-500);
+    expect(sent.payment[0].amount).toBe(-500);
+    expect(r).toMatchObject({ ok: true, amountDelta: -500 });
   });
 });
 
@@ -659,5 +697,109 @@ describe('mapOrderToFiscalSaleRow', () => {
       payments: [{ method: 'CASH', metaJson: { kind: 'PAYMENT' } }],
     });
     expect(offTill.fiscalPending).toBe(false);
+  });
+});
+
+describe('corrections that hit an outage', () => {
+  const fiscalOn = {
+    defaultVatRate: 0.2,
+    fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+  };
+  const offline = {
+    kind: 'not-registered',
+    docId: 'x',
+    message: 'The request never reached easyPos',
+  };
+  const later = () => Date.now() + 60 * 60_000;
+
+  it('queues a cancellation that could not reach easyPos and sends it later', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce(fiscalOn as any);
+    vi.mocked(cancelInvoice).mockResolvedValueOnce(offline as never);
+    const r = await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Wrong table',
+    });
+    expect(r).toMatchObject({ ok: true, needsFiling: true });
+    expect(flagged[0]).toMatchObject({ queued: true });
+    expect(
+      [...kv.keys()].filter((k) => k.startsWith('fiscal:correction-retry:')),
+    ).toHaveLength(1);
+
+    vi.mocked(cancelInvoice).mockResolvedValueOnce({
+      kind: 'complete',
+      docId: 'cnl',
+      identifiers: { iic: 'CANCEL-IIC', fic: 'CANCEL-FIC' },
+    } as never);
+    const pass = await retryQueuedFiscalCorrections(fiscalOn, later());
+    expect(pass).toEqual({ attempted: 1, filed: 1 });
+    expect(db.corrections[0]).toMatchObject({
+      correctionNslf: 'CANCEL-IIC',
+      correctionNivf: 'CANCEL-FIC',
+    });
+    expect(claims.get('doc-1')?.state).toBe('CORRECTED');
+    expect(
+      [...kv.keys()].some((k) => k.startsWith('fiscal:correction-retry:')),
+    ).toBe(false);
+  });
+
+  it('keeps waiting while still offline, and reuses the same cancellation docId', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce(fiscalOn as any);
+    vi.mocked(cancelInvoice).mockResolvedValueOnce(offline as never);
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Wrong table',
+    });
+    const firstDocId = (vi.mocked(cancelInvoice).mock.calls.at(-1)![1] as any)
+      .docId;
+
+    vi.mocked(cancelInvoice).mockResolvedValueOnce(offline as never);
+    const pass = await retryQueuedFiscalCorrections(fiscalOn, later());
+    expect(pass).toEqual({ attempted: 1, filed: 0 });
+    expect((vi.mocked(cancelInvoice).mock.calls.at(-1)![1] as any).docId).toBe(
+      firstDocId,
+    );
+    const queued = [...kv.entries()].find(([k]) =>
+      k.startsWith('fiscal:correction-retry:'),
+    )![1];
+    expect(queued.attempts).toBe(2);
+  });
+
+  it('hands a refusal to the review list instead of retrying it', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce(fiscalOn as any);
+    vi.mocked(cancelInvoice).mockResolvedValueOnce(offline as never);
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Wrong table',
+    });
+    vi.mocked(cancelInvoice).mockResolvedValueOnce({
+      kind: 'rejected',
+      docId: 'x',
+      message: 'Invoice already cancelled',
+    } as never);
+    await retryQueuedFiscalCorrections(fiscalOn, later());
+    expect(
+      [...kv.keys()].some((k) => k.startsWith('fiscal:correction-retry:')),
+    ).toBe(false);
+    expect(claims.get('doc-1')?.lastError).toMatch(/already cancelled/);
+  });
+
+  it('does not queue a refusal in the first place', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce(fiscalOn as any);
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Wrong table',
+    });
+    expect(
+      [...kv.keys()].some((k) => k.startsWith('fiscal:correction-retry:')),
+    ).toBe(false);
+    expect(flagged[0]?.queued).toBe(false);
   });
 });

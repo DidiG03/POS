@@ -707,6 +707,8 @@ export async function resolveFiscalClaim(
 export async function flagFiscalCorrectionRequired(input: {
   idempotencyKey: string;
   reason: string;
+  /** easyPos was unreachable; the document is queued and resent on its own. */
+  queued?: boolean;
   actorUserId?: number;
   context?: FiscalClaimRecord['context'];
   result?: StoredFiscalResult;
@@ -736,10 +738,11 @@ export async function flagFiscalCorrectionRequired(input: {
     .filter(Boolean)
     .join(' ');
   const cancel = /cancel/i.test(input.reason);
+  const doc = cancel ? 'cancellation' : 'corrective invoice';
   await notifyAdminsAndActor({
-    message: cancel
-      ? `Fiskalizimi needs a cancellation${where ? ` on ${where}` : ''}. File it in Settings › Fiskalizimi.`
-      : `Fiskalizimi needs a corrective invoice${where ? ` on ${where}` : ''}. File it in Settings › Fiskalizimi.`,
+    message: input.queued
+      ? `Fiskalizimi could not be reached, so the ${doc}${where ? ` for ${where}` : ''} is queued. It is sent automatically when the connection is back.`
+      : `Fiskalizimi needs a ${doc}${where ? ` on ${where}` : ''}. File it in Settings › Fiskalizimi.`,
     actorUserId: input.actorUserId,
     type: 'SECURITY',
   }).catch(() => undefined);

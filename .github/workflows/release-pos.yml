@@ -219,12 +219,10 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.87 (fiskalizimi audit)"
-            echo "- Cash sales queued during an internet outage that runs past midnight are no longer refused the next morning: the day's opening float is declared before they are sent."
-            echo "- New in Admin > Fiskalizimi: \"Business is not VAT registered\". Invoices are then filed at VAT band A and receipts and reports show no TVSH."
-            echo "- Admin > Fiskalizimi warns when the POS currency is not ALL, so a Lek-priced menu is never filed in EUR."
-            echo "- Items sold by weight are filed in kilograms (KGM) instead of pieces."
-            echo "- Shops: the quick Void is no longer offered on sales still waiting to be sent to fiskalizimi."
+            echo "### Changes in v0.2.88 (fiskalizimi voids)"
+            echo "- Removing items from a fiscalized sale now files a corrective invoice automatically (it was refused by easyPos before). Only the removed items are filed, as the tax service expects."
+            echo "- A cancellation or corrective made while the internet is down is queued and sent automatically when the connection is back, instead of waiting for an admin."
+            echo "- The receipt QR code now opens a clean \"Fiskalizimi i suksesshëm!\" on the tax site (it showed a time-mismatch warning before)."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

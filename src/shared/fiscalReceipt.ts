@@ -71,7 +71,10 @@ function isCisInvoiceCheck(url: string): boolean {
 function hashQuery(url: string): URLSearchParams {
   const hash = url.includes('#') ? url.slice(url.indexOf('#') + 1) : '';
   const qIndex = hash.indexOf('?');
-  return new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
+  // `+` is literal in these links (the crtd offset), not a space.
+  return new URLSearchParams(
+    qIndex >= 0 ? hash.slice(qIndex + 1).replace(/\+/g, '%2B') : '',
+  );
 }
 
 function completeCisParams(params: {
@@ -127,7 +130,28 @@ export function tinFromVerifyUrl(url: string | null | undefined): string {
   return text(hashQuery(raw).get('tin'));
 }
 
+/**
+ * easyPos returns the CIS link with the issue time's offset as a raw `+`
+ * (`crtd=2026-10-12T01:24:46+02:00`). InvoiceCheck reads `+` in a query as
+ * a space, so every scanned receipt opened with "Fiskalizimi i suksesshëm,
+ * por: Periudha kohore e faturës nuk përputhet…". Encoded, it verifies
+ * cleanly. No other CIS parameter can contain a `+`.
+ */
+export function encodeCisQueryPlus(url: string): string {
+  const hash = url.indexOf('#');
+  const q = url.indexOf('?', hash >= 0 ? hash : 0);
+  if (q < 0) return url;
+  return url.slice(0, q + 1) + url.slice(q + 1).replace(/\+/g, '%2B');
+}
+
 function pickProviderUrl(value: string): string | undefined {
+  const picked = pickProviderUrlRaw(value);
+  return picked && isCisInvoiceCheck(picked)
+    ? encodeCisQueryPlus(picked)
+    : picked;
+}
+
+function pickProviderUrlRaw(value: string): string | undefined {
   if (!value || value.length > MAX_QR_PAYLOAD) return undefined;
   if (looksLikeQrImageDump(value)) return undefined;
   if (looksLikeUrl(value)) {

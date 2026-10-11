@@ -352,6 +352,33 @@ export function buildRestatedInvoiceLines(
   };
 }
 
+/**
+ * The lines of a corrective invoice for a partial void: each struck line
+ * as filed originally (same article id, VAT band, unit), with its units
+ * negated. Returns the (negative) total the payment must carry.
+ */
+export function buildCorrectionDifferenceLines(
+  items: Array<{
+    sku?: string;
+    name: string;
+    qty: number;
+    unitPrice: number;
+    vatRate: number;
+    soldByKg?: boolean;
+  }>,
+  settings: SettingsDTO,
+): { articles: EasyPosInvoiceDraft['articles']; amount: number } {
+  const payload = { items, meta: {} } as unknown as TicketPrintPayload;
+  const articles = buildArticles(payload, settings).map((a) => ({
+    ...a,
+    units: -a.units,
+  }));
+  if (articles.length === 0) {
+    throw new Error('A corrective invoice needs at least one struck line.');
+  }
+  return { articles, amount: invoiceTotalOf(articles) };
+}
+
 export function buildEasyPosCloudInvoiceDraft(
   payload: TicketPrintPayload,
   settings: SettingsDTO,

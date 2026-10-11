@@ -214,10 +214,17 @@ function validateArticles(request: RegisterInvoiceRequest): ValidationIssue[] {
       });
     }
     const units = num(article.units);
-    if (units == null || units <= 0) {
+    // A corrective invoice states the difference: the struck lines with
+    // negative units at their positive price (easyPos / CIS convention).
+    const corrective = Boolean(
+      String((request as any).correctiveInvoice?.iicRef || '').trim(),
+    );
+    if (units == null || units === 0 || (units < 0 && !corrective)) {
       issues.push({
         field: `${at}.units`,
-        message: 'Must be greater than zero.',
+        message: corrective
+          ? 'Must not be zero.'
+          : 'Must be greater than zero.',
       });
     }
     if (num(article.price) == null) {

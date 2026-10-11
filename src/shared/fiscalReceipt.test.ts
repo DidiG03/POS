@@ -56,6 +56,28 @@ describe('fiscalVerificationQr', () => {
   it('returns nothing when the invoice has not been issued', () => {
     expect(fiscalVerificationQr({})).toBeUndefined();
   });
+
+  // The link easyPos returned in the sandbox run on 2026-10-12. With the raw
+  // `+`, InvoiceCheck warned "Periudha kohore e faturës nuk përputhet".
+  const easyPosLink =
+    'https://efiskalizimi-app-test.tatime.gov.al/invoice-check/#/verify?iic=9759B072CAF5838CEF219BD8B497FCE9&tin=L52101183A&crtd=2026-10-12T01:24:46+02:00&ord=68&bu=kl749av758&cr=qq038ml699&sw=wc801oy838&prc=640.00';
+
+  it('encodes the + in the issue time so InvoiceCheck reads the offset', () => {
+    const url = fiscalVerificationQr({ link: easyPosLink })!;
+    expect(url).toContain('crtd=2026-10-12T01:24:46%2B02:00');
+    expect(url).not.toContain('+');
+    // Everything else is untouched.
+    expect(url).toBe(easyPosLink.replace('+02:00', '%2B02:00'));
+    // Idempotent: an already-encoded link is not double-encoded.
+    expect(fiscalVerificationQr({ link: url })).toBe(url);
+  });
+
+  it('keeps the offset when rebuilding from a link missing a parameter', () => {
+    const partial =
+      'https://efiskalizimi-app-test.tatime.gov.al/invoice-check/#/verify?iic=ABC&tin=L52101183A&crtd=2026-10-12T01:24:46+02:00';
+    const url = fiscalVerificationQr({ link: partial, total: 640 })!;
+    expect(url).toContain('crtd=2026-10-12T01%3A24%3A46%2B02%3A00');
+  });
 });
 
 describe('fiscalVoidVerifyUrl', () => {

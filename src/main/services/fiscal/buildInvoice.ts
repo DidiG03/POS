@@ -337,12 +337,15 @@ export interface CorrectiveInvoiceInput extends BaseInvoiceInput {
 }
 
 /**
- * A restated invoice for the lines that survive a partial void.
+ * A corrective invoice for a partial void: the struck lines with negative
+ * units (positive prices) and a negative payment, referencing the original
+ * by IIC. CIS then nets original + corrective to what the guest paid.
  *
- * Cash / non-electronic originals are a NORMAL register with
- * `correctiveInvoice.type = CORRECTIVE`. Electronic originals are P9 and
- * need the buyer from the original e-invoice — without that we refuse
- * rather than file a P9 CIS will reject.
+ * The reference is `{ iicRef }` only: easyPos answers HTTP 400 "Unknown
+ * fields found" for `type` and `issueDateTimeRef`, and `issueDateTime`
+ * defaults to the original invoice's. Electronic originals are P9 and need
+ * the buyer from the original e-invoice — without that we refuse rather
+ * than file a P9 CIS will reject.
  */
 export function buildCorrectiveInvoice(
   input: CorrectiveInvoiceInput,
@@ -353,13 +356,7 @@ export function buildCorrectiveInvoice(
       'Cannot file a corrective invoice without the original IIC (correctiveInvoice.iicRef).',
     );
   }
-  const ref: CorrectiveInvoiceRef = {
-    iicRef,
-    type: 'CORRECTIVE',
-    ...(input.original.issueDateTime
-      ? { issueDateTimeRef: input.original.issueDateTime }
-      : {}),
-  };
+  const ref: CorrectiveInvoiceRef = { iicRef };
   const electronic = Boolean(String(input.original.eic || '').trim());
   if (electronic) {
     if (!input.buyer) {

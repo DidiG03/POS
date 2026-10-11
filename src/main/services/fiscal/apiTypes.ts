@@ -202,11 +202,10 @@ export interface InvoiceCurrency {
 export interface CorrectiveInvoiceRef {
   iicRef: string;
   /**
-   * Not sent on cancellations — easyPos returns HTTP 400
-   * "Unknown fields found" for `type` and `issueDateTimeRef`.
+   * Defaults to the original invoice's date. There is no `type` or
+   * `issueDateTimeRef`: easyPos answers HTTP 400 "Unknown fields found".
    */
-  issueDateTimeRef?: string;
-  type?: 'CORRECTIVE' | 'CANCELLATION';
+  issueDateTime?: string;
 }
 
 /** Period covered by an EXPORT supply. */
