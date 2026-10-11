@@ -633,5 +633,31 @@ describe('mapOrderToFiscalSaleRow', () => {
     expect(row.items).toEqual([
       { id: 1, name: 'Espresso', qty: 2, unitPrice: 150, voided: false },
     ]);
+    expect(row.fiscalPending).toBe(false);
+  });
+
+  it('marks a sale still waiting to be fiscalized, but not one taken with fiskalizimi off', () => {
+    const base = {
+      id: 8,
+      total: 300,
+      status: 'PAID',
+      items: [],
+      corrections: [],
+    };
+    const queued = mapOrderToFiscalSaleRow({
+      ...base,
+      payments: [
+        {
+          method: 'CASH',
+          metaJson: { fiscalEnabled: true, fiscalStatus: 'pending' },
+        },
+      ],
+    });
+    expect(queued.fiscalPending).toBe(true);
+    const offTill = mapOrderToFiscalSaleRow({
+      ...base,
+      payments: [{ method: 'CASH', metaJson: { kind: 'PAYMENT' } }],
+    });
+    expect(offTill.fiscalPending).toBe(false);
   });
 });

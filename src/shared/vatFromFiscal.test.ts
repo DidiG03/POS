@@ -37,4 +37,18 @@ describe('vatFromFiscal', () => {
       false,
     );
   });
+
+  it('shows no VAT for a seller outside the VAT scheme', () => {
+    expect(
+      isVatEnabledFromSettings({
+        fiscal: { enabled: true, vat: { nonVatBusiness: true } },
+      }),
+    ).toBe(false);
+    expect(
+      resolveVatEnabledFromMeta(
+        { vatEnabled: true },
+        { fiscal: { enabled: true, vat: { nonVatBusiness: true } } },
+      ),
+    ).toBe(false);
+  });
 });

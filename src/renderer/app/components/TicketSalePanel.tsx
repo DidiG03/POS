@@ -54,7 +54,10 @@ export function TicketSalePanel({
   const voided = sale.status.toUpperCase() === 'VOID';
   // Shops: a ticket that never reached the tax service (e.g. printed by
   // mistake) is simply voided — out of revenue and reports, stock returned.
-  const shopVoid = !hasTables && !sale.fiscalNivf && !sale.fiscalNslf;
+  // A sale waiting to be sent to fiskalizimi still owes its invoice; voiding
+  // it here would quietly withdraw it, so it goes through the full flow.
+  const shopVoid =
+    !hasTables && !sale.fiscalNivf && !sale.fiscalNslf && !sale.fiscalPending;
   const cancelFiled = sale.corrections.some(
     (c) => c.kind === 'CANCEL' && c.correctionNslf,
   );

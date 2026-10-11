@@ -17,6 +17,7 @@ import {
 } from '../../stores/ticket';
 import { TicketLineRow } from '../components/TicketLineRow';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
+import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import {
   computeDiscountAmount,
   computeServiceChargeAmount,
@@ -1488,7 +1489,7 @@ export default function OrderPage() {
   async function reloadPreferences() {
     try {
       const s: any = await window.api.settings.get().catch(() => null);
-      setVatEnabled(Boolean((s as any)?.fiscal?.enabled));
+      setVatEnabled(isVatEnabledFromSettings(s));
       setPosCurrency(
         String((s as any)?.currency || 'EUR')
           .trim()

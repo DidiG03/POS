@@ -1308,6 +1308,11 @@ export interface FiscalSaleDTO {
   fiscalQrCode?: string | null;
   /** Seller NIPT — CIS InvoiceCheck requires this next to the IIC. */
   fiscalTin?: string | null;
+  /**
+   * Taken with fiskalizimi on and not registered yet (offline, queued for
+   * sending). Not an "unfiscalized" sale: its invoice is still owed.
+   */
+  fiscalPending?: boolean;
   /** easyPos docId for the original invoice. */
   docId: string | null;
   items: {

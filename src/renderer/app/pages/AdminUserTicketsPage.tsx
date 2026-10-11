@@ -336,6 +336,7 @@ function TicketCard({
     String(ticket.sale?.status || '').toUpperCase() !== 'VOID' &&
     !ticket.sale?.fiscalNivf &&
     !ticket.sale?.fiscalNslf &&
+    !ticket.sale?.fiscalPending &&
     Boolean(window.api.admin.correctSale);
   const liveItems = ticket.items.filter((it) => !it.voided);
   const voidedItems = ticket.items.filter((it) => it.voided);

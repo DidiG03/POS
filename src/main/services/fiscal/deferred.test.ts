@@ -9,10 +9,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SettingsDTO } from '@shared/ipc';
 
-const { store, payments, createSale } = vi.hoisted(() => ({
+const { store, payments, createSale, ensureFloat } = vi.hoisted(() => ({
   store: new Map<string, { valueJson: any; updatedAt: Date }>(),
   payments: new Map<string, any>(),
   createSale: vi.fn(),
+  ensureFloat: vi.fn(async (..._args: unknown[]) => ({
+    kind: 'already-declared',
+  })),
 }));
 
 vi.mock('@db/client', () => ({
@@ -96,6 +99,8 @@ vi.mock('./easypos', async (importActual) => {
   return { ...actual, createEasyPosSale: createSale };
 });
 
+vi.mock('./balance', () => ({ ensureDailyBalanceForCash: ensureFloat }));
+
 import { transmitDueDeferredInvoices } from './deferred';
 import {
   fiscalClaimKey,
@@ -128,6 +133,7 @@ beforeEach(() => {
   resetFiscalDeferredHint();
   store.clear();
   payments.clear();
+  ensureFloat.mockClear();
   createSale.mockReset();
   createSale.mockResolvedValue({
     nslf: 'NSLF-D',
@@ -242,5 +248,63 @@ describe('deferred loop when nothing is waiting', () => {
     await listFiscalClaimsDeferred();
     expect(fiscalDeferredWorkMayExist()).toBe(false);
     expect(fiscalDeferredWorkMayExist(Date.now() + 2 * 60_000)).toBe(true);
+  });
+});
+
+describe('opening float for invoices sent late', () => {
+  const cloud = {
+    fiscal: {
+      enabled: true,
+      baseUrl: 'https://api.easypos.al/fiscalisation-service/v1',
+      openingFloat: 5000,
+    },
+  } as unknown as SettingsDTO;
+
+  it("declares today's float before resending a cash invoice", async () => {
+    deferred('cash-1', {
+      draft: {
+        docId: 'cash-1',
+        articles: [],
+        payment: [{ type: 'CASH', amount: 300 }],
+      },
+    });
+    const order: string[] = [];
+    ensureFloat.mockImplementationOnce(async () => {
+      order.push('float');
+      return { kind: 'initiated' } as any;
+    });
+    createSale.mockImplementationOnce(async () => {
+      order.push('invoice');
+      return { nslf: 'N', nivf: 'F', link: '', status: 'accepted' };
+    });
+    await transmitDueDeferredInvoices(cloud);
+    expect(order).toEqual(['float', 'invoice']);
+    expect(ensureFloat.mock.calls[0][1]).toEqual({ openingFloat: 5000 });
+  });
+
+  it('leaves card invoices alone', async () => {
+    deferred('card-1', {
+      draft: {
+        docId: 'card-1',
+        articles: [],
+        payment: [{ type: 'CARD', amount: 300 }],
+      },
+    });
+    await transmitDueDeferredInvoices(cloud);
+    expect(ensureFloat).not.toHaveBeenCalled();
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('still sends the invoice when the float check fails', async () => {
+    deferred('cash-2', {
+      draft: {
+        docId: 'cash-2',
+        articles: [],
+        payment: [{ type: 'CASH', amount: 300 }],
+      },
+    });
+    ensureFloat.mockRejectedValueOnce(new Error('offline'));
+    await transmitDueDeferredInvoices(cloud);
+    expect(createSale).toHaveBeenCalledTimes(1);
   });
 });

@@ -41,6 +41,9 @@ export type EasyPosCloudInvoiceDraft = {
   invoiceRebate?: Rebate;
 };
 
+/** UN/CEFACT code for kilogram, per the easyPos `soldIn` field. */
+export const SOLD_BY_KG_UNIT = 'KGM';
+
 function fiscalArticleSettings(settings: SettingsDTO) {
   const fiscal = (settings as any)?.fiscal || {};
   const config = fiscalConfig(settings);
@@ -206,7 +209,9 @@ function buildArticles(
         articleName: String(it.name || 'Item'),
       }),
       name: String(it.name || 'Item').slice(0, 100),
-      soldIn,
+      // Weighed items are sold in kilograms (UN/CEFACT KGM); filing 0.35
+      // "pieces" misstates the unit on the invoice.
+      soldIn: (it as any).soldByKg === true ? SOLD_BY_KG_UNIT : soldIn,
       price: Number(it.unitPrice || 0),
       units: qty,
     });

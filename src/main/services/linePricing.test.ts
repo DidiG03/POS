@@ -303,3 +303,38 @@ describe('wiring', () => {
     expect(fn).toContain('await recordMenuPriceChange(');
   });
 });
+
+describe('sold by weight', () => {
+  it('takes the kg flag from the menu, not the line', () => {
+    const fish = {
+      sku: 'FISH',
+      name: 'Peshk',
+      price: 4000,
+      vatRate: 0.2,
+      isKg: true,
+    };
+    const r = repriceLines(
+      [
+        {
+          sku: 'FISH',
+          name: 'Peshk',
+          qty: 0.35,
+          unitPrice: 4000,
+          vatRate: 0.2,
+        },
+        // A line claiming kg for an item the menu sells by the piece.
+        {
+          sku: 'ESP',
+          name: 'Espresso',
+          qty: 1,
+          unitPrice: 100,
+          vatRate: 0.2,
+          soldByKg: true,
+        },
+      ],
+      [fish, ESPRESSO],
+      [],
+    );
+    expect(r.items.map((i: any) => i.soldByKg)).toEqual([true, undefined]);
+  });
+});

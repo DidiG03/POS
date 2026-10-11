@@ -219,11 +219,12 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.86"
-            echo "- Payments no longer wait ~10 seconds each when the receipt printer is offline: the receipt is queued and prints when the printer is back."
-            echo "- After a printer outage, queued receipts and kitchen tickets now print within seconds (they could take ~5 minutes per 20)."
-            echo "- A payment for a bill that changed on another device (items added after the pay screen opened) is refused instead of closing the table and dropping those items. Reopen the table and charge the new total."
-            echo "- A phone repeating a payment while the first attempt is still running now gets the same answer instead of an error or a hang."
+            echo "### Changes in v0.2.87 (fiskalizimi audit)"
+            echo "- Cash sales queued during an internet outage that runs past midnight are no longer refused the next morning: the day's opening float is declared before they are sent."
+            echo "- New in Admin > Fiskalizimi: \"Business is not VAT registered\". Invoices are then filed at VAT band A and receipts and reports show no TVSH."
+            echo "- Admin > Fiskalizimi warns when the POS currency is not ALL, so a Lek-priced menu is never filed in EUR."
+            echo "- Items sold by weight are filed in kilograms (KGM) instead of pieces."
+            echo "- Shops: the quick Void is no longer offered on sales still waiting to be sent to fiskalizimi."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

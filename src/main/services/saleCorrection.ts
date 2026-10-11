@@ -74,6 +74,8 @@ export type FiscalSaleRow = {
   fiscalQrCode: string | null;
   /** Seller NIPT — CIS InvoiceCheck requires this next to the IIC. */
   fiscalTin: string | null;
+  /** Fiskalizimi was on for this sale and its invoice is not registered yet. */
+  fiscalPending: boolean;
   items: Array<{
     id: number;
     name: string;
@@ -160,6 +162,9 @@ export function mapOrderToFiscalSaleRow(
     fiscalLink: pickFiscalField(payment, 'fiscalLink'),
     fiscalQrCode: pickFiscalField(payment, 'fiscalQrCode'),
     fiscalTin: pickFiscalTin(payment, options?.tin || undefined),
+    fiscalPending:
+      paymentMeta(payment).fiscalEnabled === true &&
+      !String(payment?.fiscalNivf || '').trim(),
     items: (Array.isArray(row.items) ? row.items : []).map((it: any) => ({
       id: Number(it.id),
       name: String(it.name || 'Item'),

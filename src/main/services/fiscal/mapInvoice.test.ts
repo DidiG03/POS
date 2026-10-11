@@ -261,3 +261,23 @@ describe('buildRestatedInvoiceLines', () => {
     ]);
   });
 });
+
+describe('unit of measure', () => {
+  it('files weighed items in KGM and everything else in the default unit', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload(
+        [
+          { name: 'Peshk', qty: 0.35, unitPrice: 4000, soldByKg: true } as any,
+          { name: 'Uje', qty: 1, unitPrice: 100 },
+        ],
+        { totalAfter: 1500 },
+      ),
+      settings,
+      { docId: 'inv-kg-unit' },
+    );
+    expect(draft.articles.map((a) => [a.name, a.soldIn, a.units])).toEqual([
+      ['Peshk', 'KGM', 0.35],
+      ['Uje', 'XPP', 1],
+    ]);
+  });
+});

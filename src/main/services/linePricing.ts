@@ -43,6 +43,8 @@ export interface MenuPrice {
   name: string;
   price: number;
   vatRate: number;
+  /** Sold by weight: the fiscal invoice files it in KGM, not pieces. */
+  isKg?: boolean;
 }
 
 export interface LinePriceIssue {
@@ -159,6 +161,10 @@ export function repriceLines(
       (sameVat(claimedVat, item.vatRate) ||
         past.some((p) => sameVat(claimedVat, p.vatRate)));
 
+    // Like price and VAT, the unit comes from the menu, not the line.
+    if (item.isKg === true) line.soldByKg = true;
+    else delete line.soldByKg;
+
     if (priceOk && vatOk) {
       out.push(line);
       continue;
@@ -229,13 +235,14 @@ async function loadMenu(items: unknown): Promise<MenuPrice[]> {
   const list = [...keys];
   const rows = await prisma.menuItem.findMany({
     where: { OR: [{ sku: { in: list } }, { name: { in: list } }] },
-    select: { sku: true, name: true, price: true, vatRate: true },
+    select: { sku: true, name: true, price: true, vatRate: true, isKg: true },
   } as any);
   return (rows as any[]).map((r) => ({
     sku: String(r.sku),
     name: String(r.name),
     price: Number(r.price),
     vatRate: Number(r.vatRate),
+    isKg: r.isKg === true || r.isKg === 1,
   }));
 }
 

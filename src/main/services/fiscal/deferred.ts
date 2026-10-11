@@ -31,6 +31,8 @@ import {
 } from './easypos';
 import { notifyAdminsAndActor } from '../adminAlerts';
 import { prisma } from '@db/client';
+import { ensureDailyBalanceForCash } from './balance';
+import { fiscalConfig } from './config';
 
 const LOOP_MS = 20_000;
 const OUTAGE_NOTICE_MS = 30 * 60 * 1000;
@@ -126,6 +128,39 @@ async function stampFiscalIdentifiersOnSale(
       } as any,
     })
     .catch(() => undefined);
+}
+
+/**
+ * A cash invoice sent after midnight needs that day's opening float, and the
+ * float is otherwise declared only when a waiter takes a cash payment. An
+ * outage that ran overnight therefore sent yesterday's cash invoices before
+ * anything declared today's float; the tax service refused them as
+ * "daily balance not reported", which is permanent, and every one of them
+ * had to be filed by hand in SelfCare.
+ */
+async function declareFloatForCashDraft(
+  settings: SettingsDTO,
+  draft: unknown,
+): Promise<void> {
+  try {
+    if (!fiscalConfig(settings).cloud) return;
+    const raw = (draft as any)?.payment;
+    const payments = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const cash = payments.some(
+      (p: any) => String(p?.type || '').toUpperCase() === 'CASH',
+    );
+    if (!cash) return;
+    const configured = Number((settings as any)?.fiscal?.openingFloat);
+    await ensureDailyBalanceForCash(settings, {
+      openingFloat:
+        Number.isFinite(configured) && configured >= 0 ? configured : 0,
+    });
+  } catch (e: any) {
+    // The register call is the authority; it reports a missing float itself.
+    console.warn(
+      `[fiscal-defer] could not check today's opening float: ${String(e?.message || e)}`,
+    );
+  }
 }
 
 async function noticeOutage(message: string): Promise<void> {
@@ -232,6 +267,8 @@ async function transmitOne(
   if (!latest || latest.state === 'ABANDONED') return false;
   const saleKey =
     String(latest.context?.saleKey || '').trim() || idempotencyKey;
+
+  await declareFloatForCashDraft(settings, draft);
 
   try {
     const result = await createEasyPosSale(settings, draft as any);

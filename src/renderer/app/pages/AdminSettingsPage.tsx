@@ -1404,6 +1404,9 @@ function FiscalSettings() {
   const [defaultSoldIn, setDefaultSoldIn] = useState('XPP');
   const [cloudFallbackArticleId, setCloudFallbackArticleId] = useState('');
   const [openingFloat, setOpeningFloat] = useState('');
+  const [nonVatBusiness, setNonVatBusiness] = useState(false);
+  const [storedVat, setStoredVat] = useState<Record<string, unknown>>({});
+  const [posCurrency, setPosCurrency] = useState('');
   const setStatus = useStatusToast();
   const [testing, setTesting] = useState(false);
   const [testingMinimal, setTestingMinimal] = useState(false);
@@ -1446,6 +1449,11 @@ function FiscalSettings() {
             ? String(fiscal.openingFloat)
             : '',
         );
+        const vat =
+          fiscal.vat && typeof fiscal.vat === 'object' ? fiscal.vat : {};
+        setStoredVat(vat);
+        setNonVatBusiness(vat.nonVatBusiness === true);
+        setPosCurrency(String((s as any)?.currency || '').toUpperCase());
       } finally {
         setLoading(false);
       }
@@ -1483,6 +1491,17 @@ function FiscalSettings() {
       // Blank means no float, not "leave whatever was there" — an empty box
       // has to be able to set the drawer back to zero.
       openingFloat: float ? Number(float.replace(',', '.')) : 0,
+      // A seller outside the VAT scheme files every line at band A, and a
+      // 0% line means A for them rather than C (exempt supply).
+      vat: {
+        ...storedVat,
+        nonVatBusiness,
+        zeroRateCode: nonVatBusiness
+          ? 'A'
+          : storedVat.zeroRateCode === 'A'
+            ? 'A'
+            : 'C',
+      },
     };
   }
 
@@ -1647,6 +1666,24 @@ function FiscalSettings() {
               checked={enabled}
               onChange={setEnabled}
               label={t('fiscal.enableLabel')}
+            />
+          </SettingsCard>
+
+          {enabled && posCurrency && posCurrency !== 'ALL' ? (
+            <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+              {t('fiscal.currencyWarning', { currency: posCurrency })}
+            </div>
+          ) : null}
+
+          <SettingsCard
+            title={t('fiscal.nonVatTitle')}
+            description={t('fiscal.nonVatHelp')}
+          >
+            <SettingsToggleRow
+              title={t('fiscal.nonVatLabel')}
+              checked={nonVatBusiness}
+              onChange={setNonVatBusiness}
+              label={t('fiscal.nonVatLabel')}
             />
           </SettingsCard>
 
