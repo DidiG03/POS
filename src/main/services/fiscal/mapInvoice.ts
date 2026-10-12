@@ -6,7 +6,7 @@ import { assertVatCode } from './vatConfig';
 import { buildCurrency } from './buildInvoice';
 import { assertValidDocId } from './docId';
 import { DEFAULT_CURRENCY, type Rebate, type VatCode } from './apiTypes';
-import { computeInvoiceTotal } from './validate';
+import { articleLineTotal, computeInvoiceTotal } from './validate';
 // Deliberately the same rounding the payment total was computed with. A local
 // copy without the epsilon nudge disagreed with it on values that land just
 // under a half cent (1.005 is stored as 1.00499…), and easyPos rejects an
@@ -72,6 +72,7 @@ export interface DraftAdjustment {
   articleTotal: number;
   targetTotal: number;
   difference: number;
+  /** The item bands the gap was filed on, joined for the admin alert. */
   vatCode: string;
 }
 
@@ -87,12 +88,91 @@ function ticketDiscountRebate(payload: TicketPrintPayload): Rebate | undefined {
 }
 
 /**
+ * Split `amount` across `weights` so the parts sum to the amount exactly.
+ *
+ * Largest-remainder on cents. A proportional split that rounds each share
+ * on its own drops or adds a cent, and easyPos rejects that invoice.
+ */
+function allocateMoney(amount: number, weights: number[]): number[] {
+  const cents = Math.round(roundMoney(amount) * 100);
+  if (cents <= 0 || weights.length === 0) return weights.map(() => 0);
+  const sum = weights.reduce((total, weight) => total + Math.max(0, weight), 0);
+  if (!(sum > 0)) return weights.map(() => 0);
+  const exacts = weights.map((weight) =>
+    weight > 0 ? (cents * weight) / sum : 0,
+  );
+  const floors = exacts.map((exact) => Math.floor(exact + 1e-9));
+  let remain = cents - floors.reduce((total, value) => total + value, 0);
+  const order = exacts
+    .map((exact, index) => ({ index, frac: exact - floors[index] }))
+    .sort((a, b) => b.frac - a.frac || a.index - b.index);
+  const out = floors.slice();
+  for (let i = 0; i < remain; i++) out[order[i % order.length].index] += 1;
+  return out.map((value) => value / 100);
+}
+
+function positiveBands(
+  articles: EasyPosInvoiceDraft['articles'],
+): Array<{ code: VatCode; weight: number }> {
+  const weights = new Map<VatCode, number>();
+  for (const article of articles) {
+    const gross = articleLineTotal(article);
+    if (!(gross > 0)) continue;
+    weights.set(article.vatCode, (weights.get(article.vatCode) || 0) + gross);
+  }
+  return [...weights.entries()].map(([code, weight]) => ({ code, weight }));
+}
+
+function bandLabel(codes: string[]): string {
+  if (codes.length <= 1) return codes[0] || '';
+  if (codes.length === 2) return `${codes[0]} and ${codes[1]}`;
+  return `${codes.slice(0, -1).join(', ')} and ${codes[codes.length - 1]}`;
+}
+
+/**
+ * Put a discount on the lines that earned it, in proportion to each line,
+ * so a 20% item and a 6% item each keep their own VAT base.
+ */
+function addLineRebates(
+  articles: EasyPosInvoiceDraft['articles'],
+  amount: number,
+): EasyPosInvoiceDraft['articles'] {
+  let left = roundMoney(amount);
+  let current = articles.map((article) => ({ ...article }));
+  for (let pass = 0; pass < 4 && left >= 0.01; pass++) {
+    const room = current.map((article) => {
+      const gross = roundMoney(
+        Number(article.price || 0) * Number(article.units || 0),
+      );
+      const taken = roundMoney(Number(article.rebate?.inValue || 0));
+      return Math.max(0, roundMoney(gross - taken));
+    });
+    const budget = Math.min(
+      left,
+      roundMoney(room.reduce((total, value) => total + value, 0)),
+    );
+    if (budget < 0.01) break;
+    const shares = allocateMoney(budget, room);
+    current = current.map((article, index) => {
+      if (shares[index] < 0.01) return article;
+      const prev = Number(article.rebate?.inValue || 0);
+      return {
+        ...article,
+        rebate: { inValue: roundMoney(prev + shares[index]) },
+      };
+    });
+    left = roundMoney(left - shares.reduce((total, value) => total + value, 0));
+  }
+  return current;
+}
+
+/**
  * Make the invoice total equal the amount charged without negative prices.
  *
- * A ticket discount is `invoiceRebate`. Any leftover overage (charged less
- * than the lines) is added to that rebate. A shortfall (charged more) is
- * a positive adjustment line — still the default VAT band, which is why
- * mixed-VAT tickets still alert.
+ * One VAT band keeps a ticket discount as `invoiceRebate`. Mixed bands get
+ * a rebate on each line, in proportion to that line, so the tax service is
+ * not told the whole discount belonged to the default rate. A shortfall is
+ * an adjustment line per band of the goods, not one line at the default rate.
  */
 function reconcileToChargedTotal(
   articles: EasyPosInvoiceDraft['articles'],
@@ -107,39 +187,74 @@ function reconcileToChargedTotal(
   if (!Number.isFinite(targetTotal) || targetTotal < 0) {
     return { articles, invoiceRebate };
   }
+  // An invoice-level rebate has no VAT band. On a mixed ticket that files
+  // the whole discount against one rate, so move it onto the lines first.
+  if (positiveBands(articles).length > 1 && invoiceRebate) {
+    const lines = invoiceTotalOf(articles);
+    const fromValue = roundMoney(Number(invoiceRebate?.inValue || 0));
+    const fromPercent =
+      invoiceRebate?.inPercentage != null
+        ? roundMoney(lines * ((Number(invoiceRebate.inPercentage) || 0) / 100))
+        : 0;
+    const rebateValue = roundMoney(fromValue + fromPercent);
+    if (rebateValue >= 0.01) {
+      articles = addLineRebates(articles, rebateValue);
+    }
+    invoiceRebate = undefined;
+  }
   const current = invoiceTotalOf(articles, invoiceRebate);
   const diff = roundMoney(current - targetTotal);
   if (Math.abs(diff) < 0.01) return { articles, invoiceRebate };
 
-  const vatCode = defaultVatCode(settings);
+  const bands = positiveBands(articles);
+  const codes = bands.map((band) => band.code);
+  const sole = codes.length === 1 ? codes[0] : undefined;
   onAdjustment?.({
     articleTotal: current,
     targetTotal,
     difference: diff,
-    vatCode,
+    vatCode: bandLabel(codes) || defaultVatCode(settings),
   });
 
+  // Charged less than the lines. One band can stay an invoice rebate — that
+  // is the whole tax base. Mixed bands take the discount on each line.
   if (diff > 0) {
+    if (sole) {
+      return {
+        articles,
+        invoiceRebate: {
+          inValue: roundMoney(Number(invoiceRebate?.inValue || 0) + diff),
+        },
+      };
+    }
+    const rebateNow = roundMoney(Number(invoiceRebate?.inValue || 0));
     return {
-      articles,
-      invoiceRebate: {
-        inValue: roundMoney(Number(invoiceRebate?.inValue || 0) + diff),
-      },
+      articles: addLineRebates(articles, roundMoney(rebateNow + diff)),
     };
   }
 
+  const shortfall = roundMoney(Math.abs(diff));
   const soldIn = fiscalArticleSettings(settings).soldIn;
+  const shares =
+    bands.length > 0
+      ? allocateMoney(
+          shortfall,
+          bands.map((band) => band.weight),
+        ).map((amount, index) => ({ code: bands[index].code, amount }))
+      : [{ code: defaultVatCode(settings), amount: shortfall }];
   return {
     articles: [
       ...articles,
-      {
-        articleId: resolveArticleId('POS-ADJUSTMENT', 'Adjustment', settings),
-        vatCode,
-        name: 'Adjustment',
-        soldIn,
-        price: Math.abs(diff),
-        units: 1,
-      },
+      ...shares
+        .filter((share) => share.amount >= 0.01)
+        .map((share) => ({
+          articleId: resolveArticleId('POS-ADJUSTMENT', 'Adjustment', settings),
+          vatCode: share.code,
+          name: 'Adjustment',
+          soldIn,
+          price: share.amount,
+          units: 1,
+        })),
     ],
     invoiceRebate,
   };
@@ -219,18 +334,29 @@ function buildArticles(
 
   const scAmt = Number(meta.serviceChargeAmount || 0);
   if (Number.isFinite(scAmt) && scAmt > 0) {
-    articles.push({
-      articleId: resolveArticleId(
-        'POS-SERVICE-CHARGE',
-        'Service charge',
-        settings,
-      ),
-      vatCode: defaultVatCode(settings),
-      name: 'Service charge',
-      soldIn,
-      price: scAmt,
-      units: 1,
-    });
+    const bands = positiveBands(articles);
+    const shares =
+      bands.length > 0
+        ? allocateMoney(
+            scAmt,
+            bands.map((band) => band.weight),
+          ).map((amount, index) => ({ code: bands[index].code, amount }))
+        : [{ code: defaultVatCode(settings), amount: roundMoney(scAmt) }];
+    for (const share of shares) {
+      if (share.amount < 0.01) continue;
+      articles.push({
+        articleId: resolveArticleId(
+          'POS-SERVICE-CHARGE',
+          'Service charge',
+          settings,
+        ),
+        vatCode: share.code,
+        name: 'Service charge',
+        soldIn,
+        price: share.amount,
+        units: 1,
+      });
+    }
   }
 
   return articles;
@@ -458,11 +584,11 @@ export function buildEasyPosInvoiceDraft(
     return buildEasyPosCloudInvoiceDraft(payload, settings, options);
   }
 
-  const articles = buildArticles(payload, settings);
+  let articles = buildArticles(payload, settings);
   if (articles.length === 0) {
     throw new Error('Cannot fiscalize an empty ticket.');
   }
-  const invoiceRebate = ticketDiscountRebate(payload);
+  let invoiceRebate = ticketDiscountRebate(payload);
 
   const meta: any = payload.meta || {};
   const method = mapPaymentMethod(
@@ -477,24 +603,21 @@ export function buildEasyPosInvoiceDraft(
       : Number.isFinite(total) && total > 0
         ? total
         : articleTotal;
+  if (Number.isFinite(amountDue) && amountDue >= 0) {
+    const reconciled = reconcileToChargedTotal(
+      articles,
+      invoiceRebate,
+      amountDue,
+      settings,
+      options?.onAdjustment,
+    );
+    articles = reconciled.articles;
+    invoiceRebate = reconciled.invoiceRebate;
+  }
   const payment =
     Number.isFinite(amountDue) && amountDue > 0
       ? { type: method, amount: roundMoney(amountDue) }
       : { type: method };
-
-  // Unlike the cloud draft this path sends the charged amount as-is rather
-  // than forcing the lines to match it. easyPos rejects the invoice when
-  // the two disagree, so surface the discrepancy instead of letting the
-  // payment fail with an opaque provider error.
-  const gap = roundMoney(articleTotal - roundMoney(amountDue));
-  if (Number.isFinite(gap) && Math.abs(gap) >= 0.01) {
-    options?.onAdjustment?.({
-      articleTotal,
-      targetTotal: roundMoney(amountDue),
-      difference: gap,
-      vatCode: defaultVatCode(settings),
-    });
-  }
 
   const draft: EasyPosInvoiceDraft = {
     app: 'OneTap POS',

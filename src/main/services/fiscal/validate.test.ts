@@ -8,7 +8,9 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  articleLineTotal,
   computeInvoiceTotal,
+  sumPayments,
   validateCancelInvoice,
   validateRegisterInvoice,
 } from './validate';
@@ -593,5 +595,30 @@ describe('validateCancelInvoice', () => {
         selectedProcess: 'P10',
       }).map((i) => i.field),
     ).toContain('selectedProcess');
+  });
+});
+
+describe('negative lines round like positive ones', () => {
+  it('rounds a half cent away from zero on a corrective line', () => {
+    // 0.25 kg × 880.06 = 220.015 was filed at 220.02. Its corrective must
+    // take back 220.02, not 220.01, or the void is a cent off the sale.
+    const line = {
+      articleId: 'KG',
+      vatCode: 'B' as const,
+      name: 'Djathe',
+      soldIn: 'KGM',
+      price: 880.06,
+      units: -0.25,
+    };
+    expect(articleLineTotal(line)).toBe(-220.02);
+    expect(articleLineTotal({ ...line, units: 0.25 })).toBe(220.02);
+    expect(
+      computeInvoiceTotal({
+        articles: [line, { ...line, price: 824.59, units: -6 }],
+      }),
+    ).toBe(-5167.56);
+    expect(sumPayments([{ type: 'CASH', amount: -220.015 } as any])).toBe(
+      -220.02,
+    );
   });
 });

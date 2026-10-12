@@ -162,6 +162,11 @@ export interface FiscalClaimRecord {
    * correction restated an unsent invoice instead of just withdrawing it.
    */
   replacedBy?: string;
+  /**
+   * An earlier send of this docId may have reached easyPos and its outcome
+   * was never confirmed. The next send asks `/invoice/status` first.
+   */
+  checkStatusFirst?: boolean;
 }
 
 export type FiscalClaimDecision =
@@ -169,6 +174,11 @@ export type FiscalClaimDecision =
   | { outcome: 'proceed'; attemptId: string }
   /** Already registered — reuse these identifiers, do not call the provider. */
   | { outcome: 'replay'; result: StoredFiscalResult }
+  /**
+   * The invoice was withdrawn before CIS accepted it. Do not file it, and
+   * do not treat the payment as fiscalized.
+   */
+  | { outcome: 'withdrawn'; reason: string; replacedBy?: string }
   /** Another attempt is mid-flight. Back off and let it finish. */
   | { outcome: 'in-flight' }
   /** Outcome unknowable. Needs a human to reconcile against easyPos. */
@@ -217,6 +227,7 @@ function parseRecord(valueJson: unknown): FiscalClaimRecord | null {
       ? String(raw.orphanDetectedAt)
       : undefined,
     replacedBy: raw.replacedBy ? String(raw.replacedBy) : undefined,
+    checkStatusFirst: raw.checkStatusFirst === true ? true : undefined,
   };
 }
 
@@ -393,7 +404,27 @@ export async function claimFiscalRegistration(
   }
 
   if (existing.state === 'ABANDONED') {
-    return { outcome: 'replay', result: existing.result || {} };
+    // A NIVF on a withdrawn claim means CIS already has the invoice. Replaying
+    // it as an empty success would record a sale with no fiscal codes, and
+    // rejecting it would invite a new Pay tap to file a second one.
+    const nivf = String(existing.result?.nivf || '').trim();
+    if (nivf) {
+      return {
+        outcome: 'needs-review',
+        reason:
+          `This payment was marked withdrawn, but NIVF ${nivf} is stored on it.` +
+          ' Check this docId in easyPos before taking the payment again.',
+        alreadyReported: false,
+      };
+    }
+    const replacedBy = String(existing.replacedBy || '').trim();
+    return {
+      outcome: 'withdrawn',
+      ...(replacedBy ? { replacedBy } : {}),
+      reason: replacedBy
+        ? `This payment was withdrawn before fiskalizimi received it. A replacement invoice is queued under docId ${replacedBy}, so this payment will not be sent.`
+        : 'This payment was withdrawn before fiskalizimi received it (the ticket was voided or the invoice was dropped). It will not be sent. Take a new payment if the sale is still owed.',
+    };
   }
 
   if (existing.state === 'UNKNOWN') {
@@ -498,14 +529,258 @@ export async function settleFiscalClaimDeferred(
   error: string,
   draft: unknown,
   nextAttemptAt: string,
+  options?: { checkStatusFirst?: boolean },
 ): Promise<void> {
   const existing = await readFiscalClaim(idempotencyKey);
+  // Once set, the flag stays until the docId is confirmed one way or the
+  // other: a later offline failure says nothing about the earlier send.
+  const checkStatusFirst =
+    existing?.checkStatusFirst === true || options?.checkStatusFirst === true;
   await settle(idempotencyKey, attemptId, {
     state: 'DEFERRED',
     lastError: error,
     draft: draft ?? existing?.draft,
     nextAttemptAt,
+    ...(checkStatusFirst ? { checkStatusFirst: true } : {}),
   });
+}
+
+/** Short pauses between claim writes. The first attempt does not wait. */
+const CLAIM_WRITE_DELAYS_MS = [0, 15, 40, 120];
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function holdsRegistration(
+  saved: FiscalClaimRecord | null,
+  result: StoredFiscalResult,
+): boolean {
+  if (!saved) return false;
+  if (
+    saved.state !== 'REGISTERED' &&
+    saved.state !== 'CORRECTED' &&
+    saved.state !== 'CORRECTION_REQUIRED'
+  ) {
+    return false;
+  }
+  const wantedNivf = String(result.nivf || '').trim();
+  const savedNivf = String(saved.result?.nivf || '').trim();
+  if (wantedNivf) return savedNivf === wantedNivf;
+  const wantedNslf = String(result.nslf || '').trim();
+  const savedNslf = String(saved.result?.nslf || '').trim();
+  if (wantedNslf) return savedNslf === wantedNslf;
+  return false;
+}
+
+/**
+ * The sentence admins see when CIS already issued a NIVF and the claim
+ * store did not keep it. The identifiers have to be in the text: if the
+ * write keeps failing, this notification is the only local copy.
+ */
+export function acceptedButUnstoredMessage(
+  result: StoredFiscalResult,
+  detail: string,
+): string {
+  const ids = [
+    result.nivf ? `NIVF ${result.nivf}` : '',
+    result.nslf ? `NSLF ${result.nslf}` : '',
+    result.eic ? `EIC ${result.eic}` : '',
+  ].filter(Boolean);
+  return (
+    `Fiskalizimi accepted this invoice${ids.length ? ` (${ids.join(', ')})` : ''}` +
+    ` but the local record could not be saved: ${detail}.` +
+    ' Do not take this payment again until this docId is resolved in Settings › Fiskalizimi.'
+  );
+}
+
+export interface RegisteredCommit {
+  /** The claim is REGISTERED and holds the identifiers CIS returned. */
+  ok: boolean;
+  /**
+   * CIS accepted the invoice and the claim was parked as UNKNOWN with those
+   * identifiers, so a retry will not file it again.
+   */
+  parkedUnknown: boolean;
+  message?: string;
+}
+
+/**
+ * Persist a registration CIS has already confirmed.
+ *
+ * The write is retried and then read back. A thrown error, or a settle that
+ * quietly no-ops, must not be reported as success: the claim is the only
+ * durable trace of the NIVF if the receipt row never lands. When REGISTERED
+ * cannot be written, the claim is parked UNKNOWN with the identifiers on it
+ * so the review queue has them and nothing sends the invoice again.
+ */
+export async function commitRegisteredFiscalClaim(
+  idempotencyKey: string,
+  attemptId: string,
+  result: StoredFiscalResult,
+  options?: { sleep?: (ms: number) => Promise<void> },
+): Promise<RegisteredCommit> {
+  const sleep = options?.sleep ?? pause;
+  let lastError = 'the fiscal claim could not be saved';
+  for (let i = 0; i < CLAIM_WRITE_DELAYS_MS.length; i++) {
+    if (CLAIM_WRITE_DELAYS_MS[i]) await sleep(CLAIM_WRITE_DELAYS_MS[i]);
+    try {
+      await settleFiscalClaimRegistered(idempotencyKey, attemptId, result);
+    } catch (e: any) {
+      lastError = String(e?.message || e);
+    }
+    try {
+      const saved = await readFiscalClaim(idempotencyKey);
+      if (holdsRegistration(saved, result)) {
+        return { ok: true, parkedUnknown: false };
+      }
+    } catch (e: any) {
+      lastError = String(e?.message || e);
+    }
+  }
+
+  const message = acceptedButUnstoredMessage(result, lastError);
+  for (let i = 0; i < 2; i++) {
+    if (i) await sleep(CLAIM_WRITE_DELAYS_MS[1] || 15);
+    try {
+      await parkAcceptedRegistration(
+        idempotencyKey,
+        attemptId,
+        result,
+        message,
+      );
+      const saved = await readFiscalClaim(idempotencyKey);
+      if (holdsRegistration(saved, result)) {
+        return { ok: true, parkedUnknown: false };
+      }
+      const ids = String(
+        saved?.result?.nivf || saved?.result?.nslf || '',
+      ).trim();
+      if (saved?.state === 'UNKNOWN' && ids) {
+        return { ok: false, parkedUnknown: true, message };
+      }
+    } catch (e: any) {
+      lastError = String(e?.message || e);
+    }
+  }
+  return {
+    ok: false,
+    parkedUnknown: false,
+    message: acceptedButUnstoredMessage(result, lastError),
+  };
+}
+
+/**
+ * CIS accepted the invoice and REGISTERED would not stick. Park the
+ * identifiers on UNKNOWN so a retry cannot file a second document.
+ * Caller must hold the claim lock. Never downgrades a registration.
+ */
+async function parkAcceptedRegistration(
+  idempotencyKey: string,
+  attemptId: string,
+  result: StoredFiscalResult,
+  message: string,
+): Promise<void> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing || existing.attemptId !== attemptId) return;
+  if (
+    existing.state === 'REGISTERED' ||
+    existing.state === 'CORRECTED' ||
+    existing.state === 'CORRECTION_REQUIRED'
+  ) {
+    return;
+  }
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    state: 'UNKNOWN',
+    result,
+    lastError: message,
+    updatedAt: nowIso(),
+  });
+}
+
+/**
+ * Queue an invoice CIS never received.
+ *
+ * Read back DEFERRED with the draft attached. `releaseOnFailure` marks the
+ * claim FAILED when the queue write does not stick, so a payment that was
+ * not recorded can be sent on the next tap. The transmit loop leaves the
+ * claim PENDING (the draft is already on it); the sweep puts a dead PENDING
+ * claim that still has a draft back on the queue.
+ */
+export async function commitDeferredFiscalClaim(
+  idempotencyKey: string,
+  attemptId: string,
+  error: string,
+  draft: unknown,
+  nextAttemptAt: string,
+  options?: {
+    sleep?: (ms: number) => Promise<void>;
+    /** Mark FAILED so an unrecorded payment can be sent on the next tap. */
+    releaseOnFailure?: boolean;
+    /** An earlier send may have reached easyPos; check status before resending. */
+    checkStatusFirst?: boolean;
+  },
+): Promise<boolean> {
+  const sleep = options?.sleep ?? pause;
+  for (let i = 0; i < CLAIM_WRITE_DELAYS_MS.length; i++) {
+    if (CLAIM_WRITE_DELAYS_MS[i]) await sleep(CLAIM_WRITE_DELAYS_MS[i]);
+    try {
+      await settleFiscalClaimDeferred(
+        idempotencyKey,
+        attemptId,
+        error,
+        draft,
+        nextAttemptAt,
+        { checkStatusFirst: options?.checkStatusFirst },
+      );
+    } catch {
+      // The read-back is the proof, not the absence of a throw.
+    }
+    const saved = await readFiscalClaim(idempotencyKey).catch(() => null);
+    if (saved?.state === 'DEFERRED' && saved.draft != null) return true;
+  }
+  // FAILED lets the next tap send without asking first, so it is only safe
+  // when nothing may have reached easyPos.
+  if (options?.releaseOnFailure && !options?.checkStatusFirst) {
+    try {
+      await settleFiscalClaimFailed(
+        idempotencyKey,
+        attemptId,
+        `Could not queue the invoice for later transmission: ${error}`,
+      );
+    } catch {
+      // The claim stays PENDING. Nothing was filed.
+    }
+  }
+  return false;
+}
+
+/**
+ * A deferred retry died after the claim had already moved to PENDING, draft
+ * still attached. Put it back on the queue, marked so the next send asks
+ * `/invoice/status` first: the interrupted send may have been filed. A
+ * PENDING claim with no draft has no body to check against and stays for
+ * review. Caller must hold the claim lock.
+ */
+export async function requeueDeadDeferredDraftUnlocked(
+  idempotencyKey: string,
+): Promise<boolean> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing || !isDeadPendingClaim(existing) || existing.draft == null) {
+    return false;
+  }
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    state: 'DEFERRED',
+    checkStatusFirst: true,
+    nextAttemptAt: nowIso(),
+    updatedAt: nowIso(),
+    lastError:
+      existing.lastError ||
+      'Interrupted while sending a queued invoice. Queued again under the same docId.',
+  });
+  return true;
 }
 
 /**
@@ -530,15 +805,22 @@ export async function abandonUnsentFiscalClaim(
  * invoice may exist — marking it ABANDONED would hide a filed invoice for a
  * cancelled sale. Those are left for {@link markDeadPendingUnknown} and the
  * review queue instead.
+ *
+ * A claim marked `checkStatusFirst` is not provably unsent either: an
+ * earlier send may have reached easyPos. It is withdrawn only after
+ * easyPos said it has never seen the docId (`statusConfirmedAbsent`).
  */
 export async function abandonUnsentFiscalClaimUnlocked(
   idempotencyKey: string,
   reason: string,
-  options?: { replacedBy?: string },
+  options?: { replacedBy?: string; statusConfirmedAbsent?: boolean },
 ): Promise<boolean> {
   const existing = await readFiscalClaim(idempotencyKey);
   if (!existing) return false;
   if (existing.state !== 'DEFERRED' && existing.state !== 'FAILED') {
+    return false;
+  }
+  if (existing.checkStatusFirst && !options?.statusConfirmedAbsent) {
     return false;
   }
   await writeClaim(idempotencyKey, {
@@ -570,6 +852,30 @@ export async function markDeadPendingUnknownUnlocked(
     lastError:
       note ||
       'Fiscalization was interrupted (the till closed or lost power mid-send); easyPos never confirmed whether the invoice was filed.',
+  });
+  return true;
+}
+
+/**
+ * A queued invoice whose earlier send was never confirmed, met by a void.
+ * It must not go out for a cancelled sale, and it may already exist, so it
+ * stops here and goes to review. Caller must hold the claim lock.
+ */
+export async function parkUnconfirmedClaimUnlocked(
+  idempotencyKey: string,
+  note: string,
+): Promise<boolean> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing || !existing.checkStatusFirst) return false;
+  if (existing.state !== 'DEFERRED' && existing.state !== 'FAILED') {
+    return false;
+  }
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    state: 'UNKNOWN',
+    updatedAt: nowIso(),
+    nextAttemptAt: undefined,
+    lastError: `${existing.lastError ? `${existing.lastError} · ` : ''}${note}`,
   });
   return true;
 }

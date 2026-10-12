@@ -12,13 +12,13 @@ import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import { backoffDelayMs } from './backoff';
 import {
   claimFiscalRegistration,
+  commitDeferredFiscalClaim,
+  commitRegisteredFiscalClaim,
   fiscalDeferredWorkMayExist,
   listFiscalClaimsDeferred,
   markFiscalDeferAlert,
   readFiscalClaim,
-  settleFiscalClaimDeferred,
   settleFiscalClaimFailed,
-  settleFiscalClaimRegistered,
   settleFiscalClaimUnknown,
   withFiscalClaimLock,
   FiscalClaimBusyError,
@@ -26,6 +26,7 @@ import {
 import { sweepFiscalClaims } from './sitting';
 import {
   createEasyPosSale,
+  fiscalNeedsStatusCheck,
   fiscalOutcomeOf,
   isFiscalRetryable,
 } from './easypos';
@@ -53,7 +54,7 @@ function whereLabel(record: {
     .join(' ');
 }
 
-async function stampFiscalIdentifiersOnSale(
+export async function stampFiscalIdentifiersOnSale(
   idempotencyKey: string,
   result: {
     nslf?: string;
@@ -271,16 +272,34 @@ async function transmitOne(
   await declareFloatForCashDraft(settings, draft);
 
   try {
-    const result = await createEasyPosSale(settings, draft as any);
-    await settleFiscalClaimRegistered(idempotencyKey, decision.attemptId, {
+    const result = latest.checkStatusFirst
+      ? await createEasyPosSale(settings, draft as any, { statusFirst: true })
+      : await createEasyPosSale(settings, draft as any);
+    const storedResult = {
       nslf: result.nslf || undefined,
       nivf: result.nivf || undefined,
       eic: result.eic || undefined,
       link: result.link || undefined,
       qrCode: result.qrCode || undefined,
       status: result.status,
-    }).catch(() => undefined);
+    };
+    const stored = await commitRegisteredFiscalClaim(
+      idempotencyKey,
+      decision.attemptId,
+      storedResult,
+    );
+    // The sale already exists. Stamp the codes even when the claim could
+    // only be parked, so a later void still sees the NIVF.
     await stampFiscalIdentifiersOnSale(saleKey, result).catch(() => undefined);
+    if (!stored.ok) {
+      await notifyAdminsAndActor({
+        message:
+          stored.message ||
+          `Fiskalizimi accepted docId ${idempotencyKey} but the local record could not be saved.`,
+        type: 'SECURITY',
+      }).catch(() => undefined);
+      return false;
+    }
     return true;
   } catch (e: any) {
     const message = String(e?.message || e);
@@ -288,13 +307,19 @@ async function transmitOne(
       const nextAttemptAt = new Date(
         now + backoffDelayMs(Math.max(1, (latest.attempts || 1) + 1)),
       ).toISOString();
-      await settleFiscalClaimDeferred(
+      const queued = await commitDeferredFiscalClaim(
         idempotencyKey,
         decision.attemptId,
         message,
         cloneJson(draft),
         nextAttemptAt,
-      ).catch(() => undefined);
+        { checkStatusFirst: fiscalNeedsStatusCheck(e) },
+      );
+      if (!queued) {
+        console.warn(
+          `[fiscal-defer] docId ${idempotencyKey} could not be re-queued: ${message}`,
+        );
+      }
       await noticeOutage(message);
       return false;
     }

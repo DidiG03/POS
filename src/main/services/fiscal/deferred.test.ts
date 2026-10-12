@@ -159,6 +159,65 @@ describe('transmitDueDeferredInvoices', () => {
     });
   });
 
+  it('keeps the NIVF when the registered claim will not save', async () => {
+    deferred('pay-unstored');
+    payments.set('pay-unstored', {
+      id: 2,
+      idempotencyKey: 'pay-unstored',
+      metaJson: {},
+    });
+    const { prisma } = await import('@db/client');
+    const upsert = vi.mocked(prisma.syncState.upsert);
+    const original = upsert.getMockImplementation();
+    upsert.mockImplementation(async (args: any) => {
+      const value = args?.update?.valueJson ?? args?.create?.valueJson;
+      if (value?.state === 'REGISTERED') throw new Error('disk full');
+      return original!(args);
+    });
+    try {
+      const r = await transmitDueDeferredInvoices(settings);
+      expect(r.registered).toBe(0);
+      expect(createSale).toHaveBeenCalledTimes(1);
+      expect((await readFiscalClaim('pay-unstored'))?.state).toBe('UNKNOWN');
+      expect((await readFiscalClaim('pay-unstored'))?.result?.nivf).toBe(
+        'NIVF-D',
+      );
+      expect(payments.get('pay-unstored')).toMatchObject({
+        fiscalNivf: 'NIVF-D',
+        fiscalNslf: 'NSLF-D',
+      });
+      await transmitDueDeferredInvoices(settings);
+      expect(createSale).toHaveBeenCalledTimes(1);
+    } finally {
+      if (original) upsert.mockImplementation(original);
+    }
+  });
+
+  it('asks easyPos first when an earlier send was never confirmed', async () => {
+    deferred('pay-check', { checkStatusFirst: true });
+    await transmitDueDeferredInvoices(settings);
+    expect(createSale).toHaveBeenCalledWith(
+      settings,
+      expect.objectContaining({ docId: 'pay-check' }),
+      { statusFirst: true },
+    );
+  });
+
+  it('keeps the status check when easyPos still cannot be asked', async () => {
+    deferred('pay-still-off');
+    createSale.mockRejectedValueOnce(
+      Object.assign(new Error('offline'), {
+        fiscalOutcome: 'not-registered',
+        fiscalRetryable: true,
+        fiscalCheckStatusFirst: true,
+      }),
+    );
+    await transmitDueDeferredInvoices(settings);
+    const claim = await readFiscalClaim('pay-still-off');
+    expect(claim?.state).toBe('DEFERRED');
+    expect(claim?.checkStatusFirst).toBe(true);
+  });
+
   it('never sends a withdrawn invoice', async () => {
     store.set(fiscalClaimKey('pay-2'), {
       valueJson: {

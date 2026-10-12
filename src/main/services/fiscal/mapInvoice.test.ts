@@ -77,6 +77,85 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
     expect(draft.payment[0].amount).toBe(30.47);
   });
 
+  it('splits a mixed-VAT shortfall across the bands of the items', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload(
+        [
+          { name: 'Steak', qty: 1, unitPrice: 100, vatRate: 0.2 },
+          { name: 'Bread', qty: 1, unitPrice: 50, vatRate: 0.1 },
+        ] as any,
+        { totalAfter: 180 },
+      ),
+      settings,
+      { docId: 'inv-mixed-shortfall' },
+    );
+    const adjustments = draft.articles.filter((a) => a.name === 'Adjustment');
+    expect(adjustments.map((a) => [a.vatCode, a.price])).toEqual([
+      ['B', 20],
+      ['D', 10],
+    ]);
+    expect(draft.payment[0].amount).toBe(180);
+  });
+
+  it('puts a mixed-VAT discount on each line instead of one rebate', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload(
+        [
+          { name: 'Steak', qty: 1, unitPrice: 100, vatRate: 0.2 },
+          { name: 'Bread', qty: 1, unitPrice: 50, vatRate: 0.1 },
+        ] as any,
+        { totalAfter: 135, discountAmount: 15 },
+      ),
+      settings,
+      { docId: 'inv-mixed-discount' },
+    );
+    expect(draft.invoiceRebate).toBeUndefined();
+    expect(draft.articles.find((a) => a.name === 'Steak')?.rebate).toEqual({
+      inValue: 10,
+    });
+    expect(draft.articles.find((a) => a.name === 'Bread')?.rebate).toEqual({
+      inValue: 5,
+    });
+    expect(draft.payment[0].amount).toBe(135);
+  });
+
+  it('files the service charge on the VAT bands of the goods', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload(
+        [
+          { name: 'Steak', qty: 1, unitPrice: 100, vatRate: 0.2 },
+          { name: 'Bread', qty: 1, unitPrice: 100, vatRate: 0.06 },
+        ] as any,
+        { totalAfter: 220, serviceChargeAmount: 20 },
+      ),
+      settings,
+      { docId: 'inv-service-bands' },
+    );
+    expect(
+      draft.articles
+        .filter((a) => a.name === 'Service charge')
+        .map((a) => [a.vatCode, a.price]),
+    ).toEqual([
+      ['B', 10],
+      ['E', 10],
+    ]);
+    expect(draft.payment[0].amount).toBe(220);
+  });
+
+  it('files a shortfall on a reduced-rate item at that rate', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload([{ name: 'Bread', qty: 1, unitPrice: 10, vatRate: 0.1 }] as any, {
+        totalAfter: 12,
+      }),
+      settings,
+      { docId: 'inv-single-reduced' },
+    );
+    expect(draft.articles.map((a) => [a.name, a.vatCode, a.price])).toEqual([
+      ['Bread', 'D', 10],
+      ['Adjustment', 'D', 2],
+    ]);
+  });
+
   it('still balances a genuine gap with rebate, and says so', () => {
     const onAdjustment = vi.fn();
     const draft = buildEasyPosCloudInvoiceDraft(

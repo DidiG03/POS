@@ -101,6 +101,8 @@ import {
   pruneFiscalClaims,
   readFiscalClaim,
   resolveFiscalClaim,
+  commitDeferredFiscalClaim,
+  commitRegisteredFiscalClaim,
   settleFiscalClaimFailed,
   settleFiscalClaimDeferred,
   settleFiscalClaimRegistered,
@@ -214,7 +216,9 @@ describe('claimFiscalRegistration', () => {
     expect((await readFiscalClaim(KEY))?.draft).toBeUndefined();
 
     const again = await claimFiscalRegistration(KEY);
-    expect(again.outcome).toBe('replay');
+    expect(again.outcome).toBe('withdrawn');
+    if (again.outcome !== 'withdrawn') throw new Error('unreachable');
+    expect(again.reason).toMatch(/will not be sent/i);
   });
 
   it('sends an interrupted attempt to review rather than retrying it', async () => {
@@ -278,6 +282,90 @@ describe('settling a claim', () => {
     await expect(
       settleFiscalClaimRegistered('missing', 'whatever', {}),
     ).resolves.toBeUndefined();
+  });
+
+  it('retries a registration write until the NIVF is readable', async () => {
+    const first = await claimFiscalRegistration(KEY);
+    if (first.outcome !== 'proceed') throw new Error('expected proceed');
+    const { prisma } = await import('@db/client');
+    const upsert = vi.mocked(prisma.syncState.upsert);
+    const original = upsert.getMockImplementation();
+    upsert.mockImplementationOnce(async () => {
+      throw new Error('disk full');
+    });
+    try {
+      const stored = await commitRegisteredFiscalClaim(
+        KEY,
+        first.attemptId,
+        { nslf: 'NSLF-1', nivf: 'NIVF-1', status: 'accepted' },
+        { sleep: async () => undefined },
+      );
+      expect(stored.ok).toBe(true);
+      expect((await readFiscalClaim(KEY))?.state).toBe('REGISTERED');
+      expect((await readFiscalClaim(KEY))?.result?.nivf).toBe('NIVF-1');
+    } finally {
+      if (original) upsert.mockImplementation(original);
+    }
+  });
+
+  it('parks an accepted invoice as unknown when REGISTERED will not stick', async () => {
+    const first = await claimFiscalRegistration(KEY);
+    if (first.outcome !== 'proceed') throw new Error('expected proceed');
+    const { prisma } = await import('@db/client');
+    const upsert = vi.mocked(prisma.syncState.upsert);
+    const original = upsert.getMockImplementation();
+    upsert.mockImplementation(async (args: any) => {
+      const value = args?.update?.valueJson ?? args?.create?.valueJson;
+      if (value?.state === 'REGISTERED') throw new Error('disk full');
+      return original!(args);
+    });
+    try {
+      const stored = await commitRegisteredFiscalClaim(
+        KEY,
+        first.attemptId,
+        { nslf: 'NSLF-1', nivf: 'NIVF-1', status: 'accepted' },
+        { sleep: async () => undefined },
+      );
+      expect(stored.ok).toBe(false);
+      expect(stored.parkedUnknown).toBe(true);
+      expect(stored.message).toContain('NIVF-1');
+      const claim = await readFiscalClaim(KEY);
+      expect(claim?.state).toBe('UNKNOWN');
+      expect(claim?.result?.nivf).toBe('NIVF-1');
+      const again = await claimFiscalRegistration(KEY);
+      expect(again.outcome).toBe('needs-review');
+    } finally {
+      if (original) upsert.mockImplementation(original);
+    }
+  });
+
+  it('does not report a deferred sale as queued when the draft was not saved', async () => {
+    const first = await claimFiscalRegistration(KEY);
+    if (first.outcome !== 'proceed') throw new Error('expected proceed');
+    const { prisma } = await import('@db/client');
+    const upsert = vi.mocked(prisma.syncState.upsert);
+    const original = upsert.getMockImplementation();
+    upsert.mockImplementation(async (args: any) => {
+      const value = args?.update?.valueJson ?? args?.create?.valueJson;
+      if (value?.state === 'DEFERRED') throw new Error('disk full');
+      return original!(args);
+    });
+    try {
+      const queued = await commitDeferredFiscalClaim(
+        KEY,
+        first.attemptId,
+        'offline',
+        { docId: 'x' },
+        new Date().toISOString(),
+        { sleep: async () => undefined, releaseOnFailure: true },
+      );
+      expect(queued).toBe(false);
+      expect((await readFiscalClaim(KEY))?.state).toBe('FAILED');
+      const retry = await claimFiscalRegistration(KEY);
+      expect(retry.outcome).toBe('proceed');
+    } finally {
+      if (original) upsert.mockImplementation(original);
+    }
   });
 });
 

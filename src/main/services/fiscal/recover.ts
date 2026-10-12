@@ -90,6 +90,12 @@ export interface RecoveryOptions {
     environment: FiscalEnvironment,
   ) => Promise<string | null | undefined>;
   onEvent?: (event: RecoveryEvent) => void;
+  /**
+   * An earlier send of this docId may have reached easyPos (it was
+   * interrupted, or its outcome could not be checked). Ask
+   * `/invoice/status` first and send only if the docId is absent.
+   */
+  statusFirst?: boolean;
   /** Test seams. */
   sleep?: Sleep;
   random?: () => number;
@@ -124,6 +130,11 @@ export type RecoveryResult =
       kind: 'not-registered';
       docId: string;
       message: string;
+      /**
+       * An earlier send may have reached easyPos and could not be checked.
+       * The next attempt must pass `statusFirst`.
+       */
+      checkStatusFirst?: boolean;
       sendAttempts: number;
       statusPolls: number;
     }
@@ -259,10 +270,86 @@ async function driveRecovery(input: {
     await sleep(delay);
   };
 
-  let attempt = await doSend(sendPhase);
+  // True once a send may have reached easyPos (any answer, or a failure after
+  // connecting), and from the start when the caller says an earlier send
+  // may have. From then on the body is posted again only after
+  // `/invoice/status` says the docId is absent.
+  let mayExist = options.statusFirst === true;
+
+  /**
+   * Nothing could be confirmed, but the next attempt is safe: it is marked
+   * to ask `/invoice/status` before it sends anything.
+   */
+  const deferChecked = (message: string): RecoveryResult => ({
+    kind: 'not-registered',
+    docId,
+    message: `${message} docId ${docId} was not sent again; easyPos is asked about it before the next send.`,
+    checkStatusFirst: true,
+    sendAttempts,
+    statusPolls,
+  });
+
+  /** Poll status once. Settles the document, sends it, or hands back the poll. */
+  const checkStatus = async (): Promise<RecoveryResult | Attempt> => {
+    const status = await doStatus();
+    if (!status.result) return status;
+    const verdict = assessCompletion(target, status.result.data);
+    if (verdict.complete) {
+      return {
+        kind: 'complete',
+        docId,
+        identifiers: verdict.identifiers,
+        via: 'status',
+        sendAttempts,
+        statusPolls,
+        raw: status.result.data,
+      };
+    }
+    // (d) The only safe green light for a replay.
+    if (
+      isNotFoundStatus({
+        httpStatus: status.result.httpStatus,
+        data: status.result.data,
+      })
+    ) {
+      if (sendAttempts >= maxSendAttempts || outOfTime()) {
+        return {
+          kind: 'not-registered',
+          docId,
+          message: `easyPos has no record of docId ${docId}, but the recovery budget is spent. ${lastMessage}`,
+          sendAttempts,
+          statusPolls,
+        };
+      }
+      if (sendAttempts === 0) {
+        emit(sendPhase, `easyPos has no record of docId ${docId}; sending it`);
+        return doSend(sendPhase);
+      }
+      emit(
+        'replay',
+        `easyPos has no record of docId ${docId}; replaying the identical request`,
+      );
+      return doSend('replay');
+    }
+    return status;
+  };
+
+  let attempt: Attempt;
+  if (options.statusFirst) {
+    const first = await checkStatus();
+    if ('kind' in first) return first;
+    attempt = first;
+  } else {
+    attempt = await doSend(sendPhase);
+  }
 
   for (;;) {
     const { classification } = classifyAttempt(attempt, target);
+    const neverReached =
+      classification.action === 'retry' &&
+      classification.outcome === 'not-registered' &&
+      !attempt.result;
+    if (attempt.source !== 'status' && !neverReached) mayExist = true;
 
     // A completed document ends everything, whichever call reported it.
     if (attempt.result) {
@@ -309,48 +396,51 @@ async function driveRecovery(input: {
       };
     }
 
-    // 401/403: renew for the right environment, then repeat the same call
-    // with the same docId and body.
+    // 401/403: renew for the right environment. A send that was answered
+    // may still have stored the invoice, so it is not posted again until
+    // status says the docId is absent.
     if (classification.action === 'renew-token') {
       const environment = fiscalConfig(settings).environment;
-      if (renewals >= MAX_TOKEN_RENEWALS || !options.onTokenRenew) {
-        return {
-          kind: 'not-registered',
-          docId,
-          message: classification.message,
-          sendAttempts,
-          statusPolls,
-        };
+      let renewed: string | null | undefined = null;
+      let detail = classification.message;
+      if (renewals < MAX_TOKEN_RENEWALS && options.onTokenRenew) {
+        renewals++;
+        renewed = await options.onTokenRenew(environment).catch(() => null);
+        if (!renewed) {
+          detail = `${classification.message} Renewing the ${environment} token failed.`;
+        }
       }
-      renewals++;
-      const renewed = await options.onTokenRenew(environment).catch(() => null);
       if (!renewed) {
-        return {
-          kind: 'not-registered',
-          docId,
-          message: `${classification.message} Renewing the ${environment} token failed.`,
-          sendAttempts,
-          statusPolls,
-        };
+        return mayExist
+          ? deferChecked(detail)
+          : {
+              kind: 'not-registered',
+              docId,
+              message: detail,
+              sendAttempts,
+              statusPolls,
+            };
       }
       authToken = renewed;
       emit(
         attempt.source === 'status' ? 'status' : sendPhase,
         `Renewed ${environment} token`,
       );
-      attempt =
-        attempt.source === 'status'
-          ? await doStatus()
-          : await doSend(sendPhase);
+      if (!mayExist) {
+        attempt = await doSend(sendPhase);
+        continue;
+      }
+      const next = await checkStatus();
+      if ('kind' in next) return next;
+      attempt = next;
       continue;
     }
 
-    // Proven never to have reached the provider (connection refused, DNS,
-    // rate limit). Safe to send the same docId again without a status check.
-    if (
-      classification.action === 'retry' &&
-      classification.outcome === 'not-registered'
-    ) {
+    // Proven never to have reached the provider (connection refused, DNS),
+    // and nothing earlier may have either: safe to send again directly. A
+    // 429 has a response, and a dead link after an ambiguous send says
+    // nothing about that send, so both are status-checked instead.
+    if (neverReached && !mayExist) {
       if (sendAttempts >= maxSendAttempts || outOfTime()) {
         return {
           kind: 'not-registered',
@@ -365,8 +455,20 @@ async function driveRecovery(input: {
       continue;
     }
 
+    // A status-first attempt that cannot reach easyPos has sent nothing in
+    // this run. Polling on would only hold the claim lock while offline.
+    if (neverReached && attempt.source === 'status' && sendAttempts === 0) {
+      return deferChecked(lastMessage);
+    }
+
     // (b)(c) Ambiguous: back off, then ask what happened.
     if (statusPolls >= maxStatusPolls || outOfTime()) {
+      // easyPos could not be asked (offline, refused auth, rate-limited,
+      // down). Queue it marked for a status check rather than parking the
+      // sale for a person: the next attempt asks before it sends.
+      if (attempt.source === 'status' && statusWasUnavailable(attempt)) {
+        return deferChecked(lastMessage);
+      }
       return {
         kind: 'unresolved',
         docId,
@@ -377,49 +479,18 @@ async function driveRecovery(input: {
     }
 
     await wait();
-    const status = await doStatus();
-
-    if (status.result) {
-      const verdict = assessCompletion(target, status.result.data);
-      if (verdict.complete) {
-        return {
-          kind: 'complete',
-          docId,
-          identifiers: verdict.identifiers,
-          via: 'status',
-          sendAttempts,
-          statusPolls,
-          raw: status.result.data,
-        };
-      }
-      // (d) The only safe green light for a replay.
-      if (
-        isNotFoundStatus({
-          httpStatus: status.result.httpStatus,
-          data: status.result.data,
-        })
-      ) {
-        if (sendAttempts >= maxSendAttempts || outOfTime()) {
-          return {
-            kind: 'not-registered',
-            docId,
-            message: `easyPos has no record of docId ${docId}, but the recovery budget is spent. ${lastMessage}`,
-            sendAttempts,
-            statusPolls,
-          };
-        }
-        emit(
-          'replay',
-          `easyPos has no record of docId ${docId}; replaying the identical request`,
-        );
-        attempt = await doSend('replay');
-        continue;
-      }
-    }
-
+    const next = await checkStatus();
+    if ('kind' in next) return next;
     // Status was itself inconclusive. Loop: classify it, back off, ask again.
-    attempt = status;
+    attempt = next;
   }
+}
+
+/** The status call got no usable answer: no response, auth, rate limit or 5xx. */
+function statusWasUnavailable(attempt: Attempt): boolean {
+  const status = attempt.result?.httpStatus;
+  if (!attempt.result || !status) return true;
+  return status === 401 || status === 403 || status === 429 || status >= 500;
 }
 
 /** Freeze the request so no attempt can mutate what a replay must resend. */

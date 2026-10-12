@@ -39,6 +39,7 @@ import {
   listFiscalClaimsUpdatedSince,
   markDeadPendingUnknownUnlocked,
   notifyFiscalReviewNeeded,
+  requeueDeadDeferredDraftUnlocked,
   withFiscalClaimLock,
   type FiscalClaimRecord,
 } from './claims';
@@ -358,6 +359,17 @@ export async function sweepFiscalClaims(options?: {
   for (const row of rows) {
     if (!isDeadPendingClaim(row.record, now)) continue;
     if (isFiscalClaimLocked(row.idempotencyKey)) continue;
+    // A queued invoice whose retry was interrupted still has its draft.
+    // Put it back on the transmit queue. A PENDING claim with no draft may
+    // already have been filed, so that one still goes to review.
+    if (row.record.draft != null) {
+      const requeued = await withFiscalClaimLock(
+        row.idempotencyKey,
+        () => requeueDeadDeferredDraftUnlocked(row.idempotencyKey),
+        1_000,
+      ).catch(() => false);
+      if (requeued) continue;
+    }
     if (await surfaceDeadPending(row)) interrupted += 1;
   }
 

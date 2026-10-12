@@ -99,19 +99,28 @@ function rebateIssues(
   return issues;
 }
 
+/**
+ * Half a cent rounds away from zero on both sides. `roundMoney` alone
+ * takes -220.015 to -220.01, so a corrective (negative units) for a line
+ * the original filed at 220.02 came out a cent short of the sale change.
+ */
+function roundSigned(value: number): number {
+  return value < 0 ? -roundMoney(-value) : roundMoney(value);
+}
+
 /** Line total after its own rebate. */
 export function articleLineTotal(article: InvoiceArticle): number {
   const gross = Number(article.price || 0) * Number(article.units || 0);
   const rebate = article.rebate;
-  if (!rebate) return roundMoney(gross);
+  if (!rebate) return roundSigned(gross);
   if (rebate.inPercentage != null) {
     const pct = Number(rebate.inPercentage) || 0;
-    return roundMoney(gross * (1 - pct / 100));
+    return roundSigned(gross * (1 - pct / 100));
   }
   if (rebate.inValue != null) {
-    return roundMoney(gross - (Number(rebate.inValue) || 0));
+    return roundSigned(gross - (Number(rebate.inValue) || 0));
   }
-  return roundMoney(gross);
+  return roundSigned(gross);
 }
 
 /**
@@ -134,16 +143,16 @@ export function computeInvoiceTotal(request: {
   );
   const rebate = request.invoiceRebate;
   if (rebate?.inPercentage != null) {
-    return roundMoney(lines * (1 - (Number(rebate.inPercentage) || 0) / 100));
+    return roundSigned(lines * (1 - (Number(rebate.inPercentage) || 0) / 100));
   }
   if (rebate?.inValue != null) {
-    return roundMoney(lines - (Number(rebate.inValue) || 0));
+    return roundSigned(lines - (Number(rebate.inValue) || 0));
   }
-  return roundMoney(lines);
+  return roundSigned(lines);
 }
 
 export function sumPayments(payment: InvoicePayment[] | undefined): number {
-  return roundMoney(
+  return roundSigned(
     (payment || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0),
   );
 }

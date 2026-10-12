@@ -219,10 +219,13 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.88 (fiskalizimi voids)"
-            echo "- Removing items from a fiscalized sale now files a corrective invoice automatically (it was refused by easyPos before). Only the removed items are filed, as the tax service expects."
-            echo "- A cancellation or corrective made while the internet is down is queued and sent automatically when the connection is back, instead of waiting for an admin."
-            echo "- The receipt QR code now opens a clean \"Fiskalizimi i suksesshëm!\" on the tax site (it showed a time-mismatch warning before)."
+            echo "### Changes in v0.2.89 (fiskalizimi safety)"
+            echo "- An invoice whose send could not be confirmed (connection lost mid-send, expired token, rate limit) is now checked with easyPos before it is sent again, so a sale can no longer be filed twice."
+            echo "- An expired easyPos token no longer holds payments for admin review: the sale completes and its invoice is sent once the token works again."
+            echo "- Discounts and service charge on tickets with mixed VAT rates are filed on each item's own VAT rate, not all on 20%."
+            echo "- Partial voids of items sold by weight no longer come out one cent off."
+            echo "- Voiding a sale whose invoice might already be at easyPos checks first: it is cancelled there if it exists, and never silently dropped."
+            echo "- A payment whose invoice was withdrawn is refused instead of being recorded as paid without fiscal codes."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

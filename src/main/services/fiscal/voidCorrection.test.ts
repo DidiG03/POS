@@ -266,4 +266,35 @@ describe('flagVoidAfterFiscalization — invoices not yet sent', () => {
     expect(claim?.lastError).toMatch(/voided/);
     expect(notifications.some((n) => n.message.includes(KEY))).toBe(true);
   });
+
+  it('never withdraws a queued invoice whose earlier send is unconfirmed', async () => {
+    openAt.value = new Date(Date.now() - 60_000).toISOString();
+    const c = await claimFiscalRegistration(KEY, {
+      area: 'Bar',
+      tableLabel: '4',
+      total: 300,
+    });
+    if (c.outcome !== 'proceed') throw new Error('expected proceed');
+    const { settleFiscalClaimDeferred } = await import('./claims');
+    await settleFiscalClaimDeferred(
+      KEY,
+      c.attemptId,
+      'easyPos could not be asked',
+      { docId: KEY },
+      new Date().toISOString(),
+      { checkStatusFirst: true },
+    );
+    expect(
+      await flagVoidAfterFiscalization({
+        area: 'Bar',
+        tableLabel: '4',
+        reason: 'voided',
+      }),
+    ).toBe(true);
+    const claim = await readFiscalClaim(KEY);
+    // Stopped (the ticket is void) but kept for a person (it may exist).
+    expect(claim?.state).toBe('UNKNOWN');
+    expect(claim?.lastError).toMatch(/cancel it there/);
+    expect(notifications.some((n) => n.message.includes(KEY))).toBe(true);
+  });
 });

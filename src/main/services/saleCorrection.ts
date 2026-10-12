@@ -31,8 +31,10 @@ import {
   flagFiscalCorrectionRequired,
   isDeadPendingClaim,
   markDeadPendingUnknownUnlocked,
+  parkUnconfirmedClaimUnlocked,
   readFiscalClaim,
   resolveFiscalClaim,
+  settleFiscalClaimRegistered,
   withFiscalClaimLock,
   type FiscalClaimRecord,
 } from './fiscal/claims';
@@ -42,6 +44,7 @@ import {
   buildRestatedInvoiceLines,
 } from './fiscal/mapInvoice';
 import { cancelInvoice } from './fiscal/cancel';
+import { checkFiscalDocStatus } from './fiscal/easypos';
 import { registerCorrectiveInvoice } from './fiscal/corrective';
 import { isFiscalEnabled } from './fiscal';
 import { docIdFromKey, newDocId } from './fiscal/docId';
@@ -291,18 +294,23 @@ async function fileCancellation(input: {
   }
 
   try {
-    const outcome = await cancelInvoice(input.settings, {
-      docId,
-      target: {
-        iic: input.iic,
-        eic: input.eic,
-        issueDateTime: input.issueDateTime,
+    const outcome = await cancelInvoice(
+      input.settings,
+      {
+        docId,
+        target: {
+          iic: input.iic,
+          eic: input.eic,
+          issueDateTime: input.issueDateTime,
+        },
+        originalDocId: input.originalDocId,
+        // Only electronic when the original actually carries an EIC — a P10
+        // against a non-electronic invoice is rejected by the tax service.
+        electronic: Boolean(input.eic),
       },
-      originalDocId: input.originalDocId,
-      // Only electronic when the original actually carries an EIC — a P10
-      // against a non-electronic invoice is rejected by the tax service.
-      electronic: Boolean(input.eic),
-    });
+      // A stored docId means an earlier attempt may have reached easyPos.
+      existing ? { statusFirst: true } : undefined,
+    );
 
     if (outcome.kind === 'complete') {
       return {
@@ -455,16 +463,21 @@ async function fileCorrective(input: {
       };
     }
     const method = mapPaymentMethod(input.method || 'CASH');
-    const outcome = await registerCorrectiveInvoice(input.settings, {
-      docId,
-      articles,
-      payment: [{ type: method as any, amount }],
-      original: {
-        iic: input.iic,
-        eic: input.eic,
-        issueDateTime: input.issueDateTime,
+    const outcome = await registerCorrectiveInvoice(
+      input.settings,
+      {
+        docId,
+        articles,
+        payment: [{ type: method as any, amount }],
+        original: {
+          iic: input.iic,
+          eic: input.eic,
+          issueDateTime: input.issueDateTime,
+        },
       },
-    });
+      // A stored docId means an earlier attempt may have reached easyPos.
+      existing ? { statusFirst: true } : undefined,
+    );
     if (outcome.kind === 'complete') {
       return {
         state: 'FILED',
@@ -637,10 +650,54 @@ async function reverseUnsentInvoice(input: {
     }
     if (record.state !== 'DEFERRED' && record.state !== 'FAILED') return null;
 
+    // An earlier send of this invoice was never confirmed. Ask easyPos
+    // before treating it as unsent: withdrawing one it already holds would
+    // leave a filed invoice for a cancelled sale.
+    if (record.checkStatusFirst) {
+      const probe = await checkFiscalDocStatus(
+        input.settings,
+        input.claimKey,
+        record.draft,
+      );
+      if (probe.kind === 'filed') {
+        const r = probe.result;
+        await settleFiscalClaimRegistered(input.claimKey, record.attemptId, {
+          nslf: r.nslf || undefined,
+          nivf: r.nivf || undefined,
+          eic: r.eic || undefined,
+          link: r.link || undefined,
+          qrCode: r.qrCode || undefined,
+          status: r.status,
+        });
+        // The sale keeps its codes for reprints. Loaded lazily: the
+        // deferred loop imports this module the same way.
+        await import('./fiscal/deferred')
+          .then((m) => m.stampFiscalIdentifiersOnSale(input.saleKey, r))
+          .catch(() => undefined);
+        return {
+          state: 'SENT',
+          docId: input.claimKey,
+          detail:
+            'easyPos already had this invoice, so it is reversed like any filed invoice.',
+          iic: String(r.nslf || '').trim() || undefined,
+          eic: String(r.eic || '').trim() || undefined,
+        };
+      }
+      if (probe.kind === 'unknown') {
+        const detail = `${note} ${probe.message}`;
+        await parkUnconfirmedClaimUnlocked(input.claimKey, detail);
+        return { state: 'UNKNOWN', docId: input.claimKey, detail };
+      }
+    }
+    // Reached only when nothing earlier may have been filed, or easyPos
+    // just said it has never seen this docId.
+    const statusConfirmedAbsent = record.checkStatusFirst === true;
+
     if (input.cancelsSale) {
       await abandonUnsentFiscalClaimUnlocked(
         input.claimKey,
         `Sale #${input.orderId} cancelled before its invoice was sent: ${input.reason}`,
+        { statusConfirmedAbsent },
       );
       return {
         state: 'WITHDRAWN',
@@ -718,7 +775,7 @@ async function reverseUnsentInvoice(input: {
     await abandonUnsentFiscalClaimUnlocked(
       input.claimKey,
       `Replaced by ${docId} after sale #${input.orderId} was corrected: ${input.reason}`,
-      { replacedBy: docId },
+      { replacedBy: docId, statusConfirmedAbsent },
     );
     return {
       state: 'RESTATED',

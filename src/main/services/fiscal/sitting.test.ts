@@ -402,6 +402,24 @@ describe('sweepFiscalClaims', () => {
     ).toBeUndefined();
   });
 
+  it('puts an interrupted queued invoice back on the transmit queue', async () => {
+    const beforeStart = PROCESS_STARTED_AT - 1_000;
+    putClaim(
+      'pay-queued',
+      { state: 'PENDING', draft: { docId: 'pay-queued' } },
+      { createdAt: beforeStart, updatedAt: beforeStart },
+    );
+    await sweepFiscalClaims({ force: true, now: NOW });
+    const claim = await readFiscalClaim('pay-queued');
+    expect(claim?.state).toBe('DEFERRED');
+    expect(claim?.draft).toEqual({ docId: 'pay-queued' });
+    // The interrupted send may have been filed: ask before sending again.
+    expect(claim?.checkStatusFirst).toBe(true);
+    expect(
+      (await listFiscalClaimsNeedingReview()).map((r) => r.idempotencyKey),
+    ).not.toContain('pay-queued');
+  });
+
   it('is throttled between runs', async () => {
     await sweepFiscalClaims({ force: true, now: NOW });
     const beforeStart = PROCESS_STARTED_AT - 1_000;

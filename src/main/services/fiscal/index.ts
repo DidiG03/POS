@@ -4,6 +4,7 @@ import { buildEasyPosInvoiceDraft, type DraftAdjustment } from './mapInvoice';
 import {
   assertFiscalConfigured,
   createEasyPosSale,
+  fiscalNeedsStatusCheck,
   fiscalOutcomeOf,
   isFiscalRetryable,
   testEasyPosConnection,
@@ -22,16 +23,18 @@ import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import { notifyAdminsAndActor } from '../adminAlerts';
 import { getTableSessionStartedAt } from '../tableSession';
 import {
+  annotateFiscalClaimUnlocked,
   claimFiscalRegistration,
+  commitDeferredFiscalClaim,
+  commitRegisteredFiscalClaim,
   findRegisteredClaimForTable,
   findUnsentClaimForTable,
   flagFiscalCorrectionRequired,
   notifyFiscalReviewNeeded,
   settleFiscalClaimFailed,
-  settleFiscalClaimDeferred,
-  settleFiscalClaimRegistered,
   settleFiscalClaimUnknown,
   abandonUnsentFiscalClaimUnlocked,
+  parkUnconfirmedClaimUnlocked,
   isDeadPendingClaim,
   markDeadPendingUnknownUnlocked,
   readFiscalClaim,
@@ -191,7 +194,7 @@ async function reportDraftAdjustment(
   console.warn(`[fiscal] ${detail}`);
   if (Math.abs(info.difference) < ADJUSTMENT_ALERT_THRESHOLD) return;
   await notifyAdminsAndActor({
-    message: `${detail} The adjustment was filed at VAT band ${info.vatCode}, so the VAT breakdown may not match the receipt.`,
+    message: `${detail} It was filed on VAT band ${info.vatCode}, split the same way as the items, so the tax service gets those bands and not the default rate.`,
     actorUserId: Number((payload.meta as any)?.userId || 0) || undefined,
     type: 'SECURITY',
   }).catch(() => undefined);
@@ -487,11 +490,30 @@ async function registerUnderClaim(input: {
   }
 
   if (decision.outcome === 'replay') {
+    // A stored registration with no NIVF is not a fiscalized sale. Returning
+    // ok here is how a receipt gets printed with neither FISKALIZUAR nor
+    // the pending banner.
+    if (!String(decision.result?.nivf || '').trim()) {
+      const reason = decision.result?.nslf
+        ? `This sale is stored as registered with NSLF ${decision.result.nslf} but no NIVF, so it is not fiskalizuar. Check this docId in easyPos before taking it again.`
+        : 'This sale is stored as registered but no NIVF was saved, so it is not fiskalizuar. Check this docId in easyPos before taking it again.';
+      const claim = await readFiscalClaim(docId);
+      const already = String(claim?.lastError || '').includes('no NIVF');
+      if (!already) {
+        await annotateFiscalClaimUnlocked(docId, { lastError: reason }).catch(
+          () => undefined,
+        );
+      }
+      return review(reason, already);
+    }
     return {
       kind: 'ok',
       payload: withFiscalMeta(payload, decision.result, settings),
       replayed: true,
     };
+  }
+  if (decision.outcome === 'withdrawn') {
+    return { kind: 'rejected', message: decision.reason };
   }
   if (decision.outcome === 'in-flight') {
     return {
@@ -504,9 +526,16 @@ async function registerUnderClaim(input: {
     return review(decision.reason, decision.alreadyReported);
   }
 
+  // A queued invoice whose earlier send could not be confirmed is checked
+  // against easyPos before it is sent again.
+  const statusFirst =
+    (await readFiscalClaim(docId).catch(() => null))?.checkStatusFirst === true;
+
   try {
-    const result = await createEasyPosSale(settings, draft);
-    await settleFiscalClaimRegistered(docId, decision.attemptId, {
+    const result = statusFirst
+      ? await createEasyPosSale(settings, draft, { statusFirst: true })
+      : await createEasyPosSale(settings, draft);
+    const storedResult = {
       nslf: result.nslf || undefined,
       nivf: result.nivf || undefined,
       eic: result.eic || undefined,
@@ -514,8 +543,22 @@ async function registerUnderClaim(input: {
       qrCode: result.qrCode || undefined,
       status: result.status,
       warning: result.warning || undefined,
-    }).catch(() => undefined);
-    return { kind: 'ok', payload: withFiscalMeta(payload, result, settings) };
+    };
+    const stored = await commitRegisteredFiscalClaim(
+      docId,
+      decision.attemptId,
+      storedResult,
+    );
+    if (!stored.ok) {
+      return review(
+        stored.message ||
+          'Fiskalizimi accepted this invoice but the local record could not be saved.',
+      );
+    }
+    return {
+      kind: 'ok',
+      payload: withFiscalMeta(payload, result, settings),
+    };
   } catch (e: any) {
     const message = String(e?.message || e);
     if (fiscalOutcomeOf(e) === 'not-registered') {
@@ -526,13 +569,23 @@ async function registerUnderClaim(input: {
         const nextAttemptAt = new Date(
           Date.now() + backoffDelayMs(1),
         ).toISOString();
-        await settleFiscalClaimDeferred(
+        const queued = await commitDeferredFiscalClaim(
           docId,
           decision.attemptId,
           message,
           frozen,
           nextAttemptAt,
-        ).catch(() => undefined);
+          {
+            releaseOnFailure: true,
+            checkStatusFirst: statusFirst || fiscalNeedsStatusCheck(e),
+          },
+        );
+        if (!queued) {
+          return {
+            kind: 'retryable',
+            message: `Fiskalizimi is unreachable, and this invoice could not be queued locally, so the sale was not recorded. Try again. ${message}`,
+          };
+        }
         return {
           kind: 'deferred',
           payload: withFiscalMeta(
@@ -618,6 +671,10 @@ export async function flagVoidAfterFiscalization(input: {
       const outcome = await withFiscalClaimLock(key, async () => {
         if (await abandonUnsentFiscalClaimUnlocked(key, input.reason)) {
           return 'abandoned' as const;
+        }
+        const unconfirmed = `The ticket was voided (${input.reason}) while its queued invoice had an unconfirmed earlier send; it was not sent again. If easyPos has docId ${key}, cancel it there.`;
+        if (await parkUnconfirmedClaimUnlocked(key, unconfirmed)) {
+          return 'unknown' as const;
         }
         const latest = await readFiscalClaim(key);
         if (latest && isDeadPendingClaim(latest)) {

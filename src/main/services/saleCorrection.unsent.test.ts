@@ -138,6 +138,13 @@ const { cancelInvoice, registerCorrectiveInvoice, buildDraft } = vi.hoisted(
   }),
 );
 vi.mock('./fiscal/cancel', () => ({ cancelInvoice }));
+const { checkStatus } = vi.hoisted(() => ({
+  checkStatus: vi.fn(async (): Promise<any> => ({ kind: 'absent' })),
+}));
+vi.mock('./fiscal/easypos', () => ({ checkFiscalDocStatus: checkStatus }));
+vi.mock('./fiscal/deferred', () => ({
+  stampFiscalIdentifiersOnSale: vi.fn(async () => undefined),
+}));
 vi.mock('./fiscal/corrective', () => ({ registerCorrectiveInvoice }));
 vi.mock('./fiscal/mapInvoice', () => ({
   buildEasyPosInvoiceDraft: buildDraft,
@@ -213,6 +220,7 @@ beforeEach(() => {
   cancelInvoice.mockClear();
   registerCorrectiveInvoice.mockClear();
   buildDraft.mockClear();
+  checkStatus.mockReset().mockResolvedValue({ kind: 'absent' });
 });
 
 describe('reversing a sale whose invoice is still waiting to be sent', () => {
@@ -325,5 +333,74 @@ describe('reversing a sale whose invoice is still waiting to be sent', () => {
     expect(claim?.state).toBe('UNKNOWN');
     expect(claim?.lastError).toMatch(/cancel it there/);
     expect(cancelInvoice).not.toHaveBeenCalled();
+  });
+
+  describe('when an earlier send was never confirmed', () => {
+    it('asks easyPos and withdraws only when it never saw the invoice', async () => {
+      seedDeferredSale('DEFERRED', { checkStatusFirst: true });
+      await applySaleCorrection({
+        orderId: 1,
+        kind: 'CANCEL',
+        reason: 'Guest never served',
+      });
+      expect(checkStatus).toHaveBeenCalledTimes(1);
+      expect((await readFiscalClaim('pay-1'))?.state).toBe('ABANDONED');
+      expect(cancelInvoice).not.toHaveBeenCalled();
+    });
+
+    it('cancels it upstream when easyPos already has it', async () => {
+      seedDeferredSale('DEFERRED', { checkStatusFirst: true });
+      checkStatus.mockResolvedValue({
+        kind: 'filed',
+        result: {
+          nslf: 'IIC-LATE',
+          nivf: 'FIC-LATE',
+          link: '',
+          status: 'accepted',
+        },
+      });
+      const result = await applySaleCorrection({
+        orderId: 1,
+        kind: 'CANCEL',
+        reason: 'Guest never served',
+      });
+      const claim = await readFiscalClaim('pay-1');
+      expect(claim?.state).not.toBe('ABANDONED');
+      expect(claim?.result?.nivf).toBe('FIC-LATE');
+      expect(cancelInvoice).toHaveBeenCalledTimes(1);
+      expect((cancelInvoice.mock.calls[0] as any)[1]).toMatchObject({
+        target: { iic: 'IIC-LATE' },
+      });
+      expect(result).toMatchObject({ ok: true, needsFiling: false });
+    });
+
+    it('stops the send and asks a person when easyPos cannot be asked', async () => {
+      seedDeferredSale('DEFERRED', { checkStatusFirst: true });
+      checkStatus.mockResolvedValue({ kind: 'unknown', message: 'offline' });
+      const result = await applySaleCorrection({
+        orderId: 1,
+        kind: 'CANCEL',
+        reason: 'Guest never served',
+      });
+      const claim = await readFiscalClaim('pay-1');
+      // Not withdrawn (it may exist) and not left queued (the sale is gone).
+      expect(claim?.state).toBe('UNKNOWN');
+      expect(cancelInvoice).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: true, needsFiling: true });
+    });
+
+    it('restates a partial correction only after easyPos says it is absent', async () => {
+      seedDeferredSale('DEFERRED', { checkStatusFirst: true });
+      checkStatus.mockResolvedValue({ kind: 'unknown', message: 'offline' });
+      await applySaleCorrection({
+        orderId: 1,
+        kind: 'CORRECTIVE',
+        itemIds: [11],
+        reason: 'Coffee returned',
+      });
+      const original = await readFiscalClaim('pay-1');
+      expect(original?.state).toBe('UNKNOWN');
+      expect(original?.replacedBy).toBeUndefined();
+    });
   });
 });

@@ -16,7 +16,12 @@ import {
 // `cause`, and undici puts `ECONNREFUSED` two levels down behind a bare
 // `fetch failed` — so a connection that provably never reached easyPos was
 // classified as an unknown outcome and sent a retryable sale to review.
-import { classifyFiscalAttempt, neverReachedProvider } from './classify';
+import {
+  classifyFiscalAttempt,
+  isNotFoundStatus,
+  neverReachedProvider,
+} from './classify';
+import { postInvoiceStatus } from './client';
 import { registerInvoiceWithRecovery, type RecoveryOptions } from './recover';
 import { newDocId } from './docId';
 import type { RegisterInvoiceRequest, CancelInvoiceRequest } from './apiTypes';
@@ -73,17 +78,31 @@ export interface FiscalError extends Error {
    * the payment stuck with nobody told why.
    */
   fiscalRetryable: boolean;
+  /**
+   * Not filed as far as anyone could tell, but an earlier send may have
+   * reached easyPos. Whoever retries must pass `statusFirst`.
+   */
+  fiscalCheckStatusFirst?: boolean;
 }
 
 function fiscalError(
   message: string,
   outcome: FiscalOutcome,
   retryable = true,
+  checkStatusFirst = false,
 ): FiscalError {
   const err = new Error(message) as FiscalError;
   err.fiscalOutcome = outcome;
   err.fiscalRetryable = retryable;
+  if (checkStatusFirst) err.fiscalCheckStatusFirst = true;
   return err;
+}
+
+/** True when the next send of this docId must ask `/invoice/status` first. */
+export function fiscalNeedsStatusCheck(error: unknown): boolean {
+  return (
+    (error as Partial<FiscalError> | null)?.fiscalCheckStatusFirst === true
+  );
 }
 
 /** Anything we did not explicitly classify is assumed to have registered. */
@@ -624,6 +643,16 @@ export async function createEasyPosSale(
   const { cloud } = fiscalConfig(settings);
   const isEinvoice = (draft as any)?.isEinvoice === true;
 
+  if (!cloud && options?.statusFirst) {
+    // The middleware cannot be asked whether the earlier send arrived, and
+    // sending again is how one sale gets two invoices.
+    throw fiscalError(
+      `An earlier send of docId ${String((draft as any)?.docId || '')} may have reached the easyPos middleware, which cannot be asked whether it did. Check it in easyPos before sending it again.`,
+      'unknown',
+      false,
+    );
+  }
+
   if (!cloud) {
     const data = await easyPosRequest(
       settings,
@@ -662,7 +691,12 @@ export async function createEasyPosSale(
     throw fiscalError(outcome.message, 'not-registered', false);
   }
   if (outcome.kind === 'not-registered') {
-    throw fiscalError(outcome.message, 'not-registered', true);
+    throw fiscalError(
+      outcome.message,
+      'not-registered',
+      true,
+      outcome.checkStatusFirst === true,
+    );
   }
   // 'unresolved': the recovery sequence could not establish whether the
   // document exists. Never retried automatically.
@@ -704,4 +738,64 @@ export async function createEasyPosCancellation(
     httpStatus: 200,
     isEinvoice: request.isEinvoice === true,
   });
+}
+
+export type FiscalDocStatus =
+  | { kind: 'filed'; result: FiscalSaleResult }
+  | { kind: 'absent' }
+  | { kind: 'unknown'; message: string };
+
+/**
+ * Ask easyPos once whether a docId exists. For a void that meets an invoice
+ * whose earlier send was never confirmed: withdraw it only when easyPos says
+ * it has never seen it, cancel it when it has, and stop otherwise.
+ *
+ * The local middleware has no status route, so it is always `unknown`.
+ */
+export async function checkFiscalDocStatus(
+  settings: SettingsDTO,
+  docId: string,
+  draft?: unknown,
+): Promise<FiscalDocStatus> {
+  if (!fiscalConfig(settings).cloud) {
+    return {
+      kind: 'unknown',
+      message:
+        'The local easyPos middleware cannot be asked whether this invoice was filed.',
+    };
+  }
+  try {
+    const res = await postInvoiceStatus(settings, { docId });
+    const verdict = assessCompletion(
+      targetForInvoice({ isEinvoice: (draft as any)?.isEinvoice === true }),
+      res.data,
+    );
+    if (verdict.complete) {
+      const ids = verdict.identifiers;
+      return {
+        kind: 'filed',
+        result: {
+          nslf: ids.iic || '',
+          nivf: ids.fic || '',
+          ...(ids.eic ? { eic: ids.eic } : {}),
+          link: ids.link || '',
+          ...(ids.qrCode ? { qrCode: ids.qrCode } : {}),
+          status: 'accepted',
+          raw: res.data,
+        },
+      };
+    }
+    if (isNotFoundStatus({ httpStatus: res.httpStatus, data: res.data })) {
+      return { kind: 'absent' };
+    }
+    return {
+      kind: 'unknown',
+      message: `easyPos did not say whether docId ${docId} exists (HTTP ${res.httpStatus}).`,
+    };
+  } catch (e: any) {
+    return {
+      kind: 'unknown',
+      message: `easyPos could not be asked about docId ${docId}: ${String(e?.message || e)}`,
+    };
+  }
 }

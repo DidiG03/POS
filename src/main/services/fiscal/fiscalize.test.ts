@@ -72,7 +72,7 @@ vi.mock('./easypos', async (importActual) => {
 });
 
 import { fiscalizePaymentOnce } from './index';
-import { readFiscalClaim } from './claims';
+import { abandonUnsentFiscalClaim, readFiscalClaim } from './claims';
 
 const KEY = 'pay-42';
 
@@ -549,6 +549,59 @@ describe('fiscalizePaymentOnce — one invoice per sale', () => {
     expect(await readFiscalClaim('pay-new')).toBeNull();
   });
 
+  it('refuses a withdrawn invoice instead of recording it as paid', async () => {
+    createSale.mockRejectedValueOnce(
+      taggedError('The request never reached easyPos', 'not-registered'),
+    );
+    const first = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(first.kind).toBe('deferred');
+    expect(await abandonUnsentFiscalClaim(KEY, 'Ticket voided')).toBe(true);
+
+    const again = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(again.kind).toBe('rejected');
+    if (again.kind !== 'rejected') throw new Error('unreachable');
+    expect(again.message).toMatch(/will not be sent/i);
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the payment when the NIVF cannot be stored', async () => {
+    createSale.mockResolvedValue({
+      nslf: 'NSLF-1',
+      nivf: 'NIVF-1',
+      status: 'accepted',
+    });
+    const { prisma } = await import('@db/client');
+    const upsert = vi.mocked(prisma.syncState.upsert);
+    const original = upsert.getMockImplementation();
+    upsert.mockImplementation(async (args: any) => {
+      const value = args?.update?.valueJson ?? args?.create?.valueJson;
+      if (value?.state === 'REGISTERED') throw new Error('disk full');
+      return original!(args);
+    });
+    try {
+      const out = await fiscalizePaymentOnce(payment(), settings, {
+        idempotencyKey: KEY,
+      });
+      expect(out.kind).toBe('needs-review');
+      if (out.kind !== 'needs-review') throw new Error('unreachable');
+      expect(out.message).toContain('NIVF-1');
+      expect((await readFiscalClaim(KEY))?.state).toBe('UNKNOWN');
+      expect((await readFiscalClaim(KEY))?.result?.nivf).toBe('NIVF-1');
+
+      const again = await fiscalizePaymentOnce(payment(), settings, {
+        idempotencyKey: KEY,
+      });
+      expect(again.kind).toBe('needs-review');
+      expect(createSale).toHaveBeenCalledTimes(1);
+    } finally {
+      if (original) upsert.mockImplementation(original);
+    }
+  });
+
   it('records which sale a new invoice belongs to', async () => {
     createSale.mockResolvedValue({
       nslf: 'N',
@@ -580,5 +633,60 @@ describe('fiscalizePaymentOnce — one invoice per sale', () => {
     expect(createSale).toHaveBeenCalledTimes(1);
     expect(ra.kind).toBe('ok');
     expect(rb.kind).toBe('ok');
+  });
+
+  it('queues an unconfirmed send and checks easyPos before the next one', async () => {
+    // easyPos may have stored the first send (e.g. 401 after it arrived);
+    // the next tap must ask before posting the body again.
+    const unsure: any = taggedError('HTTP 401', 'not-registered');
+    unsure.fiscalRetryable = true;
+    unsure.fiscalCheckStatusFirst = true;
+    createSale.mockRejectedValueOnce(unsure);
+
+    const first = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(first.kind).toBe('deferred');
+    const queued = await readFiscalClaim(KEY);
+    expect(queued?.state).toBe('DEFERRED');
+    expect(queued?.checkStatusFirst).toBe(true);
+
+    createSale.mockResolvedValueOnce({
+      nslf: 'NSLF-S',
+      nivf: 'NIVF-S',
+      link: '',
+      status: 'accepted',
+    });
+    const second = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(second.kind).toBe('ok');
+    expect(createSale).toHaveBeenLastCalledWith(settings, expect.anything(), {
+      statusFirst: true,
+    });
+    expect((await readFiscalClaim(KEY))?.result?.nivf).toBe('NIVF-S');
+  });
+
+  it('keeps the status check through another offline failure', async () => {
+    const unsure: any = taggedError('HTTP 401', 'not-registered');
+    unsure.fiscalCheckStatusFirst = true;
+    createSale.mockRejectedValueOnce(unsure);
+    await fiscalizePaymentOnce(payment(), settings, { idempotencyKey: KEY });
+
+    // Plain offline this time: says nothing about the earlier send.
+    createSale.mockRejectedValueOnce(taggedError('offline', 'not-registered'));
+    await fiscalizePaymentOnce(payment(), settings, { idempotencyKey: KEY });
+    expect((await readFiscalClaim(KEY))?.checkStatusFirst).toBe(true);
+  });
+
+  it('sends a first payment without a status check', async () => {
+    createSale.mockResolvedValueOnce({
+      nslf: 'N',
+      nivf: 'F',
+      link: '',
+      status: 'accepted',
+    });
+    await fiscalizePaymentOnce(payment(), settings, { idempotencyKey: KEY });
+    expect(createSale.mock.calls[0]).toHaveLength(2);
   });
 });

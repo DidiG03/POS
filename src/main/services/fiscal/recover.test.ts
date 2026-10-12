@@ -455,7 +455,33 @@ describe('a refused connection', () => {
 });
 
 describe('token renewal', () => {
-  it('renews for the environment and repeats the same docId', async () => {
+  it('renews, checks status, and resends only when the docId is absent', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json(401, { message: 'unauthorized' }))
+      .mockResolvedValueOnce(json(200, { message: 'Document not found' }))
+      .mockResolvedValueOnce(json(200, { iic: 'A1', fic: 'B2' }));
+    const onTokenRenew = vi.fn(async () => 'fresh-jwt');
+
+    const out = await registerInvoiceWithRecovery(settings, request, {
+      ...fast,
+      onTokenRenew,
+    });
+
+    expect(out.kind).toBe('complete');
+    if (out.kind !== 'complete') throw new Error('unreachable');
+    expect(out.via).toBe('replay');
+    expect(onTokenRenew).toHaveBeenCalledWith('dev');
+    expect(routesCalled()).toEqual([
+      FISCAL_ROUTES.register,
+      FISCAL_ROUTES.status,
+      FISCAL_ROUTES.register,
+    ]);
+    const replay = fetchMock.mock.calls[2]![1] as any;
+    expect(replay.headers.Authorization).toBe('Bearer fresh-jwt');
+    expect(JSON.parse(String(replay.body)).docId).toBe('inv-recovery-1');
+  });
+
+  it('does not resend a 401 once status shows the invoice exists', async () => {
     fetchMock
       .mockResolvedValueOnce(json(401, { message: 'unauthorized' }))
       .mockResolvedValueOnce(json(200, { iic: 'A1', fic: 'B2' }));
@@ -467,18 +493,95 @@ describe('token renewal', () => {
     });
 
     expect(out.kind).toBe('complete');
-    expect(onTokenRenew).toHaveBeenCalledWith('dev');
-    const second = fetchMock.mock.calls[1]![1] as any;
-    expect(second.headers.Authorization).toBe('Bearer fresh-jwt');
-    // Same docId, same body.
-    expect(JSON.parse(String(second.body)).docId).toBe('inv-recovery-1');
+    if (out.kind !== 'complete') throw new Error('unreachable');
+    expect(out.via).toBe('status');
+    expect(countOf(FISCAL_ROUTES.register)).toBe(1);
   });
 
-  it('does not loop when renewal is impossible', async () => {
+  it('does not resend when the token cannot be renewed, and queues a status check', async () => {
     fetchMock.mockResolvedValue(json(401, {}));
     const out = await registerInvoiceWithRecovery(settings, request, fast);
+    // Queued, not parked for a person: the next attempt asks first.
     expect(out.kind).toBe('not-registered');
+    if (out.kind !== 'not-registered') throw new Error('unreachable');
+    expect(out.checkStatusFirst).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks status after a rate limit before sending the invoice again', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json(429, { message: 'slow down' }))
+      .mockResolvedValueOnce(json(200, { message: 'Document not found' }))
+      .mockResolvedValueOnce(json(200, { iic: 'A1', fic: 'B2' }));
+
+    const out = await registerInvoiceWithRecovery(settings, request, fast);
+    expect(out.kind).toBe('complete');
+    if (out.kind !== 'complete') throw new Error('unreachable');
+    expect(out.via).toBe('replay');
+    expect(routesCalled()).toEqual([
+      FISCAL_ROUTES.register,
+      FISCAL_ROUTES.status,
+      FISCAL_ROUTES.register,
+    ]);
+  });
+});
+
+describe('status first', () => {
+  const offline = () =>
+    Object.assign(new Error('fetch failed'), {
+      cause: { code: 'ECONNREFUSED' },
+    });
+
+  it('does not send when status shows the invoice was filed', async () => {
+    fetchMock.mockResolvedValueOnce(json(200, { iic: 'A1', fic: 'B2' }));
+    const out = await registerInvoiceWithRecovery(settings, request, {
+      ...fast,
+      statusFirst: true,
+    });
+    expect(out.kind).toBe('complete');
+    expect(routesCalled()).toEqual([FISCAL_ROUTES.status]);
+  });
+
+  it('sends once when easyPos has never seen the docId', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json(200, { message: 'Document not found' }))
+      .mockResolvedValueOnce(json(200, { iic: 'A1', fic: 'B2' }));
+    const out = await registerInvoiceWithRecovery(settings, request, {
+      ...fast,
+      statusFirst: true,
+    });
+    expect(out.kind).toBe('complete');
+    expect(routesCalled()).toEqual([
+      FISCAL_ROUTES.status,
+      FISCAL_ROUTES.register,
+    ]);
+  });
+
+  it('sends nothing while easyPos cannot be asked', async () => {
+    fetchMock.mockRejectedValue(offline());
+    const out = await registerInvoiceWithRecovery(settings, request, {
+      ...fast,
+      statusFirst: true,
+    });
+    expect(out.kind).toBe('not-registered');
+    if (out.kind !== 'not-registered') throw new Error('unreachable');
+    expect(out.checkStatusFirst).toBe(true);
+    expect(countOf(FISCAL_ROUTES.register)).toBe(0);
+  });
+
+  it('does not resend after a timeout when the link then drops', async () => {
+    // The register may have landed before the link went. A refused status
+    // call says nothing about it, so the body must not be posted again.
+    fetchMock
+      .mockRejectedValueOnce(
+        Object.assign(new Error('aborted'), { name: 'AbortError' }),
+      )
+      .mockRejectedValue(offline());
+    const out = await registerInvoiceWithRecovery(settings, request, fast);
+    expect(countOf(FISCAL_ROUTES.register)).toBe(1);
+    expect(out.kind).toBe('not-registered');
+    if (out.kind !== 'not-registered') throw new Error('unreachable');
+    expect(out.checkStatusFirst).toBe(true);
   });
 });
 

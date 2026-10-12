@@ -180,6 +180,14 @@ describe('createEasyPosSale error classification', () => {
     );
   });
 
+  it('never resends an unconfirmed invoice through the local middleware', async () => {
+    // It has no status route, so the earlier send cannot be checked.
+    await expect(
+      createEasyPosSale(settings, draft as any, { statusFirst: true }),
+    ).rejects.toSatisfy((e: any) => fiscalOutcomeOf(e) === 'unknown');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('treats a 5xx as indeterminate', async () => {
     // The provider may have filed the invoice and then failed to answer.
     fetchMock.mockResolvedValue(jsonResponse(500, { message: 'boom' }));
