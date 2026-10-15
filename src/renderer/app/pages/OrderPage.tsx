@@ -1475,11 +1475,13 @@ export default function OrderPage() {
       pin: '',
       error: null,
     });
-    return new Promise<{ userId: number; userName: string } | null>(
-      (resolve) => {
-        approvalResolveRef.current = resolve;
-      },
-    );
+    return new Promise<{
+      userId: number;
+      userName: string;
+      approvalToken?: string;
+    } | null>((resolve) => {
+      approvalResolveRef.current = resolve;
+    });
   }
 
   function requestAdminApproval(action: string) {
@@ -1490,11 +1492,13 @@ export default function OrderPage() {
       pin: '',
       error: null,
     });
-    return new Promise<{ userId: number; userName: string } | null>(
-      (resolve) => {
-        approvalResolveRef.current = resolve;
-      },
-    );
+    return new Promise<{
+      userId: number;
+      userName: string;
+      approvalToken?: string;
+    } | null>((resolve) => {
+      approvalResolveRef.current = resolve;
+    });
   }
 
   async function reloadPreferences() {
@@ -3824,6 +3828,7 @@ export default function OrderPage() {
               let managerApprovedBy: {
                 userId: number;
                 userName: string;
+                approvalToken?: string;
               } | null = null;
               if (needsDiscountApproval || needsServiceRemovalApproval) {
                 managerApprovedBy = await requestManagerApproval(
@@ -3921,6 +3926,9 @@ export default function OrderPage() {
                     totalAfter: totalDue,
                     managerApprovedById: managerApprovedBy?.userId ?? null,
                     managerApprovedByName: managerApprovedBy?.userName ?? null,
+                    // The till checks this; the id alone proves nothing.
+                    managerApprovalToken:
+                      managerApprovedBy?.approvalToken || undefined,
                     closeTable,
                     seatLabel: payingSeatLabel,
                     seatId: paySeatId || undefined,
@@ -4951,9 +4959,11 @@ export default function OrderPage() {
                     setApprovalModal((s) => ({
                       ...s,
                       error:
-                        approvalModal.kind === 'ADMIN'
-                          ? t('order.invalidAdminPin')
-                          : t('order.invalidManagerPin'),
+                        (r as any)?.code === 'APPROVAL_LOCKED'
+                          ? t('order.approvalLocked')
+                          : approvalModal.kind === 'ADMIN'
+                            ? t('order.invalidAdminPin')
+                            : t('order.invalidManagerPin'),
                     }));
                     return;
                   }
@@ -5018,9 +5028,11 @@ export default function OrderPage() {
                       setApprovalModal((s) => ({
                         ...s,
                         error:
-                          approvalModal.kind === 'ADMIN'
-                            ? t('order.invalidAdminPin')
-                            : t('order.invalidManagerPin'),
+                          (r as any)?.code === 'APPROVAL_LOCKED'
+                            ? t('order.approvalLocked')
+                            : approvalModal.kind === 'ADMIN'
+                              ? t('order.invalidAdminPin')
+                              : t('order.invalidManagerPin'),
                       }));
                       return;
                     }

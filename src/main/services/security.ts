@@ -280,26 +280,6 @@ export function sanitizeNumber(
 }
 
 /**
- * Generate secure random token
- */
-export function generateSecureToken(length = 32): string {
-  const chars =
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  const randomBytes = new Uint8Array(length);
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    crypto.getRandomValues(randomBytes);
-  } else {
-    // Fallback for environments without crypto API
-    for (let i = 0; i < length; i++) {
-      randomBytes[i] = Math.floor(Math.random() * 256);
-    }
-  }
-  return Array.from(randomBytes)
-    .map((byte) => chars[byte % chars.length])
-    .join('');
-}
-
-/**
  * Hash sensitive data (for logging, not storage)
  */
 export function hashSensitive(data: string): string {

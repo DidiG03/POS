@@ -1161,6 +1161,7 @@
     "enterManagerPin": "Shkruaj PIN-in e menaxherit",
     "invalidAdminPin": "PIN admin i pavlefshëm.",
     "invalidManagerPin": "PIN menaxheri i pavlefshëm.",
+    "approvalLocked": "Shumë PIN të gabuar. Aprovoni në arkë, ose provoni pas disa minutash.",
     "sessionExpiredLogin": "Sesioni përfundi. Hyni përsëri.",
     "verifyPinFailed": "Nuk mund të verifikohet PIN (jashtë linje/host i paarritshëm). Riprovo.",
     "lowStockTitle": "Stok i ulët — ende mund të porositet",

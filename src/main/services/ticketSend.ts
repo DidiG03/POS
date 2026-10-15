@@ -72,7 +72,7 @@ export type TicketSendResult =
   | {
       ok: false;
       error: string;
-      code: 'TABLE_CLOSED' | 'TABLE_OWNED_BY_OTHER';
+      code: 'TABLE_CLOSED' | 'TABLE_OWNED_BY_OTHER' | 'INVALID_ORDER';
       ownerId?: number;
       ownerName?: string | null;
     };
@@ -167,9 +167,114 @@ async function isAdminUser(userId: number): Promise<boolean> {
   );
 }
 
+/** Largest quantity one line may carry (weighed items are fractions). */
+export const MAX_LINE_QTY = 9999;
+/** Largest unit price, in the venue's currency. */
+export const MAX_UNIT_PRICE = 10_000_000;
+
+// Control characters have no place in a label, and U+001F separates the
+// parts of a sitting key.
+// eslint-disable-next-line no-control-regex -- matching them is the point
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Check a Send's table and lines before anything is written. Returns the
+ * lines with numeric fields as numbers and zero-quantity lines dropped, or
+ * the reason the Send is refused.
+ *
+ * Without this a negative quantity put stock back and showed a negative
+ * bill, and a price or quantity of "abc" or 1e12 was stored as sent.
+ */
+export function validateTicketSendLines(input: {
+  area: unknown;
+  tableLabel: unknown;
+  items: unknown;
+  /** The fired subset may be empty (a Send that only re-sends the bill). */
+  allowEmpty?: boolean;
+}):
+  | { ok: true; items: Record<string, unknown>[] }
+  | { ok: false; error: string } {
+  const area = String(input.area ?? '').trim();
+  const label = String(input.tableLabel ?? '').trim();
+  if (!area || !label) return { ok: false, error: 'The table has no name.' };
+  if (CONTROL_CHARS.test(area) || CONTROL_CHARS.test(label)) {
+    return { ok: false, error: 'The table name has invalid characters.' };
+  }
+  if (!Array.isArray(input.items)) {
+    return { ok: false, error: 'The order has no items.' };
+  }
+  const out: Record<string, unknown>[] = [];
+  for (const raw of input.items) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, error: 'The order has an unreadable line.' };
+    }
+    const line = raw as Record<string, unknown>;
+    const name =
+      String(line.name ?? '').trim() || String(line.sku ?? '').trim();
+    if (
+      !name ||
+      typeof line.name === 'object' ||
+      typeof line.sku === 'object'
+    ) {
+      return { ok: false, error: 'An order line has no item name.' };
+    }
+    const qty = Number(line.qty);
+    if (!Number.isFinite(qty) || qty < 0 || qty > MAX_LINE_QTY) {
+      return {
+        ok: false,
+        error: `${name}: quantity ${String(line.qty)} is not allowed.`,
+      };
+    }
+    if (qty === 0) continue;
+    let unitPrice = line.unitPrice;
+    if (unitPrice !== undefined && unitPrice !== null) {
+      const p = Number(unitPrice);
+      if (!Number.isFinite(p) || p < 0 || p > MAX_UNIT_PRICE) {
+        return {
+          ok: false,
+          error: `${name}: price ${String(unitPrice)} is not allowed.`,
+        };
+      }
+      unitPrice = p;
+    }
+    out.push({
+      ...line,
+      qty,
+      ...(unitPrice !== undefined ? { unitPrice } : {}),
+    });
+  }
+  if (out.length === 0 && !input.allowEmpty) {
+    return { ok: false, error: 'The order has no items.' };
+  }
+  return { ok: true, items: out };
+}
+
 export async function recordTicketSend(
-  input: TicketSendInput,
+  rawInput: TicketSendInput,
 ): Promise<TicketSendResult> {
+  const checked = validateTicketSendLines(rawInput);
+  if (!checked.ok) {
+    return { ok: false, error: checked.error, code: 'INVALID_ORDER' };
+  }
+  let addedItems = rawInput.addedItems;
+  if (Array.isArray(addedItems)) {
+    const added = validateTicketSendLines({
+      ...rawInput,
+      items: addedItems,
+      allowEmpty: true,
+    });
+    if (!added.ok) {
+      return { ok: false, error: added.error, code: 'INVALID_ORDER' };
+    }
+    addedItems = added.items;
+  }
+  const input: TicketSendInput = {
+    ...rawInput,
+    area: String(rawInput.area).trim(),
+    tableLabel: String(rawInput.tableLabel).trim(),
+    items: checked.items,
+    addedItems,
+  };
   const area = input.area;
   const tableLabel = input.tableLabel;
   const idempotencyKey = String(input.idempotencyKey || '').trim();

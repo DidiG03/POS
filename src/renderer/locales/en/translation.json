@@ -1161,6 +1161,7 @@
     "enterManagerPin": "Enter manager PIN",
     "invalidAdminPin": "Invalid admin PIN.",
     "invalidManagerPin": "Invalid manager PIN.",
+    "approvalLocked": "Too many wrong PINs. Approve at the till, or try again in a few minutes.",
     "sessionExpiredLogin": "Session expired. Please log in again.",
     "verifyPinFailed": "Could not verify PIN (offline/host unreachable). Please try again.",
     "lowStockTitle": "Low stock — still available to order",

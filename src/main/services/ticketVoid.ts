@@ -75,6 +75,8 @@ export async function voidTicketItem(input: {
   tableLabel: string;
   item: VoidTargetLine;
   idempotencyKey?: string | null;
+  /** Filled with the line actually voided, for the audit message. */
+  report?: { qty?: number; name?: string };
 }): Promise<ItemVoidOutcome> {
   const key = String(input.idempotencyKey || '').trim();
   return withTableLock(input.area, input.tableLabel, async () => {
@@ -90,6 +92,10 @@ export async function voidTicketItem(input: {
     if (plan.outcome === 'paid') return 'paid' as const;
     if (!sitting || plan.outcome !== 'ok') return 'not-found' as const;
     items[plan.index] = { ...items[plan.index], voided: true };
+    if (input.report) {
+      input.report.qty = Number(items[plan.index]?.qty) || 0;
+      input.report.name = String(items[plan.index]?.name || '');
+    }
     const written = await writeVoidedVersion(
       sitting,
       items,

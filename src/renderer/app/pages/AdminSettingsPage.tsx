@@ -4421,9 +4421,9 @@ function LanSettings() {
                   {
                     label: t('adminLan.regenerate'),
                     onSelect: () => {
-                      const code = String(
-                        Math.floor(100000 + Math.random() * 900000),
-                      );
+                      const n = new Uint32Array(1);
+                      crypto.getRandomValues(n);
+                      const code = String(100000 + (n[0] % 900000));
                       void persist({ pairingCode: code });
                     },
                   },

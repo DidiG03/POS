@@ -21,6 +21,7 @@ import { voidTicketItem, voidWholeTicket } from './services/ticketVoid';
 import { revokeSessionsForUser } from './services/ipcSession';
 import { resolveLanTokenSubject } from './services/lanAuth';
 import { coreServices } from './services/core';
+import { verifyManagerPin } from './services/managerPin';
 import { applyOpenAtLogin, isOpenAtLoginEnabled } from './services/hostRuntime';
 import {
   dispatchTicket,
@@ -83,6 +84,7 @@ import {
   withPaymentLock,
 } from './services/paymentSettle';
 import { findStaleBillPayment } from './services/staleBill';
+import { checkPaymentApproval } from './services/paymentApproval';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
@@ -373,12 +375,6 @@ type CorsPolicy = {
 
 type AuthContext = { userId: number; role?: string } | null;
 
-// Suspicious-pattern detection (best-effort, in-memory).
-const mgrPinFailByIp = new Map<
-  string,
-  { count: number; resetAt: number; lastAlertAt: number }
->();
-
 // Suspicious-pattern detection (best-effort, in-memory) for payment adjustments.
 const payAdjustByUser = new Map<
   number,
@@ -490,26 +486,36 @@ function allowStoreCounterArea(
 // every documented LAN-API payload; backups & menu uploads use dedicated streaming routes.
 const MAX_JSON_BYTES = 1024 * 1024;
 
+/** Past this, an oversized upload is cut off instead of drained. */
+const MAX_DRAIN_BYTES = 64 * 1024 * 1024;
+
 async function parseJson(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
     let aborted = false;
     req.on('data', (chunk: Buffer | string) => {
-      if (aborted) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buf.length;
+      if (aborted) {
+        // Keep reading (and discarding) so the client gets the 413 below.
+        // Cutting the connection looked like a Wi-Fi drop to a phone,
+        // which then retried the same oversized order forever.
+        if (size > MAX_DRAIN_BYTES) {
+          try {
+            req.destroy();
+          } catch {
+            // ignore
+          }
+        }
+        return;
+      }
       if (size > MAX_JSON_BYTES) {
         aborted = true;
-        const err = Object.assign(new Error('payload too large'), {
-          statusCode: 413,
-        });
-        try {
-          req.destroy();
-        } catch {
-          // ignore
-        }
-        reject(err);
+        chunks.length = 0;
+        reject(
+          Object.assign(new Error('payload too large'), { statusCode: 413 }),
+        );
         return;
       }
       chunks.push(buf);
@@ -519,8 +525,8 @@ async function parseJson(req: http.IncomingMessage): Promise<any> {
       try {
         const body = Buffer.concat(chunks).toString('utf8');
         resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        reject(e);
+      } catch {
+        reject(Object.assign(new Error('invalid JSON'), { statusCode: 400 }));
       }
     });
     req.on('error', reject);
@@ -590,7 +596,7 @@ async function getOrCreatePairingCode(): Promise<string> {
   if (typeof existing === 'string' && existing.trim().length >= 4)
     return existing.trim();
   // 6 digits
-  const created = String(Math.floor(100000 + Math.random() * 900000));
+  const created = String(crypto.randomInt(100000, 1000000));
   await coreServices.updateSettings({
     security: { ...(current as any)?.security, pairingCode: created },
   });
@@ -1600,82 +1606,40 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // For LAN host API, do not trust x-forwarded-for (clients can spoof it).
         const remoteIp = String(req.socket.remoteAddress || '').trim();
         const { pin } = await parseJson(req);
-        const p = String(pin || '').trim();
-        if (!/^\d{4,6}$/.test(p))
-          return send(res, 200, { ok: false }, corsOrigin);
-        // Track repeated failures per IP (conservative thresholds, neutral admin alert).
-        const windowMinutes = 10;
-        const threshold = 10;
-        const cooldownMinutes = 60;
-        const now = Date.now();
-        const cur = mgrPinFailByIp.get(remoteIp);
-        if (!cur || cur.resetAt <= now) {
-          mgrPinFailByIp.set(remoteIp, {
-            count: 0,
-            resetAt: now + windowMinutes * 60 * 1000,
-            lastAlertAt: cur?.lastAlertAt || 0,
-          });
+        const result = await verifyManagerPin({
+          pin,
+          source: remoteIp,
+          lan: !isLoopback(remoteIp),
+        });
+        if (!result.ok) {
+          return send(
+            res,
+            200,
+            result.lockedForMs
+              ? {
+                  ok: false,
+                  code: 'APPROVAL_LOCKED',
+                  retryAfterMs: result.lockedForMs,
+                }
+              : { ok: false },
+            corsOrigin,
+          );
         }
-        // Local-first: always use local DB for manager PIN verification
-        const admins = await prisma.user
-          .findMany({
-            where: { role: 'ADMIN', active: true },
-            orderBy: { id: 'asc' },
-          })
-          .catch(() => []);
-        for (const u of admins as any[]) {
-          const ok = await bcrypt
-            .compare(p, String((u as any).pinHash || ''))
-            .catch(() => false);
-          if (ok) {
-            // success resets counter
-            const st = mgrPinFailByIp.get(remoteIp);
-            if (st) mgrPinFailByIp.set(remoteIp, { ...st, count: 0 });
-            const approvalToken = await issueApprovalToken(secret, {
-              userId: (u as any).id,
-              role: 'ADMIN',
-            });
-            return send(
-              res,
-              200,
-              {
-                ok: true,
-                userId: (u as any).id,
-                userName: (u as any).displayName,
-                approvalToken,
-              },
-              corsOrigin,
-            );
-          }
-        }
-        // failure increments counter + maybe alert
-        const st = mgrPinFailByIp.get(remoteIp)!;
-        st.count += 1;
-        mgrPinFailByIp.set(remoteIp, st);
-        if (
-          st.count >= threshold &&
-          (!st.lastAlertAt ||
-            now - st.lastAlertAt > cooldownMinutes * 60 * 1000)
-        ) {
-          const msg =
-            `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes` +
-            `${remoteIp ? ` from IP ${remoteIp}` : ''}. ` +
-            `This can be normal (mistyped PINs); please review if unexpected.`;
-          for (const a of admins as any[]) {
-            await prisma.notification
-              .create({
-                data: {
-                  userId: a.id,
-                  type: 'SECURITY' as any,
-                  message: msg,
-                } as any,
-              })
-              .catch(() => {});
-          }
-          st.lastAlertAt = now;
-          mgrPinFailByIp.set(remoteIp, st);
-        }
-        return send(res, 200, { ok: false }, corsOrigin);
+        const approvalToken = await issueApprovalToken(secret, {
+          userId: result.admin.id,
+          role: 'ADMIN',
+        });
+        return send(
+          res,
+          200,
+          {
+            ok: true,
+            userId: result.admin.id,
+            userName: result.admin.displayName,
+            approvalToken,
+          },
+          corsOrigin,
+        );
       }
 
       // Menu
@@ -2661,6 +2625,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             ) {
               return send(res, 409, tableAlreadyPaidResult(), corsOrigin);
             }
+            const approvalRefused = await checkPaymentApproval({
+              settings,
+              meta: payload?.meta,
+              actorIsAdmin: String(auth?.role || '').toUpperCase() === 'ADMIN',
+              approvalIsValid: async (token, adminId) => {
+                const approved = await verifyApprovalToken(secret, token);
+                return Boolean(approved && approved.userId === adminId);
+              },
+            });
+            if (approvalRefused) {
+              return send(res, 409, approvalRefused, corsOrigin);
+            }
+            if (payload?.meta) delete payload.meta.managerApprovalToken;
             if (paymentShouldCloseTable(payload?.meta)) {
               const stale = await findStaleBillPayment(payload);
               if (stale) return send(res, 409, stale, corsOrigin);
@@ -2920,11 +2897,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // audit notification, so the log never claims a void that the
         // ticket did not take.
         // Locked, versioned and idempotent: see `voidTicketItem`.
+        const voidReport: { qty?: number; name?: string } = {};
         const voided = await voidTicketItem({
           area: String(area),
           tableLabel: String(tableLabel),
           item,
           idempotencyKey: voidKey ? String(voidKey) : null,
+          report: voidReport,
         });
         if (voided === 'paid') {
           return send(
@@ -2940,8 +2919,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         // A retry of a void that already landed: nothing more to record.
         if (voided === 'duplicate') return send(res, 200, 'ok', corsOrigin);
+        // Nothing on the bill matched: no audit entry, no kitchen change.
+        if (voided === 'not-found') return send(res, 200, 'ok', corsOrigin);
 
-        const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
+        const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
         await notifyAdminsAndActor({
           message,
           actorUserId: Number(userId),
@@ -4487,7 +4468,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       return send(res, 404, 'not found', corsOrigin);
     } catch (e: any) {
       const code = Number(e?.statusCode || 0);
-      if (code === 413) return send(res, 413, 'payload too large');
+      // Neither can succeed on retry; `permanent` stops the phone's queue.
+      if (code === 413) {
+        return send(res, 413, {
+          ok: false,
+          code: 'PAYLOAD_TOO_LARGE',
+          error: 'This request is too large for the till.',
+          permanent: true,
+        });
+      }
+      if (code === 400) {
+        return send(res, 400, {
+          ok: false,
+          code: 'INVALID_REQUEST',
+          error: 'The till could not read this request.',
+          permanent: true,
+        });
+      }
       // Another request held this table past the lock wait (e.g. a payment
       // waiting on a printer). Retryable: not `permanent`, so the tablet
       // queues it and the replay is deduped by its idempotency key.

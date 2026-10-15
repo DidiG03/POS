@@ -32,6 +32,8 @@ import {
 initSentry();
 import { resolveHostIntent } from '@shared/tableIntent';
 import { coreServices } from './services/core';
+import { verifyManagerPin } from './services/managerPin';
+import { checkPaymentApproval } from './services/paymentApproval';
 import { syncTableAreasToDb } from './services/tableAreasSync';
 import { presentSettingsForClient } from './services/settingsPresent';
 import {
@@ -1311,6 +1313,14 @@ async function ensureLanApiStarted(): Promise<void> {
   }
   lanApiStarting = true;
   try {
+    // Development only: lets a second scratch till run beside another one.
+    const devLanPort = app.isPackaged
+      ? NaN
+      : Number(process.env.POS_DEV_LAN_PORT);
+    if (Number.isInteger(devLanPort) && devLanPort > 0) {
+      apiServers = await startApiServer(devLanPort, devLanPort + 110);
+      return;
+    }
     apiServers = await startApiServer();
     try {
       const { startMdnsAdvertiser } = await import('./services/mdnsAdvertiser');
@@ -1794,84 +1804,19 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
 });
 
 ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
-  const pin = String((payload as any)?.pin || '').trim();
-  // Validate format (but don't reject weak PINs during verification - managers may already have them)
-  const pinValidation = validatePin(pin, false, 'ADMIN'); // rejectWeak = false for verification
-  if (!pinValidation.valid) return { ok: false };
-
-  // Suspicious-pattern alerting (local): repeated manager PIN failures from the same window/sender.
-  // Conservative thresholds + neutral wording to avoid false accusations.
-  const windowMinutes = 10;
-  const threshold = 10;
-  const cooldownMinutes = 60;
-  const senderId = Number(_e.sender.id || 0);
-  const now = Date.now();
-  // Map is attached to global to avoid duplicate instances in dev reloads.
-  const g: any = globalThis as any;
-  if (!g.__mgrPinFailBySender) g.__mgrPinFailBySender = new Map();
-  const failMap: Map<
-    number,
-    { count: number; resetAt: number; lastAlertAt: number }
-  > = g.__mgrPinFailBySender;
-  const cur = failMap.get(senderId);
-  if (!cur || cur.resetAt <= now) {
-    failMap.set(senderId, {
-      count: 0,
-      resetAt: now + windowMinutes * 60 * 1000,
-      lastAlertAt: cur?.lastAlertAt || 0,
-    });
-  }
-  // Local-first: always use local DB for manager PIN verification
-  const admins = await prisma.user
-    .findMany({
-      where: { role: 'ADMIN', active: true },
-      orderBy: { id: 'asc' },
-    })
-    .catch(() => []);
-  for (const u of admins as any[]) {
-    const ok = await bcrypt
-      .compare(pin, String((u as any).pinHash || ''))
-      .catch(() => false);
-    if (ok) {
-      // Success resets the counter
-      const st = failMap.get(senderId);
-      if (st) failMap.set(senderId, { ...st, count: 0 });
-      // Local-only short-lived approval token to prevent spoofing approvals.
-      const token = issueApprovalToken(Number((u as any).id), 'ADMIN');
-      return {
-        ok: true,
-        userId: (u as any).id,
-        userName: (u as any).displayName,
-        approvalToken: token,
-      };
-    }
-  }
-  // Failure
-  const st = failMap.get(senderId)!;
-  st.count += 1;
-  failMap.set(senderId, st);
-  if (
-    st.count >= threshold &&
-    (!st.lastAlertAt || now - st.lastAlertAt > cooldownMinutes * 60 * 1000)
-  ) {
-    const msg =
-      `Unusual activity (auto-check): ${st.count} manager PIN verification failures in the last ${windowMinutes} minutes. ` +
-      `This can be normal (mistyped PINs); please review if unexpected.`;
-    for (const a of admins as any[]) {
-      await prisma.notification
-        .create({
-          data: {
-            userId: (a as any).id,
-            type: 'SECURITY' as any,
-            message: msg,
-          } as any,
-        })
-        .catch(() => {});
-    }
-    st.lastAlertAt = now;
-    failMap.set(senderId, st);
-  }
-  return { ok: false };
+  const result = await verifyManagerPin({
+    pin: (payload as any)?.pin,
+    source: `till:${Number(_e.sender.id || 0)}`,
+    lan: false,
+  });
+  if (!result.ok) return { ok: false };
+  // Local-only short-lived approval token to prevent spoofing approvals.
+  return {
+    ok: true,
+    userId: result.admin.id,
+    userName: result.admin.displayName,
+    approvalToken: issueApprovalToken(result.admin.id, 'ADMIN'),
+  };
 });
 
 ipcHandle('auth:logoutAdmin', async (_e) => {
@@ -2733,7 +2678,7 @@ ipcHandle('tickets:preparePayment', async () => {
 });
 
 // Print ticket over ESC/POS
-ipcHandle('tickets:print', async (_e, input) => {
+ipcHandle('tickets:print', async (_e, input, ctx) => {
   const idempotencyKey = String((input as any)?.idempotencyKey ?? '').trim();
   if (idempotencyKey) {
     const existing = await prisma.printJob
@@ -2821,6 +2766,15 @@ ipcHandle('tickets:print', async (_e, input) => {
       if (!(await tableIsOpenForPayment(area, tableLabel))) {
         return tableAlreadyPaidResult();
       }
+      const approvalRefused = await checkPaymentApproval({
+        settings,
+        meta,
+        actorIsAdmin: ctx?.session?.role === 'ADMIN',
+        approvalIsValid: async (token, adminId) =>
+          isApprovalValidFor(token, adminId),
+      });
+      if (approvalRefused) return approvalRefused;
+      if (meta) delete meta.managerApprovalToken;
       if (paymentShouldCloseTable(meta)) {
         const stale = await findStaleBillPayment({
           area,
@@ -4075,17 +4029,21 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   // is written — including the audit notification, which would otherwise
   // record a void that never happened.
   // Locked, versioned and idempotent: see `voidTicketItem`.
+  const voidReport: { qty?: number; name?: string } = {};
   const voided = await voidTicketItem({
     area,
     tableLabel,
     item,
     idempotencyKey: String((input as any)?.idempotencyKey || ''),
+    report: voidReport,
   });
   if (voided === 'paid') return false;
   // A retry of a void that already landed: nothing more to record.
   if (voided === 'duplicate') return true;
+  // Nothing on the bill matched: no audit entry, no kitchen change.
+  if (voided === 'not-found') return true;
 
-  const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
+  const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
     .create({ data: { userId, type: 'OTHER' as any, message } })

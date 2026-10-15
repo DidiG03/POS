@@ -58,6 +58,7 @@ import {
   linesNewToBill,
   recordTicketSend,
   ticketCapturedAt,
+  validateTicketSendLines,
 } from './ticketSend';
 
 const kafe = { sku: 'KAFE', name: 'Kafe', qty: 1, unitPrice: 100, fired: true };
@@ -312,5 +313,53 @@ describe('ticketCapturedAt', () => {
     expect(ticketCapturedAt({}, 100_000)).toBeNull();
     expect(ticketCapturedAt({ intentAgeMs: -1 }, 100_000)).toBeNull();
     expect(ticketCapturedAt(null)).toBeNull();
+  });
+});
+
+describe('validateTicketSendLines', () => {
+  const ok = (items: unknown[], label: unknown = '4') =>
+    validateTicketSendLines({ area: 'Salla', tableLabel: label, items });
+
+  it('refuses quantities and prices that cannot be real', () => {
+    for (const qty of [-5, 'abc', 1e12, '1e400', Infinity, null]) {
+      expect(ok([{ ...kafe, qty }])).toMatchObject({ ok: false });
+    }
+    for (const unitPrice of [-1000, 'abc', 1e12]) {
+      expect(ok([{ ...kafe, unitPrice }])).toMatchObject({ ok: false });
+    }
+  });
+
+  it('drops zero-quantity lines and turns numeric strings into numbers', () => {
+    const r = ok([
+      { ...kafe, qty: 0 },
+      { ...birre, qty: '2', unitPrice: '300' },
+    ]);
+    expect(r).toEqual({
+      ok: true,
+      items: [{ ...birre, qty: 2, unitPrice: 300 }],
+    });
+  });
+
+  it('keeps weighed fractions', () => {
+    expect(ok([{ ...kafe, qty: 0.35 }])).toMatchObject({ ok: true });
+  });
+
+  it('refuses blank or control-character table names and nameless lines', () => {
+    expect(ok([kafe], '   ')).toMatchObject({ ok: false });
+    expect(ok([kafe], 'T\u001f1')).toMatchObject({ ok: false });
+    expect(ok([{ qty: 1, unitPrice: 1 }])).toMatchObject({ ok: false });
+    expect(ok([{ sku: { $gt: '' }, name: { a: 1 }, qty: 1 }])).toMatchObject({
+      ok: false,
+    });
+    expect(ok(['x'])).toMatchObject({ ok: false });
+  });
+
+  it('a Send with a bad line writes nothing', async () => {
+    const r = await recordTicketSend({
+      ...base,
+      items: [kafe, { ...birre, qty: -3 }],
+    });
+    expect(r).toMatchObject({ ok: false, code: 'INVALID_ORDER' });
+    expect(h.written).toHaveLength(0);
   });
 });
