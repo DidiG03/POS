@@ -31,6 +31,7 @@
  */
 
 import { ageSinceTap } from '@shared/tableIntent';
+import { newIdempotencyKey } from './idempotency';
 
 export type OfflineOp =
   | 'tickets.log'
@@ -498,11 +499,6 @@ async function raceLiveAttempt(
   }
 }
 
-/** True when the host says this table is not in a state that accepts the write. */
-function isTableClosedRejection(e: any): boolean {
-  return String(e?.code || '') === 'TABLE_CLOSED';
-}
-
 /**
  * Normalise a ticket rejection across both transports.
  *
@@ -524,6 +520,15 @@ export function ticketRejection(input: {
     thrown.permanent = true;
     return thrown;
   }
+  // The till's handler answers a bare `false` for an order it would not
+  // take (no table, no lines). Counting that as success marked the lines
+  // sent while nothing was recorded.
+  if (result === false) {
+    const err: any = new Error('The till did not accept this order');
+    err.code = 'TICKET_REJECTED';
+    err.permanent = true;
+    return err;
+  }
   if (!result || typeof result !== 'object' || result.ok !== false) return null;
   const err: any = new Error(
     String(result.error || 'Ticket rejected by server'),
@@ -534,6 +539,22 @@ export function ticketRejection(input: {
 }
 
 /**
+ * The ticket payload as it goes on the wire: the capture time becomes an
+ * age (`intentAgeMs`) measured on this device, so the till applies it to its
+ * own clock and a phone whose clock is off cannot mislead it.
+ */
+export function ticketWirePayload(
+  a: any,
+  now = Date.now(),
+): Record<string, unknown> {
+  if (!a || typeof a !== 'object') return a;
+  const { capturedAt, ...rest } = a;
+  const at = Number(capturedAt);
+  if (!Number.isFinite(at) || at <= 0) return rest;
+  return { ...rest, intentAgeMs: ageSinceTap(at, now) };
+}
+
+/**
  * Send an order to the host.
  *
  * The host returns a richer `{ ok, error?, code? }` object over IPC and the
@@ -541,57 +562,26 @@ export function ticketRejection(input: {
  * callers (legacy queue items) might have hit the boolean version, so any
  * other shape counts as success.
  *
- * This used to open the table FIRST, unconditionally, so `openAt` existed
- * before the ticket write. That made every replay resurrect a table: the host
- * dedupes the ticket on `idempotencyKey` and answers ok, but the `setOpen`
- * ahead of it had already re-occupied a sitting that was paid and closed in
- * the meantime — a table going red on the floor with an empty bill and nobody
- * near it.
- *
- * So the ticket goes first, and the table is only opened to recover a
- * rejection on the *live* attempt, where a waiter is holding the device and
- * the sitting is genuinely mid-open. A background replay that finds the table
- * closed surfaces instead: `TABLE_CLOSED` is permanent, so it lands on the
- * failed-sync panel for a human to decide about. Replays of a legitimate
- * offline open-and-send still work, because the paired `tables.setOpen` was
- * queued ahead of the order and drains first.
+ * A `TABLE_CLOSED` answer means the till closed this table (paid, voided or
+ * moved) after the order was taken. It is final: this used to reopen the
+ * table and send again, which on a live tap brought a paid sitting back to
+ * the floor with the old bill on it. The till opens a table itself for a
+ * genuine first order, inside the same lock as the write.
  */
 export async function dispatchTicketLog(
   a: any,
-  ctx: DispatchContext,
+  _ctx: DispatchContext,
 ): Promise<void> {
-  // Resolves to a rejection error, or null when the host accepted. A transport
-  // failure (Wi-Fi drop) still throws — that must reach the queue so the order
-  // is replayed, not parked.
-  const send = async (): Promise<any | null> => {
-    try {
-      return ticketRejection({ result: await window.api.tickets.log(a) });
-    } catch (e: any) {
-      const rejected = ticketRejection({ thrown: e });
-      if (rejected) return rejected;
-      throw e;
-    }
-  };
-  let rejection = await send();
-  if (
-    rejection &&
-    isTableClosedRejection(rejection) &&
-    ctx.attempt === 0 &&
-    a?.area &&
-    a?.tableLabel
-  ) {
-    try {
-      await window.api.tables.setOpen(
-        String(a.area),
-        String(a.tableLabel),
-        true,
-        0,
-      );
-      rejection = await send();
-    } catch {
-      // Could not reach the host to open the table — keep the original
-      // rejection so the caller/queue decides, rather than masking it.
-    }
+  let rejection: any | null;
+  try {
+    rejection = ticketRejection({
+      result: await window.api.tickets.log(ticketWirePayload(a) as any),
+    });
+  } catch (e: any) {
+    // A transport failure (Wi-Fi drop) still throws — that must reach the
+    // queue so the order is replayed, not parked.
+    rejection = ticketRejection({ thrown: e });
+    if (!rejection) throw e;
   }
   if (rejection) throw rejection;
   if (a?.area && a?.tableLabel) {
@@ -658,6 +648,97 @@ export async function applyQueuedTableOpen(
 }
 
 /**
+ * The till's void handlers answer `false` when they refuse (no valid
+ * manager approval, another waiter's table, a paid line). That used to count
+ * as success: the phone showed the item voided while the bill still charged
+ * for it. A refusal will not change on retry.
+ */
+export function assertVoidAccepted(result: unknown): void {
+  if (result === false) {
+    const err: any = new Error('The till refused this void');
+    err.code = 'VOID_REJECTED';
+    err.permanent = true;
+    throw err;
+  }
+}
+
+/**
+ * Ops the host dedupes on `idempotencyKey`. The key has to exist before the
+ * first attempt: a void or transfer whose response was lost is retried by
+ * the queue, and without the key the host applied it again (a second
+ * identical line voided).
+ */
+const KEYED_OPS = new Set<OfflineOp>([
+  'tickets.log',
+  'tickets.print',
+  'tickets.voidItem',
+  'tickets.voidTicket',
+  'tables.transfer',
+  'payments.record',
+]);
+
+/** `args` with an idempotency key, minting one only when it has none. */
+export function withIdempotencyKey(op: OfflineOp, args: any): any {
+  if (!KEYED_OPS.has(op) || !args || typeof args !== 'object') return args;
+  if (String(args.idempotencyKey || '').trim()) return args;
+  return { ...args, idempotencyKey: newIdempotencyKey() };
+}
+
+/** The tables a queued write touches, as `area\u0001label` keys. */
+export function queuedItemTables(item: {
+  op: OfflineOp;
+  args?: any;
+}): string[] {
+  const a = item.args || {};
+  const key = (area: unknown, label: unknown) => {
+    const ar = String(area ?? '').trim();
+    const lb = String(label ?? '').trim();
+    return ar && lb ? `${ar}\u0001${lb}` : null;
+  };
+  const keys =
+    item.op === 'tables.transfer'
+      ? [key(a.fromArea, a.fromLabel), key(a.toArea, a.toLabel)]
+      : item.op === 'tables.setOpen' || item.op === 'covers.save'
+        ? [key(a.area, a.label)]
+        : [key(a.area, a.tableLabel)];
+  return keys.filter((k): k is string => Boolean(k));
+}
+
+/**
+ * Writes whose order on a table matters. While one of these is still
+ * waiting, later writes for the same table wait behind it. An order retried
+ * after a blip used to be overtaken by the payment queued after it, so the
+ * order then reached a closed table and was refused; a void could land
+ * before the order it voids.
+ */
+const ORDERED_OPS = new Set<OfflineOp>([
+  'tickets.log',
+  'tickets.voidItem',
+  'tickets.voidTicket',
+  'tables.transfer',
+  'payments.record',
+]);
+
+/**
+ * Per-pass table ordering for {@link OfflineQueue.sync}. `waits(item)` is
+ * true when an earlier ordered write for one of its tables is still waiting;
+ * `hold(item)` records that `item` itself is waiting (backing off, or failed
+ * this pass) so later writes for its tables wait behind it.
+ */
+export function createTableOrder() {
+  const blocked = new Set<string>();
+  return {
+    waits(item: { op: OfflineOp; args?: any }): boolean {
+      return queuedItemTables(item).some((t) => blocked.has(t));
+    },
+    hold(item: { op: OfflineOp; args?: any }): void {
+      if (!ORDERED_OPS.has(item.op)) return;
+      for (const t of queuedItemTables(item)) blocked.add(t);
+    },
+  };
+}
+
+/**
  * Per-op dispatchers. These are the SAME calls the renderer would make
  * when online — kept thin so the queue never "knows" anything special
  * about each op.
@@ -669,11 +750,11 @@ const dispatchers: Record<
   'tickets.log': dispatchTicketLog,
 
   'tickets.voidItem': async (a) => {
-    await window.api.tickets.voidItem(a);
+    assertVoidAccepted(await window.api.tickets.voidItem(a));
   },
 
   'tickets.voidTicket': async (a) => {
-    await window.api.tickets.voidTicket(a);
+    assertVoidAccepted(await window.api.tickets.voidTicket(a));
   },
 
   'tables.setOpen': (a, ctx) => applyQueuedTableOpen(a, ctx),
@@ -894,6 +975,19 @@ class OfflineQueue {
     });
   }
 
+  /** True when an ordered write for any of `tables` is still queued. */
+  async hasOrderedWorkFor(tables: string[]): Promise<boolean> {
+    if (!tables.length) return false;
+    const want = new Set(tables);
+    const items = (await this.getAll())
+      .map(this.normalize)
+      .filter((it): it is OfflineQueueItem => it !== null);
+    return items.some(
+      (it) =>
+        ORDERED_OPS.has(it.op) && queuedItemTables(it).some((t) => want.has(t)),
+    );
+  }
+
   async getPendingCount(): Promise<number> {
     const items = await this.getAll();
     return items.length;
@@ -958,9 +1052,20 @@ class OfflineQueue {
       let touched = false;
 
       const signedIn = signedInUser();
+      // Tables with an ordered write still waiting: later writes for them
+      // wait too (see createTableOrder). Another waiter's held order does not
+      // block: a payment must not wait for someone who has gone home.
+      const order = createTableOrder();
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        if (it.nextAttemptAt && it.nextAttemptAt > now) continue;
+        if (order.waits(it)) {
+          order.hold(it);
+          continue;
+        }
+        if (it.nextAttemptAt && it.nextAttemptAt > now) {
+          order.hold(it);
+          continue;
+        }
         // Another waiter's order: leave it exactly as it is until they sign
         // in. Sending it now would only be refused.
         if (isHeldForOwner(it, signedIn)) continue;
@@ -1053,6 +1158,7 @@ class OfflineQueue {
               lastError,
             });
           }
+          if (!removedIds.has(it.id)) order.hold(it);
           touched = true;
           // If the box clearly can't reach the network, don't burn
           // through every other queued item making the same failed
@@ -1394,6 +1500,33 @@ export async function retireQueuedTableOpen(
     .catch(() => undefined);
 }
 
+/** How long a live write waits for its table's queued writes to drain. */
+const BACKLOG_DRAIN_BUDGET_MS = 3_000;
+
+/**
+ * Before a live write, give this table's queued writes a chance to land
+ * first. A waiter who sent an order offline and then took payment as the
+ * Wi-Fi came back paid before the order reached the till; the order then
+ * arrived at a closed table and was refused. Bounded: the waiter is never
+ * held longer than {@link BACKLOG_DRAIN_BUDGET_MS}.
+ */
+async function drainTableBacklog(op: OfflineOp, args: any): Promise<void> {
+  const tables = queuedItemTables({ op, args });
+  try {
+    if (!(await offlineQueue.hasOrderedWorkFor(tables))) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      offlineQueue.sync().catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, BACKLOG_DRAIN_BUDGET_MS);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  } catch {
+    // The queue is advisory here; the live write goes ahead regardless.
+  }
+}
+
 export async function tryOrQueue<T = unknown>(
   op: OfflineOp,
   args: any,
@@ -1413,6 +1546,9 @@ export async function tryOrQueue<T = unknown>(
   if (!dispatcher) {
     throw new Error(`Unknown offline op: ${op}`);
   }
+  // Same key for the live attempt and every replay of it.
+  args = withIdempotencyKey(op, args);
+  if (ORDERED_OPS.has(op)) await drainTableBacklog(op, args);
   if (shouldEnqueueWithoutLiveAttempt(op)) {
     await offlineQueue.enqueue(op, args, options);
     return { queued: true };

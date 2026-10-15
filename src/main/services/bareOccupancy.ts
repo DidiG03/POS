@@ -99,7 +99,11 @@ async function closeIfStillBare(
       ) {
         return false;
       }
-      return setTableOccupied(area, label, false);
+      // Housekeeping, not a close anyone made: an order taken on this
+      // table while it sat bare must still be accepted when it arrives.
+      return setTableOccupied(area, label, false, undefined, {
+        recordIntent: false,
+      });
     });
   } catch {
     // Table is busy with a Send or Pay. Leave the sitting.

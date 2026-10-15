@@ -16,9 +16,11 @@ import {
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { resolveHostIntent } from '@shared/tableIntent';
+import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
+import { voidTicketItem, voidWholeTicket } from './services/ticketVoid';
 import { revokeSessionsForUser } from './services/ipcSession';
 import { resolveLanTokenSubject } from './services/lanAuth';
-import { coreServices, withTableLock } from './services/core';
+import { coreServices } from './services/core';
 import { applyOpenAtLogin, isOpenAtLoginEnabled } from './services/hostRuntime';
 import {
   dispatchTicket,
@@ -69,10 +71,7 @@ import {
 } from '@shared/ticketLogItems';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
-import {
-  setTableOpenWithSideEffects,
-  ensureOccupiedForTicketWrite,
-} from './services/tableOpen';
+import { setTableOpenWithSideEffects } from './services/tableOpen';
 import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
@@ -162,7 +161,7 @@ import {
 } from './services/security';
 import { normalizePin } from '@shared/staffPin';
 import { allowLanCorsOrigin, isTrustedLanClient } from './services/lanCors';
-import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
+import { planTicketVoid } from '@shared/voidPaid';
 import { applySaleCorrection } from './services/saleCorrection';
 import {
   gzipBodyIfAccepted,
@@ -203,15 +202,14 @@ import {
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
-  getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
-import { decideTicketRequest } from './services/ticketRequests';
 import {
-  stockLinesFromPayload,
-  writeTicketSnapshot,
-} from './services/ticketLogWrite';
+  createTicketRequest,
+  decideTicketRequest,
+} from './services/ticketRequests';
+import { stockLinesFromPayload } from './services/ticketLogWrite';
 import { compactTicketLogSession } from './services/ticketLogCompact';
 import { compactCoversForTable } from './services/coversCompact';
 import {
@@ -1852,77 +1850,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             : null;
         const idempotencyKey = String(body?.idempotencyKey || '').trim();
 
-        if (idempotencyKey) {
-          const existing = await prisma.ticketLog
-            .findFirst({ where: { idempotencyKey } as any })
-            .catch(() => null);
-          if (existing) {
-            return send(res, 200, { ok: true }, corsOrigin);
-          }
-        }
-
-        const result = await withTableLock(
-          sanitizedArea,
-          sanitizedTableLabel,
-          async () => {
-            // Open if needed inside the same lock as the TicketLog write —
-            // phones used to open in a prior LAN call that often lost the race.
-            await ensureOccupiedForTicketWrite(
-              sanitizedArea,
-              sanitizedTableLabel,
-            );
-
-            const ownerId = await getCurrentSessionOwnerId(
-              sanitizedArea,
-              sanitizedTableLabel,
-            );
-            if (ownerId !== null && ownerId !== Number(userId)) {
-              const actor = await prisma.user
-                .findUnique({ where: { id: Number(userId) } })
-                .catch(() => null);
-              const actorIsAdmin =
-                actor &&
-                String((actor as any).role || '').toUpperCase() === 'ADMIN';
-              if (!actorIsAdmin) {
-                const ownerName = await prisma.user
-                  .findUnique({ where: { id: ownerId } })
-                  .catch(() => null);
-                return {
-                  ok: false as const,
-                  error: `Table is owned by ${ownerName?.displayName || `waiter #${ownerId}`}`,
-                  code: 'TABLE_OWNED_BY_OTHER',
-                };
-              }
-            }
-
-            // Same cumulative-snapshot tagging as the Electron IPC path —
-            // see `getCurrentTableSessionKey`.
-            const sessionKey = await getCurrentTableSessionKey(
-              sanitizedArea,
-              sanitizedTableLabel,
-            ).catch(() => null);
-
-            // Same write as the till, including the low-stock count-down
-            // the phone route used to skip.
-            const outcome = await writeTicketSnapshot({
-              userId: Number(userId),
-              area: sanitizedArea,
-              tableLabel: sanitizedTableLabel,
-              covers: sanitizedCovers,
-              items: items ?? [],
-              note: sanitizedNote,
-              idempotencyKey,
-              sessionKey,
-              stockConsumeLines: stockLinesFromPayload(body?.stockConsumeLines),
-            });
-            if (outcome === 'duplicate') return { ok: true as const };
-            return {
-              ok: true as const,
-              written: true as const,
-              sessionKey,
-            };
-          },
-        );
+        // Dedupe, closed-table check, ownership and the merge with the bill
+        // already there all happen in one place for the till and phones.
+        const result = await recordTicketSend({
+          userId: Number(userId),
+          area: sanitizedArea,
+          tableLabel: sanitizedTableLabel,
+          covers: sanitizedCovers,
+          items,
+          note: sanitizedNote,
+          idempotencyKey,
+          stockConsumeLines: stockLinesFromPayload(body?.stockConsumeLines),
+          capturedAt: ticketCapturedAt(body),
+          addedItems: Array.isArray(body?.addedItems) ? body.addedItems : null,
+        });
 
         if (!result.ok) {
           // `permanent` tells the client's offline queue that a retry cannot
@@ -1943,9 +1884,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
           void compactTicketLogSession(result.sessionKey);
           if (!storePlanBlocksKds()) {
-            const kdsFireItems = Array.isArray(body?.kdsFireItems)
-              ? body.kdsFireItems
-              : undefined;
+            // What became new on the bill, so a replay never cooks twice;
+            // older phones without Send keys keep their own fire list.
+            const kdsFireItems = result.firedNow
+              ? result.firedNow
+              : Array.isArray(body?.kdsFireItems)
+                ? body.kdsFireItems
+                : undefined;
             void createKdsTicketFromLog({
               userId: Number(userId),
               area: sanitizedArea,
@@ -2886,6 +2831,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           approvedByAdminId,
           approvedByAdminName,
           approvedByAdminToken,
+          idempotencyKey: voidKey,
         } = await parseJson(req);
         if (!userId || !area || !tableLabel || !item?.name)
           return send(res, 400, 'invalid', corsOrigin);
@@ -2973,28 +2919,33 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // correction can undo a paid (and filed) line. Refuse before the
         // audit notification, so the log never claims a void that the
         // ticket did not take.
-        const last = await findLatestTicketLogForCurrentSession(
-          String(area),
-          String(tableLabel),
-        );
-        const plan = planItemVoid((last?.itemsJson as any[]) || [], item);
-        if (plan.outcome === 'paid') {
-          return send(res, 409, { error: 'line_already_paid' }, corsOrigin);
+        // Locked, versioned and idempotent: see `voidTicketItem`.
+        const voided = await voidTicketItem({
+          area: String(area),
+          tableLabel: String(tableLabel),
+          item,
+          idempotencyKey: voidKey ? String(voidKey) : null,
+        });
+        if (voided === 'paid') {
+          return send(
+            res,
+            409,
+            {
+              error: 'line_already_paid',
+              code: 'LINE_ALREADY_PAID',
+              permanent: true,
+            },
+            corsOrigin,
+          );
         }
+        // A retry of a void that already landed: nothing more to record.
+        if (voided === 'duplicate') return send(res, 200, 'ok', corsOrigin);
 
         const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
         await notifyAdminsAndActor({
           message,
           actorUserId: Number(userId),
         });
-        if (last && plan.outcome === 'ok') {
-          const items = (last.itemsJson as any[]) || [];
-          items[plan.index] = { ...items[plan.index], voided: true };
-          await prisma.ticketLog.update({
-            where: { id: last.id },
-            data: { itemsJson: items },
-          });
-        }
         await applyKdsVoidItem({
           userId: Number(userId),
           area: String(area),
@@ -3038,6 +2989,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           approvedByAdminId,
           approvedByAdminName,
           approvedByAdminToken,
+          idempotencyKey: voidKey,
         } = await parseJson(req);
         if (!userId || !area || !tableLabel)
           return send(res, 400, 'invalid', corsOrigin);
@@ -3124,13 +3076,32 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // Paid lines stay on the ticket. When they are all that is left,
         // this sitting is settled and only an admin correction can reverse
         // it — mirrors the desktop `tickets:voidTicket` rule.
-        const last = await findLatestTicketLogForCurrentSession(
-          String(area),
-          String(tableLabel),
-        );
-        const plan = planTicketVoid((last?.itemsJson as any[]) || []);
-        if (plan.outcome === 'paid') {
-          return send(res, 409, { error: 'ticket_already_paid' }, corsOrigin);
+        // A retry of a void that already landed changes nothing.
+        if (voidKey) {
+          const prior = await prisma.ticketLog
+            .findFirst({ where: { idempotencyKey: String(voidKey) } as any })
+            .catch(() => null);
+          if (prior) return send(res, 200, 'ok', corsOrigin);
+        }
+        {
+          const last = await findLatestTicketLogForCurrentSession(
+            String(area),
+            String(tableLabel),
+          );
+          if (
+            planTicketVoid((last?.itemsJson as any[]) || []).outcome === 'paid'
+          ) {
+            return send(
+              res,
+              409,
+              {
+                error: 'ticket_already_paid',
+                code: 'TICKET_ALREADY_PAID',
+                permanent: true,
+              },
+              corsOrigin,
+            );
+          }
         }
 
         const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
@@ -3138,37 +3109,40 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           message,
           actorUserId: Number(userId),
         });
-        if (last) {
-          await prisma.ticketLog.update({
-            where: { id: last.id },
-            data: {
-              itemsJson: plan.items,
-              note: last.note
-                ? `${last.note} | VOIDED${reason ? `: ${reason}` : ''}`
-                : `VOIDED${reason ? `: ${reason}` : ''}`,
+        // Bill, fiscal check, KDS and close in one table lock, so no Send
+        // can land between the void and the close (see `voidWholeTicket`).
+        const voided = await voidWholeTicket({
+          area: String(area),
+          tableLabel: String(tableLabel),
+          reason: reason ? String(reason) : null,
+          idempotencyKey: voidKey ? String(voidKey) : null,
+          beforeClose: async () => {
+            await flagVoidAfterFiscalization({
+              area: String(area),
+              tableLabel: String(tableLabel),
+              reason: `Ticket voided after the sale was fiscalized${reason ? `: ${String(reason)}` : ''}`,
+              actorUserId: Number(userId) || undefined,
+            }).catch(() => false);
+            await applyKdsVoidTicket({
+              userId: Number(userId),
+              area: String(area),
+              tableLabel: String(tableLabel),
+              reason: reason ? String(reason) : undefined,
+            }).catch(() => false);
+          },
+        });
+        if (voided === 'paid') {
+          return send(
+            res,
+            409,
+            {
+              error: 'ticket_already_paid',
+              code: 'TICKET_ALREADY_PAID',
+              permanent: true,
             },
-          });
+            corsOrigin,
+          );
         }
-        // Must run before the close clears `tables:openAt`. Mirrors the
-        // desktop `tickets:voidTicket` path: an invoice already filed for
-        // this table needs a corrective document, not a silent close.
-        await flagVoidAfterFiscalization({
-          area: String(area),
-          tableLabel: String(tableLabel),
-          reason: `Ticket voided after the sale was fiscalized${reason ? `: ${String(reason)}` : ''}`,
-          actorUserId: Number(userId) || undefined,
-        }).catch(() => false);
-        await applyKdsVoidTicket({
-          userId: Number(userId),
-          area: String(area),
-          tableLabel: String(tableLabel),
-          reason: reason ? String(reason) : undefined,
-        }).catch(() => false);
-        await setTableOpenWithSideEffects(
-          String(area),
-          String(tableLabel),
-          false,
-        ).catch(() => false);
         try {
           broadcastTicketsChanged({
             area: String(area),
@@ -3211,16 +3185,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           auth.role !== 'ADMIN'
         )
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        await prisma.ticketRequest.create({
-          data: {
-            requesterId: Number(requesterId),
-            ownerId: Number(ownerId),
-            area: String(area),
-            tableLabel: String(tableLabel),
-            itemsJson: items,
-            note: note ? String(note) : null,
-            status: 'PENDING' as any,
-          },
+        // Shared with the till: notifies the owner, and a retried POST
+        // does not create the same request twice.
+        await createTicketRequest({
+          requesterId: Number(requesterId),
+          ownerId: Number(ownerId),
+          area: String(area),
+          tableLabel: String(tableLabel),
+          items,
+          note,
         });
         return send(res, 200, 'ok', corsOrigin);
       }

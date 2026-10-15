@@ -213,6 +213,50 @@ export function bindTicketTable<
   };
 }
 
+/**
+ * A table transfer moved the bill from `fromKey` to `toKey`: bind `toKey` with
+ * the draft captured before the move, unsent lines included. `draft` is taken
+ * up front because SSE for the closing source table can wipe the bound cart
+ * while the transfer request is still in flight.
+ */
+export function moveTicketDraft<
+  T extends TicketDraft & {
+    boundKey: string | null;
+    drafts: Record<string, TicketDraft>;
+  },
+>(
+  state: T,
+  fromKey: string,
+  toKey: string,
+  draft: TicketDraft,
+  now = Date.now(),
+): T {
+  const drafts = { ...state.drafts };
+  delete drafts[fromKey];
+  delete drafts[toKey];
+  if (
+    state.boundKey &&
+    state.boundKey !== fromKey &&
+    state.boundKey !== toKey
+  ) {
+    drafts[state.boundKey] = { ...snapshotTicketDraft(state), savedAt: now };
+  }
+  const snap = snapshotTicketDraft(draft);
+  return {
+    ...state,
+    addMode: snap.addMode,
+    lines: snap.lines as T['lines'],
+    courses: snap.courses as T['courses'],
+    seats: snap.seats as T['seats'],
+    activeCourseId: snap.activeCourseId,
+    activeSeatId: snap.activeSeatId,
+    orderNote: snap.orderNote,
+    drafts,
+    boundKey: toKey,
+    savedAt: now,
+  };
+}
+
 /** Drop a persisted unsent cart that is older than the leave/refresh grace window. */
 export function revivePersistedTicketDraft<
   T extends TicketDraft & {

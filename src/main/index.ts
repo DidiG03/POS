@@ -31,7 +31,7 @@ import {
 } from './services/sentry';
 initSentry();
 import { resolveHostIntent } from '@shared/tableIntent';
-import { coreServices, withTableLock } from './services/core';
+import { coreServices } from './services/core';
 import { syncTableAreasToDb } from './services/tableAreasSync';
 import { presentSettingsForClient } from './services/settingsPresent';
 import {
@@ -61,7 +61,7 @@ import {
   broadcastUsersChanged,
 } from './services/realtime';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
-import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
+import { planTicketVoid } from '@shared/voidPaid';
 import {
   isApprovalValidFor,
   issueApprovalToken,
@@ -156,7 +156,6 @@ import {
   unlockVault,
 } from './services/vault/lifecycle';
 import { relaunchTillSoon } from './services/vault/relaunch';
-import type { Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { startApiServer } from './api';
 import type * as http from 'node:http';
@@ -186,16 +185,8 @@ import {
   startFiscalDeferLoop,
   stopFiscalDeferLoop,
 } from './services/fiscal/deferred';
-import {
-  transferTableLocal,
-  parseTransferTag,
-  isTransferredOutNote,
-} from './services/tableTransfer';
-import {
-  setTableOpenWithSideEffects,
-  applyTableOpenState,
-  ensureOccupiedForTicketWrite,
-} from './services/tableOpen';
+import { transferTableLocal } from './services/tableTransfer';
+import { setTableOpenWithSideEffects } from './services/tableOpen';
 import {
   backfillTableOccupancyFromSyncState,
   listOccupiedTables,
@@ -254,11 +245,8 @@ import {
 } from './services/kdsList';
 import {
   ALL_KDS_STATIONS,
-  decorateKdsTicketItemsFromCategory,
   enabledStationsFromSettings,
   kdsMasterEnabledFromSettings,
-  kdsStationsWithActiveItems,
-  loadKdsRoutingFromDb,
 } from './services/kdsStationRouting';
 import {
   finalizeShiftAfterClockOut,
@@ -274,7 +262,6 @@ import {
 import {
   applySaleCorrection,
   listFiscalizedSales,
-  mapOrderToFiscalSaleRow,
 } from './services/saleCorrection';
 import {
   buildSalesTrendBuckets,
@@ -306,7 +293,6 @@ dotenv.config();
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
-  getCurrentTableSessionKey,
   getTableSessionStartedAt,
 } from './services/tableSession';
 import { notifyAutoVoidedTable } from './services/autoVoidAlert';
@@ -315,11 +301,13 @@ import {
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
-import { decideTicketRequest } from './services/ticketRequests';
 import {
-  stockLinesFromPayload,
-  writeTicketSnapshot,
-} from './services/ticketLogWrite';
+  createTicketRequest,
+  decideTicketRequest,
+} from './services/ticketRequests';
+import { stockLinesFromPayload } from './services/ticketLogWrite';
+import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
+import { voidTicketItem, voidWholeTicket } from './services/ticketVoid';
 import {
   asTicketLogItems,
   rowIsInOpenSession,
@@ -944,11 +932,36 @@ function startAutoVoidStaleTicketsLoop() {
           // ignore
         }
 
-        // Close occupancy so the floor immediately turns green.
+        // Paid lines stay paid. The key is per sitting, so a second pass of
+        // this loop cannot void the same bill again.
         try {
-          await withTableLock(area, tableLabel, async () => {
-            await applyTableOpenState(area, tableLabel, false);
+          const outcome = await voidWholeTicket({
+            area,
+            tableLabel,
+            reason,
+            idempotencyKey: `auto-void:${area}:${tableLabel}:${openedAt?.getTime() ?? 0}`,
+            beforeClose: async () => {
+              await flagVoidAfterFiscalization({
+                area,
+                tableLabel,
+                reason: `Ticket auto-voided after the sale was fiscalized: ${reason}`,
+                actorUserId: actorUserId || undefined,
+              }).catch(() => false);
+              if (actorUserId) {
+                await applyKdsVoidTicket({
+                  userId: actorUserId,
+                  area,
+                  tableLabel,
+                  reason,
+                }).catch(() => false);
+              }
+            },
           });
+          // Nothing left to void (all paid) or already voided: the table
+          // is still past its limit and must not stay on the floor.
+          if (outcome !== 'ok') {
+            await setTableOpenWithSideEffects(area, tableLabel, false);
+          }
         } catch {
           // ignore
         }
@@ -963,26 +976,6 @@ function startAutoVoidStaleTicketsLoop() {
               update: { valueJson: closedOverride },
             })
             .catch(() => null);
-        } catch {
-          // ignore
-        }
-
-        // Mirror locally: mark latest ticket items voided + note reason (best-effort).
-        try {
-          if (last) {
-            const itemsArr = ((last.itemsJson as any[]) || []).map(
-              (it: any) => ({ ...it, voided: true }),
-            );
-            const note2 = last.note
-              ? `${last.note} | VOIDED: ${reason}`
-              : `VOIDED: ${reason}`;
-            await prisma.ticketLog
-              .update({
-                where: { id: last.id },
-                data: { itemsJson: itemsArr, note: note2 },
-              })
-              .catch(() => null);
-          }
         } catch {
           // ignore
         }
@@ -1016,32 +1009,6 @@ function startAutoVoidStaleTicketsLoop() {
               data: { userId: actorUserId, type: 'OTHER' as any, message: msg },
             })
             .catch(() => {});
-        }
-
-        // KDS is always local: reflect void + close order immediately.
-        try {
-          if (actorUserId)
-            await applyKdsVoidTicket({
-              userId: actorUserId,
-              area,
-              tableLabel,
-              reason,
-            }).catch(() => false);
-          const active = await (prisma as any).kdsOrder
-            .findFirst({
-              where: { area, tableLabel, closedAt: null },
-              orderBy: { openedAt: 'desc' },
-            })
-            .catch(() => null);
-          if (active)
-            await (prisma as any).kdsOrder
-              .update({
-                where: { id: active.id },
-                data: { closedAt: new Date() },
-              })
-              .catch(() => null);
-        } catch {
-          // ignore
         }
       }
     } catch {
@@ -3565,12 +3532,6 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     const idempotencyKey = String(
       (payload as any)?.idempotencyKey ?? '',
     ).trim();
-    if (idempotencyKey) {
-      const existing = await prisma.ticketLog
-        .findFirst({ where: { idempotencyKey } as any })
-        .catch(() => null);
-      if (existing) return { ok: true };
-    }
 
     // Sanitize inputs
     const sanitizedArea = sanitizeString(area, 50);
@@ -3581,89 +3542,39 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     // Validate items array
     if (!Array.isArray(items) || items.length === 0) return false;
 
-    // Hold the table lock only for occupancy + the TicketLog write.
-    // Compact and KDS are extra SQLite work and must not stall the
-    // waiter's Send ACK — other phones are waiting on the same WAL.
-    const logged = await withTableLock(
-      sanitizedArea,
-      sanitizedTableLabel,
-      async () => {
-        // Open if needed inside the same lock as the TicketLog write —
-        // phones used to open in a prior LAN call that often lost the race.
-        await ensureOccupiedForTicketWrite(sanitizedArea, sanitizedTableLabel);
-
-        // Anti-collision: if the latest log row IN THIS OPEN SESSION was
-        // written by a different waiter (and the actor isn't an admin),
-        // the actor is operating on a stale view — most likely both
-        // waiters tried to claim the same empty table, or this device
-        // missed a transfer broadcast. Reject so the renderer can refresh
-        // and toast a clear message instead of silently overwriting the
-        // session owner.
-        //
-        // CRITICAL: scope the lookup to the CURRENT open session via
-        // `getCurrentSessionOwnerId`. Tables get reused — without that
-        // scope, the first send by a fresh waiter who opened a
-        // previously-paid-out table would be rejected because the
-        // all-time "latest" row belongs to whoever last owned that
-        // table label (often days ago).
-        const ownerId = await getCurrentSessionOwnerId(
-          sanitizedArea,
-          sanitizedTableLabel,
-        );
-        if (ownerId !== null && ownerId !== Number(userId)) {
-          const actor = await prisma.user
-            .findUnique({ where: { id: Number(userId) } })
-            .catch(() => null);
-          const actorIsAdmin =
-            actor &&
-            String((actor as any).role || '').toUpperCase() === 'ADMIN';
-          if (!actorIsAdmin) {
-            const ownerName = await prisma.user
-              .findUnique({ where: { id: ownerId } })
-              .catch(() => null);
-            return {
-              ok: false,
-              error: `Table is owned by ${ownerName?.displayName || `waiter #${ownerId}`}`,
-              code: 'TABLE_OWNED_BY_OTHER',
-              ownerId,
-              ownerName: ownerName?.displayName || null,
-            };
+    // Dedupe, closed-table check, ownership and the merge with the bill
+    // already there: the same service the phone route uses. Compact and
+    // KDS run after the lock so they do not stall the waiter's ACK.
+    const kdsFireItems = Array.isArray((payload as any)?.kdsFireItems)
+      ? ((payload as any).kdsFireItems as any[])
+      : undefined;
+    const sent = await recordTicketSend({
+      userId: Number(userId),
+      area: sanitizedArea,
+      tableLabel: sanitizedTableLabel,
+      covers: sanitizedCovers,
+      items,
+      note: sanitizedNote,
+      idempotencyKey,
+      stockConsumeLines: stockLinesFromPayload(
+        (payload as any)?.stockConsumeLines,
+      ),
+      capturedAt: ticketCapturedAt(payload as any),
+      addedItems: Array.isArray((payload as any)?.addedItems)
+        ? (payload as any).addedItems
+        : null,
+    });
+    // What became new on the bill, so a replay never cooks twice; older
+    // clients without Send keys keep their own fire list.
+    const logged =
+      sent.ok && sent.written
+        ? {
+            ...sent,
+            // An empty list means nothing new to cook. Never null: the KDS
+            // reads a missing list as "the whole bill".
+            kdsFireItems: sent.firedNow ?? kdsFireItems,
           }
-        }
-
-        // Local-first: always use local DB for tickets
-        const kdsFireItems = Array.isArray((payload as any)?.kdsFireItems)
-          ? ((payload as any).kdsFireItems as any[])
-          : undefined;
-
-        const sessionKey = await getCurrentTableSessionKey(
-          sanitizedArea,
-          sanitizedTableLabel,
-        ).catch(() => null);
-
-        // Same write (and stock count-down) as the phone route.
-        const outcome = await writeTicketSnapshot({
-          userId: Number(userId),
-          area: sanitizedArea,
-          tableLabel: sanitizedTableLabel,
-          covers: sanitizedCovers,
-          items: items ?? [],
-          note: sanitizedNote,
-          idempotencyKey,
-          sessionKey,
-          stockConsumeLines: stockLinesFromPayload(
-            (payload as any)?.stockConsumeLines,
-          ),
-        });
-        if (outcome === 'duplicate') return { ok: true as const };
-        return {
-          ok: true as const,
-          written: true as const,
-          sessionKey,
-          kdsFireItems,
-        };
-      },
-    );
+        : sent;
     if (!logged || typeof logged !== 'object') return logged;
     if ('ok' in logged && logged.ok === false) return logged;
     if (!('written' in logged) || !logged.written) return { ok: true };
@@ -3679,7 +3590,6 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     }
 
     void compactTicketLogSession(logged.sessionKey);
-    const kdsFireItems = logged.kdsFireItems;
     void (async () => {
       try {
         if (!storePlanBlocksKds()) {
@@ -4164,9 +4074,16 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   // Only an admin correction can undo that, so refuse here before anything
   // is written — including the audit notification, which would otherwise
   // record a void that never happened.
-  const sitting = await findLatestTicketLogForCurrentSession(area, tableLabel);
-  const plan = planItemVoid((sitting?.itemsJson as any[]) || [], item);
-  if (plan.outcome === 'paid') return false;
+  // Locked, versioned and idempotent: see `voidTicketItem`.
+  const voided = await voidTicketItem({
+    area,
+    tableLabel,
+    item,
+    idempotencyKey: String((input as any)?.idempotencyKey || ''),
+  });
+  if (voided === 'paid') return false;
+  // A retry of a void that already landed: nothing more to record.
+  if (voided === 'duplicate') return true;
 
   const message = `Voided item on ${area} ${tableLabel}: ${item.name} x${Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
@@ -4189,16 +4106,6 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
     }
   } catch {
     // ignore
-  }
-  // Also append a void marker in the latest ticket log for this sitting.
-  // Unscoped findFirst would rewrite the previous paid-out ticket after pay → reopen.
-  if (sitting && plan.outcome === 'ok') {
-    const items = (sitting.itemsJson as any[]) || [];
-    items[plan.index] = { ...items[plan.index], voided: true };
-    await prisma.ticketLog.update({
-      where: { id: sitting.id },
-      data: { itemsJson: items },
-    });
   }
   try {
     broadcastTicketsChanged({
@@ -4298,15 +4205,23 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   // Paid lines survive a ticket void: the money is taken and an invoice is
   // filed against them. If that is all this sitting has left, there is
   // nothing here a waiter may void — it needs an admin correction.
-  const sitting = await findLatestTicketLogForCurrentSession(area, tableLabel);
-  const plan = planTicketVoid((sitting?.itemsJson as any[]) || []);
-  if (plan.outcome === 'paid') return false;
+  // A retry of a void that already landed changes nothing.
+  const voidKey = String((input as any)?.idempotencyKey || '').trim();
+  if (voidKey) {
+    const prior = await prisma.ticketLog
+      .findFirst({ where: { idempotencyKey: voidKey } as any })
+      .catch(() => null);
+    if (prior) return true;
+  }
+  {
+    const sitting = await findLatestTicketLogForCurrentSession(
+      area,
+      tableLabel,
+    );
+    if (planTicketVoid((sitting?.itemsJson as any[]) || []).outcome === 'paid')
+      return false;
+  }
 
-  // Local-first: close table locally. Wrap in `withTableLock` so the
-  // close serializes against any in-flight `tickets:log` for the same
-  // table — without that, a stale send could slip in between our
-  // ownership check and the close, leaving a fresh row on a table the
-  // server thinks is voided/closed.
   const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
@@ -4329,36 +4244,27 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   } catch {
     // ignore
   }
-  // Mark the unpaid items in the current sitting as voided. Never touch a
-  // prior ticket, and never a line that has been paid for.
-  if (sitting) {
-    await prisma.ticketLog.update({
-      where: { id: sitting.id },
-      data: {
-        itemsJson: plan.items,
-        note: sitting.note
-          ? `${sitting.note} | VOIDED${reason ? `: ${reason}` : ''}`
-          : `VOIDED${reason ? `: ${reason}` : ''}`,
-      },
-    });
-  }
-  // Before the close clears `tables:openAt`: if this table was already
-  // fiscalized in this session, the tax service now holds an invoice for a
-  // ticket that no longer exists. Only a corrective invoice fixes that.
-  await flagVoidAfterFiscalization({
+  // Bill, fiscal check, KDS and close in one table lock, so no Send can
+  // land between the void and the close. The fiscal check and the KDS
+  // cards need the sitting still open, so they run just before the close.
+  const voided = await voidWholeTicket({
     area,
     tableLabel,
-    reason: `Ticket voided after the sale was fiscalized${reason ? `: ${reason}` : ''}`,
-    actorUserId: Number(userId) || undefined,
-  }).catch(() => false);
-
-  // Close table + openAt. Void the KDS cards first: closing the table
-  // sets kdsOrder.closedAt, and applyKdsVoidTicket would otherwise miss
-  // the order and leave the kitchen ticket on NEW.
-  await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(
-    () => false,
-  );
-  await setTableOpenWithSideEffects(area, tableLabel, false).catch(() => false);
+    reason,
+    idempotencyKey: voidKey,
+    beforeClose: async () => {
+      await flagVoidAfterFiscalization({
+        area,
+        tableLabel,
+        reason: `Ticket voided after the sale was fiscalized${reason ? `: ${reason}` : ''}`,
+        actorUserId: Number(userId) || undefined,
+      }).catch(() => false);
+      await applyKdsVoidTicket({ userId, area, tableLabel, reason }).catch(
+        () => false,
+      );
+    },
+  });
+  if (voided === 'paid') return false;
   try {
     broadcastTicketsChanged({
       area,
@@ -4772,34 +4678,23 @@ ipcHandle('layout:save', async (_e, { area, nodes }) => {
 });
 
 // Create a request from non-owner
-ipcHandle('requests:create', async (_e, input) => {
+ipcHandle('requests:create', async (_e, input, ctx) => {
   assertDiningFloorEnabled();
   const { requesterId, ownerId, area, tableLabel, items, note } = input || {};
   if (!requesterId || !ownerId || !area || !tableLabel || !Array.isArray(items))
     return false;
+  // The request (and the owner's notification) names the requester; it has
+  // to be whoever is signed in, as on the phone route.
+  if (!actorIdentityAllows(ctx, Number(requesterId))) return false;
 
-  const created = await prisma.ticketRequest.create({
-    data: {
-      requesterId: Number(requesterId),
-      ownerId: Number(ownerId),
-      area: String(area),
-      tableLabel: String(tableLabel),
-      itemsJson: items,
-      note: note ? String(note) : null,
-      status: 'PENDING' as any,
-    },
+  await createTicketRequest({
+    requesterId: Number(requesterId),
+    ownerId: Number(ownerId),
+    area: String(area),
+    tableLabel: String(tableLabel),
+    items,
+    note,
   });
-
-  // Notify owner
-  const requester = await prisma.user.findUnique({
-    where: { id: Number(requesterId) },
-  });
-  const msg = `${requester?.displayName || 'Staff'} requested to add items on ${area} ${tableLabel} (Request #${created.id})`;
-  await prisma.notification
-    .create({
-      data: { userId: Number(ownerId), type: 'OTHER' as any, message: msg },
-    })
-    .catch(() => {});
   return true;
 });
 

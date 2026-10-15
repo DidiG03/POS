@@ -57,6 +57,11 @@ export class AsyncMutex {
     }
     this.held = false;
   }
+
+  /** Nobody holds it and nobody waits. */
+  isIdle(): boolean {
+    return !this.held && this.queue.length === 0;
+  }
 }
 
 export class KeyedAsyncMutex {
@@ -72,7 +77,20 @@ export class KeyedAsyncMutex {
       mutex = new AsyncMutex();
       this.locks.set(key, mutex);
     }
-    return mutex.runExclusive(fn, waitMs);
+    const held = mutex;
+    try {
+      return await held.runExclusive(fn, waitMs);
+    } finally {
+      // Keys come from request data (table labels). Keeping one mutex per
+      // key ever seen grew the map without bound on a till that runs for
+      // weeks; an idle one is safe to drop, the next caller makes a new one.
+      if (held.isIdle() && this.locks.get(key) === held) this.locks.delete(key);
+    }
+  }
+
+  /** @internal tests */
+  get size(): number {
+    return this.locks.size;
   }
 }
 

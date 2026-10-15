@@ -16,6 +16,8 @@ export interface TicketLinePayload {
   seatId?: string | null;
   fired?: boolean;
   paid?: boolean;
+  /** Idempotency key of the Send that fired this line. */
+  sendKey?: string;
 }
 
 export interface TicketPayload {
@@ -36,6 +38,14 @@ export interface TicketPayload {
    * a caller that owns a longer-lived intent can supply its own.
    */
   idempotencyKey?: string;
+  /**
+   * When the order was taken (this device's clock). Delivered as an age, so
+   * the till can refuse an order taken before the table was closed.
+   * Stamped by {@link logTicket} when the caller omits it.
+   */
+  capturedAt?: number;
+  /** The lines this Send fires, so a late Send only adds those. */
+  addedItems?: TicketLinePayload[];
 }
 
 /**
@@ -66,10 +76,12 @@ export async function logTicket(
   const normalized: TicketPayload & {
     covers: number | null;
     idempotencyKey: string;
+    capturedAt: number;
   } = {
     ...payload,
     covers: payload.covers ?? null,
     idempotencyKey: payload.idempotencyKey || newIdempotencyKey(),
+    capturedAt: payload.capturedAt || Date.now(),
   };
 
   try {

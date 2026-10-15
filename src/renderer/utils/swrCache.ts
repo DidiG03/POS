@@ -55,6 +55,29 @@ function persistableStore(): Store {
 }
 
 /**
+ * The blob to save, within `maxBytes`. Saved bills go first, oldest first:
+ * they are the cheapest to lose. Over the cap this used to save nothing at
+ * all, so on a busy shift the offline menu stopped updating for good.
+ */
+export function fitPersistBlob(
+  store: Store,
+  maxBytes = MAX_PERSIST_BYTES,
+): string | null {
+  let json = JSON.stringify(store);
+  if (json.length <= maxBytes) return json;
+  const out: Store = { ...store };
+  const tickets = Object.keys(out)
+    .filter((k) => k.startsWith('pos:ticket:'))
+    .sort((a, b) => out[a].at - out[b].at);
+  for (const key of tickets) {
+    delete out[key];
+    json = JSON.stringify(out);
+    if (json.length <= maxBytes) return json;
+  }
+  return null;
+}
+
+/**
  * Occupancy is memory-only. A floor or open-table list read back after a
  * restart describes the last session: a phone that was off while tables
  * were paid painted them red again — for the whole shift if it could not
@@ -88,8 +111,8 @@ function schedulePersist(): void {
   persistTimer = window.setTimeout(() => {
     persistTimer = null;
     try {
-      const json = JSON.stringify(persistableStore());
-      if (json.length > MAX_PERSIST_BYTES) return;
+      const json = fitPersistBlob(persistableStore());
+      if (json == null) return;
       localStorage.setItem(STORAGE_KEY, json);
     } catch {
       // Quota / private mode — memory cache still works this session.

@@ -100,13 +100,19 @@ describe('both Send paths share the write', () => {
   const read = (rel: string) =>
     fs.readFileSync(path.resolve(__dirname, rel), 'utf8');
 
-  it('the till and the phone route both call writeTicketSnapshot', () => {
+  it('the till and the phone route both go through recordTicketSend', () => {
     const ipc = read('../index.ts');
     const lan = read('../api.ts');
     const ipcHandler = ipc.slice(ipc.indexOf("ipcHandle('tickets:log'"));
     const lanRoute = lan.slice(lan.indexOf("pathname === '/tickets')"));
-    expect(ipcHandler.slice(0, 6000)).toContain('writeTicketSnapshot(');
-    expect(lanRoute.slice(0, 6000)).toContain('writeTicketSnapshot(');
-    expect(lanRoute.slice(0, 6000)).toContain('stockConsumeLines');
+    for (const route of [ipcHandler.slice(0, 6000), lanRoute.slice(0, 6000)]) {
+      expect(route).toContain('recordTicketSend(');
+      expect(route).toContain('stockConsumeLines');
+      expect(route).toContain('capturedAt');
+      expect(route).toContain('addedItems');
+      // The write itself lives in the shared service, nowhere else.
+      expect(route).not.toContain('writeTicketSnapshot(');
+    }
+    expect(read('./ticketSend.ts')).toContain('writeTicketSnapshot(');
   });
 });

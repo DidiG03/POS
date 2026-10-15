@@ -166,3 +166,29 @@ describe('swrCache', () => {
     expect(peekAgeMs('k')).toBeGreaterThan(10);
   });
 });
+
+describe('fitPersistBlob', () => {
+  it('drops the oldest saved bills until the blob fits, keeping the menu', async () => {
+    const { fitPersistBlob } = await import('./swrCache');
+    const big = 'x'.repeat(400);
+    const store = {
+      'pos:menu': { at: 1, value: big },
+      'pos:ticket:old': { at: 10, value: big },
+      'pos:ticket:new': { at: 20, value: big },
+    };
+    const json = fitPersistBlob(store, 1_000);
+    expect(json).not.toBeNull();
+    const saved = JSON.parse(json!);
+    expect(Object.keys(saved).sort()).toEqual(['pos:menu', 'pos:ticket:new']);
+  });
+
+  it('gives up only when even the menu alone does not fit', async () => {
+    const { fitPersistBlob } = await import('./swrCache');
+    expect(
+      fitPersistBlob(
+        { 'pos:menu': { at: 1, value: 'x'.repeat(2_000) } },
+        1_000,
+      ),
+    ).toBeNull();
+  });
+});

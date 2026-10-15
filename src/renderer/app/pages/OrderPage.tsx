@@ -29,7 +29,11 @@ import {
   toEurAtRate,
 } from '@shared/paymentDisplay';
 import { tableKey } from '@shared/utils/tableKey';
-import { restoreMissingServerLines } from '@shared/ticketDraft';
+import {
+  emptyTicketDraft,
+  restoreMissingServerLines,
+  snapshotTicketDraft,
+} from '@shared/ticketDraft';
 import { useOrderContext } from '@shared/stores/orderContext';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { ensureStoreCounterSelected } from '@shared/editionCapabilities';
@@ -358,12 +362,6 @@ function sortNaturalTableLabels(labels: string[]): string[] {
   });
 }
 
-function activeTicketItems<T extends { voided?: boolean; paid?: boolean }>(
-  items: T[],
-): T[] {
-  return items.filter((it) => !it?.voided && !it?.paid);
-}
-
 /** Do not hold Send on a hung ticket GET — local lines still go to the kitchen. */
 const LIVE_TICKET_BUDGET_MS = 2_000;
 
@@ -611,7 +609,7 @@ export default function OrderPage() {
     useOrderContext();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const uiTheme = usePosUiTheme();
-  const { setOpen, isOpen } = useTableStatus();
+  const { setOpen, isOpen, openMap } = useTableStatus();
   const [openLoaded, setOpenLoaded] = useState(
     () => Object.keys(useTableStatus.getState().openMap).length > 0,
   );
@@ -621,13 +619,15 @@ export default function OrderPage() {
     const key = selectedTable
       ? tableKey(selectedTable.area, selectedTable.label)
       : null;
-    bindTable(key, {
-      keepLiveBill: Boolean(
-        openLoaded &&
-          selectedTable &&
-          isOpen(selectedTable.area, selectedTable.label),
-      ),
-    });
+    // Occupancy unknown must not wipe a live bill. That used to be dead
+    // code (`hasHydrated` never flipped); now it would blank a just-moved
+    // ticket whenever the open-table poll had not landed yet.
+    const knownClosed = Boolean(
+      openLoaded &&
+        selectedTable &&
+        !isOpen(selectedTable.area, selectedTable.label),
+    );
+    bindTable(key, { keepLiveBill: !knownClosed });
   }, [
     ticketPersistReady,
     bindTable,
@@ -732,6 +732,8 @@ export default function OrderPage() {
   const initialRenderRef = useRef(true);
   /** Table whose "still open" answer from the host we already took over. */
   const adoptedHostOpenRef = useRef<string | null>(null);
+  /** Source table of a table transfer that is still in flight. */
+  const transferringFromRef = useRef<string | null>(null);
   /**
    * Incremented on every void AND on every table switch; background effects
    * use it to cancel stale fetches so a slow response from a previous table
@@ -752,7 +754,9 @@ export default function OrderPage() {
   // heartbeat timed out on congested Wi-Fi — that is the rush-hour failure.
   const connectionOk = true;
   const [mobilePane, setMobilePane] = useState<'menu' | 'ticket'>('menu');
-  const [ticketSyncing, setTicketSyncing] = useState(false);
+  // Nothing sets this any more; kept as a constant so the guards that read
+  // it stay in one place if a blocking sync state comes back.
+  const ticketSyncing = false;
 
   useEffect(() => {
     if (!(twoPane || mobilePane === 'ticket')) return;
@@ -779,6 +783,7 @@ export default function OrderPage() {
   const [transferLayoutLabels, setTransferLayoutLabels] = useState<string[]>(
     [],
   );
+  const [transferDestLoading, setTransferDestLoading] = useState(false);
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferError, setTransferError] = useState<string | null>(null);
 
@@ -798,19 +803,24 @@ export default function OrderPage() {
   }, [transferTableSections, selectedTable?.area]);
 
   const transferDestTableOptions = useMemo(() => {
-    return transferLayoutLabels.filter(
-      (l) =>
-        !(
-          selectedTable &&
-          String(transferToArea) === String(selectedTable.area) &&
-          l === selectedTable.label
-        ),
-    );
+    return transferLayoutLabels.filter((l) => {
+      if (
+        selectedTable &&
+        String(transferToArea) === String(selectedTable.area) &&
+        l === selectedTable.label
+      ) {
+        return false;
+      }
+      if (transferToArea && isOpen(transferToArea, l)) return false;
+      return true;
+    });
   }, [
     transferLayoutLabels,
     transferToArea,
     selectedTable?.area,
     selectedTable?.label,
+    openMap,
+    isOpen,
   ]);
 
   // Keep destination section aligned with the dropdown list once settings load.
@@ -1170,6 +1180,7 @@ export default function OrderPage() {
   // overwrite state for the new table.
   useEffect(() => {
     hydrateGenRef.current += 1;
+    transferringFromRef.current = null;
   }, [selectedTable?.area, selectedTable?.label]);
 
   useEffect(() => {
@@ -1964,47 +1975,55 @@ export default function OrderPage() {
     if (!showTransfer || transferMode !== 'TABLE' || !user?.id) return;
     const areaName = String(transferToArea || '').trim();
     if (!areaName || !selectedTable) {
+      setTransferDestLoading(false);
       setTransferLayoutLabels([]);
       setTransferToLabel('');
       return;
     }
 
+    setTransferDestLoading(true);
     setTransferLayoutLabels([]);
 
     let cancelled = false;
     const load = async () => {
-      const meta = transferTableSections.find(
-        (a) => String(a.name) === String(areaName),
-      );
-      const count =
-        meta && Number(meta.count) > 0 && Number.isFinite(Number(meta.count))
-          ? Number(meta.count)
-          : 8;
-      const saved = await window.api.layout
-        .get(user.id, areaName)
-        .catch(() => null);
-      if (cancelled) return;
-      const fromSaved = labelsFromLayoutNodes(
-        Array.isArray(saved) ? saved : null,
-      );
-      const labels =
-        fromSaved.length > 0
-          ? sortNaturalTableLabels(fromSaved)
-          : sortNaturalTableLabels(syntheticLabelsFromAreaDefaultCount(count));
+      try {
+        const meta = transferTableSections.find(
+          (a) => String(a.name) === String(areaName),
+        );
+        const count =
+          meta && Number(meta.count) > 0 && Number.isFinite(Number(meta.count))
+            ? Number(meta.count)
+            : 8;
+        const saved = await window.api.layout
+          .get(user.id, areaName)
+          .catch(() => null);
+        if (cancelled) return;
+        const fromSaved = labelsFromLayoutNodes(
+          Array.isArray(saved) ? saved : null,
+        );
+        const labels =
+          fromSaved.length > 0
+            ? sortNaturalTableLabels(fromSaved)
+            : sortNaturalTableLabels(
+                syntheticLabelsFromAreaDefaultCount(count),
+              );
 
-      const available = labels.filter(
-        (l) =>
-          !(
-            String(areaName) === String(selectedTable.area) &&
-            l === selectedTable.label
-          ),
-      );
+        const available = labels.filter(
+          (l) =>
+            !(
+              String(areaName) === String(selectedTable.area) &&
+              l === selectedTable.label
+            ),
+        );
 
-      setTransferLayoutLabels(labels);
-      setTransferToLabel((prev) => {
-        if (prev && available.includes(prev)) return prev;
-        return available[0] ?? '';
-      });
+        setTransferLayoutLabels(labels);
+        setTransferToLabel((prev) => {
+          if (prev && available.includes(prev)) return prev;
+          return available[0] ?? '';
+        });
+      } finally {
+        if (!cancelled) setTransferDestLoading(false);
+      }
     };
 
     void load();
@@ -2142,6 +2161,7 @@ export default function OrderPage() {
         return;
       }
       invalidateTicketCache(selectedTable.area, selectedTable.label);
+      if (transferringFromRef.current === tableKey(area, tableLabel)) return;
       const uid = Number(detail.userId);
       void refreshTableOwner(
         selectedTable.area,
@@ -2165,6 +2185,8 @@ export default function OrderPage() {
         return;
       }
       invalidateTicketCache(selectedTable.area, selectedTable.label);
+      // The transfer handler moves this cart to the destination itself.
+      if (transferringFromRef.current === tableKey(area, label)) return;
       if (detail.open === false) {
         adoptedHostOpenRef.current = null;
         useTicketStore
@@ -2419,16 +2441,27 @@ export default function OrderPage() {
       const alreadyOnBill = state.lines
         .filter((l) => l.staged !== true)
         .map((l) => toTicketLogLine(l, { fired: true }));
+      // One key for this Send: the ticket write's idempotency key, and the
+      // mark on every line it fires. The till uses the mark to tell a Send
+      // it already holds (carried by a later one) from a new one, and the
+      // capture time to refuse an order taken before the table was closed.
+      const sendKey = newIdempotencyKey();
+      const capturedAt = Date.now();
+      const keyed = (l: TicketLine): TicketLine =>
+        firingIds.has(l.id) ? { ...l, sendKey } : l;
       const localLogItems = state.lines.map((l) =>
-        toTicketLogLine(l, {
+        toTicketLogLine(keyed(l), {
           fired: l.voided === true || l.staged !== true || firingIds.has(l.id),
         }),
+      );
+      const addedItems = fireLines.map((l) =>
+        toTicketLogLine(keyed(l), { fired: true }),
       );
       const printLinesBase = isFireOrder
         ? fireLines.map((l) => toTicketLogLine(l))
         : null;
       if (hasStaged) {
-        useTicketStore.getState().markLinesAsSent(fireIds);
+        useTicketStore.getState().markLinesAsSent(fireIds, sendKey);
       }
       // A ticket log replaces the whole bill, so send what the host already
       // holds for this sitting plus our lines. Without this, a till whose
@@ -2504,6 +2537,9 @@ export default function OrderPage() {
           covers: opts.covers,
           items: logItems,
           note: state.orderNote,
+          idempotencyKey: sendKey,
+          capturedAt,
+          addedItems,
           stockConsumeLines: fireLines.map((l) => ({
             sku: l.sku,
             qty: l.qty,
@@ -3172,7 +3208,10 @@ export default function OrderPage() {
                   <button
                     type="button"
                     className="pos-ticket-iconbtn pos-ticket-pairbtn"
-                    onClick={() => setShowTransfer(true)}
+                    onClick={() => {
+                      setTransferDestLoading(true);
+                      setShowTransfer(true);
+                    }}
                     title={t('order.transferTitle')}
                     aria-label={t('order.transfer')}
                   >
@@ -4040,6 +4079,7 @@ export default function OrderPage() {
                 }`}
                 onClick={() => {
                   setTransferMode('TABLE');
+                  setTransferDestLoading(true);
                   setTransferError(null);
                 }}
                 type="button"
@@ -4127,15 +4167,18 @@ export default function OrderPage() {
                     onChange={(e) => setTransferToLabel(e.target.value)}
                     disabled={
                       !String(transferToArea || '').trim() ||
+                      transferDestLoading ||
                       transferDestTableOptions.length === 0
                     }
                   >
                     <option value="">
                       {!String(transferToArea || '').trim()
                         ? t('order.chooseSectionFirst')
-                        : transferDestTableOptions.length === 0
-                          ? t('order.noFreeTable')
-                          : t('order.chooseTable')}
+                        : transferDestLoading
+                          ? t('tables.loading')
+                          : transferDestTableOptions.length === 0
+                            ? t('order.noFreeTable')
+                            : t('order.chooseTable')}
                     </option>
                     {transferDestTableOptions.map((lab) => (
                       <option key={lab} value={lab}>
@@ -4168,7 +4211,8 @@ export default function OrderPage() {
                   !canTransfer ||
                   (transferMode === 'WAITER'
                     ? !transferToUserId
-                    : !transferToArea.trim() ||
+                    : transferDestLoading ||
+                      !transferToArea.trim() ||
                       !transferToLabel.trim() ||
                       transferDestTableOptions.length === 0)
                 }
@@ -4176,6 +4220,7 @@ export default function OrderPage() {
                   if (!selectedTable || !user?.id) return;
                   setTransferBusy(true);
                   setTransferError(null);
+                  let tableMoved = false;
                   try {
                     // Block transfer if destination table is already occupied.
                     // We toast as well as set the inline error so the warning
@@ -4205,6 +4250,18 @@ export default function OrderPage() {
                         setTransferBusy(false);
                         return;
                       }
+                    }
+                    const fromKey = tableKey(
+                      selectedTable.area,
+                      selectedTable.label,
+                    );
+                    const ticketBefore = useTicketStore.getState();
+                    const carriedDraft =
+                      ticketBefore.boundKey === fromKey
+                        ? snapshotTicketDraft(ticketBefore)
+                        : (ticketBefore.drafts[fromKey] ?? emptyTicketDraft());
+                    if (transferMode === 'TABLE') {
+                      transferringFromRef.current = fromKey;
                     }
                     const transferIdempotencyKey = newIdempotencyKey();
                     const payload: any = {
@@ -4265,6 +4322,10 @@ export default function OrderPage() {
                       invalidateFloorCache();
                       setOpen(selectedTable.area, selectedTable.label, false);
                       setOpen(toA, toL, true);
+                      useTicketStore
+                        .getState()
+                        .moveDraft(fromKey, tableKey(toA, toL), carriedDraft);
+                      tableMoved = true;
                       setSelectedTable({
                         ...selectedTable,
                         area: toA,
@@ -4301,6 +4362,7 @@ export default function OrderPage() {
                       ),
                     );
                   } finally {
+                    if (!tableMoved) transferringFromRef.current = null;
                     setTransferBusy(false);
                   }
                 }}
@@ -4595,10 +4657,26 @@ export default function OrderPage() {
                   const remaining = useTicketStore
                     .getState()
                     .lines.filter((l) => !l.voided && !l.paid);
+                  const area = selectedTable.area;
+                  const label = selectedTable.label;
+                  // Whatever happened, show the bill as the till has it: a
+                  // refused void must not stay struck through on this phone.
+                  const reloadBill = () =>
+                    void raceWithBudget(
+                      window.api.tickets.getLatestForTable(area, label),
+                      LIVE_TICKET_BUDGET_MS,
+                    ).then((latest) => {
+                      if (!latest) return;
+                      const allItems = ((latest as any)?.items || []) as any[];
+                      useTicketStore.getState().hydrate({
+                        items: allItems as any,
+                        note: (latest as any)?.note || '',
+                      });
+                    });
                   void tryOrQueue('tickets.voidItem', {
                     userId: user.id,
-                    area: selectedTable.area,
-                    tableLabel: selectedTable.label,
+                    area,
+                    tableLabel: label,
                     actorRole: user.role,
                     item: {
                       name: vt.name,
@@ -4615,45 +4693,28 @@ export default function OrderPage() {
                         }
                       : {}),
                   })
-                    .then(() => {
-                      void raceWithBudget(
-                        window.api.tickets.getLatestForTable(
-                          selectedTable.area,
-                          selectedTable.label,
-                        ),
-                        LIVE_TICKET_BUDGET_MS,
-                      ).then((latest) => {
-                        if (!latest) return;
-                        const allItems = ((latest as any)?.items ||
-                          []) as any[];
-                        useTicketStore.getState().hydrate({
-                          items: allItems as any,
-                          note: (latest as any)?.note || '',
+                    .then((r) => {
+                      reloadBill();
+                      // Free the table only once the till has the void. A
+                      // queued or refused void would otherwise leave a closed
+                      // table with items still on its bill.
+                      if (remaining.length !== 0 || r?.queued) return;
+                      setOpen(area, label, false);
+                      void tryOrQueue(
+                        'tables.setOpen',
+                        { area, label, open: false },
+                        { dedupeKey: `tables.setOpen:${area}:${label}` },
+                      ).catch((e: unknown) => {
+                        reportAppError(e, {
+                          fallback: t('order.toastTryAgain'),
+                          key: `tables.setOpen:${area}:${label}`,
                         });
                       });
                     })
                     .catch(() => {
+                      reloadBill();
                       toast.error(t('order.voidItemFailed'));
                     });
-                  if (remaining.length === 0) {
-                    setOpen(selectedTable.area, selectedTable.label, false);
-                    void tryOrQueue(
-                      'tables.setOpen',
-                      {
-                        area: selectedTable.area,
-                        label: selectedTable.label,
-                        open: false,
-                      },
-                      {
-                        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                      },
-                    ).catch((e: unknown) => {
-                      reportAppError(e, {
-                        fallback: t('order.toastTryAgain'),
-                        key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                      });
-                    });
-                  }
                 }}
               >
                 {t('order.voidConfirm')}

@@ -72,6 +72,13 @@ describe('ticketRejection', () => {
     expect(ticketRejection({ result: { ok: true } })).toBe(null);
     expect(ticketRejection({ result: true })).toBe(null);
   });
+
+  it('treats the till’s bare false as a refusal, not a success', () => {
+    expect(ticketRejection({ result: false })).toMatchObject({
+      code: 'TICKET_REJECTED',
+      permanent: true,
+    });
+  });
 });
 
 describe('dispatchTicketLog', () => {
@@ -82,17 +89,29 @@ describe('dispatchTicketLog', () => {
     });
   });
 
-  it('opens the table and retries once on the live attempt', async () => {
-    // Open-and-send where the table-open write has not landed yet. The waiter
-    // is standing at the table, so self-healing is the right call.
-    log
-      .mockResolvedValueOnce({ ok: false, code: 'TABLE_CLOSED' })
-      .mockResolvedValueOnce({ ok: true });
+  it('never re-opens a closed table on the live attempt either', async () => {
+    // TABLE_CLOSED now means the till closed this table after the order was
+    // taken. Reopening it here put the paid sitting back on the floor; the
+    // till opens tables for genuine first orders itself.
+    log.mockResolvedValue({ ok: false, code: 'TABLE_CLOSED' });
 
-    await dispatchTicketLog(ORDER, { attempt: 0 });
+    await expect(
+      dispatchTicketLog(ORDER, { attempt: 0 }),
+    ).rejects.toMatchObject({ code: 'TABLE_CLOSED', permanent: true });
+    expect(setOpen).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledTimes(1);
+  });
 
-    expect(setOpen).toHaveBeenCalledWith('Salla', 'T1', true, 0);
-    expect(log).toHaveBeenCalledTimes(2);
+  it('sends how long ago the order was taken, never the device clock', async () => {
+    await dispatchTicketLog(
+      { ...ORDER, capturedAt: Date.now() - 90_000 },
+      { attempt: 2 },
+    );
+    const sent = log.mock.calls[0][0];
+    expect(sent.capturedAt).toBeUndefined();
+    expect(sent.intentAgeMs).toBeGreaterThanOrEqual(90_000);
+    expect(sent.intentAgeMs).toBeLessThan(95_000);
+    expect(sent.idempotencyKey).toBe('intent-1');
   });
 
   it('never re-opens a closed table on a background replay', async () => {

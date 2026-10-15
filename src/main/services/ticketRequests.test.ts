@@ -20,6 +20,27 @@ vi.mock('@db/client', () => ({
       findUnique: vi.fn(
         async ({ where }: any) => requests.get(where.id) ?? null,
       ),
+      findMany: vi.fn(async ({ where }: any) =>
+        [...requests.values()]
+          .filter(
+            (r) =>
+              r.requesterId === where.requesterId &&
+              r.ownerId === where.ownerId &&
+              r.area === where.area &&
+              r.tableLabel === where.tableLabel &&
+              r.status === where.status &&
+              r.createdAt >= where.createdAt.gte,
+          )
+          .reverse(),
+      ),
+      create: vi.fn(async ({ data }: any) => {
+        const row = { id: requests.size + 100, createdAt: new Date(), ...data };
+        requests.set(row.id, row);
+        return row;
+      }),
+    },
+    user: {
+      findUnique: vi.fn(async () => ({ id: 3, displayName: 'Ana' })),
     },
     notification: {
       create: vi.fn(async ({ data }: any) => {
@@ -36,7 +57,7 @@ vi.mock('@db/client', () => ({
   },
 }));
 
-import { decideTicketRequest } from './ticketRequests';
+import { createTicketRequest, decideTicketRequest } from './ticketRequests';
 
 describe('decideTicketRequest', () => {
   beforeEach(() => {
@@ -101,5 +122,48 @@ describe('decideTicketRequest', () => {
     expect(
       await decideTicketRequest({ id: 0, ownerId: 7, decision: 'APPROVED' }),
     ).toBe(false);
+  });
+});
+
+describe('createTicketRequest', () => {
+  const ask = {
+    requesterId: 3,
+    ownerId: 5,
+    area: 'Salla',
+    tableLabel: '4',
+    items: [{ name: 'Kafe', qty: 2 }],
+    note: null,
+  };
+
+  beforeEach(() => {
+    requests.clear();
+    notifications.length = 0;
+  });
+
+  it('records the request and tells the owner', async () => {
+    const r = await createTicketRequest(ask);
+    expect(r.created).toBe(true);
+    expect(notifications).toEqual([
+      expect.objectContaining({
+        userId: 5,
+        message: expect.stringContaining(
+          'Ana requested to add items on Salla 4',
+        ),
+      }),
+    ]);
+  });
+
+  it('a retried POST does not create a second request', async () => {
+    const first = await createTicketRequest(ask);
+    const again = await createTicketRequest(ask);
+    expect(again).toEqual({ id: first.id, created: false });
+    expect(requests.size).toBe(1);
+    expect(notifications).toHaveLength(1);
+  });
+
+  it('a different order from the same waiter is a new request', async () => {
+    await createTicketRequest(ask);
+    await createTicketRequest({ ...ask, items: [{ name: 'Uje', qty: 1 }] });
+    expect(requests.size).toBe(2);
   });
 });

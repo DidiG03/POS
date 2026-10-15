@@ -12,6 +12,7 @@ import {
   draftHasLiveBill,
   emptyTicketDraft,
   mergeLocalStagedOntoHydrated,
+  moveTicketDraft,
   pruneStaleTicketDrafts,
   pruneLiveBillsForClosedTables,
   revivePersistedTicketDraft,
@@ -59,6 +60,11 @@ export interface TicketLine {
   staged?: boolean;
   voided?: boolean;
   paid?: boolean;
+  /**
+   * Idempotency key of the Send that fired this line. Lets the till tell a
+   * Send it already has (carried by a later one) from a new one.
+   */
+  sendKey?: string;
 }
 
 export type TicketLogItem = {
@@ -77,6 +83,8 @@ export type TicketLogItem = {
   /** False = held for a later course fire. Missing = already sent (legacy). */
   fired?: boolean;
   paid?: boolean;
+  /** See {@link TicketLine.sendKey}. */
+  sendKey?: string;
 };
 
 export function toTicketLogLine(
@@ -98,6 +106,7 @@ export function toTicketLogLine(
     seatId: l.seatId || null,
     fired: extra?.fired,
     paid: l.paid === true,
+    ...(l.sendKey ? { sendKey: l.sendKey } : {}),
   };
 }
 
@@ -116,6 +125,8 @@ interface TicketState {
   setHasHydrated: (v: boolean) => void;
   setAddMode: (mode: OrderAddMode) => void;
   bindTable: (key: string | null, opts?: { keepLiveBill?: boolean }) => void;
+  /** After a table transfer: bind `toKey` with the source's pre-move draft. */
+  moveDraft: (fromKey: string, toKey: string, draft: TicketDraft) => void;
   dropOrphanLiveBills: (openKeys: string[]) => void;
   addItem: (input: {
     sku: string;
@@ -139,7 +150,8 @@ interface TicketState {
   hydrate: (payload: { items: TicketLogItem[]; note?: string | null }) => void;
   clear: () => void;
   markAllAsSent: () => void;
-  markLinesAsSent: (ids: string[]) => void;
+  /** Unstage after a Send; `sendKey` is that Send's idempotency key. */
+  markLinesAsSent: (ids: string[], sendKey?: string) => void;
   /** Undo {@link markLinesAsSent} when a Send fails after optimistic unstage. */
   markLinesAsStaged: (ids: string[]) => void;
   ensureCourses: () => void;
@@ -253,6 +265,8 @@ export const useTicketStore = create<TicketState>()(
       },
       bindTable: (key, opts) =>
         set((s) => bindTicketTable(s, key, Date.now(), opts)),
+      moveDraft: (fromKey, toKey, draft) =>
+        set((s) => moveTicketDraft(s, fromKey, toKey, draft, Date.now())),
       dropOrphanLiveBills: (openKeys) =>
         set((s) => {
           const drafts = pruneLiveBillsForClosedTables(s.drafts, openKeys);
@@ -421,6 +435,7 @@ export const useTicketStore = create<TicketState>()(
             station: it.station,
             categoryId: it.categoryId,
             categoryName: it.categoryName,
+            ...(it.sendKey ? { sendKey: String(it.sendKey) } : {}),
           }));
           const merged = shouldMergeLocalStagedOntoHydrated(fromLog)
             ? mergeLocalStagedOntoHydrated(fromLog, s.lines)
@@ -462,12 +477,14 @@ export const useTicketStore = create<TicketState>()(
         }),
       markAllAsSent: () =>
         set((s) => ({ lines: s.lines.map((l) => ({ ...l, staged: false })) })),
-      markLinesAsSent: (ids) =>
+      markLinesAsSent: (ids, sendKey) =>
         set((s) => {
           const sent = new Set(ids);
           return {
             lines: s.lines.map((l) =>
-              sent.has(l.id) ? { ...l, staged: false } : l,
+              sent.has(l.id)
+                ? { ...l, staged: false, ...(sendKey ? { sendKey } : {}) }
+                : l,
             ),
           };
         }),
@@ -647,43 +664,43 @@ export const useTicketStore = create<TicketState>()(
           boundKey: raw?.boundKey ?? null,
         });
       },
-      onRehydrateStorage: () => (state) => {
-        if (state) {
-          const revived = revivePersistedTicketDraft({
-            addMode: state.addMode,
-            lines: state.lines,
-            courses: state.courses,
-            seats: state.seats,
-            activeCourseId: state.activeCourseId,
-            activeSeatId: state.activeSeatId,
-            orderNote: state.orderNote,
-            savedAt: state.savedAt ?? undefined,
-            drafts: state.drafts || {},
-          });
-          useTicketStore.setState({
-            ...revived,
-            savedAt: revived.savedAt ?? Date.now(),
-            hasHydrated: true,
-          });
-          return;
-        }
-        useTicketStore.setState({ hasHydrated: true });
+      onRehydrateStorage: () => (_state, error) => {
+        if (error) queueMicrotask(finishTicketHydration);
       },
     },
   ),
 );
 
-if (typeof useTicketStore.persist?.onFinishHydration === 'function') {
-  useTicketStore.persist.onFinishHydration(() => {
-    const s = useTicketStore.getState();
-    if (s.addMode === 'course') s.ensureCourses();
-    if (s.addMode === 'seat') s.ensureSeats();
-    useTicketStore.setState({ hasHydrated: true });
+// localStorage is synchronous, so persist hydrates inside create(), before
+// `useTicketStore` is assigned. Touching the store from onRehydrateStorage
+// there throws a TDZ error that persist swallows, and hasHydrated then stays
+// false for the life of the page — only the deferred error path may use it.
+function finishTicketHydration(): void {
+  const s = useTicketStore.getState();
+  const revived = revivePersistedTicketDraft({
+    addMode: s.addMode,
+    lines: s.lines,
+    courses: s.courses,
+    seats: s.seats,
+    activeCourseId: s.activeCourseId,
+    activeSeatId: s.activeSeatId,
+    orderNote: s.orderNote,
+    savedAt: s.savedAt ?? undefined,
+    drafts: s.drafts || {},
   });
-  if (useTicketStore.persist.hasHydrated()) {
-    const s = useTicketStore.getState();
-    if (s.addMode === 'course') s.ensureCourses();
-    if (s.addMode === 'seat') s.ensureSeats();
-    useTicketStore.setState({ hasHydrated: true });
-  }
+  useTicketStore.setState({
+    ...revived,
+    savedAt: revived.savedAt ?? Date.now(),
+  });
+  const next = useTicketStore.getState();
+  if (next.addMode === 'course') next.ensureCourses();
+  if (next.addMode === 'seat') next.ensureSeats();
+  useTicketStore.setState({ hasHydrated: true });
+}
+
+if (!useTicketStore.persist) {
+  useTicketStore.setState({ hasHydrated: true });
+} else {
+  useTicketStore.persist.onFinishHydration(finishTicketHydration);
+  if (useTicketStore.persist.hasHydrated()) finishTicketHydration();
 }

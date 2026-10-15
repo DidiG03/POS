@@ -58,8 +58,8 @@ export const useSessionStore = create<SessionState>()(
         sessionToken: state.sessionToken,
       }),
       merge: (persisted, current) => mergeSessionPersist(persisted, current),
-      onRehydrateStorage: () => (_state, _error) => {
-        useSessionStore.setState({ hasHydrated: true });
+      onRehydrateStorage: () => (_state, error) => {
+        if (error) queueMicrotask(markSessionHydrated);
       },
       migrate: (persisted: any, version) => {
         // v1 stored only { user }. v2 added expiresAtMs. v3 adds sessionToken;
@@ -80,10 +80,14 @@ export const useSessionStore = create<SessionState>()(
   ),
 );
 
-if (typeof window !== 'undefined') {
-  window.setTimeout(() => {
-    if (!useSessionStore.getState().hasHydrated) {
-      useSessionStore.setState({ hasHydrated: true });
-    }
-  }, 400);
+// Not onRehydrateStorage: sync storage hydrates inside create(), before
+// `useSessionStore` is assigned, so touching the store there throws.
+function markSessionHydrated(): void {
+  useSessionStore.setState({ hasHydrated: true });
+}
+if (!useSessionStore.persist) {
+  markSessionHydrated();
+} else {
+  useSessionStore.persist.onFinishHydration(markSessionHydrated);
+  if (useSessionStore.persist.hasHydrated()) markSessionHydrated();
 }

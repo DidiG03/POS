@@ -5,6 +5,7 @@ import {
   emptyTicketDraft,
   isTicketDraftFresh,
   mergeLocalStagedOntoHydrated,
+  moveTicketDraft,
   pruneLiveBillsForClosedTables,
   pruneStaleTicketDrafts,
   restoreMissingServerLines,
@@ -36,6 +37,57 @@ describe('ticketDraft', () => {
     expect(back.addMode).toBe('course');
     expect(back.lines[0]?.name).toBe('Soup');
     expect(back.orderNote).toBe('no onion');
+  });
+
+  it('moves the pre-transfer cart to the destination table', () => {
+    const carried = {
+      ...emptyTicketDraft('seat'),
+      lines: [
+        { name: 'Soup', qty: 1, unitPrice: 5, sendKey: 'k1' },
+        { name: 'Cola', qty: 2, unitPrice: 2, staged: true },
+      ],
+      orderNote: 'window seat',
+    };
+    // SSE for the closing source already wiped the bound cart.
+    const wiped = {
+      ...emptyTicketDraft(),
+      boundKey: 'Main:T4',
+      drafts: {
+        'Main:T4': carried,
+        'Main:T1': { ...emptyTicketDraft(), lines: [] },
+      } as Record<string, TicketDraft>,
+    };
+    const moved = moveTicketDraft(wiped, 'Main:T4', 'Main:T1', carried, 5);
+    expect(moved.boundKey).toBe('Main:T1');
+    expect(moved.lines.map((l) => l.name)).toEqual(['Soup', 'Cola']);
+    expect(moved.lines[1]?.staged).toBe(true);
+    expect(moved.addMode).toBe('seat');
+    expect(moved.orderNote).toBe('window seat');
+    expect(moved.drafts['Main:T4']).toBeUndefined();
+    expect(moved.drafts['Main:T1']).toBeUndefined();
+    // Binding the destination afterwards is a no-op, not a reset.
+    expect(bindTicketTable(moved, 'Main:T1', 6, { keepLiveBill: true })).toBe(
+      moved,
+    );
+  });
+
+  it('parks an unrelated bound table when moving a transfer cart', () => {
+    const state = {
+      ...emptyTicketDraft(),
+      boundKey: 'Main:T9',
+      drafts: {} as Record<string, TicketDraft>,
+      lines: [{ name: 'Tea', qty: 1, unitPrice: 2, staged: true }],
+    };
+    const moved = moveTicketDraft(
+      state,
+      'Main:T4',
+      'Main:T1',
+      emptyTicketDraft(),
+      7,
+    );
+    expect(moved.boundKey).toBe('Main:T1');
+    expect(moved.lines).toEqual([]);
+    expect(moved.drafts['Main:T9']?.lines[0]?.name).toBe('Tea');
   });
 
   it('restores a parked unsent draft only within 10 seconds', () => {

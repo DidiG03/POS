@@ -314,6 +314,18 @@ async function transferTableUnderLock(
   if (!fromArea || !fromLabel)
     return { ok: false, error: 'Missing from table' };
   if (!actorUserId) return { ok: false, error: 'Missing actor' };
+
+  // First, before any check that depends on the table as it is now. A
+  // retry of a transfer that already landed finds the source empty (moved)
+  // or owned by someone else (handed over), and used to be refused — the
+  // waiter saw a failed transfer that had in fact gone through.
+  const transferIdem = String(input.idempotencyKey ?? '').trim();
+  if (transferIdem) {
+    const prior = await prisma.ticketLog
+      .findFirst({ where: { idempotencyKey: transferIdem } as any })
+      .catch(() => null);
+    if (prior) return { ok: true };
+  }
   if (!toArea || !toLabel)
     return { ok: false, error: 'Missing destination table' };
   if (toUserId != null && !toUserId)
@@ -384,14 +396,6 @@ async function transferTableUnderLock(
   const changingOwner =
     toUserId != null && Number(toUserId) !== Number(currentOwnerId);
   if (!movingTable && !changingOwner) return { ok: true };
-
-  const transferIdem = String(input.idempotencyKey ?? '').trim();
-  if (transferIdem) {
-    const prior = await prisma.ticketLog
-      .findFirst({ where: { idempotencyKey: transferIdem } as any })
-      .catch(() => null);
-    if (prior) return { ok: true };
-  }
 
   // If moving table, ensure destination isn't already open
   const fromOpen = await isTableOccupied(fromArea, fromLabel);

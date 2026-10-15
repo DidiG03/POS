@@ -122,4 +122,16 @@ describe('wiring', () => {
     expect(loop).toContain('notifyAutoVoidedTable(');
     expect(loop).toContain('findLatestTicketLogForCurrentSession(');
   });
+
+  it('the auto-void voids under the table lock and keeps paid lines', () => {
+    const src = read('index.ts');
+    const start = src.indexOf('function startAutoVoidStaleTicketsLoop');
+    const loop = src.slice(
+      start,
+      src.indexOf('function stopAutoVoidStaleTicketsLoop'),
+    );
+    expect(loop).toContain('await voidWholeTicket(');
+    expect(loop).toContain('idempotencyKey: `auto-void:');
+    expect(loop).not.toMatch(/ticketLog\s*\.update\(/);
+  });
 });

@@ -219,13 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.89 (fiskalizimi safety)"
-            echo "- An invoice whose send could not be confirmed (connection lost mid-send, expired token, rate limit) is now checked with easyPos before it is sent again, so a sale can no longer be filed twice."
-            echo "- An expired easyPos token no longer holds payments for admin review: the sale completes and its invoice is sent once the token works again."
-            echo "- Discounts and service charge on tickets with mixed VAT rates are filed on each item's own VAT rate, not all on 20%."
-            echo "- Partial voids of items sold by weight no longer come out one cent off."
-            echo "- Voiding a sale whose invoice might already be at easyPos checks first: it is cancelled there if it exists, and never silently dropped."
-            echo "- A payment whose invoice was withdrawn is refused instead of being recorded as paid without fiscal codes."
+            echo "### Changes in v0.2.90 (waiter tickets)"
+            echo "- After a table transfer the ticket stays on the new table and no longer blanks on the next occupancy refresh."
+            echo "- The transfer destination list shows a loading state instead of \"no free table\", and occupied tables are omitted."
+            echo "- Sends, item voids, whole-ticket voids, and occupancy writes now share one table lock so two waiters cannot clobber the same bill."
+            echo "- A waiter app restart no longer leaves the ticket store half-hydrated, which was what unbound the bill after a transfer."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"

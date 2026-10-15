@@ -39,12 +39,18 @@ export const useTableStatus = create<TableStatusState>()(
     {
       name: 'pos-table-status',
       version: 1,
-      onRehydrateStorage: () => (state) => {
-        if (state) useTableStatus.setState(dropOptimisticOpenState(state));
-      },
     },
   ),
 );
+
+// Not onRehydrateStorage: sync storage hydrates inside create(), before
+// `useTableStatus` is assigned, so touching the store there throws.
+const dropPersistedOpenState = () =>
+  useTableStatus.setState(dropOptimisticOpenState(useTableStatus.getState()));
+if (useTableStatus.persist) {
+  useTableStatus.persist.onFinishHydration(dropPersistedOpenState);
+  if (useTableStatus.persist.hasHydrated()) dropPersistedOpenState();
+}
 
 // SSE in main.tsx talks to this hook. TablesPage used to install it on
 // mount and null it on leave, so OrderPage missed occupancy events.

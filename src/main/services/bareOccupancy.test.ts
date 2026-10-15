@@ -139,8 +139,25 @@ describe('releaseBareOccupancy', () => {
       { area: 'Veranda', label: 'T29' },
       { area: 'Salla', label: '1' },
     ]);
-    expect(setTableOccupied).toHaveBeenCalledWith('Veranda', 'T29', false);
-    expect(setTableOccupied).toHaveBeenCalledWith('Salla', '1', false);
+    // Housekeeping does not count as someone closing the table.
+    expect(setTableOccupied).toHaveBeenCalledWith(
+      'Veranda',
+      'T29',
+      false,
+      undefined,
+      {
+        recordIntent: false,
+      },
+    );
+    expect(setTableOccupied).toHaveBeenCalledWith(
+      'Salla',
+      '1',
+      false,
+      undefined,
+      {
+        recordIntent: false,
+      },
+    );
     expect(broadcast).toHaveBeenCalledWith({
       area: 'Veranda',
       label: 'T29',

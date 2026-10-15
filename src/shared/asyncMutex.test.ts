@@ -73,3 +73,42 @@ describe('coalesceInflight', () => {
     expect(starts).toBe(1);
   });
 });
+
+describe('KeyedAsyncMutex cleanup', () => {
+  it('drops a key once nobody holds or waits for it', async () => {
+    const { KeyedAsyncMutex } = await import('./asyncMutex');
+    const locks = new KeyedAsyncMutex();
+    let release!: () => void;
+    const first = locks.runExclusive(
+      'T1',
+      () => new Promise<void>((r) => (release = r)),
+    );
+    const second = locks.runExclusive('T1', async () => 'second');
+    expect(locks.size).toBe(1);
+    while (!release) await Promise.resolve();
+    release();
+    await first;
+    expect(await second).toBe('second');
+    expect(locks.size).toBe(0);
+  });
+
+  it('still serialises a key reused after cleanup', async () => {
+    const { KeyedAsyncMutex } = await import('./asyncMutex');
+    const locks = new KeyedAsyncMutex();
+    await locks.runExclusive('T2', async () => undefined);
+    const order: string[] = [];
+    let release!: () => void;
+    const a = locks.runExclusive('T2', async () => {
+      order.push('a-start');
+      await new Promise<void>((r) => (release = r));
+      order.push('a-end');
+    });
+    const b = locks.runExclusive('T2', async () => {
+      order.push('b');
+    });
+    while (!release) await Promise.resolve();
+    release();
+    await Promise.all([a, b]);
+    expect(order).toEqual(['a-start', 'a-end', 'b']);
+  });
+});

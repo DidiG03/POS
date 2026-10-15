@@ -312,7 +312,15 @@ export async function setTableOccupied(
   label: string,
   open: boolean,
   client?: OccupancyClient,
-  options?: { intentAt?: number | null },
+  options?: {
+    intentAt?: number | null;
+    /**
+     * False for housekeeping that nobody asked for (releasing a table that
+     * never got an order). Such a close is not a "table was closed" event:
+     * an order taken just before it must still be accepted.
+     */
+    recordIntent?: boolean;
+  },
 ): Promise<boolean> {
   if (!area || !label) return false;
   await backfillTableOccupancyFromSyncState(client);
@@ -331,7 +339,9 @@ export async function setTableOccupied(
   } else {
     await c.tableOccupancy.deleteMany({ where: { area, label } });
   }
-  await commitIntent(c, area, label, hasExplicit ? explicit : Date.now());
+  if (options?.recordIntent !== false) {
+    await commitIntent(c, area, label, hasExplicit ? explicit : Date.now());
+  }
   return true;
 }
 

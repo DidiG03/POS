@@ -55,3 +55,80 @@ export async function decideTicketRequest(input: {
   }
   return true;
 }
+
+/** A repeat of the same request inside this window is a retry, not a second ask. */
+export const REQUEST_RETRY_WINDOW_MS = 60_000;
+
+/**
+ * Ask a table's owner to add items. Shared by the till (`requests:create`)
+ * and phones (`POST /requests/create`).
+ *
+ * The phone route never told the owner, so a request sat unseen until the
+ * owner opened their list. And a phone retries a POST that failed after the
+ * request was sent, which created the same request twice; approving both
+ * added the items twice. An identical PENDING request from the same waiter
+ * within {@link REQUEST_RETRY_WINDOW_MS} is now treated as that retry.
+ */
+export async function createTicketRequest(input: {
+  requesterId: number;
+  ownerId: number;
+  area: string;
+  tableLabel: string;
+  items: unknown[];
+  note?: string | null;
+  now?: number;
+}): Promise<{ id: number; created: boolean }> {
+  const now = input.now ?? Date.now();
+  const area = String(input.area);
+  const tableLabel = String(input.tableLabel);
+  const note = input.note ? String(input.note) : null;
+  const itemsKey = JSON.stringify(input.items ?? []);
+
+  const recent = (await prisma.ticketRequest
+    .findMany({
+      where: {
+        requesterId: Number(input.requesterId),
+        ownerId: Number(input.ownerId),
+        area,
+        tableLabel,
+        status: 'PENDING' as any,
+        createdAt: { gte: new Date(now - REQUEST_RETRY_WINDOW_MS) },
+      },
+      orderBy: { id: 'desc' },
+      take: 5,
+    } as any)
+    .catch(() => [])) as any[];
+  const repeat = recent.find(
+    (r) =>
+      JSON.stringify(r.itemsJson ?? []) === itemsKey &&
+      (r.note ?? null) === note,
+  );
+  if (repeat) return { id: Number(repeat.id), created: false };
+
+  const created = await prisma.ticketRequest.create({
+    data: {
+      requesterId: Number(input.requesterId),
+      ownerId: Number(input.ownerId),
+      area,
+      tableLabel,
+      itemsJson: input.items as any,
+      note,
+      status: 'PENDING' as any,
+    },
+  });
+
+  const requester = await prisma.user
+    .findUnique({ where: { id: Number(input.requesterId) } })
+    .catch(() => null);
+  const msg = `${(requester as any)?.displayName || 'Staff'} requested to add items on ${area} ${tableLabel} (Request #${created.id})`;
+  await prisma.notification
+    .create({
+      data: {
+        userId: Number(input.ownerId),
+        type: 'OTHER' as any,
+        message: msg,
+      },
+    })
+    .catch(() => undefined);
+  return { id: Number(created.id), created: true };
+}
