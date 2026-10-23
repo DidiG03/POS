@@ -233,6 +233,23 @@ export async function printWithProfile(
   profile: PrinterProfileDTO,
   opts: { forceProtocol?: 'RAW' | 'LPR'; retries?: number } = {},
 ): Promise<PrintAttemptResult> {
+  // A throw (serial module missing, bad port path, temp dir, a payload the
+  // encoder chokes on) must come back as a failed print. Thrown, it took
+  // down a routed dispatch with every other printer's result, queued no
+  // retry, and left a probing printer marked down for good.
+  try {
+    return await printWithProfileUnsafe(payload, settings, profile, opts);
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e || 'Print failed') };
+  }
+}
+
+async function printWithProfileUnsafe(
+  payload: TicketPrintPayload,
+  settings: SettingsDTO,
+  profile: PrinterProfileDTO,
+  opts: { forceProtocol?: 'RAW' | 'LPR'; retries?: number },
+): Promise<PrintAttemptResult> {
   const mode = profileMode(profile);
   const retries = Math.max(0, Number(opts.retries ?? 0));
 

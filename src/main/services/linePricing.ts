@@ -18,6 +18,7 @@
  *   - anything else                          → the menu's price/VAT, and
  *                                              the correction is reported
  *   - not on the menu at all                 → unchanged, but reported
+ *   - not on the menu, negative price        → dropped, reported
  *   - quantity zero or negative              → dropped, reported
  *
  * Like the totals check, a divergence never refuses the payment.
@@ -146,6 +147,12 @@ export function repriceLines(
 
     const item = findMenuItem(line, bySku, byName);
     if (!item) {
+      // An off-menu line keeps its price, so that price has to be a sale:
+      // a negative one would quietly take money off the bill.
+      if (claimedPrice !== null && claimedPrice < 0) {
+        issues.push({ kind: 'dropped', name, sku, claimedPrice, qty });
+        continue;
+      }
       issues.push({ kind: 'unknown', name, sku, claimedPrice });
       out.push(line);
       continue;
@@ -202,7 +209,9 @@ export function describeLineIssues(issues: LinePriceIssue[]): string | null {
   const parts = issues.map((i) => {
     const label = i.name || i.sku || 'item';
     if (i.kind === 'dropped') {
-      return `${label} removed (quantity ${i.qty ?? '?'})`;
+      return i.claimedPrice !== null && i.claimedPrice < 0
+        ? `${label} removed (price ${money(i.claimedPrice)})`
+        : `${label} removed (quantity ${i.qty ?? '?'})`;
     }
     if (i.kind === 'unknown') {
       return `${label} is not on the menu (charged ${money(i.claimedPrice)} as sent)`;

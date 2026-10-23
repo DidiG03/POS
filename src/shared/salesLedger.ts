@@ -9,6 +9,7 @@ import { isStoreCounterArea } from './editionCapabilities';
 import { roundMoney } from './pricing';
 import {
   effectiveVatRate,
+  splitChargedNetVat,
   splitGrossVat,
   sumTicketLinesNetVat,
 } from './ticketRevenue';
@@ -77,21 +78,24 @@ export function saleFiguresFromPayload(
   const items = Array.isArray(p?.items) ? p.items : [];
   const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
-  const { net: subtotal, vat } = sumTicketLinesNetVat(
-    items,
-    vatEnabled,
-    defaultVatRate,
-  );
+  const goods = sumTicketLinesNetVat(items, vatEnabled, defaultVatRate);
   const serviceChargeAmount = roundMoney(meta.serviceChargeAmount || 0);
   const discountAmount = roundMoney(meta.discountAmount || 0);
   const fallbackTotal = Math.max(
     0,
-    roundMoney(subtotal + vat + serviceChargeAmount - discountAmount),
+    roundMoney(goods.net + goods.vat + serviceChargeAmount - discountAmount),
   );
   const totalAfter = Number(meta.totalAfter);
   const total = Number.isFinite(totalAfter)
     ? Math.max(0, roundMoney(totalAfter))
     : fallbackTotal;
+  // VAT on the amount charged (after discount / service charge), as filed.
+  const { net: subtotal, vat } = splitChargedNetVat(
+    items,
+    total,
+    vatEnabled,
+    defaultVatRate,
+  );
   return {
     subtotal: roundMoney(subtotal),
     vat: roundMoney(vat),

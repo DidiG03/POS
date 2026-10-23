@@ -162,6 +162,16 @@ export default function LoginPage() {
     if (pairingCodeRef.current) pairingCodeRef.current.value = '';
   };
 
+  /**
+   * The till signs a window in as soon as the PIN matches. When this screen
+   * then turns the person away (wrong app for the role, or no clock-in),
+   * that session has to go too — otherwise the PIN pad sits on a window
+   * still signed in as them, an admin included.
+   */
+  const dropRefusedSession = () => {
+    void window.api.auth.endSession?.().catch(() => undefined);
+  };
+
   const onSubmit = async () => {
     if (!hasHydrated) {
       showLoginMessage(t('login.loginFailed'));
@@ -211,6 +221,7 @@ export default function LoginPage() {
       }
       if (user) {
         if (isAdminContext && user.role !== 'ADMIN') {
+          dropRefusedSession();
           showLoginMessage(t('login.adminOnly'));
           return;
         }
@@ -221,11 +232,13 @@ export default function LoginPage() {
           !isAdminContext &&
           String((user as any).role || '').toUpperCase() === 'HOST'
         ) {
+          dropRefusedSession();
           showLoginMessage(t('login.hostsReservations'));
           return;
         }
         // Admins never enter the POS shell. Back office is OneTap Admin only.
         if (user.role === 'ADMIN' && !isAdminApp) {
+          dropRefusedSession();
           showLoginMessage(t('login.useAdminApp'));
           return;
         }
@@ -849,6 +862,7 @@ export default function LoginPage() {
           confirmLabel={t('common.confirm')}
           cancelLabel={t('common.cancel')}
           onCancel={() => {
+            dropRefusedSession();
             setShowShiftConfirm(false);
             setPendingUser(null);
           }}
@@ -876,6 +890,7 @@ export default function LoginPage() {
                     return String((r as { reopenAt?: string }).reopenAt || '');
                   }
                 })();
+                dropRefusedSession();
                 setShowShiftConfirm(false);
                 showLoginMessage(t('login.shiftReopenBlocked', { when }));
                 return;
@@ -885,6 +900,7 @@ export default function LoginPage() {
               setUser(pendingUser);
               goStaffHome(pendingUser, isKdsContext);
             } catch (e: any) {
+              dropRefusedSession();
               setShowShiftConfirm(false);
               const msg = String(e?.message || e || '').trim();
               showLoginMessage(msg || t('login.loginFailed'));

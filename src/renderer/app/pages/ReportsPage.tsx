@@ -732,7 +732,6 @@ function ReceiptCard({
         fallback: t('reports.printTicketFailed'),
         key: `reports.print:${ticket?.area}:${ticket?.tableLabel}`,
       });
-      toast.warn(t('order.ticketPrintQueued'));
     } finally {
       setPrinting(false);
     }

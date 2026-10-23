@@ -211,6 +211,12 @@ function Root() {
       } catch {
         // ignore
       }
+      // Sign the window out on the till as well. Clearing the store alone
+      // left it signed in as the last waiter behind the PIN pad. (Admin has
+      // its own logout, which also notifies this window.)
+      if (shell !== 'admin') {
+        void (window as any).api?.auth?.endSession?.().catch(() => undefined);
+      }
       try {
         window.location.hash =
           shell === 'admin'

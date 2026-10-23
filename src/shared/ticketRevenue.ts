@@ -306,3 +306,37 @@ export function sumTicketLinesNetVat(
   }
   return { net, vat };
 }
+
+/**
+ * Net/VAT split of what the guest was actually charged.
+ *
+ * A whole-ticket discount lowers the taxable amount and a service charge
+ * raises it, so the goods' VAT is scaled to `chargedTotal` line by line —
+ * the way the fiscal invoice files it (discount prorated over the lines,
+ * service charge shared across the goods' VAT bands). Splitting the goods
+ * alone reported VAT on money that was never taken, and ledger net + VAT
+ * stopped adding up to the total. Without a usable charged total this is
+ * the plain goods split.
+ */
+export function splitChargedNetVat(
+  itemsJson: unknown,
+  chargedTotal: unknown,
+  vatEnabled = true,
+  defaultVatRate = 0,
+): { net: number; vat: number } {
+  const lines = liveTicketLines(itemsJson).map((it: any) => ({
+    gross: Number(it?.unitPrice || 0) * Number(it?.qty || 1),
+    rate: effectiveVatRate(it?.vatRate, defaultVatRate),
+  }));
+  const goods = lines.reduce((sum, l) => sum + l.gross, 0);
+  const total = Number(chargedTotal);
+  if (!Number.isFinite(total) || total < 0 || !(goods > 0)) {
+    return sumTicketLinesNetVat(itemsJson, vatEnabled, defaultVatRate);
+  }
+  if (!vatEnabled) return { net: total, vat: 0 };
+  const factor = total / goods;
+  let vat = 0;
+  for (const line of lines)
+    vat += splitGrossVat(line.gross * factor, line.rate).vat;
+  return { net: total - vat, vat };
+}

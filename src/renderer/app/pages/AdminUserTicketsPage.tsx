@@ -31,6 +31,7 @@ import {
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { TicketSalePanel } from '../components/TicketSalePanel';
 import { PageSpinner } from '../../components/PageSpinner';
+import { addDays } from '../../utils/calendarMath';
 
 type TicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
 
@@ -806,11 +807,7 @@ export default function AdminUserTicketsPage() {
               label="Previous day"
               icon={<IconChevronLeft />}
               onClick={() =>
-                goToDate(
-                  allDays
-                    ? new Date(today.getTime() - 24 * 60 * 60 * 1000)
-                    : new Date(viewDate.getTime() - 24 * 60 * 60 * 1000),
-                )
+                goToDate(allDays ? addDays(today, -1) : addDays(viewDate, -1))
               }
             />
             <Input
@@ -829,9 +826,7 @@ export default function AdminUserTicketsPage() {
             <IconButton
               label="Next day"
               icon={<IconChevronRight />}
-              onClick={() =>
-                goToDate(new Date(viewDate.getTime() + 24 * 60 * 60 * 1000))
-              }
+              onClick={() => goToDate(addDays(viewDate, 1))}
               disabled={allDays || isToday}
             />
             {allDays ? (

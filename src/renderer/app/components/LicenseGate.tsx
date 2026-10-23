@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useRef,
   useState,
   type ComponentProps,
 } from 'react';
@@ -149,6 +150,10 @@ export default function LicenseGate({
   const [resendIn, setResendIn] = useState(0);
   const [plans, setPlans] = useState<LicensePlansDTO>(emptyPlans);
 
+  const retryTimerRef = useRef<number | null>(null);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   const fail = useCallback(
     (message: string, detail?: string) => {
       toast.error(message, {
@@ -174,17 +179,42 @@ export default function LicenseGate({
       }
     } catch (e: unknown) {
       const detail = e instanceof Error ? e.message : String(e || '');
-      toast.fromError(e, t('license.statusFailed'), {
-        title: t('license.errorTitle'),
-      });
-      setStatus({
-        required: true,
-        licensed: false,
-        billingConfigured: true,
-        message: detail || t('license.statusFailed'),
-      });
+      const cur = statusRef.current;
+      const open = Boolean(cur && (!cur.required || cur.licensed));
+      // Quiet while the till is open and working; the retry below is enough.
+      if (!open) {
+        toast.fromError(e, t('license.statusFailed'), {
+          title: t('license.errorTitle'),
+        });
+      }
+      // A failed read is not an expired license. A till already known to be
+      // licensed stays open; otherwise show the gate, but read again soon —
+      // nothing else re-checks, and one hiccup used to lock the till.
+      setStatus((prev) =>
+        prev && (!prev.required || prev.licensed)
+          ? prev
+          : {
+              required: true,
+              licensed: false,
+              billingConfigured: true,
+              message: detail || t('license.statusFailed'),
+            },
+      );
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = window.setTimeout(() => {
+        retryTimerRef.current = null;
+        void refreshRef.current();
+      }, 15_000);
     }
   }, [isHost, t]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(
+    () => () => {
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!isHost) return;

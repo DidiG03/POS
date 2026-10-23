@@ -82,6 +82,7 @@
     "viewLess": "View less"
   },
   "failedSync": {
+    "dismissAllConfirm": "Discard all {{count}} unsent actions? Orders, voids and payments in this list will not reach the till.",
     "title": "Sync failures",
     "banner_one": "{{count}} action failed to sync — review required",
     "banner_other": "{{count}} actions failed to sync — review required",
@@ -467,6 +468,7 @@
     "menuNoItems": "Nothing to print on this table."
   },
   "preferences": {
+    "loadFailed": "Could not load preferences, so nothing was saved. Reopen this page and try again.",
     "title": "Preferences",
     "saved": "Saved.",
     "currencyInvalid": "Currency must be a 3-letter ISO code (e.g. EUR, QAR, USD).",
@@ -675,6 +677,7 @@
     "receiptHint": "These details will be used on printed receipts next."
   },
   "settingsAreas": {
+    "loadFailed": "Could not load the table areas, so nothing was saved. Reopen this page and try again.",
     "title": "Table Areas",
     "help": "The floor layout is shared across every waiter and host device. Use Edit layout to arrange tables and shapes — your changes appear instantly on every connected device.",
     "editLayout": "Edit layout",
@@ -801,6 +804,7 @@
     "noLayoutYet": "No layout yet — ask an admin to set up this area in Settings → Table Areas."
   },
   "fiscal": {
+    "loadFailed": "Could not load the fiscal settings, so nothing was saved. Reopen this page and try again.",
     "shopVoidAction": "Void sale",
     "shopVoidHelp": "This sale was not fiscalized. Voiding removes it from revenue, reports and the sales list, and puts its items back in stock. Only an admin can void, with the admin PIN.",
     "shopVoidReasonHint": "e.g. printed by mistake",
@@ -1182,6 +1186,7 @@
     "destinationAriaTable": "Destination table"
   },
   "reservations": {
+    "timeRequired": "Choose a time for the reservation.",
     "title": "Reservations",
     "loginSubtitle": "Sign in as a Host or Admin to manage today's bookings.",
     "whoIsLoggingIn": "Who's logging in?",
@@ -1827,6 +1832,7 @@
     "fallbackTitle": "{{text}}"
   },
   "adminLan": {
+    "loadFailed": "Could not load the network settings, so nothing was changed. Reopen this page and try again.",
     "hostRunningTitle": "Tablets stay connected in the background",
     "hostRunningTitleStore": "Extra tills stay connected in the background",
     "hostRunningBody": "On the installed POS, closing this window does not stop the app. It keeps running in the menu bar (Mac) or system tray (Windows) so iPads and tablets can still take orders. Open it again from that icon. Choose Quit on the icon to stop — tablets will disconnect until the POS is opened on this computer.",

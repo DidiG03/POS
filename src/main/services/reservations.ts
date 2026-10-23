@@ -14,6 +14,7 @@ import { broadcastReservationsChanged } from './realtime';
 import { coreServices } from './core';
 import {
   DEFAULT_RESERVATION_DURATION_MIN,
+  reservationOccupancyStartMs,
   reservationOccupiesTable,
 } from '@shared/reservationDuration';
 
@@ -145,15 +146,28 @@ export async function assertNoTableConflict(args: {
     },
     select: {
       id: true,
+      status: true,
       startsAt: true,
+      seatedAt: true,
       durationMin: true,
       customerName: true,
     },
     take: 50,
   });
   for (const c of candidates as any[]) {
-    const cStart = new Date(c.startsAt).getTime();
-    const cEnd = cStart + (Number(c.durationMin) || 0) * 60_000;
+    // Hold the table the way the floor does: a seated party from when it
+    // sat down, and a row with no stay length for the default stay. Using
+    // the booked slot and a zero length let a late-seated table, or a legacy
+    // row, be booked again while the floor still showed it taken.
+    const cStart =
+      reservationOccupancyStartMs(c) ?? new Date(c.startsAt).getTime();
+    const cDur = Number(c.durationMin);
+    const cEnd =
+      cStart +
+      (Number.isFinite(cDur) && cDur > 0
+        ? cDur
+        : DEFAULT_RESERVATION_DURATION_MIN) *
+        60_000;
     // Half-open intervals: touching back-to-back (end == start) is allowed.
     if (cStart < endMs && cEnd > startMs) {
       const t = new Date(cStart);

@@ -76,7 +76,9 @@ describe('createKdsTicketFromLog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     userFindUnique.mockResolvedValue({ id: 1 });
-    readSettings.mockResolvedValue({ kds: { stations: { KITCHEN: true } } });
+    readSettings.mockResolvedValue({
+      kds: { stations: { KITCHEN: true, BAR: true } },
+    });
     loadKdsRoutingFromDb.mockResolvedValue({
       categoryIdToKdsStation: {},
       categoryIdToSortOrder: {},
@@ -216,6 +218,37 @@ describe('createKdsTicketFromLog', () => {
         ],
       }),
     });
+  });
+
+  it('keeps drinks and food without courses on separate cards', async () => {
+    // The drinks card written first is open (NEW) when the food batch looks
+    // for a card to join; both have an empty course key.
+    const drinksCard = {
+      id: 300,
+      itemsJson: [{ name: 'Cola', qty: 1, station: 'BAR' }],
+    };
+    kdsTicketFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([drinksCard]);
+    kdsTicketCreate
+      .mockResolvedValueOnce({ id: 300 })
+      .mockResolvedValueOnce({ id: 301 });
+
+    const result = await createKdsTicketFromLog({
+      userId: 1,
+      area: 'Sallon',
+      tableLabel: 'T1',
+      items: [],
+      fireItems: [
+        { name: 'Cola', qty: 1, station: 'BAR' },
+        { name: 'Pasta', qty: 1, categoryId: 1 },
+      ],
+      note: null,
+    });
+
+    expect(result).toEqual({ orderNo: 5, ticketId: 301 });
+    expect(kdsTicketUpdate).not.toHaveBeenCalled();
+    expect(kdsTicketCreate).toHaveBeenCalledTimes(2);
   });
 
   it('does not create a ticket when KDS is turned off', async () => {

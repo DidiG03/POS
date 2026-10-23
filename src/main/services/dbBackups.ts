@@ -143,8 +143,21 @@ export async function restoreDbBackup(
     };
   }
 
+  // The current ledger is overwritten next. Without a copy of it, restoring
+  // the wrong file would lose every sale since that backup for good.
+  const safety = await createDbBackupNow().catch((e: any) => ({
+    ok: false,
+    error: String(e?.message || e),
+  }));
+  if (!safety.ok) {
+    return {
+      ok: false,
+      error:
+        `Could not back up the current data first, so nothing was restored. ${safety.error || ''}`.trim(),
+    };
+  }
+
   try {
-    await createDbBackupNow().catch(() => null);
     await prisma.$disconnect().catch(() => null);
     fs.copyFileSync(src, dbPath);
     // The old ledger's -wal/-shm must not be replayed onto the restored file.

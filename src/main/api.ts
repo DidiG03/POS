@@ -173,6 +173,12 @@ import {
 } from './services/staticPath';
 import { ifNoneMatchHits, weakEtag } from './services/lanConditional';
 import { enforceAuthoritativePaymentTotals } from './services/paymentTotals';
+import { clockOutForceAllowed, withShiftLock } from './services/shiftClock';
+import { validCoversCount } from '@shared/coversCount';
+import {
+  LAST_ADMIN_ERROR,
+  wouldRemoveLastActiveAdmin,
+} from './services/lastAdmin';
 import {
   ensureSettledSaleFromPrintJob,
   persistReceiptAudit,
@@ -3465,144 +3471,148 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (!userId) return send(res, 400, 'invalid', corsOrigin);
         if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN')
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        const already = await prisma.dayShift.findFirst({
-          where: { closedAt: null, openedById: Number(userId) },
-        });
-        if (already)
-          return send(
-            res,
-            200,
-            {
-              id: already.id,
-              openedAt: already.openedAt.toISOString(),
-              closedAt: null,
-              openedById: already.openedById,
-              closedById: already.closedById ?? null,
-            },
-            corsOrigin,
+        return withShiftLock(Number(userId), async () => {
+          const already = await prisma.dayShift.findFirst({
+            where: { closedAt: null, openedById: Number(userId) },
+          });
+          if (already)
+            return send(
+              res,
+              200,
+              {
+                id: already.id,
+                openedAt: already.openedAt.toISOString(),
+                closedAt: null,
+                openedById: already.openedById,
+                closedById: already.closedById ?? null,
+              },
+              corsOrigin,
+            );
+          const settings = await coreServices.readSettings().catch(() => null);
+          if (!isClockCaptureEnabled(settings))
+            return send(res, 200, null, corsOrigin);
+
+          const lastClosed = await prisma.dayShift.findFirst({
+            where: { openedById: Number(userId), closedAt: { not: null } },
+            orderBy: { closedAt: 'desc' },
+            select: { closedAt: true },
+          });
+          const reopenAt = shiftReopenBlockedUntil(
+            settings,
+            lastClosed?.closedAt,
           );
-        const settings = await coreServices.readSettings().catch(() => null);
-        if (!isClockCaptureEnabled(settings))
-          return send(res, 200, null, corsOrigin);
-
-        const lastClosed = await prisma.dayShift.findFirst({
-          where: { openedById: Number(userId), closedAt: { not: null } },
-          orderBy: { closedAt: 'desc' },
-          select: { closedAt: true },
-        });
-        const reopenAt = shiftReopenBlockedUntil(
-          settings,
-          lastClosed?.closedAt,
-        );
-        if (reopenAt) {
-          return send(
-            res,
-            200,
-            {
-              ok: false,
-              code: 'SHIFT_REOPEN_BLOCKED',
-              error: 'Shift reopen is blocked until the cooldown ends.',
-              reopenAt: reopenAt.toISOString(),
-            },
-            corsOrigin,
-          );
-        }
-
-        const created = await prisma.dayShift.create({
-          data: { openedById: Number(userId), totalsJson: {} as any } as any,
-        });
-        return send(
-          res,
-          200,
-          {
-            id: created.id,
-            openedAt: created.openedAt.toISOString(),
-            closedAt: null,
-            openedById: created.openedById,
-            closedById: created.closedById ?? null,
-          },
-          corsOrigin,
-        );
-      }
-      // Shift: clock out
-      if (req.method === 'POST' && pathname === '/shifts/clock-out') {
-        const body = await parseJson(req);
-        const { userId } = body || {};
-        const force = Boolean(body?.force);
-        if (!userId) return send(res, 400, 'invalid', corsOrigin);
-        if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN')
-          return send(res, 403, { error: 'forbidden' }, corsOrigin);
-        const open = await prisma.dayShift.findFirst({
-          where: { closedAt: null, openedById: Number(userId) },
-        });
-        if (!open) return send(res, 200, null, corsOrigin);
-
-        // Mirror the IPC guard: refuse to clock out while the waiter
-        // still owns open tables. Mobile waiters hit this same path, so
-        // the same anti-stranding rule must apply or iOS becomes the
-        // back door around it.
-        if (!force) {
-          const openTables: Array<{ area: string; label: string }> = [];
-          try {
-            const keys = await coreServices.listOpenTables();
-            for (const { area, label } of keys) {
-              const last = await prisma.ticketLog
-                .findFirst({
-                  where: { area, tableLabel: label },
-                  orderBy: { createdAt: 'desc' },
-                  select: { userId: true },
-                })
-                .catch(() => null);
-              if (last && Number(last.userId) === Number(userId)) {
-                openTables.push({ area, label });
-              }
-            }
-          } catch {
-            // Best-effort guard — never trap a waiter at work because
-            // of a transient lookup failure.
-          }
-          if (openTables.length > 0) {
+          if (reopenAt) {
             return send(
               res,
               200,
               {
                 ok: false,
-                error: `You still have ${openTables.length} open table${openTables.length === 1 ? '' : 's'}. Close or transfer them before clocking out.`,
-                code: 'OPEN_TABLES_OWNED',
-                openTables,
+                code: 'SHIFT_REOPEN_BLOCKED',
+                error: 'Shift reopen is blocked until the cooldown ends.',
+                reopenAt: reopenAt.toISOString(),
               },
               corsOrigin,
             );
           }
-        }
 
-        const closedAt = new Date();
-        const updated = await prisma.dayShift.update({
-          where: { id: open.id },
-          data: { closedAt, closedById: Number(userId) },
+          const created = await prisma.dayShift.create({
+            data: { openedById: Number(userId), totalsJson: {} as any } as any,
+          });
+          return send(
+            res,
+            200,
+            {
+              id: created.id,
+              openedAt: created.openedAt.toISOString(),
+              closedAt: null,
+              openedById: created.openedById,
+              closedById: created.closedById ?? null,
+            },
+            corsOrigin,
+          );
         });
-        void finalizeShiftAfterClockOut({
-          shiftId: updated.id,
-          userId: Number(userId),
-          openedAt: open.openedAt,
-          closedAt,
-        }).catch((e) =>
-          console.warn('[api shifts/clock-out] shift print failed:', e),
-        );
-        return send(
-          res,
-          200,
-          {
-            id: updated.id,
-            openedAt: updated.openedAt.toISOString(),
-            closedAt: updated.closedAt
-              ? new Date(updated.closedAt).toISOString()
-              : null,
-            openedById: updated.openedById,
-            closedById: updated.closedById ?? null,
-          },
-          corsOrigin,
-        );
+      }
+      // Shift: clock out
+      if (req.method === 'POST' && pathname === '/shifts/clock-out') {
+        const body = await parseJson(req);
+        const { userId } = body || {};
+        const force = clockOutForceAllowed(body?.force, auth?.role);
+        if (!userId) return send(res, 400, 'invalid', corsOrigin);
+        if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN')
+          return send(res, 403, { error: 'forbidden' }, corsOrigin);
+        return withShiftLock(Number(userId), async () => {
+          const open = await prisma.dayShift.findFirst({
+            where: { closedAt: null, openedById: Number(userId) },
+          });
+          if (!open) return send(res, 200, null, corsOrigin);
+
+          // Mirror the IPC guard: refuse to clock out while the waiter
+          // still owns open tables. Mobile waiters hit this same path, so
+          // the same anti-stranding rule must apply or iOS becomes the
+          // back door around it.
+          if (!force) {
+            const openTables: Array<{ area: string; label: string }> = [];
+            try {
+              const keys = await coreServices.listOpenTables();
+              for (const { area, label } of keys) {
+                const last = await prisma.ticketLog
+                  .findFirst({
+                    where: { area, tableLabel: label },
+                    orderBy: { createdAt: 'desc' },
+                    select: { userId: true },
+                  })
+                  .catch(() => null);
+                if (last && Number(last.userId) === Number(userId)) {
+                  openTables.push({ area, label });
+                }
+              }
+            } catch {
+              // Best-effort guard — never trap a waiter at work because
+              // of a transient lookup failure.
+            }
+            if (openTables.length > 0) {
+              return send(
+                res,
+                200,
+                {
+                  ok: false,
+                  error: `You still have ${openTables.length} open table${openTables.length === 1 ? '' : 's'}. Close or transfer them before clocking out.`,
+                  code: 'OPEN_TABLES_OWNED',
+                  openTables,
+                },
+                corsOrigin,
+              );
+            }
+          }
+
+          const closedAt = new Date();
+          const updated = await prisma.dayShift.update({
+            where: { id: open.id },
+            data: { closedAt, closedById: Number(userId) },
+          });
+          void finalizeShiftAfterClockOut({
+            shiftId: updated.id,
+            userId: Number(userId),
+            openedAt: open.openedAt,
+            closedAt,
+          }).catch((e) =>
+            console.warn('[api shifts/clock-out] shift print failed:', e),
+          );
+          return send(
+            res,
+            200,
+            {
+              id: updated.id,
+              openedAt: updated.openedAt.toISOString(),
+              closedAt: updated.closedAt
+                ? new Date(updated.closedAt).toISOString()
+                : null,
+              openedById: updated.openedById,
+              closedById: updated.closedById ?? null,
+            },
+            corsOrigin,
+          );
+        });
       }
 
       // Billing status: tablets poll this after login. Host license is
@@ -3767,8 +3777,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // Covers
       if (req.method === 'POST' && pathname === '/covers/save') {
         const { area, label, covers } = await parseJson(req);
-        const num = Number(covers);
-        if (!area || !label || !Number.isFinite(num) || num <= 0)
+        const num = validCoversCount(covers);
+        if (!area || !label || num == null)
           return send(res, 400, 'invalid', corsOrigin);
         if (!allowStoreCounterArea(area, res, corsOrigin)) return;
         await prisma.covers.create({
@@ -4121,6 +4131,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             sanitizedInput.displayName = sanitized;
           }
           if (sanitizedInput.role) assertStaffRoleAllowed(sanitizedInput.role);
+          if (
+            await wouldRemoveLastActiveAdmin(input.id, {
+              active: sanitizedInput.active,
+              role: sanitizedInput.role,
+            })
+          ) {
+            return send(res, 400, { error: LAST_ADMIN_ERROR }, corsOrigin);
+          }
           let pinHash: string | undefined;
           if (sanitizedInput.pin)
             pinHash = await bcrypt.hash(normalizePin(sanitizedInput.pin), 10);
@@ -4177,6 +4195,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             return send(res, 400, { error: 'invalid user id' }, corsOrigin);
           }
           if (!input.hard) {
+            if (await wouldRemoveLastActiveAdmin(id, { active: false })) {
+              return send(res, 400, { error: LAST_ADMIN_ERROR }, corsOrigin);
+            }
             await prisma.user.update({
               where: { id },
               data: { active: false },

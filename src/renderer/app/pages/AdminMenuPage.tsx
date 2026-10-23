@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type ParsedMenuRow, parseMenuWorkbook } from '../../utils/menuImport';
+import {
+  menuMoneyInput,
+  menuNumberKeys,
+  menuVatInput,
+} from '../../utils/menuNumberInput';
 import { type KdsStation } from '@shared/kdsStations';
 import { normalizeProductCode } from '@shared/barcodeScan';
 import { PageSpinner } from '../../components/PageSpinner';
@@ -1396,15 +1401,15 @@ function AddItemForm({
   const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
 
   function submit() {
-    const costNum = Number(String(cost).replace(',', '.').trim());
+    const costNum = menuMoneyInput(cost);
     const costPayload =
       !hasTables && cost.trim() !== '' && Number.isFinite(costNum)
         ? costWritePayload([emptyCostLine(costNum)])
         : {};
     onAdd({
       name: name.trim(),
-      price: Number(price),
-      vatRate: vat ? Number(vat) : undefined,
+      price: menuMoneyInput(price),
+      vatRate: vat ? menuVatInput(vat) : undefined,
       isKg,
       ...(hasTables ? {} : { sku: sku.trim() || undefined }),
       ...costPayload,
@@ -1450,7 +1455,7 @@ function AddItemForm({
             placeholder="0"
             inputMode="decimal"
             value={price}
-            onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
+            onChange={(e) => setPrice(menuNumberKeys(e.target.value))}
             disabled={disabled}
           />
         </Field>
@@ -1459,7 +1464,7 @@ function AddItemForm({
             placeholder="0.2"
             inputMode="decimal"
             value={vat}
-            onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
+            onChange={(e) => setVat(menuNumberKeys(e.target.value))}
             disabled={disabled}
           />
         </Field>
@@ -1471,7 +1476,7 @@ function AddItemForm({
             placeholder="0"
             inputMode="decimal"
             value={cost}
-            onChange={(e) => setCost(e.target.value.replace(/[^0-9.]/g, ''))}
+            onChange={(e) => setCost(menuNumberKeys(e.target.value))}
             disabled={disabled}
           />
         </Field>
@@ -1986,7 +1991,7 @@ function EditItemModal({
               placeholder="0"
               inputMode="decimal"
               value={price}
-              onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))}
+              onChange={(e) => setPrice(menuNumberKeys(e.target.value))}
               disabled={disabled}
             />
           </Field>
@@ -1995,7 +2000,7 @@ function EditItemModal({
               placeholder="0.2"
               inputMode="decimal"
               value={vat}
-              onChange={(e) => setVat(e.target.value.replace(/[^0-9.]/g, ''))}
+              onChange={(e) => setVat(menuNumberKeys(e.target.value))}
               disabled={disabled}
             />
           </Field>
@@ -2118,8 +2123,8 @@ function EditItemModal({
               costBreakdown?: ItemCostLine[] | null;
             } = {
               name: name.trim(),
-              price: Number(price || 0),
-              vatRate: Number(vat || 0),
+              price: menuMoneyInput(price),
+              vatRate: menuVatInput(vat),
               isKg,
               active,
             };

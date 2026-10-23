@@ -123,6 +123,14 @@ export function FailedSyncPanel() {
   }, [items, refresh, t]);
 
   const handleDismissAll = useCallback(async () => {
+    // Dismissing drops these orders, voids and payments for good; one tap
+    // used to throw away every unsent order on the device.
+    if (
+      !window.confirm(
+        t('failedSync.dismissAllConfirm', { count: items.length }),
+      )
+    )
+      return;
     const ids = items.map((i) => i.id);
     for (const id of ids) {
       try {

@@ -676,7 +676,11 @@ export function installBrowserLanApi(): void {
     // ignore
   }
 
-  function isRetryableNetworkError(e: any, method: string) {
+  function isRetryableNetworkError(
+    e: any,
+    method: string,
+    body?: BodyInit | null,
+  ) {
     const name = String(e?.name || '');
     const mutating =
       method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
@@ -684,7 +688,17 @@ export function installBrowserLanApi(): void {
     // the write. Retrying POST after AbortError is how a 15s timeout became
     // a second ticket / void / request.
     if (mutating && name === 'AbortError') return false;
+    // "Failed to fetch" can also arrive after the host did the write. Only
+    // resend a write the host dedupes; a second reservation, staff member or
+    // menu item is otherwise created on a flaky connection.
+    if (mutating && !hasIdempotencyKey(body)) return false;
     return name === 'AbortError' || e instanceof TypeError;
+  }
+
+  function hasIdempotencyKey(body?: BodyInit | null): boolean {
+    return (
+      typeof body === 'string' && /"idempotencyKey"\s*:\s*"[^"]+"/.test(body)
+    );
   }
 
   async function fetchWithRetry(
@@ -705,7 +719,8 @@ export function installBrowserLanApi(): void {
       } catch (e: any) {
         lastErr = e;
         recordFailure();
-        if (!isRetryableNetworkError(e, method) || i === tries - 1) throw e;
+        if (!isRetryableNetworkError(e, method, init?.body) || i === tries - 1)
+          throw e;
         const delay = Math.min(800, 150 * Math.pow(2, i));
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -940,7 +955,7 @@ export function installBrowserLanApi(): void {
               lastErr = retryErr;
             }
           }
-          if (!isRetryableNetworkError(e, method)) throw e;
+          if (!isRetryableNetworkError(e, method, opts?.body)) throw e;
           // Once HTTP is known to work, a timeout is congestion — not a
           // reason to wait a second HTTPS handshake on the same slow link.
           if (getPreferredScheme() === 'http') throw e;
@@ -1007,6 +1022,14 @@ export function installBrowserLanApi(): void {
         return null;
       },
       async endSession() {
+        // The PIN screen turned this login away; do not keep its token. A
+        // host or admin login was also copied to the host key — drop that
+        // copy, but not a different host session kept there.
+        const refused = readStoredToken(tokenKeyForShell());
+        if (refused && readStoredToken(TOKEN_KEY_HOST) === refused) {
+          writeStoredToken(TOKEN_KEY_HOST, null);
+        }
+        setToken(null);
         return true;
       },
       async listUsers(_input?: { includeAdmins?: boolean }) {

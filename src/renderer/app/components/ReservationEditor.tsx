@@ -322,6 +322,11 @@ export default function ReservationEditor({
       Boolean(isEdit && initial?.id) &&
       String(initial?.area || '') === formArea &&
       String(initial?.tableLabel || '') === tableLabel;
+    // A cleared time field reads as 00:00 and booked the table at midnight.
+    if (!/^\d{1,2}:\d{2}$/.test(String(time || '').trim())) {
+      setError(t('reservations.timeRequired'));
+      return;
+    }
     const startsAtIso = isoFromLocalDateAndTime(reservationDay, time);
     if (tableLabel && isTableBusy?.(formArea, tableLabel) && !keepCurrent) {
       setError(

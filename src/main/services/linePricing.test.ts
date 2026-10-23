@@ -177,6 +177,19 @@ describe('repriceLines', () => {
     expect(describeLineIssues(r.issues)).toContain('Ghost is not on the menu');
   });
 
+  it('drops an off-menu line with a negative price', () => {
+    const r = repriceLines(
+      [{ sku: 'GHOST', name: 'Ghost', qty: 1, unitPrice: -900 }],
+      menu,
+      [],
+    );
+    expect(r.items).toEqual([]);
+    expect(r.issues.map((i) => i.kind)).toEqual(['dropped']);
+    expect(describeLineIssues(r.issues)).toContain(
+      'Ghost removed (price -900.00)',
+    );
+  });
+
   it('finds an older ticket line by name when it carries no code', () => {
     const r = repriceLines(
       [{ sku: 'Steak', name: 'Steak', qty: 1, unitPrice: 15, vatRate: 0.2 }],

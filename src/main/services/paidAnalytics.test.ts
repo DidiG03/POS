@@ -238,7 +238,7 @@ describe('normalizePaidSaleVat / sumPaidRevenue', () => {
     );
     expect(fixed.total).toBe(1140);
     expect(fixed.vatAmount).toBeGreaterThan(0);
-    expect(fixed.subtotal + fixed.vatAmount).toBeCloseTo(1200, 2);
+    expect(fixed.subtotal + fixed.vatAmount).toBeCloseTo(1140, 2);
   });
 
   it('when VAT is off, headline net matches gross receipt total', () => {
@@ -276,5 +276,25 @@ describe('topSellingFromSales / fillTrendPoints', () => {
       [{ label: '09/05', from, to }],
     );
     expect(points[0]).toEqual({ label: '09/05', total: 1200, orders: 1 });
+  });
+});
+
+describe('buildSalesTrendBuckets across the spring clock change', () => {
+  it('lists 14 consecutive local days ending today', async () => {
+    const prev = process.env.TZ;
+    process.env.TZ = 'Europe/Tirane';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 5, 12, 0));
+    try {
+      const { buildSalesTrendBuckets } = await import('./paidAnalytics');
+      const days = buildSalesTrendBuckets('daily').map((b) => b.label);
+      expect(days[0]).toBe('03/23');
+      expect(days).toContain('03/29');
+      expect(days[13]).toBe('04/05');
+      expect(new Set(days).size).toBe(14);
+    } finally {
+      vi.useRealTimers();
+      process.env.TZ = prev;
+    }
   });
 });

@@ -26,6 +26,13 @@ export type CreateKdsTicketInput = {
   courseLabel?: string | null;
 };
 
+function isDrinksCard(items: unknown): boolean {
+  const list = Array.isArray(items) ? items : [];
+  return (
+    list.length > 0 && list.every((it) => isImmediateFireStation(it?.station))
+  );
+}
+
 function kdsFireBatches(decorated: any[]): any[][] {
   const drinks = decorated.filter((it) => isImmediateFireStation(it?.station));
   const food = decorated.filter((it) => !isImmediateFireStation(it?.station));
@@ -46,6 +53,7 @@ async function upsertKdsTicket(opts: {
   courseLabel?: string | null;
 }): Promise<{ orderNo: number; ticketId: number }> {
   const incomingCourseKey = courseKeyFromItems(opts.decorated);
+  const incomingDrinks = isDrinksCard(opts.decorated);
   const openTickets = await opts.tx.kdsTicket.findMany({
     where: {
       orderId: opts.order.id,
@@ -53,8 +61,12 @@ async function upsertKdsTicket(opts: {
     },
     orderBy: { id: 'desc' },
   });
+  // Drinks carry no course, so their course key is empty — the same as food
+  // sent without courses. Match the kind too, or the drinks card and the
+  // food card of one send merged straight back into one.
   const existingTicket = openTickets.find(
     (t: { itemsJson?: unknown }) =>
+      isDrinksCard(t.itemsJson) === incomingDrinks &&
       courseKeyFromItems(t.itemsJson) === incomingCourseKey,
   );
 
@@ -93,10 +105,9 @@ async function upsertKdsTicket(opts: {
     return { orderNo: opts.order.orderNo, ticketId: existingTicket.id };
   }
 
-  const isDrinksOnly = opts.decorated.every((it) =>
-    isImmediateFireStation(it?.station),
-  );
-  const courseNote = isDrinksOnly ? '' : String(opts.courseLabel || '').trim();
+  const courseNote = incomingDrinks
+    ? ''
+    : String(opts.courseLabel || '').trim();
   const ticketNote = courseNote
     ? [courseNote, opts.note].filter(Boolean).join(' · ')
     : (opts.note ?? null);

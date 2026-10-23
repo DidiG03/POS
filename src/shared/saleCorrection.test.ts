@@ -76,6 +76,20 @@ describe('planSaleCorrection — corrective', () => {
     expect(plan.nextVat).toBeCloseTo(83.33, 2);
   });
 
+  it('splits VAT from what the discounted sale still totals', () => {
+    // 1500 of lines sold for 1350. Striking the 300 water leaves 1050 owed;
+    // its VAT is 1050 / 1.2 × 0.2, not the VAT of 1200 at menu price.
+    const plan = ok(
+      planSaleCorrection(
+        { ...sale, total: 1350 },
+        { kind: 'CORRECTIVE', itemIds: [3], reason: 'Not served' },
+      ),
+    );
+    expect(plan.nextTotal).toBe(1050);
+    expect(plan.nextVat).toBe(175);
+    expect(plan.nextSubtotal).toBe(875);
+  });
+
   it('refuses to strike every line — that is a cancellation', () => {
     expect(
       planSaleCorrection(sale, {

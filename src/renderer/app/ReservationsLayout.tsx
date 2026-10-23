@@ -33,6 +33,7 @@ import {
   IconLogout,
   IconPlus,
 } from '../components/icons';
+import { addDays } from '../utils/calendarMath';
 
 export type ReservationsContext = {
   me: { id: number; displayName: string; role: string };
@@ -188,9 +189,9 @@ export default function ReservationsLayout() {
   );
   const goRelativeDays = useCallback(
     (delta: number) =>
-      setDateState((cur) =>
-        startOfLocalDay(new Date(cur.getTime() + delta * 24 * 60 * 60 * 1000)),
-      ),
+      // Calendar days: +24h from 00:00 on 25 October is 23:00 the same
+      // day, so "next day" stayed put there.
+      setDateState((cur) => startOfLocalDay(addDays(cur, delta))),
     [],
   );
 
@@ -312,7 +313,8 @@ export default function ReservationsLayout() {
         if (cancelled) return;
         setTodayReservations(Array.isArray(list) ? list : []);
       } catch {
-        if (!cancelled) setTodayReservations([]);
+        // Keep the last list: emptying it showed every reserved table as
+        // free for a walk-in until the next refresh.
       }
     };
     void load();
@@ -527,6 +529,8 @@ export default function ReservationsLayout() {
   );
 
   function signOut() {
+    // Also sign this window out on the till, not just on screen.
+    void window.api.auth.endSession?.().catch(() => undefined);
     setUser(null);
     navigate('/reservations', { replace: true });
   }

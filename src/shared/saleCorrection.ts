@@ -14,7 +14,7 @@
  * Striking a line takes exactly that line's gross off the total.
  */
 import { roundMoney } from './pricing';
-import { sumTicketLinesNetVat } from './ticketRevenue';
+import { splitChargedNetVat } from './ticketRevenue';
 
 export type SaleCorrectionKind = 'CANCEL' | 'CORRECTIVE';
 
@@ -126,12 +126,6 @@ export function planSaleCorrection(
   const struckIds = new Set(struck.map((l) => Number(l.id)));
   const remaining = live.filter((l) => !struckIds.has(Number(l.id)));
   const vatEnabled = order.vatEnabled === true;
-  const { net, vat } = sumTicketLinesNetVat(
-    remaining as any,
-    vatEnabled,
-    Number(options?.defaultVatRate || 0),
-  );
-
   const cancelsSale = request.kind === 'CANCEL' || remaining.length === 0;
   const struckGross = roundMoney(
     struck.reduce((sum, l) => sum + lineGross(l), 0),
@@ -139,6 +133,14 @@ export function planSaleCorrection(
   const amountDelta = cancelsSale
     ? roundMoney(-originalTotal)
     : roundMoney(-Math.min(struckGross, originalTotal));
+  // VAT of what the sale still totals, not of the remaining lines at menu
+  // price — the discount / service charge stay on the restated sale.
+  const { net, vat } = splitChargedNetVat(
+    remaining as any,
+    roundMoney(originalTotal + amountDelta),
+    vatEnabled,
+    Number(options?.defaultVatRate || 0),
+  );
 
   return {
     ok: true,

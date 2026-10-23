@@ -121,6 +121,25 @@ describe('swrCache', () => {
     }
   });
 
+  it('does not let a read from before an invalidation write back', async () => {
+    let release!: (v: string) => void;
+    const slow = swr('k', () => new Promise<string>((r) => (release = r)), {
+      maxAgeMs: 60_000,
+    });
+    // The bill changed on the till while that read was in flight.
+    invalidateCache('k');
+    release('before-transfer');
+    await expect(slow).resolves.toBe('before-transfer');
+    expect(peek('k')).toBeUndefined();
+
+    // The next read fetches again rather than joining the stale one.
+    const fresh = await swr('k', async () => 'after-transfer', {
+      maxAgeMs: 60_000,
+    });
+    expect(fresh).toBe('after-transfer');
+    expect(peek('k')).toBe('after-transfer');
+  });
+
   it('dedupes concurrent fetchers', async () => {
     let calls = 0;
     const fetcher = async () => {

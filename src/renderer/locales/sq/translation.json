@@ -82,6 +82,7 @@
     "viewLess": "Shiko më pak"
   },
   "failedSync": {
+    "dismissAllConfirm": "Të hidhen të {{count}} veprimet e padërguara? Porositë, anulimet dhe pagesat në këtë listë nuk do të arrijnë në arkë.",
     "title": "Dështime sinkronizimi",
     "banner_one": "{{count}} veprim nuk u sinkronizua — duhet shqyrtim",
     "banner_other": "{{count}} veprime nuk u sinkronizuan — duhet shqyrtim",
@@ -467,6 +468,7 @@
     "menuNoItems": "Nuk ka asgjë për të printuar në këtë tavolinë."
   },
   "preferences": {
+    "loadFailed": "Preferencat nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
     "title": "Preferencat",
     "saved": "U ruajt.",
     "currencyInvalid": "Valuta duhet të jetë kod ISO me 3 shkronja (p.sh. EUR, ALL, USD).",
@@ -675,6 +677,7 @@
     "receiptHint": "Këto të dhëna do të përdoren në faturat e printuara."
   },
   "settingsAreas": {
+    "loadFailed": "Zonat e tavolinave nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
     "title": "Zonat e tavolinave",
     "help": "Plani i sallës ndahet në çdo pajisje kamarieri dhe hosti. Përdor Ndrysho planin për tavolinat dhe format — ndryshimet shfaqen menjëherë në çdo pajisje të lidhur.",
     "editLayout": "Ndrysho planin",
@@ -801,6 +804,7 @@
     "noLayoutYet": "Nuk ka plan ende — kërkoji një admin ta ngrerë këtë zonë te Cilësimet → Zonat e tavolinave."
   },
   "fiscal": {
+    "loadFailed": "Cilësimet e fiskalizimit nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
     "shopVoidAction": "Anulo shitjen",
     "shopVoidHelp": "Kjo shitje nuk është fiskalizuar. Anulimi e heq nga të ardhurat, raportet dhe lista e shitjeve, dhe i kthen artikujt në stok. Vetëm admini mund të anulojë, me PIN-in e adminit.",
     "shopVoidReasonHint": "p.sh. u printua gabimisht",
@@ -1182,6 +1186,7 @@
     "destinationAriaTable": "Tavolina destinacion"
   },
   "reservations": {
+    "timeRequired": "Zgjidhni orën e rezervimit.",
     "title": "Rezervime",
     "loginSubtitle": "Hyni si Host ose Admin për të menaxhuar rezervimet e sotme.",
     "whoIsLoggingIn": "Kush po hyn?",
@@ -1827,6 +1832,7 @@
     "fallbackTitle": "{{text}}"
   },
   "adminLan": {
+    "loadFailed": "Cilësimet e rrjetit nuk u ngarkuan, ndaj nuk u ndryshua asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
     "hostRunningTitle": "Tabletat mbeten të lidhura në sfond",
     "hostRunningTitleStore": "Arkat shtesë mbeten të lidhura në sfond",
     "hostRunningBody": "Në POS-in e instaluar, mbyllja e kësaj dritareje nuk e ndal aplikacionin. Vazhdon të punojë te shiriti i menysë (Mac) ose tabaka e sistemit (Windows) që iPad-et dhe tabletat të marrin porosi. Hape sërish nga ajo ikonë. Zgjidh Dil te ikona për ta ndalur — tabletat shkëputen derisa POS-i të hapet sërish në këtë kompjuter.",

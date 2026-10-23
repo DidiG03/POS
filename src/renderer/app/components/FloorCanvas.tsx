@@ -556,6 +556,10 @@ export default function FloorCanvas({
   // layout on load/resize without snapping back to centre mid-drag.
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [layoutFailed, setLayoutFailed] = useState(false);
+  // Saving writes the whole area. After a failed read the canvas is empty,
+  // so one added table (or closing the editor) replaced every table there.
+  const layoutFailedRef = useRef(false);
+  layoutFailedRef.current = layoutFailed;
   const onLayoutReadyRef = useRef(onLayoutReady);
   onLayoutReadyRef.current = onLayoutReady;
 
@@ -589,6 +593,8 @@ export default function FloorCanvas({
       if (saved == null) {
         if (!cached) {
           setLayoutFailed(true);
+          // Shown in the editor toolbar; the empty canvas is not the plan.
+          setSaveError(t('tables.layoutLoadFailed'));
           setNodes([]);
           setDirty(false);
           onLayoutReadyRef.current?.({ area, tableCount: 0 });
@@ -626,6 +632,7 @@ export default function FloorCanvas({
     const sc = scope;
     return () => {
       if (!isEditorRef.current || !dirtyRef.current) return;
+      if (layoutFailedRef.current) return;
       const draft = nodesRef.current;
       if (!draft?.length) return;
       void (window as any).api.layout
@@ -885,6 +892,10 @@ export default function FloorCanvas({
 
   const save = useCallback(async () => {
     if (!nodes) return;
+    if (layoutFailedRef.current) {
+      setSaveError(t('tables.layoutLoadFailed'));
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     try {
@@ -1286,6 +1297,8 @@ export default function FloorCanvas({
           );
           if (cancelled) return;
           if (!Array.isArray(saved)) return;
+          setLayoutFailed(false);
+          setSaveError(null);
           setNodes(normaliseSavedNodes(saved));
           setDirty(false);
           setLayoutVersion((v) => v + 1);

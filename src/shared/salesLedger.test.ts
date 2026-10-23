@@ -67,8 +67,25 @@ describe('saleFiguresFromPayload', () => {
     expect(figs.total).toBe(1140);
     expect(figs.discountAmount).toBe(60);
     expect(figs.vatEnabled).toBe(true);
-    expect(figs.subtotal).toBe(1000);
-    expect(figs.vat).toBe(200);
+    // VAT on the 1140 charged, as the fiscal invoice files it.
+    expect(figs.subtotal).toBe(950);
+    expect(figs.vat).toBe(190);
+  });
+
+  it('adds service charge VAT to the bands it was shared across', () => {
+    const figs = saleFiguresFromPayload(
+      {
+        items: [
+          { name: 'Wine', qty: 1, unitPrice: 120, vatRate: 0.2 },
+          { name: 'Room', qty: 1, unitPrice: 106, vatRate: 0.06 },
+        ],
+        meta: { kind: 'PAYMENT', totalAfter: 248.6, serviceChargeAmount: 22.6 },
+      },
+      { fiscal: { enabled: true }, defaultVatRate: 0.2 },
+    );
+    expect(figs.vat).toBe(28.6);
+    expect(figs.subtotal).toBe(220);
+    expect(figs.subtotal + figs.vat).toBeCloseTo(figs.total, 2);
   });
 
   it('turns VAT off when fiskalizimi is disabled even if meta says otherwise', () => {

@@ -135,7 +135,11 @@ export function UpdateNotification() {
         if (result.error) setError(result.error);
         return;
       }
-      await window.api.updater.installUpdate();
+      // A refusal (no download, this Mac user cannot replace the app) comes
+      // back as `{ error }`, not a throw; ignoring it left Install doing
+      // nothing visible.
+      const result: any = await window.api.updater.installUpdate();
+      if (result?.error) setError(String(result.error));
     } catch (e: any) {
       setError(e?.message || 'Failed to install update');
     }

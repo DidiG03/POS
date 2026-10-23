@@ -610,8 +610,12 @@ export default function TablesPage() {
           // await the host bill — that LAN RTT is what made occupied taps
           // feel stuck on phones. OrderPage still syncs on mount; this
           // background hydrate can fill the cart while the chunk loads.
+          const tappedKey = tableKey(area, openLabel);
           void loadOpenTableBill(area, openLabel)
             .then((bill) => {
+              // The waiter may have backed out and opened another table by
+              // now; this bill must not land in that table's cart.
+              if (useTicketStore.getState().boundKey !== tappedKey) return;
               if (bill) {
                 hydrate({ items: bill.items as any, note: bill.note });
               }
@@ -729,7 +733,6 @@ export default function TablesPage() {
         fallback: t('reports.printTicketFailed'),
         key: `tables.print:${area}:${openLabel}`,
       });
-      toast.warn(t('order.ticketPrintQueued'));
     } finally {
       setMenuBusy(false);
     }

@@ -254,8 +254,10 @@ export async function recallKdsTicket(
       return await recallWholeTicketRow(prisma, station, row);
     }
 
-    const row = await (prisma as any).kdsTicketStation
-      .findFirst({
+    // A void closes its cards as DONE too; recalling one of those brings
+    // back a card with nothing left to cook. Take the last real bump.
+    const rows = await (prisma as any).kdsTicketStation
+      .findMany({
         where: {
           station,
           status: 'DONE',
@@ -263,8 +265,14 @@ export async function recallKdsTicket(
         },
         orderBy: { bumpedAt: 'desc' },
         include: { ticket: true },
+        take: 20,
       })
-      .catch(() => null);
+      .catch(() => []);
+    const row = (rows || []).find((r: any) =>
+      (Array.isArray(r?.ticket?.itemsJson) ? r.ticket.itemsJson : []).some(
+        (it: any) => stationMatches(it, station) && !it?.voided,
+      ),
+    );
     if (!row) return { ok: false as const, ticketId: null };
     return await recallWholeTicketRow(prisma, station, row);
   } catch {

@@ -2338,12 +2338,23 @@ export default function OrderPage() {
             appliedRequestIdsRef.current.add(Number(r.id));
             const items = Array.isArray(r.items) ? r.items : [];
             for (const it of items) {
+              // Add the line as the colleague sent it. Keying it by name lost
+              // the stock count and kitchen routing, the note was dropped,
+              // and "1 + extra taps" turned 0.35 kg into 1 kg.
+              const qty = Number(it.qty);
+              const before = new Set(
+                useTicketStore.getState().lines.map((l) => l.id),
+              );
               addItem({
-                sku: String(it.name),
+                sku: String(it.sku || it.name),
                 name: String(it.name),
                 unitPrice: Number(it.unitPrice || 0),
                 vatRate: Number(it.vatRate || 0),
+                qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
                 station: it.station,
+                categoryId:
+                  it.categoryId != null ? Number(it.categoryId) : undefined,
+                categoryName: it.categoryName || undefined,
                 courseId:
                   addMode === 'course' &&
                   String(it.station || '').toUpperCase() !== 'BAR'
@@ -2351,10 +2362,13 @@ export default function OrderPage() {
                     : null,
                 seatId: addMode === 'seat' ? activeSeatId : null,
               });
-              const times = Math.max(1, Number(it.qty || 1)) - 1;
-              for (let i = 0; i < times; i++) {
-                const last = useTicketStore.getState().lines.slice(-1)[0];
-                if (last) useTicketStore.getState().increment(last.id);
+              const note = String(it.note || '').trim();
+              if (note) {
+                const added = useTicketStore
+                  .getState()
+                  .lines.find((l) => !before.has(l.id));
+                if (added)
+                  useTicketStore.getState().setLineNote(added.id, note);
               }
             }
           }
@@ -3382,6 +3396,11 @@ export default function OrderPage() {
                             unitPrice: l.unitPrice,
                             vatRate: l.vatRate,
                             note: l.note,
+                            // So the owner's screen routes it to the right
+                            // station (a drink to the bar, not the kitchen).
+                            station: l.station,
+                            categoryId: l.categoryId,
+                            categoryName: l.categoryName,
                           }));
                           try {
                             await window.api.requests.create({
@@ -4342,7 +4361,12 @@ export default function OrderPage() {
                       const latest = await window.api.tickets
                         .getLatestForTable(toA, toL)
                         .catch(() => null as any);
-                      if (latest?.items) {
+                      // Only if the cart is still on the destination.
+                      if (
+                        latest?.items &&
+                        useTicketStore.getState().boundKey ===
+                          tableKey(toA, toL)
+                      ) {
                         useTicketStore.getState().hydrate({
                           items: latest.items as any,
                           note: latest.note || '',
@@ -4675,6 +4699,14 @@ export default function OrderPage() {
                       LIVE_TICKET_BUDGET_MS,
                     ).then((latest) => {
                       if (!latest) return;
+                      // The void is not awaited, so the waiter may be on
+                      // another table by now; this bill is not theirs.
+                      if (
+                        useTicketStore.getState().boundKey !==
+                        tableKey(area, label)
+                      ) {
+                        return;
+                      }
                       const allItems = ((latest as any)?.items || []) as any[];
                       useTicketStore.getState().hydrate({
                         items: allItems as any,
@@ -4909,7 +4941,10 @@ export default function OrderPage() {
           inputMode="decimal"
           value={weightInput ? `${weightInput} ${weightUnit}` : ''}
           onChange={(e) => {
+            // A comma is the decimal key on Albanian keyboards. Stripping it
+            // turned "0,35" kg into 35 kg.
             const digits = e.target.value
+              .replace(/,/g, '.')
               .replace(/[^0-9.]/g, '')
               .replace(/(\..*)\./g, '$1');
             setWeightInput(digits);
@@ -5171,9 +5206,12 @@ function computeTotals(
   defaultVatRate = 0,
 ) {
   const { net, vat } = sumTicketLinesNetVat(lines, vatEnabled, defaultVatRate);
-  const subtotal = roundMoney(net);
+  // Round the gross once, as the host does. Rounding net and VAT apart
+  // and adding them put the total a cent over the charge (€0.15 → €0.16
+  // at 20%), and the host flagged each such payment to every admin.
+  const total = roundMoney(net + vat);
   const vatAmount = roundMoney(vat);
-  return { subtotal, vat: vatAmount, total: roundMoney(subtotal + vatAmount) };
+  return { subtotal: roundMoney(total - vatAmount), vat: vatAmount, total };
 }
 
 // makeFormatAmount imported from utils/format

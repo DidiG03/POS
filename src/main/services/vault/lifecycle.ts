@@ -21,9 +21,14 @@ import {
 import { isOsUnlockAvailable, unwrapDekFromOs, wrapDekForOs } from './osUnlock';
 import { secureDelete, secureDeleteSqliteGroup } from './secureDelete';
 import {
+  VAULT_VERSION,
+  clearPendingVaultFile,
   effectiveUnlockMode,
+  promotePendingVaultFile,
+  readPendingVaultFile,
   readVaultFile,
   vaultFilePath,
+  writePendingVaultFile,
   writeVaultFile,
   type VaultFile,
 } from './store';
@@ -133,6 +138,7 @@ export function getVaultStatus(opts?: {
   }
   const userData = opts?.userData ?? vaultUserData();
   const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
+  adoptPendingVault(userData, dbFile);
   const vault = readVaultFile(userData);
   const extras = {
     osAvailable,
@@ -144,6 +150,36 @@ export function getVaultStatus(opts?: {
   if (!vault && encrypted) return { state: 'broken', ...extras };
   if (!vault) return { state: 'setup', ...extras };
   return { state: 'locked', ...extras };
+}
+
+/**
+ * First-time encryption stages its key in vault.pending.json before the
+ * plaintext ledger is replaced. If the till stopped after the ledger was
+ * encrypted but before the vault was promoted, that staged file is the only
+ * copy of the key: make it the vault. Beside a plaintext ledger it is just
+ * an abandoned setup and is left for setup to discard.
+ */
+function adoptPendingVault(userData: string, dbFile: string): void {
+  try {
+    if (readVaultFile(userData)) return;
+    if (!readPendingVaultFile(userData)) return;
+    if (!looksLikeSqliteCiphertext(dbFile)) return;
+    promotePendingVaultFile(userData);
+    console.warn(
+      '[vault] adopted the staged vault left by an interrupted setup',
+    );
+  } catch (e) {
+    console.error('[vault] could not adopt the staged vault:', e);
+  }
+}
+
+/** Older layouts, or a wrap kept only because the OS store was missing. */
+function vaultNeedsRewrite(vault: VaultFile): boolean {
+  return (
+    vault.version !== VAULT_VERSION ||
+    Boolean(vault.passphrase) ||
+    vault.unlockMode !== 'os'
+  );
 }
 
 function persistVault(userData: string, vault: VaultFile, dek: Buffer): void {
@@ -204,11 +240,17 @@ function vaultOpError(e: unknown): string {
 }
 
 function discardIncompleteVault(userData: string, dbFile: string): void {
-  try {
-    fs.unlinkSync(vaultFilePath(userData));
-  } catch {
-    // ignore
+  for (const file of [
+    vaultFilePath(userData),
+    `${vaultFilePath(userData)}.tmp`,
+  ]) {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // ignore
+    }
   }
+  clearPendingVaultFile(userData);
   secureDelete(`${dbFile}.encrypted-new`);
 }
 
@@ -230,6 +272,7 @@ async function setupVaultWithOsOp(opts?: {
   if (!isOsUnlockAvailable()) return { ok: false, error: 'os_unavailable' };
   const userData = opts?.userData ?? vaultUserData();
   const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
+  adoptPendingVault(userData, dbFile);
   if (readVaultFile(userData)) {
     if (looksLikeSqliteCiphertext(dbFile)) {
       return { ok: false, error: 'already_setup' };
@@ -251,15 +294,35 @@ async function setupVaultWithOsOp(opts?: {
     os: { provider: 'safeStorage', blob: osBlob },
   };
 
+  // The key goes to disk before the plaintext ledger is encrypted and
+  // shredded. Writing it afterwards meant a power cut, or a failed write
+  // (disk full), left an encrypted ledger whose only key was gone.
+  const wasEncrypted = looksLikeSqliteCiphertext(dbFile);
+  try {
+    writePendingVaultFile(userData, vault);
+  } catch (e) {
+    clearPendingVaultFile(userData);
+    return { ok: false, error: vaultOpError(e) };
+  }
   try {
     await openWithDek(dbFile, dek, opts?.openPrisma !== false);
-    writeVaultFile(userData, vault);
+    promotePendingVaultFile(userData);
     shredPlaintextSidecars(userData, dbFile);
     pendingRecoveryKey = recoveryKey;
     return { ok: true, recoveryKey };
   } catch (e) {
     unlockedDek = null;
-    discardIncompleteVault(userData, dbFile);
+    if (!wasEncrypted && looksLikeSqliteCiphertext(dbFile)) {
+      // This setup already encrypted the ledger with `dek`; keep its key.
+      try {
+        promotePendingVaultFile(userData);
+      } catch (promoteErr) {
+        console.error('[vault] could not keep the new key:', promoteErr);
+      }
+      pendingRecoveryKey = recoveryKey;
+    } else {
+      discardIncompleteVault(userData, dbFile);
+    }
     return { ok: false, error: vaultOpError(e) };
   }
 }
@@ -271,6 +334,7 @@ export async function tryUnlockWithOs(opts?: {
 }): Promise<boolean> {
   const userData = opts?.userData ?? vaultUserData();
   const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
+  adoptPendingVault(userData, dbFile);
   const vault = readVaultFile(userData);
   if (!vault || effectiveUnlockMode(vault) !== 'os' || !vault.os?.blob) {
     return false;
@@ -283,10 +347,14 @@ export async function tryUnlockWithOs(opts?: {
     unlockedDek = null;
     return false;
   }
-  try {
-    persistVault(userData, vault, dek);
-  } catch (e) {
-    console.error('[vault] persist after unlock failed:', e);
+  // Rewriting vault.json on every start put the ledger key at risk of a
+  // power cut on every boot; only migrate files that need it.
+  if (vaultNeedsRewrite(vault)) {
+    try {
+      persistVault(userData, vault, dek);
+    } catch (e) {
+      console.error('[vault] persist after unlock failed:', e);
+    }
   }
   return true;
 }
@@ -317,6 +385,7 @@ async function unlockVaultOp(
   if (unlockedDek) return { ok: true };
   const userData = opts?.userData ?? vaultUserData();
   const dbFile = opts?.dbFile ?? resolveSqliteFilePath();
+  adoptPendingVault(userData, dbFile);
   const vault = readVaultFile(userData);
   if (!vault) return { ok: false, error: 'missing_vault' };
 
@@ -507,6 +576,20 @@ function moveSqliteGroup(from: string, to: string): void {
   }
 }
 
+/**
+ * A swap that failed after the live ledger was moved aside: put it back.
+ * Reopening a missing file creates an empty ledger, and the till carried
+ * on with no sales while the real ones sat in the backup.
+ */
+function restoreMovedLedger(dbFile: string, movedTo: string | null): void {
+  if (!movedTo || fs.existsSync(dbFile) || !fs.existsSync(movedTo)) return;
+  try {
+    moveSqliteGroup(movedTo, dbFile);
+  } catch (e) {
+    console.error('[vault] could not put the ledger back:', e);
+  }
+}
+
 function removeSqliteGroup(file: string): void {
   for (const suffix of ['', '-wal', '-shm']) {
     try {
@@ -586,6 +669,7 @@ async function repairLedgerOp(opts?: {
 
   const rebuilt = `${dbFile}.repair-new`;
   let issues: string[] = [];
+  let backup: string | null = null;
   // Requests that arrive meanwhile get POS_DB_LOCKED instead of opening the
   // file with the wrong engine.
   process.env.POS_VAULT_LOCK = '1';
@@ -604,7 +688,7 @@ async function repairLedgerOp(opts?: {
     });
     const rows = await proveCopy(dbFile, key, rebuilt, key);
 
-    const backup = `${dbFile}.before-repair-${fileStamp()}`;
+    backup = `${dbFile}.before-repair-${fileStamp()}`;
     moveSqliteGroup(dbFile, backup);
     replaceFile(rebuilt, dbFile);
     await reopenLedger(dbFile, key);
@@ -621,6 +705,7 @@ async function repairLedgerOp(opts?: {
     };
   } catch (e) {
     console.error('[vault] ledger repair failed:', e);
+    restoreMovedLedger(dbFile, backup);
     removeSqliteGroup(rebuilt);
     try {
       await reopenLedger(dbFile, key);
@@ -655,6 +740,7 @@ async function disableDiskProtectionOp(opts?: {
   const key = dekToEncryptionKey(unlockedDek);
   const plainNew = `${dbFile}.plain-new`;
   let issues: string[] = [];
+  let encryptedBackup: string | null = null;
   process.env.POS_VAULT_LOCK = '1';
   await disconnectPrisma();
   try {
@@ -676,7 +762,7 @@ async function disableDiskProtectionOp(opts?: {
     const stamp = fileStamp();
     // Kept encrypted: it can still be opened with the recovery key and the
     // vault file saved beside it.
-    const encryptedBackup = `${dbFile}.encrypted-backup-${stamp}`;
+    encryptedBackup = `${dbFile}.encrypted-backup-${stamp}`;
     moveSqliteGroup(dbFile, encryptedBackup);
     replaceFile(plainNew, dbFile);
     const vaultBackup = path.join(userData, `vault-backup-${stamp}.json`);
@@ -710,6 +796,7 @@ async function disableDiskProtectionOp(opts?: {
     };
   } catch (e) {
     console.error('[vault] turning Disk protection off failed:', e);
+    restoreMovedLedger(dbFile, encryptedBackup);
     removeSqliteGroup(plainNew);
     try {
       await reopenLedger(dbFile, key);

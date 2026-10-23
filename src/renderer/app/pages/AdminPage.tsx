@@ -32,6 +32,7 @@ import { Badge } from '../../components/ui/Badge';
 import { EmptyState } from '../../components/ui/Surface';
 import { Segmented } from '../../components/ui/Segmented';
 import { cn } from '../../components/ui/cn';
+import { addDays } from '../../utils/calendarMath';
 
 type Overview = {
   activeUsers: number;
@@ -356,13 +357,15 @@ export default function AdminPage() {
         startIso: startOfToday.toISOString(),
         endIso: endOfToday.toISOString(),
       };
+    // Step by calendar days, not 24h: a day the clocks change is 23 or 25
+    // hours, and "Yesterday" then started at 01:00 or 23:00.
     if (shiftRange === 'YESTERDAY') {
-      const s = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
-      const e = new Date(endOfToday.getTime() - 24 * 60 * 60 * 1000);
+      const s = addDays(startOfToday, -1);
+      const e = addDays(endOfToday, -1);
       return { startIso: s.toISOString(), endIso: e.toISOString() };
     }
     if (shiftRange === 'WEEK') {
-      const s = new Date(startOfToday.getTime() - 6 * 24 * 60 * 60 * 1000);
+      const s = addDays(startOfToday, -6);
       return { startIso: s.toISOString(), endIso: endOfToday.toISOString() };
     }
     if (shiftRange === 'MONTH') {

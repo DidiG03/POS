@@ -15,6 +15,17 @@ type Store = Record<string, Entry>;
 
 const mem: Store = {};
 const inflight = new Map<string, Promise<unknown>>();
+/**
+ * Bumped by every invalidation. A read that started before one (a bill
+ * fetched just before a transfer or void) must not write its answer back
+ * afterwards: that put the stale value straight back into the cache.
+ */
+const generations = new Map<string, number>();
+
+function bumpGeneration(key: string): void {
+  generations.set(key, (generations.get(key) ?? 0) + 1);
+  inflight.delete(key);
+}
 let persistTimer: number | null = null;
 let loaded = false;
 
@@ -161,6 +172,7 @@ export function patchCacheValue<T>(
 export function invalidateCache(key: string): void {
   load();
   delete mem[key];
+  bumpGeneration(key);
   schedulePersist();
 }
 
@@ -168,6 +180,9 @@ export function invalidateCachePrefix(prefix: string): void {
   load();
   for (const k of Object.keys(mem)) {
     if (k.startsWith(prefix)) delete mem[k];
+  }
+  for (const k of [...inflight.keys(), ...generations.keys()]) {
+    if (k.startsWith(prefix)) bumpGeneration(k);
   }
   schedulePersist();
 }
@@ -190,9 +205,10 @@ export async function swr<T>(
 
   const revalidate = (): Promise<T> => {
     if (existing) return existing;
+    const gen = generations.get(key) ?? 0;
     const p = fetcher()
       .then((value) => {
-        writeCache(key, value);
+        if ((generations.get(key) ?? 0) === gen) writeCache(key, value);
         return value;
       })
       .finally(() => {

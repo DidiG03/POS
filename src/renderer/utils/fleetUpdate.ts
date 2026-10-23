@@ -274,7 +274,9 @@ export async function installFleetUpdates(): Promise<{ error?: string }> {
   const admin = await local?.getUpdateStatus?.().catch(() => null);
   if (admin?.downloaded) {
     try {
-      await local?.installUpdate?.();
+      // Refusals come back as `{ error }`, not a throw.
+      const r = await local?.installUpdate?.();
+      if (r?.error) return { error: String(r.error) };
     } catch (e: any) {
       return { error: String(e?.message || e || 'Failed to install Admin') };
     }

@@ -352,6 +352,16 @@ describe('printWithProfile', () => {
     expect(sendSerial).toHaveBeenCalledTimes(1);
   });
 
+  it('returns a failed print instead of throwing', async () => {
+    sendSerial.mockRejectedValueOnce(new Error('serialport module missing'));
+    const r = await printWithProfile(
+      payload,
+      {} as any,
+      { id: 'p', name: 'P', mode: 'SERIAL', serialPath: '/dev/x' } as any,
+    );
+    expect(r).toEqual({ ok: false, error: 'serialport module missing' });
+  });
+
   it('NETWORK with no IP fails fast', async () => {
     const r = await printWithProfile(
       payload,

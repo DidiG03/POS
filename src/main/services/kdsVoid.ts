@@ -17,13 +17,21 @@ export async function applyKdsVoidTicket(input: {
 
   try {
     await (prisma as any).$transaction(async (tx: any) => {
+      // This sitting's order. A void that lands after the close (which
+      // closes the KDS order too) may still take the last closed order, but
+      // only while it has cards waiting in the kitchen — otherwise it is the
+      // previous party's, already cooked, and must not be struck.
       const order =
         (await tx.kdsOrder.findFirst({
           where: { area, tableLabel, closedAt: null },
           orderBy: { openedAt: 'desc' },
         })) ||
         (await tx.kdsOrder.findFirst({
-          where: { area, tableLabel },
+          where: {
+            area,
+            tableLabel,
+            tickets: { some: { stations: { some: { status: 'NEW' } } } },
+          },
           orderBy: { openedAt: 'desc' },
         }));
       if (!order) return;

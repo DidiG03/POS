@@ -69,6 +69,12 @@ import {
   issueApprovalToken,
 } from './services/approvalTokens';
 import { actorIdentityAllows, resolveActorUserId } from './services/ipcActor';
+import { clockOutForceAllowed, withShiftLock } from './services/shiftClock';
+import { validCoversCount } from '@shared/coversCount';
+import {
+  LAST_ADMIN_ERROR,
+  wouldRemoveLastActiveAdmin,
+} from './services/lastAdmin';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import {
   LoginWithPinInputSchema,
@@ -152,6 +158,8 @@ import {
   getVaultPrefs,
   getVaultStatus,
   isVaultRequired,
+  peekPendingRecoveryKey,
+  tryUnlockWithOs,
   repairLedger,
   setVaultUnlockMode,
   setupVaultWithOs,
@@ -1688,7 +1696,18 @@ ipcHandle('vault:ackRecovery', async () => {
 
 ipcHandle('vault:setup', async () => {
   const result = await setupVaultWithOs();
-  if (result.ok) await completeVaultAndBoot();
+  if (result.ok) {
+    await completeVaultAndBoot();
+    return result;
+  }
+  // Setup encrypted the ledger but could not open it afterwards; it kept the
+  // key. Open it the normal way and still hand over the new recovery key —
+  // otherwise the owner is asked for a key they were never shown.
+  const recoveryKey = peekPendingRecoveryKey();
+  if (recoveryKey && (await tryUnlockWithOs())) {
+    await completeVaultAndBoot();
+    return { ok: true as const, recoveryKey };
+  }
   return result;
 });
 
@@ -1991,6 +2010,14 @@ ipcHandle('auth:updateUser', async (_e, payload) => {
   if (sanitizedInput.role) {
     assertStaffRoleAllowed(sanitizedInput.role);
   }
+  if (
+    await wouldRemoveLastActiveAdmin(input.id, {
+      active: sanitizedInput.active,
+      role: sanitizedInput.role,
+    })
+  ) {
+    throw new Error(LAST_ADMIN_ERROR);
+  }
 
   // Log user update (security audit)
   logSecurityEvent('user_updated', {
@@ -2047,6 +2074,9 @@ ipcHandle('auth:deleteUser', async (_e, payload) => {
 
   // Local-first: always use local DB for user delete/disable
   if (!input.hard) {
+    if (await wouldRemoveLastActiveAdmin(id, { active: false })) {
+      throw new Error(LAST_ADMIN_ERROR);
+    }
     await prisma.user.update({ where: { id }, data: { active: false } });
     // A deactivated account must lose its privileges now, not whenever its
     // window happens to reload.
@@ -2123,6 +2153,10 @@ ipcHandle('shifts:getOpen', async (_e, { userId }, ctx) => {
 ipcHandle('shifts:clockIn', async (_e, { userId }, ctx) => {
   // Clocking a colleague in is time fraud; pin the shift to the sender.
   userId = resolveActorUserId(ctx, userId);
+  return withShiftLock(userId, () => clockInLocal(userId));
+});
+
+async function clockInLocal(userId: number) {
   const already = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -2162,10 +2196,15 @@ ipcHandle('shifts:clockIn', async (_e, { userId }, ctx) => {
     openedById: created.openedById,
     closedById: created.closedById ?? null,
   };
-});
+}
 
 ipcHandle('shifts:clockOut', async (_e, { userId, force }, ctx) => {
   userId = resolveActorUserId(ctx, userId);
+  const forced = clockOutForceAllowed(force, ctx?.session?.role);
+  return withShiftLock(userId, () => clockOutLocal(userId, forced));
+});
+
+async function clockOutLocal(userId: number, force: boolean) {
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -2239,7 +2278,7 @@ ipcHandle('shifts:clockOut', async (_e, { userId, force }, ctx) => {
     openedById: updated.openedById,
     closedById: updated.closedById ?? null,
   };
-});
+}
 
 ipcHandle('shifts:listOpen', async (_e) => {
   const open = await prisma.dayShift.findMany({ where: { closedAt: null } });
@@ -3412,24 +3451,37 @@ ipcHandle('reservations:listCounts', async (_e, input) => {
   return reservationsService.listReservationCounts(input || {});
 });
 
-ipcHandle('reservations:create', async (_e, input) => {
+ipcHandle('reservations:create', async (_e, input, ctx) => {
   assertReservationsEnabled();
-  return reservationsService.createReservation(input || {});
+  // The booking is recorded under whoever is signed in, as on the LAN route.
+  return reservationsService.createReservation({
+    ...(input || {}),
+    createdById: resolveActorUserId(ctx, input?.createdById),
+  });
 });
 
-ipcHandle('reservations:update', async (_e, input) => {
+ipcHandle('reservations:update', async (_e, input, ctx) => {
   assertReservationsEnabled();
-  return reservationsService.updateReservation(input || {});
+  return reservationsService.updateReservation({
+    ...(input || {}),
+    actorId: resolveActorUserId(ctx, input?.actorId),
+  });
 });
 
-ipcHandle('reservations:setStatus', async (_e, input) => {
+ipcHandle('reservations:setStatus', async (_e, input, ctx) => {
   assertReservationsEnabled();
-  return reservationsService.setReservationStatus(input || {});
+  return reservationsService.setReservationStatus({
+    ...(input || {}),
+    actorId: resolveActorUserId(ctx, input?.actorId),
+  });
 });
 
-ipcHandle('reservations:delete', async (_e, input) => {
+ipcHandle('reservations:delete', async (_e, input, ctx) => {
   assertReservationsEnabled();
-  return reservationsService.deleteReservation(input || {});
+  return reservationsService.deleteReservation({
+    ...(input || {}),
+    actorId: resolveActorUserId(ctx, input?.actorId),
+  });
 });
 
 // Backups: create/list/restore (local SQLite)
@@ -4517,8 +4569,8 @@ ipcHandle('reports:getMySalesTrends', async (_e, input, ctx) => {
 });
 // Covers API
 ipcHandle('covers:save', async (_e, { area, label, covers }) => {
-  const num = Number(covers);
-  if (!area || !label || !Number.isFinite(num) || num <= 0) return false;
+  const num = validCoversCount(covers);
+  if (!area || !label || num == null) return false;
   assertStoreCounterAllowed(area);
   await prisma.covers.create({ data: { area, label, covers: num } });
   await compactCoversForTable(area, label);

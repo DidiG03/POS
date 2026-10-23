@@ -310,6 +310,92 @@ describe('setupVaultWithOs / unlockVault', () => {
     expect(looksLikeSqliteCiphertext(dbFile)).toBe(true);
   });
 
+  it('keeps the key when the till stopped before the vault was saved', async () => {
+    useOs();
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    const src = createClient({ url: `file:${dbFile}` });
+    await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    await src.execute('INSERT INTO t (id) VALUES (7)');
+    await src.close();
+    const setup = await setupVaultWithOs({
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(true);
+    lockVaultForTests();
+
+    // The ledger is encrypted and its plaintext gone, but the power went
+    // before the staged key became vault.json.
+    const vaultPath = path.join(dir, 'vault.json');
+    fs.renameSync(vaultPath, path.join(dir, 'vault.pending.json'));
+    expect(looksLikeSqliteCiphertext(dbFile)).toBe(true);
+
+    expect(
+      await tryUnlockWithOs({ userData: dir, dbFile, openPrisma: false }),
+    ).toBe(true);
+    expect(fs.existsSync(vaultPath)).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'vault.pending.json'))).toBe(false);
+  });
+
+  it('starts setup over when it stopped before the ledger was encrypted', async () => {
+    useOs();
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    const src = createClient({ url: `file:${dbFile}` });
+    await src.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    await src.close();
+    // A staged key beside a ledger that is still plaintext.
+    fs.writeFileSync(
+      path.join(dir, 'vault.pending.json'),
+      JSON.stringify({
+        version: 2,
+        recovery: { kdf: { salt: 'aa' }, iv: 'bb', ct: 'cc' },
+      }),
+    );
+
+    expect(
+      await tryUnlockWithOs({ userData: dir, dbFile, openPrisma: false }),
+    ).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'vault.json'))).toBe(false);
+
+    const setup = await setupVaultWithOs({
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'vault.pending.json'))).toBe(false);
+    expect(looksLikeSqliteCiphertext(dbFile)).toBe(true);
+  });
+
+  it('does not rewrite an up-to-date vault.json on every start', async () => {
+    useOs();
+    const dir = tmpDir();
+    const dbFile = path.join(dir, 'pos.db');
+    const setup = await setupVaultWithOs({
+      userData: dir,
+      dbFile,
+      kdf: FAST,
+      openPrisma: false,
+    });
+    expect(setup.ok).toBe(true);
+    lockVaultForTests();
+    const vaultPath = path.join(dir, 'vault.json');
+    const before = fs.readFileSync(vaultPath, 'utf8');
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(vaultPath, old, old);
+
+    expect(
+      await tryUnlockWithOs({ userData: dir, dbFile, openPrisma: false }),
+    ).toBe(true);
+    expect(fs.readFileSync(vaultPath, 'utf8')).toBe(before);
+    expect(fs.statSync(vaultPath).mtimeMs).toBe(old.getTime());
+  });
+
   it('does not auto-create a vault before the owner encrypts the till', async () => {
     useOs();
     const dir = tmpDir();

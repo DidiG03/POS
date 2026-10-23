@@ -17,7 +17,10 @@ import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
 import { coreServices } from './core';
 import { roundMoney } from '@shared/pricing';
-import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
+import {
+  splitChargedNetVat,
+  sumTicketLinesNetVat,
+} from '@shared/ticketRevenue';
 import { isTransferredOutNote } from './tableTransfer';
 
 export type PaidSaleLine = {
@@ -105,15 +108,21 @@ export function normalizePaidSaleVat(
     return { ...sale, subtotal: gross, vatAmount: 0, total: gross };
   }
   if (sale.vatAmount > 0) return sale;
-  const { net, vat } = sumTicketLinesNetVat(
+  const goodsSplit = sumTicketLinesNetVat(
     sale.items,
     true,
     Number(opts.defaultVatRate || 0),
   );
-  const goods = roundMoney(net + vat);
+  const goods = roundMoney(goodsSplit.net + goodsSplit.vat);
   // Keep the settled receipt total (service / discount). Only fall back to
   // goods when the ledger row never stored a total.
   const total = sale.total > 0 ? roundMoney(sale.total) : goods;
+  const { net, vat } = splitChargedNetVat(
+    sale.items,
+    total,
+    true,
+    Number(opts.defaultVatRate || 0),
+  );
   return {
     ...sale,
     subtotal: roundMoney(net),
@@ -532,19 +541,22 @@ export function buildSalesTrendBuckets(
   const today = new Date(new Date().setHours(0, 0, 0, 0));
   const buckets: TrendBucket[] = [];
   if (range === 'daily') {
-    const start = new Date(today.getTime() - 13 * 86400000);
+    // Calendar days, not 86400000 ms: across the spring clock change that
+    // started the chart a day early and skipped the change day.
     for (let i = 0; i < 14; i++) {
-      const d = new Date(start.getTime() + i * 86400000);
+      const d = new Date(today);
+      d.setDate(today.getDate() - 13 + i);
       const from = new Date(d.setHours(0, 0, 0, 0));
       const to = new Date(d.setHours(23, 59, 59, 999));
       const label = `${String(from.getMonth() + 1).padStart(2, '0')}/${String(from.getDate()).padStart(2, '0')}`;
       buckets.push({ label, from, to });
     }
   } else if (range === 'weekly') {
-    const start = new Date(today.getTime() - 7 * 86400000 * 11);
     for (let i = 0; i < 12; i++) {
-      const from = new Date(start.getTime() + i * 7 * 86400000);
-      const to = new Date(from.getTime() + 6 * 86400000);
+      const from = new Date(today);
+      from.setDate(today.getDate() - 7 * 11 + i * 7);
+      const to = new Date(from);
+      to.setDate(from.getDate() + 6);
       from.setHours(0, 0, 0, 0);
       to.setHours(23, 59, 59, 999);
       const oneJan = new Date(from.getFullYear(), 0, 1);

@@ -754,6 +754,10 @@ function PreferencesSettings() {
     reservationNoShowMinutes: 20,
   });
   const lastSavedRef = useRef('');
+  // Set once the stored settings are on screen. Until then every field
+  // shows a default, and saving would write those defaults over the real
+  // settings (a lek till switched to EUR after one failed read).
+  const loadedRef = useRef(false);
   const debounceRef = useRef<number | null>(null);
 
   draftRef.current = {
@@ -778,6 +782,10 @@ function PreferencesSettings() {
 
   const persistDraft = useCallback(
     async (next: PrefDraft) => {
+      if (!loadedRef.current) {
+        setStatus(t('preferences.loadFailed'), 'error');
+        return;
+      }
       const cur = String(next.currency || '')
         .trim()
         .toUpperCase();
@@ -921,6 +929,10 @@ function PreferencesSettings() {
       setLoading(true);
       try {
         const s: any = await window.api.settings.get().catch(() => null);
+        if (!s) {
+          setStatus(t('preferences.loadFailed'), 'error');
+          return;
+        }
         const cur =
           String((s as any)?.currency || 'EUR')
             .trim()
@@ -976,6 +988,7 @@ function PreferencesSettings() {
             ? Math.round(noShowMin)
             : 20,
         );
+        loadedRef.current = true;
       } finally {
         setLoading(false);
       }
@@ -1407,6 +1420,10 @@ function FiscalSettings() {
   const [nonVatBusiness, setNonVatBusiness] = useState(false);
   const [storedVat, setStoredVat] = useState<Record<string, unknown>>({});
   const [posCurrency, setPosCurrency] = useState('');
+  // Save and both tests write the whole fiscal block. Before the stored one
+  // is loaded that block is defaults: fiscalization off, NIPT blank, the
+  // VAT band setup gone.
+  const fiscalLoadedRef = useRef(false);
   const setStatus = useStatusToast();
   const [testing, setTesting] = useState(false);
   const [testingMinimal, setTestingMinimal] = useState(false);
@@ -1430,6 +1447,10 @@ function FiscalSettings() {
       setLoading(true);
       try {
         const s: any = await window.api.settings.get().catch(() => null);
+        if (!s) {
+          setStatus(t('fiscal.loadFailed'), 'error');
+          return;
+        }
         const fiscal = (s as any)?.fiscal || {};
         setEnabled(Boolean(fiscal.enabled));
         setProvider(fiscal.provider === 'easypos' ? 'easypos' : 'easypos');
@@ -1454,6 +1475,7 @@ function FiscalSettings() {
         setStoredVat(vat);
         setNonVatBusiness(vat.nonVatBusiness === true);
         setPosCurrency(String((s as any)?.currency || '').toUpperCase());
+        fiscalLoadedRef.current = true;
       } finally {
         setLoading(false);
       }
@@ -1505,7 +1527,15 @@ function FiscalSettings() {
     };
   }
 
+  /** False (and says so) while the stored fiscal block is not on screen. */
+  function fiscalReady(): boolean {
+    if (fiscalLoadedRef.current) return true;
+    setStatus(t('fiscal.loadFailed'), 'error');
+    return false;
+  }
+
   async function save() {
+    if (!fiscalReady()) return;
     const url = String(baseUrl || '')
       .trim()
       .replace(/\/+$/g, '');
@@ -1547,6 +1577,7 @@ function FiscalSettings() {
   }
 
   async function testMinimalInvoice() {
+    if (!fiscalReady()) return;
     setTestingMinimal(true);
     try {
       if (!window.api.settings.testFiscalMinimalInvoice) {
@@ -1576,6 +1607,7 @@ function FiscalSettings() {
   }
 
   async function testConnection() {
+    if (!fiscalReady()) return;
     setTesting(true);
     try {
       if (authToken.trim()) {
@@ -3929,9 +3961,16 @@ function AreasSettings() {
   const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
   const [editingArea, setEditingArea] = useState<string | null>(null);
   const lastSavedRef = useRef('');
+  // Saving sends the whole list; before it is loaded that is only the rows
+  // added on screen, and every other area would be deleted.
+  const areasLoadedRef = useRef(false);
 
   const persistAreas = useCallback(
     async (rows: { name: string; count: number }[]) => {
+      if (!areasLoadedRef.current) {
+        toast.error(t('settingsAreas.loadFailed'));
+        return;
+      }
       const named = namedTableAreas(rows);
       const key = JSON.stringify(named);
       if (key === lastSavedRef.current) return;
@@ -3949,10 +3988,17 @@ function AreasSettings() {
 
   useEffect(() => {
     (async () => {
-      const s = await window.api.settings.get();
-      const loaded = Array.isArray(s.tableAreas) ? s.tableAreas : [];
+      let s: any;
+      try {
+        s = await window.api.settings.get();
+      } catch {
+        toast.error(t('settingsAreas.loadFailed'));
+        return;
+      }
+      const loaded = Array.isArray(s?.tableAreas) ? s.tableAreas : [];
       setAreas(loaded);
       lastSavedRef.current = JSON.stringify(namedTableAreas(loaded));
+      areasLoadedRef.current = true;
     })();
   }, []);
 
@@ -4247,6 +4293,9 @@ function LanSettings() {
     pairingCode: '',
     openAtLogin: true,
   });
+  // Every save sends the whole block; before it is loaded that block says
+  // phones are off (a failed read, then one toggle, cut every waiter off).
+  const lanLoadedRef = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -4264,11 +4313,14 @@ function LanSettings() {
           openAtLogin: (s as any)?.host?.openAtLogin !== false,
         };
         draftRef.current = next;
+        lanLoadedRef.current = true;
         setAllowLan(next.allowLan);
         setRequirePairingCode(next.requirePairingCode);
         setPairingCode(next.pairingCode);
         setOpenAtLogin(next.openAtLogin);
         setIps(ipList || []);
+      } catch {
+        toast.error(t('adminLan.loadFailed'));
       } finally {
         setLoading(false);
       }
@@ -4321,6 +4373,10 @@ function LanSettings() {
     pairingCode?: string;
     openAtLogin?: boolean;
   }) {
+    if (!lanLoadedRef.current) {
+      toast.error(t('adminLan.loadFailed'));
+      return;
+    }
     const next = { ...draftRef.current, ...patch };
     draftRef.current = next;
     if (patch.allowLan != null) setAllowLan(next.allowLan);

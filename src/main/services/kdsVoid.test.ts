@@ -112,13 +112,11 @@ describe('applyKdsVoidTicket', () => {
     kdsOrderUpdate.mockResolvedValue({});
   });
 
-  it('voids every line and bumps NEW stations even if the order was already closed', async () => {
-    kdsOrderFindFirst
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        id: 9,
-        closedAt: new Date('2026-09-05T16:00:00Z'),
-      });
+  it('voids a closed order whose cards are still waiting in the kitchen', async () => {
+    kdsOrderFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: 9,
+      closedAt: new Date('2026-09-05T16:00:00Z'),
+    });
     kdsTicketFindMany.mockResolvedValue([
       {
         id: 42,
@@ -155,6 +153,30 @@ describe('applyKdsVoidTicket', () => {
       }),
     );
     expect(kdsOrderUpdate).not.toHaveBeenCalled();
+    // The fallback only considers orders with a card still on NEW.
+    expect(kdsOrderFindFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tickets: { some: { stations: { some: { status: 'NEW' } } } },
+        }),
+      }),
+    );
+  });
+
+  it("leaves the previous party's cooked order alone", async () => {
+    kdsOrderFindFirst.mockResolvedValue(null);
+
+    const ok = await applyKdsVoidTicket({
+      userId: 1,
+      area: 'Salla',
+      tableLabel: 'T7',
+      reason: 'Opened by mistake',
+    });
+
+    expect(ok).toBe(true);
+    expect(kdsTicketUpdate).not.toHaveBeenCalled();
+    expect(kdsTicketStationUpdateMany).not.toHaveBeenCalled();
   });
 
   it('closes an still-open KDS order after voiding its tickets', async () => {

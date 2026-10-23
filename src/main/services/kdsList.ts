@@ -160,7 +160,9 @@ export async function formatKdsTicketListRows(
       const area = String(o?.area || '');
       const tableLabel = String(o?.tableLabel || '');
       const tableKey = `${area}:${tableLabel}`;
-      const ownerId = ownerByTable.get(tableKey);
+      // The table's current owner only for the sitting still open; a card
+      // from an earlier sitting keeps the waiter who sent it.
+      const ownerId = o?.closedAt ? undefined : ownerByTable.get(tableKey);
       const waiterName =
         (ownerId ? waiterById.get(ownerId) : null) ??
         (t?.userId ? waiterById.get(Number(t.userId)) : null) ??

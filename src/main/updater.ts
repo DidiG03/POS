@@ -42,6 +42,8 @@ const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED !== 'false';
 let updateCheckInterval: NodeJS.Timeout | null = null;
 let updateInfo: UpdateInfo | null = null;
 let updateDownloaded = false;
+/** Version sitting downloaded and ready, so a re-check does not forget it. */
+let downloadedVersion: string | null = null;
 let checking = false;
 let downloading = false;
 let downloadPercent: number | null = null;
@@ -492,10 +494,19 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
     autoUpdater.on('update-available', (info: UpdateInfo) => {
       console.log('[AutoUpdater] Update available:', info.version);
       updateInfo = info;
-      updateDownloaded = false;
+      // The 4-hourly check announces the release that is already
+      // downloaded. Resetting turned Install back into Download on the till,
+      // and on the kitchen display downloaded it again and restarted the
+      // install countdown a cook had just deferred.
+      const alreadyDownloaded =
+        updateDownloaded && downloadedVersion === info.version;
+      updateDownloaded = alreadyDownloaded;
+      if (!alreadyDownloaded) downloadedVersion = null;
       checking = false;
       emitStatusChange();
+      // Screens reload their status here, which now says "downloaded".
       notifyListeners('update-available', snapshotUpdateInfo(info));
+      if (alreadyDownloaded) return;
       addBreadcrumb(`Update available: ${info.version}`, 'updater', 'info');
       // Kiosk path: pull the update down immediately so the only remaining
       // step is the (auto-scheduled) restart. `autoDownload` already does
@@ -519,6 +530,7 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
       );
       updateInfo = null;
       updateDownloaded = false;
+      downloadedVersion = null;
       checking = false;
       emitStatusChange();
       notifyListeners('update-not-available');
@@ -555,6 +567,7 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
       console.log('[AutoUpdater] Update downloaded:', info.version);
       updateInfo = info;
       updateDownloaded = true;
+      downloadedVersion = info.version;
       downloadPercent = null;
       checking = false;
       emitStatusChange();

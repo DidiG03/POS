@@ -24,6 +24,7 @@ import {
 import { OrdersByTimeChart, OrdersByTimeLegend } from './OrdersByTimeChart';
 import { PageSpinner } from '../../components/PageSpinner';
 import { reportAppError } from '../../utils/reportAppError';
+import { addMonths, addYears } from '../../utils/calendarMath';
 
 // ---------------------------------------------------------------------
 // Date helpers — all comparisons are computed in the operator's local
@@ -56,18 +57,6 @@ function startOfYear(d: Date): Date {
 
 function endOfYear(d: Date): Date {
   return new Date(d.getFullYear(), 11, 31, 23, 59, 59, 999);
-}
-
-function addMonths(d: Date, n: number): Date {
-  const out = new Date(d);
-  out.setMonth(out.getMonth() + n);
-  return out;
-}
-
-function addYears(d: Date, n: number): Date {
-  const out = new Date(d);
-  out.setFullYear(out.getFullYear() + n);
-  return out;
 }
 
 function previousMonthToSameElapsedDay(d: Date): Period {

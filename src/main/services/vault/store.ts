@@ -37,8 +37,15 @@ export function effectiveUnlockMode(vault: VaultFile): VaultUnlockMode {
   return 'os';
 }
 
-export function readVaultFile(userData: string): VaultFile | null {
-  const file = vaultFilePath(userData);
+/**
+ * Staging copy written by first-time encryption before the plaintext ledger
+ * is touched, so the key is on disk before anything depends on it.
+ */
+export function pendingVaultFilePath(userData: string): string {
+  return path.join(userData, 'vault.pending.json');
+}
+
+function parseVaultFile(file: string): VaultFile | null {
   if (!fs.existsSync(file)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as VaultFile;
@@ -62,8 +69,18 @@ export function readVaultFile(userData: string): VaultFile | null {
   }
 }
 
-export function writeVaultFile(userData: string, vault: VaultFile): void {
+export function readVaultFile(userData: string): VaultFile | null {
   const file = vaultFilePath(userData);
+  // A write cut short on a platform where the swap is not atomic leaves the
+  // complete new copy beside it.
+  return parseVaultFile(file) ?? parseVaultFile(`${file}.tmp`);
+}
+
+export function readPendingVaultFile(userData: string): VaultFile | null {
+  return parseVaultFile(pendingVaultFilePath(userData));
+}
+
+function writeVaultBody(file: string, vault: VaultFile): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const body: VaultFile = {
     version: VAULT_VERSION,
@@ -73,9 +90,38 @@ export function writeVaultFile(userData: string, vault: VaultFile): void {
   if (vault.passphrase) body.passphrase = vault.passphrase;
   if (vault.os?.blob) body.os = vault.os;
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeSync(fd, `${JSON.stringify(body, null, 2)}\n`);
+    // On disk before the rename, or a power cut can leave an empty file
+    // under the final name.
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   replaceFile(tmp, file);
+}
+
+export function writeVaultFile(userData: string, vault: VaultFile): void {
+  writeVaultBody(vaultFilePath(userData), vault);
+}
+
+export function writePendingVaultFile(
+  userData: string,
+  vault: VaultFile,
+): void {
+  writeVaultBody(pendingVaultFilePath(userData), vault);
+}
+
+/** The staged key becomes the vault. */
+export function promotePendingVaultFile(userData: string): void {
+  replaceFile(pendingVaultFilePath(userData), vaultFilePath(userData));
+}
+
+export function clearPendingVaultFile(userData: string): void {
+  try {
+    fs.unlinkSync(pendingVaultFilePath(userData));
+  } catch {
+    // already gone
+  }
 }
