@@ -393,7 +393,11 @@ describe('setupVaultWithOs / unlockVault', () => {
       await tryUnlockWithOs({ userData: dir, dbFile, openPrisma: false }),
     ).toBe(true);
     expect(fs.readFileSync(vaultPath, 'utf8')).toBe(before);
-    expect(fs.statSync(vaultPath).mtimeMs).toBe(old.getTime());
+    // Linux keeps nanoseconds, so the time read back can be a hair off;
+    // a rewrite would move it by the full minute.
+    expect(
+      Math.abs(fs.statSync(vaultPath).mtimeMs - old.getTime()),
+    ).toBeLessThan(1000);
   });
 
   it('does not auto-create a vault before the owner encrypts the till', async () => {
