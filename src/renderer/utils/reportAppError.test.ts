@@ -18,6 +18,7 @@ import { toast } from '../stores/toasts';
 import { captureRendererException } from './sentryBrowser';
 import {
   installUnhandledErrorToasts,
+  isExpectedRefusal,
   isTransientNetworkError,
   reportAppError,
   resetReportAppErrorStateForTests,
@@ -43,6 +44,18 @@ describe('reportAppError', () => {
     expect(shouldIgnoreAppError({ status: 401, message: 'unauthorized' })).toBe(
       true,
     );
+  });
+
+  it('toasts a deliberate refusal without reporting it to Sentry', () => {
+    const err = Object.assign(
+      new Error('This barcode is already used by another product.'),
+      { status: 409, code: 'SKU_TAKEN' },
+    );
+    expect(isExpectedRefusal(err)).toBe(true);
+    expect(isExpectedRefusal(new Error('boom'))).toBe(false);
+    expect(reportAppError(err, { key: 'adminMenu.create-item' })).toBe(true);
+    expect(toast.fromError).toHaveBeenCalledTimes(1);
+    expect(captureRendererException).not.toHaveBeenCalled();
   });
 
   it('toasts unexpected errors and dedupes the same key', () => {

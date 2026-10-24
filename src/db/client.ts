@@ -5,6 +5,9 @@ import { PrismaLibSQL } from '@prisma/adapter-libsql';
 import { AsyncMutex } from '@shared/asyncMutex';
 import {
   SQLITE_BUSY_TIMEOUT_MS,
+  SQLITE_RETRY_DELAYS_MS,
+  isRetryableSqliteRead,
+  isSqliteBusy,
   withSqliteRetry,
   withSqliteTransactionOptions,
 } from './sqliteBusy';
@@ -142,7 +145,14 @@ async function runPrismaOp(
   }
   const run = () => query(args);
   if (!isSqliteWriteOperation(operation)) {
-    return withSqliteRetry(run);
+    // Raw SQL can hide a write (`INSERT … RETURNING`), so only model reads
+    // retry a dropped engine response.
+    const rawSql = /queryRaw/i.test(String(operation || ''));
+    return withSqliteRetry(
+      run,
+      SQLITE_RETRY_DELAYS_MS,
+      rawSql ? isSqliteBusy : isRetryableSqliteRead,
+    );
   }
   const depth = writeDepth.getStore() ?? 0;
   if (depth > 0) return run();

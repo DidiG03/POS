@@ -74,6 +74,17 @@ export function decideAccess(
 }
 
 /**
+ * Services tag deliberate refusals (plan gates, not found, conflicts) with a
+ * 4xx `statusCode`, as the LAN API maps them. Those are answers, not bugs.
+ */
+export function isExpectedRefusal(error: unknown): boolean {
+  if (error instanceof IpcAuthorizationError) return true;
+  if (error instanceof ZodError) return true;
+  const code = Number((error as { statusCode?: unknown } | null)?.statusCode);
+  return Number.isFinite(code) && code >= 400 && code < 500;
+}
+
+/**
  * A till that is already bound to this token is re-presenting it (boot, HMR,
  * Strict Mode), not guessing. Counting those against the resume limiter is
  * what locked the floor after a burst of Vite remounts.
@@ -155,13 +166,11 @@ export function ipcHandle<T>(channel: string, listener: GuardedListener<T>) {
       // "the app broke" — Electron relays the rejection to the renderer as a
       // handled IPC error, so it never surfaces as an `unhandledRejection`
       // and would otherwise never reach Sentry. Denials are already recorded
-      // via `logSecurityEvent` above, and a `ZodError` is just a caller
-      // sending a payload that fails input validation — neither is a code
-      // bug, so only report genuine failures.
-      if (
-        !(error instanceof IpcAuthorizationError) &&
-        !(error instanceof ZodError)
-      ) {
+      // via `logSecurityEvent` above, a `ZodError` is just a caller sending
+      // a payload that fails input validation, and a 4xx `statusCode` is a
+      // service refusing on purpose — none is a code bug, so only report
+      // genuine failures.
+      if (!isExpectedRefusal(error)) {
         captureException(
           error instanceof Error ? error : new Error(String(error)),
           {

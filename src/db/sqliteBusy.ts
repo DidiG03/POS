@@ -14,7 +14,7 @@ export const SQLITE_BUSY_TIMEOUT_MS = 8_000;
  */
 export const SQLITE_TX_TIMEOUT_MS = 20_000;
 
-const RETRY_DELAYS_MS = [20, 50, 100, 200, 400, 800];
+export const SQLITE_RETRY_DELAYS_MS = [20, 50, 100, 200, 400, 800];
 
 export function isSqliteBusy(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
@@ -56,13 +56,29 @@ export function isSqliteBusy(err: unknown): boolean {
   return false;
 }
 
+/**
+ * The Prisma engine dropped a request (seen on tills short on memory). Safe
+ * to retry a read; a write may already have landed, so callers opt in.
+ */
+export function isPrismaEngineEmptyResponse(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const message = String((err as { message?: unknown }).message || '');
+  return /response from the engine was empty/i.test(message);
+}
+
+/** What a read may retry: a busy database or a dropped engine response. */
+export function isRetryableSqliteRead(err: unknown): boolean {
+  return isSqliteBusy(err) || isPrismaEngineEmptyResponse(err);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function withSqliteRetry<T>(
   fn: () => Promise<T>,
-  delaysMs: number[] = RETRY_DELAYS_MS,
+  delaysMs: number[] = SQLITE_RETRY_DELAYS_MS,
+  retryable: (err: unknown) => boolean = isSqliteBusy,
 ): Promise<T> {
   let last: unknown;
   for (let i = 0; i <= delaysMs.length; i++) {
@@ -70,7 +86,7 @@ export async function withSqliteRetry<T>(
       return await fn();
     } catch (err) {
       last = err;
-      if (!isSqliteBusy(err) || i === delaysMs.length) throw err;
+      if (!retryable(err) || i === delaysMs.length) throw err;
       await sleep(delaysMs[i]!);
     }
   }

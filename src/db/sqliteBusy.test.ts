@@ -4,6 +4,8 @@ import path from 'node:path';
 import {
   SQLITE_BUSY_TIMEOUT_MS,
   SQLITE_TX_TIMEOUT_MS,
+  isPrismaEngineEmptyResponse,
+  isRetryableSqliteRead,
   isSqliteBusy,
   withSqliteRetry,
   withSqliteTransactionOptions,
@@ -110,5 +112,44 @@ describe('withSqliteTransactionOptions', () => {
   it('leaves non-transaction calls unchanged', () => {
     const args = ['PRAGMA journal_mode=WAL;'];
     expect(withSqliteTransactionOptions(args)).toBe(args);
+  });
+});
+
+describe('dropped engine response', () => {
+  const EMPTY = new Error(
+    'Invalid `prisma.category.findMany()` invocation:\n\n\nResponse from the Engine was empty',
+  );
+
+  it('is retryable for reads but not treated as a busy database', () => {
+    expect(isPrismaEngineEmptyResponse(EMPTY)).toBe(true);
+    expect(isRetryableSqliteRead(EMPTY)).toBe(true);
+    expect(isSqliteBusy(EMPTY)).toBe(false);
+    expect(isRetryableSqliteRead(new Error('boom'))).toBe(false);
+  });
+
+  it('retries a read that hits it once', async () => {
+    let calls = 0;
+    const out = await withSqliteRetry(
+      async () => {
+        calls += 1;
+        if (calls === 1) throw EMPTY;
+        return 'ok';
+      },
+      [0],
+      isRetryableSqliteRead,
+    );
+    expect(out).toBe('ok');
+    expect(calls).toBe(2);
+  });
+
+  it('does not retry it under the default (write) rule', async () => {
+    let calls = 0;
+    await expect(
+      withSqliteRetry(async () => {
+        calls += 1;
+        throw EMPTY;
+      }, [0]),
+    ).rejects.toBe(EMPTY);
+    expect(calls).toBe(1);
   });
 });
