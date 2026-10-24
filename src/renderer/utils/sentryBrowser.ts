@@ -116,6 +116,14 @@ export function initRendererSentry(): void {
               shell: shellTag(),
             },
           },
+          // A 401 from the till already forced a logout to the PIN screen;
+          // a background call that missed its catch is not a bug report.
+          beforeSend(event, hint) {
+            const status = Number(
+              (hint?.originalException as { status?: unknown } | null)?.status,
+            );
+            return status === 401 ? null : event;
+          },
         });
         const api: SentryApi = { captureException };
         sentry = api;

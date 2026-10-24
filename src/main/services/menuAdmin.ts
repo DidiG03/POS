@@ -95,6 +95,14 @@ export function mapMenuCategoryForClient(
   };
 }
 
+/** A refusal the owner fixes in the form, not a crash. */
+function barcodeTakenError(): Error {
+  return Object.assign(
+    new Error('This barcode is already used by another product.'),
+    { statusCode: 409, code: 'SKU_TAKEN' },
+  );
+}
+
 let lastExpireStaleStockAt = 0;
 const EXPIRE_STALE_STOCK_EVERY_MS = 60_000;
 
@@ -111,7 +119,14 @@ async function expireStaleMenuStockThrottled(): Promise<void> {
   const now = Date.now();
   if (now - lastExpireStaleStockAt < EXPIRE_STALE_STOCK_EVERY_MS) return;
   lastExpireStaleStockAt = now;
-  await expireStaleMenuStock(prisma);
+  try {
+    await expireStaleMenuStock(prisma);
+  } catch (e) {
+    // Housekeeping, and idempotent: the next poll tries again. Failing here
+    // used to fail the whole menu read for the till and every tablet.
+    lastExpireStaleStockAt = 0;
+    console.warn('[menu] expiring stale stock failed:', e);
+  }
 }
 
 export async function listMenuCategoriesForClient(opts?: {
@@ -193,7 +208,7 @@ export async function createMenuItemFromInput(payload: unknown) {
       select: { id: true },
     });
     if (clash) {
-      throw new Error('This barcode is already used by another product.');
+      throw barcodeTakenError();
     }
     const created = await prisma.menuItem.create({
       data: { ...data, sku: explicitSku } as any,
@@ -259,7 +274,7 @@ export async function updateMenuItemFromInput(payload: unknown) {
         select: { id: true },
       });
       if (clash && clash.id !== existing.id) {
-        throw new Error('This barcode is already used by another product.');
+        throw barcodeTakenError();
       }
       data.sku = nextSku;
     }

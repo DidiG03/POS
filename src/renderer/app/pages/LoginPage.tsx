@@ -346,6 +346,9 @@ export default function LoginPage() {
         .then((live) => ({ live: true as const, s: live }))
         .catch(() => ({ live: false as const, s: cached ?? null }));
       const usersP = window.api.auth.listUsers({ includeAdmins: true });
+      // Awaited below, after settings. Until then (or forever, if the page
+      // unmounts first) a fast rejection would surface as unhandled.
+      usersP.catch(() => undefined);
 
       const got = await settingsP;
       if (cancelled) return;

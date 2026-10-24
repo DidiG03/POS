@@ -74,6 +74,15 @@ export function shouldIgnoreAppError(error: unknown): boolean {
   );
 }
 
+/**
+ * The till refused on purpose (plan gate, gone, conflict such as a barcode
+ * already in use). Staff still see the toast; Sentry is for bugs.
+ */
+export function isExpectedRefusal(error: unknown): boolean {
+  const status = Number((error as { status?: unknown } | null)?.status);
+  return status === 403 || status === 404 || status === 409;
+}
+
 function prune(now: number) {
   if (recent.size < 40) return;
   for (const [key, at] of recent) {
@@ -104,6 +113,7 @@ export function reportAppError(
   recent.set(key, now);
   prune(now);
   toast.fromError(error, fallback, { title: opts?.title });
+  if (isExpectedRefusal(error)) return true;
   captureRendererException(error, {
     toastKey: key,
     ...(opts?.extra || {}),

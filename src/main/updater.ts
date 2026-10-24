@@ -29,7 +29,9 @@ import {
 } from './services/macBundleUpdate';
 import { resolveUpdateFeed } from './services/updateFeed';
 import {
+  isMacCodeSignatureError,
   isMissingUpdateFeedError,
+  isOfflineUpdaterError,
   userFacingUpdaterError,
 } from '@shared/updateFeedError';
 
@@ -167,10 +169,12 @@ function beginDownload(): Promise<UpdateActionResult> {
       return { success: true, downloaded: true };
     } catch (error: any) {
       if (updateDownloaded) return { success: true, downloaded: true };
-      captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { context: 'updater:downloadUpdate' },
-      );
+      if (!isOfflineUpdaterError(error)) {
+        captureException(
+          error instanceof Error ? error : new Error(String(error)),
+          { context: 'updater:downloadUpdate' },
+        );
+      }
       return {
         error: userFacingUpdaterError(error) || 'Failed to download update',
       };
@@ -311,10 +315,12 @@ async function performCheck(): Promise<UpdateCheckResult> {
         updateInfo: snapshotUpdateInfo(updateInfo),
       };
     }
-    captureException(
-      error instanceof Error ? error : new Error(String(error)),
-      { context: 'updater:checkForUpdates' },
-    );
+    if (!isOfflineUpdaterError(error)) {
+      captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: 'updater:checkForUpdates' },
+      );
+    }
     return { error: userFacingUpdaterError(error), currentVersion: version };
   } finally {
     checking = false;
@@ -513,13 +519,8 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
       // this internally, but calling it explicitly keeps behavior obvious
       // and works even if a future electron-updater changes the default.
       if (autoUpdater.autoDownload) {
-        void beginDownload().then((result) => {
-          if (result.error) {
-            captureException(new Error(result.error), {
-              context: 'updater:autoDownload',
-            });
-          }
-        });
+        // beginDownload reports a real failure itself, with its cause.
+        void beginDownload();
       }
     });
 
@@ -537,6 +538,18 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
     });
 
     autoUpdater.on('error', (error: Error) => {
+      // electron-updater feeds every finished Mac download to Squirrel.Mac,
+      // which throws this on an ad-hoc build. The download itself succeeded
+      // and `quitAndInstallUpdate` swaps the bundle instead, so do not reset
+      // the status or tell staff the update failed.
+      if (
+        process.platform === 'darwin' &&
+        isMacCodeSignatureError(error) &&
+        !macAppIsDeveloperIdSigned()
+      ) {
+        console.log('[AutoUpdater] Squirrel.Mac skipped on ad-hoc build');
+        return;
+      }
       checking = false;
       downloading = false;
       downloadPercent = null;
@@ -544,6 +557,11 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
       if (isMissingUpdateFeedError(error)) {
         console.log('[AutoUpdater] No update feed on this release');
         notifyListeners('update-not-available');
+        return;
+      }
+      if (isOfflineUpdaterError(error)) {
+        console.warn('[AutoUpdater] Offline:', error?.message || error);
+        notifyListeners('error', { message: userFacingUpdaterError(error) });
         return;
       }
       console.error('[AutoUpdater] Error:', error);
