@@ -21,7 +21,12 @@ import {
   splitChargedNetVat,
   sumTicketLinesNetVat,
 } from '@shared/ticketRevenue';
-import { isTransferredOutNote } from './tableTransfer';
+import {
+  isTransferredOutNote,
+  TRANSFERRED_OUT_TAG_PREFIX,
+} from './tableTransfer';
+import { adapterDateTimeText } from '@db/datetimeText';
+import { matchOrdersToTicketRows, SITTING_LOOKBACK_MS } from './adminTickets';
 
 export type PaidSaleLine = {
   name: string;
@@ -43,6 +48,8 @@ export type PaidSale = {
   /** False for a partial seat payment; covers count on the closing pay. */
   closeTable: boolean;
   items: PaidSaleLine[];
+  /** Ledger row, so a sale can be traced to the sitting it settled. */
+  orderId?: number;
 };
 
 export type TrendBucket = { label: string; from: Date; to: Date };
@@ -77,7 +84,9 @@ export function paidSaleFromOrderRow(row: any): PaidSale {
     (it: any) => it?.voidedAt == null,
   );
   const closedAt = row?.closedAt ? new Date(row.closedAt) : new Date();
+  const orderId = Number(row?.id);
   return {
+    ...(Number.isInteger(orderId) && orderId > 0 ? { orderId } : {}),
     closedAt,
     userId: Number(row?.userId) > 0 ? Number(row.userId) : null,
     area: String(row?.area || ''),
@@ -131,6 +140,140 @@ export function normalizePaidSaleVat(
   };
 }
 
+/**
+ * `closedAt` range that matches both DateTime storages: INTEGER ms (native
+ * engine, plain ledger) and adapter TEXT (encrypted ledger). SQLite sorts
+ * every INTEGER before every TEXT, so each half only matches its own kind
+ * and both still use the (status, closedAt) index.
+ */
+function closedAtRangeSql(from: Date, to: Date, column = 'o."closedAt"') {
+  return {
+    sql:
+      `((${column} >= ? AND ${column} <= ?) OR ` +
+      `(${column} >= ? AND ${column} <= ?))`,
+    args: [
+      from.getTime(),
+      to.getTime(),
+      adapterDateTimeText(from),
+      adapterDateTimeText(to),
+    ],
+  };
+}
+
+function sqlDate(v: unknown): Date {
+  if (v instanceof Date) return v;
+  if (typeof v === 'bigint') return new Date(Number(v));
+  return new Date(v as any);
+}
+
+/**
+ * Paid orders in shape `paidSaleFromOrderRow` reads. Raw SQL, not
+ * `findMany` + include: Prisma built a Decimal per money field and a full
+ * row per line, so a year of a busy venue took ~12s and ~1.6GB on the
+ * till's main process. Only the meta flags the dedupe and covers need are
+ * read from `metaJson`.
+ */
+async function queryPaidOrderRows(
+  from: Date,
+  to: Date,
+  userId?: number,
+): Promise<any[]> {
+  const range = closedAtRangeSql(from, to);
+  const userSql = userId ? ' AND o."userId" = ?' : '';
+  const where = `o."status" = 'PAID' AND ${range.sql}${userSql}`;
+  const args = [...range.args, ...(userId ? [userId] : [])];
+  const orders: any[] = await prisma.$queryRawUnsafe(
+    `SELECT o."id", o."userId", o."area", o."tableLabel", o."covers",
+       o."closedAt", o."createdAt",
+       CAST(o."subtotal" AS REAL) AS "subtotal",
+       CAST(o."vatAmount" AS REAL) AS "vatAmount",
+       CAST(o."total" AS REAL) AS "total",
+       p."method" AS "payMethod",
+       p."fiscalNslf" AS "payNslf",
+       p."fiscalNivf" AS "payNivf",
+       CASE WHEN json_valid(p."metaJson")
+         THEN upper(CAST(json_extract(p."metaJson", '$.kind') AS TEXT)) END
+         AS "metaKind",
+       CASE WHEN json_valid(p."metaJson")
+         THEN json_type(p."metaJson", '$.reprint') END AS "metaReprint",
+       CASE WHEN json_valid(p."metaJson")
+         THEN json_type(p."metaJson", '$.closeTable') END AS "metaCloseTable"
+     FROM "Order" o
+     LEFT JOIN "Payment" p ON p."id" = (
+       SELECT p2."id" FROM "Payment" p2 WHERE p2."orderId" = o."id"
+       ORDER BY p2."createdAt" ASC, p2."id" ASC LIMIT 1
+     )
+     WHERE ${where}
+     ORDER BY o."closedAt" ASC, o."id" ASC`,
+    ...args,
+  );
+  if (orders.length === 0) return [];
+  const lines: any[] = await prisma.$queryRawUnsafe(
+    `SELECT i."orderId", i."name",
+       CAST(i."qty" AS REAL) AS "qty",
+       CAST(i."unitPrice" AS REAL) AS "unitPrice",
+       i."categoryName"
+     FROM "OrderItem" i JOIN "Order" o ON o."id" = i."orderId"
+     WHERE ${where} AND i."voidedAt" IS NULL
+     ORDER BY i."orderId" ASC, i."sortOrder" ASC, i."id" ASC`,
+    ...args,
+  );
+  const itemsByOrder = new Map<number, any[]>();
+  for (const l of lines) {
+    const id = Number(l.orderId);
+    let list = itemsByOrder.get(id);
+    if (!list) itemsByOrder.set(id, (list = []));
+    list.push(l);
+  }
+  return orders.map((o) => {
+    const id = Number(o.id);
+    const meta: Record<string, unknown> = {};
+    if (o.metaKind != null) meta.kind = String(o.metaKind);
+    if (o.metaReprint === 'true') meta.reprint = true;
+    if (o.metaCloseTable === 'false') meta.closeTable = false;
+    return {
+      id,
+      userId: o.userId == null ? null : Number(o.userId),
+      area: o.area,
+      tableLabel: o.tableLabel,
+      covers: o.covers == null ? null : Number(o.covers),
+      closedAt: sqlDate(o.closedAt),
+      createdAt: sqlDate(o.createdAt),
+      subtotal: Number(o.subtotal),
+      vatAmount: Number(o.vatAmount),
+      total: Number(o.total),
+      payments:
+        o.payMethod == null
+          ? []
+          : [
+              {
+                method: o.payMethod,
+                fiscalNslf: o.payNslf,
+                fiscalNivf: o.payNivf,
+                metaJson: meta,
+              },
+            ],
+      items: itemsByOrder.get(id) ?? [],
+    };
+  });
+}
+
+const FETCH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** Inclusive, non-overlapping ms windows covering [from, to]. */
+export function fetchWindows(from: Date, to: Date): { from: Date; to: Date }[] {
+  const out: { from: Date; to: Date }[] = [];
+  const end = to.getTime();
+  let start = from.getTime();
+  if (!(end >= start)) return [{ from, to }];
+  while (start <= end) {
+    const last = Math.min(end, start + FETCH_WINDOW_MS - 1);
+    out.push({ from: new Date(start), to: new Date(last) });
+    start = last + 1;
+  }
+  return out;
+}
+
 export async function fetchPaidSales(args: {
   from: Date;
   to: Date;
@@ -140,79 +283,89 @@ export async function fetchPaidSales(args: {
   const settings = await coreServices.readSettings().catch(() => ({}));
   const vatEnabled = isVatEnabledFromSettings(settings);
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
-  const rows = await prisma.order
-    .findMany({
-      where: {
-        status: 'PAID' as any,
-        closedAt: { gte: safe.from, lte: safe.to },
-        ...(args.userId ? { userId: args.userId } : {}),
-      } as any,
-      orderBy: [{ closedAt: 'asc' }, { id: 'asc' }],
-      include: {
-        items: { orderBy: { sortOrder: 'asc' } },
-        payments: { orderBy: { createdAt: 'asc' }, take: 1 },
-      },
-    })
-    .catch(() => []);
-  return keepCanonicalPaidOrders(rows as any[])
+  let rows: any[] = [];
+  try {
+    // Long ranges load in slices with a macrotask between them: one year in
+    // a single read held the main thread ~0.5s, stalling waiter requests.
+    for (const w of fetchWindows(safe.from, safe.to)) {
+      if (rows.length > 0) await new Promise((r) => setImmediate(r));
+      rows = rows.concat(await queryPaidOrderRows(w.from, w.to, args.userId));
+    }
+  } catch {
+    rows = [];
+  }
+  return keepCanonicalPaidOrders(rows)
     .map(paidSaleFromOrderRow)
     .map((sale) => normalizePaidSaleVat(sale, { vatEnabled, defaultVatRate }));
 }
 
-export async function countVoidedTickets(
-  from: Date,
-  to: Date,
-): Promise<number> {
-  const safe = safeFetchRange(from, to);
-  const range = { gte: safe.from, lte: safe.to };
-  const keyedHeads = await prisma.ticketLog
-    .findMany({
-      where: {
-        createdAt: range,
-        NOT: { OR: [{ sessionKey: null }, { sessionKey: '' }] },
-      },
-      select: {
-        id: true,
-        sessionKey: true,
-        note: true,
-        area: true,
-        tableLabel: true,
-        createdAt: true,
-      },
-    })
-    .catch(() => []);
-  const unkeyed = await prisma.ticketLog
-    .findMany({
-      where: {
-        createdAt: range,
-        OR: [{ sessionKey: null }, { sessionKey: '' }],
-      },
-      select: {
-        id: true,
-        sessionKey: true,
-        note: true,
-        area: true,
-        tableLabel: true,
-        createdAt: true,
-        itemsJson: true,
-      } as any,
-    })
-    .catch(() => []);
+const TRIM_WS = "' ' || char(9, 10, 13)";
+const SESSION_KEY_SQL = `trim(t."sessionKey", ${TRIM_WS})`;
+/** SQL twin of `sessionKeyCanGroup` (NUL never survives into SQLite). */
+const SESSION_KEY_GROUPS_SQL =
+  `(t."sessionKey" IS NOT NULL AND ${SESSION_KEY_SQL} <> '' AND ` +
+  `(instr(t."sessionKey", char(31)) > 0 OR ` +
+  `${SESSION_KEY_SQL} <> trim(t."area", ${TRIM_WS})))`;
+
+function createdAtRangeSql(from: Date, to: Date) {
+  return closedAtRangeSql(from, to, 't."createdAt"');
+}
+
+/**
+ * Sittings with a session key whose newest snapshot has every line voided.
+ * Counted in SQL: loading a year of TicketLog heads into JS took ~2.7s.
+ */
+export function voidedKeyedSessionsSql(from: Date, to: Date) {
+  const range = createdAtRangeSql(from, to);
+  return {
+    sql: `WITH heads AS (
+       SELECT t."itemsJson" AS items,
+         ROW_NUMBER() OVER (
+           PARTITION BY ${SESSION_KEY_SQL}
+           ORDER BY t."createdAt" DESC, t."id" DESC
+         ) AS rn
+       FROM "TicketLog" t
+       WHERE ${range.sql} AND ${SESSION_KEY_GROUPS_SQL}
+         AND instr(coalesce(t."note", ''), ?) = 0
+     )
+     SELECT count(*) AS n FROM heads
+     WHERE rn = 1 AND json_valid(items) AND json_type(items) = 'array'
+       AND json_array_length(items) > 0
+       AND NOT EXISTS (
+         SELECT 1 FROM json_each(heads.items) e
+         WHERE (CASE WHEN e.type = 'object'
+           THEN json_type(e.value, '$.voided') END) IS NOT 'true'
+       )`,
+    args: [...range.args, TRANSFERRED_OUT_TAG_PREFIX],
+  };
+}
+
+/** Rows `latestRowPerSession` groups per table, not per key. */
+async function countVoidedLegacyRows(from: Date, to: Date): Promise<number> {
+  const range = createdAtRangeSql(from, to);
+  const rows: any[] = await prisma.$queryRawUnsafe(
+    `SELECT t."id", t."sessionKey", t."note", t."area", t."tableLabel",
+       t."createdAt",
+       CASE WHEN t."sessionKey" IS NULL OR t."sessionKey" = ''
+         THEN t."itemsJson" END AS "itemsJson"
+     FROM "TicketLog" t
+     WHERE ${range.sql} AND NOT ${SESSION_KEY_GROUPS_SQL}`,
+    ...range.args,
+  );
+  if (rows.length === 0) return 0;
   const latest = latestRowPerSession(
-    [...(keyedHeads as any[]), ...(unkeyed as any[])].filter(
-      (r) => !isTransferredOutNote(r?.note),
-    ),
+    rows
+      .map((r) => ({ ...r, createdAt: sqlDate(r.createdAt) }))
+      .filter((r) => !isTransferredOutNote(r?.note)),
   );
   const ids = latest
     .map((r) => Number(r.id))
     .filter((id) => Number.isInteger(id) && id > 0);
   if (ids.length === 0) return 0;
-  const bodies = await prisma.ticketLog
-    .findMany({
-      where: { id: { in: ids } },
-      select: { itemsJson: true },
-    })
-    .catch(() => []);
+  const bodies = await prisma.ticketLog.findMany({
+    where: { id: { in: ids } },
+    select: { itemsJson: true },
+  });
   let n = 0;
   for (const r of bodies as any[]) {
     const items = Array.isArray(r.itemsJson) ? r.itemsJson : [];
@@ -220,6 +373,22 @@ export async function countVoidedTickets(
       n += 1;
   }
   return n;
+}
+
+export async function countVoidedTickets(
+  from: Date,
+  to: Date,
+): Promise<number> {
+  const safe = safeFetchRange(from, to);
+  try {
+    const keyed = voidedKeyedSessionsSql(safe.from, safe.to);
+    const [row]: any[] = await prisma.$queryRawUnsafe(keyed.sql, ...keyed.args);
+    return (
+      Number(row?.n || 0) + (await countVoidedLegacyRows(safe.from, safe.to))
+    );
+  } catch {
+    return 0;
+  }
 }
 
 export function bucketLabel(d: Date, g: ReviewGranularity): string {
@@ -335,12 +504,19 @@ export function summarizePaidSales(
   const heatmap = emptyReviewHeatmap();
 
   let orders = 0;
+  let bucketFromMs = NaN;
+  let bucketToMs = NaN;
+  let bucketIdx: number | undefined;
   for (const sale of sales) {
     const when = sale.closedAt;
     if (when.getTime() < s.getTime() || when.getTime() > e.getTime()) continue;
 
     const rowGross = sale.total;
-    const rowItems = sale.items.reduce((n, it) => n + num(it.qty), 0);
+    // A weighed portion (0.335 kg) is one item sold, not a third of one.
+    const rowItems = sale.items.reduce(
+      (n, it) => n + (Number.isInteger(num(it.qty)) ? num(it.qty) : 1),
+      0,
+    );
     revenueNet += sale.subtotal;
     revenueVat += sale.vatAmount;
     revenueGross += rowGross;
@@ -402,16 +578,26 @@ export function summarizePaidSales(
       categoryAgg.set(catName, cat);
     }
 
-    hourly[when.getHours()].orders += 1;
-    hourly[when.getHours()].revenue += rowGross;
-    weekday[when.getDay()].orders += 1;
-    weekday[when.getDay()].revenue += rowGross;
-    const heat = heatmap[reviewHeatmapIndex(when.getDay(), when.getHours())];
+    const hour = when.getHours();
+    const dow = when.getDay();
+    hourly[hour].orders += 1;
+    hourly[hour].revenue += rowGross;
+    weekday[dow].orders += 1;
+    weekday[dow].revenue += rowGross;
+    const heat = heatmap[reviewHeatmapIndex(dow, hour)];
     heat.orders += 1;
     heat.revenue += rowGross;
 
-    const bIso = bucketStart(when, granularity).toISOString();
-    const idx = seriesIndex.get(bIso);
+    // Sales arrive in time order, so the bucket rarely changes; a Date and
+    // an ISO string per sale was most of a year-long review's main-thread time.
+    const at = when.getTime();
+    if (!(at >= bucketFromMs && at < bucketToMs)) {
+      const start = bucketStart(when, granularity);
+      bucketFromMs = start.getTime();
+      bucketToMs = nextBucket(start, granularity).getTime();
+      bucketIdx = seriesIndex.get(start.toISOString());
+    }
+    const idx = bucketIdx;
     if (idx != null) {
       series[idx].revenue += rowGross;
       series[idx].orders += 1;
@@ -601,6 +787,200 @@ function todayRange(): { start: Date; end: Date } {
   return { start: s, end: e };
 }
 
+type SittingLedger = {
+  sittings: Array<{
+    id: number;
+    userId: number;
+    area: string;
+    tableLabel: string;
+    createdAt: Date;
+  }>;
+  /** Voided sales in range, and every sale in the lookback before it: each
+   *  settled a sitting that a later sale must not take. */
+  voids: Array<{
+    id: number;
+    area: string;
+    tableLabel: string;
+    closedAt: Date;
+  }>;
+};
+
+/**
+ * Table sittings and voided sales in range, read lean for matching sales to
+ * the waiter who served them. Same sittings as the staff lists: newest
+ * snapshot per session, moved-out rows left out; legacy rows without a
+ * usable key are grouped per table in JS as there.
+ */
+async function loadSittingLedger(from: Date, to: Date): Promise<SittingLedger> {
+  // A table served before midnight is paid after it: look back for its sitting.
+  const lookback = new Date(from.getTime() - SITTING_LOOKBACK_MS);
+  const range = createdAtRangeSql(lookback, to);
+  const notMoved = `instr(coalesce(t."note", ''), ?) = 0`;
+  const keyed: any[] = await prisma.$queryRawUnsafe(
+    `SELECT "id", "userId", "area", "tableLabel", "createdAt" FROM (
+       SELECT t."id", t."userId", t."area", t."tableLabel", t."createdAt",
+         ROW_NUMBER() OVER (
+           PARTITION BY ${SESSION_KEY_SQL}
+           ORDER BY t."createdAt" DESC, t."id" DESC
+         ) AS rn
+       FROM "TicketLog" t
+       WHERE ${range.sql} AND ${SESSION_KEY_GROUPS_SQL} AND ${notMoved}
+     ) WHERE rn = 1`,
+    ...range.args,
+    TRANSFERRED_OUT_TAG_PREFIX,
+  );
+  const legacy: any[] = await prisma.$queryRawUnsafe(
+    `SELECT t."id", t."userId", t."area", t."tableLabel", t."createdAt",
+       t."sessionKey", CAST(t."itemsJson" AS TEXT) AS "itemsJson"
+     FROM "TicketLog" t
+     WHERE ${range.sql} AND NOT ${SESSION_KEY_GROUPS_SQL} AND ${notMoved}`,
+    ...range.args,
+    TRANSFERRED_OUT_TAG_PREFIX,
+  );
+  const sittings = [
+    ...keyed,
+    ...latestRowPerSession(
+      legacy
+        .sort((a, b) => Number(b.id) - Number(a.id))
+        .map((r) => ({ ...r, createdAt: sqlDate(r.createdAt) })),
+    ),
+  ].map((r) => ({
+    id: Number(r.id),
+    userId: Number(r.userId),
+    area: String(r.area || ''),
+    tableLabel: String(r.tableLabel || ''),
+    createdAt: sqlDate(r.createdAt),
+  }));
+  const closed = closedAtRangeSql(from, to);
+  const before = closedAtRangeSql(lookback, new Date(from.getTime() - 1));
+  const voids: any[] = await prisma.$queryRawUnsafe(
+    `SELECT o."id", o."area", o."tableLabel", o."closedAt" FROM "Order" o
+     WHERE (o."status" = 'VOID' AND ${closed.sql})
+        OR (o."status" IN ('PAID', 'VOID') AND ${before.sql})`,
+    ...closed.args,
+    ...before.args,
+  );
+  return {
+    sittings,
+    voids: voids.map((o) => ({
+      id: Number(o.id),
+      area: String(o.area || ''),
+      tableLabel: String(o.tableLabel || ''),
+      closedAt: sqlDate(o.closedAt),
+    })),
+  };
+}
+
+/**
+ * Credit each sale to the waiter whose table it settled, as the staff lists
+ * do. `Order.userId` is whoever was signed in where the payment was taken,
+ * so a venue that settles at the till showed the admin with every sale.
+ * A sale on no sitting (counter, takeaway) keeps the payer.
+ */
+export function creditServingWaiters(
+  sales: PaidSale[],
+  ledger: SittingLedger,
+): PaidSale[] {
+  if (sales.length === 0 || ledger.sittings.length === 0) return sales;
+  const orders = [
+    ...sales.flatMap((s) =>
+      s.orderId
+        ? [
+            {
+              id: s.orderId,
+              area: s.area,
+              tableLabel: s.tableLabel,
+              closedAt: s.closedAt,
+            },
+          ]
+        : [],
+    ),
+    ...ledger.voids,
+  ];
+  const { orderIdByTicketId } = matchOrdersToTicketRows(
+    ledger.sittings,
+    orders,
+  );
+  const waiterBySittingId = new Map(
+    ledger.sittings.map((r) => [r.id, r.userId] as const),
+  );
+  const servedBy = new Map<number, number>();
+  for (const [sittingId, orderId] of orderIdByTicketId) {
+    const uid = waiterBySittingId.get(sittingId);
+    if (uid && uid > 0) servedBy.set(orderId, uid);
+  }
+  return sales.map((s) => {
+    const uid = s.orderId ? servedBy.get(s.orderId) : undefined;
+    return uid && uid !== s.userId ? { ...s, userId: uid } : s;
+  });
+}
+
+async function servedSales(
+  sales: Promise<PaidSale[]>,
+  from: Date,
+  to: Date,
+): Promise<PaidSale[]> {
+  const [list, ledger] = await Promise.all([
+    sales,
+    loadSittingLedger(from, to).catch(() => null),
+  ]);
+  return ledger ? creditServingWaiters(list, ledger) : list;
+}
+
+/**
+ * One waiter's sales in range, credited by the tables they served (as the
+ * staff lists and Review do), not by the device that took payment. Reads
+ * every waiter's sales for the range, since a table this waiter served may
+ * have been settled by a colleague or at the till.
+ */
+export async function fetchServedSales(args: {
+  from: Date;
+  to: Date;
+  userId: number;
+}): Promise<PaidSale[]> {
+  const sales = await servedSales(
+    fetchPaidSales({ from: args.from, to: args.to }),
+    args.from,
+    args.to,
+  );
+  return sales.filter((s) => s.userId === args.userId);
+}
+
+const SERVED_BY_TTL_MS = 5_000;
+let servedByCache: {
+  key: string;
+  at: number;
+  map: Promise<Map<number, number>>;
+} | null = null;
+
+/**
+ * Who served each sale settled since the start of today, by order id. The
+ * waiter's paid list polls this from every phone on the Reports tab, so a
+ * few seconds of reuse keeps the till from redoing it per phone.
+ */
+export function servingWaiterByOrderToday(): Promise<Map<number, number>> {
+  const from = new Date(new Date().setHours(0, 0, 0, 0));
+  const key = String(from.getTime());
+  const now = Date.now();
+  if (servedByCache?.key === key && now - servedByCache.at < SERVED_BY_TTL_MS) {
+    return servedByCache.map;
+  }
+  const map = servedSales(
+    fetchPaidSales({ from, to: new Date() }),
+    from,
+    new Date(),
+  )
+    .then((sales) => {
+      const out = new Map<number, number>();
+      for (const s of sales)
+        if (s.orderId && s.userId) out.set(s.orderId, s.userId);
+      return out;
+    })
+    .catch(() => new Map<number, number>());
+  servedByCache = { key, at: now, map };
+  return map;
+}
+
 export async function getAdminReview(
   input: ReviewRangeInput | null | undefined,
 ): Promise<ReviewDTO> {
@@ -619,9 +999,17 @@ export async function getAdminReview(
 
   const [curSales, cmpSales, curVoids, cmpVoids, allUsers, shifts] =
     await Promise.all([
-      fetchPaidSales({ from: curStart, to: curEnd }),
+      servedSales(
+        fetchPaidSales({ from: curStart, to: curEnd }),
+        curStart,
+        curEnd,
+      ),
       compare
-        ? fetchPaidSales({ from: compare.start, to: compare.end })
+        ? servedSales(
+            fetchPaidSales({ from: compare.start, to: compare.end }),
+            compare.start,
+            compare.end,
+          )
         : Promise.resolve([] as PaidSale[]),
       countVoidedTickets(curStart, curEnd),
       compare

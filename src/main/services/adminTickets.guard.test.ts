@@ -12,7 +12,7 @@ describe('admin tickets SQLite DateTime / itemsJson', () => {
   it('serializes createdAt without assuming a Date', () => {
     expect(src).toContain('ticketCreatedAtIso');
     expect(src).toContain('asTicketLogItems');
-    expect(src).toContain('ticketLogCreatedAtRangeSql');
+    expect(src).toContain('dateRangeSupersetSql');
     expect(src).toContain('ticketLogCreatedAtMs');
     expect(src).not.toMatch(/createdAt\.toISOString\s*\(/);
     expect(src).not.toMatch(/Array\.isArray\(r\.itemsJson\)/);
@@ -25,6 +25,12 @@ describe('admin tickets SQLite DateTime / itemsJson', () => {
     expect(src).toContain('paidSalesNotOnTickets');
     expect(src).toContain('matchOrdersToTicketRows');
     expect(src).toContain('keepCanonicalPaidOrders');
+  });
+
+  it("counts and one waiter's list read the same ticket-to-sale ledger", () => {
+    // Matching only a waiter's own payments credited a table a colleague
+    // took payment for to the colleague on one page and the waiter on the other.
+    expect(src.match(/await staffLedger\(/g)?.length).toBe(2);
   });
 
   it('staff list defaults to today and shows per-waiter metrics', () => {

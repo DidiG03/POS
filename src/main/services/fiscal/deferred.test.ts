@@ -367,3 +367,28 @@ describe('opening float for invoices sent late', () => {
     expect(createSale).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('an outage during a resend pass', () => {
+  it('sends the oldest sale first and stops at the first unreachable send', async () => {
+    const at = (min: number) =>
+      new Date(Date.now() - min * 60_000).toISOString();
+    deferred('inv-newer-000', { createdAt: at(5) });
+    deferred('inv-oldest-00', { createdAt: at(30) });
+    deferred('inv-middle-00', { createdAt: at(15) });
+    const offline = Object.assign(new Error('fetch failed'), {
+      fiscalOutcome: 'not-registered',
+      fiscalRetryable: true,
+    });
+    createSale.mockReset();
+    createSale.mockRejectedValue(offline);
+
+    const r = await transmitDueDeferredInvoices(settings);
+
+    // One send found easyPos down; the other two wait for the next pass
+    // instead of each spending a full recovery budget on the same answer.
+    expect(createSale).toHaveBeenCalledTimes(1);
+    expect((createSale.mock.calls[0] as any)[1].docId).toBe('inv-oldest-00');
+    expect(r).toEqual({ attempted: 1, registered: 0 });
+    expect((await readFiscalClaim('inv-middle-00'))?.state).toBe('DEFERRED');
+  });
+});

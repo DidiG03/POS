@@ -10,6 +10,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SettingsDTO } from '@shared/ipc';
 import { roundMoney } from '@shared/pricing';
 import {
+  bandChangeBetween,
+  buildCorrectionDifferenceLines,
+  invoiceBandTotals,
   buildEasyPosCloudInvoiceDraft,
   buildRestatedInvoiceLines,
 } from './mapInvoice';
@@ -140,6 +143,26 @@ describe('buildEasyPosCloudInvoiceDraft rounding', () => {
       ['E', 10],
     ]);
     expect(draft.payment[0].amount).toBe(220);
+  });
+
+  it('files a 0% menu rate at the default band, as the receipt does', () => {
+    // 0 means "not set" on the menu; filing it zero-rated declared no VAT
+    // on an ordinary drink the receipt showed 20% VAT on.
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload(
+        [
+          { name: 'Coca Cola', qty: 1, unitPrice: 200, vatRate: 0 },
+          { name: 'Fanta', qty: 1, unitPrice: 200 },
+        ] as any,
+        { totalAfter: 400 },
+      ),
+      settings,
+      { docId: 'inv-zero-rate-unset' },
+    );
+    expect(draft.articles.map((a) => [a.name, a.vatCode])).toEqual([
+      ['Coca Cola', 'B'],
+      ['Fanta', 'B'],
+    ]);
   });
 
   it('files a shortfall on a reduced-rate item at that rate', () => {
@@ -358,5 +381,89 @@ describe('unit of measure', () => {
       ['Peshk', 'KGM', 0.35],
       ['Uje', 'XPP', 1],
     ]);
+  });
+});
+
+describe('buildCorrectionDifferenceLines — refund below the menu price', () => {
+  const settings = {
+    defaultVatRate: 0.2,
+    fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+  } as any;
+
+  it('puts the bill discount on every struck line as a percentage', () => {
+    const { articles, amount } = buildCorrectionDifferenceLines(
+      [{ name: 'Steak', qty: 1, unitPrice: 1000, vatRate: 0.2 }],
+      settings,
+      { refund: 900 },
+    );
+    expect(articles).toMatchObject([
+      { name: 'Steak', price: 1000, units: -1, rebate: { inPercentage: 10 } },
+    ]);
+    expect(amount).toBe(-900);
+  });
+
+  it('strikes the service charge share next to the dish', () => {
+    const { articles, amount } = buildCorrectionDifferenceLines(
+      [{ name: 'Kafe', qty: 1, unitPrice: 500, vatRate: 0.2 }],
+      settings,
+      { serviceCharge: 50, refund: 550 },
+    );
+    expect(articles.map((a) => [a.name, a.price, a.units])).toEqual([
+      ['Kafe', 500, -1],
+      ['Service charge', 50, -1],
+    ]);
+    expect(articles.every((a) => !a.rebate)).toBe(true);
+    expect(amount).toBe(-550);
+  });
+
+  it('balances rounding with one line so the document totals the refund', () => {
+    // 3 × 333.33 at 12.5% off is 874.99 on easyPos' arithmetic; a refund
+    // of 875 needs a cent more.
+    const { articles, amount } = buildCorrectionDifferenceLines(
+      [{ name: 'A', qty: 3, unitPrice: 333.33, vatRate: 0.2 }],
+      settings,
+      { refund: 875 },
+    );
+    expect(amount).toBe(-875);
+    expect(articles.at(-1)).toMatchObject({
+      name: 'Adjustment',
+      price: 0.01,
+      units: -1,
+    });
+  });
+});
+
+describe('buildCorrectionDifferenceLines — per VAT band', () => {
+  const settings = {
+    defaultVatRate: 0.2,
+    fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+  } as any;
+  const steak = { name: 'Steak', qty: 1, unitPrice: 1000, vatRate: 0.2 };
+  const wine = { name: 'Wine', qty: 1, unitPrice: 1000, vatRate: 0.06 };
+
+  it('moves a fixed discount onto the band that stays on the bill', () => {
+    // 2000 with 200 off, spread 100 / 100 on the original invoice. Refunding
+    // the steak gives back 1000 (the discount stays with the bill), so the
+    // wine now carries all 200 of it.
+    const before = invoiceBandTotals(
+      { items: [steak, wine], discountAmount: 200, total: 1800 },
+      settings,
+    );
+    expect(before).toEqual({ B: 900, E: 900 });
+    const after = invoiceBandTotals(
+      { items: [wine], discountAmount: 200, total: 800 },
+      settings,
+    );
+    const { articles, amount } = buildCorrectionDifferenceLines(
+      [steak],
+      settings,
+      { refund: 1000, bandChange: bandChangeBetween(before, after) },
+    );
+    expect(amount).toBe(-1000);
+    const net = new Map<string, number>();
+    for (const a of articles) {
+      net.set(a.vatCode, (net.get(a.vatCode) || 0) + a.price * a.units);
+    }
+    expect(Object.fromEntries(net)).toEqual({ B: -900, E: -100 });
   });
 });

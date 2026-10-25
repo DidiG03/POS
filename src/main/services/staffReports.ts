@@ -10,6 +10,7 @@
 import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
 import { prisma } from '@db/client';
 import { coreServices } from './core';
+import { servingWaiterByOrderToday } from './paidAnalytics';
 import { isTransferredOutNote } from './tableTransfer';
 import { listOccupiedTables } from './tableOccupancy';
 import { ticketCreatedAtIso } from '@shared/ticketLogItems';
@@ -107,9 +108,22 @@ export async function listMyPaidTickets(
   if (!userId) return [];
 
   const take = q ? Math.max(limit, 500) : limit;
+  // Today's sales go to the waiter who served the table, as on the staff
+  // pages: one settled at the till or by a colleague is this waiter's, and
+  // one this waiter only took payment for is not. Older ones keep the payer.
+  const servedBy = await servingWaiterByOrderToday();
+  const servedIds: number[] = [];
+  for (const [orderId, uid] of servedBy)
+    if (uid === userId) servedIds.push(orderId);
   const sales = await prisma.order
     .findMany({
-      where: { status: 'PAID' as any, userId } as any,
+      where: {
+        status: 'PAID' as any,
+        OR: [
+          { userId },
+          ...(servedIds.length ? [{ id: { in: servedIds } }] : []),
+        ],
+      } as any,
       orderBy: [{ closedAt: 'desc' }, { id: 'desc' }],
       take: Math.min(1000, Math.max(take * 3, 100)),
       include: {
@@ -126,6 +140,8 @@ export async function listMyPaidTickets(
 
   const out: any[] = [];
   for (const sale of keepCanonicalPaidOrders(sales as any[])) {
+    const served = servedBy.get(Number(sale.id));
+    if (served != null && served !== userId) continue;
     const pay = sale.payments?.[0] || null;
     const meta = (pay?.metaJson as any) || {};
     const area = String(sale.area || '');

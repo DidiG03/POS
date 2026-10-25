@@ -158,6 +158,14 @@ export async function enforceAuthoritativePaymentTotals(
     meta,
     validation,
   );
+  // A refund of one dish gives back its share of a percentage charge but
+  // not of a fixed one, so the sale keeps which it was.
+  if (validation.computed.serviceChargeAmount > 0) {
+    nextMeta.serviceChargeMode =
+      (settings as any)?.preferences?.serviceCharge?.mode === 'PERCENT'
+        ? 'PERCENT'
+        : 'AMOUNT';
+  }
   if (lineDetail) {
     nextMeta.linePriceCheck = {
       detail: lineDetail,

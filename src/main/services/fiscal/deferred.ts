@@ -207,14 +207,23 @@ export async function transmitDueDeferredInvoices(
   }
   const now = options?.now ?? Date.now();
   if (!fiscalDeferredWorkMayExist()) return { attempted: 0, registered: 0 };
-  const rows = await listFiscalClaimsDeferred();
+  // Oldest sale first, so invoices reach CIS in the order they were made.
+  const rows = (await listFiscalClaimsDeferred()).sort(
+    (a, b) =>
+      (Date.parse(a.record.createdAt) || 0) -
+      (Date.parse(b.record.createdAt) || 0),
+  );
   let attempted = 0;
   let registered = 0;
+  // Once one send finds easyPos unreachable the rest would too, each after
+  // its own full recovery budget (~90s) — hours for a long outage queue,
+  // during which nothing else in this loop runs.
+  let unreachable = false;
 
   for (const { idempotencyKey, record } of rows) {
     await noticeDeadline(idempotencyKey, record, now);
     const dueAt = Date.parse(record.nextAttemptAt || '') || 0;
-    if (dueAt > now) continue;
+    if (dueAt > now || unreachable) continue;
 
     attempted += 1;
     const draft = record.draft;
@@ -234,7 +243,8 @@ export async function transmitDueDeferredInvoices(
         () => transmitOne(settings, idempotencyKey, record, draft, now),
         1_000,
       );
-      if (sent) registered += 1;
+      if (sent === 'sent') registered += 1;
+      if (sent === 'unreachable') unreachable = true;
     } catch (e) {
       if (e instanceof FiscalClaimBusyError) continue;
       console.warn(`[fiscal-defer] docId ${idempotencyKey} failed:`, e);
@@ -252,20 +262,20 @@ async function transmitOne(
   >[number]['record'],
   draft: unknown,
   now: number,
-): Promise<boolean> {
+): Promise<'sent' | 'unreachable' | 'not-sent'> {
   const current = await readFiscalClaim(idempotencyKey);
-  if (!current || current.state !== 'DEFERRED') return false;
+  if (!current || current.state !== 'DEFERRED') return 'not-sent';
 
   let decision: Awaited<ReturnType<typeof claimFiscalRegistration>>;
   try {
     decision = await claimFiscalRegistration(idempotencyKey, record.context);
   } catch {
-    return false;
+    return 'not-sent';
   }
-  if (decision.outcome !== 'proceed') return false;
+  if (decision.outcome !== 'proceed') return 'not-sent';
 
   const latest = await readFiscalClaim(idempotencyKey);
-  if (!latest || latest.state === 'ABANDONED') return false;
+  if (!latest || latest.state === 'ABANDONED') return 'not-sent';
   const saleKey =
     String(latest.context?.saleKey || '').trim() || idempotencyKey;
 
@@ -298,9 +308,9 @@ async function transmitOne(
           `Fiskalizimi accepted docId ${idempotencyKey} but the local record could not be saved.`,
         type: 'SECURITY',
       }).catch(() => undefined);
-      return false;
+      return 'not-sent';
     }
-    return true;
+    return 'sent';
   } catch (e: any) {
     const message = String(e?.message || e);
     if (fiscalOutcomeOf(e) === 'not-registered' && isFiscalRetryable(e)) {
@@ -321,7 +331,7 @@ async function transmitOne(
         );
       }
       await noticeOutage(message);
-      return false;
+      return 'unreachable';
     }
     if (fiscalOutcomeOf(e) === 'not-registered') {
       await settleFiscalClaimFailed(
@@ -333,14 +343,14 @@ async function transmitOne(
         message: `Deferred fiskalizimi is now refused${whereLabel(latest) ? ` on ${whereLabel(latest)}` : ''} · docId ${idempotencyKey}: ${message}`,
         type: 'SECURITY',
       }).catch(() => undefined);
-      return false;
+      return 'not-sent';
     }
     await settleFiscalClaimUnknown(
       idempotencyKey,
       decision.attemptId,
       message,
     ).catch(() => undefined);
-    return false;
+    return 'not-sent';
   }
 }
 

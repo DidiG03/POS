@@ -186,6 +186,7 @@ import {
 import {
   buildSalesTrendBuckets,
   fetchPaidSales,
+  fetchServedSales,
   fillTrendPoints,
   getAdminReview,
   sumPaidRevenue,
@@ -4278,7 +4279,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const end = new Date();
         const settings = await coreServices.readSettings();
         const fiscalVatEnabled = isVatEnabledFromSettings(settings);
-        const sales = await fetchPaidSales({
+        const sales = await fetchServedSales({
           from: start,
           to: end,
           userId: auth!.userId,
@@ -4319,7 +4320,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       ) {
         const start = new Date(new Date().setHours(0, 0, 0, 0));
         const end = new Date(new Date().setHours(23, 59, 59, 999));
-        const sales = await fetchPaidSales({
+        const sales = await fetchServedSales({
           from: start,
           to: end,
           userId: auth!.userId,
@@ -4332,7 +4333,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const trendRange =
           range === 'weekly' || range === 'monthly' ? range : 'daily';
         const buckets = buildSalesTrendBuckets(trendRange);
-        const sales = await fetchPaidSales({
+        const sales = await fetchServedSales({
           from: buckets[0].from,
           to: buckets[buckets.length - 1].to,
           userId: auth!.userId,

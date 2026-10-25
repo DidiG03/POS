@@ -1,6 +1,8 @@
 import type { SettingsDTO, TicketPrintMeta } from '@shared/ipc';
 import { resolveVatEnabledFromMeta } from '@shared/vatFromFiscal';
-import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
+import { lineGross } from '@shared/ticketRevenue';
+import { roundMoney } from '@shared/money';
+import { formatMoneyPlain, receiptFigures } from '@shared/receiptFigures';
 import {
   editionHasTables,
   formatSaleLocation,
@@ -185,18 +187,31 @@ function aggregateTicketItems(items: TicketPrintItem[]): TicketPrintItem[] {
   const map = new Map<string, TicketPrintItem>();
   const order: string[] = [];
   for (const it of arr) {
+    if ((it as any)?.voided === true) continue;
     const qty = Number(it?.qty || 0);
     if (!Number.isFinite(qty) || qty <= 0) continue;
     const key = keyOf(it);
     const existing = map.get(key);
+    // Each merged line keeps the sum of its own rounded amounts, so the
+    // printed lines add up to the total (two weighed portions of one dish
+    // rounded together could land a cent off).
     if (!existing) {
       order.push(key);
-      map.set(key, { ...it, qty });
+      map.set(key, { ...it, qty, lineTotal: lineGross(it) } as any);
     } else {
       existing.qty = Number(existing.qty || 0) + qty;
+      (existing as any).lineTotal = roundMoney(
+        Number((existing as any).lineTotal || 0) + lineGross(it),
+      );
     }
   }
   return order.map((k) => map.get(k)!).filter(Boolean);
+}
+
+/** Printed amount of one (possibly merged) receipt line. */
+function printedLineTotal(it: TicketPrintItem): number {
+  const merged = Number((it as any)?.lineTotal);
+  return Number.isFinite(merged) ? merged : lineGross(it);
 }
 
 /** Guest payment / bill slips — kitchen ORDER tickets keep notes. */
@@ -485,8 +500,6 @@ export function buildEscposTicket(
 
   // Items. Prices are VAT-inclusive (Albanian fiscalization): the gross
   // line already contains the tax, so VAT is extracted, never added on top.
-  let grossSubtotal = 0;
-  let vat = 0;
   const vatEnabled = resolveVatEnabledFromMeta(meta, settings);
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   if (kind === 'ORDER') {
@@ -496,12 +509,7 @@ export function buildEscposTicket(
   const orderLayout = kitchenItemLayout(layout);
   for (const it of itemsToPrint) {
     const qty = Number(it.qty || 1);
-    const linePrice = Number(it.unitPrice || 0) * qty;
-    grossSubtotal += linePrice;
-    if (vatEnabled) {
-      const rate = effectiveVatRate(it.vatRate, defaultVatRate);
-      vat += splitGrossVat(linePrice, rate).vat;
-    }
+    const linePrice = printedLineTotal(it);
     if (kind === 'ORDER') {
       lines.push(...twoCol(String(it.name || ''), String(qty), orderLayout));
       if (it.note) {
@@ -541,28 +549,18 @@ export function buildEscposTicket(
     }
   }
 
-  // Totals (skip for ORDER slips). Net is the gross minus the contained
-  // VAT so that Subtotal + VAT == gross total (the menu-price sum).
-  const subtotal = grossSubtotal - vat;
-  const scAmt = Number(meta?.serviceChargeAmount || 0);
-  const discountAmt = Number(meta?.discountAmount || 0);
-  const baseTotal = subtotal + vat;
-  const totalAfter = Number(meta?.totalAfter);
-  const fallbackTotal = Math.max(
-    0,
-    baseTotal +
-      (Number.isFinite(scAmt) ? scAmt : 0) -
-      (Number.isFinite(discountAmt) ? discountAmt : 0),
-  );
-  const totalFinal = Number.isFinite(totalAfter)
-    ? Math.max(0, totalAfter)
-    : fallbackTotal;
+  // Totals (skip for ORDER slips): service and discount take the goods to
+  // the amount charged, then Subtotal + VAT is that amount, VAT as filed.
+  const figures = receiptFigures(itemsToPrint, meta, {
+    vatEnabled,
+    defaultVatRate,
+  });
+  const scAmt = figures.service;
+  const discountAmt = figures.discount;
+  const totalFinal = figures.total;
   if (!hidePrices) {
     lines.push(escposText(`${layout.sep}\n`));
-    lines.push(...twoCol(copy.subtotal, formatMoneyEscpos(subtotal), layout));
-    if (vatEnabled)
-      lines.push(...twoCol(copy.vat, formatMoneyEscpos(vat), layout));
-    if (Number.isFinite(scAmt) && scAmt > 0) {
+    if (scAmt > 0) {
       const mode = String(meta?.serviceChargeMode || '').toUpperCase();
       const v = meta?.serviceChargeValue;
       const label =
@@ -571,7 +569,7 @@ export function buildEscposTicket(
           : copy.service;
       lines.push(...twoCol(label, formatMoneyEscpos(scAmt), layout));
     }
-    if (Number.isFinite(discountAmt) && discountAmt > 0) {
+    if (discountAmt > 0) {
       const dtype = String(meta?.discountType || '').toUpperCase();
       const dval = meta?.discountValue;
       const label =
@@ -582,6 +580,11 @@ export function buildEscposTicket(
         ...twoCol(label, '-' + formatMoneyEscpos(discountAmt), layout),
       );
     }
+    lines.push(
+      ...twoCol(copy.subtotal, formatMoneyEscpos(figures.net), layout),
+    );
+    if (vatEnabled)
+      lines.push(...twoCol(copy.vat, formatMoneyEscpos(figures.vat), layout));
     lines.push(cmdBold(true));
     // Double height only on restaurant slips, so TOTAL and the amount stay
     // on one line of the normal column grid.
@@ -768,33 +771,13 @@ export function buildHtmlReceipt(
 
   const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
   const items = hidePrices ? itemsRaw : aggregateTicketItems(itemsRaw);
-  // VAT-inclusive: the gross line already contains the tax, so we extract
-  // the contained VAT rather than adding it on top of the menu price.
-  const grossSubtotal = items.reduce(
-    (sum, it) => sum + Number(it.unitPrice || 0) * Number(it.qty || 1),
-    0,
-  );
-  const vat = vatEnabled
-    ? items.reduce((sum, it) => {
-        const lineGross = Number(it.unitPrice || 0) * Number(it.qty || 1);
-        const rate = effectiveVatRate(it.vatRate, defaultVatRate);
-        return sum + splitGrossVat(lineGross, rate).vat;
-      }, 0)
-    : 0;
-  const subtotal = grossSubtotal - vat;
-  const scAmt = Number(meta?.serviceChargeAmount || 0);
-  const discountAmt = Number(meta?.discountAmount || 0);
-  const baseTotal = subtotal + vat;
-  const totalAfter = Number(meta?.totalAfter);
-  const fallbackTotal = Math.max(
-    0,
-    baseTotal +
-      (Number.isFinite(scAmt) ? scAmt : 0) -
-      (Number.isFinite(discountAmt) ? discountAmt : 0),
-  );
-  const totalFinal = Number.isFinite(totalAfter)
-    ? Math.max(0, totalAfter)
-    : fallbackTotal;
+  // Same money block as the thermal slip: see `receiptFigures`.
+  const figures = receiptFigures(items, meta, { vatEnabled, defaultVatRate });
+  const subtotal = figures.net;
+  const vat = figures.vat;
+  const scAmt = figures.service;
+  const discountAmt = figures.discount;
+  const totalFinal = figures.total;
   const fx =
     kind === 'PAYMENT' || kind === 'RECEIPT'
       ? dualTotalsFromSettings(totalFinal, settings)
@@ -803,7 +786,7 @@ export function buildHtmlReceipt(
   const rows = items
     .map((it) => {
       const qty = Number(it.qty || 1);
-      const line = Number(it.unitPrice || 0) * qty;
+      const line = printedLineTotal(it);
       const note = it.note ? `<div class="note">- ${safe(it.note)}</div>` : '';
       const right =
         kind === 'ORDER'
@@ -925,10 +908,10 @@ export function buildHtmlReceipt(
       hidePrices
         ? ''
         : `<div class="sep"></div>
-    <div class="row"><div class="left">${safe(copy.subtotal)}</div><div class="right">${safe(formatMoney(subtotal, currency))}</div></div>
-    ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
     ${scLine}
     ${discountLine}
+    <div class="row"><div class="left">${safe(copy.subtotal)}</div><div class="right">${safe(formatMoney(subtotal, currency))}</div></div>
+    ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
     <div class="row total"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>${
       fx.lek != null
         ? `<div class="row"><div class="left">${safe(copy.totalLek)}</div><div class="right">${safe(formatMoney(fx.lek, 'ALL'))}</div></div>`
@@ -1358,23 +1341,23 @@ async function sendViaLpr(
 }
 
 function formatMoney(amount: number, currency: string): string {
+  const v = roundMoney(amount);
+  const digits = Number.isInteger(v) ? 0 : 2;
   try {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
       currency,
-      maximumFractionDigits: 0,
-      minimumFractionDigits: 0,
-    }).format(Math.round(Number(amount) || 0));
+      maximumFractionDigits: digits,
+      minimumFractionDigits: digits,
+    }).format(v);
   } catch {
-    return `${Math.round(Number(amount) || 0)} ${currency}`;
+    return `${formatMoneyPlain(v)} ${currency}`;
   }
 }
 
 function formatMoneyEscpos(amount: number): string {
-  const n = Number(amount || 0);
-  if (!Number.isFinite(n)) return '0';
-  // Keep ASCII only for printer compatibility; no trailing .00.
-  return String(Math.round(n));
+  // ASCII for printer compatibility; whole amounts without a trailing .00.
+  return formatMoneyPlain(amount);
 }
 
 function escposText(s: string): Buffer {

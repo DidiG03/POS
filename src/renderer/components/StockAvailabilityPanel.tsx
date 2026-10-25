@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useCostVat } from '../utils/costVat';
 import { inventoryLevelFromOnHand } from '@shared/menuStock';
 import {
   itemCostFigures,
@@ -484,6 +485,7 @@ export function StockAvailabilityPanel({
           onClose={() => setCostItemId(null)}
           itemName={costItem.name}
           sellPrice={Number(costItem.price || 0)}
+          vatRate={(costItem as any).vatRate}
           costPrice={costItem.costPrice}
           costBreakdown={costItem.costBreakdown}
           onHand={
@@ -510,10 +512,12 @@ function CostCells({
   row: StockPanelMenuItem;
   currency: string;
 }) {
+  const costVat = useCostVat();
   const cost = resolveUnitCost(row.costPrice, row.costBreakdown);
   const figures = itemCostFigures({
     sellPrice: Number(row.price || 0),
     cost,
+    vatRate: costVat((row as any).vatRate),
   });
   const money = (n: number | null) =>
     n == null ? '—' : formatCostMoney(n, currency);

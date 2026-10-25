@@ -13,6 +13,7 @@ import { articleLineTotal, computeInvoiceTotal } from './validate';
 // invoice whose lines and payment differ by a single cent — the table stays
 // open and staff retry the payment.
 import { roundMoney } from '@shared/pricing';
+import { effectiveVatRate } from '@shared/ticketRevenue';
 
 export type EasyPosInvoiceDraft = {
   app: string;
@@ -306,6 +307,9 @@ function buildArticles(
   const { soldIn } = fiscalArticleSettings(settings);
 
   for (const it of items) {
+    // A struck line is not part of the sale; filed and then rebated away it
+    // misstated the goods and alerted admins to a mismatch.
+    if ((it as any).voided === true) continue;
     const qty = Number(it.qty || 0);
     if (!Number.isFinite(qty) || qty <= 0) continue;
     articles.push({
@@ -319,7 +323,14 @@ function buildArticles(
       // 0% is A, C or J depending on facts a percentage does not carry.
       vatCode: assertVatCode(settings, {
         vatCode: (it as any).vatCode,
-        vatRate: Number(it.vatRate ?? settings.defaultVatRate ?? 0),
+        // A menu rate of 0 means "not set" here, as on the receipt and in
+        // the ledger: filing it zero-rated declared no VAT on a Coca Cola
+        // the receipt showed 20% on. A genuinely exempt supply carries
+        // `vatExempt` or its own code.
+        vatRate: effectiveVatRate(
+          it.vatRate,
+          Number(settings.defaultVatRate) || 0.2,
+        ),
         exempt: (it as any).vatExempt === true,
         articleName: String(it.name || 'Item'),
       }),
@@ -479,9 +490,17 @@ export function buildRestatedInvoiceLines(
 }
 
 /**
- * The lines of a corrective invoice for a partial void: each struck line
- * as filed originally (same article id, VAT band, unit), with its units
- * negated. Returns the (negative) total the payment must carry.
+ * The lines of a corrective invoice: each struck line as filed originally
+ * (same article id, VAT band, unit), with its units negated, and the share
+ * of the service charge that went with them, split by band like the
+ * original's service charge lines.
+ *
+ * `refund` is what the guest paid for all of that — less than its menu
+ * gross on a bill with a percentage discount. It goes on as the same
+ * percentage rebate on every line: easyPos applies `inPercentage` to the
+ * line (so a negative line comes back smaller, which `inValue` does not do)
+ * and takes it to two decimals. Whatever the rounding leaves is one
+ * balancing line, so the document totals exactly `-refund`.
  */
 export function buildCorrectionDifferenceLines(
   items: Array<{
@@ -493,16 +512,146 @@ export function buildCorrectionDifferenceLines(
     soldByKg?: boolean;
   }>,
   settings: SettingsDTO,
+  options?: {
+    serviceCharge?: number;
+    refund?: number;
+    /**
+     * The change to each VAT band, from `invoiceBandTotals` before and
+     * after. When given, each band is balanced to it rather than the
+     * document as a whole, so a fixed discount that the original spread over
+     * every band moves between them instead of staying on the struck ones.
+     */
+    bandChange?: Partial<Record<string, number>>;
+  },
 ): { articles: EasyPosInvoiceDraft['articles']; amount: number } {
-  const payload = { items, meta: {} } as unknown as TicketPrintPayload;
-  const articles = buildArticles(payload, settings).map((a) => ({
+  const serviceChargeAmount = Math.max(
+    0,
+    roundMoney(Number(options?.serviceCharge) || 0),
+  );
+  const payload = {
+    items,
+    meta: { serviceChargeAmount },
+  } as unknown as TicketPrintPayload;
+  let articles = buildArticles(payload, settings).map((a) => ({
     ...a,
     units: -a.units,
   }));
   if (articles.length === 0) {
     throw new Error('A corrective invoice needs at least one struck line.');
   }
+  const struck = roundMoney(-invoiceTotalOf(articles));
+  const wanted = Number(options?.refund);
+  const refund =
+    Number.isFinite(wanted) && wanted >= 0 ? roundMoney(wanted) : struck;
+  if (struck > 0 && refund < struck) {
+    const pct = roundMoney((1 - refund / struck) * 100);
+    if (pct > 0) {
+      articles = articles.map((a) => ({
+        ...a,
+        rebate: { inPercentage: Math.min(100, pct) },
+      }));
+    }
+  }
+  const balance = (code: VatCode, residual: number) => {
+    if (Math.abs(residual) < 0.01) return;
+    articles.push({
+      articleId: resolveArticleId('POS-ADJUSTMENT', 'Adjustment', settings),
+      vatCode: code,
+      name: 'Adjustment',
+      soldIn: fiscalArticleSettings(settings).soldIn,
+      price: Math.abs(residual),
+      units: residual < 0 ? -1 : 1,
+    });
+  };
+  const targets = options?.bandChange;
+  const bandSum = Object.values(targets || {}).reduce<number>(
+    (t, v) => t + (Number(v) || 0),
+    0,
+  );
+  if (targets && Math.abs(roundMoney(bandSum + refund)) < 0.01) {
+    const filed = new Map<VatCode, number>();
+    for (const a of articles) {
+      filed.set(a.vatCode, (filed.get(a.vatCode) || 0) + articleLineTotal(a));
+    }
+    const codes = new Set<VatCode>([
+      ...filed.keys(),
+      ...(Object.keys(targets) as VatCode[]),
+    ]);
+    for (const code of codes) {
+      balance(
+        code,
+        roundMoney((Number(targets[code]) || 0) - (filed.get(code) || 0)),
+      );
+    }
+  } else {
+    const band = positiveBands(
+      articles.map((a) => ({ ...a, units: -a.units, rebate: undefined })),
+    ).sort((a, b) => b.weight - a.weight)[0];
+    balance(
+      band?.code ?? defaultVatCode(settings),
+      roundMoney(-refund - invoiceTotalOf(articles)),
+    );
+  }
   return { articles, amount: invoiceTotalOf(articles) };
+}
+
+/**
+ * What an invoice for this sale files on each VAT band — the same lines,
+ * service charge split and discount placement as the invoice the sale was
+ * filed with. A corrective files the difference between two of these, so
+ * the bands net out exactly as the sale changes.
+ */
+export function invoiceBandTotals(
+  sale: {
+    items: Array<{
+      sku?: string;
+      name: string;
+      qty: number;
+      unitPrice: number;
+      vatRate: number;
+    }>;
+    serviceChargeAmount?: number | null;
+    discountAmount?: number | null;
+    total: number;
+  },
+  settings: SettingsDTO,
+): Partial<Record<VatCode, number>> {
+  const positive = (v: unknown) => Math.max(0, roundMoney(Number(v) || 0));
+  const payload = {
+    items: sale.items,
+    meta: {
+      serviceChargeAmount: positive(sale.serviceChargeAmount),
+      discountAmount: positive(sale.discountAmount),
+    },
+  } as unknown as TicketPrintPayload;
+  const lines = buildArticles(payload, settings);
+  const out: Partial<Record<VatCode, number>> = {};
+  if (lines.length === 0) return out;
+  const { articles, invoiceRebate } = reconcileToChargedTotal(
+    lines,
+    ticketDiscountRebate(payload),
+    positive(sale.total),
+    settings,
+  );
+  for (const a of articles) {
+    out[a.vatCode] = roundMoney((out[a.vatCode] || 0) + articleLineTotal(a));
+  }
+  const rebate = roundMoney(Number(invoiceRebate?.inValue) || 0);
+  const sole = positiveBands(articles)[0]?.code;
+  if (rebate > 0 && sole) out[sole] = roundMoney((out[sole] || 0) - rebate);
+  return out;
+}
+
+/** `after − before` per band, for `buildCorrectionDifferenceLines`. */
+export function bandChangeBetween(
+  before: Partial<Record<string, number>>,
+  after: Partial<Record<string, number>>,
+): Partial<Record<string, number>> {
+  const out: Partial<Record<string, number>> = {};
+  for (const code of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    out[code] = roundMoney((after[code] || 0) - (before[code] || 0));
+  }
+  return out;
 }
 
 export function buildEasyPosCloudInvoiceDraft(

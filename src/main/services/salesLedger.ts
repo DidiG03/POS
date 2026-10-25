@@ -43,6 +43,18 @@ function money(n: number): string {
   return roundMoney(n).toFixed(2);
 }
 
+/**
+ * Quantities keep grams. Weighed lines are entered in grams (335 g is
+ * 0.335 kg); storing them as money cut that to 0.34, and every later read
+ * of the line (dish revenue, a corrective invoice restating the sale)
+ * priced 5 g the guest never bought.
+ */
+function quantity(n: number): string {
+  const q = Number(n);
+  if (!Number.isFinite(q)) return '0';
+  return String(Math.round(q * 1000) / 1000);
+}
+
 function optionalKey(raw: unknown): string | undefined {
   const s = String(raw || '').trim();
   return s || undefined;
@@ -187,7 +199,7 @@ export async function writeSettledSale(
               : null,
             sku: String(l.sku || ''),
             name: String(l.name || '').trim() || 'Item',
-            qty: money(Number(l.qty || 0)),
+            qty: quantity(Number(l.qty || 0)),
             unitPrice: money(Number(l.unitPrice || 0)),
             vatRate: money(Number(l.vatRate || 0)),
             note: l.note ? String(l.note) : null,

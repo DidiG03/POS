@@ -1665,7 +1665,12 @@ function FiscalSettings() {
                     ? t('fiscal.testingMinimal')
                     : t('fiscal.testMinimalInvoice'),
                   onSelect: () => void testMinimalInvoice(),
-                  disabled: !enabled || testing || testingMinimal,
+                  // It files a real sale; only the test service may get one.
+                  disabled:
+                    !enabled ||
+                    testing ||
+                    testingMinimal ||
+                    !baseUrl.toLowerCase().includes('api.dev.easypos.al'),
                 },
               ]}
             />

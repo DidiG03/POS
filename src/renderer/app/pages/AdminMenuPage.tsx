@@ -128,6 +128,12 @@ function presetLabel(
   });
 }
 
+/** A menu rate of 0 means "not set": the default rate is charged and filed. */
+function vatRateUnset(rate: unknown): boolean {
+  const n = Number(rate);
+  return !(Number.isFinite(n) && n > 0);
+}
+
 function vatPercent(rate: number): number {
   const n = Number(rate);
   if (!Number.isFinite(n)) return 0;
@@ -228,6 +234,7 @@ export default function AdminMenuPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [cats, setCats] = useState<MenuCategory[]>([]);
+  const [defaultVatPct, setDefaultVatPct] = useState(20);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -237,6 +244,29 @@ export default function AdminMenuPage() {
   const [showAddCategory, setShowAddCategory] = useState(false);
   const initialLoad = useRef(true);
 
+  const vatUnsetCount = useMemo(
+    () =>
+      cats.reduce(
+        (n, c) =>
+          n + (c.items || []).filter((it) => vatRateUnset(it.vatRate)).length,
+        0,
+      ),
+    [cats],
+  );
+  useEffect(() => {
+    let alive = true;
+    void window.api.settings
+      .get()
+      .then((s: any) => {
+        const r = Number(s?.defaultVatRate);
+        if (alive && Number.isFinite(r) && r > 0)
+          setDefaultVatPct(vatPercent(r));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
   const selected = useMemo(
     () => cats.find((c) => c.id === selectedId) || null,
     [cats, selectedId],
@@ -689,6 +719,17 @@ export default function AdminMenuPage() {
             {billingPaused ? (
               <div className="m-3 rounded-lg border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[13px] text-amber-200">
                 {t('adminMenu.billingPaused')}
+              </div>
+            ) : null}
+            {vatUnsetCount > 0 ? (
+              <div
+                role="status"
+                className="pos-alert m-3 !border-amber-500/50 !bg-amber-500/10 text-[13px]"
+              >
+                {t('adminMenu.vatUnsetNotice', {
+                  count: vatUnsetCount,
+                  pct: defaultVatPct,
+                })}
               </div>
             ) : null}
 
@@ -1459,7 +1500,14 @@ function AddItemForm({
             disabled={disabled}
           />
         </Field>
-        <Field label={t('adminMenu.vatRate')}>
+        <Field
+          label={t('adminMenu.vatRate')}
+          hint={
+            vat.trim() !== '' && vatRateUnset(menuVatInput(vat))
+              ? t('adminMenu.vatZeroHint')
+              : undefined
+          }
+        >
           <Input
             placeholder="0.2"
             inputMode="decimal"
@@ -1753,9 +1801,21 @@ function ItemRow({
                 {kdsLinkLabel(t, kdsStation)}
               </Badge>
             ) : null}
-            <Badge className="text-[10px]">
-              {t('adminMenu.vat', { pct: vatPercent(item.vatRate) })}
-            </Badge>
+            {vatRateUnset(item.vatRate) ? (
+              <span title={t('adminMenu.vatUnsetTitle')}>
+                <Badge
+                  tone="warn"
+                  className="inline-flex items-center gap-0.5 text-[10px]"
+                >
+                  <IconAlert className="size-3" />
+                  {t('adminMenu.vatUnset')}
+                </Badge>
+              </span>
+            ) : (
+              <Badge className="text-[10px]">
+                {t('adminMenu.vat', { pct: vatPercent(item.vatRate) })}
+              </Badge>
+            )}
             {item.isKg ? (
               <Badge className="text-[10px]">{t('adminMenu.soldByKg')}</Badge>
             ) : null}
@@ -1995,7 +2055,14 @@ function EditItemModal({
               disabled={disabled}
             />
           </Field>
-          <Field label={t('adminMenu.vatRate')}>
+          <Field
+            label={t('adminMenu.vatRate')}
+            hint={
+              vat.trim() !== '' && vatRateUnset(menuVatInput(vat))
+                ? t('adminMenu.vatZeroHint')
+                : undefined
+            }
+          >
             <Input
               placeholder="0.2"
               inputMode="decimal"
@@ -2009,6 +2076,7 @@ function EditItemModal({
         {!hasTables ? (
           <ItemCostFields
             sellPrice={price}
+            vatRate={menuVatInput(vat)}
             showSellPrice={false}
             lines={costLines}
             onChangeLines={setCostLines}

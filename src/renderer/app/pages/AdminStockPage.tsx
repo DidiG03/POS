@@ -11,6 +11,7 @@ import { itemCostFigures, resolveUnitCost } from '@shared/itemCost';
 import { IconAlert } from '../../components/icons';
 import { reportAppError } from '../../utils/reportAppError';
 import { cn } from '../../components/ui/cn';
+import { useCostVat } from '../../utils/costVat';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 
 export default function AdminStockPage() {
@@ -102,6 +103,7 @@ export default function AdminStockPage() {
     return { ok, low, out };
   }, [categories, trackInventory]);
 
+  const costVat = useCostVat();
   const valueTotals = useMemo(() => {
     let stockValue = 0;
     let stockProfit = 0;
@@ -118,6 +120,7 @@ export default function AdminStockPage() {
           sellPrice: Number(it.price || 0),
           cost,
           onHand,
+          vatRate: costVat((it as any).vatRate),
         });
         if (figs.stockValue != null) {
           stockValue += figs.stockValue;
@@ -127,7 +130,7 @@ export default function AdminStockPage() {
       }
     }
     return { stockValue, stockProfit, withCost };
-  }, [categories]);
+  }, [categories, costVat]);
 
   if (loading) return <PageSpinner message={t('stockPanel.loading')} />;
 

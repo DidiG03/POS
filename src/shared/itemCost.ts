@@ -96,6 +96,11 @@ export function itemCostFigures(input: {
   sellPrice: number;
   cost: number | null;
   onHand?: number | null;
+  /**
+   * VAT in the sell price, as a fraction, when the venue charges VAT. The
+   * margin is on what the venue keeps: 1200 at 20% is 1000 of revenue.
+   */
+  vatRate?: number;
 }): {
   cost: number | null;
   profit: number | null;
@@ -104,7 +109,9 @@ export function itemCostFigures(input: {
   stockValue: number | null;
   stockProfit: number | null;
 } {
-  const sell = Number(input.sellPrice);
+  const gross = Number(input.sellPrice);
+  const rate = Number(input.vatRate);
+  const sell = Number.isFinite(rate) && rate > 0 ? gross / (1 + rate) : gross;
   const cost = input.cost;
   const hasSell = Number.isFinite(sell);
   const hasCost = cost != null && Number.isFinite(cost);

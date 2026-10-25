@@ -13,6 +13,7 @@ import { Button, IconButton } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { IconPlus, IconTrash } from './icons';
 import { cn } from './ui/cn';
+import { useCostVat } from '../utils/costVat';
 
 export function formatCostMoney(amount: number, currency: string): string {
   const n = Math.round(Number.isFinite(amount) ? amount : 0);
@@ -61,6 +62,7 @@ export function ItemCostFields({
   onHand,
   currency,
   disabled,
+  vatRate,
 }: {
   sellPrice: string;
   onSellPriceChange?: (next: string) => void;
@@ -70,8 +72,11 @@ export function ItemCostFields({
   onHand?: number | null;
   currency: string;
   disabled?: boolean;
+  /** The item's VAT rate as entered; stripped from the price for margins. */
+  vatRate?: unknown;
 }) {
   const { t } = useTranslation();
+  const costVat = useCostVat();
   const [amountDraft, setAmountDraft] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -95,6 +100,7 @@ export function ItemCostFields({
     sellPrice: sell,
     cost: lines.some((l) => l.label.trim() || l.amount) ? cost : null,
     onHand,
+    vatRate: costVat(vatRate),
   });
   const money = (n: number | null) =>
     n == null ? '—' : formatCostMoney(n, currency);
@@ -252,6 +258,7 @@ export function ItemCostModal({
   currency,
   disabled,
   onSave,
+  vatRate,
 }: {
   open: boolean;
   onClose: () => void;
@@ -266,6 +273,7 @@ export function ItemCostModal({
     costPrice: number | null;
     costBreakdown: ItemCostLine[] | null;
   }) => Promise<void> | void;
+  vatRate?: unknown;
 }) {
   const { t } = useTranslation();
   const [lines, setLines] = useState<ItemCostLine[]>(() =>
@@ -322,6 +330,7 @@ export function ItemCostModal({
         onHand={onHand}
         currency={currency}
         disabled={disabled || saving}
+        vatRate={vatRate}
       />
     </Modal>
   );

@@ -33,6 +33,7 @@ vi.mock('@db/client', () => ({
             .filter((it) => it.orderId === order.id)
             .sort((a, b) => a.sortOrder - b.sortOrder),
           payments: order.payment ? [order.payment] : [],
+          corrections: db.corrections.filter((c) => c.orderId === order.id),
         };
       }),
       findMany: vi.fn(async () => []),
@@ -509,9 +510,11 @@ describe('applySaleCorrection — corrective', () => {
 });
 
 describe('applySaleCorrection — corrective with a service charge', () => {
-  it('takes off only the struck line; the service charge stays on the sale', async () => {
+  function seedServiceCharged(meta?: Record<string, unknown>) {
     seedSale();
-    Object.assign(db.orders.get(1), { total: 1650, serviceChargeAmount: 150 });
+    const order = db.orders.get(1);
+    Object.assign(order, { total: 1650, serviceChargeAmount: 150 });
+    if (meta) order.payment.metaJson = meta;
     vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
       defaultVatRate: 0.2,
       fiscal: { enabled: true, defaultSoldIn: 'XPP' },
@@ -521,7 +524,22 @@ describe('applySaleCorrection — corrective with a service charge', () => {
       docId: 'corr-sc',
       identifiers: { fic: 'NIVF-SC' },
     } as never);
+  }
 
+  function sentCorrective() {
+    return (registerCorrectiveInvoice.mock.calls as any)[0][1] as {
+      articles: Array<{
+        name: string;
+        price: number;
+        units: number;
+        rebate?: { inPercentage?: number };
+      }>;
+      payment: Array<{ amount: number }>;
+    };
+  }
+
+  it('gives back the struck line and its share of a 10% service charge', async () => {
+    seedServiceCharged({ serviceChargeMode: 'PERCENT' });
     const r = await applySaleCorrection({
       orderId: 1,
       kind: 'CORRECTIVE',
@@ -529,15 +547,115 @@ describe('applySaleCorrection — corrective with a service charge', () => {
       reason: 'Coffee charged twice',
     });
 
-    const sent = (registerCorrectiveInvoice.mock.calls as any)[0][1] as {
-      articles: Array<{ name: string; price: number; units: number }>;
-      payment: Array<{ amount: number }>;
-    };
+    // 1500 of dishes + 150 service. The 500 coffee carried 50 of it.
+    const sent = sentCorrective();
+    expect(sent.articles.map((a) => [a.name, a.price, a.units])).toEqual([
+      ['Kafe', 500, -1],
+      ['Service charge', 50, -1],
+    ]);
+    expect(sent.payment[0].amount).toBe(-550);
+    expect(r).toMatchObject({ ok: true, amountDelta: -550 });
+    expect(db.orders.get(1)).toMatchObject({
+      total: 1100,
+      serviceChargeAmount: 100,
+    });
+  });
+
+  it('leaves a fixed service charge on the bill', async () => {
+    seedServiceCharged({ serviceChargeMode: 'AMOUNT' });
+    const r = await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee charged twice',
+    });
+
+    const sent = sentCorrective();
     expect(sent.articles.map((a) => a.name)).toEqual(['Kafe']);
-    const lines = sent.articles.reduce((t, a) => t + a.price * a.units, 0);
-    expect(lines).toBe(-500);
     expect(sent.payment[0].amount).toBe(-500);
     expect(r).toMatchObject({ ok: true, amountDelta: -500 });
+    expect(db.orders.get(1).serviceChargeAmount).toBe(150);
+  });
+});
+
+describe('applySaleCorrection — corrective on a discounted bill', () => {
+  it('refunds what the guest paid for the dish, filed as the same percentage', async () => {
+    seedSale();
+    // 1500 of dishes with 10% off: the guest paid 1350.
+    Object.assign(db.orders.get(1), {
+      total: 1350,
+      discountAmount: 150,
+      discountType: 'PERCENT',
+    });
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+    } as any);
+    registerCorrectiveInvoice.mockResolvedValueOnce({
+      kind: 'complete',
+      docId: 'corr-d',
+      identifiers: { fic: 'NIVF-D' },
+    } as never);
+
+    const r = await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee returned',
+    });
+
+    const sent = (registerCorrectiveInvoice.mock.calls as any)[0][1];
+    expect(sent.articles).toMatchObject([
+      { name: 'Kafe', price: 500, units: -1, rebate: { inPercentage: 10 } },
+    ]);
+    expect(sent.payment[0].amount).toBe(-450);
+    expect(r).toMatchObject({ ok: true, amountDelta: -450 });
+    expect(db.orders.get(1)).toMatchObject({ total: 900, discountAmount: 100 });
+  });
+});
+
+describe('applySaleCorrection — cancel after a corrective', () => {
+  it('strikes what is left with a corrective, not a cancel of the original', async () => {
+    vi.mocked(cancelInvoice).mockClear();
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValue({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+    } as any);
+    registerCorrectiveInvoice
+      .mockResolvedValueOnce({
+        kind: 'complete',
+        docId: 'corr-1',
+        identifiers: { iic: 'IIC-C1', fic: 'NIVF-C1' },
+      } as never)
+      .mockResolvedValueOnce({
+        kind: 'complete',
+        docId: 'corr-2',
+        identifiers: { iic: 'IIC-C2', fic: 'NIVF-C2' },
+      } as never);
+
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee returned',
+    });
+    const r = await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Table walked out',
+    });
+
+    // easyPos' cancel reverses the whole original 1500, so the coffee
+    // already struck would come off twice.
+    expect(cancelInvoice).not.toHaveBeenCalled();
+    const second = (registerCorrectiveInvoice.mock.calls as any)[1][1];
+    expect(second.articles.map((a: any) => [a.name, a.units])).toEqual([
+      ['Tavë kosi', -2],
+    ]);
+    expect(second.payment[0].amount).toBe(-1000);
+    expect(r).toMatchObject({ ok: true, amountDelta: -1000 });
+    expect(db.orders.get(1).status).toBe('VOID');
   });
 });
 

@@ -7,11 +7,12 @@
  * referencing the original — the original sale is never edited away, which
  * is why this returns the *delta* rather than a rewritten invoice.
  *
- * The money is computed off the original total rather than re-derived from
- * scratch: a bill can carry a whole-ticket discount or a service charge
- * whose split across lines nobody recorded, and inventing that split here
- * would make the corrective document disagree with the invoice it corrects.
- * Striking a line takes exactly that line's gross off the total.
+ * The money is what the guest paid for the struck lines, not their menu
+ * price: a percentage discount or service charge scales with the dishes, so
+ * striking a 1,000 dish from a bill with 10% off gives back 900. Fixed
+ * amounts stay with the bill (capped at what is left to discount). The
+ * change is applied to the sale's own total, so a bill whose stored figures
+ * never added up exactly keeps that difference instead of losing it.
  */
 import { roundMoney } from './pricing';
 import { splitChargedNetVat } from './ticketRevenue';
@@ -33,6 +34,17 @@ export type CorrectionOrderSnapshot = {
   total?: number | null;
   vatEnabled?: boolean | null;
   items: readonly CorrectionOrderLine[];
+  /** The bill's service charge as it stands now. */
+  serviceChargeAmount?: number | null;
+  /**
+   * How it was worked out. A fixed charge stays with the bill; a
+   * percentage (and an unknown mode) scales with the dishes.
+   */
+  serviceChargeMode?: 'PERCENT' | 'AMOUNT' | null;
+  /** The bill's discount as it stands now. */
+  discountAmount?: number | null;
+  /** PERCENT scales with the dishes; anything else is a fixed amount. */
+  discountType?: string | null;
 };
 
 export type SaleCorrectionRequest = {
@@ -67,6 +79,14 @@ export type SaleCorrectionPlan = {
   nextTotal: number;
   nextSubtotal: number;
   nextVat: number;
+  /** Service charge and discount the sale carries afterwards. */
+  nextServiceCharge: number;
+  nextDiscount: number;
+  /**
+   * The part of the service charge that goes with the struck lines. The
+   * corrective invoice strikes it next to them, as the original filed it.
+   */
+  struckServiceCharge: number;
   /** True when nothing of the sale survives. */
   cancelsSale: boolean;
 };
@@ -82,6 +102,53 @@ export function lineGross(line: CorrectionOrderLine): number {
   const unitPrice = Number(line.unitPrice);
   if (!Number.isFinite(qty) || !Number.isFinite(unitPrice)) return 0;
   return roundMoney(qty * unitPrice);
+}
+
+type BillCharges = {
+  base: number;
+  service: number;
+  discount: number;
+  total: number;
+};
+
+/**
+ * What the bill would come to with only `lines` on it, by the rules it was
+ * charged with. On the lines still standing this reproduces the stored
+ * service charge and discount exactly; a percentage is applied as the ratio
+ * the bill actually carries, so no rate has to be stored or re-read.
+ */
+function chargesFor(
+  lines: readonly CorrectionOrderLine[],
+  live: readonly CorrectionOrderLine[],
+  order: CorrectionOrderSnapshot,
+): BillCharges {
+  const sum = (ls: readonly CorrectionOrderLine[]) =>
+    roundMoney(ls.reduce((t, l) => t + lineGross(l), 0));
+  const positive = (v: unknown) => Math.max(0, roundMoney(Number(v) || 0));
+  const liveBase = sum(live);
+  const base = sum(lines);
+  const liveService = positive(order.serviceChargeAmount);
+  const service =
+    order.serviceChargeMode === 'AMOUNT'
+      ? liveService
+      : liveBase > 0
+        ? roundMoney((base * liveService) / liveBase)
+        : 0;
+  const liveBefore = roundMoney(liveBase + liveService);
+  const before = roundMoney(base + service);
+  const liveDiscount = Math.min(positive(order.discountAmount), liveBefore);
+  const percent = String(order.discountType || '').toUpperCase() === 'PERCENT';
+  const discount = percent
+    ? liveBefore > 0
+      ? Math.min(before, roundMoney((before * liveDiscount) / liveBefore))
+      : 0
+    : Math.min(liveDiscount, before);
+  return {
+    base,
+    service,
+    discount,
+    total: roundMoney(Math.max(0, before - discount)),
+  };
 }
 
 export function planSaleCorrection(
@@ -127,12 +194,15 @@ export function planSaleCorrection(
   const remaining = live.filter((l) => !struckIds.has(Number(l.id)));
   const vatEnabled = order.vatEnabled === true;
   const cancelsSale = request.kind === 'CANCEL' || remaining.length === 0;
-  const struckGross = roundMoney(
-    struck.reduce((sum, l) => sum + lineGross(l), 0),
-  );
+  const before = chargesFor(live, live, order);
+  const after = cancelsSale
+    ? { base: 0, service: 0, discount: 0, total: 0 }
+    : chargesFor(remaining, live, order);
   const amountDelta = cancelsSale
     ? roundMoney(-originalTotal)
-    : roundMoney(-Math.min(struckGross, originalTotal));
+    : roundMoney(
+        -Math.min(Math.max(0, before.total - after.total), originalTotal),
+      );
   // VAT of what the sale still totals, not of the remaining lines at menu
   // price — the discount / service charge stay on the restated sale.
   const { net, vat } = splitChargedNetVat(
@@ -153,6 +223,11 @@ export function planSaleCorrection(
       nextTotal: cancelsSale ? 0 : roundMoney(originalTotal + amountDelta),
       nextSubtotal: cancelsSale ? 0 : roundMoney(net),
       nextVat: cancelsSale ? 0 : roundMoney(vat),
+      nextServiceCharge: after.service,
+      nextDiscount: after.discount,
+      struckServiceCharge: roundMoney(
+        Math.max(0, before.service - after.service),
+      ),
       cancelsSale,
     },
   };

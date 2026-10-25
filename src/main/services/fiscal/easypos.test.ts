@@ -20,6 +20,7 @@ import {
   createEasyPosSale,
   fiscalOutcomeOf,
   isFiscalRetryable,
+  testMinimalCloudInvoice,
 } from './easypos';
 
 const settings = {
@@ -278,5 +279,28 @@ describe('createEasyPosCancellation', () => {
       iicRef: 'ORIG-IIC',
       docId: 'cancel-doc-1',
     });
+  });
+});
+
+describe('testMinimalCloudInvoice', () => {
+  it('never files its 200 ALL test sale on the live service', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const live = {
+      fiscal: {
+        enabled: true,
+        provider: 'easypos',
+        baseUrl: 'https://api.easypos.al/fiscalisation-service/v1',
+        authToken: 'token',
+        integrationApp: 'generic',
+        defaultOperatorId: 'ab123cd456',
+        cloudFallbackArticleId: 'PROD001',
+      },
+    } as unknown as SettingsDTO;
+    const r = await testMinimalCloudInvoice(live);
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/test service/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

@@ -90,15 +90,13 @@ export function saleFiguresFromPayload(
     ? Math.max(0, roundMoney(totalAfter))
     : fallbackTotal;
   // VAT on the amount charged (after discount / service charge), as filed.
-  const { net: subtotal, vat } = splitChargedNetVat(
-    items,
-    total,
-    vatEnabled,
-    defaultVatRate,
-  );
+  const { vat } = splitChargedNetVat(items, total, vatEnabled, defaultVatRate);
+  // Round the VAT, then net is what is left: rounding both on their own
+  // filed net + VAT a cent off the total.
+  const vatRounded = roundMoney(vat);
   return {
-    subtotal: roundMoney(subtotal),
-    vat: roundMoney(vat),
+    subtotal: roundMoney(total - vatRounded),
+    vat: vatRounded,
     discountAmount,
     serviceChargeAmount,
     total,

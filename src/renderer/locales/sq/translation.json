@@ -1663,7 +1663,12 @@
       "HotDrinks": "Pije të nxehta",
       "SoftDrinks": "Pije të ftohta",
       "Alcohol": "Alkool"
-    }
+    },
+    "vatUnset": "TVSH e pavendosur",
+    "vatUnsetTitle": "TVSH 0% do të thotë e pavendosur: ky artikull faturohet, printohet dhe fiskalizohet me normën standarde.",
+    "vatUnsetNotice_one": "{{count}} artikull ka TVSH 0%. 0% do të thotë “e pavendosur”: faturohet, printohet dhe fiskalizohet me normën standarde ({{pct}}%). Vendos normën e saktë nëse është ndryshe.",
+    "vatUnsetNotice_other": "{{count}} artikuj kanë TVSH 0%. 0% do të thotë “e pavendosur”: faturohen, printohen dhe fiskalizohen me normën standarde ({{pct}}%). Vendos normën e saktë për ata që ndryshojnë.",
+    "vatZeroHint": "0% do të thotë “e pavendosur”: faturohet dhe fiskalizohet me normën standarde."
   },
   "adminReview": {
     "title": "Rishikim i biznesit",

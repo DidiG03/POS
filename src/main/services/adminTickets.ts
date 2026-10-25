@@ -1,4 +1,5 @@
 import { prisma } from '@db/client';
+import { roundMoney } from '@shared/money';
 import {
   latestRowPerSession,
   sumTicketLinesNetVat,
@@ -8,7 +9,6 @@ import {
   asTicketLogItems,
   ticketCreatedAtIso,
   ticketLogCreatedAtMs,
-  ticketLogCreatedAtRangeSql,
   ticketLogInRange,
 } from '@shared/ticketLogItems';
 import { asPositiveId } from './ticketLogLatest';
@@ -97,14 +97,43 @@ export function adminTicketRevenueAmount(args: {
 }): number {
   const settled = Number(args.settledTotal);
   if (Number.isFinite(settled) && settled > 0) {
-    return Math.round(settled * 100) / 100;
+    return roundMoney(settled);
   }
   const { net, vat } = sumTicketLinesNetVat(
     args.liveItems,
     args.vatEnabled,
     args.defaultVatRate,
   );
-  return Math.round((net + (args.vatEnabled ? vat : 0)) * 100) / 100;
+  return roundMoney(net + (args.vatEnabled ? vat : 0));
+}
+
+/**
+ * Sittings for the staff lists. Live ones are the newest snapshot per
+ * session. Handed-off ones (moved-out rows left on the source after a table
+ * move or owner change) are grouped per waiter as well, so the waiter who
+ * handed a table over sees it as Transferred instead of it vanishing; an
+ * owner change keeps the session key, so grouping them with the live rows
+ * let the new owner's row swallow them. They never claim a sale, so the
+ * revenue stays on the destination ticket.
+ */
+export function staffSittings<
+  T extends { id: number; userId?: unknown; note?: string | null },
+>(rows: T[]): { live: T[]; movedOut: T[] } {
+  const live = latestRowPerSession(
+    rows.filter((r) => !isTransferredOutNote(r?.note)) as any[],
+  ) as T[];
+  const byUser = new Map<number, T[]>();
+  for (const r of rows) {
+    if (!isTransferredOutNote(r?.note)) continue;
+    const uid = Number(r.userId) || 0;
+    const list = byUser.get(uid);
+    if (list) list.push(r);
+    else byUser.set(uid, [r]);
+  }
+  const movedOut = [...byUser.values()].flatMap(
+    (list) => latestRowPerSession(list as any[]) as T[],
+  );
+  return { live, movedOut };
 }
 
 export function matchOrdersToTicketRows(
@@ -121,36 +150,114 @@ export function matchOrdersToTicketRows(
     closedAt?: unknown;
   }>,
 ): { usedOrderIds: Set<number>; orderIdByTicketId: Map<number, number> } {
-  const byTable = new Map<string, { id: number; atMs: number }[]>();
+  type Ev = { id: number; atMs: number };
+  const tableKey = (r: { area?: string | null; tableLabel?: string | null }) =>
+    `${String(r.area || '')}|${String(r.tableLabel || '')}`;
+  const sittingsByTable = new Map<string, Ev[]>();
+  for (const row of tickets) {
+    const at = ticketLogCreatedAtMs(row.createdAt);
+    if (!Number.isFinite(at)) continue;
+    const key = tableKey(row);
+    const arr = sittingsByTable.get(key) || [];
+    arr.push({ id: Number(row.id), atMs: at });
+    sittingsByTable.set(key, arr);
+  }
+  const ordersByTable = new Map<string, Ev[]>();
   for (const order of orders) {
     const at = ticketLogCreatedAtMs(order.closedAt);
     if (!Number.isFinite(at)) continue;
-    const key = `${String(order.area || '')}|${String(order.tableLabel || '')}`;
-    const arr = byTable.get(key) || [];
+    const key = tableKey(order);
+    const arr = ordersByTable.get(key) || [];
     arr.push({ id: Number(order.id), atMs: at });
-    byTable.set(key, arr);
+    ordersByTable.set(key, arr);
   }
-  for (const arr of byTable.values()) arr.sort((a, b) => a.atMs - b.atMs);
 
   const usedOrderIds = new Set<number>();
   const orderIdByTicketId = new Map<number, number>();
-  const chronological = [...tickets].sort((a, b) => {
-    const ta = ticketLogCreatedAtMs(a.createdAt);
-    const tb = ticketLogCreatedAtMs(b.createdAt);
-    return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0);
-  });
-  for (const row of chronological) {
-    const key = `${String(row.area || '')}|${String(row.tableLabel || '')}`;
-    const rowMs = ticketLogCreatedAtMs(row.createdAt);
-    const covering = (byTable.get(key) || []).find(
-      (p) =>
-        Number.isFinite(rowMs) && p.atMs >= rowMs && !usedOrderIds.has(p.id),
+  // A payment settles the table's most recent open sitting before it. Pairing
+  // each sitting with the first payment after it instead let an abandoned
+  // sitting (walkout, 12h auto-void) take the next guest's payment, crediting
+  // the wrong waiter and leaving the real sitting unpaid.
+  for (const [key, list] of ordersByTable) {
+    const sittings = (sittingsByTable.get(key) || []).sort(
+      (x, y) => x.atMs - y.atMs,
     );
-    if (!covering) continue;
-    usedOrderIds.add(covering.id);
-    orderIdByTicketId.set(Number(row.id), covering.id);
+    list.sort((x, y) => x.atMs - y.atMs);
+    const open: Ev[] = [];
+    let next = 0;
+    for (const order of list) {
+      if (usedOrderIds.has(order.id)) continue;
+      while (next < sittings.length && sittings[next].atMs <= order.atMs) {
+        open.push(sittings[next]);
+        next += 1;
+      }
+      const sitting = open.pop();
+      if (!sitting) continue;
+      usedOrderIds.add(order.id);
+      orderIdByTicketId.set(sitting.id, order.id);
+    }
   }
   return { usedOrderIds, orderIdByTicketId };
+}
+
+/** Rows a range query may load; the old newest-8000 window cut busy months short. */
+const RANGE_ROW_CAP = 50_000;
+const DAY_MS = 86_400_000;
+const MAX_DATE_MS = 8.64e15;
+
+/**
+ * Index-friendly superset of `column` in [startMs, endMs] over every shape a
+ * DateTime has been stored in: INTEGER ms or seconds, ISO / `YYYY-MM-DD hh:mm`
+ * TEXT, and digit TEXT. Bounds are widened a day so a zone offset or a
+ * space-for-T text still lands inside; callers filter exactly in JS with
+ * `ticketLogInRange`.
+ */
+export function dateRangeSupersetSql(
+  column: string,
+  startMs?: number,
+  endMs?: number,
+): { sql: string; params: Array<string | number> } | null {
+  const hasStart = typeof startMs === 'number' && Number.isFinite(startMs);
+  const hasEnd = typeof endMs === 'number' && Number.isFinite(endMs);
+  if (!hasStart && !hasEnd) return null;
+  const lo = hasStart ? Math.max(0, startMs! - DAY_MS) : 0;
+  const hi = hasEnd ? Math.min(MAX_DATE_MS, endMs! + DAY_MS) : MAX_DATE_MS;
+  const loSec = Math.floor(lo / 1000);
+  const hiSec = Math.ceil(hi / 1000);
+  const c = `"${column}"`;
+  const between = `(${c} >= ? AND ${c} <= ?)`;
+  return {
+    sql: `(${[between, between, between, between, between].join(' OR ')})`,
+    params: [
+      lo,
+      hi,
+      loSec,
+      hiSec,
+      new Date(lo).toISOString().slice(0, 10),
+      // An open end is `+275760-…` as ISO, which sorts before `2026-…`.
+      hasEnd ? `${new Date(hi).toISOString().slice(0, 10)}\uffff` : '\uffff',
+      String(lo),
+      String(hi),
+      String(loSec),
+      String(hiSec),
+    ],
+  };
+}
+
+async function idsWhere(
+  table: string,
+  parts: string[],
+  params: Array<string | number>,
+): Promise<number[]> {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT "id" FROM "${table}" WHERE ${parts.join(' AND ')} ORDER BY "id" DESC LIMIT ?`,
+    ...params,
+    RANGE_ROW_CAP,
+  );
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((r: any) => asPositiveId(r?.id))
+    .filter((id): id is number => id != null);
 }
 
 async function loadTicketLogs(input?: {
@@ -162,39 +269,27 @@ async function loadTicketLogs(input?: {
   const take = Math.min(8000, Math.max(1, Number(input?.take || 2000)));
   const userId = Number(input?.userId) || 0;
   const { startMs, endMs } = rangeMs(input);
-  const rangeSql = ticketLogCreatedAtRangeSql(startMs, endMs);
+  const inRange = (r: any) => ticketLogInRange(r.createdAt, startMs, endMs);
+  const rangeSql = dateRangeSupersetSql('createdAt', startMs, endMs);
 
-  const viaRaw = async (): Promise<number[] | null> => {
-    if (!rangeSql && !userId) return null;
-    const parts = ['1=1'];
-    const params: Array<string | number> = [];
-    if (userId) {
-      parts.push('userId = ?');
-      params.push(userId);
-    }
-    if (rangeSql) {
-      parts.push(rangeSql.sql);
-      params.push(...rangeSql.params);
-    }
-    const sql = `SELECT id FROM TicketLog WHERE ${parts.join(' AND ')} ORDER BY id DESC LIMIT ?`;
-    params.push(take);
-    const rows = await prisma.$queryRawUnsafe(sql, ...params);
-    if (!Array.isArray(rows)) return [];
-    return rows
-      .map((r: any) => asPositiveId(r?.id))
-      .filter((id): id is number => id != null);
-  };
-
-  let rawRows: any[] = [];
-  try {
-    const ids = await viaRaw();
-    if (ids && ids.length) {
-      rawRows = await prisma.ticketLog.findMany({
+  if (rangeSql) {
+    try {
+      const parts = [rangeSql.sql];
+      const params = [...rangeSql.params];
+      if (userId) {
+        parts.push('"userId" = ?');
+        params.push(userId);
+      }
+      const ids = await idsWhere('TicketLog', parts, params);
+      if (ids.length === 0) return [];
+      const rows = await prisma.ticketLog.findMany({
         where: { id: { in: ids } },
+        orderBy: { id: 'desc' },
       });
+      return (rows as any[]).filter(inRange);
+    } catch {
+      // Fall back to the newest rows filtered in JS.
     }
-  } catch {
-    // Prisma + JS filter below still recovers mixed DateTime rows.
   }
 
   const where: any = {};
@@ -204,16 +299,9 @@ async function loadTicketLogs(input?: {
     orderBy: { id: 'desc' },
     take,
   });
-  const jsRows =
-    startMs == null && endMs == null
-      ? recent
-      : recent.filter((r: any) =>
-          ticketLogInRange(r.createdAt, startMs, endMs),
-        );
-  return unionTicketLogsById(
-    rawRows as { id: number }[],
-    jsRows as { id: number }[],
-  );
+  return startMs == null && endMs == null
+    ? recent
+    : (recent as any[]).filter(inRange);
 }
 
 const PAID_ORDER_INCLUDE = {
@@ -231,6 +319,35 @@ async function loadPaidOrders(input?: {
   const take = Math.min(4000, Math.max(1, Number(input?.take || 2000)));
   const userId = Number(input?.userId) || 0;
   const { startMs, endMs } = rangeMs(input);
+  const inRange = (r: any) =>
+    ticketLogInRange(r.closedAt ?? r.createdAt, startMs, endMs);
+  const closed = dateRangeSupersetSql('closedAt', startMs, endMs);
+  const created = dateRangeSupersetSql('createdAt', startMs, endMs);
+
+  if (closed && created) {
+    try {
+      const parts = [
+        `"status" IN ('PAID', 'VOID')`,
+        `(${closed.sql} OR ("closedAt" IS NULL AND ${created.sql}))`,
+      ];
+      const params = [...closed.params, ...created.params];
+      if (userId) {
+        parts.push('"userId" = ?');
+        params.push(userId);
+      }
+      const ids = await idsWhere('Order', parts, params);
+      if (ids.length === 0) return [];
+      const rows = await prisma.order.findMany({
+        where: { id: { in: ids } },
+        orderBy: { id: 'desc' },
+        include: PAID_ORDER_INCLUDE,
+      } as any);
+      return (rows as any[]).filter(inRange);
+    } catch {
+      // Fall back to the newest rows filtered in JS.
+    }
+  }
+
   const where: any = { status: { in: ['PAID', 'VOID'] } };
   if (userId) where.userId = userId;
   const rows = await prisma.order
@@ -242,9 +359,102 @@ async function loadPaidOrders(input?: {
     } as any)
     .catch(() => []);
   if (startMs == null && endMs == null) return rows as any[];
-  return (rows as any[]).filter((r) =>
-    ticketLogInRange(r.closedAt ?? r.createdAt, startMs, endMs),
+  return (rows as any[]).filter(inRange);
+}
+
+type StaffSale = {
+  vatEnabled: boolean;
+  sale: ReturnType<typeof mapOrderToFiscalSaleRow>;
+};
+
+/**
+ * Every waiter's sittings in range matched against every settled sale, so a
+ * paid table belongs to the waiter who served it whoever took the payment.
+ * Staff counts and one waiter's ticket list both read this; matching only
+ * one waiter's own payments made the two disagree.
+ */
+/**
+ * How far back a sitting can start and still be the one a sale settles: a
+ * table open across midnight is paid "today" but was served "yesterday".
+ * Auto-void closes any table after 12 hours.
+ */
+export const SITTING_LOOKBACK_MS = 12 * 60 * 60 * 1000;
+
+async function staffLedger(
+  input: { startIso?: string; endIso?: string } | undefined,
+  fiscalTin: string,
+) {
+  const { startMs, endMs } = rangeMs(input);
+  const lookbackIso =
+    startMs == null
+      ? undefined
+      : new Date(startMs - SITTING_LOOKBACK_MS).toISOString();
+  const logs = await loadTicketLogs({
+    startIso: lookbackIso,
+    endIso: input?.endIso,
+    take: 8000,
+  }).catch(() => []);
+  const sittings = staffSittings(logs as any[]);
+  const allOrders = dedupePaidOrdersBySettlement(
+    await loadPaidOrders({
+      startIso: lookbackIso,
+      endIso: input?.endIso,
+      take: 4000,
+    }).catch(() => []),
   );
+  // Sittings and sales from the hours before the range only settle each
+  // other here; the lists and counts show the range itself.
+  const inRange = (at: unknown) => ticketLogInRange(at, startMs, endMs);
+  const live = sittings.live.filter((r: any) => inRange(r.createdAt));
+  const movedOut = sittings.movedOut.filter((r: any) => inRange(r.createdAt));
+  const paidOrders = (allOrders as any[]).filter((o) =>
+    inRange(o.closedAt ?? o.createdAt),
+  );
+  // A handed-off ticket is not a sale: only live sittings may claim one.
+  const matched = matchOrdersToTicketRows(
+    sittings.live as any[],
+    allOrders as any[],
+  );
+  const liveIds = new Set(live.map((r: any) => Number(r.id)));
+  const waiterBySitting = new Map(
+    (sittings.live as any[]).map((r) => [Number(r.id), Number(r.userId)]),
+  );
+  const usedOrderIds = new Set<number>();
+  const orderIdByTicketId = new Map<number, number>();
+  /** Sales in range that settled a sitting begun before it: its waiter's. */
+  const servedBy = new Map<number, number>();
+  for (const [ticketId, orderId] of matched.orderIdByTicketId) {
+    if (liveIds.has(ticketId)) {
+      usedOrderIds.add(orderId);
+      orderIdByTicketId.set(ticketId, orderId);
+    } else {
+      const uid = waiterBySitting.get(ticketId);
+      if (uid && uid > 0) servedBy.set(orderId, uid);
+    }
+  }
+  const saleByOrderId = new Map<number, StaffSale>();
+  for (const order of paidOrders) {
+    saleByOrderId.set(Number(order.id), {
+      vatEnabled: Boolean(order.vatEnabled),
+      sale: mapOrderToFiscalSaleRow(order, { tin: fiscalTin }),
+    });
+  }
+  const saleByLogId = new Map<number, StaffSale>();
+  for (const [ticketId, orderId] of orderIdByTicketId) {
+    const covering = saleByOrderId.get(orderId);
+    if (covering) saleByLogId.set(ticketId, covering);
+  }
+  const creditedUserId = (order: any): number =>
+    servedBy.get(Number(order.id)) ?? Number(order.userId);
+  return {
+    live,
+    movedOut,
+    paidOrders,
+    usedOrderIds,
+    saleByOrderId,
+    saleByLogId,
+    creditedUserId,
+  };
 }
 
 export async function listAdminTicketCounts(input?: {
@@ -257,14 +467,15 @@ export async function listAdminTicketCounts(input?: {
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const fiscalTin = String((settings as any)?.fiscal?.nipt || '').trim();
 
-  const logs = await loadTicketLogs({
-    startIso: input?.startIso,
-    endIso: input?.endIso,
-    take: 8000,
-  }).catch(() => []);
-  const live = latestRowPerSession(
-    (logs as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  );
+  const {
+    live,
+    movedOut,
+    paidOrders,
+    usedOrderIds,
+    saleByOrderId,
+    saleByLogId,
+    creditedUserId,
+  } = await staffLedger(input, fiscalTin);
 
   const users = await prisma.user.findMany({
     where: { role: { not: 'ADMIN' } } as any,
@@ -274,36 +485,6 @@ export async function listAdminTicketCounts(input?: {
     where: { closedAt: null },
   });
   const openIds = new Set(openShifts.map((s: any) => s.openedById));
-
-  const paidOrders = dedupePaidOrdersBySettlement(
-    await loadPaidOrders({
-      startIso: input?.startIso,
-      endIso: input?.endIso,
-      take: 4000,
-    }).catch(() => []),
-  );
-  const { usedOrderIds, orderIdByTicketId } = matchOrdersToTicketRows(
-    live as any[],
-    paidOrders as any[],
-  );
-  const saleByOrderId = new Map<
-    number,
-    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
-  >();
-  for (const order of paidOrders as any[]) {
-    saleByOrderId.set(Number(order.id), {
-      vatEnabled: Boolean(order.vatEnabled),
-      sale: mapOrderToFiscalSaleRow(order, { tin: fiscalTin }),
-    });
-  }
-  const saleByLogId = new Map<
-    number,
-    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
-  >();
-  for (const [ticketId, orderId] of orderIdByTicketId) {
-    const covering = saleByOrderId.get(orderId);
-    if (covering) saleByLogId.set(ticketId, covering);
-  }
 
   const counts: Record<number, number> = {};
   const paid: Record<number, number> = {};
@@ -316,7 +497,7 @@ export async function listAdminTicketCounts(input?: {
     bag[uid] = (bag[uid] ?? 0) + n;
   };
 
-  for (const r of live as any[]) {
+  for (const r of [...live, ...movedOut] as any[]) {
     const uid = Number(r.userId);
     if (!Number.isInteger(uid) || uid <= 0) continue;
     if (!ticketLogInRange(r.createdAt, startMs, endMs)) continue;
@@ -363,7 +544,7 @@ export async function listAdminTicketCounts(input?: {
     usedOrderIds,
     (paidOrders as any[]).map((row) => ({ ...row, orderId: Number(row.id) })),
   )) {
-    const uid = Number(order.userId);
+    const uid = creditedUserId(order);
     if (!Number.isInteger(uid) || uid <= 0) continue;
     bump(counts, uid);
     const covering = saleByOrderId.get(Number(order.id));
@@ -408,9 +589,9 @@ export async function listAdminTicketCounts(input?: {
     transferred: transferred[u.id] ?? 0,
     /** @deprecated use transferred — kept for older clients */
     transfersIn: transferred[u.id] ?? 0,
-    total: Math.round((total[u.id] ?? 0) * 100) / 100,
+    total: roundMoney(total[u.id] ?? 0),
     /** @deprecated use total */
-    revenue: Math.round((total[u.id] ?? 0) * 100) / 100,
+    revenue: roundMoney(total[u.id] ?? 0),
   }));
 }
 
@@ -426,47 +607,23 @@ export async function listAdminTicketsByUser(input?: {
   const defaultVatEnabled = isVatEnabledFromSettings(settings);
   const fiscalTin = String((settings as any)?.fiscal?.nipt || '').trim();
   const limit = Math.min(2000, Math.max(1, Number(input?.limit || 500)));
-  const rows = await loadTicketLogs({
-    userId,
-    startIso: input?.startIso,
-    endIso: input?.endIso,
-    take: 8000,
-  });
-
-  const visibleRows = latestRowPerSession(
-    (rows as any[]).filter((r: any) => !isTransferredOutNote(r?.note)),
-  ).slice(0, limit);
-
-  const paidOrders = dedupePaidOrdersBySettlement(
-    await loadPaidOrders({
-      userId,
-      startIso: input?.startIso,
-      endIso: input?.endIso,
-      take: 4000,
-    }).catch(() => []),
-  );
-  const { usedOrderIds, orderIdByTicketId } = matchOrdersToTicketRows(
-    visibleRows as any[],
-    paidOrders as any[],
-  );
-  const saleByOrderId = new Map<
-    number,
-    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
-  >();
-  for (const order of paidOrders as any[]) {
-    saleByOrderId.set(Number(order.id), {
-      vatEnabled: Boolean(order.vatEnabled),
-      sale: mapOrderToFiscalSaleRow(order, { tin: fiscalTin }),
-    });
-  }
-  const saleByLogId = new Map<
-    number,
-    { vatEnabled: boolean; sale: ReturnType<typeof mapOrderToFiscalSaleRow> }
-  >();
-  for (const [ticketId, orderId] of orderIdByTicketId) {
-    const covering = saleByOrderId.get(orderId);
-    if (covering) saleByLogId.set(ticketId, covering);
-  }
+  // Same ledger as the staff counts, then this waiter's slice of it. Matching
+  // only this waiter's own payments showed a table a colleague (or the till)
+  // took payment for as Active here and Paid on the colleague's page, while
+  // the counts credited it to this waiter.
+  const {
+    live,
+    movedOut,
+    paidOrders,
+    usedOrderIds,
+    saleByLogId,
+    saleByOrderId,
+    creditedUserId,
+  } = await staffLedger(input, fiscalTin);
+  const visibleRows = [...live, ...movedOut]
+    .filter((r: any) => Number(r.userId) === userId)
+    .sort((a: any, b: any) => Number(b.id) - Number(a.id))
+    .slice(0, limit);
 
   const fromLogs = visibleRows.map((r: any) => {
     const items = asTicketLogItems(r.itemsJson) as any[];
@@ -527,7 +684,9 @@ export async function listAdminTicketsByUser(input?: {
 
   const unmatchedOrders = paidSalesNotOnTickets(
     usedOrderIds,
-    (paidOrders as any[]).map((row) => ({ ...row, orderId: Number(row.id) })),
+    (paidOrders as any[])
+      .filter((row) => creditedUserId(row) === userId)
+      .map((row) => ({ ...row, orderId: Number(row.id) })),
   );
   const defaultVatRate = Number((settings as any)?.defaultVatRate || 0);
   const fromOrders = unmatchedOrders.map((order: any) => {

@@ -24,6 +24,7 @@ import {
 import { postInvoiceStatus } from './client';
 import { registerInvoiceWithRecovery, type RecoveryOptions } from './recover';
 import { newDocId } from './docId';
+import { assertVatCode } from './vatConfig';
 import type { RegisterInvoiceRequest, CancelInvoiceRequest } from './apiTypes';
 
 export {
@@ -568,11 +569,20 @@ export async function testMinimalCloudInvoice(
   settings: SettingsDTO,
 ): Promise<{ ok: boolean; message?: string }> {
   try {
-    const { cloud } = fiscalConfig(settings);
+    const { cloud, environment, operatorCode } = fiscalConfig(settings);
     if (!cloud) {
       return {
         ok: false,
         message: 'Minimal invoice test is for easyPos cloud only.',
+      };
+    }
+    // The test files a real 200 ALL cash sale. On the live service that is
+    // a sale the business never made, declared to the tax authority.
+    if (environment !== 'dev') {
+      return {
+        ok: false,
+        message:
+          'The test invoice is only sent to the easyPos test service (api.dev.easypos.al). On the live service it would declare a sale that never happened — use Test connection instead.',
       };
     }
     const { defaultSoldIn, cloudFallbackArticleId } =
@@ -591,7 +601,10 @@ export async function testMinimalCloudInvoice(
       articles: [
         {
           articleId,
-          vatCode: 'B',
+          vatCode: assertVatCode(settings, {
+            vatRate: Number(settings.defaultVatRate) || 0.2,
+            articleName: 'Test invoice',
+          }),
           name: 'Product Name',
           soldIn,
           price: 100,
@@ -599,6 +612,7 @@ export async function testMinimalCloudInvoice(
         },
       ],
       payment: [{ type: 'CASH', amount: 200 }],
+      ...(operatorCode ? { operatorCode } : {}),
     };
     // Judged by the same completion contract as a real sale: a test that
     // passes on an NSLF alone reports the integration as working when cash

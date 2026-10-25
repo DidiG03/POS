@@ -2484,10 +2484,32 @@ export default function OrderPage() {
       // A ticket log replaces the whole bill, so send what the host already
       // holds for this sitting plus our lines. Without this, a till whose
       // cart went stale (or empty) silently drops items off the bill.
-      const onServer = await liveServerTicketLines(
+      const onServerRead = liveServerTicketLines(
         selectedTable.area,
         selectedTable.label,
       );
+      // Best-effort occupancy on the client; the host also opens inside
+      // tickets.log. Prefer a direct await (not the 4s-budgeted queue) so a
+      // slow LAN phone does not Send against a still-closed table. Runs
+      // alongside the bill read: neither needs the other, and in sequence
+      // they cost every Send an extra Wi-Fi round trip.
+      let tableOpened: Promise<void> = Promise.resolve();
+      if (hasStaged) {
+        suppressFreeOnEmptyRef.current = true;
+        setOpen(selectedTable.area, selectedTable.label, true);
+        tableOpened = window.api.tables
+          .setOpen(selectedTable.area, selectedTable.label, true, 0)
+          .then(
+            () => undefined,
+            (e: unknown) => {
+              reportAppError(e, {
+                fallback: t('order.toastTryAgain'),
+                key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+              });
+            },
+          );
+      }
+      const onServer = await onServerRead;
       const logItems = restoreMissingServerLines(
         localLogItems,
         onServer,
@@ -2530,24 +2552,7 @@ export default function OrderPage() {
       };
 
       if (hasStaged) {
-        // Best-effort occupancy on the client; the host also opens inside
-        // tickets.log. Prefer a direct await (not the 4s-budgeted queue) so a
-        // slow LAN phone does not Send against a still-closed table.
-        suppressFreeOnEmptyRef.current = true;
-        setOpen(selectedTable.area, selectedTable.label, true);
-        try {
-          await window.api.tables.setOpen(
-            selectedTable.area,
-            selectedTable.label,
-            true,
-            0,
-          );
-        } catch (e: unknown) {
-          reportAppError(e, {
-            fallback: t('order.toastTryAgain'),
-            key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-          });
-        }
+        await tableOpened;
         const logResult = await logTicket({
           userId: user.id,
           area: selectedTable.area,

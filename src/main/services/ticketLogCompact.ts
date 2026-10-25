@@ -5,7 +5,7 @@ import {
   sessionKeyIsSafeToCompact,
   type SessionKeyRow,
 } from '@shared/ticketRevenue';
-import { buildTableSessionKey } from './tableSession';
+import { buildTableSessionKey, TABLE_SESSION_KEY_SEP } from './tableSession';
 
 /**
  * Each Send writes a full ticket snapshot. Reports only need the newest
@@ -116,7 +116,16 @@ export async function applyTicketLogSessionKeys(
 async function loadUnkeyedTableLogs(
   client: BackfillClient,
 ): Promise<SessionKeyRow[]> {
+  // A key with the separator always groups (`sessionKeyCanGroup`), so only
+  // the rest can be legacy. Filtering here keeps a year of history from
+  // being read into JS on every boot, before the LAN API can start.
   const tagged = await client.ticketLog.findMany({
+    where: {
+      OR: [
+        { sessionKey: null },
+        { NOT: { sessionKey: { contains: TABLE_SESSION_KEY_SEP } } },
+      ],
+    },
     select: { area: true, tableLabel: true, sessionKey: true },
   });
   const want = new Set<string>();
@@ -163,6 +172,8 @@ async function oversizedSessionKeys(client: BackfillClient): Promise<string[]> {
         NOT: { OR: [{ sessionKey: null }, { sessionKey: '' }] },
       },
       _count: { id: true },
+      // Only oversized sittings: every sitting of the year came back before.
+      having: { id: { _count: { gt: TICKET_LOG_KEEP_PER_SESSION } } },
     });
     const out: string[] = [];
     for (const row of grouped || []) {

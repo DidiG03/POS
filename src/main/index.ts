@@ -276,6 +276,7 @@ import {
 import {
   buildSalesTrendBuckets,
   fetchPaidSales,
+  fetchServedSales,
   fillTrendPoints,
   getAdminReview,
   sumPaidRevenue,
@@ -4514,7 +4515,7 @@ ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
   const fiscalVatEnabled = isVatEnabledFromSettings(settings);
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date();
-  const sales = await fetchPaidSales({ from: start, to: end, userId });
+  const sales = await fetchServedSales({ from: start, to: end, userId });
   const { revenueNet, revenueVat } = sumPaidRevenue(sales, {
     vatEnabled: fiscalVatEnabled,
   });
@@ -4549,7 +4550,7 @@ ipcHandle('reports:getMyTopSellingToday', async (_e, input, ctx) => {
   if (!userId) return null;
   const start = new Date(new Date().setHours(0, 0, 0, 0));
   const end = new Date(new Date().setHours(23, 59, 59, 999));
-  const sales = await fetchPaidSales({ from: start, to: end, userId });
+  const sales = await fetchServedSales({ from: start, to: end, userId });
   return topSellingFromSales(sales);
 });
 
@@ -4560,7 +4561,7 @@ ipcHandle('reports:getMySalesTrends', async (_e, input, ctx) => {
     range === 'weekly' || range === 'monthly' ? range : 'daily';
   if (!userId) return { range: trendRange, points: [] } as any;
   const buckets = buildSalesTrendBuckets(trendRange);
-  const sales = await fetchPaidSales({
+  const sales = await fetchServedSales({
     from: buckets[0].from,
     to: buckets[buckets.length - 1].to,
     userId,

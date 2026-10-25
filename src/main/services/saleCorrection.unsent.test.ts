@@ -283,7 +283,8 @@ describe('reversing a sale whose invoice is still waiting to be sent', () => {
       reason: 'Coffee returned',
     });
     const meta = (buildDraft.mock.calls as any).at(-1)[0].meta;
-    expect(meta).toMatchObject({ totalAfter: 1150, serviceChargeAmount: 150 });
+    // The 500 coffee took its 50 share of the 10% charge with it.
+    expect(meta).toMatchObject({ totalAfter: 1100, serviceChargeAmount: 100 });
   });
 
   it('follows the replacement on a second correction', async () => {

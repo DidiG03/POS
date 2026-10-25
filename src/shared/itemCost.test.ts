@@ -51,3 +51,17 @@ describe('itemCost', () => {
     expect(f.stockProfit).toBe(600);
   });
 });
+
+describe('margins on a VAT-inclusive price', () => {
+  it('measures profit on what the venue keeps after VAT', () => {
+    const f = itemCostFigures({ sellPrice: 1200, cost: 600, vatRate: 0.2 });
+    expect(f.profit).toBeCloseTo(400);
+    expect(f.marginPct).toBeCloseTo(40);
+    expect(f.markupPct).toBeCloseTo(66.67, 1);
+  });
+
+  it('keeps the gross price when no VAT applies', () => {
+    const f = itemCostFigures({ sellPrice: 1200, cost: 600, vatRate: 0 });
+    expect(f.profit).toBe(600);
+  });
+});

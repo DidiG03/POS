@@ -1,8 +1,7 @@
+import { formatMoneyPlain } from '@shared/receiptFigures';
+/** Whole amounts grouped as before; cents shown only when there are some. */
 export function makeFormatAmount() {
-  return (n: number) => {
-    const v = Math.round(Number.isFinite(n) ? n : 0);
-    return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  };
+  return (n: number) => formatMoneyPlain(Number.isFinite(n) ? n : 0, ',');
 }
 
 /** Euro amount for dual-currency tips — whole euros, no trailing cents. */

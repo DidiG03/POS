@@ -1,3 +1,4 @@
+import { roundMoney } from '@shared/money';
 /**
  * Change calculator on the payment screen: the cashier types what the
  * customer handed over and sees the change. Display only — nothing here is
@@ -39,7 +40,7 @@ export function parseCashInput(raw: string): number | null {
 }
 
 function round2(n: number): number {
-  return Math.round(n * 100) / 100;
+  return roundMoney(n);
 }
 
 /**

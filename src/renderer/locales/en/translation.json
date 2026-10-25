@@ -1663,7 +1663,12 @@
       "HotDrinks": "Hot drinks",
       "SoftDrinks": "Soft drinks",
       "Alcohol": "Alcohol"
-    }
+    },
+    "vatUnset": "VAT not set",
+    "vatUnsetTitle": "VAT 0% means not set: this item is charged, printed and filed at the default rate.",
+    "vatUnsetNotice_one": "{{count}} item has VAT 0%. 0% means “not set”: it is charged, printed and filed with the tax service at the default rate ({{pct}}%). Set the real rate if it differs.",
+    "vatUnsetNotice_other": "{{count}} items have VAT 0%. 0% means “not set”: they are charged, printed and filed with the tax service at the default rate ({{pct}}%). Set the real rate on any that differ.",
+    "vatZeroHint": "0% means “not set”: the default rate is charged and filed."
   },
   "adminReview": {
     "title": "Business Review",

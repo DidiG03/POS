@@ -2,6 +2,7 @@ import type { SettingsDTO } from '@shared/ipc';
 import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { prisma } from '@db/client';
+import { roundMoney } from '@shared/money';
 import { coreServices } from './core';
 import type { ShiftClosePrintSummary } from '../print';
 import { dispatchTicket, pickActiveReceiptProfile } from './printDispatcher';
@@ -39,18 +40,15 @@ export async function computeShiftPaidTotals(args: {
     })
     .catch(() => []);
 
-  let revenueNet = 0;
   let revenueVat = 0;
   let revenueGross = 0;
   let orders = 0;
   const byMethod = new Map<string, number>();
 
   for (const sale of keepCanonicalPaidOrders(sales as any[])) {
-    const subtotal = num(sale.subtotal);
     const vat = num(sale.vatAmount);
     const total = num(sale.total);
     const method = String(sale.payments?.[0]?.method || '').toUpperCase();
-    revenueNet += subtotal;
     revenueVat += vat;
     revenueGross += total;
     orders += 1;
@@ -64,13 +62,15 @@ export async function computeShiftPaidTotals(args: {
     openedAtIso: args.openedAt.toISOString(),
     closedAtIso: args.closedAt.toISOString(),
     orders,
-    revenueNet,
-    revenueVat,
-    revenueGross,
+    // Gross to the cent, VAT to the cent, net what is left — so the slip's
+    // lines add up like the receipts they summarise.
+    revenueNet: roundMoney(roundMoney(revenueGross) - roundMoney(revenueVat)),
+    revenueVat: roundMoney(revenueVat),
+    revenueGross: roundMoney(revenueGross),
     vatEnabled: fiscalVatEnabled,
     byMethod: Array.from(byMethod.entries()).map(([method, amount]) => ({
       method,
-      amount,
+      amount: roundMoney(amount),
     })),
   };
 }

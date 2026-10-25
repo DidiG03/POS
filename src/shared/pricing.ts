@@ -16,16 +16,18 @@
  * The formulas mirror the renderer exactly so an honest client always
  * agrees to the cent and `validatePaymentTotals` stays quiet:
  *
- *   base    = Σ(unitPrice × qty) over non-voided lines   (VAT-inclusive)
+ *   base    = Σ round(unitPrice × qty) over non-voided lines (VAT-inclusive)
  *   service = enabled && applied ? (PERCENT ? base×v/100 : v) : 0
  *   before  = base + service
  *   discount= PERCENT ? before×v/100 : v      (clamped to `before`)
  *   total   = before − discount
  */
 
+import { roundMoney } from './money';
 import {
   liveTicketLines,
   effectiveVatRate,
+  lineGross,
   splitGrossVat,
 } from './ticketRevenue';
 
@@ -56,16 +58,7 @@ export interface AuthoritativeTotals {
   totalDue: number;
 }
 
-/**
- * Round to cents. The epsilon nudge keeps values that land just under a
- * half-cent because of binary representation (1.005 stored as
- * 1.00499999…) rounding up the way an accountant expects.
- */
-export function roundMoney(value: unknown): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return 0;
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
+export { roundMoney };
 
 /** Coerce to a finite, non-negative number. */
 function positive(value: unknown): number {
@@ -73,15 +66,10 @@ function positive(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** VAT-inclusive sum of every non-voided line. */
+/** VAT-inclusive sum of every non-voided line, each line to the cent. */
 export function sumLineItemsGross(itemsJson: unknown): number {
   let gross = 0;
-  for (const line of liveTicketLines(itemsJson)) {
-    const qty = Number((line as any)?.qty ?? 1);
-    const unit = Number((line as any)?.unitPrice ?? 0);
-    if (!Number.isFinite(qty) || !Number.isFinite(unit)) continue;
-    gross += unit * qty;
-  }
+  for (const line of liveTicketLines(itemsJson)) gross += lineGross(line);
   return roundMoney(gross);
 }
 
@@ -133,14 +121,11 @@ export function computeAuthoritativeTotals(input: {
   let gross = 0;
   let vat = 0;
   for (const line of liveTicketLines(input.items)) {
-    const qty = Number((line as any)?.qty ?? 1);
-    const unit = Number((line as any)?.unitPrice ?? 0);
-    if (!Number.isFinite(qty) || !Number.isFinite(unit)) continue;
-    const lineGross = unit * qty;
-    gross += lineGross;
+    const g = lineGross(line);
+    gross += g;
     if (vatEnabled) {
       const rate = effectiveVatRate((line as any)?.vatRate, defaultVatRate);
-      vat += splitGrossVat(lineGross, rate).vat;
+      vat += splitGrossVat(g, rate).vat;
     }
   }
 

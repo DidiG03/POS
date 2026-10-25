@@ -518,7 +518,8 @@ describe('fiscal receipt block', () => {
     const text = buf.toString('latin1');
     expect(text).toContain('TOTAL');
     expect(text).toMatch(/LEK\s+600(?!\.)/);
-    expect(text).toMatch(/EUR\s+6(?!\.)/);
+    // 600 / 100.5 = 5.97; a whole-euro "6" quoted the guest the wrong amount.
+    expect(text).toMatch(/EUR\s+5\.97/);
   });
 
   it('prints LEK and EUR on non-fiscal payment receipts', () => {

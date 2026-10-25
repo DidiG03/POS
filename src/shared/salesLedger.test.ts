@@ -141,3 +141,23 @@ describe('parsePaidAt / cashChangeDue', () => {
     expect(cashChangeDue(500, 1140)).toBe(0);
   });
 });
+
+describe('ledger net + VAT', () => {
+  it('always adds up to the total charged', async () => {
+    const { saleFiguresFromPayload } = await import('./salesLedger');
+    // Example from the cross-check: rounding net and VAT apart was 2953.18.
+    const items = [
+      { unitPrice: 494, qty: 1.907, vatRate: 0.2 },
+      { unitPrice: 1959, qty: 0.941, vatRate: 0.06 },
+    ];
+    for (const totalAfter of [0.15, 2953.17, 2684.7, 1111.5]) {
+      const f = saleFiguresFromPayload(
+        { items, meta: { kind: 'PAYMENT', totalAfter, vatEnabled: true } },
+        { defaultVatRate: 0.2, fiscal: { enabled: true } },
+      );
+      expect(Math.round((f.subtotal + f.vat) * 100)).toBe(
+        Math.round(totalAfter * 100),
+      );
+    }
+  });
+});

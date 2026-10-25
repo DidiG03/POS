@@ -409,3 +409,34 @@ describe('sumTicketLinesNetVat', () => {
     expect(vat).toBeCloseTo(20, 6);
   });
 });
+
+describe('line totals and VAT rates', () => {
+  it('rounds each line to the cent before adding, as the invoice does', async () => {
+    const { lineGross, sumTicketLinesNetVat } = await import('./ticketRevenue');
+    expect(lineGross({ unitPrice: 1959, qty: 0.941 })).toBe(1843.42);
+    const { net, vat } = sumTicketLinesNetVat(
+      [
+        { unitPrice: 1959, qty: 0.941, vatRate: 0.2 },
+        { unitPrice: 494, qty: 1.907, vatRate: 0.2 },
+      ],
+      true,
+      0.2,
+    );
+    expect(Math.round((net + vat) * 100) / 100).toBe(1843.42 + 942.06);
+  });
+
+  it('counts a zero quantity as nothing and a missing one as one', async () => {
+    const { lineGross } = await import('./ticketRevenue');
+    expect(lineGross({ unitPrice: 300, qty: 0 })).toBe(0);
+    expect(lineGross({ unitPrice: 300 })).toBe(300);
+    expect(lineGross({ unitPrice: 300, qty: 'x' })).toBe(0);
+  });
+
+  it('reads a rate written as a percentage', async () => {
+    const { effectiveVatRate } = await import('./ticketRevenue');
+    expect(effectiveVatRate(20, 0)).toBe(0.2);
+    expect(effectiveVatRate(6, 0)).toBe(0.06);
+    expect(effectiveVatRate(0.2, 0)).toBe(0.2);
+    expect(effectiveVatRate(null, 20)).toBe(0.2);
+  });
+});

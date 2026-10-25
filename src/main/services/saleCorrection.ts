@@ -41,6 +41,8 @@ import {
 import {
   buildEasyPosInvoiceDraft,
   buildCorrectionDifferenceLines,
+  invoiceBandTotals,
+  bandChangeBetween,
   buildRestatedInvoiceLines,
 } from './fiscal/mapInvoice';
 import { cancelInvoice } from './fiscal/cancel';
@@ -420,6 +422,10 @@ async function fileCorrective(input: {
     unitPrice: number;
     vatRate: number;
   }>;
+  /** The service charge that went with the struck lines. */
+  serviceCharge?: number;
+  /** Change to each VAT band, so the bands net out like the sale. */
+  bandChange?: Partial<Record<string, number>>;
   /** The planned change to the sale total (negative). */
   amountDelta: number;
   method: string;
@@ -444,7 +450,8 @@ async function fileCorrective(input: {
     }
     // The difference, not a restatement: filing the remaining lines next to
     // the original declared both (2,300 + 1,800 for a 1,800 sale). Weighed
-    // lines keep the KGM unit the original was filed in.
+    // lines keep the KGM unit the original was filed in, and the refund is
+    // what the guest paid for them, discount and service charge included.
     const kgSkus = await weighedSkus(struck.map((it) => String(it.sku || '')));
     const { articles, amount } = buildCorrectionDifferenceLines(
       struck.map((it) => ({
@@ -452,10 +459,14 @@ async function fileCorrective(input: {
         soldByKg: kgSkus.has(String(it.sku || '')),
       })),
       input.settings,
+      {
+        serviceCharge: input.serviceCharge,
+        refund: Math.max(0, -roundMoney(input.amountDelta)),
+        bandChange: input.bandChange,
+      },
     );
     if (Math.abs(roundMoney(amount - input.amountDelta)) >= 0.01) {
-      // Only when the cap on a reversal (it never exceeds the sale total)
-      // bit. Do not guess how to split that; leave it for an admin.
+      // The builder balances to the refund, so this is a guard only.
       return {
         state: 'NOT_FILED',
         docId,
@@ -532,6 +543,60 @@ async function resolveOriginalEic(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * How the sale's service charge was worked out. Recorded on the payment
+ * since this was needed; for older sales, the venue's current setting when
+ * it reproduces the amount charged. Null reads as a percentage.
+ */
+function serviceChargeModeOf(
+  payment: any,
+  settings: any,
+  amount?: number,
+): 'PERCENT' | 'AMOUNT' | null {
+  const recorded = String(paymentMeta(payment).serviceChargeMode || '');
+  if (recorded === 'PERCENT' || recorded === 'AMOUNT') return recorded;
+  const current = settings?.preferences?.serviceCharge;
+  if (
+    current?.mode === 'AMOUNT' &&
+    Math.abs(num(current.value) - num(amount)) < 0.01
+  ) {
+    return 'AMOUNT';
+  }
+  return null;
+}
+
+/**
+ * True when a corrective invoice has already struck part of the invoice
+ * `iic` (filed, or queued to be).
+ */
+async function hasCorrectiveAgainst(
+  orderId: number,
+  iic: string,
+  corrections: any[] | undefined,
+): Promise<boolean> {
+  const filed = (Array.isArray(corrections) ? corrections : []).some(
+    (c) =>
+      String(c?.kind) === 'CORRECTIVE' &&
+      (String(c?.originalNslf || '').trim() === iic ||
+        Boolean(String(c?.correctionNslf || '').trim())),
+  );
+  if (filed) return true;
+  const queued = (await prisma.syncState
+    .findMany({
+      where: { key: { startsWith: `${CORRECTION_RETRY_PREFIX}${orderId}:` } },
+    })
+    .catch(() => [])) as any[];
+  return queued.some((row) => {
+    try {
+      const raw = row?.valueJson;
+      const q = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return q?.kind === 'CORRECTIVE';
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Claim states meaning the tax service holds an invoice for the sale. */
@@ -810,17 +875,36 @@ export async function applySaleCorrection(input: {
       include: {
         items: { orderBy: { sortOrder: 'asc' } },
         payments: { orderBy: { createdAt: 'desc' }, take: 1 },
+        corrections: {
+          select: {
+            id: true,
+            kind: true,
+            originalNslf: true,
+            correctionNslf: true,
+          },
+        },
       } as any,
     })
     .catch(() => null);
   if (!order) return { ok: false, error: 'not-found' };
 
   const settings: any = await coreServices.readSettings().catch(() => ({}));
+  const latestPayment = Array.isArray((order as any).payments)
+    ? (order as any).payments[0]
+    : null;
   const planned = planSaleCorrection(
     {
       status: (order as any).status,
       total: num((order as any).total),
       vatEnabled: (order as any).vatEnabled === true,
+      serviceChargeAmount: num((order as any).serviceChargeAmount),
+      serviceChargeMode: serviceChargeModeOf(
+        latestPayment,
+        settings,
+        num((order as any).serviceChargeAmount),
+      ),
+      discountAmount: num((order as any).discountAmount),
+      discountType: (order as any).discountType ?? null,
       items: ((order as any).items || []).map((it: any) => ({
         id: Number(it.id),
         name: String(it.name || ''),
@@ -836,9 +920,7 @@ export async function applySaleCorrection(input: {
   if (!planned.ok) return { ok: false, error: planned.error };
   const plan = planned.plan;
 
-  const payment = Array.isArray((order as any).payments)
-    ? (order as any).payments[0]
-    : null;
+  const payment = latestPayment;
   const now = new Date();
 
   const correctionId = await prisma.$transaction(async (tx: any) => {
@@ -874,6 +956,8 @@ export async function applySaleCorrection(input: {
           subtotal: plan.nextSubtotal,
           vatAmount: plan.nextVat,
           total: plan.nextTotal,
+          serviceChargeAmount: plan.nextServiceCharge,
+          discountAmount: plan.nextDiscount,
         },
       });
     }
@@ -936,8 +1020,8 @@ export async function applySaleCorrection(input: {
               vatRate: num(it.vatRate),
             })),
           nextTotal: plan.nextTotal,
-          serviceChargeAmount: num((order as any).serviceChargeAmount),
-          discountAmount: num((order as any).discountAmount),
+          serviceChargeAmount: plan.nextServiceCharge,
+          discountAmount: plan.nextDiscount,
           method: String(payment?.method || 'CASH'),
         });
       } catch (e: any) {
@@ -975,8 +1059,75 @@ export async function applySaleCorrection(input: {
   let needsFiling = false;
   let cancellation: FiledCancellation | null = null;
   let corrective: FiledCancellation | null = null;
+  // easyPos cancels the whole original invoice. After a corrective has
+  // already struck part of it, that reverses those lines a second time, so
+  // the rest of the sale is struck by another corrective instead.
+  const cancelAsCorrective =
+    plan.cancelsSale &&
+    Boolean(iic) &&
+    (await hasCorrectiveAgainst(orderId, iic, (order as any).corrections));
+  // What the invoice files per VAT band before and after, the way the
+  // original was built. Filing the difference keeps each band right when a
+  // fixed discount or service charge was spread over several of them.
+  let bandChange: Partial<Record<string, number>> | undefined;
+  try {
+    const struckIds = new Set(plan.struckItemIds);
+    const asLine = (it: any) => ({
+      sku: String(it.sku || ''),
+      name: String(it.name || 'Item'),
+      qty: num(it.qty),
+      unitPrice: num(it.unitPrice),
+      vatRate: num(it.vatRate),
+    });
+    const live = ((order as any).items || []).filter(
+      (it: any) => it.voidedAt == null,
+    );
+    const before = invoiceBandTotals(
+      {
+        items: live.map(asLine),
+        serviceChargeAmount: num((order as any).serviceChargeAmount),
+        discountAmount: num((order as any).discountAmount),
+        total: num((order as any).total),
+      },
+      settings,
+    );
+    const after = plan.cancelsSale
+      ? {}
+      : invoiceBandTotals(
+          {
+            items: live
+              .filter((it: any) => !struckIds.has(Number(it.id)))
+              .map(asLine),
+            serviceChargeAmount: plan.nextServiceCharge,
+            discountAmount: plan.nextDiscount,
+            total: plan.nextTotal,
+          },
+          settings,
+        );
+    bandChange = bandChangeBetween(before, after);
+  } catch {
+    // Unknown VAT configuration: the document is balanced as a whole.
+    bandChange = undefined;
+  }
+  const struckLines = (): QueuedCorrection['struck'] => {
+    const struck = new Set(plan.struckItemIds);
+    return ((order as any).items || [])
+      .filter((it: any) => struck.has(Number(it.id)))
+      .map((it: any) => ({
+        sku: String(it.sku || ''),
+        name: String(it.name || 'Item'),
+        qty: num(it.qty),
+        unitPrice: num(it.unitPrice),
+        vatRate: num(it.vatRate),
+      }));
+  };
   if (wasFiscalized && docId) {
-    if (plan.cancelsSale && iic && isFiscalEnabled(settings)) {
+    if (
+      plan.cancelsSale &&
+      !cancelAsCorrective &&
+      iic &&
+      isFiscalEnabled(settings)
+    ) {
       cancellation = await fileCancellation({
         settings,
         orderId,
@@ -985,8 +1136,7 @@ export async function applySaleCorrection(input: {
         eic: originalEic,
         issueDateTime: iso(payment?.paidAt) || undefined,
       });
-    } else if (!plan.cancelsSale && iic && isFiscalEnabled(settings)) {
-      const struck = new Set(plan.struckItemIds);
+    } else if (iic && isFiscalEnabled(settings)) {
       corrective = await fileCorrective({
         settings,
         orderId,
@@ -995,15 +1145,9 @@ export async function applySaleCorrection(input: {
         iic,
         eic: originalEic,
         issueDateTime: iso(payment?.paidAt) || undefined,
-        struck: ((order as any).items || [])
-          .filter((it: any) => struck.has(Number(it.id)))
-          .map((it: any) => ({
-            sku: String(it.sku || ''),
-            name: String(it.name || 'Item'),
-            qty: num(it.qty),
-            unitPrice: num(it.unitPrice),
-            vatRate: num(it.vatRate),
-          })),
+        struck: struckLines(),
+        serviceCharge: plan.struckServiceCharge,
+        bandChange,
         amountDelta: plan.amountDelta,
         method: String(payment?.method || 'CASH'),
       });
@@ -1025,21 +1169,13 @@ export async function applySaleCorrection(input: {
           orderId,
           correctionId,
           originalDocId: docId,
-          kind: plan.cancelsSale ? 'CANCEL' : 'CORRECTIVE',
+          kind: cancellation ? 'CANCEL' : 'CORRECTIVE',
           iic: iic!,
           eic: originalEic,
           issueDateTime: iso(payment?.paidAt) || undefined,
-          struck: plan.cancelsSale
-            ? []
-            : ((order as any).items || [])
-                .filter((it: any) => plan.struckItemIds.includes(Number(it.id)))
-                .map((it: any) => ({
-                  sku: String(it.sku || ''),
-                  name: String(it.name || 'Item'),
-                  qty: num(it.qty),
-                  unitPrice: num(it.unitPrice),
-                  vatRate: num(it.vatRate),
-                })),
+          struck: cancellation ? [] : struckLines(),
+          serviceCharge: cancellation ? undefined : plan.struckServiceCharge,
+          bandChange: cancellation ? undefined : bandChange,
           amountDelta: plan.amountDelta,
           method: String(payment?.method || 'CASH'),
         }).catch(() => undefined);
@@ -1128,6 +1264,9 @@ interface QueuedCorrection {
     unitPrice: number;
     vatRate: number;
   }>;
+  /** Absent on corrections queued before service charge was struck. */
+  serviceCharge?: number;
+  bandChange?: Partial<Record<string, number>>;
   amountDelta: number;
   method: string;
   attempts?: number;
@@ -1167,11 +1306,19 @@ export async function retryQueuedFiscalCorrections(
     const rows = (await prisma.syncState
       .findMany({ where: { key: { startsWith: CORRECTION_RETRY_PREFIX } } })
       .catch(() => [])) as any[];
+    // After one finds easyPos unreachable, the rest wait for the next pass
+    // rather than each spending a full recovery budget finding the same.
+    let unreachable = false;
     for (const row of rows) {
+      if (unreachable) break;
       const raw = row.valueJson;
-      const q: QueuedCorrection =
-        typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if (Date.parse(String(q.nextAttemptAt || '')) > now) continue;
+      let q: QueuedCorrection;
+      try {
+        q = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      } catch {
+        continue;
+      }
+      if (!q || Date.parse(String(q.nextAttemptAt || '')) > now) continue;
       attempted += 1;
       const result =
         q.kind === 'CANCEL'
@@ -1192,11 +1339,14 @@ export async function retryQueuedFiscalCorrections(
               eic: q.eic,
               issueDateTime: q.issueDateTime,
               struck: q.struck,
+              serviceCharge: q.serviceCharge,
+              bandChange: q.bandChange,
               amountDelta: q.amountDelta,
               method: q.method,
             });
 
       if (result.state === 'NOT_FILED' && result.retryable) {
+        unreachable = true;
         const attempts = (q.attempts || 1) + 1;
         const wait = Math.min(
           CORRECTION_RETRY_MAX_MS,

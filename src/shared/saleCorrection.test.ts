@@ -223,3 +223,94 @@ describe('lineGross', () => {
     expect(lineGross({ id: 1, qty: 2, unitPrice: null })).toBe(0);
   });
 });
+
+describe('planSaleCorrection — discount and service charge', () => {
+  it('gives back what the guest paid for a dish on a bill with 10% off', () => {
+    const plan = ok(
+      planSaleCorrection(
+        {
+          ...sale,
+          total: 1350,
+          discountAmount: 150,
+          discountType: 'PERCENT',
+        },
+        { kind: 'CORRECTIVE', itemIds: [2], reason: 'Coffee returned' },
+      ),
+    );
+    expect(plan.amountDelta).toBe(-180);
+    expect(plan.nextTotal).toBe(1170);
+    expect(plan.nextDiscount).toBe(130);
+  });
+
+  it('keeps a fixed discount whole while there is something to discount', () => {
+    const plan = ok(
+      planSaleCorrection(
+        { ...sale, total: 1400, discountAmount: 100, discountType: 'AMOUNT' },
+        { kind: 'CORRECTIVE', itemIds: [2], reason: 'Coffee returned' },
+      ),
+    );
+    expect(plan.amountDelta).toBe(-200);
+    expect(plan.nextDiscount).toBe(100);
+  });
+
+  it('caps a fixed discount at what is left', () => {
+    // 1500 of dishes with 1200 off: 300 paid. Striking the 1000 tavë leaves
+    // 500 of dishes, all of it still covered by the discount.
+    const plan = ok(
+      planSaleCorrection(
+        { ...sale, total: 300, discountAmount: 1200, discountType: 'AMOUNT' },
+        { kind: 'CORRECTIVE', itemIds: [1], reason: 'Not served' },
+      ),
+    );
+    expect(plan.amountDelta).toBe(-300);
+    expect(plan.nextTotal).toBe(0);
+    expect(plan.nextDiscount).toBe(500);
+  });
+
+  it('takes a percentage service charge off with the dish', () => {
+    const plan = ok(
+      planSaleCorrection(
+        { ...sale, total: 1650, serviceChargeAmount: 150 },
+        { kind: 'CORRECTIVE', itemIds: [3], reason: 'Not served' },
+      ),
+    );
+    expect(plan.amountDelta).toBe(-330);
+    expect(plan.struckServiceCharge).toBe(30);
+    expect(plan.nextServiceCharge).toBe(120);
+  });
+
+  it('leaves a fixed service charge on the bill', () => {
+    const plan = ok(
+      planSaleCorrection(
+        {
+          ...sale,
+          total: 1650,
+          serviceChargeAmount: 150,
+          serviceChargeMode: 'AMOUNT',
+        },
+        { kind: 'CORRECTIVE', itemIds: [3], reason: 'Not served' },
+      ),
+    );
+    expect(plan.amountDelta).toBe(-300);
+    expect(plan.struckServiceCharge).toBe(0);
+    expect(plan.nextServiceCharge).toBe(150);
+  });
+
+  it('applies the discount to the service charge too, as the bill did', () => {
+    // 1500 + 10% service = 1650, then 10% off = 1485.
+    const plan = ok(
+      planSaleCorrection(
+        {
+          ...sale,
+          total: 1485,
+          serviceChargeAmount: 150,
+          discountAmount: 165,
+          discountType: 'PERCENT',
+        },
+        { kind: 'CORRECTIVE', itemIds: [3], reason: 'Not served' },
+      ),
+    );
+    // 300 water + 30 service, less 10%.
+    expect(plan.amountDelta).toBe(-297);
+  });
+});

@@ -14,6 +14,7 @@ import {
   matchOrdersToTicketRows,
   paidSalesNotOnTickets,
   resolveAdminTicketStatus,
+  staffSittings,
   unionTicketLogsById,
 } from './adminTickets';
 
@@ -188,5 +189,154 @@ describe('Daniel-style area-key collapse', () => {
       ...extra.map((r) => r.tableLabel),
     ].sort();
     expect(tables).toEqual(['T15', 'T20', 'T22', 'T23', 'T29', 'T30', 'T31']);
+  });
+});
+
+describe('staffSittings', () => {
+  const key = (t: string) => `Salla\u001f${t}\u001f2026-10-20T18:00:00.000Z`;
+  const out = (to: string) => `[TRANSFER moved-out → Salla ${to}]`;
+  const row = (
+    id: number,
+    userId: number,
+    tableLabel: string,
+    note: string | null = null,
+  ) => ({
+    id,
+    userId,
+    area: 'Salla',
+    tableLabel,
+    sessionKey: key(tableLabel),
+    createdAt: new Date(1_000 * id),
+    itemsJson: [{ sku: 'a', name: 'Pizza', qty: 1, unitPrice: 10 }],
+    note,
+  });
+
+  it('keeps a moved table as one handed-off sitting on the source', () => {
+    const { live, movedOut } = staffSittings([
+      row(1, 7, 'T1', out('T5')),
+      row(2, 7, 'T1', out('T5')),
+      { ...row(3, 7, 'T5', '[TRANSFER from Salla T1 → Salla T5]') },
+    ]);
+    expect(live.map((r) => r.id)).toEqual([3]);
+    expect(movedOut.map((r) => r.id)).toEqual([2]);
+  });
+
+  it('keeps the old owner on a same-table handoff', () => {
+    // Owner change reuses the session key; the new owner's row is newest.
+    const { live, movedOut } = staffSittings([
+      row(1, 7, 'T1', out('T1')),
+      row(2, 8, 'T1', '[TRANSFER Ana → Ben]'),
+    ]);
+    expect(live.map((r) => [r.id, r.userId])).toEqual([[2, 8]]);
+    expect(movedOut.map((r) => [r.id, r.userId])).toEqual([[1, 7]]);
+  });
+
+  it('counts each waiter once when a ticket is passed on twice', () => {
+    const { live, movedOut } = staffSittings([
+      row(1, 7, 'T1', out('T1')),
+      row(2, 8, 'T1', `${out('T1')}\n[TRANSFER Ana → Ben]`),
+      row(3, 8, 'T1', out('T1')),
+      row(4, 9, 'T1', '[TRANSFER Ben → Cara]'),
+    ]);
+    expect(live.map((r) => r.userId)).toEqual([9]);
+    expect(movedOut.map((r) => [r.id, r.userId]).sort()).toEqual([
+      [1, 7],
+      [3, 8],
+    ]);
+  });
+});
+
+describe('matchOrdersToTicketRows pairing', () => {
+  const at = (h: number) => Date.parse('2026-09-20T00:00:00.000Z') + h * 36e5;
+  const sit = (id: number, h: number, table = 'T1') => ({
+    id,
+    area: 'Salla',
+    tableLabel: table,
+    createdAt: at(h),
+  });
+  const pay = (id: number, h: number, table = 'T1') => ({
+    id,
+    area: 'Salla',
+    tableLabel: table,
+    closedAt: at(h),
+  });
+
+  it('does not let an abandoned sitting take the next guest’s payment', () => {
+    // 10:00 walkout (never paid); 19:00 next guests, paid 20:30.
+    const got = matchOrdersToTicketRows(
+      [sit(1, 10), sit(2, 19)],
+      [pay(90, 20.5)],
+    );
+    expect([...got.orderIdByTicketId]).toEqual([[2, 90]]);
+  });
+
+  it('pairs back-to-back sittings with their own payments', () => {
+    const got = matchOrdersToTicketRows(
+      [sit(1, 10), sit(2, 12)],
+      [pay(90, 11), pay(91, 13)],
+    );
+    expect(Object.fromEntries(got.orderIdByTicketId)).toEqual({ 1: 90, 2: 91 });
+  });
+
+  it('leaves a second payment on one sitting unmatched', () => {
+    // Split bill: the first payment settles the sitting, the second is extra.
+    const got = matchOrdersToTicketRows(
+      [sit(1, 10)],
+      [pay(90, 11), pay(91, 11.5)],
+    );
+    expect([...got.orderIdByTicketId]).toEqual([[1, 90]]);
+    expect([...got.usedOrderIds]).toEqual([90]);
+  });
+
+  it('ignores a payment taken before any sitting on that table', () => {
+    const got = matchOrdersToTicketRows([sit(1, 12)], [pay(90, 11)]);
+    expect(got.orderIdByTicketId.size).toBe(0);
+  });
+
+  // Plain reference: each payment, in time order, takes the latest unused
+  // sitting on its table at or before it.
+  function reference(tickets: any[], orders: any[]) {
+    const used = new Set<number>();
+    const out = new Map<number, number>();
+    for (const o of [...orders].sort((a, b) => a.closedAt - b.closedAt)) {
+      const cands = tickets.filter(
+        (t) =>
+          t.tableLabel === o.tableLabel &&
+          t.createdAt <= o.closedAt &&
+          !used.has(t.id),
+      );
+      if (!cands.length || [...out.values()].includes(o.id)) continue;
+      const best = cands.reduce((m, t) => (t.createdAt >= m.createdAt ? t : m));
+      used.add(best.id);
+      out.set(best.id, o.id);
+    }
+    return out;
+  }
+
+  it('matches a plain reference on random service days', () => {
+    let seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    for (let round = 0; round < 300; round++) {
+      const tables = ['T1', 'T2', 'T3'];
+      const tickets = Array.from(
+        { length: 1 + Math.floor(rnd() * 25) },
+        (_, i) => ({
+          id: i + 1,
+          area: 'Salla',
+          tableLabel: tables[Math.floor(rnd() * 3)],
+          createdAt: (i * 7 + Math.floor(rnd() * 5)) * 1000,
+        }),
+      );
+      const orders = Array.from({ length: Math.floor(rnd() * 25) }, (_, i) => ({
+        id: 100 + i,
+        area: 'Salla',
+        tableLabel: tables[Math.floor(rnd() * 3)],
+        closedAt: (i * 7 + Math.floor(rnd() * 9)) * 1000,
+      }));
+      const got = matchOrdersToTicketRows(tickets, orders).orderIdByTicketId;
+      expect([...got.entries()].sort()).toEqual(
+        [...reference(tickets, orders).entries()].sort(),
+      );
+    }
   });
 });

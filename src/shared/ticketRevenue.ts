@@ -9,6 +9,7 @@ import {
   ticketCreatedAtIso,
   ticketLogCreatedAtMs,
 } from './ticketLogItems';
+import { roundMoney } from './money';
 
 export function liveTicketLines(itemsJson: unknown): any[] {
   return asTicketLogItems(itemsJson).filter((it: any) => !it?.voided);
@@ -251,10 +252,34 @@ export function effectiveVatRate(
   rawRate: unknown,
   defaultRate: unknown = 0,
 ): number {
-  const r = Number(rawRate);
-  if (Number.isFinite(r) && r > 0) return r;
-  const d = Number(defaultRate);
-  return Number.isFinite(d) && d > 0 ? d : 0;
+  const r = asVatFraction(rawRate);
+  if (r > 0) return r;
+  return asVatFraction(defaultRate);
+}
+
+/**
+ * A rate as a fraction. Imported menus and settings have carried 20 for
+ * 20%; read as a fraction that put 95% of the price down as VAT, while the
+ * fiscal invoice (which already reads >1 as a percentage) filed 20%.
+ */
+function asVatFraction(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n > 1 ? n / 100 : n;
+}
+
+/**
+ * VAT-inclusive total of one line, to the cent. Every total is the sum of
+ * these, as on the printed receipt and the fiscal invoice; summing raw
+ * weighed lines and rounding once drifted a cent from the invoice, which
+ * then needed a balancing line. A missing quantity is one; zero is zero.
+ */
+export function lineGross(line: unknown): number {
+  const raw = (line as any)?.qty;
+  const qty = raw == null || raw === '' ? 1 : Number(raw);
+  const unit = Number((line as any)?.unitPrice ?? 0);
+  if (!Number.isFinite(qty) || !Number.isFinite(unit)) return 0;
+  return roundMoney(unit * qty);
 }
 
 /**
@@ -292,9 +317,7 @@ export function sumTicketLinesNetVat(
   let net = 0;
   let vat = 0;
   for (const it of lines) {
-    const qty = Number((it as any)?.qty || 1);
-    const unit = Number((it as any)?.unitPrice || 0);
-    const gross = unit * qty;
+    const gross = lineGross(it);
     if (!vatEnabled) {
       net += gross;
       continue;
@@ -325,7 +348,7 @@ export function splitChargedNetVat(
   defaultVatRate = 0,
 ): { net: number; vat: number } {
   const lines = liveTicketLines(itemsJson).map((it: any) => ({
-    gross: Number(it?.unitPrice || 0) * Number(it?.qty || 1),
+    gross: lineGross(it),
     rate: effectiveVatRate(it?.vatRate, defaultVatRate),
   }));
   const goods = lines.reduce((sum, l) => sum + l.gross, 0);
