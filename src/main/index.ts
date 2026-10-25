@@ -3111,8 +3111,10 @@ ipcHandle('tables:listOpen', async (_e) => {
 });
 
 ipcHandle('tables:getFloorSnapshot', async (_e, input) => {
-  assertDiningFloorEnabled();
   const area = String(input?.area || '').trim();
+  // A Store till reads its own `Store` bill through here (ticketRead falls
+  // back to the floor snapshot); only the restaurant floor is plan-gated.
+  assertStoreCounterAllowed(area);
   return getFloorSnapshot(area || undefined);
 });
 

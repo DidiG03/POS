@@ -1036,7 +1036,13 @@ export function installBrowserLanApi(): void {
         if ((window as any).__ADMIN_APP__) {
           const token = getToken();
           if (token && isHostOrAdminRole(jwtRole(token))) {
-            return await goLan('/admin/users');
+            try {
+              return await goLan('/admin/users');
+            } catch (e) {
+              // An expired admin token at launch: the till has just logged
+              // us out, and the login screen still needs the staff list.
+              if (!(e instanceof HttpError && e.status === 401)) throw e;
+            }
           }
         }
         return await goLan('/auth/users');

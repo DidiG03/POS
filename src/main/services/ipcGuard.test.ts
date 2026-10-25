@@ -7,10 +7,15 @@ import { describe, expect, it, vi } from 'vitest';
 // `ipcGuard.ts` reports unexpected handler errors to Sentry, whose module
 // touches `app` from `electron` at import time — real outside a packaged
 // Electron process. Nothing here exercises that path (only the pure
-// `decideAccess`/`skipResumeRateLimit` helpers), so stub it out.
+// helpers), so stub it out.
 vi.mock('./sentry', () => ({ captureException: () => undefined }));
 
-import { decideAccess, skipResumeRateLimit } from './ipcGuard';
+import {
+  IpcAuthorizationError,
+  decideAccess,
+  isExpectedRefusal,
+  skipResumeRateLimit,
+} from './ipcGuard';
 import type { IpcCallContext } from './ipcGuard';
 import type { IpcSession } from './ipcSession';
 
@@ -150,5 +155,32 @@ describe('skipResumeRateLimit', () => {
     expect(skipResumeRateLimit('auth:resumeSession', { token: 'abc' }, 1)).toBe(
       false,
     );
+  });
+});
+
+describe('isExpectedRefusal', () => {
+  it('treats a plan gate (403) as an answer, not a bug', () => {
+    const err = Object.assign(
+      new Error('Dining floor is not available on the Store plan.'),
+      { statusCode: 403 },
+    );
+    expect(isExpectedRefusal(err)).toBe(true);
+  });
+
+  it('treats denials and other 4xx refusals as expected', () => {
+    expect(isExpectedRefusal(new IpcAuthorizationError('forbidden'))).toBe(
+      true,
+    );
+    expect(
+      isExpectedRefusal(Object.assign(new Error('x'), { statusCode: 409 })),
+    ).toBe(true);
+  });
+
+  it('still reports genuine failures', () => {
+    expect(isExpectedRefusal(new Error('boom'))).toBe(false);
+    expect(
+      isExpectedRefusal(Object.assign(new Error('x'), { statusCode: 500 })),
+    ).toBe(false);
+    expect(isExpectedRefusal(null)).toBe(false);
   });
 });

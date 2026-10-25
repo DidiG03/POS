@@ -16,6 +16,7 @@ import {
 } from '@shared/ipc';
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { resolveHostIntent } from '@shared/tableIntent';
+import { isStoreCounterArea } from '@shared/editionCapabilities';
 import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
 import { voidTicketItem, voidWholeTicket } from './services/ticketVoid';
 import { revokeSessionsForUser } from './services/ipcSession';
@@ -1762,8 +1763,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         } catch (e: any) {
           return send(
             res,
-            400,
-            { error: String(e?.message || e || 'create failed') },
+            Number(e?.statusCode) === 409 ? 409 : 400,
+            {
+              error: String(e?.message || e || 'create failed'),
+              code: e?.code ? String(e.code) : undefined,
+            },
             corsOrigin,
           );
         }
@@ -1775,8 +1779,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         } catch (e: any) {
           return send(
             res,
-            400,
-            { error: String(e?.message || e || 'update failed') },
+            Number(e?.statusCode) === 409 ? 409 : 400,
+            {
+              error: String(e?.message || e || 'update failed'),
+              code: e?.code ? String(e.code) : undefined,
+            },
             corsOrigin,
           );
         }
@@ -1938,7 +1945,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (storePlanBlocksTables()) {
         if (
           pathname === '/tables/transfer' ||
-          pathname === '/tables/floor-snapshot' ||
+          (pathname === '/tables/floor-snapshot' &&
+            !isStoreCounterArea(String(parsed.query.area || ''))) ||
           pathname.startsWith('/layout') ||
           pathname.startsWith('/requests')
         ) {
