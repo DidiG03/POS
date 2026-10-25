@@ -219,15 +219,11 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.93 (speed, correct figures, fiskalizimi refunds)"
-            echo "- Speed: a year of Review opens in about 2 seconds instead of 12, and the till no longer freezes while an admin runs reports during service. Staff counts, monthly ticket lists and start-up are much faster, and sending an order makes one fewer trip over Wi-Fi."
-            echo "- Reports: monthly ticket lists no longer miss sales after about 11 busy days. The Transferred count works (it always showed 0)."
-            echo "- Waiters: every screen (dashboard, staff pages, Review and the waiter's phone) credits a sale to the waiter who served the table, including tables paid after midnight or by a colleague."
-            echo "- Money: amounts round correctly to the cent, net plus VAT always equals the total, receipts show VAT on the amount actually charged, weighed items keep their exact weight, and cost margins use prices without VAT."
-            echo "- VAT: a menu item with VAT 0% uses the default rate everywhere, including the fiscal invoice. The menu screen flags those items."
-            echo "- Fiskalizimi refunds: refunding a dish from a bill with a percentage discount or service charge gives back what the guest actually paid, and the corrective invoice matches it for each VAT rate. Cancelling a sale after a partial refund no longer reverses the refunded dish a second time."
-            echo "- Fiskalizimi: the test invoice can only be sent to the easyPos test service, never a live account. Invoices queued during an outage are sent oldest first and no longer hold up the queue while easyPos is still down."
-            echo "- Stability: fixes for the errors reported from tills and the Admin app (store counter bills, offline update checks, menu reads, duplicate barcodes, expired admin logins)."
+            echo "### Changes in v0.2.94 (fiskalizimi: cash sales and the daily float)"
+            echo "- A cash sale refused because the day's opening cash balance was not declared is now fixed on its own: the till declares the balance and sends the same invoice again, which completes it. It no longer waits for an admin to review it."
+            echo "- If the balance still cannot be declared, the sale goes through with the fiskalizimi-pending receipt and the invoice is sent automatically once the balance is declared."
+            echo "- The Test minimal invoice button in Admin, Fiskalizimi works the same way, instead of failing with a confusing message."
+            echo "- Also includes everything in v0.2.93: faster reports, correct waiter credit and money figures, and correct fiskalizimi refunds on discounted bills."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
