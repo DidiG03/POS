@@ -124,6 +124,8 @@ export type RecoveryResult =
       message: string;
       sendAttempts: number;
       statusPolls: number;
+      /** Fault 123: declare today's float, then send this docId again. */
+      dailyBalanceMissing?: boolean;
     }
   /** Nothing was filed. The same docId may be sent again later. */
   | {
@@ -373,6 +375,19 @@ async function driveRecovery(input: {
     }
 
     lastMessage = classification.message;
+
+    // Whichever call reported it, the docId is unfinished on easyPos and
+    // completes when it is sent again after the float is declared.
+    if (classification.dailyBalanceMissing) {
+      return {
+        kind: 'rejected',
+        docId,
+        message: classification.message,
+        sendAttempts,
+        statusPolls,
+        dailyBalanceMissing: true,
+      };
+    }
 
     // (f) Nothing a retry can fix.
     if (classification.action === 'fix-request') {

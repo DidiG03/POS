@@ -388,11 +388,32 @@ export function isBalanceSettled(
 export async function ensureDailyBalanceForCash(
   settings: SettingsDTO,
   input: { openingFloat: number },
-  options?: BalanceOptions & { now?: () => number },
+  options?: BalanceOptions & {
+    now?: () => number;
+    /**
+     * easyPos just refused a cash invoice for a missing float (fault 123).
+     * It is the authority: a local record saying today's float was
+     * declared is wrong, so it is declared again under a new docId.
+     */
+    refuted?: boolean;
+  },
 ): Promise<BalanceOutcome> {
   const dayKey = dayKeyLocal();
   const storageKey = initiateKey(deviceKeyOf(settings), dayKey);
-  const existing = await readRecord(storageKey);
+  let existing = await readRecord(storageKey);
+
+  if (existing?.state === 'COMPLETE' && options?.refuted) {
+    existing = {
+      ...existing,
+      docId: '',
+      fcdc: undefined,
+      state: 'FAILED',
+      lastError:
+        "easyPos reported today's opening balance as not declared, although it was recorded here.",
+      updatedAt: new Date().toISOString(),
+    };
+    await writeRecord(storageKey, existing);
+  }
 
   if (existing?.state === 'COMPLETE') {
     return {

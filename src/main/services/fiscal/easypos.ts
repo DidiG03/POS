@@ -25,6 +25,15 @@ import { postInvoiceStatus } from './client';
 import { registerInvoiceWithRecovery, type RecoveryOptions } from './recover';
 import { newDocId } from './docId';
 import { assertVatCode } from './vatConfig';
+import { ensureDailyBalanceForCash, isBalanceSettled } from './balance';
+
+function paysCash(draft: unknown): boolean {
+  const raw = (draft as any)?.payment;
+  const payments = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  return payments.some(
+    (p: any) => String(p?.type || '').toUpperCase() === 'CASH',
+  );
+}
 import type { RegisterInvoiceRequest, CancelInvoiceRequest } from './apiTypes';
 
 export {
@@ -679,11 +688,43 @@ export async function createEasyPosSale(
     return resultFromResponse({ data, httpStatus: 200, isEinvoice });
   }
 
-  const outcome = await registerInvoiceWithRecovery(
+  let outcome = await registerInvoiceWithRecovery(
     settings,
     draft as unknown as RegisterInvoiceRequest,
     options,
   );
+
+  // Fault 123: easyPos holds this docId unfinished until today's float is
+  // declared. Declare it and send the same docId once more, which completes
+  // that same invoice. Still refused, it is queued rather than refused: the
+  // sale is real, and the defer loop declares the float before resending.
+  if (outcome.kind === 'rejected' && outcome.dailyBalanceMissing) {
+    if (paysCash(draft)) {
+      const configured = Number((settings as any)?.fiscal?.openingFloat);
+      const declared = await ensureDailyBalanceForCash(
+        settings,
+        {
+          openingFloat:
+            Number.isFinite(configured) && configured >= 0 ? configured : 0,
+        },
+        { refuted: true },
+      ).catch(() => null);
+      if (declared && isBalanceSettled(declared)) {
+        outcome = await registerInvoiceWithRecovery(
+          settings,
+          draft as unknown as RegisterInvoiceRequest,
+          options,
+        );
+      }
+    }
+    if (outcome.kind === 'rejected' && outcome.dailyBalanceMissing) {
+      throw fiscalError(
+        `${outcome.message} Declaring it did not succeed, so the invoice is kept and sent again once it is declared (Admin → Fiskalizimi → opening balance).`,
+        'not-registered',
+        true,
+      );
+    }
+  }
 
   if (outcome.kind === 'complete') {
     return {

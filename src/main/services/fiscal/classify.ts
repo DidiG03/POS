@@ -56,6 +56,12 @@ export interface FiscalClassification {
   /** True when the next step must be `/invoice/status`, not another POST. */
   mustCheckStatus: boolean;
   message: string;
+  /**
+   * CIS fault 123: a cash invoice before today's opening float was
+   * declared. easyPos holds it unfinished under the same docId; declaring
+   * the float and sending that docId again completes it.
+   */
+  dailyBalanceMissing?: boolean;
 }
 
 export interface ClassifyInput {
@@ -268,6 +274,15 @@ export function isCisServerFault(data: unknown): boolean {
   return env === SERVER_ENV || env === 'server';
 }
 
+/** CIS fault 123, "daily balance not reported" on a cash invoice. */
+export function isDailyBalanceFault(data: unknown): boolean {
+  const cis = errorEnvelope(data)?.cisError;
+  if (!cis) return false;
+  if (String(cis.faultCode ?? '').trim() === '123') return true;
+  const text = lower(cis.faultString);
+  return text.includes('balanc') && text.includes('ditore');
+}
+
 export function hasCisError(data: unknown): boolean {
   const cis = errorEnvelope(data)?.cisError;
   if (!cis) return false;
@@ -383,6 +398,21 @@ export function classifyFiscalAttempt(
       message: `The tax service rejected the data (env:CLIENT): ${
         faultMessage(data) || 'no detail supplied'
       }. This needs a corrected request, not a retry.`,
+    };
+  }
+
+  // Tagged env:SERVER, but nothing failed on easyPos' side and nothing was
+  // filed: the float is missing. Polling status only finds the same fault.
+  if (isDailyBalanceFault(data)) {
+    return {
+      action: 'fix-request',
+      outcome: 'not-registered',
+      retryable: true,
+      mustCheckStatus: false,
+      dailyBalanceMissing: true,
+      message: `Today's opening cash balance has not been declared, so the tax service refused this cash invoice (${
+        faultMessage(data) || 'fault 123'
+      }).`,
     };
   }
 
