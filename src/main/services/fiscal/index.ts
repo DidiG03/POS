@@ -221,6 +221,7 @@ function withFiscalMeta(
       fiscalLink: result.link || undefined,
       fiscalQrCode: (result as any).qrCode || undefined,
       fiscalTin: tin || undefined,
+      fiscalDoc: result.doc || undefined,
       fiscalWarning: result.warning || undefined,
       fiscalStatus: result.status,
     },
@@ -477,6 +478,7 @@ async function registerUnderClaim(input: {
       method: mapPaymentMethod(
         String(meta.method || meta.paymentMethod || 'CASH'),
       ),
+      environment: fiscalConfig(settings).environment,
     });
   } catch (e: any) {
     // No durable claim means nothing would stop a retry from filing a
@@ -541,6 +543,7 @@ async function registerUnderClaim(input: {
       eic: result.eic || undefined,
       link: result.link || undefined,
       qrCode: result.qrCode || undefined,
+      ...(result.doc ? { doc: result.doc } : {}),
       status: result.status,
       warning: result.warning || undefined,
     };

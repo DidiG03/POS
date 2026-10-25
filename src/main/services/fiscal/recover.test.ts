@@ -19,7 +19,11 @@ vi.mock('./transport', () => ({
   warmEasyPosConnection: async () => undefined,
 }));
 import type { SettingsDTO } from '@shared/ipc';
-import { __resetDocIdLocks, FISCAL_ROUTES } from './client';
+import {
+  __resetDeviceQueues,
+  __resetDocIdLocks,
+  FISCAL_ROUTES,
+} from './client';
 import { registerInvoiceWithRecovery } from './recover';
 import type { RegisterInvoiceRequest } from './apiTypes';
 
@@ -95,6 +99,7 @@ function countOf(route: string): number {
 
 beforeEach(() => {
   __resetDocIdLocks();
+  __resetDeviceQueues();
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -608,7 +613,9 @@ describe('serialisation by docId', () => {
     expect(peak).toBe(1);
   });
 
-  it('lets different docIds proceed in parallel', async () => {
+  // easyPos refuses a second document from a device while one is in flight
+  // ("Një kërkesë tjetër po përpunohet!"), so they go one after another.
+  it('sends different docIds one at a time on one device', async () => {
     let concurrent = 0;
     let peak = 0;
     fetchMock.mockImplementation(async () => {
@@ -628,7 +635,7 @@ describe('serialisation by docId', () => {
       ),
     ]);
 
-    expect(peak).toBe(2);
+    expect(peak).toBe(1);
   });
 
   it('releases the lock after a failed attempt', async () => {

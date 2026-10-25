@@ -55,11 +55,13 @@ import {
   ensureDailyBalanceForCash,
   initiateDailyBalance,
   initiateKey,
+  isAlreadyDeclared,
   isDailyBalanceDeclared,
   deviceKeyOf,
   withdrawCash,
 } from './balance';
 import { __resetDocIdLocks, FISCAL_ROUTES } from './client';
+import { dayKeyLocal } from '../kdsRetention';
 
 const settings = {
   fiscal: {
@@ -371,5 +373,39 @@ describe('deposit and withdraw', () => {
     await expect(depositCash(settings, { amount: NaN }, fast)).rejects.toThrow(
       /numeric amount in ALL/,
     );
+  });
+});
+
+describe('isAlreadyDeclared', () => {
+  it('reads easyPos\' "already registered today" answer', () => {
+    expect(
+      isAlreadyDeclared({
+        message: 'Balanaca ditore eshte rregjistruar me heret!',
+      }),
+    ).toBe(true);
+    expect(isAlreadyDeclared({ message: 'Operatori nuk gjendet' })).toBe(false);
+  });
+});
+
+describe('ensureDailyBalanceForCash — easyPos says the float is missing', () => {
+  it('declares straight away, cooldown or not', async () => {
+    const key = initiateKey(deviceKeyOf(settings), dayKeyLocal());
+    store.set(key, {
+      valueJson: {
+        operation: 'initiate',
+        docId: 'bal-earlier-00001',
+        state: 'PENDING',
+        lastAutoAttemptAt: new Date().toISOString(),
+        lastError: 'offline',
+      },
+      updatedAt: new Date(),
+    });
+    fetchMock.mockResolvedValueOnce(json(200, { fcdc: 'FCDC-NOW' }));
+    const r = await ensureDailyBalanceForCash(
+      settings,
+      { openingFloat: 0 },
+      { refuted: true },
+    );
+    expect(r.kind).toBe('complete');
   });
 });

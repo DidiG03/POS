@@ -311,3 +311,23 @@ describe('isNotFoundStatus — the only green light for a replay', () => {
     ).toBe(false);
   });
 });
+
+describe('what easyPos actually answers (sandbox, 2026-10-25)', () => {
+  it('"Fatura nuk gjendet!" from /invoice/status means never filed', () => {
+    expect(
+      isNotFoundStatus({
+        httpStatus: 400,
+        data: { message: 'Fatura nuk gjendet!' },
+      }),
+    ).toBe(true);
+  });
+
+  it('"Një kërkesë tjetër po përpunohet!" is easyPos busy, not a bad invoice', () => {
+    const c = classifyFiscalAttempt({
+      httpStatus: 400,
+      data: { message: 'Një kërkesë tjetër po përpunohet!' },
+    });
+    expect(c.action).toBe('wait-and-poll');
+    expect(c.retryable).toBe(true);
+  });
+});

@@ -392,3 +392,43 @@ describe('an outage during a resend pass', () => {
     expect((await readFiscalClaim('inv-middle-00'))?.state).toBe('DEFERRED');
   });
 });
+
+describe('test and live easyPos kept apart', () => {
+  const live = {
+    fiscal: {
+      enabled: true,
+      baseUrl: 'https://api.easypos.al/fiscalisation-service/v1',
+    },
+  } as unknown as SettingsDTO;
+  const test = {
+    fiscal: {
+      enabled: true,
+      baseUrl: 'https://api.dev.easypos.al/fiscalisation-service/v1',
+    },
+  } as unknown as SettingsDTO;
+  const ctx = (environment: string) => ({
+    context: { area: 'Bar', tableLabel: '4', total: 300, environment },
+  });
+
+  it('never sends a sale queued on the test service to the live one', async () => {
+    deferred('inv-sandbox-01', ctx('dev'));
+    deferred('inv-live-0001', ctx('prod'));
+    await transmitDueDeferredInvoices(live);
+    const sent = createSale.mock.calls.map((c: any) => c[1].docId);
+    expect(sent).toEqual(['inv-live-0001']);
+    expect((await readFiscalClaim('inv-sandbox-01'))?.state).toBe('ABANDONED');
+  });
+
+  it('keeps a live sale waiting while the till points at the test service', async () => {
+    deferred('inv-live-0002', ctx('prod'));
+    await transmitDueDeferredInvoices(test);
+    expect(createSale).not.toHaveBeenCalled();
+    expect((await readFiscalClaim('inv-live-0002'))?.state).toBe('DEFERRED');
+  });
+
+  it('sends untagged work from before this check as before', async () => {
+    deferred('inv-untagged-1');
+    await transmitDueDeferredInvoices(live);
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+});

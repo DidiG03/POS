@@ -114,6 +114,16 @@ async function writeRecord(key: string, record: BalanceRecord): Promise<void> {
  * Sending
  * ------------------------------------------------------------------ */
 
+/** easyPos' answer when today's opening balance is already declared. */
+export function isAlreadyDeclared(data: unknown): boolean {
+  const text = String((data as any)?.message || '').toLowerCase();
+  return (
+    /regjistruar|rregjistruar|already (?:been )?(?:declared|registered)/.test(
+      text,
+    ) && /her[eë]t|already/.test(text)
+  );
+}
+
 const POST_BY_OPERATION: Record<
   BalanceOperation,
   (settings: SettingsDTO, request: BalanceRequest) => Promise<FiscalHttpResult>
@@ -210,6 +220,19 @@ async function sendBalance(
           fcdc,
           identifiers: verdict.identifiers,
         };
+      }
+      // "Balanaca ditore eshte rregjistruar me heret!": today's opening
+      // balance already exists on this device (declared in easyPos, by
+      // another install, or a record we lost). That is what we wanted.
+      if (operation === 'initiate' && isAlreadyDeclared(result.data)) {
+        await writeRecord(storageKey, {
+          ...record,
+          state: 'COMPLETE',
+          fcdc: '',
+          updatedAt: new Date().toISOString(),
+          lastError: undefined,
+        }).catch(() => undefined);
+        return { kind: 'already-declared', docId: record.docId };
       }
       // A "not found" here would be about the docId we just sent, which
       // means the request was refused outright rather than half-applied.
@@ -425,7 +448,11 @@ export async function ensureDailyBalanceForCash(
 
   const now = options?.now ?? Date.now;
   const lastAttempt = Date.parse(String(existing?.lastAutoAttemptAt || ''));
+  // The cooldown keeps an unreachable easyPos from slowing every cash sale.
+  // A refusal for a missing float just came from easyPos, so it is reachable
+  // and the declaration is what unblocks the sale: no waiting.
   if (
+    !options?.refuted &&
     Number.isFinite(lastAttempt) &&
     now() - lastAttempt < AUTO_DECLARE_RETRY_COOLDOWN_MS
   ) {

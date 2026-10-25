@@ -11,6 +11,7 @@ import { dueFiscalDeferAlert } from '@shared/fiscalDefer';
 import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import { backoffDelayMs } from './backoff';
 import {
+  abandonUnsentFiscalClaimUnlocked,
   claimFiscalRegistration,
   commitDeferredFiscalClaim,
   commitRegisteredFiscalClaim,
@@ -34,6 +35,8 @@ import { notifyAdminsAndActor } from '../adminAlerts';
 import { prisma } from '@db/client';
 import { ensureDailyBalanceForCash } from './balance';
 import { fiscalConfig } from './config';
+import type { FiscalDocInfo } from './completion';
+import { isLeftoverTestWork, sameFiscalEnvironment } from './environment';
 
 const LOOP_MS = 20_000;
 const OUTAGE_NOTICE_MS = 30 * 60 * 1000;
@@ -41,6 +44,8 @@ const OUTAGE_NOTICE_MS = 30 * 60 * 1000;
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
 let lastOutageNoticeAt = 0;
+let lastOtherServiceNoticeAt = 0;
+const OTHER_SERVICE_NOTICE_MS = 6 * 60 * 60 * 1000;
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
@@ -63,6 +68,7 @@ export async function stampFiscalIdentifiersOnSale(
     link?: string;
     qrCode?: string;
     status?: string;
+    doc?: FiscalDocInfo;
   },
 ): Promise<void> {
   const nslf = String(result.nslf || '').trim() || null;
@@ -91,6 +97,7 @@ export async function stampFiscalIdentifiersOnSale(
     if (link) meta.fiscalLink = link;
     if (qrCode) meta.fiscalQrCode = qrCode;
     if (tin) meta.fiscalTin = tin;
+    if (result.doc) meta.fiscalDoc = result.doc;
     meta.fiscalStatus = result.status || 'accepted';
     delete meta.fiscalWarning;
     await prisma.printJob
@@ -116,6 +123,7 @@ export async function stampFiscalIdentifiersOnSale(
   if (link) metaJson.fiscalLink = link;
   if (qrCode) metaJson.fiscalQrCode = qrCode;
   if (tin) metaJson.fiscalTin = tin;
+  if (result.doc) metaJson.fiscalDoc = result.doc;
   metaJson.fiscalStatus = result.status || 'accepted';
   delete metaJson.fiscalWarning;
   await prisma.payment
@@ -219,8 +227,31 @@ export async function transmitDueDeferredInvoices(
   // its own full recovery budget (~90s) — hours for a long outage queue,
   // during which nothing else in this loop runs.
   let unreachable = false;
+  const environment = fiscalConfig(settings).environment;
+  let droppedTest = 0;
+  let waitingElsewhere = 0;
 
   for (const { idempotencyKey, record } of rows) {
+    const madeOn = record.context?.environment;
+    if (isLeftoverTestWork(madeOn, environment)) {
+      // A test-service sale: it must never reach the tax authority.
+      const dropped = await withFiscalClaimLock(
+        idempotencyKey,
+        () =>
+          abandonUnsentFiscalClaimUnlocked(
+            idempotencyKey,
+            'Made on the easyPos test service; not sent to the live service.',
+            { statusConfirmedAbsent: true },
+          ),
+        1_000,
+      ).catch(() => false);
+      if (dropped) droppedTest += 1;
+      continue;
+    }
+    if (!sameFiscalEnvironment(madeOn, environment)) {
+      waitingElsewhere += 1;
+      continue;
+    }
     await noticeDeadline(idempotencyKey, record, now);
     const dueAt = Date.parse(record.nextAttemptAt || '') || 0;
     if (dueAt > now || unreachable) continue;
@@ -249,6 +280,23 @@ export async function transmitDueDeferredInvoices(
       if (e instanceof FiscalClaimBusyError) continue;
       console.warn(`[fiscal-defer] docId ${idempotencyKey} failed:`, e);
     }
+  }
+
+  if (droppedTest > 0) {
+    await notifyAdminsAndActor({
+      message: `Fiskalizimi: ${droppedTest} invoice(s) queued while the till used the easyPos test service were not sent to the live service.`,
+      type: 'SECURITY',
+    }).catch(() => undefined);
+  }
+  if (
+    waitingElsewhere > 0 &&
+    now - lastOtherServiceNoticeAt >= OTHER_SERVICE_NOTICE_MS
+  ) {
+    lastOtherServiceNoticeAt = now;
+    await notifyAdminsAndActor({
+      message: `Fiskalizimi: ${waitingElsewhere} invoice(s) were taken on the live easyPos service and are still waiting to be sent. They are not sent to the test service the till now points at — switch Settings › Fiskalizimi back to the live service so they reach the tax authority within 48 hours.`,
+      type: 'SECURITY',
+    }).catch(() => undefined);
   }
 
   return { attempted, registered };
@@ -291,6 +339,7 @@ async function transmitOne(
       eic: result.eic || undefined,
       link: result.link || undefined,
       qrCode: result.qrCode || undefined,
+      ...(result.doc ? { doc: result.doc } : {}),
       status: result.status,
     };
     const stored = await commitRegisteredFiscalClaim(

@@ -131,6 +131,45 @@ export function __resetDocIdLocks(): void {
 }
 
 /* ------------------------------------------------------------------ *
+ * One document at a time per device
+ * ------------------------------------------------------------------ */
+
+/**
+ * easyPos files one document at a time per device and refuses the next
+ * while one is in flight ("Një kërkesë tjetër po përpunohet!"). Two waiters
+ * paying at once therefore had one payment refused. Routes that create a
+ * document queue here, per base URL and token (one device); status, PDF
+ * and lookups do not collide and are not held back.
+ */
+const DOCUMENT_ROUTES = new Set<string>([
+  '/invoice/register',
+  '/invoice/cancel',
+  '/balance/initiate',
+  '/balance/deposit',
+  '/balance/withdraw',
+]);
+const deviceQueues = new Map<string, Promise<unknown>>();
+
+function onePerDevice<T>(device: string, fn: () => Promise<T>): Promise<T> {
+  const previous = deviceQueues.get(device) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  deviceQueues.set(device, settled);
+  void settled.then(() => {
+    if (deviceQueues.get(device) === settled) deviceQueues.delete(device);
+  });
+  return run;
+}
+
+/** Test seam. Never call from application code. */
+export function __resetDeviceQueues(): void {
+  deviceQueues.clear();
+}
+
+/* ------------------------------------------------------------------ *
  * Request primitive
  * ------------------------------------------------------------------ */
 
@@ -154,6 +193,23 @@ export async function postFiscal(
   options?: PostOptions,
 ): Promise<FiscalHttpResult> {
   assertFiscalConfigured(settings);
+  const path = route.startsWith('/') ? route : `/${route}`;
+  if (DOCUMENT_ROUTES.has(path)) {
+    const config = fiscalConfig(settings);
+    const device = `${config.baseUrl}|${options?.authToken || config.authToken}`;
+    return onePerDevice(device, () =>
+      postFiscalNow(settings, route, body, options),
+    );
+  }
+  return postFiscalNow(settings, route, body, options);
+}
+
+async function postFiscalNow(
+  settings: SettingsDTO,
+  route: string,
+  body: unknown,
+  options?: PostOptions,
+): Promise<FiscalHttpResult> {
   const config = fiscalConfig(settings);
   const url = `${config.baseUrl}${route.startsWith('/') ? route : `/${route}`}`;
   const token = String(options?.authToken || config.authToken);

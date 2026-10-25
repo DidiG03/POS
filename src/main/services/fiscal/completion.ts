@@ -56,6 +56,24 @@ export interface FiscalIdentifiers {
   link?: string;
   qrCode?: string;
   iicSignature?: string;
+  /** What the printed fiscal receipt states besides NSLF / NIVF. */
+  doc?: FiscalDocInfo;
+}
+
+/**
+ * The registered invoice's own numbering and codes, as the tax service
+ * holds them. A fiscal receipt states these; they come back on every
+ * register / status answer (and inside the verification link).
+ */
+export interface FiscalDocInfo {
+  /** e.g. 283/2026/qq038ml699 — sequence / year / TCR. */
+  invoiceNumber?: string;
+  businessUnitCode?: string;
+  tcrCode?: string;
+  operatorCode?: string;
+  softwareCode?: string;
+  /** Seller NIPT as registered. */
+  sellerNuis?: string;
 }
 
 export type CompletionVerdict =
@@ -92,13 +110,40 @@ export function readIdentifiers(data: unknown): FiscalIdentifiers {
     }
     return undefined;
   };
+  const link = pick('link', 'verificationUrl', 'verificationLink');
+  const fromLink = (key: string): string | undefined => {
+    const m = String(link || '').match(new RegExp(`[?&]${key}=([^&]+)`));
+    if (!m) return undefined;
+    try {
+      return text(decodeURIComponent(m[1]));
+    } catch {
+      return text(m[1]);
+    }
+  };
+  const tcrCode = pick('tcrCode') ?? fromLink('cr');
+  const ord = pick('invoiceOrderNumber') ?? fromLink('ord');
+  const year = (fromLink('crtd') || '').slice(0, 4);
+  const doc: FiscalDocInfo = {
+    invoiceNumber:
+      pick('invoiceNumber') ??
+      (ord && /^\d{4}$/.test(year) && tcrCode
+        ? `${ord}/${year}/${tcrCode}`
+        : undefined),
+    businessUnitCode: pick('businessUnitCode') ?? fromLink('bu'),
+    tcrCode,
+    operatorCode: pick('operatorCode'),
+    softwareCode: pick('softwareCode') ?? fromLink('sw'),
+    sellerNuis: pick('sellerNuis', 'sellerNipt') ?? fromLink('tin'),
+  };
+  const hasDoc = Object.values(doc).some(Boolean);
   return {
+    ...(hasDoc ? { doc } : {}),
     iic: pick('iic', 'IIC', 'nslf', 'NSLF'),
     fic: pick('fic', 'FIC', 'nivf', 'NIVF'),
     eic: pick('eic', 'EIC'),
     fcdc: pick('fcdc', 'FCDC'),
     base64: pick('base64', 'pdf', 'pdfBase64'),
-    link: pick('link', 'verificationUrl', 'verificationLink'),
+    link,
     qrCode: pick('qrCode', 'qrcode'),
     iicSignature: pick('iicSignature', 'iicsignature'),
   };

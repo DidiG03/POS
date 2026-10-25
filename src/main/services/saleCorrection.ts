@@ -49,6 +49,11 @@ import { cancelInvoice } from './fiscal/cancel';
 import { checkFiscalDocStatus } from './fiscal/easypos';
 import { registerCorrectiveInvoice } from './fiscal/corrective';
 import { isFiscalEnabled } from './fiscal';
+import { fiscalConfig } from './fiscal/config';
+import {
+  isLeftoverTestWork,
+  sameFiscalEnvironment,
+} from './fiscal/environment';
 import { docIdFromKey, newDocId } from './fiscal/docId';
 import { mapPaymentMethod } from './fiscal/paymentMethod';
 import { roundMoney } from '@shared/pricing';
@@ -1043,6 +1048,16 @@ export async function applySaleCorrection(input: {
   const wasFiscalized = Boolean(
     iic || String(payment?.fiscalNivf || '').trim(),
   );
+  // Filed on the easyPos test service while the till is now live: there is
+  // nothing on the live service to cancel, and sending one would be refused
+  // or, worse, mistaken for a real reversal.
+  const saleClaim = docId
+    ? await currentClaimForSale(docId).catch(() => null)
+    : null;
+  const filedOnTestService = isLeftoverTestWork(
+    saleClaim?.record.context?.environment,
+    fiscalConfig(settings).environment,
+  );
   const originalEic =
     (await resolveOriginalEic(payment, docId)) || claimEic || undefined;
   const what =
@@ -1121,7 +1136,15 @@ export async function applySaleCorrection(input: {
         vatRate: num(it.vatRate),
       }));
   };
-  if (wasFiscalized && docId) {
+  if (wasFiscalized && docId && filedOnTestService) {
+    await notifyAdminsAndActor({
+      message:
+        `Sale #${orderId} reversed${where ? ` (${where})` : ''}: ${plan.reason}` +
+        ` · ${plan.amountDelta} · Its invoice was filed on the easyPos test service, so nothing is filed with the tax authority.`,
+      actorUserId: Number(input.actorUserId) || undefined,
+      type: 'SECURITY',
+    }).catch(() => undefined);
+  } else if (wasFiscalized && docId) {
     if (
       plan.cancelsSale &&
       !cancelAsCorrective &&
@@ -1176,6 +1199,7 @@ export async function applySaleCorrection(input: {
           struck: cancellation ? [] : struckLines(),
           serviceCharge: cancellation ? undefined : plan.struckServiceCharge,
           bandChange: cancellation ? undefined : bandChange,
+          environment: fiscalConfig(settings).environment,
           amountDelta: plan.amountDelta,
           method: String(payment?.method || 'CASH'),
         }).catch(() => undefined);
@@ -1267,6 +1291,8 @@ interface QueuedCorrection {
   /** Absent on corrections queued before service charge was struck. */
   serviceCharge?: number;
   bandChange?: Partial<Record<string, number>>;
+  /** The easyPos service the original invoice was filed on. */
+  environment?: 'dev' | 'prod' | 'local';
   amountDelta: number;
   method: string;
   attempts?: number;
@@ -1309,6 +1335,7 @@ export async function retryQueuedFiscalCorrections(
     // After one finds easyPos unreachable, the rest wait for the next pass
     // rather than each spending a full recovery budget finding the same.
     let unreachable = false;
+    const environment = fiscalConfig(settings).environment;
     for (const row of rows) {
       if (unreachable) break;
       const raw = row.valueJson;
@@ -1318,7 +1345,17 @@ export async function retryQueuedFiscalCorrections(
       } catch {
         continue;
       }
-      if (!q || Date.parse(String(q.nextAttemptAt || '')) > now) continue;
+      if (!q) continue;
+      // A reversal of a test-service sale has nothing to reverse on the
+      // live service; one of a live sale waits for the live service.
+      if (isLeftoverTestWork(q.environment, environment)) {
+        await prisma.syncState
+          .delete({ where: { key: row.key } })
+          .catch(() => undefined);
+        continue;
+      }
+      if (!sameFiscalEnvironment(q.environment, environment)) continue;
+      if (Date.parse(String(q.nextAttemptAt || '')) > now) continue;
       attempted += 1;
       const result =
         q.kind === 'CANCEL'

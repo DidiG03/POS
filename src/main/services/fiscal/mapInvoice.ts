@@ -297,6 +297,29 @@ function resolveArticleId(
   return `ITEM-${String(name || 'item').slice(0, 24)}`.slice(0, 100);
 }
 
+/**
+ * The tax service's invoice schema caps an item name at 50 characters,
+ * counted in UTF-16 units, and refuses the whole invoice past that — so a
+ * dish with a long menu name could not be paid for. Characters outside the
+ * Basic Multilingual Plane (most emoji: 🍰, not ☕) break easyPos' XML
+ * signature ("digest wrong", code 30), so they are dropped. The menu and the
+ * printed receipt keep the full name.
+ */
+export const FISCAL_ITEM_NAME_MAX = 50;
+
+export function fiscalItemName(raw: unknown): string {
+  const name = String(raw ?? '')
+    .replace(/[\u{10000}-\u{10FFFF}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!name) return 'Item';
+  if (name.length <= FISCAL_ITEM_NAME_MAX) return name;
+  let cut = name.slice(0, FISCAL_ITEM_NAME_MAX);
+  // Never leave half of a surrogate pair at the end.
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return cut.trimEnd();
+}
+
 function buildArticles(
   payload: TicketPrintPayload,
   settings: SettingsDTO,
@@ -334,7 +357,7 @@ function buildArticles(
         exempt: (it as any).vatExempt === true,
         articleName: String(it.name || 'Item'),
       }),
-      name: String(it.name || 'Item').slice(0, 100),
+      name: fiscalItemName(it.name),
       // Weighed items are sold in kilograms (UN/CEFACT KGM); filing 0.35
       // "pieces" misstates the unit on the invoice.
       soldIn: (it as any).soldByKg === true ? SOLD_BY_KG_UNIT : soldIn,

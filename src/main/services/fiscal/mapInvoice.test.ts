@@ -15,6 +15,7 @@ import {
   invoiceBandTotals,
   buildEasyPosCloudInvoiceDraft,
   buildRestatedInvoiceLines,
+  fiscalItemName,
 } from './mapInvoice';
 
 const settings = {
@@ -465,5 +466,30 @@ describe('buildCorrectionDifferenceLines — per VAT band', () => {
       net.set(a.vatCode, (net.get(a.vatCode) || 0) + a.price * a.units);
     }
     expect(Object.fromEntries(net)).toEqual({ B: -900, E: -100 });
+  });
+});
+
+describe('fiscalItemName — what the tax service accepts', () => {
+  it('keeps Albanian letters and ordinary punctuation', () => {
+    expect(fiscalItemName('Tavë kosi "e shtëpisë" – ☕ €')).toBe(
+      'Tavë kosi "e shtëpisë" – ☕ €',
+    );
+  });
+
+  it('cuts at 50 characters (the schema refuses 51)', () => {
+    const name = 'Tavë kosi e shtëpisë me mish qengji dhe oriz me perime';
+    expect(fiscalItemName(name)).toHaveLength(50);
+    expect(fiscalItemName('a'.repeat(50))).toBe('a'.repeat(50));
+  });
+
+  it('drops emoji that break the invoice signature', () => {
+    expect(fiscalItemName('Tortë 🍰 çokollate')).toBe('Tortë çokollate');
+    expect(fiscalItemName('🍰')).toBe('Item');
+  });
+
+  it('never ends on half a character', () => {
+    const name = fiscalItemName(`${'a'.repeat(49)}ë🍰b`);
+    expect(name.length).toBeLessThanOrEqual(50);
+    expect(/[\uD800-\uDBFF]$/.test(name)).toBe(false);
   });
 });

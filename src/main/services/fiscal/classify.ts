@@ -168,9 +168,10 @@ function isAbort(error: unknown): boolean {
 }
 
 /**
- * "Another request is processing" — the provider is mid-flight on this
- * docId. Recognised in both languages because the Albanian text is what
- * production actually returns.
+ * "Another request is processing" — easyPos files one document at a time
+ * per device and refuses the next while one is in flight ("Një kërkesë
+ * tjetër po përpunohet!"). Nothing was filed for this docId. Recognised in
+ * both languages because the Albanian text is what easyPos returns.
  */
 export function isAnotherRequestProcessing(data: unknown): boolean {
   const haystack = [
@@ -184,7 +185,9 @@ export function isAnotherRequestProcessing(data: unknown): boolean {
     haystack.includes('request is already being processed') ||
     haystack.includes('request in progress') ||
     (haystack.includes('kerkese') && haystack.includes('proces')) ||
-    (haystack.includes('kërkes') && haystack.includes('proces'))
+    (haystack.includes('kërkes') && haystack.includes('proces')) ||
+    ((haystack.includes('kërkes') || haystack.includes('kerkes')) &&
+      (haystack.includes('përpunohet') || haystack.includes('perpunohet')))
   );
 }
 
@@ -192,7 +195,9 @@ export function isAnotherRequestProcessing(data: unknown): boolean {
 const ABSENT = String.raw`not found|notfound|no such|does not exist|doesn't exist|unknown|nuk gjendet|nuk ekziston|i panjohur`;
 
 /** The thing that is absent has to be the *document*, not some field of it. */
-const DOCUMENT = String.raw`document|docid|doc id|dokument|invoice|fature|faturë|receipt`;
+// `fatur` covers fatura / faturë / faturën: easyPos answers an unknown
+// docId with "Fatura nuk gjendet!".
+const DOCUMENT = String.raw`document|docid|doc id|dokument|invoice|fatur|receipt`;
 
 /**
  * Entities whose absence says nothing about whether the document exists.
@@ -255,6 +260,18 @@ export function isNotFoundStatus(input: {
  * broad on purpose: a 400 is the provider telling us the payload is wrong,
  * and there is no 400 that a byte-identical retry fixes.
  */
+/** Plain-language reading of refusals staff will actually meet. */
+function refusalHint(text: string): string {
+  const lower = text.toLowerCase();
+  if (
+    lower.includes('500000') ||
+    (lower.includes('më shumë se') && lower.includes('individ'))
+  ) {
+    return 'The law caps one cash-type invoice (cash or card) to a private customer at 500,000 ALL. A larger bill needs an invoice to a business (with its NIPT), issued in easyPos.';
+  }
+  return '';
+}
+
 export function isValidationFailure(input: {
   httpStatus?: number;
   data?: unknown;
@@ -353,7 +370,7 @@ export function classifyFiscalAttempt(
       retryable: true,
       mustCheckStatus: true,
       message:
-        'easyPos is already processing a request for this docId. Waiting and polling its status rather than sending again.',
+        'easyPos is busy with another document from this device. Waiting and checking this one before sending again.',
     };
   }
 
@@ -436,7 +453,7 @@ export function classifyFiscalAttempt(
       mustCheckStatus: false,
       message: `easyPos refused the payload (HTTP ${httpStatus}): ${
         faultMessage(data) || 'no detail supplied'
-      }. A byte-identical retry will be refused the same way.`,
+      }. ${refusalHint(faultMessage(data)) || 'A byte-identical retry will be refused the same way.'}`,
     };
   }
 

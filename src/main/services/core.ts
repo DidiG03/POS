@@ -242,6 +242,18 @@ export const coreServices = {
       };
     if (input?.fiscal) {
       merged.fiscal = { ...(current.fiscal || {}), ...input.fiscal };
+      // Switching between the easyPos test and live services: whatever is
+      // still queued stays with the service it was made for.
+      const { fiscalEnvironmentOf } = await import('./fiscal/config');
+      const before = String((current as any)?.fiscal?.baseUrl || '').trim();
+      const after = String(merged.fiscal?.baseUrl || '').trim();
+      if (
+        before &&
+        fiscalEnvironmentOf(before) !== fiscalEnvironmentOf(after)
+      ) {
+        const { tagUntaggedFiscalWork } = await import('./fiscal/environment');
+        await tagUntaggedFiscalWork(fiscalEnvironmentOf(before)).catch(() => 0);
+      }
       const nextToken = String((input.fiscal as any)?.authToken || '').trim();
       const prevToken = String(
         (current as any)?.fiscal?.authToken || '',

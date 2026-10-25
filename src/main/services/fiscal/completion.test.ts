@@ -153,3 +153,40 @@ describe('readFaultText', () => {
     expect(readFaultText('not authorized')).toBe('not authorized');
   });
 });
+
+describe('readIdentifiers — invoice number and codes', () => {
+  const link =
+    'https://efiskalizimi-app-test.tatime.gov.al/invoice-check/#/verify?iic=AA1&tin=L52101183A&crtd=2026-10-25T17:32:23+01:00&ord=283&bu=kl749av758&cr=qq038ml699&sw=wc801oy838&prc=1300.00';
+
+  it('takes them from the easyPos answer', () => {
+    const ids = readIdentifiers({
+      iic: 'AA1',
+      fic: 'F1',
+      link,
+      operatorCode: 'gh537ez280',
+      businessUnitCode: 'kl749av758',
+      tcrCode: 'qq038ml699',
+      sellerNuis: 'L52101183A',
+      invoiceNumber: '283/2026/qq038ml699',
+    });
+    expect(ids.doc).toEqual({
+      invoiceNumber: '283/2026/qq038ml699',
+      businessUnitCode: 'kl749av758',
+      tcrCode: 'qq038ml699',
+      operatorCode: 'gh537ez280',
+      softwareCode: 'wc801oy838',
+      sellerNuis: 'L52101183A',
+    });
+  });
+
+  it('falls back to the verification link', () => {
+    const ids = readIdentifiers({ iic: 'AA1', fic: 'F1', link });
+    expect(ids.doc).toMatchObject({
+      invoiceNumber: '283/2026/qq038ml699',
+      businessUnitCode: 'kl749av758',
+      tcrCode: 'qq038ml699',
+      softwareCode: 'wc801oy838',
+      sellerNuis: 'L52101183A',
+    });
+  });
+});

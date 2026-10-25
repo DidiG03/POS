@@ -439,6 +439,41 @@ describe('fiscal receipt block', () => {
     expect(text).not.toContain('FISKALIZIMI NE PRITJE');
   });
 
+  it('states the invoice number, NIPT and fiscal codes', () => {
+    const meta = {
+      kind: 'PAYMENT',
+      method: 'CARD',
+      totalAfter: 150,
+      fiscalEnabled: true,
+      fiscalNivf: 'NIVF-1',
+      fiscalNslf: 'IIC-1',
+      fiscalDoc: {
+        invoiceNumber: '283/2026/qq038ml699',
+        businessUnitCode: 'kl749av758',
+        tcrCode: 'qq038ml699',
+        operatorCode: 'gh537ez280',
+        softwareCode: 'wc801oy838',
+        sellerNuis: 'L52101183A',
+      },
+    } as any;
+    const payload = {
+      area: 'Salla',
+      tableLabel: 'T1',
+      items: [{ name: 'Kafe', qty: 1, unitPrice: 150 }],
+      meta,
+    };
+    const settings = { restaurantName: 'Test', currency: 'ALL' } as any;
+    const text = buildEscposTicket(payload, settings).toString('latin1');
+    expect(text).toContain('Nr. i fatur');
+    expect(text).toContain('283/2026/qq038ml699');
+    expect(text).toContain('NIPT: L52101183A');
+    expect(text).toContain('Operatori: gh537ez280');
+    expect(text).toContain('TCR: qq038ml699');
+    const html = buildHtmlReceipt(payload, settings);
+    expect(html).toContain('Nr. i faturës: 283/2026/qq038ml699');
+    expect(html).toContain('NIPT: L52101183A');
+  });
+
   it('does not claim fiskalizimi on a deferred sale', () => {
     const buf = buildEscposTicket(
       {

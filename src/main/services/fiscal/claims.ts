@@ -22,6 +22,7 @@
 import crypto from 'node:crypto';
 import { prisma } from '@db/client';
 import { notifyAdminsAndActor } from '../adminAlerts';
+import type { FiscalDocInfo } from './completion';
 
 const KEY_PREFIX = 'fiscal:claim:';
 /** First key past every claim — `;` sorts right after `:`. */
@@ -121,6 +122,8 @@ export interface StoredFiscalResult {
   qrCode?: string;
   status?: 'accepted' | 'pending';
   warning?: string;
+  /** Invoice number and codes for the printed receipt. */
+  doc?: FiscalDocInfo;
 }
 
 export interface FiscalClaimRecord {
@@ -143,6 +146,12 @@ export interface FiscalClaimRecord {
     saleKey?: string;
     /** Fiscal payment type the invoice was filed with (CASH, CARD, …). */
     method?: string;
+    /**
+     * The easyPos environment (test or live) this invoice belongs to. Work
+     * queued on one is never sent to the other: a sandbox sale must not
+     * reach the tax service when the till goes live.
+     */
+    environment?: 'dev' | 'prod' | 'local';
   };
   result?: StoredFiscalResult;
   lastError?: string;

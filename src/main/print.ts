@@ -244,6 +244,29 @@ export type TicketPrintPayload = {
   meta?: TicketPrintMeta;
 };
 
+/**
+ * What a fiscal receipt states besides NIVF / NSLF: the invoice number and
+ * the seller's NIPT, operator, business unit, register (TCR) and software
+ * codes, as the tax service registered them. In Albanian — it is the line
+ * an inspector reads.
+ */
+export function fiscalDocLines(meta: any, settings?: any): string[] {
+  const doc = (meta?.fiscalDoc || {}) as Record<string, unknown>;
+  const val = (v: unknown) => String(v ?? '').trim();
+  const nipt =
+    val(doc.sellerNuis) ||
+    val(meta?.fiscalTin) ||
+    fiscalTinFromSettings(settings);
+  return [
+    val(doc.invoiceNumber) && `Nr. i faturës: ${val(doc.invoiceNumber)}`,
+    nipt && `NIPT: ${nipt}`,
+    val(doc.operatorCode) && `Operatori: ${val(doc.operatorCode)}`,
+    val(doc.businessUnitCode) && `Njësia: ${val(doc.businessUnitCode)}`,
+    val(doc.tcrCode) && `TCR: ${val(doc.tcrCode)}`,
+    val(doc.softwareCode) && `Softi: ${val(doc.softwareCode)}`,
+  ].filter(Boolean) as string[];
+}
+
 export type ShiftClosePrintSummary = {
   waiterName: string;
   openedAtIso: string;
@@ -676,6 +699,11 @@ export function buildEscposTicket(
           lines.push(escposText(`${ln}\n`));
         }
       }
+      for (const text of fiscalDocLines(meta, settings)) {
+        for (const ln of wrapEscposText(text, fiscalLineWidth)) {
+          lines.push(escposText(`${ln}\n`));
+        }
+      }
       if (qr) {
         // Restaurant slips: the footer already starts with a blank line.
         lines.push(escposText(guestSlip ? '\n' : '\n\n'));
@@ -829,7 +857,14 @@ export function buildHtmlReceipt(
       : kind === 'PAYMENT' &&
           meta?.fiscalEnabled &&
           isFiscalRegistered(meta as any)
-        ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalRegistered)}</div>${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalQr ? `<div class="small"><a href="${safe(fiscalQr)}">${safe(fiscalQr)}</a></div>` : ''}`
+        ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalRegistered)}</div>${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalDocLines(
+            meta,
+            settings,
+          )
+            .map((t) => `<div class="small">${safe(t)}</div>`)
+            .join(
+              '',
+            )}${fiscalQr ? `<div class="small"><a href="${safe(fiscalQr)}">${safe(fiscalQr)}</a></div>` : ''}`
         : '';
   const payMethod = printPaymentMethod(
     lang,

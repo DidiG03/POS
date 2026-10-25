@@ -39,7 +39,10 @@ import {
   listFiscalClaimsUpdatedSince,
   markDeadPendingUnknownUnlocked,
   notifyFiscalReviewNeeded,
+  readFiscalClaim,
   requeueDeadDeferredDraftUnlocked,
+  settleFiscalClaimFailed,
+  settleFiscalClaimRegistered,
   withFiscalClaimLock,
   type FiscalClaimRecord,
 } from './claims';
@@ -152,6 +155,74 @@ async function flagOrphan(row: ClaimRow, now: number): Promise<void> {
 }
 
 /** Move an interrupted send to review and tell admins. Returns true if it did. */
+/**
+ * An interrupted send (the till closed mid-request) is a question easyPos
+ * can answer: ask it before putting the sale in front of an admin. Filed →
+ * REGISTERED, so the table's next payment reuses that invoice; never seen →
+ * FAILED, so the next payment files normally. Anything else goes to review.
+ */
+async function resolveDeadPendingByStatus(row: ClaimRow): Promise<boolean> {
+  try {
+    const { coreServices } = await import('../core');
+    const settings: any = await coreServices.readSettings();
+    if (settings?.fiscal?.enabled !== true) return false;
+    const { fiscalConfig } = await import('./config');
+    const { sameFiscalEnvironment } = await import('./environment');
+    const config = fiscalConfig(settings);
+    if (!config.cloud) return false;
+    if (
+      !sameFiscalEnvironment(
+        row.record.context?.environment,
+        config.environment,
+      )
+    ) {
+      return false;
+    }
+    const { checkFiscalDocStatus } = await import('./easypos');
+    return await withFiscalClaimLock(
+      row.idempotencyKey,
+      async () => {
+        const latest = await readFiscalClaim(row.idempotencyKey);
+        if (!latest || !isDeadPendingClaim(latest)) return false;
+        const probe = await checkFiscalDocStatus(
+          settings,
+          row.idempotencyKey,
+          latest.draft,
+        );
+        if (probe.kind === 'filed') {
+          const r = probe.result;
+          await settleFiscalClaimRegistered(
+            row.idempotencyKey,
+            latest.attemptId,
+            {
+              nslf: r.nslf || undefined,
+              nivf: r.nivf || undefined,
+              eic: r.eic || undefined,
+              link: r.link || undefined,
+              qrCode: r.qrCode || undefined,
+              ...(r.doc ? { doc: r.doc } : {}),
+              status: r.status,
+            },
+          );
+          return true;
+        }
+        if (probe.kind === 'absent') {
+          await settleFiscalClaimFailed(
+            row.idempotencyKey,
+            latest.attemptId,
+            'The till closed while sending this invoice; easyPos confirmed it was never filed.',
+          );
+          return true;
+        }
+        return false;
+      },
+      30_000,
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function surfaceDeadPending(row: ClaimRow): Promise<boolean> {
   const converted = await withFiscalClaimLock(
     row.idempotencyKey,
@@ -186,6 +257,8 @@ export async function checkSittingBeforePayment(input: {
   /** This payment's idempotency key. */
   idempotencyKey: string;
   now?: number;
+  /** Set on the second look, after easyPos was asked about cut-off sends. */
+  statusAsked?: boolean;
 }): Promise<SittingCheck> {
   const now = input.now ?? Date.now();
   const area = String(input.area || '');
@@ -216,6 +289,19 @@ export async function checkSittingBeforePayment(input: {
         row.record.state === 'REGISTERED'),
   );
   if (rows.length === 0) return { kind: 'clear' };
+
+  // An earlier attempt was cut off mid-send: ask easyPos what happened
+  // before deciding, then look again with the answer on the claim.
+  if (!input.statusAsked) {
+    let resolved = false;
+    for (const row of rows) {
+      if (isDeadPendingClaim(row.record, now)) {
+        resolved = (await resolveDeadPendingByStatus(row)) || resolved;
+      }
+    }
+    if (resolved)
+      return checkSittingBeforePayment({ ...input, statusAsked: true });
+  }
 
   const recorded = await recordedSaleKeys(rows.flatMap(saleKeysOf));
   const open = rows
@@ -370,6 +456,7 @@ export async function sweepFiscalClaims(options?: {
       ).catch(() => false);
       if (requeued) continue;
     }
+    if (await resolveDeadPendingByStatus(row)) continue;
     if (await surfaceDeadPending(row)) interrupted += 1;
   }
 

@@ -338,6 +338,18 @@ export interface TicketPrintMeta {
   fiscalQrCode?: string;
   /** Seller NIPT used in the CIS verification QR. */
   fiscalTin?: string;
+  /**
+   * The registered invoice's number and codes (number, business unit, TCR,
+   * operator, software), printed under FISKALIZUAR.
+   */
+  fiscalDoc?: {
+    invoiceNumber?: string;
+    businessUnitCode?: string;
+    tcrCode?: string;
+    operatorCode?: string;
+    softwareCode?: string;
+    sellerNuis?: string;
+  };
   fiscalWarning?: string;
   fiscalStatus?: string;
 }

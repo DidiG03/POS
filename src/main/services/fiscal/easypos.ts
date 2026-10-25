@@ -10,6 +10,7 @@ import {
   assessCompletion,
   readFaultText,
   targetForInvoice,
+  type FiscalDocInfo,
 } from './completion';
 // One definition of "the request never left this machine", shared with the
 // recovery sequence. The copy that used to live here read only one level of
@@ -49,6 +50,8 @@ export type FiscalSaleResult = {
   eic?: string;
   link: string;
   qrCode?: string;
+  /** Invoice number and codes the printed receipt states. */
+  doc?: FiscalDocInfo;
   /**
    * Only ever `'accepted'` now. Kept in the shape because receipts, the
    * claim store and the LAN API all read it.
@@ -425,6 +428,7 @@ function resultFromResponse(input: {
       ...(verdict.identifiers.qrCode
         ? { qrCode: verdict.identifiers.qrCode }
         : {}),
+      ...(verdict.identifiers.doc ? { doc: verdict.identifiers.doc } : {}),
       status: 'accepted',
       raw: input.data,
     };
@@ -735,6 +739,7 @@ export async function createEasyPosSale(
       ...(outcome.identifiers.qrCode
         ? { qrCode: outcome.identifiers.qrCode }
         : {}),
+      ...(outcome.identifiers.doc ? { doc: outcome.identifiers.doc } : {}),
       status: 'accepted',
       raw: outcome.raw,
     };
@@ -835,6 +840,7 @@ export async function checkFiscalDocStatus(
           ...(ids.eic ? { eic: ids.eic } : {}),
           link: ids.link || '',
           ...(ids.qrCode ? { qrCode: ids.qrCode } : {}),
+          ...(ids.doc ? { doc: ids.doc } : {}),
           status: 'accepted',
           raw: res.data,
         },
