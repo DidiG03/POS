@@ -219,11 +219,15 @@ jobs:
             echo
             echo "Windows POS, KDS, and Admin installers are published onto this same tag."
             echo
-            echo "### Changes in v0.2.94 (fiskalizimi: cash sales and the daily float)"
-            echo "- A cash sale refused because the day's opening cash balance was not declared is now fixed on its own: the till declares the balance and sends the same invoice again, which completes it. It no longer waits for an admin to review it."
-            echo "- If the balance still cannot be declared, the sale goes through with the fiskalizimi-pending receipt and the invoice is sent automatically once the balance is declared."
-            echo "- The Test minimal invoice button in Admin, Fiskalizimi works the same way, instead of failing with a confusing message."
-            echo "- Also includes everything in v0.2.93: faster reports, correct waiter credit and money figures, and correct fiskalizimi refunds on discounted bills."
+            echo "### Changes in v0.2.95 (fiskalizimi ready for live use)"
+            echo "- Busy service: when several waiters take payment at the same moment, every invoice now goes through. easyPos accepts one invoice at a time per till, and simultaneous payments used to be refused."
+            echo "- Internet or easyPos problems: a payment whose answer is lost, delayed or cut off is checked with easyPos and completed with the invoice that was filed, never filed twice. Sales taken offline and refunds queued offline are sent automatically when the connection is back, instead of waiting for an admin."
+            echo "- Till restart: if the till closes while an invoice is being sent, it asks easyPos what happened when it starts again. The next payment for that table reuses the filed invoice."
+            echo "- Receipts: fiscal receipts now print the invoice number, the NIPT and the operator, business unit, register and software codes."
+            echo "- Dish names: names longer than 50 characters or containing emoji no longer make easyPos refuse the invoice. The menu and the receipt keep the full name."
+            echo "- Going live: invoices queued while the till used the easyPos test service are never sent to the live tax service, and live invoices are never sent to the test service."
+            echo "- The daily cash balance is recognised when it was already declared, and declared straight away when easyPos asks for it."
+            echo "- Includes everything in v0.2.93 and v0.2.94."
           } > "$NOTES_FILE"
 
           source "${GITHUB_WORKSPACE}/.github/scripts/gh-release.sh"
