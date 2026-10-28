@@ -463,7 +463,23 @@ const LIVE_ATTEMPT_BUDGET_MS = 4_000;
  * Money, kitchen chits and transfers are deliberately excluded — the waiter
  * needs a definite live answer for those.
  */
-const BUDGETED_OPS = new Set<OfflineOp>(['tables.setOpen', 'covers.save']);
+const BUDGETED_OPS = new Set<OfflineOp>([
+  'tables.setOpen',
+  'covers.save',
+  'tickets.log',
+]);
+
+/**
+ * A Send gets longer than the table writes, but not forever: on a stalled
+ * link the phone sat on "Sending order…" through every transport timeout.
+ * After this the queue owns it; the till dedupes it by its Send key, and a
+ * refusal it meets later lands in the failed-sync list.
+ */
+const SEND_LIVE_BUDGET_MS = 8_000;
+
+function liveBudgetMs(op: OfflineOp): number {
+  return op === 'tickets.log' ? SEND_LIVE_BUDGET_MS : LIVE_ATTEMPT_BUDGET_MS;
+}
 
 type LiveOutcome = { handedOff: true } | { handedOff: false; result: unknown };
 
@@ -487,7 +503,7 @@ async function raceLiveAttempt(
   );
   let timer: ReturnType<typeof setTimeout> | undefined;
   const budget = new Promise<'handoff'>((resolve) => {
-    timer = setTimeout(() => resolve('handoff'), LIVE_ATTEMPT_BUDGET_MS);
+    timer = setTimeout(() => resolve('handoff'), liveBudgetMs(op));
   });
   try {
     const winner = await Promise.race([settled, budget]);
@@ -1530,7 +1546,15 @@ async function drainTableBacklog(op: OfflineOp, args: any): Promise<void> {
 export async function tryOrQueue<T = unknown>(
   op: OfflineOp,
   args: any,
-  options?: { dedupeKey?: string },
+  options?: {
+    dedupeKey?: string;
+    /**
+     * Never park this on the phone: a failure to reach the till throws
+     * (`code: 'TILL_UNREACHABLE'`). Payments use it — a payment the till has
+     * not confirmed must not wait on the phone while the guest walks out.
+     */
+    liveOnly?: boolean;
+  },
 ): Promise<{ queued: boolean; result?: T; error?: string }> {
   if (op === 'tables.setOpen') {
     const tappedAt = Number(args?.tappedAt);
@@ -1591,6 +1615,10 @@ export async function tryOrQueue<T = unknown>(
       throw e;
     }
     if (isSaleAlreadySettled(e)) {
+      throw e;
+    }
+    if (options?.liveOnly && !isPermanentFailure(e)) {
+      if (e && typeof e === 'object' && !e.code) e.code = 'TILL_UNREACHABLE';
       throw e;
     }
     if (isLikelyOfflineError(e)) {

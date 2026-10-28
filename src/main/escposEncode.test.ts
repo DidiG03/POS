@@ -90,8 +90,8 @@ describe('buildEscposTicket width', () => {
     expect(payment.includes(Buffer.from([0x1d, 0x21, 0x11]))).toBe(false);
     const text = payment.toString('latin1');
     expect(text).toMatch(/Item +Qty +Price +Amount\n/);
-    expect(text).toMatch(/Antipast. e sht.pis. +2 +1200 +2400\n/);
-    expect(text).toMatch(/TOTAL +2400\n/);
+    expect(text).toMatch(/Antipast. e sht.pis. +2 +1200\.00 +2400\.00\n/);
+    expect(text).toMatch(/TOTAL +2400\.00\n/);
     expect(text).toMatch(/Salla Brenda - T1 +Covers: 2\n/);
 
     const kitchen = buildEscposTicket(
@@ -552,7 +552,7 @@ describe('fiscal receipt block', () => {
     );
     const text = buf.toString('latin1');
     expect(text).toContain('TOTAL');
-    expect(text).toMatch(/LEK\s+600(?!\.)/);
+    expect(text).toMatch(/LEK\s+600\.00/);
     // 600 / 100.5 = 5.97; a whole-euro "6" quoted the guest the wrong amount.
     expect(text).toMatch(/EUR\s+5\.97/);
   });
@@ -577,8 +577,8 @@ describe('fiscal receipt block', () => {
       } as any,
     );
     const text = buf.toString('latin1');
-    expect(text).toMatch(/LEK\s+201(?!\.)/);
-    expect(text).toMatch(/EUR\s+2(?!\.)/);
+    expect(text).toMatch(/LEK\s+201\.00/);
+    expect(text).toMatch(/EUR\s+2\.00/);
     expect(text).not.toContain('FISKALIZUAR');
   });
 });

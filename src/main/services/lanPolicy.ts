@@ -83,25 +83,24 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /menu/delete-item': { allow: ADMIN },
 
   // ------------------------------------------------------------------- kds
-  // Dedicated kitchen displays have no login screen, so these are open to
-  // anyone who can reach the port. On the Electron side the equivalent grant is
-  // tied to a window id that a renderer cannot forge; over the LAN there is no
-  // such anchor yet. Closing this needs a device credential issued at KDS
-  // setup — tracked separately, because it changes the setup flow on every
-  // kitchen display.
-  'GET /kds/tickets': { allow: 'public', note: 'kiosk; see note above' },
-  'GET /kds/ticket-detail': { allow: 'public', note: 'kiosk' },
-  'GET /kds/cooker-mode': { allow: 'public', note: 'kiosk' },
-  'GET /kds/enabled-stations': {
+  // Kitchen displays have no PIN screen. They pair once with the till's
+  // pairing code (`POST /kds/pair`) and send the device token it returns;
+  // the api.ts token gate turns that into the `KDS` role. Kitchen staff
+  // signed in on a phone use their own session.
+  'POST /kds/pair': {
     allow: 'public',
-    note: 'kiosk; which prep stations the host is routing',
+    note: 'the kitchen pairing gate itself',
   },
+  'GET /kds/tickets': { allow: 'session' },
+  'GET /kds/ticket-detail': { allow: 'session' },
+  'GET /kds/cooker-mode': { allow: 'session' },
+  'GET /kds/enabled-stations': { allow: 'session' },
   'GET /kds/debug': { allow: 'public', note: 'kiosk reachability probe' },
-  'POST /kds/bump': { allow: 'public', note: 'kiosk write' },
-  'POST /kds/bump-item': { allow: 'public', note: 'kiosk write' },
-  'POST /kds/recall': { allow: 'public', note: 'kiosk write' },
-  'POST /kds/clear-done': { allow: 'public', note: 'kiosk write' },
-  'POST /kds/cooker-mode': { allow: 'public', note: 'kiosk write' },
+  'POST /kds/bump': { allow: 'session' },
+  'POST /kds/bump-item': { allow: 'session' },
+  'POST /kds/recall': { allow: 'session' },
+  'POST /kds/clear-done': { allow: 'session' },
+  'POST /kds/cooker-mode': { allow: ['ADMIN', 'KDS'] },
   'GET /kds/floor-orders': { allow: POS },
 
   // ------------------------------------------------------------------ auth
@@ -137,6 +136,8 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /settings/update': { allow: ADMIN },
 
   // ----------------------------------------------------------------- print
+  'GET /print/jobs': { allow: POS },
+  'POST /print/jobs/reprint': { allow: POS },
   'POST /print/test': { allow: ADMIN },
   'POST /print/test-profile': { allow: ADMIN },
   'POST /print/scan-network': { allow: ADMIN },

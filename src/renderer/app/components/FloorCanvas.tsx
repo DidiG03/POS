@@ -27,6 +27,7 @@ import {
   type FloorFitPadding,
 } from '../../utils/floorLayoutState';
 import { reportAppError } from '../../utils/reportAppError';
+import { floorLayoutProblem } from '@shared/floorLayoutCheck';
 import {
   peekLayout,
   readLayout,
@@ -710,12 +711,34 @@ export default function FloorCanvas({
     setDirty(true);
   }, []);
 
-  const handleAreaRename = useCallback((id: number, label: string) => {
-    setNodes((prev) =>
-      (prev || []).map((n) => (n.id === id ? { ...(n as any), label } : n)),
-    );
-    setDirty(true);
-  }, []);
+  const handleAreaRename = useCallback(
+    (id: number, label: string) => {
+      const renamed = (nodes || []).find((n) => n.id === id);
+      // Two tables with one name: refuse at the rename, not only at save.
+      if (
+        renamed &&
+        isFloorTableNode(renamed) &&
+        (nodes || []).some(
+          (n) =>
+            n.id !== id &&
+            isFloorTableNode(n) &&
+            String(n.label || '')
+              .trim()
+              .toLowerCase() === label.trim().toLowerCase(),
+        )
+      ) {
+        setSaveError(t('settingsFloor.duplicateLabel', { label }));
+        return false;
+      }
+      setSaveError(null);
+      setNodes((prev) =>
+        (prev || []).map((n) => (n.id === id ? { ...(n as any), label } : n)),
+      );
+      setDirty(true);
+      return true;
+    },
+    [nodes, t],
+  );
 
   const handleDelete = useCallback((id: number) => {
     setNodes((prev) => (prev || []).filter((n) => n.id !== id));
@@ -903,6 +926,18 @@ export default function FloorCanvas({
     if (noSeats) {
       setSaveError(
         t('settingsFloor.seatsMinOn', { label: noSeats.label || '' }),
+      );
+      return;
+    }
+    // Same rules the till enforces on save (`floorLayoutCheck.ts`).
+    const problem = floorLayoutProblem(nodes);
+    if (problem) {
+      setSaveError(
+        problem.code === 'DUPLICATE_LABEL'
+          ? t('settingsFloor.duplicateLabel', { label: problem.label })
+          : problem.code === 'BAD_SEATS'
+            ? t('settingsFloor.seatsMinOn', { label: problem.label })
+            : t('settingsFloor.labelRequired'),
       );
       return;
     }
@@ -1715,7 +1750,7 @@ function Inspector({
   onChange: (id: number, patch: Partial<FloorNode>) => void;
   onClose: () => void;
   onDelete: (id: number) => void;
-  onRelabel: (id: number, label: string) => void;
+  onRelabel: (id: number, label: string) => boolean | void;
 }) {
   const { t } = useTranslation();
   const [label, setLabel] = useState(node?.label ?? '');
@@ -1759,7 +1794,9 @@ function Inspector({
                 setLabel(node.label);
                 return;
               }
-              if (next !== node.label) onRelabel(node.id, next);
+              if (next !== node.label && onRelabel(node.id, next) === false) {
+                setLabel(node.label);
+              }
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur();

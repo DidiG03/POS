@@ -19,6 +19,24 @@ import type { VoidTargetLine } from '@shared/voidLine';
 import { withTableLock } from './core';
 import { applyTableOpenState } from './tableOpen';
 import { findLatestTicketLogForCurrentSession } from './tableSession';
+import { restoreDailyStockForLines } from './menuStock';
+import { storePlanBlocksTables } from './license';
+
+/**
+ * Kitchen stock taken at Send goes back when a sent line is voided before
+ * it is paid. Store tills keep their own on-hand restock (corrections).
+ */
+async function restoreStockForVoided(lines: any[]): Promise<void> {
+  if (storePlanBlocksTables()) return;
+  const sent = lines.filter(
+    (l) => l && l.fired !== false && l.staged !== true && l.paid !== true,
+  );
+  if (!sent.length) return;
+  await restoreDailyStockForLines(
+    prisma,
+    sent.map((l) => ({ sku: String(l.sku || ''), qty: Number(l.qty) })),
+  ).catch((e) => console.warn('[void] stock restore failed', e));
+}
 
 export type ItemVoidOutcome =
   /** The line is now voided on the bill. */
@@ -76,7 +94,7 @@ export async function voidTicketItem(input: {
   item: VoidTargetLine;
   idempotencyKey?: string | null;
   /** Filled with the line actually voided, for the audit message. */
-  report?: { qty?: number; name?: string };
+  report?: { qty?: number; name?: string; line?: Record<string, unknown> };
 }): Promise<ItemVoidOutcome> {
   const key = String(input.idempotencyKey || '').trim();
   return withTableLock(input.area, input.tableLabel, async () => {
@@ -95,6 +113,7 @@ export async function voidTicketItem(input: {
     if (input.report) {
       input.report.qty = Number(items[plan.index]?.qty) || 0;
       input.report.name = String(items[plan.index]?.name || '');
+      input.report.line = { ...(sitting!.itemsJson as any[])[plan.index] };
     }
     const written = await writeVoidedVersion(
       sitting,
@@ -102,7 +121,9 @@ export async function voidTicketItem(input: {
       (sitting as any).note ?? null,
       key,
     );
-    return written === 'duplicate' ? ('duplicate' as const) : ('ok' as const);
+    if (written === 'duplicate') return 'duplicate' as const;
+    await restoreStockForVoided([(sitting!.itemsJson as any[])[plan.index]]);
+    return 'ok' as const;
   });
 }
 
@@ -119,6 +140,8 @@ export async function voidWholeTicket(input: {
   reason?: string | null;
   idempotencyKey?: string | null;
   beforeClose?: () => Promise<void>;
+  /** Filled with the lines this void took off the bill. */
+  report?: { lines?: unknown[] };
 }): Promise<TicketVoidOutcome> {
   const key = String(input.idempotencyKey || '').trim();
   const reason = String(input.reason || '').trim();
@@ -137,6 +160,15 @@ export async function voidWholeTicket(input: {
         : marker;
       const written = await writeVoidedVersion(sitting, plan.items, note, key);
       if (written === 'duplicate') return 'duplicate' as const;
+      // Lines this void took off the bill (were live, now voided).
+      const before = Array.isArray(sitting.itemsJson)
+        ? (sitting.itemsJson as any[])
+        : [];
+      const taken = before.filter(
+        (l, i) => l?.voided !== true && (plan.items[i] as any)?.voided === true,
+      );
+      if (input.report) input.report.lines = taken;
+      await restoreStockForVoided(taken);
     }
     if (input.beforeClose) {
       await input.beforeClose().catch(() => undefined);

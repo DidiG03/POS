@@ -23,10 +23,18 @@ import { revokeSessionsForUser } from './services/ipcSession';
 import { resolveLanTokenSubject } from './services/lanAuth';
 import { coreServices } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
+import { classifyPrinterError } from './print';
+import {
+  approvalScope,
+  claimApprovalUse,
+  releaseApprovalUse,
+  voidLineIdentity,
+} from './services/approvalUse';
 import { applyOpenAtLogin, isOpenAtLoginEnabled } from './services/hostRuntime';
 import {
   dispatchTicket,
   fireDispatchTicket,
+  isTransientPrintError,
   paymentPrintWaitsForPrinters,
   pickActiveReceiptProfile,
   testPrintWithProfile,
@@ -62,6 +70,7 @@ import {
   broadcastLayoutChanged,
   broadcastSettingsChanged,
   broadcastUsersChanged,
+  broadcastPrinterEvent,
   ensureSseKeepAlive,
   sseCatchupIfMissed,
 } from './services/realtime';
@@ -74,6 +83,21 @@ import {
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
+import { checkFloorTable } from './services/floorTables';
+import { countLowStockMenuItems } from './services/menuStock';
+import {
+  checkPaymentOwnership,
+  notifyOwnerOfPayment,
+} from './services/paymentOwnership';
+import {
+  listStationPrintJobs,
+  reprintStationPrintJob,
+} from './services/printJobs';
+import { notifyOwnerOfVoid, printVoidSlip } from './services/voidFollowUp';
+import {
+  describeFloorLayoutProblem,
+  floorLayoutProblem,
+} from '@shared/floorLayoutCheck';
 import {
   closeTableAfterAcceptedPayment,
   closeTableAfterIdempotentPayment,
@@ -134,12 +158,11 @@ import {
 } from './services/fiscalReviews';
 import { lanLoginRequiresPairingCode } from './services/lanLoginPairing';
 import {
-  ADMIN_LOCK_MS,
+  ACCOUNT_LOCK_MS,
   IP_LOCK_MS,
-  clearLanLoginFailures,
-  lanLoginAdminLockedFor,
+  beginLanLoginAttempt,
   lanLoginIpLockedFor,
-  recordLanLoginFailure,
+  type LanLoginFailure,
 } from './services/lanLoginThrottle';
 import {
   listAdminTicketCounts,
@@ -219,6 +242,7 @@ import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
   decideTicketRequest,
+  markTicketRequestsApplied,
 } from './services/ticketRequests';
 import { stockLinesFromPayload } from './services/ticketLogWrite';
 import { compactTicketLogSession } from './services/ticketLogCompact';
@@ -495,6 +519,9 @@ function allowStoreCounterArea(
 // every documented LAN-API payload; backups & menu uploads use dedicated streaming routes.
 const MAX_JSON_BYTES = 1024 * 1024;
 
+/** How long a phone's kitchen-slip print waits for the printers' answer. */
+const LAN_STATION_PRINT_ANSWER_MS = 2_500;
+
 /** Past this, an oversized upload is cut off instead of drained. */
 const MAX_DRAIN_BYTES = 64 * 1024 * 1024;
 
@@ -645,31 +672,38 @@ function sendLoginLocked(
 }
 
 /**
- * Count a failed LAN login or pairing attempt, slow the answer down, and tell
- * admins when a device or an admin account gets locked out.
+ * Report a failed LAN login or pairing attempt (already counted by its
+ * reservation), slow the answer down, and tell admins when a device or an
+ * account gets locked out.
  */
 async function failLanLogin(
   remoteIp: string,
+  outcome: LanLoginFailure,
   opts: {
     reason: 'pin' | 'pairing' | 'user';
-    adminUserId?: number | null;
+    userId?: number | null;
     targetName?: string;
   },
 ): Promise<void> {
-  const outcome = recordLanLoginFailure(remoteIp, {
-    adminUserId: opts.adminUserId,
-  });
   logSecurityEvent('lan_login_failed', {
     remoteIp,
     reason: opts.reason,
-    adminUserId: opts.adminUserId ?? null,
+    userId: opts.userId ?? null,
     ipLocked: outcome.ipLocked,
-    adminLocked: outcome.adminLocked,
+    accountLocked: outcome.adminLocked,
+    deviceLocked: outcome.deviceLocked,
   });
-  if (outcome.ipLocked || outcome.adminLocked) {
-    const what = outcome.adminLocked
-      ? `LAN sign-in for admin "${opts.targetName || `#${opts.adminUserId}`}" is locked for ${Math.round(ADMIN_LOCK_MS / 60_000)} minutes`
-      : `LAN sign-in from ${remoteIp || 'an unknown device'} is locked for ${Math.round(IP_LOCK_MS / 60_000)} minutes`;
+  const who = opts.targetName || (opts.userId ? `#${opts.userId}` : '');
+  const what = outcome.adminLocked
+    ? `LAN sign-in for "${who}" is locked on every device for ${Math.round(ACCOUNT_LOCK_MS / 60_000)} minutes`
+    : outcome.deviceLocked
+      ? `LAN sign-in from ${remoteIp || 'an unknown device'} is locked for ${Math.round(IP_LOCK_MS / 60_000)} minutes`
+      : outcome.ipLocked
+        ? who
+          ? `LAN sign-in for "${who}" from ${remoteIp || 'an unknown device'} is locked for ${Math.round(IP_LOCK_MS / 60_000)} minutes`
+          : `LAN sign-in from ${remoteIp || 'an unknown device'} is locked for ${Math.round(IP_LOCK_MS / 60_000)} minutes`
+        : '';
+  if (what) {
     await notifyAdminsAndActor({
       message: `Unusual activity: repeated failed sign-ins over Wi-Fi. ${what}. Sign-in at the till itself still works.`,
       type: 'SECURITY',
@@ -768,6 +802,9 @@ async function issueApprovalToken(
       sub: ctx.userId,
       role: ctx.role,
       purpose: 'manager_approval',
+      // Two approvals in the same second must still be two tokens: each
+      // covers one action (see `approvalUse.ts`).
+      nonce: base64url(crypto.randomBytes(9)),
       iat: now,
       exp: now + ttlSeconds,
     }),
@@ -777,10 +814,18 @@ async function issueApprovalToken(
   return `${body}.${sig}`;
 }
 
+type ApprovalContext = {
+  userId: number;
+  role?: string;
+  /** Signature part: unique per token, the key its one use is claimed on. */
+  tokenId: string;
+  expiresAtMs: number;
+} | null;
+
 async function verifyApprovalToken(
   secret: string,
   token: string,
-): Promise<AuthContext> {
+): Promise<ApprovalContext> {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   const [h, p, s] = parts;
@@ -802,7 +847,50 @@ async function verifyApprovalToken(
   if (typeof payload.exp === 'number' && payload.exp < now) return null;
   // Only admins can approve.
   if (String(payload.role || '').toUpperCase() !== 'ADMIN') return null;
-  return { userId: payload.sub, role: payload.role };
+  return {
+    userId: payload.sub,
+    role: payload.role,
+    tokenId: s,
+    expiresAtMs:
+      typeof payload.exp === 'number'
+        ? payload.exp * 1000
+        : Date.now() + 5 * 60_000,
+  };
+}
+
+/**
+ * A verified approval by admin `adminId`, claimed for `scope` so the same
+ * token cannot approve a second action (see `approvalUse.ts`).
+ */
+async function claimLanApproval(
+  secret: string,
+  token: unknown,
+  adminId: unknown,
+  scope: string,
+  idempotencyKey?: string | null,
+  opts: { anyKeyInScope?: boolean } = {},
+): Promise<boolean> {
+  const tok = String(token || '').trim();
+  const aid = Number(adminId) || 0;
+  if (!tok || !aid) return false;
+  const approved = await verifyApprovalToken(secret, tok);
+  if (!approved || approved.userId !== aid) return false;
+  return claimApprovalUse({
+    tokenId: approved.tokenId,
+    scope,
+    idempotencyKey,
+    expiresAt: approved.expiresAtMs,
+    anyKeyInScope: opts.anyKeyInScope,
+  });
+}
+
+async function releaseLanApproval(
+  secret: string,
+  token: unknown,
+  scope: string,
+): Promise<void> {
+  const approved = await verifyApprovalToken(secret, String(token || ''));
+  if (approved) releaseApprovalUse(approved.tokenId, scope);
 }
 
 async function verifyToken(
@@ -834,6 +922,62 @@ async function verifyToken(
     ? Number(payload.iatMs)
     : Number(payload.iat) * 1000;
   return resolveLanTokenSubject({ userId, issuedAtMs });
+}
+
+/** How long a paired kitchen display stays paired. */
+const KDS_DEVICE_TTL_SECONDS = 365 * 24 * 60 * 60;
+
+/**
+ * Credential a kitchen display gets for entering the pairing code once.
+ *
+ * Kitchen displays have no PIN screen, so `/kds/*` used to be open to
+ * anything on the Wi-Fi: anyone could bump tickets off the board or change
+ * KDS settings. The token carries a fingerprint of the pairing code it was
+ * issued for, so changing the code in Admin un-pairs every display.
+ */
+function pairingFingerprint(secret: string, pairingCode: string): string {
+  return base64url(hmacSha256(secret, `kds:${pairingCode}`)).slice(0, 16);
+}
+
+function issueKdsDeviceToken(secret: string, pairingCode: string): string {
+  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64url(
+    JSON.stringify({
+      purpose: 'kds_device',
+      pc: pairingFingerprint(secret, pairingCode),
+      iat: now,
+      exp: now + KDS_DEVICE_TTL_SECONDS,
+    }),
+  );
+  const body = `${header}.${payload}`;
+  return `${body}.${base64url(hmacSha256(secret, body))}`;
+}
+
+async function verifyKdsDeviceToken(
+  secret: string,
+  token: string,
+): Promise<boolean> {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return false;
+  const [h, p, s] = parts;
+  const expected = base64url(hmacSha256(secret, `${h}.${p}`));
+  if (s.length !== expected.length) return false;
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(s)))
+    return false;
+  let payload: any;
+  try {
+    const b64 = p.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+    payload = JSON.parse(Buffer.from(b64 + pad, 'base64').toString('utf8'));
+  } catch {
+    return false;
+  }
+  if (String(payload?.purpose || '') !== 'kds_device') return false;
+  if (typeof payload.exp === 'number' && payload.exp < Date.now() / 1000)
+    return false;
+  const code = await getOrCreatePairingCode().catch(() => '');
+  return Boolean(code) && payload.pc === pairingFingerprint(secret, code);
 }
 
 /**
@@ -1311,20 +1455,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           if (!requirePairing) return send(res, 200, { ok: true }, corsOrigin);
           if (isLoopback(remoteIp))
             return send(res, 200, { ok: true }, corsOrigin);
-          const lockedFor = lanLoginIpLockedFor(remoteIp);
-          if (lockedFor > 0) return sendLoginLocked(res, lockedFor, corsOrigin);
-          const code = await getOrCreatePairingCode();
-          if (!pairingCodesMatch(pairingCode, code)) {
-            // Without a budget this route is a free oracle for the code.
-            await failLanLogin(remoteIp, { reason: 'pairing' });
-            return send(
-              res,
-              403,
-              { ok: false, error: 'pairing code required' },
-              corsOrigin,
-            );
+          const attempt = beginLanLoginAttempt(remoteIp, 0);
+          if (!attempt.ok)
+            return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+          try {
+            const code = await getOrCreatePairingCode();
+            if (!pairingCodesMatch(pairingCode, code)) {
+              // Without a budget this route is a free oracle for the code.
+              await failLanLogin(remoteIp, attempt.fail(), {
+                reason: 'pairing',
+              });
+              return send(
+                res,
+                403,
+                { ok: false, error: 'pairing code required' },
+                corsOrigin,
+              );
+            }
+            attempt.succeed();
+            return send(res, 200, { ok: true }, corsOrigin);
+          } finally {
+            attempt.release();
           }
-          return send(res, 200, { ok: true }, corsOrigin);
         } catch {
           if (!isLoopback(remoteIp))
             return send(
@@ -1342,7 +1494,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // and per admin account. Admin logins skip the pairing code, so
         // without this the admin PIN was the only barrier and it could be
         // walked in minutes. The till itself (loopback) is never throttled.
-        const { pin, userId, pairingCode } = await parseJson(req);
+        const body = await parseJson(req);
+        const { pin, userId, pairingCode } = body || {};
         const remoteIp = String((req.socket as any)?.remoteAddress || '');
         const loopback = isLoopback(remoteIp);
         if (!loopback) {
@@ -1388,22 +1541,24 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           ? { id: Number(userId), active: true }
           : { active: true };
         const user = await prisma.user.findFirst({ where });
+        // Clients that understand it get attempts left with a wrong PIN;
+        // older ones still expect the bare `null`.
+        const wantsStatus = Number(body?.v) >= 2;
         if (!user) {
-          if (!loopback) await failLanLogin(remoteIp, { reason: 'user' });
+          if (!loopback) {
+            const attempt = beginLanLoginAttempt(remoteIp, 0);
+            if (!attempt.ok)
+              return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+            await failLanLogin(remoteIp, attempt.fail(), { reason: 'user' });
+          }
           return send(res, 200, null, corsOrigin);
-        }
-        const adminUserId =
-          String(user.role || '').toUpperCase() === 'ADMIN'
-            ? Number(user.id)
-            : null;
-        if (!loopback && adminUserId) {
-          const lockedFor = lanLoginAdminLockedFor(adminUserId);
-          if (lockedFor > 0) return sendLoginLocked(res, lockedFor, corsOrigin);
         }
         // Pairing is checked BEFORE the PIN. Checking it after made the
         // answer differ between a wrong PIN (null) and a right PIN with no
         // code (403), so the PIN could be guessed without the code. Admin —
-        // the issuer of the code — is still exempt.
+        // the issuer of the code — is still exempt. A pairing miss counts
+        // against the device, not the account: a phone without the code
+        // must not be able to lock a waiter out everywhere.
         if (
           lanLoginRequiresPairingCode({
             requirePairing,
@@ -1411,30 +1566,65 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             role: user.role,
           })
         ) {
-          const code = await getOrCreatePairingCode();
-          if (!pairingCodesMatch(pairingCode, code)) {
-            await failLanLogin(remoteIp, { reason: 'pairing' });
+          const pairingAttempt = beginLanLoginAttempt(remoteIp, 0);
+          if (!pairingAttempt.ok)
+            return sendLoginLocked(res, pairingAttempt.lockedForMs, corsOrigin);
+          try {
+            const code = await getOrCreatePairingCode();
+            if (!pairingCodesMatch(pairingCode, code)) {
+              await failLanLogin(remoteIp, pairingAttempt.fail(), {
+                reason: 'pairing',
+              });
+              return send(
+                res,
+                403,
+                { error: 'pairing code required' },
+                corsOrigin,
+              );
+            }
+          } finally {
+            pairingAttempt.release();
+          }
+        }
+        // Reserved before the (slow) PIN check, so parallel guesses cannot
+        // all pass the lock check before the first miss is counted.
+        const attempt = loopback
+          ? null
+          : beginLanLoginAttempt(remoteIp, user.id);
+        if (attempt && !attempt.ok) {
+          logSecurityEvent('lan_login_while_locked', {
+            remoteIp,
+            userId: Number(user.id),
+          });
+          return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+        }
+        try {
+          const ok = await bcrypt.compare(normalizePin(pin), user.pinHash);
+          if (!ok) {
+            await recordWrongPinAttempt(user.id);
+            let attemptsLeft: number | undefined;
+            if (attempt?.ok) {
+              const outcome = attempt.fail();
+              attemptsLeft = outcome.attemptsLeft;
+              await failLanLogin(remoteIp, outcome, {
+                reason: 'pin',
+                userId: Number(user.id),
+                targetName: String(user.displayName || ''),
+              });
+            }
             return send(
               res,
-              403,
-              { error: 'pairing code required' },
+              200,
+              wantsStatus
+                ? { ok: false, code: 'WRONG_PIN', attemptsLeft }
+                : null,
               corsOrigin,
             );
           }
+          if (attempt?.ok) attempt.succeed();
+        } finally {
+          if (attempt?.ok) attempt.release();
         }
-        const ok = await bcrypt.compare(normalizePin(pin), user.pinHash);
-        if (!ok) {
-          await recordWrongPinAttempt(user.id);
-          if (!loopback) {
-            await failLanLogin(remoteIp, {
-              reason: 'pin',
-              adminUserId,
-              targetName: String(user.displayName || ''),
-            });
-          }
-          return send(res, 200, null, corsOrigin);
-        }
-        if (!loopback) clearLanLoginFailures(remoteIp);
         const token = await issueToken(secret, {
           userId: user.id,
           role: String(user.role || '').toUpperCase(),
@@ -1473,6 +1663,49 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         );
       }
 
+      // Pair a kitchen display: the till's pairing code buys a device token
+      // for the `/kds/*` routes. Always needs the code (kitchen displays
+      // have no PIN), except from the till itself. Misses are throttled
+      // like pairing on the login screen.
+      if (req.method === 'POST' && pathname === '/kds/pair') {
+        const remoteIp = String((req.socket as any)?.remoteAddress || '');
+        const { pairingCode } = (await parseJson(req)) || {};
+        const code = await getOrCreatePairingCode();
+        if (isLoopback(remoteIp)) {
+          return send(
+            res,
+            200,
+            { ok: true, token: issueKdsDeviceToken(secret, code) },
+            corsOrigin,
+          );
+        }
+        const attempt = beginLanLoginAttempt(remoteIp, 0);
+        if (!attempt.ok)
+          return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+        try {
+          if (!pairingCodesMatch(pairingCode, code)) {
+            await failLanLogin(remoteIp, attempt.fail(), {
+              reason: 'pairing',
+            });
+            return send(
+              res,
+              403,
+              { ok: false, error: 'pairing code required' },
+              corsOrigin,
+            );
+          }
+          attempt.succeed();
+          return send(
+            res,
+            200,
+            { ok: true, token: issueKdsDeviceToken(secret, code) },
+            corsOrigin,
+          );
+        } finally {
+          attempt.release();
+        }
+      }
+
       // All non-public endpoints require a valid token when serving LAN clients.
       // (Electron renderer uses IPC and never hits this for privileged operations.)
       const publicPaths = new Set<string>([
@@ -1481,15 +1714,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/auth/users',
         '/events/login',
         '/menu/categories',
-        // KDS should be usable on dedicated kitchen devices without login.
-        '/kds/tickets',
-        '/kds/ticket-detail',
-        '/kds/bump',
-        '/kds/bump-item',
-        '/kds/recall',
-        '/kds/clear-done',
-        '/kds/cooker-mode',
-        '/kds/enabled-stations',
+        // Kitchen displays sign in with a device token from `/kds/pair`
+        // (or a kitchen staff session); only the reachability probe and
+        // the pairing step itself are open.
+        '/kds/pair',
         '/kds/debug',
         '/shifts/open',
         '/settings',
@@ -1511,6 +1739,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (!isPublic) {
         const token = pickBearerToken(req, parsed);
         auth = token ? await verifyToken(secret, token) : null;
+        // A paired kitchen display (no staff account) on a kitchen route.
+        // The till itself (the KDS app on the same machine) needs no token.
+        if (
+          !auth &&
+          pathname.startsWith('/kds/') &&
+          ((token && (await verifyKdsDeviceToken(secret, token))) ||
+            isLoopback(String((req.socket as any)?.remoteAddress || '')))
+        ) {
+          auth = { userId: 0, role: 'KDS' };
+        }
         // Empty database: OneTap Admin has no JWT yet. Ignore leftover tokens
         // from a previous till so clock-only / role checks cannot 401/403 the
         // bootstrap admin create.
@@ -1605,7 +1843,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             (reservationsOnThisPlan && pathname.startsWith('/reservations')) ||
             pathname.startsWith('/layout') ||
             pathname.startsWith('/notifications'));
-        if (!allowed.has(pathname) && !isHostReservationsPath)
+        // Kitchen staff signed in on a phone use the kitchen board.
+        const isKitchenBoardPath =
+          pathname.startsWith('/kds/') && pathname !== '/kds/floor-orders';
+        if (
+          !allowed.has(pathname) &&
+          !isHostReservationsPath &&
+          !isKitchenBoardPath
+        )
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
       }
 
@@ -2324,6 +2569,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           return send(res, 200, [], corsOrigin);
         }
       }
+      // Kitchen slips that have not printed, and printing one again.
+      if (req.method === 'GET' && pathname === '/print/jobs') {
+        return send(res, 200, await listStationPrintJobs(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/print/jobs/reprint') {
+        const body = await parseJson(req);
+        const id = Number(body?.id || 0);
+        if (!id)
+          return send(res, 400, { ok: false, error: 'invalid id' }, corsOrigin);
+        return send(res, 200, await reprintStationPrintJob(id), corsOrigin);
+      }
       if (req.method === 'GET' && pathname === '/print/list') {
         return send(res, 200, await listHostSystemPrinters(), corsOrigin);
       }
@@ -2626,6 +2882,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
 
           let fiscalPayload = payload;
+          let payOwnerId: number | null = null;
           let fiscalPending:
             | { fiscalPending: true; fiscalMessage?: string }
             | undefined;
@@ -2635,19 +2892,53 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             // while the first attempt recorded it. Answer it like any other
             // replay instead of "table already paid".
             if (await replyIfAlreadyRecorded(true)) return;
+            const exists = await checkFloorTable(
+              payload.area,
+              payload.tableLabel,
+            );
+            if (!exists.ok) {
+              return send(
+                res,
+                409,
+                {
+                  ok: false,
+                  code: exists.code,
+                  error: exists.error,
+                  permanent: true,
+                },
+                corsOrigin,
+              );
+            }
             if (
               !(await tableIsOpenForPayment(payload.area, payload.tableLabel))
             ) {
               return send(res, 409, tableAlreadyPaidResult(), corsOrigin);
             }
+            // Owner, cashier or admin only (`paymentOwnership.ts`).
+            if (!isStoreCounterArea(payload.area)) {
+              const owns = await checkPaymentOwnership({
+                area: payload.area,
+                tableLabel: payload.tableLabel,
+                actorUserId: Number(auth?.userId || 0),
+                actorRole: auth?.role,
+              });
+              if (!owns.ok) return send(res, 409, owns, corsOrigin);
+              payOwnerId = owns.ownerId;
+            }
             const approvalRefused = await checkPaymentApproval({
               settings,
               meta: payload?.meta,
               actorIsAdmin: String(auth?.role || '').toUpperCase() === 'ADMIN',
-              approvalIsValid: async (token, adminId) => {
-                const approved = await verifyApprovalToken(secret, token);
-                return Boolean(approved && approved.userId === adminId);
-              },
+              // One approval, one bill (see `approvalUse.ts`).
+              approvalIsValid: (token, adminId) =>
+                claimLanApproval(
+                  secret,
+                  token,
+                  adminId,
+                  approvalScope('PAYMENT', payload.area, payload.tableLabel),
+                  printIdempotencyKey,
+                  { anyKeyInScope: true },
+                ),
             });
             if (approvalRefused) {
               return send(res, 409, approvalRefused, corsOrigin);
@@ -2774,6 +3065,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           const dispatchOpts = { persistRetryOnTransientFailure: true };
 
           if (paymentPrintWaitsForPrinters(payKind)) {
+            if (payKind === 'PAYMENT' && !isPaymentReprint(payload?.meta)) {
+              await notifyOwnerOfPayment({
+                area: payload.area,
+                tableLabel: payload.tableLabel,
+                ownerId: payOwnerId,
+                actorUserId: Number(auth?.userId || 0),
+              });
+            }
             const r = await dispatchTicket(fiscalPayload, settings as any, {
               ...dispatchOpts,
               skipIfPrinterDown: true,
@@ -2797,9 +3096,53 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // Kitchen Send must not sit on TCP to every printer before the
           // tablet gets 200. Claim the idempotency key, then print in the
           // background; a down printer retries via the station loop.
+          //
+          // The answer waits a moment for the printers, though: it used to
+          // be a bare OK even when every slip had failed, so the phone never
+          // showed "printer will retry". A printer still connecting after
+          // the budget is reported later through the printer event.
           await persistLanAudit('SENT');
-          fireDispatchTicket(fiscalPayload, settings as any, dispatchOpts);
-          return send(res, 200, { ok: true }, corsOrigin);
+          const printed = await new Promise<boolean | null>((resolve) => {
+            const budget = setTimeout(
+              () => resolve(null),
+              LAN_STATION_PRINT_ANSWER_MS,
+            );
+            fireDispatchTicket(
+              fiscalPayload,
+              settings as any,
+              dispatchOpts,
+              (result) => {
+                clearTimeout(budget);
+                // A transient failure went to the retry queue, which already
+                // told everyone (`printJobNotify.ts`); anything else is
+                // reported here.
+                if (!result.ok && !isTransientPrintError(result.firstError)) {
+                  const c = classifyPrinterError(result.firstError);
+                  broadcastPrinterEvent({
+                    level: 'error',
+                    kind: c.kind,
+                    message: c.userMessage,
+                    detail: result.firstError ?? null,
+                    at: Date.now(),
+                    context: {
+                      area: requested.area,
+                      tableLabel: requested.tableLabel,
+                      failures: result.failures,
+                    },
+                  });
+                }
+                resolve(result.ok);
+              },
+            );
+          });
+          return send(
+            res,
+            200,
+            printed === null
+              ? { ok: true, printPending: true }
+              : { ok: true, printed },
+            corsOrigin,
+          );
         };
 
         if (payKindHint === 'PAYMENT') {
@@ -2907,12 +3250,48 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           );
         }
 
+        // One approval, one void: the PIN a manager typed for this line
+        // cannot be replayed for the next one (see `approvalUse.ts`).
+        const voidScope = approvalScope(
+          'VOID_ITEM',
+          String(area),
+          String(tableLabel),
+          voidLineIdentity(item),
+        );
+        const usesApproval =
+          auth?.role !== 'ADMIN' && Boolean(approvedByAdminToken);
+        if (
+          usesApproval &&
+          !(await claimLanApproval(
+            secret,
+            approvedByAdminToken,
+            approvedByAdminId,
+            voidScope,
+            voidKey ? String(voidKey) : null,
+          ))
+        ) {
+          return send(
+            res,
+            403,
+            {
+              error: 'admin_approval_required',
+              code: 'APPROVAL_ALREADY_USED',
+              message:
+                'That manager approval was already used. Ask a manager to approve this void.',
+            },
+            corsOrigin,
+          );
+        }
         // Settled money is beyond a waiter's reach — only an admin
         // correction can undo a paid (and filed) line. Refuse before the
         // audit notification, so the log never claims a void that the
         // ticket did not take.
         // Locked, versioned and idempotent: see `voidTicketItem`.
-        const voidReport: { qty?: number; name?: string } = {};
+        const voidReport: {
+          qty?: number;
+          name?: string;
+          line?: Record<string, unknown>;
+        } = {};
         const voided = await voidTicketItem({
           area: String(area),
           tableLabel: String(tableLabel),
@@ -2920,6 +3299,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           idempotencyKey: voidKey ? String(voidKey) : null,
           report: voidReport,
         });
+        if ((voided === 'paid' || voided === 'not-found') && usesApproval) {
+          await releaseLanApproval(secret, approvedByAdminToken, voidScope);
+        }
         if (voided === 'paid') {
           return send(
             res,
@@ -2942,6 +3324,21 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           message,
           actorUserId: Number(userId),
         });
+        await notifyOwnerOfVoid({
+          area: String(area),
+          tableLabel: String(tableLabel),
+          actorUserId: Number(userId),
+          message,
+        });
+        if (voidReport.line) {
+          void printVoidSlip({
+            area: String(area),
+            tableLabel: String(tableLabel),
+            lines: [voidReport.line],
+            actorUserId: Number(userId),
+            whole: false,
+          });
+        }
         await applyKdsVoidItem({
           userId: Number(userId),
           area: String(area),
@@ -3100,11 +3497,41 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
         }
 
+        // One approval, one void (see `approvalUse.ts`).
+        if (
+          auth?.role !== 'ADMIN' &&
+          approvedByAdminToken &&
+          !(await claimLanApproval(
+            secret,
+            approvedByAdminToken,
+            approvedByAdminId,
+            approvalScope('VOID_TICKET', String(area), String(tableLabel)),
+            voidKey ? String(voidKey) : null,
+          ))
+        ) {
+          return send(
+            res,
+            403,
+            {
+              error: 'admin_approval_required',
+              code: 'APPROVAL_ALREADY_USED',
+              message:
+                'That manager approval was already used. Ask a manager to approve this void.',
+            },
+            corsOrigin,
+          );
+        }
         const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
         await notifyAdminsAndActor({
           message,
           actorUserId: Number(userId),
         });
+        // Read before the void: it closes the sitting.
+        const ownerBeforeVoid = await getCurrentSessionOwnerId(
+          String(area),
+          String(tableLabel),
+        ).catch(() => null);
+        const ticketVoidReport: { lines?: unknown[] } = {};
         // Bill, fiscal check, KDS and close in one table lock, so no Send
         // can land between the void and the close (see `voidWholeTicket`).
         const voided = await voidWholeTicket({
@@ -3112,6 +3539,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           tableLabel: String(tableLabel),
           reason: reason ? String(reason) : null,
           idempotencyKey: voidKey ? String(voidKey) : null,
+          report: ticketVoidReport,
           beforeClose: async () => {
             await flagVoidAfterFiscalization({
               area: String(area),
@@ -3138,6 +3566,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             },
             corsOrigin,
           );
+        }
+        if (voided === 'ok') {
+          await notifyOwnerOfVoid({
+            area: String(area),
+            tableLabel: String(tableLabel),
+            actorUserId: Number(userId),
+            message,
+            ownerId: ownerBeforeVoid,
+          });
+          void printVoidSlip({
+            area: String(area),
+            tableLabel: String(tableLabel),
+            lines: ticketVoidReport.lines || [],
+            actorUserId: Number(userId),
+            whole: true,
+            reason: reason ? String(reason) : null,
+          });
         }
         try {
           broadcastTicketsChanged({
@@ -3268,14 +3713,22 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'POST' && pathname === '/requests/mark-applied') {
         const body = await parseJson(req);
-        const ids = Array.isArray(body?.ids)
-          ? body.ids.map((x: any) => Number(x))
-          : [];
+        const ids = Array.isArray(body?.ids) ? body.ids : [];
         if (!ids.length) return send(res, 400, 'invalid', corsOrigin);
-        await prisma.ticketRequest.updateMany({
-          where: { id: { in: ids } },
-          data: { status: 'APPLIED' as any },
+        // Owner (or admin) only: see `markTicketRequestsApplied`.
+        const changed = await markTicketRequestsApplied({
+          ids,
+          actorUserId: Number(auth?.userId || 0),
+          actorIsAdmin: auth?.role === 'ADMIN',
         });
+        if (!changed) {
+          return send(
+            res,
+            403,
+            { ok: false, error: 'Only the table owner can add these items.' },
+            corsOrigin,
+          );
+        }
         return send(res, 200, true, corsOrigin);
       }
 
@@ -3288,6 +3741,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         if (!areaTrim || !labelTrim)
           return send(res, 400, 'invalid', corsOrigin);
         if (!allowStoreCounterArea(areaTrim, res, corsOrigin)) return;
+        if (open) {
+          // Only tables on the floor plan can be opened (`floorTables.ts`).
+          const exists = await checkFloorTable(areaTrim, labelTrim);
+          if (!exists.ok) {
+            return send(
+              res,
+              400,
+              {
+                ok: false,
+                error: exists.error,
+                code: exists.code,
+                permanent: true,
+              },
+              corsOrigin,
+            );
+          }
+        }
         const ok = await setTableOpenWithSideEffects(
           areaTrim,
           labelTrim,
@@ -3407,6 +3877,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // enforced higher up the stack; we just verify the role here.
         if (auth && auth.role !== 'ADMIN')
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
+        const problem = floorLayoutProblem(nodes);
+        if (problem) {
+          return send(
+            res,
+            400,
+            {
+              ok: false,
+              code: problem.code,
+              error: describeFloorLayoutProblem(problem),
+            },
+            corsOrigin,
+          );
+        }
         await prisma.syncState.upsert({
           where: { key: globalLayoutKey(String(area)) },
           create: {
@@ -3825,12 +4308,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'GET' && pathname === '/admin/overview') {
         const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
         const todayEnd = new Date(new Date().setHours(23, 59, 59, 999));
-        const [users, openShifts, openTables, sales] = await Promise.all([
-          prisma.user.count({ where: { active: true } }),
-          prisma.dayShift.count({ where: { closedAt: null } }),
-          coreServices.countOpenTables().catch(() => 0),
-          fetchPaidSales({ from: todayStart, to: todayEnd }),
-        ]);
+        const [users, openShifts, openTables, sales, lowStockItems] =
+          await Promise.all([
+            prisma.user.count({ where: { active: true } }),
+            prisma.dayShift.count({ where: { closedAt: null } }),
+            coreServices.countOpenTables().catch(() => 0),
+            fetchPaidSales({ from: todayStart, to: todayEnd }),
+            countLowStockMenuItems(prisma),
+          ]);
         const settings = await coreServices.readSettings();
         const fiscalVatEnabled = isVatEnabledFromSettings(settings);
         const { revenueNet: revenueTodayNet, revenueVat: revenueTodayVat } =
@@ -3842,12 +4327,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             activeUsers: users,
             openShifts,
             openOrders: openTables,
-            lowStockItems: 0,
+            lowStockItems,
             queuedPrintJobs: 0,
             lastMenuSync: null,
             lastStaffSync: null,
             printerIp: process.env.PRINTER_IP ?? null,
-            appVersion: process.env.npm_package_version || '0.1.0',
+            appVersion: app.getVersion(),
             revenueTodayNet,
             revenueTodayVat,
             fiscalEnabled: fiscalVatEnabled,
@@ -3928,12 +4413,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         const aid = Number(body?.approvedByAdminId) || 0;
         const tok = String(body?.approvedByAdminToken || '').trim();
-        const approved = tok ? await verifyApprovalToken(secret, tok) : null;
         if (
-          !aid ||
-          !approved ||
-          approved.userId !== aid ||
-          String((approved as any).role || '').toUpperCase() !== 'ADMIN'
+          !(await claimLanApproval(
+            secret,
+            tok,
+            aid,
+            approvalScope('CORRECT_SALE', Number(body?.orderId), kind),
+            String(body?.idempotencyKey || ''),
+            { anyKeyInScope: true },
+          ))
         ) {
           return send(
             res,

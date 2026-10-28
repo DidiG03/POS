@@ -1004,6 +1004,8 @@ export interface KdsTicketDetailDTO {
 
 export interface ApiKds {
   openWindow(): Promise<boolean>;
+  /** LAN kitchen displays only: pair with the till's pairing code. */
+  pair?(pairingCode: string): Promise<boolean>;
   listTickets(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
     status: 'NEW' | 'DONE';
@@ -1674,6 +1676,24 @@ export interface ApiPrint {
   listRetries(): Promise<PendingPrintRetryDTO[]>;
   /** Force-fail a row so it stops retrying. */
   cancelRetry(id: number): Promise<{ ok: boolean; error?: string }>;
+  /** Kitchen slips still waiting for, or given up on by, their printer. */
+  listStationJobs?(): Promise<StationPrintJobDTO[]>;
+  /** Print one of those again now, marked REPRINT. */
+  reprintStationJob?(id: number): Promise<{ ok: boolean; error?: string }>;
+}
+
+export interface StationPrintJobDTO {
+  id: number;
+  status: 'RETRY' | 'FAILED';
+  attempts: number;
+  lastError: string | null;
+  printerName: string | null;
+  area: string;
+  tableLabel: string;
+  items: Array<{ name: string; qty: number }>;
+  voidSlip: boolean;
+  sentAt: string;
+  userId: number | null;
 }
 
 export interface ApiTickets {

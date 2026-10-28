@@ -65,6 +65,11 @@ vi.mock('./tableOccupancy', () => ({
   },
 }));
 
+const floorCheck = vi.fn(async (..._a: any[]) => ({ ok: true }) as any);
+vi.mock('./floorTables', () => ({
+  checkFloorTable: (...a: any[]) => floorCheck(...a),
+}));
+
 vi.mock('@db/client', () => ({
   prisma: {
     user: {
@@ -105,7 +110,7 @@ import {
   transferTableLocal,
   TRANSFERRED_OUT_TAG_PREFIX,
 } from './tableTransfer';
-import { withTableLock, withTablesLocked } from './core';
+import { coreServices, withTableLock, withTablesLocked } from './core';
 import { DestinationTableOccupiedError } from './tableOccupancy';
 
 describe('parseTransferTag', () => {
@@ -618,5 +623,91 @@ describe('withTablesLocked', () => {
         async () => 'done',
       ),
     ).resolves.toBe('done');
+  });
+});
+
+describe('transferTableLocal — QA round 2', () => {
+  const ACTOR = { id: 1, role: 'WAITER', active: true, displayName: 'Alice' };
+  const DREN = { id: 9, role: 'WAITER', active: true, displayName: 'Dren' };
+  const CHEF = { id: 10, role: 'CHEF', active: true, displayName: 'Chef' };
+  const LAST = {
+    id: 99,
+    userId: ACTOR.id,
+    area: 'Sallon',
+    tableLabel: 'T1',
+    note: '',
+    itemsJson: [],
+    covers: 2,
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    userFindUnique.mockImplementation(({ where }: any) =>
+      Promise.resolve(
+        [ACTOR, DREN, CHEF].find((u) => u.id === where.id) ?? null,
+      ),
+    );
+    ticketLogFindFirst.mockResolvedValue(null);
+    sessionTicket.mockResolvedValue(LAST);
+    dayShiftFindFirst.mockResolvedValue(null);
+    floorCheck.mockResolvedValue({ ok: true });
+  });
+
+  it('refuses a transfer with no destination instead of answering OK', async () => {
+    const r = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      actorUserId: ACTOR.id,
+    });
+    expect(r).toMatchObject({ ok: false });
+    expect(String((r as any).error)).toMatch(
+      /pick another table or another waiter/i,
+    );
+  });
+
+  it('refuses a made-up destination table', async () => {
+    floorCheck.mockResolvedValue({
+      ok: false,
+      code: 'UNKNOWN_TABLE',
+      error: 'There is no table "X1" in Nowhere.',
+    });
+    const r = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toArea: 'Nowhere',
+      toLabel: 'X1',
+      actorUserId: ACTOR.id,
+    });
+    expect(r).toMatchObject({
+      ok: false,
+      error: 'There is no table "X1" in Nowhere.',
+    });
+    expect(ticketLogCreate).not.toHaveBeenCalled();
+  });
+
+  it('without clock-in/out, any signed-in waiter can take the table', async () => {
+    const spy = vi
+      .spyOn(coreServices, 'readSettings')
+      .mockResolvedValue({ preferences: { captureClockInOut: false } } as any);
+    ticketLogCreate.mockResolvedValue({ id: 100 });
+    const r = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toUserId: DREN.id,
+      actorUserId: ACTOR.id,
+    });
+    expect(String((r as any).error || '')).not.toMatch(/not on shift/i);
+    expect(dayShiftFindFirst).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('never hands a table to a kitchen role', async () => {
+    const r = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toUserId: CHEF.id,
+      actorUserId: ACTOR.id,
+    });
+    expect(r).toMatchObject({ ok: false });
+    expect(String((r as any).error)).toMatch(/cannot take tables/);
   });
 });

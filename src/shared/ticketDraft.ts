@@ -30,6 +30,22 @@ export type TicketDraft = {
 /** Unsent cart survives leave/refresh only this long, then it is empty. */
 export const TICKET_DRAFT_TTL_MS = 10_000;
 
+/**
+ * On a waiter's own phone the unsent cart lives as long as the sign-in
+ * (12 h). Android kills a backgrounded app whenever it likes, and a 10 s
+ * window meant a half-taken order was gone by the time the waiter looked
+ * at the phone again. Shared tills keep the short window: the next person
+ * at the counter must not inherit someone else's cart.
+ */
+export const NATIVE_TICKET_DRAFT_TTL_MS = 12 * 60 * 60 * 1000;
+
+let draftTtlMs = TICKET_DRAFT_TTL_MS;
+
+/** Set once at startup (phones); tests reset it. */
+export function setTicketDraftTtlMs(ms: number): void {
+  draftTtlMs = Number.isFinite(ms) && ms > 0 ? ms : TICKET_DRAFT_TTL_MS;
+}
+
 export function isTicketDraftFresh(
   savedAt: number | null | undefined,
   now = Date.now(),
@@ -37,7 +53,7 @@ export function isTicketDraftFresh(
   const at = Number(savedAt);
   if (!Number.isFinite(at) || at <= 0) return false;
   const age = now - at;
-  return age >= 0 && age < TICKET_DRAFT_TTL_MS;
+  return age >= 0 && age < draftTtlMs;
 }
 
 /** Sent lines are the live bill — they must not expire with the unsent-draft timer. */

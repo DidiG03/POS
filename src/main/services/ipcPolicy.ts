@@ -200,6 +200,8 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
 
   // ---------------------------------------------------------------- print
   'print:cancelRetry': { allow: ADMIN },
+  'print:listStationJobs': { allow: POS },
+  'print:reprintStationJob': { allow: POS },
   'print:listRetries': { allow: ADMIN },
   'printer:list': { allow: ADMIN },
   'printer:scanNetwork': { allow: ADMIN },

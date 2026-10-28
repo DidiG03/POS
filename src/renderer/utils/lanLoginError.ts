@@ -92,7 +92,26 @@ export function humanLoginDetail(error: unknown): string {
   return withStatus.slice(0, 180);
 }
 
-type LoginCopy = (key: string, opts?: { detail?: string }) => string;
+type LoginCopy = (
+  key: string,
+  opts?: { detail?: string; count?: number; minutes?: string },
+) => string;
+
+/** Wrong-PIN attempts left on this device, when the till said. */
+export function loginAttemptsLeft(error: unknown): number | null {
+  const n = Number((error as { attemptsLeft?: unknown } | null)?.attemptsLeft);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** Toast title for a login failure ("Wrong PIN", "Sign-in locked"). */
+export function lanLoginTitleKey(
+  error: unknown,
+): 'login.wrongPinTitle' | 'login.lockedTitle' | 'login.failedTitle' {
+  const kind = classifyLanLoginError(error);
+  if (kind === 'invalid_pin') return 'login.wrongPinTitle';
+  if (kind === 'locked') return 'login.lockedTitle';
+  return 'login.failedTitle';
+}
 
 /** User-facing login copy. Known cases get a fixed sentence; anything else
  *  still shows the underlying reason so the error banner is never empty. */
@@ -100,8 +119,20 @@ export function lanLoginUserMessage(error: unknown, t: LoginCopy): string {
   const kind = classifyLanLoginError(error);
   if (kind === 'host') return t('login.hostUnavailable');
   if (kind === 'pairing') return t('login.pairingRequired');
-  if (kind === 'invalid_pin') return t('login.invalidPin');
-  if (kind === 'locked') return t('login.tooManyAttempts');
+  if (kind === 'invalid_pin') {
+    const left = loginAttemptsLeft(error);
+    return left != null && left <= 5
+      ? t('login.invalidPinAttemptsLeft', { count: left })
+      : t('login.invalidPin');
+  }
+  if (kind === 'locked') {
+    const ms = Number((error as { retryAfterMs?: unknown })?.retryAfterMs);
+    return Number.isFinite(ms) && ms > 0
+      ? t('login.tooManyAttemptsFor', {
+          minutes: String(Math.max(1, Math.ceil(ms / 60_000))),
+        })
+      : t('login.tooManyAttempts');
+  }
   const detail = humanLoginDetail(error);
   const lower = detail.toLowerCase();
   if (/lan disabled/.test(lower)) return t('login.lanDisabled');

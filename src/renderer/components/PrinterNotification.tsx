@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from '../stores/toasts';
 
 type PrinterEvent = {
@@ -10,7 +11,19 @@ type PrinterEvent = {
   context?: any;
 };
 
+/** Toast title for a printer event; a recovery is good news, not a problem. */
+export function printerEventTitleKey(d: PrinterEvent): string | null {
+  if (d.kind === 'fiscal') return null;
+  if (d.kind === 'recovered' || d.level === 'info') return 'printer.backTitle';
+  if (d.kind === 'receipt') return 'printer.receiptTitle';
+  if (d.kind) return 'printer.problemTitle';
+  return 'printer.title';
+}
+
 export function PrinterNotification() {
+  const { t } = useTranslation();
+  const tRef = useRef(t);
+  tRef.current = t;
   const lastKeyRef = useRef<string>('');
   const lastAtRef = useRef<number>(0);
 
@@ -34,15 +47,9 @@ export function PrinterNotification() {
       lastAtRef.current = at;
 
       if (!message) return;
-      const title =
-        d.kind === 'fiscal'
-          ? 'Fiskalizimi'
-          : d.kind === 'receipt'
-            ? 'Receipt'
-            : d.kind
-              ? 'Printer problem'
-              : 'Printer';
-      if (level === 'info') toast.info(message, { title, detail });
+      const titleKey = printerEventTitleKey(d);
+      const title = titleKey ? tRef.current(titleKey) : 'Fiskalizimi';
+      if (level === 'info') toast.success(message, { title, detail });
       else if (level === 'warn') toast.warn(message, { title, detail });
       else toast.error(message, { title, detail });
     };

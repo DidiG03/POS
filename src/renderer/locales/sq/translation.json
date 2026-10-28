@@ -278,7 +278,18 @@
     "requestNumber": "{{area}} {{table}} – Kërkesa #{{id}}",
     "syncIndicatorOffline": "Jashtë linje",
     "syncIndicatorSyncing": "Sinkronizim ({{count}})",
-    "syncIndicatorOnline": "Në linje"
+    "syncIndicatorOnline": "Në linje",
+    "actionNeeded": "Kërkon përgjigjen tuaj",
+    "printerJobs": "Punët e printerit",
+    "printerJobVoid": "fletë anulimi",
+    "printerJobPrinter": "printeri",
+    "printerJobWaiting": "Ende pa printuar: në pritje të printerit {{printer}}.",
+    "printerJobFailed": "Nuk u printua te printeri {{printer}}.",
+    "printerJobReprint": "Riprinto",
+    "printerJobReprintFailed": "Nuk u riprintua. Kontrolloni printerin dhe provoni përsëri.",
+    "tillUnreachable": "Arka nuk arrihet. Kontrolloni që është e ndezur dhe në të njëjtin Wi-Fi.",
+    "queuedWaiting_one": "{{count}} porosi ose pagesë është ruajtur në këtë telefon dhe do dërgohet kur arka të kthehet.",
+    "queuedWaiting_other": "{{count}} porosi ose pagesa janë ruajtur në këtë telefon dhe do dërgohen kur arka të kthehet."
   },
   "adminLayout": {
     "panelTitle": "Admin",
@@ -360,7 +371,12 @@
     "startShiftTitle": "Të nisësh turnin për {{name}}?",
     "shiftReopenBlocked": "Turni është mbyllur. Mund të hysh përsëri pas {{when}}.",
     "resumeShiftBody": "Je i futur, por nuk ka turn të hapur. Nise turnin për të vazhduar punën në sallë.",
-    "failedLoadOccupied": "Duke ngarkuar tavolinat e zëna… (rrjet i ngadaltë/jashtë linje). Duke riprovuar…"
+    "failedLoadOccupied": "Duke ngarkuar tavolinat e zëna… (rrjet i ngadaltë/jashtë linje). Duke riprovuar…",
+    "invalidPinAttemptsLeft": "PIN i pasaktë. Edhe {{count}} përpjekje në këtë pajisje para se hyrja të bllokohet.",
+    "tooManyAttemptsFor": "Shumë PIN të gabuar në këtë pajisje. Hyrja është e bllokuar për rreth {{minutes}} min, ose hyni te arka.",
+    "wrongPinTitle": "PIN i gabuar",
+    "lockedTitle": "Hyrja e bllokuar",
+    "failedTitle": "Hyrja dështoi"
   },
   "routes": {
     "loading": "Duke u ngarkuar…",
@@ -435,7 +451,11 @@
   "kds": {
     "bumpFailed": "Bileta nuk u hoq. Kontrollo lidhjen me POS.",
     "recallFailed": "Nuk u kthye bileta.",
-    "loadFailed": "Nuk u ngarkuan biletat e kuzhinës."
+    "loadFailed": "Nuk u ngarkuan biletat e kuzhinës.",
+    "pairTitle": "Lidh këtë ekran kuzhine",
+    "pairHint": "Shkruani kodin e lidhjes që shfaqet te OneTap Admin → Cilësimet në arkë.",
+    "pairSubmit": "Lidh ekranin",
+    "pairWrongCode": "Kodi i lidhjes nuk është i saktë. Kontrollojeni te Admin → Cilësimet."
   },
   "tables": {
     "loading": "Duke ngarkuar tavolinat…",
@@ -807,7 +827,9 @@
     "startHere": "Fillo këtu — kjo kuti është salla. Tavolinat kapen te rrjeta. Përdor Shiko planin për pamjen e kamarierëve.",
     "noLayoutYet": "Nuk ka plan ende — kërkoji një admin ta ngrerë këtë zonë te Cilësimet → Zonat e tavolinave.",
     "seatsMin": "Një tavolinë duhet të ketë të paktën 1 vend.",
-    "seatsMinOn": "Tavolina {{label}} duhet të ketë të paktën 1 vend."
+    "seatsMinOn": "Tavolina {{label}} duhet të ketë të paktën 1 vend.",
+    "duplicateLabel": "Një tavolinë tjetër në këtë zonë quhet tashmë {{label}}. Jepini secilës tavolinë emrin e vet.",
+    "labelRequired": "Çdo tavolinë duhet të ketë një emër."
   },
   "fiscal": {
     "loadFailed": "Cilësimet e fiskalizimit nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
@@ -1198,9 +1220,15 @@
     "clearTicketConfirmTitle": "Të pastrohet kjo porosi?",
     "clearTicketConfirmBody": "Të gjithë artikujt e kësaj porosie do të hiqen.",
     "chooseTableFirst": "Zgjidh një tavolinë",
-    "payFullSplit": "Paguaj të gjithë faturën • {{amount}} ({{guests}} × {{per}})",
+    "payFullSplit": "Paguaj të gjithë faturën • {{amount}} (ndarja: {{shares}})",
     "requestPendingHint": "Kërkesa u dërgua. Në pritje që kamarieri i tavolinës ta pranojë.",
-    "requestAddHint": "Kjo tavolinë i përket një kamarieri tjetër. Shto artikuj, pastaj dërgoji një kërkesë."
+    "requestAddHint": "Kjo tavolinë i përket një kamarieri tjetër. Shto artikuj, pastaj dërgoji një kërkesë.",
+    "soldOutBadge": "Mbaroi",
+    "inactiveBadge": "Jo në dispozicion",
+    "backLeaveUnsent_one": "{{count}} artikull nuk është dërguar ende. Të dilni nga kjo porosi? Mbetet e ruajtur në këtë telefon.",
+    "backLeaveUnsent_other": "{{count}} artikuj nuk janë dërguar ende. Të dilni nga kjo porosi? Mbeten të ruajtura në këtë telefon.",
+    "sendSavedOnPhone": "Arka nuk u përgjigj. Porosia është ruajtur në këtë telefon dhe do dërgohet kur arka të kthehet.",
+    "sendSavedOnPhoneTitle": "Do dërgohet kur të ketë lidhje"
   },
   "reservations": {
     "timeRequired": "Zgjidhni orën e rezervimit.",
@@ -1512,7 +1540,11 @@
       "CLEANER": "Pastrues"
     },
     "adminPinTooCommon": "Ky PIN është shumë i zakonshëm. Zgjidh një që nuk është 0000, 1111, 1234, 9999 apo i ngjashëm.",
-    "adminPinRuleHint": "4–6 shifra. PIN-et e zakonshme si 0000, 1111 ose 1234 nuk lejohen."
+    "adminPinRuleHint": "4–6 shifra. PIN-et e zakonshme si 0000, 1111 ose 1234 nuk lejohen.",
+    "vatOff": "Nuk ndiqet",
+    "vatOffHint": "Raportimi i TVSH-së është i fikur te Cilësimet, ndaj TVSH-ja nuk ndahet nga shitjet.",
+    "lowStockItems": "Artikuj me stok të ulët",
+    "staffPinRuleHint": "1–6 shkronja ose shifra (pa dallim të madhe/vogël). PIN-et e adminit duhet të jenë 4–6 shifra dhe jo të zakonshme si 1234."
   },
   "stockPanel": {
     "title": "Disponueshmëria e stokut",
@@ -1890,5 +1922,11 @@
     "setupHint": "Përdore një herë në çdo tabletë. Ruan IP-në, portet dhe kodin e çiftimit në shfletues, që stafi të mos i rishkruajë pas rinisjes së POS ose rihapjes së aplikacionit (i njëjti pajisje & shfletues).",
     "setupHintStore": "Përdore një herë në çdo arkë ose tabletë shtesë. Ruan IP-në, portet dhe kodin e çiftimit në shfletues, që stafi të mos i rishkruajë pas rinisjes së POS ose rihapjes së aplikacionit (i njëjti pajisje & shfletues).",
     "noWifi": "Nuk u gjet IP Wi‑Fi. Lidhe këtë Mac me Wi‑Fi ose Ethernet dhe rihape këtë faqe."
+  },
+  "printer": {
+    "title": "Printeri",
+    "problemTitle": "Problem me printerin",
+    "receiptTitle": "Fatura",
+    "backTitle": "Printeri u lidh përsëri"
   }
 }

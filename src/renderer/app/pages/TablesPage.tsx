@@ -11,6 +11,7 @@ import { useTicketStore } from '../../stores/ticket';
 import { tableKey } from '@shared/utils/tableKey';
 import { formatMoneyCompact } from '../../utils/format';
 import { PageSpinner } from '../../components/PageSpinner';
+import { Button } from '../../components/ui/Button';
 import { pickConfiguredArea, saneTableAreas } from '@shared/tableAreas';
 import FloorCanvas from '../components/FloorCanvas';
 import {
@@ -170,6 +171,7 @@ export default function TablesPage() {
     );
   });
   const [openLoadError, setOpenLoadError] = useState<string | null>(null);
+  const [floorStuck, setFloorStuck] = useState(false);
   const [mergeGroups, setMergeGroups] = useState<TableMergeGroup[]>([]);
 
   const reloadMerges = useCallback(async () => {
@@ -192,6 +194,16 @@ export default function TablesPage() {
   useEffect(() => {
     void reloadMerges();
   }, [reloadMerges]);
+
+  // Offer a retry once the floor has been loading for a while.
+  useEffect(() => {
+    if (areasReady || openLoaded) {
+      setFloorStuck(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setFloorStuck(true), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [areasReady, openLoaded]);
 
   useEffect(() => {
     if (!traceArea) return;
@@ -765,7 +777,23 @@ export default function TablesPage() {
     : { left: 0, top: 0 };
 
   if (!areasReady && !openLoaded) {
-    return <PageSpinner message={openLoadError || t('tables.loading')} />;
+    // A till that does not answer used to leave this spinner up for good.
+    return (
+      <PageSpinner
+        message={
+          floorStuck
+            ? t('layout.tillUnreachable')
+            : openLoadError || t('tables.loading')
+        }
+        spinner={!floorStuck}
+      >
+        {floorStuck ? (
+          <Button variant="primary" onClick={() => window.location.reload()}>
+            {t('common.retry')}
+          </Button>
+        ) : null}
+      </PageSpinner>
+    );
   }
 
   return (

@@ -1,20 +1,24 @@
-import { BrowserWindow } from 'electron';
-
 import { prisma } from '@db/client';
 
 import { coreServices } from './core';
 import {
   RETRY_MAX_ATTEMPTS,
   dispatchTicket,
-  enqueuePrintRetry,
+  isStationSlip,
   isTransientPrintError,
   loadDuePrintRetries,
   markPrinterResult,
   nextPendingRetryAt,
   pickPrinterProfile,
+  printRetryPlan,
   printWithProfile,
   setRetryWakeup,
 } from './printDispatcher';
+import { notifyStationPrintFailed } from './printJobNotify';
+import { broadcastPrinterEvent } from './realtime';
+
+/** A kitchen slip printed this long after it was sent says so on top. */
+export const LATE_SLIP_AFTER_MS = 60_000;
 
 /**
  * Background job processor for the local PrintJob table. Two distinct
@@ -76,16 +80,6 @@ async function markPrintJobSent(id: number): Promise<boolean> {
   return false;
 }
 
-function broadcast(channel: string, payload: any) {
-  try {
-    for (const w of BrowserWindow.getAllWindows()) {
-      if (!w.isDestroyed()) w.webContents.send(channel, payload);
-    }
-  } catch {
-    // ignore — no UIs open is fine
-  }
-}
-
 async function processRetryRow(
   row: any,
   settings: any,
@@ -94,8 +88,23 @@ async function processRetryRow(
   permanentlyFailed: boolean;
   /** The printer itself looks unreachable (timeout, refused). */
   printerDown?: boolean;
+  /** Printed, but later than {@link LATE_SLIP_AFTER_MS} after its Send. */
+  late?: boolean;
 }> {
-  const payload = (row?.payloadJson as any) || {};
+  const stored = (row?.payloadJson as any) || {};
+  const station = isStationSlip(stored);
+  const sentAtIso = String(
+    stored?.meta?.sentAtIso ||
+      new Date(row?.createdAt || Date.now()).toISOString(),
+  );
+  // A slip the kitchen gets minutes late must not read like a new order.
+  const late =
+    station &&
+    !stored?.meta?.reprintOfIso &&
+    Date.now() - new Date(sentAtIso).getTime() > LATE_SLIP_AFTER_MS;
+  const payload = late
+    ? { ...stored, meta: { ...(stored.meta || {}), lateSentAtIso: sentAtIso } }
+    : stored;
   const profileId = String(row?.printerProfileId || '');
   const profile = pickPrinterProfile(settings, profileId);
   // The destination profile may have been deleted from settings while
@@ -142,7 +151,7 @@ async function processRetryRow(
     console.log(
       `[PrinterRetry] ✓ Row #${row.id} succeeded after ${row.attempts} attempt(s)`,
     );
-    return { recovered: true, permanentlyFailed: false };
+    return { recovered: true, permanentlyFailed: false, late };
   }
   console.log(
     `[PrinterRetry] ✗ Row #${row.id} attempt failed: ${r.error || '(no error)'}`,
@@ -159,34 +168,57 @@ async function processRetryRow(
           status: 'FAILED' as any,
           attempts: nextAttempts,
           lastError: r.error || 'print failed',
+          nextAttemptAt: null,
         } as any,
       })
       .catch(() => {});
+    if (station) {
+      await notifyStationPrintFailed({
+        payload: stored,
+        printerName: profile.name,
+        error: r.error,
+      });
+    }
     return { recovered: false, permanentlyFailed: true };
   }
 
-  // Still a network blip — re-enqueue (creates a NEW row with the next
-  // backoff slot). Mark the current row as superseded so we don't
-  // pick it up again.
+  // Still a network blip: try again later on this same row, so a job is
+  // one print-log line with its attempt count, not a FAILED row per try.
+  const plan = printRetryPlan({
+    attempts: nextAttempts,
+    station,
+    firstFailedAt: new Date(row?.createdAt || Date.now()).getTime(),
+  });
+  const error = r.error || 'transient print failure';
   await prisma.printJob
     .update({
       where: { id: row.id },
-      data: {
-        status: 'FAILED' as any,
-        attempts: nextAttempts,
-        lastError: r.error || 'transient print failure',
-      } as any,
-    })
+      data:
+        plan.status === 'RETRY'
+          ? {
+              status: 'RETRY' as any,
+              attempts: nextAttempts,
+              lastError: error,
+              nextAttemptAt: new Date(Date.now() + plan.delayMs),
+            }
+          : {
+              status: 'FAILED' as any,
+              attempts: nextAttempts,
+              lastError: error,
+              nextAttemptAt: null,
+            },
+    } as any)
     .catch(() => {});
-  const result = await enqueuePrintRetry({
-    payload,
-    printerProfileId: profile.id,
-    error: r.error || 'transient print failure',
-    priorAttempts: nextAttempts,
-  });
+  if (plan.status === 'FAILED' && station) {
+    await notifyStationPrintFailed({
+      payload: stored,
+      printerName: profile.name,
+      error,
+    });
+  }
   return {
     recovered: false,
-    permanentlyFailed: result.status === 'FAILED',
+    permanentlyFailed: plan.status === 'FAILED',
     printerDown: true,
   };
 }
@@ -237,6 +269,7 @@ async function tick(): Promise<{ idle: boolean }> {
 
     const settings = await coreServices.readSettings();
     let recoveries = 0;
+    let lateSlips = 0;
 
     // One unreachable printer used to cost a connect timeout per due row,
     // so after an outage the loop spent minutes timing out and receipts
@@ -260,6 +293,7 @@ async function tick(): Promise<{ idle: boolean }> {
       try {
         const r = await processRetryRow(row, settings);
         if (r.recovered) recoveries++;
+        if (r.recovered && r.late) lateSlips++;
         if (r.printerDown) downThisTick.add(profileId);
       } catch {
         // Row-level failure shouldn't break the whole loop; the next
@@ -277,18 +311,20 @@ async function tick(): Promise<{ idle: boolean }> {
     }
 
     if (recoveries > 0) {
-      // Tell every renderer "the printer's back". Useful for clearing a
-      // stuck error toast or showing a green "X of Y prints recovered"
-      // confirmation.
-      broadcast('printer:event', {
+      // Tell every till window and phone "the printer's back", so the
+      // offline warning they showed is answered.
+      broadcastPrinterEvent({
         level: 'info',
         kind: 'recovered',
         message:
-          recoveries === 1
-            ? 'A queued print succeeded after retry.'
-            : `${recoveries} queued prints succeeded after retry.`,
+          (recoveries === 1
+            ? 'A queued print went through.'
+            : `${recoveries} queued prints went through.`) +
+          (lateSlips > 0
+            ? ` ${lateSlips === 1 ? 'One kitchen slip is' : `${lateSlips} kitchen slips are`} marked LATE COPY.`
+            : ''),
         at: Date.now(),
-        context: { recoveries },
+        context: { recoveries, lateSlips },
       });
     }
     return { idle: false };

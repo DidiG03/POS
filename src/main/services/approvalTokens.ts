@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { claimApprovalUse } from './approvalUse';
 
 /**
  * Short-lived proof that a manager typed their PIN on this machine.
@@ -10,9 +11,9 @@ import crypto from 'node:crypto';
  * hands back one of these tokens and the void handlers require it, which is the
  * same rule the LAN HTTP API already enforces with an HMAC token.
  *
- * Tokens are deliberately reusable inside their window: one approval covers the
- * void it was granted for, including a retry from the offline queue, and the
- * five-minute expiry is what bounds the damage.
+ * A token covers the one action it is first used for, including a retry of
+ * that action from the offline queue (see `approvalUse.ts`); the five-minute
+ * expiry bounds how long it waits to be used.
  */
 
 export const APPROVAL_TOKEN_TTL_MS = 5 * 60 * 1000;
@@ -89,6 +90,30 @@ export function isApprovalValidFor(
   if (grant.role !== 'ADMIN') return false;
   const id = Number(userId);
   return Number.isFinite(id) && id > 0 && grant.userId === id;
+}
+
+/**
+ * `isApprovalValidFor`, and claim the token for `scope` so it cannot be
+ * used for a different action (see `approvalUse.ts`).
+ */
+export function claimApprovalFor(
+  token: unknown,
+  userId: unknown,
+  scope: string,
+  idempotencyKey?: string | null,
+  opts: { anyKeyInScope?: boolean } = {},
+  now = Date.now(),
+): boolean {
+  if (!isApprovalValidFor(token, userId, now)) return false;
+  const grant = verifyApprovalToken(token, now)!;
+  return claimApprovalUse({
+    tokenId: String(token).trim(),
+    scope,
+    idempotencyKey,
+    expiresAt: grant.expiresAt,
+    now,
+    anyKeyInScope: opts.anyKeyInScope,
+  });
 }
 
 /** Test seam only. */

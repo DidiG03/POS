@@ -5,7 +5,9 @@ import {
   broadcastTicketsChanged,
 } from './realtime';
 import { moveCoveringReservationForTableTransfer } from './reservations';
-import { withTablesLocked } from './core';
+import { coreServices, withTablesLocked } from './core';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
+import { isClockOnlyRole } from '@shared/utils/roles';
 import {
   buildTableSessionKey,
   findLatestTicketLogForCurrentSession,
@@ -18,6 +20,7 @@ import {
   moveTableOccupancy,
   setTableOccupied,
 } from './tableOccupancy';
+import { checkFloorTable } from './floorTables';
 
 export type TransferTableInput = {
   fromArea: string;
@@ -373,10 +376,23 @@ async function transferTableUnderLock(
       .catch(() => null);
     if (!newOwner || newOwner.active === false)
       return { ok: false, error: 'Target waiter not found' };
+    // Kitchen and host roles cannot serve a table.
+    if (isClockOnlyRole(newOwner.role)) {
+      return {
+        ok: false,
+        error: `${newOwner.displayName || 'That person'} cannot take tables`,
+      };
+    }
 
     // Allow transferring to the current owner (no-op cases handled below);
-    // otherwise the destination must be on an open shift.
-    if (Number(toUserId) !== Number(currentOwnerId)) {
+    // otherwise the destination must be on an open shift. A venue that
+    // does not record clock-in/out has no shifts at all: there, signing in
+    // is being at work, and requiring a shift row made every colleague who
+    // signed in after the setting changed impossible to transfer to.
+    const clockOn = isClockCaptureEnabled(
+      await coreServices.readSettings().catch(() => null),
+    );
+    if (clockOn && Number(toUserId) !== Number(currentOwnerId)) {
       const onShift = await prisma.dayShift
         .findFirst({
           where: { openedById: Number(toUserId), closedAt: null },
@@ -395,7 +411,20 @@ async function transferTableUnderLock(
   const movingTable = fromArea !== toArea || fromLabel !== toLabel;
   const changingOwner =
     toUserId != null && Number(toUserId) !== Number(currentOwnerId);
-  if (!movingTable && !changingOwner) return { ok: true };
+  // Nothing to do is a mistake, not a success: a transfer screen sent
+  // with no table or waiter picked used to answer OK and change nothing.
+  if (!movingTable && !changingOwner) {
+    return {
+      ok: false,
+      error: 'Pick another table or another waiter to transfer to.',
+    };
+  }
+  // The destination has to be a table on the floor plan; a made-up one
+  // took the bill off every floor screen.
+  if (movingTable) {
+    const exists = await checkFloorTable(toArea, toLabel);
+    if (!exists.ok) return { ok: false, error: exists.error };
+  }
 
   // If moving table, ensure destination isn't already open
   const fromOpen = await isTableOccupied(fromArea, fromLabel);

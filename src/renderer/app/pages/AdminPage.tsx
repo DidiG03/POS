@@ -604,11 +604,25 @@ export default function AdminPage() {
             kind="money"
             currency={currency}
           />
+          {ov && ov.fiscalEnabled === false ? (
+            // VAT reporting is off: a "€0.00 VAT" read as if no tax was due.
+            <Stat
+              title={t('adminOverview.vatToday')}
+              value={t('adminOverview.vatOff')}
+              kind="text"
+              hint={t('adminOverview.vatOffHint')}
+            />
+          ) : (
+            <Stat
+              title={t('adminOverview.vatToday')}
+              value={ov ? (ov.revenueTodayVat ?? 0) : null}
+              kind="money"
+              currency={currency}
+            />
+          )}
           <Stat
-            title={t('adminOverview.vatToday')}
-            value={ov ? (ov.revenueTodayVat ?? 0) : null}
-            kind="money"
-            currency={currency}
+            title={t('adminOverview.lowStockItems')}
+            value={ov?.lowStockItems}
           />
           {hasTables ? (
             <Stat
@@ -1406,9 +1420,16 @@ function AddStaffModal({
                 ? 'adminOverview.adminPinDigits'
                 : 'adminOverview.pinDigits',
             )}
+            // The rule is shown before the PIN is typed, and a common admin
+            // PIN is flagged as it is typed, not only after Save.
             hint={
               isAdminPinRole(role)
                 ? t('adminOverview.adminPinRuleHint')
+                : t('adminOverview.staffPinRuleHint')
+            }
+            error={
+              isAdminPinRole(role) && isCommonAdminPin(pin)
+                ? t('adminOverview.adminPinTooCommon')
                 : undefined
             }
           >
@@ -1645,7 +1666,12 @@ function EditStaffModal({
             hint={
               isAdminPinRole(role)
                 ? `${t('adminOverview.newPinHint')} ${t('adminOverview.adminPinRuleHint')}`
-                : t('adminOverview.newPinHint')
+                : `${t('adminOverview.newPinHint')} ${t('adminOverview.staffPinRuleHint')}`
+            }
+            error={
+              pin && isAdminPinRole(role) && isCommonAdminPin(pin)
+                ? t('adminOverview.adminPinTooCommon')
+                : undefined
             }
           >
             <Input

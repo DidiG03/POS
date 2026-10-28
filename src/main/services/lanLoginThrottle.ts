@@ -9,14 +9,25 @@
  * A waiter locked out mid-service is still the worse outcome for a single
  * mistyped PIN, so this is graded rather than a flat cap:
  *
- *   - every failure from an IP adds a short delay (the same shape as the IPC
- *     throttle on the till), which costs a person nothing;
- *   - `LOCK_AFTER_FAILURES` failures from one IP inside the window lock that
- *     IP out of LAN login for `IP_LOCK_MS`;
- *   - an ADMIN account additionally locks for LAN login after
- *     `ADMIN_LOCK_AFTER_FAILURES` failures from any mix of IPs, so rotating
- *     addresses does not reset the budget. The till itself (loopback) is never
- *     throttled, so an owner can always sign in at the counter.
+ *   - every failure adds a short delay (the same shape as the IPC throttle
+ *     on the till), which costs a person nothing;
+ *   - `LOCK_AFTER_FAILURES` failures for one account from one device inside
+ *     the window lock that account on that device for `IP_LOCK_MS`. Other
+ *     staff sharing the tablet keep signing in;
+ *   - every account (waiters too: their PINs can be one character) locks for
+ *     LAN login after `ACCOUNT_LOCK_AFTER_FAILURES` failures from any mix of
+ *     devices, so rotating addresses does not reset the budget;
+ *   - `IP_SPRAY_LOCK_AFTER_FAILURES` failures from one device across all
+ *     accounts lock the device, so it cannot walk every name in turn.
+ *
+ * The till itself (loopback) is never throttled, so an owner can always sign
+ * in at the counter.
+ *
+ * An attempt is reserved with `beginLanLoginAttempt` before the PIN is
+ * checked. The check is async (bcrypt), and counting only after it let 30
+ * parallel guesses all pass the lock check before the first miss was
+ * counted. Reserved attempts count against every budget, so exactly
+ * `LOCK_AFTER_FAILURES` guesses are ever checked.
  *
  * Pairing-code misses count as failures too: `/pairing/verify` is otherwise a
  * free oracle for the 6-digit code.
@@ -25,23 +36,42 @@
 export const FAIL_WINDOW_MS = 10 * 60_000;
 export const LOCK_AFTER_FAILURES = 10;
 export const IP_LOCK_MS = 5 * 60_000;
-export const ADMIN_LOCK_AFTER_FAILURES = 20;
-export const ADMIN_LOCK_MS = 15 * 60_000;
+export const ACCOUNT_LOCK_AFTER_FAILURES = 20;
+export const ACCOUNT_LOCK_MS = 15 * 60_000;
+/** Kept for callers and alerts that still say "admin". */
+export const ADMIN_LOCK_AFTER_FAILURES = ACCOUNT_LOCK_AFTER_FAILURES;
+export const ADMIN_LOCK_MS = ACCOUNT_LOCK_MS;
+export const IP_SPRAY_LOCK_AFTER_FAILURES = 30;
 export const DELAY_STEP_MS = 250;
 export const DELAY_MAX_MS = 2_000;
+/** Answer for a guess refused only because others are still being checked. */
+export const BUSY_RETRY_MS = 2_000;
 
-type Counter = { failures: number; windowStart: number; lockedUntil: number };
+type Counter = {
+  failures: number;
+  /** Attempts reserved and not yet answered. */
+  pending: number;
+  windowStart: number;
+  lockedUntil: number;
+};
 
+const byDevice = new Map<string, Counter>();
+const byAccount = new Map<number, Counter>();
 const byIp = new Map<string, Counter>();
-const byAdmin = new Map<number, Counter>();
+
+function deviceKey(ip: string, userId: number): string {
+  return `${String(ip || '')}#${Number(userId) || 0}`;
+}
 
 function current<K>(map: Map<K, Counter>, key: K, now: number): Counter {
   const cur = map.get(key);
   if (
     !cur ||
-    (cur.lockedUntil <= now && now - cur.windowStart > FAIL_WINDOW_MS)
+    (cur.pending === 0 &&
+      cur.lockedUntil <= now &&
+      now - cur.windowStart > FAIL_WINDOW_MS)
   ) {
-    const fresh = { failures: 0, windowStart: now, lockedUntil: 0 };
+    const fresh = { failures: 0, pending: 0, windowStart: now, lockedUntil: 0 };
     map.set(key, fresh);
     return fresh;
   }
@@ -53,80 +83,193 @@ function remaining(c: Counter | undefined, now: number): number {
   return c.lockedUntil - now;
 }
 
-/** Milliseconds this IP must wait before trying again, or 0. */
-export function lanLoginIpLockedFor(ip: string, now = Date.now()): number {
-  return remaining(byIp.get(String(ip || '')), now);
-}
-
-/** Milliseconds this admin account is locked for LAN login, or 0. */
-export function lanLoginAdminLockedFor(
+/** Milliseconds this account must wait on this device, or 0. */
+export function lanLoginDeviceLockedFor(
+  ip: string,
   userId: number,
   now = Date.now(),
 ): number {
-  return remaining(byAdmin.get(Number(userId)), now);
+  return Math.max(
+    remaining(byDevice.get(deviceKey(ip, userId)), now),
+    remaining(byIp.get(String(ip || '')), now),
+  );
 }
+
+/** Milliseconds this device is locked for every account, or 0. */
+export function lanLoginIpLockedFor(ip: string, now = Date.now()): number {
+  return Math.max(
+    remaining(byIp.get(String(ip || '')), now),
+    // Pairing and unknown-account misses are kept under account 0.
+    remaining(byDevice.get(deviceKey(ip, 0)), now),
+  );
+}
+
+/** Milliseconds this account is locked for LAN login, or 0. */
+export function lanLoginAccountLockedFor(
+  userId: number,
+  now = Date.now(),
+): number {
+  return remaining(byAccount.get(Number(userId)), now);
+}
+
+export const lanLoginAdminLockedFor = lanLoginAccountLockedFor;
 
 export interface LanLoginFailure {
   /** Pause to apply before answering, so guessing stays slow. */
   delayMs: number;
-  /** True when this failure just locked the IP. */
+  /** True when this failure just locked the account on this device. */
   ipLocked: boolean;
-  /** True when this failure just locked the admin account. */
+  /** True when this failure just locked the account everywhere. */
   adminLocked: boolean;
+  /** True when this failure just locked the whole device. */
+  deviceLocked: boolean;
+  /** Failures left on this device before the account locks here. */
+  attemptsLeft: number;
 }
 
-/**
- * Record one failed attempt. Pass `adminUserId` when the targeted account is
- * an ADMIN so the account budget applies across IPs.
- */
-export function recordLanLoginFailure(
-  ip: string,
-  opts: { adminUserId?: number | null } = {},
-  now = Date.now(),
-): LanLoginFailure {
-  const ipCounter = current(byIp, String(ip || ''), now);
-  ipCounter.failures += 1;
-  let ipLocked = false;
-  if (
-    ipCounter.failures >= LOCK_AFTER_FAILURES &&
-    ipCounter.lockedUntil <= now
-  ) {
-    ipCounter.lockedUntil = now + IP_LOCK_MS;
-    ipLocked = true;
-  }
-
-  let adminLocked = false;
-  const adminId = Number(opts.adminUserId || 0);
-  if (adminId > 0) {
-    const adminCounter = current(byAdmin, adminId, now);
-    adminCounter.failures += 1;
-    if (
-      adminCounter.failures >= ADMIN_LOCK_AFTER_FAILURES &&
-      adminCounter.lockedUntil <= now
-    ) {
-      adminCounter.lockedUntil = now + ADMIN_LOCK_MS;
-      adminLocked = true;
+export type LanLoginAttempt =
+  | {
+      ok: false;
+      lockedForMs: number;
+      /** Refused because other guesses are still in flight, not locked. */
+      busy?: boolean;
     }
-  }
+  | {
+      ok: true;
+      fail: (now?: number) => LanLoginFailure;
+      succeed: () => void;
+      /** Give the reservation back without counting it (e.g. a 5xx). */
+      release: () => void;
+    };
+
+/**
+ * Reserve one login attempt for `userId` (0 = unknown account or pairing)
+ * from `ip`. Synchronous, so parallel requests cannot all see the same
+ * unlocked budget. Exactly one of `fail`, `succeed` or `release` must be
+ * called afterwards.
+ */
+export function beginLanLoginAttempt(
+  ip: string,
+  userId: number,
+  now = Date.now(),
+): LanLoginAttempt {
+  const uid = Number(userId) || 0;
+  const device = current(byDevice, deviceKey(ip, uid), now);
+  const spray = current(byIp, String(ip || ''), now);
+  const account = uid > 0 ? current(byAccount, uid, now) : null;
+
+  const lockedForMs = Math.max(
+    remaining(device, now),
+    remaining(spray, now),
+    account ? remaining(account, now) : 0,
+  );
+  if (lockedForMs > 0) return { ok: false, lockedForMs };
+  const full =
+    device.failures + device.pending >= LOCK_AFTER_FAILURES ||
+    spray.failures + spray.pending >= IP_SPRAY_LOCK_AFTER_FAILURES ||
+    (account !== null &&
+      account.failures + account.pending >= ACCOUNT_LOCK_AFTER_FAILURES);
+  if (full) return { ok: false, lockedForMs: BUSY_RETRY_MS, busy: true };
+
+  device.pending += 1;
+  spray.pending += 1;
+  if (account) account.pending += 1;
+  let settled = false;
+  const settle = (): boolean => {
+    if (settled) return false;
+    settled = true;
+    device.pending = Math.max(0, device.pending - 1);
+    spray.pending = Math.max(0, spray.pending - 1);
+    if (account) account.pending = Math.max(0, account.pending - 1);
+    return true;
+  };
 
   return {
-    delayMs: Math.min(DELAY_MAX_MS, ipCounter.failures * DELAY_STEP_MS),
-    ipLocked,
-    adminLocked,
+    ok: true,
+    release: () => {
+      settle();
+    },
+    succeed: () => {
+      if (!settle()) return;
+      // A correct PIN clears this account on this device. The account and
+      // device budgets are left to expire on their own: otherwise the real
+      // owner signing in on one device would reset a guesser's budget on
+      // another.
+      byDevice.delete(deviceKey(ip, uid));
+    },
+    fail: (at = now) => {
+      const out: LanLoginFailure = {
+        delayMs: 0,
+        ipLocked: false,
+        adminLocked: false,
+        deviceLocked: false,
+        attemptsLeft: 0,
+      };
+      if (!settle()) return out;
+      device.failures += 1;
+      if (device.failures >= LOCK_AFTER_FAILURES && device.lockedUntil <= at) {
+        device.lockedUntil = at + IP_LOCK_MS;
+        out.ipLocked = true;
+      }
+      spray.failures += 1;
+      if (
+        spray.failures >= IP_SPRAY_LOCK_AFTER_FAILURES &&
+        spray.lockedUntil <= at
+      ) {
+        spray.lockedUntil = at + IP_LOCK_MS;
+        out.deviceLocked = true;
+      }
+      if (account) {
+        account.failures += 1;
+        if (
+          account.failures >= ACCOUNT_LOCK_AFTER_FAILURES &&
+          account.lockedUntil <= at
+        ) {
+          account.lockedUntil = at + ACCOUNT_LOCK_MS;
+          out.adminLocked = true;
+        }
+      }
+      // Back off on whichever budget is most used: a guesser rotating
+      // devices still slows down on the account.
+      const worst = Math.max(device.failures, account?.failures ?? 0);
+      out.delayMs = Math.min(DELAY_MAX_MS, worst * DELAY_STEP_MS);
+      out.attemptsLeft = Math.max(0, LOCK_AFTER_FAILURES - device.failures);
+      return out;
+    },
   };
 }
 
 /**
- * A successful login from this IP clears that IP's failures. The admin
- * account budget is left to expire on its own: otherwise the real admin
- * signing in from one device would reset a guesser's budget on another.
+ * Record one failed attempt outside a reservation (kept for callers that
+ * have nothing to check, and for tests).
  */
+export function recordLanLoginFailure(
+  ip: string,
+  opts: { adminUserId?: number | null; userId?: number | null } = {},
+  now = Date.now(),
+): LanLoginFailure {
+  const uid = Number(opts.userId || opts.adminUserId || 0);
+  const attempt = beginLanLoginAttempt(ip, uid, now);
+  if (!attempt.ok) {
+    return {
+      delayMs: DELAY_MAX_MS,
+      ipLocked: false,
+      adminLocked: false,
+      deviceLocked: false,
+      attemptsLeft: 0,
+    };
+  }
+  return attempt.fail(now);
+}
+
+/** A successful login from this IP clears its unknown-account misses. */
 export function clearLanLoginFailures(ip: string): void {
-  byIp.delete(String(ip || ''));
+  byDevice.delete(deviceKey(ip, 0));
 }
 
 /** Test seam. */
 export function __resetLanLoginThrottleForTests(): void {
+  byDevice.clear();
+  byAccount.clear();
   byIp.clear();
-  byAdmin.clear();
 }

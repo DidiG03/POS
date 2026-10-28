@@ -15,9 +15,14 @@
  *      (see `mergeTicketSend`), so a late or concurrent Send cannot drop
  *      items, undo a void, or charge a paid line again.
  *
- * Step 2 also refuses a Send carrying lines from a sitting that has ended:
- * a screen left on a table that another device paid would otherwise start
- * a new sitting with the old, paid bill on it.
+ * Step 2 also drops lines from a sitting that has ended: a screen left on a
+ * table that another device paid would otherwise start a new sitting with
+ * the old, paid bill on it. The rest of that Send (the new order) goes
+ * through, so a free table can always take an order.
+ *
+ * Every line is priced and named from the menu, unknown items are refused,
+ * and the table must be on the floor plan; counted stock is taken in the
+ * same transaction as the bill write.
  */
 import { prisma } from '@db/client';
 import { asTicketLogItems, ticketLogCreatedAtMs } from '@shared/ticketLogItems';
@@ -36,6 +41,9 @@ import {
   getCurrentTableSessionKey,
 } from './tableSession';
 import { writeTicketSnapshot, type StockConsumeInput } from './ticketLogWrite';
+import { OutOfStockError } from './menuStock';
+import { repriceLinesFromMenu } from './linePricing';
+import { checkFloorTable } from './floorTables';
 
 export type TicketSendInput = {
   userId: number;
@@ -72,9 +80,16 @@ export type TicketSendResult =
   | {
       ok: false;
       error: string;
-      code: 'TABLE_CLOSED' | 'TABLE_OWNED_BY_OTHER' | 'INVALID_ORDER';
+      code:
+        | 'TABLE_CLOSED'
+        | 'TABLE_OWNED_BY_OTHER'
+        | 'INVALID_ORDER'
+        | 'UNKNOWN_TABLE'
+        | 'OUT_OF_STOCK';
       ownerId?: number;
       ownerName?: string | null;
+      /** OUT_OF_STOCK: the item and how many are left. */
+      stock?: { sku: string; name: string; remaining: number };
     };
 
 /**
@@ -110,18 +125,18 @@ export const BILL_FROM_CLOSED_SITTING_MESSAGE =
   'This screen still shows a bill that was already closed (paid, voided or moved). Reopen the table to see its current bill.';
 
 /**
- * True when `items` carry lines fired by an earlier Send that belongs to a
- * different sitting than the current one. A line's `sendKey` is the
- * idempotency key of the Send that fired it, so the TicketLog row with that
- * key says which sitting it was on. Keys the till has never seen (a Send
- * still queued on the phone) prove nothing and are ignored.
+ * Send keys in `items` that belong to a different sitting than the current
+ * one. A line's `sendKey` is the idempotency key of the Send that fired it,
+ * so the TicketLog row with that key says which sitting it was on. Keys the
+ * till has never seen (a Send still queued on the phone, or one that was
+ * refused) prove nothing and are ignored.
  */
-async function carriesClosedSittingLines(input: {
+export async function closedSittingSendKeys(input: {
   items: unknown[];
   ownKey: string;
   latestItems: MergeLine[];
   sessionKey: string | null;
-}): Promise<boolean> {
+}): Promise<Set<string>> {
   const onBill = new Set(
     input.latestItems.map((l) => String(l.sendKey || '')).filter(Boolean),
   );
@@ -130,14 +145,22 @@ async function carriesClosedSittingLines(input: {
     const key = String((raw as MergeLine)?.sendKey || '').trim();
     if (key && key !== input.ownKey && !onBill.has(key)) foreign.add(key);
   }
-  if (foreign.size === 0) return false;
+  if (foreign.size === 0) return new Set();
   const rows = (await prisma.ticketLog
     .findMany({
       where: { idempotencyKey: { in: [...foreign].slice(0, 50) } } as any,
-      select: { sessionKey: true } as any,
+      select: { sessionKey: true, idempotencyKey: true } as any,
     })
-    .catch(() => [])) as Array<{ sessionKey?: string | null }>;
-  return rows.some((r) => (r.sessionKey ?? null) !== input.sessionKey);
+    .catch(() => [])) as Array<{
+    sessionKey?: string | null;
+    idempotencyKey?: string | null;
+  }>;
+  return new Set(
+    rows
+      .filter((r) => (r.sessionKey ?? null) !== input.sessionKey)
+      .map((r) => String(r.idempotencyKey || ''))
+      .filter(Boolean),
+  );
 }
 
 export const ORDER_AFTER_CLOSE_MESSAGE =
@@ -249,6 +272,76 @@ export function validateTicketSendLines(input: {
   return { ok: true, items: out };
 }
 
+/**
+ * Price and name every line from this till's menu, by item code.
+ *
+ * Payments were already repriced (`linePricing.ts`), but the bill a Send
+ * stored kept the device's own prices and names, so the pre-bill, the
+ * kitchen and the waiter's screen showed a Ribeye at 0.01 or an item the
+ * menu never had at 0. A price the item had since the table was seated is
+ * kept (the guest was quoted it); anything else becomes the menu's.
+ *
+ * A line that is not on the menu at all is refused unless it is already on
+ * this sitting's bill (an item removed from the menu mid-service).
+ */
+export async function priceSendLinesFromMenu(input: {
+  area: string;
+  tableLabel: string;
+  items: Record<string, unknown>[];
+  /** Send keys already on the current bill. */
+  billKeys?: Set<string>;
+}): Promise<
+  { ok: true; items: Record<string, unknown>[] } | { ok: false; error: string }
+> {
+  const priced = await repriceLinesFromMenu({
+    items: input.items,
+    area: input.area,
+    tableLabel: input.tableLabel,
+  });
+  // Menu unreadable: keep the lines, as the payment check does. The bill is
+  // repriced again at payment.
+  if (!priced) return { ok: true, items: input.items };
+  const names = new Map<string, string>();
+  const rows = (await prisma.menuItem
+    .findMany({
+      where: {
+        sku: {
+          in: [
+            ...new Set(
+              priced.items.map((l: any) => String(l?.sku || '').trim()),
+            ),
+          ].filter(Boolean),
+        },
+      },
+      select: { sku: true, name: true },
+    } as any)
+    .catch(() => [])) as Array<{ sku: string; name: string }>;
+  for (const r of rows) names.set(String(r.sku), String(r.name));
+  const unknown = new Set(
+    priced.issues
+      .filter((i) => i.kind === 'unknown')
+      .map((i) => `${i.sku}\u0000${i.name}`),
+  );
+  const out: Record<string, unknown>[] = [];
+  for (const line of priced.items as Record<string, unknown>[]) {
+    const sku = String(line.sku || '').trim();
+    const name = String(line.name || '').trim();
+    if (line.voided !== true && unknown.has(`${sku}\u0000${name}`)) {
+      const onBill =
+        input.billKeys && input.billKeys.has(String(line.sendKey || ''));
+      if (!onBill) {
+        return {
+          ok: false,
+          error: `${name || sku || 'An item'} is not on the menu. Refresh the menu and send again.`,
+        };
+      }
+    }
+    const menuName = names.get(sku);
+    out.push(menuName ? { ...line, name: menuName } : line);
+  }
+  return { ok: true, items: out };
+}
+
 export async function recordTicketSend(
   rawInput: TicketSendInput,
 ): Promise<TicketSendResult> {
@@ -290,29 +383,55 @@ export async function recordTicketSend(
       if (existing) return { ok: true as const, written: false as const };
     }
 
-    // 2a. Lines from a sitting that has ended (a stale screen).
+    // 1b. The table has to exist (see `floorTables.ts`).
+    {
+      const exists = await checkFloorTable(area, tableLabel);
+      if (!exists.ok) {
+        return {
+          ok: false as const,
+          error: exists.error,
+          code: 'UNKNOWN_TABLE' as const,
+        };
+      }
+    }
+
+    // 2a. Lines from a sitting that has ended (a stale screen: the phone
+    // still shows the previous party's bill). Those lines are dropped, not
+    // sent: they were paid, voided or moved with that sitting. Refusing the
+    // whole Send instead left the table unusable from that phone — every
+    // new order carried the old lines and was refused again.
     {
       const current = await findLatestTicketLogForCurrentSession(
         area,
         tableLabel,
       ).catch(() => null);
-      if (
-        await carriesClosedSittingLines({
-          items: Array.isArray(input.items) ? input.items : [],
-          ownKey: idempotencyKey,
-          latestItems: current
-            ? (asTicketLogItems((current as any).itemsJson) as MergeLine[])
-            : [],
-          sessionKey: await getCurrentTableSessionKey(area, tableLabel).catch(
-            () => null,
-          ),
-        })
-      ) {
-        return {
-          ok: false as const,
-          error: BILL_FROM_CLOSED_SITTING_MESSAGE,
-          code: 'TABLE_CLOSED' as const,
-        };
+      const closedKeys = await closedSittingSendKeys({
+        items: Array.isArray(input.items) ? input.items : [],
+        ownKey: idempotencyKey,
+        latestItems: current
+          ? (asTicketLogItems((current as any).itemsJson) as MergeLine[])
+          : [],
+        sessionKey: await getCurrentTableSessionKey(area, tableLabel).catch(
+          () => null,
+        ),
+      });
+      if (closedKeys.size) {
+        const fromOpenSitting = (raw: unknown) =>
+          !closedKeys.has(String((raw as MergeLine)?.sendKey || '').trim());
+        input.items = (input.items as unknown[]).filter(fromOpenSitting);
+        if (Array.isArray(input.addedItems)) {
+          input.addedItems = input.addedItems.filter(fromOpenSitting);
+        }
+        console.warn(
+          `[tickets] ${area} ${tableLabel}: dropped ${closedKeys.size} Send(s) from a closed sitting`,
+        );
+        if (!input.items.length) {
+          return {
+            ok: false as const,
+            error: BILL_FROM_CLOSED_SITTING_MESSAGE,
+            code: 'TABLE_CLOSED' as const,
+          };
+        }
       }
     }
 
@@ -385,24 +504,60 @@ export async function recordTicketSend(
     if (merged.mode === 'already-included') {
       return { ok: true as const, written: false as const };
     }
+    // Prices and names from the menu, not the device (see above). Only the
+    // lines this Send fires need the menu; lines already on the bill keep
+    // what they were sold at.
+    {
+      const billKeys = new Set(
+        latestItems.map((l) => String(l.sendKey || '').trim()).filter(Boolean),
+      );
+      const priced = await priceSendLinesFromMenu({
+        area,
+        tableLabel,
+        items: merged.items as unknown as Record<string, unknown>[],
+        billKeys,
+      });
+      if (!priced.ok) {
+        return {
+          ok: false as const,
+          error: priced.error,
+          code: 'INVALID_ORDER' as const,
+        };
+      }
+      merged.items = priced.items as unknown as MergeLine[];
+    }
     const firedNow = linesNewToBill(merged.items, latestItems);
 
     const sessionKey = await getCurrentTableSessionKey(area, tableLabel).catch(
       () => null,
     );
-    const outcome = await writeTicketSnapshot({
-      userId: Number(input.userId),
-      area,
-      tableLabel,
-      covers: input.covers,
-      items: merged.items,
-      note: input.note,
-      idempotencyKey,
-      sessionKey,
-      stockConsumeLines: firedNow
-        ? firedNow.map((l) => ({ sku: l.sku, qty: Number(l.qty) }))
-        : (input.stockConsumeLines ?? []),
-    });
+    let outcome: 'written' | 'duplicate';
+    try {
+      outcome = await writeTicketSnapshot({
+        userId: Number(input.userId),
+        area,
+        tableLabel,
+        covers: input.covers,
+        items: merged.items,
+        note: input.note,
+        idempotencyKey,
+        sessionKey,
+        stockConsumeLines: firedNow
+          ? firedNow.map((l) => ({ sku: l.sku, qty: Number(l.qty) }))
+          : (input.stockConsumeLines ?? []),
+      });
+    } catch (e) {
+      // Nothing was written: the stock check shares the bill's transaction.
+      if (e instanceof OutOfStockError) {
+        return {
+          ok: false as const,
+          error: e.message,
+          code: 'OUT_OF_STOCK' as const,
+          stock: { ...e.item, remaining: e.remaining },
+        };
+      }
+      throw e;
+    }
     if (outcome === 'duplicate') {
       return { ok: true as const, written: false as const };
     }

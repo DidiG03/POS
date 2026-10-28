@@ -1,5 +1,10 @@
 @import 'tailwindcss';
 
+/* Order screen two-pane layout: wide AND tall enough. A phone held sideways
+   is 768+ px wide but only ~400 px tall; the tablet layout squeezed the
+   ticket and hid the item list there. Keep in step with ORDER_TWO_PANE. */
+@custom-variant pane (@media (min-width: 768px) and (min-height: 500px));
+
 /* Latin-only variable Inter (~48KB). Albanian sits in Latin-1; skip
  * cyrillic/greek/vietnamese/italic cuts that Lighthouse counted as payload. */
 @font-face {
@@ -2392,4 +2397,13 @@ html[data-theme='light'] .review-heat-cell--3 {
 }
 html[data-theme='light'] .review-heat-cell--4 {
   background: #e03a16;
+}
+
+/* Phone keyboard open (`mobileShell.installKeyboardAvoidance`): dialogs and
+   the ticket pane leave room so the focused field can sit above it. */
+html[data-keyboard='open'] .pos-overlay {
+  padding-bottom: calc(var(--pos-keyboard-h, 0px) + 1rem);
+}
+html[data-keyboard='open'] [data-keyboard-pad] {
+  padding-bottom: var(--pos-keyboard-h, 0px);
 }

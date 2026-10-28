@@ -433,7 +433,11 @@ export default function ReportsPage() {
             <TodayMetric
               icon={<IconChartVat />}
               label={t('reports.vatTodayShort')}
-              value={fmtCurrency.format(overview.revenueTodayVat || 0)}
+              value={
+                overview.fiscalEnabled === false
+                  ? t('adminOverview.vatOff')
+                  : fmtCurrency.format(overview.revenueTodayVat || 0)
+              }
             />
             {hasTables ? (
               <TodayMetric

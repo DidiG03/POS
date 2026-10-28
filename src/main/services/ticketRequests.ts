@@ -132,3 +132,31 @@ export async function createTicketRequest(input: {
     .catch(() => undefined);
   return { id: Number(created.id), created: true };
 }
+
+/**
+ * Mark approved requests as added to the bill. Only the table owner the
+ * request was addressed to, or an admin, may: any waiter used to be able to
+ * mark a colleague's approved request applied, and it vanished from the
+ * owner's screen before its items were ever added. Returns how many changed.
+ */
+export async function markTicketRequestsApplied(input: {
+  ids: unknown[];
+  actorUserId: number;
+  actorIsAdmin: boolean;
+}): Promise<number> {
+  const ids = (Array.isArray(input.ids) ? input.ids : [])
+    .map((x) => Number(x))
+    .filter((x) => Number.isFinite(x) && x > 0)
+    .slice(0, 200);
+  const actor = Number(input.actorUserId);
+  if (!ids.length || (!input.actorIsAdmin && !(actor > 0))) return 0;
+  const updated = await prisma.ticketRequest.updateMany({
+    where: {
+      id: { in: ids },
+      status: 'APPROVED' as any,
+      ...(input.actorIsAdmin ? {} : { ownerId: actor }),
+    },
+    data: { status: 'APPLIED' as any, decidedAt: new Date() },
+  } as any);
+  return Number(updated?.count || 0);
+}

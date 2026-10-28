@@ -246,6 +246,9 @@ const api: Api = {
     listRetries: () => ipcRenderer.invoke('print:listRetries'),
     cancelRetry: (id: number) =>
       ipcRenderer.invoke('print:cancelRetry', { id }),
+    listStationJobs: () => ipcRenderer.invoke('print:listStationJobs'),
+    reprintStationJob: (id: number) =>
+      ipcRenderer.invoke('print:reprintStationJob', { id }),
   },
   tables: {
     setOpen: (

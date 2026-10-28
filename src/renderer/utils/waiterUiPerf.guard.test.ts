@@ -87,7 +87,11 @@ describe('waiter UI stays responsive', () => {
   it('hands hung table-state writes to the queue after 4s, not 30s', () => {
     const queue = read('src/renderer/utils/offlineQueue.ts');
     expect(queue).toContain('const LIVE_ATTEMPT_BUDGET_MS = 4_000');
-    expect(queue).toContain("['tables.setOpen', 'covers.save']");
+    expect(queue).toMatch(
+      /BUDGETED_OPS = new Set<OfflineOp>\(\[\s*'tables\.setOpen',\s*'covers\.save',\s*'tickets\.log',/,
+    );
+    // A Send hands off after 8s instead of every transport timeout.
+    expect(queue).toContain('const SEND_LIVE_BUDGET_MS = 8_000');
     expect(queue).toContain('function raceLiveAttempt');
   });
 

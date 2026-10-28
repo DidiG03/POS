@@ -17,6 +17,9 @@ import {
 } from '../../stores/ticket';
 import { TicketLineRow } from '../components/TicketLineRow';
 import { sumTicketLinesNetVat } from '@shared/ticketRevenue';
+import { isHostUnreachable } from '../../utils/netQuality';
+import { isClockOnlyRole } from '@shared/utils/roles';
+import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import {
   computeDiscountAmount,
@@ -26,6 +29,7 @@ import {
 import {
   parseEurExchangeRate,
   splitEvenly,
+  splitSharesText,
   isLekCurrency,
   toEurAtRate,
   withCurrency,
@@ -217,6 +221,8 @@ const MenuItemTile = memo(function MenuItemTile({
   labels: {
     inactive: string;
     out: string;
+    soldOutBadge: string;
+    inactiveBadge: string;
     unavailable: string;
     lowTitle: string;
     lowAria: string;
@@ -298,7 +304,13 @@ const MenuItemTile = memo(function MenuItemTile({
         </div>
         <div className="mt-auto flex min-w-0 items-baseline justify-between gap-1.5 pt-1">
           <div className="shrink-0 text-sm tabular-nums">{item.price}</div>
-          {isLow ? (
+          {isDisabled ? (
+            // Spelled out: a dimmed, struck-through tile alone did not say
+            // why it could not be ordered.
+            <span className="truncate rounded bg-rose-500/20 px-1.5 text-[11px] font-semibold uppercase tracking-wide text-rose-200">
+              {item.active ? labels.soldOutBadge : labels.inactiveBadge}
+            </span>
+          ) : isLow ? (
             <div
               className={`flex min-w-0 items-center gap-1 truncate text-[11px] font-semibold tabular-nums ${
                 uiTheme === 'light' ? 'text-amber-800' : 'text-amber-100/95'
@@ -456,8 +468,12 @@ function loadCustomCommentButtons(): Record<string, string[]> {
 const MENU_LAYOUT_KEY = 'pos.order.menuLayout';
 const MENU_CAT_GRID_WIDE = '(min-width: 640px)';
 const MENU_ITEM_GRID_MID = '(min-width: 380px)';
-/** Same breakpoint as `md:` — two-pane order layout vs phone stack. */
-const ORDER_TWO_PANE = '(min-width: 768px)';
+/**
+ * Same breakpoint as the `pane:` variant (index.css): two-pane order layout
+ * vs phone stack. Height counts too, so a phone in landscape keeps the
+ * Menu / Ticket switcher instead of a squeezed tablet layout.
+ */
+const ORDER_TWO_PANE = '(min-width: 768px) and (min-height: 500px)';
 type MenuLayout = 'grid' | 'column';
 
 function documentHidden(): boolean {
@@ -772,6 +788,7 @@ export default function OrderPage() {
   const [transferMode, setTransferMode] = useState<'WAITER' | 'TABLE'>(
     'WAITER',
   );
+  const [transferClockOn, setTransferClockOn] = useState(true);
   const [transferUsers, setTransferUsers] = useState<
     Array<{ id: number; displayName: string; role: string; active: boolean }>
   >([]);
@@ -1333,6 +1350,27 @@ export default function OrderPage() {
       typeof coversKnown === 'number' &&
       coversKnown > 0
     : Boolean(selectedTable) && billableLines.length > 0;
+
+  /** Why Pay cannot open yet, said on tap (phones have no tooltip). */
+  const payBlockedReason:
+    | null
+    | 'bill'
+    | 'items'
+    | 'closed'
+    | 'send'
+    | 'covers' = !selectedTable
+    ? null
+    : billUnknown
+      ? 'bill'
+      : billableLines.length === 0
+        ? 'items'
+        : hasTables && !isTableOpen
+          ? 'closed'
+          : hasTables && hasUnsentItems
+            ? 'send'
+            : hasTables && !(typeof coversKnown === 'number' && coversKnown > 0)
+              ? 'covers'
+              : null;
 
   const openPaymentUi = useCallback(() => {
     setPaymentMethod('CASH');
@@ -1916,6 +1954,8 @@ export default function OrderPage() {
     () => ({
       inactive: t('order.itemUnavailableInactive'),
       out: t('order.outOfStockTitle'),
+      soldOutBadge: t('order.soldOutBadge'),
+      inactiveBadge: t('order.inactiveBadge'),
       unavailable: t('order.unavailableAria'),
       lowTitle: t('order.lowStockTitle'),
       lowAria: t('order.lowStockAria'),
@@ -2044,6 +2084,7 @@ export default function OrderPage() {
       setOnShiftUserIds(
         new Set((Array.isArray(openIds) ? openIds : []).map((n) => Number(n))),
       );
+      setTransferClockOn(isClockCaptureEnabled(settings));
       const list = saneTableAreas(settings?.tableAreas);
       setTransferTableSections(list);
     })();
@@ -2631,6 +2672,7 @@ export default function OrderPage() {
         serviceChargeAmount,
       };
 
+      let sendQueued = false;
       if (hasStaged) {
         await tableOpened;
         const logResult = await logTicket({
@@ -2671,6 +2713,14 @@ export default function OrderPage() {
           }
           return { ok: false, isFireOrder };
         }
+        if (logResult.queued) {
+          // Not at the till yet: say so, instead of "Order sent. Kitchen
+          // printer will retry" (offline, nothing had reached the till).
+          sendQueued = true;
+          toast.warn(t('order.sendSavedOnPhone'), {
+            title: t('order.sendSavedOnPhoneTitle'),
+          });
+        }
       }
 
       if (opts.printKitchen && (isFireOrder || !hasStaged)) {
@@ -2686,7 +2736,7 @@ export default function OrderPage() {
           meta: printMeta,
         })
           .then((printed) => {
-            if (printed?.queued) {
+            if (printed?.queued && !sendQueued) {
               toast.warn(
                 isFireOrder
                   ? t('order.kitchenPrintQueued')
@@ -2697,6 +2747,7 @@ export default function OrderPage() {
           .catch((e: unknown) => {
             if (typeof console !== 'undefined')
               console.warn('[print/ticket] failed:', e);
+            if (sendQueued) return;
             toast.warn(
               isFireOrder
                 ? t('order.kitchenPrintQueued')
@@ -2953,7 +3004,7 @@ export default function OrderPage() {
   const showTicketPane = preferTicketView || twoPane || mobilePane === 'ticket';
 
   return (
-    <div className="h-full min-h-0 min-w-0 w-full flex flex-col md:grid md:grid-cols-3 md:gap-4 gap-3 relative">
+    <div className="h-full min-h-0 min-w-0 w-full flex flex-col pane:grid pane:grid-cols-3 pane:gap-4 gap-3 relative">
       {lockOrderScroll ? (
         <PageSpinner
           variant="lock"
@@ -2971,7 +3022,7 @@ export default function OrderPage() {
         />
       ) : null}
       {/* Mobile: switch between Menu and Ticket to avoid cramped 3-column layout */}
-      <div className="md:hidden pos-surface-panel flex items-center gap-1.5 rounded-[0.85rem] p-1.5">
+      <div className="pane:hidden pos-surface-panel flex items-center gap-1.5 rounded-[0.85rem] p-1.5">
         {hasTables ? (
           <button
             className="pos-ticket-iconbtn"
@@ -3007,7 +3058,7 @@ export default function OrderPage() {
 
       {showMenuPane ? (
         <div
-          className={`md:col-span-2 min-h-0 min-w-0 h-full flex flex-1 flex-col ${
+          className={`pane:col-span-2 min-h-0 min-w-0 h-full flex flex-1 flex-col ${
             lockOrderScroll || columnMenu ? 'overflow-hidden' : 'overflow-auto'
           }`}
         >
@@ -3192,7 +3243,7 @@ export default function OrderPage() {
       {showTicketPane ? (
         <div
           className={`pos-ticket-pane flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
-            preferTicketView ? 'md:col-span-3' : ''
+            preferTicketView ? 'pane:col-span-3' : ''
           }`}
         >
           <div className="mb-2 shrink-0 space-y-2">
@@ -3243,7 +3294,7 @@ export default function OrderPage() {
                           aria-selected={active}
                           title={title}
                           aria-label={label}
-                          disabled={isTableOpen}
+                          aria-disabled={isTableOpen || undefined}
                           onPointerDown={() => {
                             if (mode === 'course' || mode === 'seat') {
                               void loadTicketCourseBoard();
@@ -3254,7 +3305,16 @@ export default function OrderPage() {
                               void loadTicketCourseBoard();
                             }
                           }}
-                          onClick={() => setAddMode(mode)}
+                          onClick={() => {
+                            // Locked once the table has a sent order; say so
+                            // on tap, the tooltip never shows on a phone.
+                            if (isTableOpen) {
+                              if (!active)
+                                toast.info(t('order.addModeLockedSent'));
+                              return;
+                            }
+                            setAddMode(mode);
+                          }}
                           className={`flex min-h-11 min-w-0 flex-1 items-center justify-center disabled:pointer-events-none disabled:cursor-not-allowed ${
                             active
                               ? 'bg-[var(--pos-accent-soft)] text-[var(--pos-accent)]'
@@ -3326,6 +3386,8 @@ export default function OrderPage() {
           </div>
           <div
             className={`flex-1 min-h-0 relative ${lockOrderScroll ? 'overflow-hidden' : 'overflow-auto'}`}
+            // Room to scroll a line note above the phone keyboard.
+            data-keyboard-pad
           >
             <div className="flex min-h-full flex-col space-y-2">
               {billUnknown ? (
@@ -3395,7 +3457,7 @@ export default function OrderPage() {
           {/* Footer pinned at the bottom of the ticket panel as a flex child.
             Was previously `absolute bottom-0` with `pb-80` on the items list,
             which overlapped the last item on narrow viewports. */}
-          <div className="mt-2 shrink-0 border-t border-[var(--pos-hairline)] pt-3 md:-mx-3 md:-mb-3 md:rounded-b md:bg-[var(--pos-surface)] md:p-3">
+          <div className="mt-2 shrink-0 border-t border-[var(--pos-hairline)] pt-3 pane:-mx-3 pane:-mb-3 pane:rounded-b pane:bg-[var(--pos-surface)] pane:p-3">
             <div className="space-y-3 text-sm">
               {hasTables &&
               (showOrderNote || Boolean(String(orderNote || '').trim())) ? (
@@ -3788,14 +3850,14 @@ export default function OrderPage() {
                         ) : null}
                       </div>
                       <button
-                        className="pos-ticket-pay"
-                        disabled={
-                          !canPay ||
-                          busyAction != null ||
-                          !connectionOk ||
-                          ticketSyncing ||
-                          billUnknown
-                        }
+                        className={`pos-ticket-pay ${
+                          payBlockedReason ? 'opacity-50' : ''
+                        }`}
+                        // Not `disabled` for a missing step: a phone has no
+                        // hover, so the tooltip was the only explanation and
+                        // nobody saw it. The tap now says what is missing.
+                        disabled={busyAction != null || ticketSyncing}
+                        aria-disabled={Boolean(payBlockedReason) || undefined}
                         title={
                           billUnknown
                             ? t('order.billUnreadableHint')
@@ -3822,6 +3884,33 @@ export default function OrderPage() {
                         }
                         onClick={async () => {
                           if (busyAction != null) return;
+                          if (selectedTable && payBlockedReason) {
+                            if (
+                              payBlockedReason === 'covers' &&
+                              canEditCovers
+                            ) {
+                              // Ask for the guests now instead of a dead button.
+                              setCoversMode('editOnly');
+                              setCoversValue('1');
+                              setShowCovers(true);
+                              toast.info(t('order.setGuestsBeforePay'));
+                              return;
+                            }
+                            toast.warn(
+                              t(
+                                payBlockedReason === 'bill'
+                                  ? 'order.billUnreadableHint'
+                                  : payBlockedReason === 'items'
+                                    ? 'order.addItems'
+                                    : payBlockedReason === 'send'
+                                      ? 'order.sendBeforePay'
+                                      : payBlockedReason === 'closed'
+                                        ? 'order.sendAndGuests'
+                                        : 'order.setGuestsBeforePay',
+                              ),
+                            );
+                            return;
+                          }
                           if (!selectedTable) {
                             if (!hasTables) {
                               ensureStoreCounterSelected({
@@ -3921,8 +4010,7 @@ export default function OrderPage() {
                   // bill is taken, so say so instead of looking per-person.
                   t('order.payFullSplit', {
                     amount: formatMoney(totalDue),
-                    guests: split.guests,
-                    per: formatMoney(split.perPerson),
+                    shares: splitSharesText(split, formatMoney),
                   })
                 : t('order.payWithTotal', {
                     amount: formatMoney(totalDue),
@@ -4030,49 +4118,64 @@ export default function OrderPage() {
               // the sale, a down printer returns `{ ok: true,
               // printed: false }` and we still close the table.
               try {
-                const payResult = await tryOrQueue('payments.record', {
-                  area: selectedTable.area,
-                  tableLabel: selectedTable.label,
-                  covers: lastCovers ?? null,
-                  items,
-                  note: hasTables ? orderNote || null : null,
-                  userName: user?.displayName || undefined,
-                  recordOnly: !printReceipt,
-                  idempotencyKey: paymentIdempotencyKey,
-                  meta: {
-                    kind: 'PAYMENT',
-                    userId: user?.id ?? null,
-                    method: paymentMethod,
-                    paidAt: new Date().toISOString(),
-                    amountPaid: Number(amountPaid),
-                    vatEnabled,
-                    baseTotal: totals.total,
-                    serviceChargeEnabled: serviceChargeCfg.enabled,
-                    serviceChargeApplied: serviceChargeCfg.enabled
-                      ? applyServiceCharge
-                      : false,
-                    serviceChargeMode: serviceChargeCfg.mode,
-                    serviceChargeValue: serviceChargeCfg.value,
-                    serviceChargeAmount,
-                    totalBefore: totalBeforeDiscount,
-                    discountType,
-                    discountValue:
-                      discountType === 'NONE'
-                        ? null
-                        : Number(String(discountValue || '').replace(',', '.')),
-                    discountAmount,
-                    discountReason: (discountReason || '').trim() || null,
-                    totalAfter: totalDue,
-                    managerApprovedById: managerApprovedBy?.userId ?? null,
-                    managerApprovedByName: managerApprovedBy?.userName ?? null,
-                    // The till checks this; the id alone proves nothing.
-                    managerApprovalToken:
-                      managerApprovedBy?.approvalToken || undefined,
-                    closeTable,
-                    seatLabel: payingSeatLabel,
-                    seatId: paySeatId || undefined,
+                // Live only: a payment the till never confirmed is not left
+                // on the phone to replay later (`tryOrQueue` liveOnly).
+                if (isHostUnreachable()) {
+                  toast.error(t('order.paymentNeedsTill'), {
+                    title: t('order.paymentBlocked'),
+                  });
+                  return;
+                }
+                const payResult = await tryOrQueue(
+                  'payments.record',
+                  {
+                    area: selectedTable.area,
+                    tableLabel: selectedTable.label,
+                    covers: lastCovers ?? null,
+                    items,
+                    note: hasTables ? orderNote || null : null,
+                    userName: user?.displayName || undefined,
+                    recordOnly: !printReceipt,
+                    idempotencyKey: paymentIdempotencyKey,
+                    meta: {
+                      kind: 'PAYMENT',
+                      userId: user?.id ?? null,
+                      method: paymentMethod,
+                      paidAt: new Date().toISOString(),
+                      amountPaid: Number(amountPaid),
+                      vatEnabled,
+                      baseTotal: totals.total,
+                      serviceChargeEnabled: serviceChargeCfg.enabled,
+                      serviceChargeApplied: serviceChargeCfg.enabled
+                        ? applyServiceCharge
+                        : false,
+                      serviceChargeMode: serviceChargeCfg.mode,
+                      serviceChargeValue: serviceChargeCfg.value,
+                      serviceChargeAmount,
+                      totalBefore: totalBeforeDiscount,
+                      discountType,
+                      discountValue:
+                        discountType === 'NONE'
+                          ? null
+                          : Number(
+                              String(discountValue || '').replace(',', '.'),
+                            ),
+                      discountAmount,
+                      discountReason: (discountReason || '').trim() || null,
+                      totalAfter: totalDue,
+                      managerApprovedById: managerApprovedBy?.userId ?? null,
+                      managerApprovedByName:
+                        managerApprovedBy?.userName ?? null,
+                      // The till checks this; the id alone proves nothing.
+                      managerApprovalToken:
+                        managerApprovedBy?.approvalToken || undefined,
+                      closeTable,
+                      seatLabel: payingSeatLabel,
+                      seatId: paySeatId || undefined,
+                    },
                   },
-                });
+                  { liveOnly: true },
+                );
                 if (payResult.queued) {
                   // Host never confirmed the sale. With fiskalizimi
                   // on, closing now would free the table before an
@@ -4093,6 +4196,10 @@ export default function OrderPage() {
                 if (String(e?.code || '') === 'TABLE_ALREADY_PAID') {
                   toast.info(t('order.alreadyPaid'));
                   paymentAccepted = true;
+                } else if (String(e?.code || '') === 'TILL_UNREACHABLE') {
+                  toast.error(t('order.paymentNeedsTill'), {
+                    title: t('order.paymentBlocked'),
+                  });
                 } else if (String(e?.code || '') === 'BILL_CHANGED') {
                   toast.error(t('order.billChanged'), {
                     title: t('order.paymentBlocked'),
@@ -4237,12 +4344,17 @@ export default function OrderPage() {
 
             {transferMode === 'WAITER' ? (
               (() => {
-                // Eligible = active, not me, not an admin, AND currently on shift.
+                // Eligible = active, not me, a serving role, and on shift.
+                // Without clock-in/out the till keeps no shifts, so every
+                // active colleague counts (the same rule as the till).
                 const eligibleWaiters = transferUsers
                   .filter((u) => u && u.active)
                   .filter((u) => Number(u.id) !== Number(user.id))
                   .filter((u) => String(u.role).toUpperCase() !== 'ADMIN')
-                  .filter((u) => onShiftUserIds.has(Number(u.id)));
+                  .filter((u) => !isClockOnlyRole(u.role))
+                  .filter(
+                    (u) => !transferClockOn || onShiftUserIds.has(Number(u.id)),
+                  );
                 return (
                   <div className="space-y-2">
                     <div className="text-sm text-[color:var(--pos-fg-muted)]">

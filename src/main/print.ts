@@ -70,6 +70,33 @@ function receiptStaffLabel(
   return printStaffLabel(lang, diningFloor);
 }
 
+function clockTime(iso: unknown): string {
+  const d = new Date(String(iso || ''));
+  if (!Number.isFinite(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** VOID / REPRINT / LATE line on top of a kitchen slip, or null. */
+export function kitchenSlipBanner(
+  meta: any,
+  copy: {
+    voidBanner: string;
+    cancelledBanner: string;
+    reprintBanner: (at: string) => string;
+    lateBanner: (at: string) => string;
+  },
+): string | null {
+  if (meta?.voidSlip === 'TICKET') return copy.cancelledBanner;
+  if (meta?.voidSlip) return copy.voidBanner;
+  if (meta?.reprintOfIso) {
+    return copy.reprintBanner(clockTime(meta.reprintOfIso) || '?');
+  }
+  if (meta?.lateSentAtIso) {
+    return copy.lateBanner(clockTime(meta.lateSentAtIso) || '?');
+  }
+  return null;
+}
+
 function kitchenOrderIdentity(payload: TicketPrintPayload): string {
   const loc = formatSaleLocation({
     diningFloor: receiptDiningFloor(payload.area),
@@ -495,6 +522,18 @@ export function buildEscposTicket(
     lines.push(escposText(`${nowStr}\n`));
     lines.push(escposText(`${layout.sep}\n`));
   } else {
+    // A void, a reprint or a slip the retry queue printed late must not
+    // read like a fresh order to cook.
+    const banner = kitchenSlipBanner(meta, copy);
+    if (banner) {
+      lines.push(cmdBold(true));
+      lines.push(cmdTextSize('lg'));
+      for (const ln of wrapEscposText(banner, layout.doubleWidthCols)) {
+        lines.push(escposText(`${ln}\n`));
+      }
+      lines.push(cmdTextSize('normal'));
+      lines.push(cmdBold(false));
+    }
     const routeLabel = String(meta?.routeLabel || '').trim();
     if (routeLabel) {
       lines.push(cmdBold(true));
@@ -1377,7 +1416,8 @@ async function sendViaLpr(
 
 function formatMoney(amount: number, currency: string): string {
   const v = roundMoney(amount);
-  const digits = Number.isInteger(v) ? 0 : 2;
+  // Receipts always show cents: "11.00", never "11".
+  const digits = 2;
   try {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
@@ -1386,13 +1426,14 @@ function formatMoney(amount: number, currency: string): string {
       minimumFractionDigits: digits,
     }).format(v);
   } catch {
-    return `${formatMoneyPlain(v)} ${currency}`;
+    return `${formatMoneyPlain(v, '', { cents: true })} ${currency}`;
   }
 }
 
 function formatMoneyEscpos(amount: number): string {
-  // ASCII for printer compatibility; whole amounts without a trailing .00.
-  return formatMoneyPlain(amount);
+  // ASCII for printer compatibility; always two decimals ("4.00", not "4"),
+  // so a column of amounts lines up and reads as money.
+  return formatMoneyPlain(amount, '', { cents: true });
 }
 
 function escposText(s: string): Buffer {

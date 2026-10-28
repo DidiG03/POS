@@ -9,6 +9,7 @@ import {
   eurTotalFromSettings,
   parseEurExchangeRate,
   splitEvenly,
+  splitSharesText,
   toEurAtRate,
 } from './paymentDisplay';
 
@@ -160,5 +161,18 @@ describe('isLekCurrency', () => {
     expect(isLekCurrency('LEK')).toBe(true);
     expect(isLekCurrency('EUR')).toBe(false);
     expect(isLekCurrency('')).toBe(false);
+  });
+});
+
+describe('splitSharesText', () => {
+  const eur = (n: number) => `€${n.toFixed(2)}`;
+  it('shows shares that add up to the bill', () => {
+    expect(splitSharesText(splitEvenly(14.25, 2)!, eur)).toBe('€7.13 + €7.12');
+    expect(splitSharesText(splitEvenly(19.99, 4)!, eur)).toBe(
+      '3 × €5.00 + €4.99',
+    );
+  });
+  it('keeps the short form when the split is even', () => {
+    expect(splitSharesText(splitEvenly(14, 2)!, eur)).toBe('2 × €7.00');
   });
 });

@@ -61,14 +61,21 @@ import {
   broadcastLayoutChanged,
   broadcastSettingsChanged,
   broadcastUsersChanged,
+  broadcastPrinterEvent as broadcastPrinterEventEverywhere,
 } from './services/realtime';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { planTicketVoid } from '@shared/voidPaid';
 import {
+  claimApprovalFor,
   isApprovalValidFor,
   issueApprovalToken,
 } from './services/approvalTokens';
 import { actorIdentityAllows, resolveActorUserId } from './services/ipcActor';
+import {
+  approvalScope,
+  releaseApprovalUse,
+  voidLineIdentity,
+} from './services/approvalUse';
 import { clockOutForceAllowed, withShiftLock } from './services/shiftClock';
 import { validCoversCount } from '@shared/coversCount';
 import {
@@ -197,6 +204,22 @@ import {
 } from './services/fiscal/deferred';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
+import { checkFloorTable } from './services/floorTables';
+import { countLowStockMenuItems } from './services/menuStock';
+import { isStoreCounterArea } from '@shared/editionCapabilities';
+import {
+  checkPaymentOwnership,
+  notifyOwnerOfPayment,
+} from './services/paymentOwnership';
+import {
+  listStationPrintJobs,
+  reprintStationPrintJob,
+} from './services/printJobs';
+import { notifyOwnerOfVoid, printVoidSlip } from './services/voidFollowUp';
+import {
+  describeFloorLayoutProblem,
+  floorLayoutProblem,
+} from '@shared/floorLayoutCheck';
 import {
   backfillTableOccupancyFromSyncState,
   listOccupiedTables,
@@ -316,6 +339,7 @@ import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
   decideTicketRequest,
+  markTicketRequestsApplied,
 } from './services/ticketRequests';
 import { stockLinesFromPayload } from './services/ticketLogWrite';
 import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
@@ -438,17 +462,8 @@ app.on('second-instance', (_event, argv) => {
 });
 
 function broadcastPrinterEvent(payload: any) {
-  try {
-    for (const w of BrowserWindow.getAllWindows()) {
-      try {
-        if (!w.isDestroyed()) w.webContents.send('printer:event', payload);
-      } catch {
-        // ignore
-      }
-    }
-  } catch {
-    // ignore
-  }
+  // Till windows and phones (SSE) alike; see `realtime.broadcastPrinterEvent`.
+  broadcastPrinterEventEverywhere(payload);
 }
 
 function forceLogoutSender(sender: any, reason: string) {
@@ -2615,6 +2630,12 @@ ipcHandle('print:cancelRetry', async (_e, payload) => {
   return { ok: true };
 });
 
+// Kitchen slips that have not printed; any POS staff may reprint one.
+ipcHandle('print:listStationJobs', async () => listStationPrintJobs());
+ipcHandle('print:reprintStationJob', async (_e, payload) =>
+  reprintStationPrintJob(Number((payload as any)?.id || 0)),
+);
+
 ipcHandle('system:openExternal', async (_e, payload) => {
   try {
     const { openExternalUrl } = await import('./services/openExternalUrl');
@@ -2801,16 +2822,44 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
     }
 
     const kind = String(meta?.kind || '').toUpperCase();
+    let payOwnerId: number | null = null;
     if (kind === 'PAYMENT' && !isPaymentReprint(meta)) {
+      const exists = await checkFloorTable(area, tableLabel);
+      if (!exists.ok) {
+        return {
+          ok: false,
+          code: exists.code,
+          error: exists.error,
+          permanent: true,
+        } as any;
+      }
       if (!(await tableIsOpenForPayment(area, tableLabel))) {
         return tableAlreadyPaidResult();
+      }
+      // Owner, cashier or admin only (`paymentOwnership.ts`).
+      if (!isStoreCounterArea(area) && ctx?.session) {
+        const owns = await checkPaymentOwnership({
+          area,
+          tableLabel,
+          actorUserId: Number(ctx.session.userId),
+          actorRole: ctx.session.role,
+        });
+        if (!owns.ok) return owns as any;
+        payOwnerId = owns.ownerId;
       }
       const approvalRefused = await checkPaymentApproval({
         settings,
         meta,
         actorIsAdmin: ctx?.session?.role === 'ADMIN',
+        // One approval, one payment (see `approvalUse.ts`).
         approvalIsValid: async (token, adminId) =>
-          isApprovalValidFor(token, adminId),
+          claimApprovalFor(
+            token,
+            adminId,
+            approvalScope('PAYMENT', area, tableLabel),
+            idempotencyKey,
+            { anyKeyInScope: true },
+          ),
       });
       if (approvalRefused) return approvalRefused;
       if (meta) delete meta.managerApprovalToken;
@@ -3037,6 +3086,14 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
     const dispatchOpts = { persistRetryOnTransientFailure: true };
 
     if (paymentPrintWaitsForPrinters(kind)) {
+      if (kind === 'PAYMENT' && !isPaymentReprint(meta) && ctx?.session) {
+        await notifyOwnerOfPayment({
+          area,
+          tableLabel,
+          ownerId: payOwnerId,
+          actorUserId: Number(ctx.session.userId),
+        });
+      }
       const result: DispatchResult = await dispatchTicket(
         payload,
         settings as any,
@@ -3099,6 +3156,8 @@ ipcHandle('tables:setOpen', async (_e, input) => {
   const label = String(input?.label || '');
   const open = Boolean(input?.open);
   assertStoreCounterAllowed(area);
+  // Only tables on the floor plan can be opened (`floorTables.ts`).
+  if (open && !(await checkFloorTable(area, label)).ok) return false;
   return setTableOpenWithSideEffects(area, label, open, {
     intentAt: resolveHostIntent(input || {}),
   });
@@ -3240,13 +3299,7 @@ ipcHandle('admin:getOverview', async (_e) => {
     prisma.user.count({ where: { active: true } }),
     prisma.dayShift.count({ where: { closedAt: null } }),
     (async () => coreServices.countOpenTables().catch(() => 0))(),
-    prisma.inventoryItem
-      .count({
-        where: {
-          qtyOnHand: { lt: prisma.inventoryItem.fields.lowStockThreshold },
-        },
-      })
-      .catch(() => 0),
+    countLowStockMenuItems(prisma),
     prisma.printJob.count({ where: { status: 'QUEUED' } }).catch(() => 0),
     prisma.syncState
       .findUnique({ where: { key: 'menu:lastSync' } })
@@ -3403,7 +3456,9 @@ ipcHandle('admin:getOverview', async (_e) => {
     lastMenuSync: (menuSync as any)?.updatedAt?.toISOString?.() ?? null,
     lastStaffSync: (staffSync as any)?.updatedAt?.toISOString?.() ?? null,
     printerIp: process.env.PRINTER_IP ?? null,
-    appVersion: process.env.npm_package_version || '0.1.0',
+    // The packaged app's own version (npm_package_version only exists
+    // under `pnpm dev`, so a real till reported 0.1.0).
+    appVersion: app.getVersion(),
     revenueTodayNet,
     revenueTodayVat,
     fiscalEnabled: fiscalVatEnabled,
@@ -4085,15 +4140,43 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   // Only an admin correction can undo that, so refuse here before anything
   // is written — including the audit notification, which would otherwise
   // record a void that never happened.
+  // One approval, one void: the PIN a manager typed for this line cannot
+  // be reused on the next one (see `approvalUse.ts`).
+  const voidItemKey = String((input as any)?.idempotencyKey || '');
+  const approvalScopeKey = approvalScope(
+    'VOID_ITEM',
+    area,
+    tableLabel,
+    voidLineIdentity(item),
+  );
+  const usesApproval = !actorIsAdmin && Boolean(approvedByAdminToken);
+  if (
+    usesApproval &&
+    !claimApprovalFor(
+      approvedByAdminToken,
+      approvedByAdminId,
+      approvalScopeKey,
+      voidItemKey,
+    )
+  ) {
+    return false;
+  }
   // Locked, versioned and idempotent: see `voidTicketItem`.
-  const voidReport: { qty?: number; name?: string } = {};
+  const voidReport: {
+    qty?: number;
+    name?: string;
+    line?: Record<string, unknown>;
+  } = {};
   const voided = await voidTicketItem({
     area,
     tableLabel,
     item,
-    idempotencyKey: String((input as any)?.idempotencyKey || ''),
+    idempotencyKey: voidItemKey,
     report: voidReport,
   });
+  if ((voided === 'paid' || voided === 'not-found') && usesApproval) {
+    releaseApprovalUse(approvedByAdminToken, approvalScopeKey);
+  }
   if (voided === 'paid') return false;
   // A retry of a void that already landed: nothing more to record.
   if (voided === 'duplicate') return true;
@@ -4132,6 +4215,16 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
     // best-effort
   }
   await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(() => false);
+  await notifyOwnerOfVoid({ area, tableLabel, actorUserId: userId, message });
+  if (voidReport.line) {
+    void printVoidSlip({
+      area,
+      tableLabel,
+      lines: [voidReport.line],
+      actorUserId: userId,
+      whole: false,
+    });
+  }
   // Removing a line from a ticket already declared to the tax service
   // changes the amount on a filed invoice.
   await flagVoidAfterFiscalization({
@@ -4236,6 +4329,19 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
     if (planTicketVoid((sitting?.itemsJson as any[]) || []).outcome === 'paid')
       return false;
   }
+  // One approval, one void (see `approvalUse.ts`).
+  if (
+    !actorIsAdmin &&
+    approvedByAdminToken &&
+    !claimApprovalFor(
+      approvedByAdminToken,
+      approvedByAdminId,
+      approvalScope('VOID_TICKET', area, tableLabel),
+      voidKey,
+    )
+  ) {
+    return false;
+  }
 
   const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
   // Notify actor + all admins (anti-theft audit trail)
@@ -4259,6 +4365,12 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   } catch {
     // ignore
   }
+  // Read before the void: it closes the sitting.
+  const ownerBeforeVoid = await getCurrentSessionOwnerId(
+    area,
+    tableLabel,
+  ).catch(() => null);
+  const ticketVoidReport: { lines?: unknown[] } = {};
   // Bill, fiscal check, KDS and close in one table lock, so no Send can
   // land between the void and the close. The fiscal check and the KDS
   // cards need the sitting still open, so they run just before the close.
@@ -4267,6 +4379,7 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
     tableLabel,
     reason,
     idempotencyKey: voidKey,
+    report: ticketVoidReport,
     beforeClose: async () => {
       await flagVoidAfterFiscalization({
         area,
@@ -4280,6 +4393,23 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
     },
   });
   if (voided === 'paid') return false;
+  if (voided === 'ok') {
+    await notifyOwnerOfVoid({
+      area,
+      tableLabel,
+      actorUserId: userId,
+      message,
+      ownerId: ownerBeforeVoid,
+    });
+    void printVoidSlip({
+      area,
+      tableLabel,
+      lines: ticketVoidReport.lines || [],
+      actorUserId: userId,
+      whole: true,
+      reason,
+    });
+  }
   try {
     broadcastTicketsChanged({
       area,
@@ -4322,7 +4452,15 @@ ipcHandle('admin:correctSale', async (_e, input, ctx) => {
   const approvedByAdminToken = String(
     (input as any)?.approvedByAdminToken || '',
   );
-  if (!isApprovalValidFor(approvedByAdminToken, approvedByAdminId)) {
+  if (
+    !claimApprovalFor(
+      approvedByAdminToken,
+      approvedByAdminId,
+      approvalScope('CORRECT_SALE', orderId, kind),
+      String((input as any)?.idempotencyKey || ''),
+      { anyKeyInScope: true },
+    )
+  ) {
     return { ok: false, error: 'approval-required' };
   }
   const approver = await prisma.user
@@ -4679,6 +4817,8 @@ ipcHandle('layout:save', async (_e, { area, nodes }) => {
   if (getSession(_e.sender.id)?.role !== 'ADMIN') {
     throw new IpcAuthorizationError('forbidden');
   }
+  const problem = floorLayoutProblem(nodes);
+  if (problem) throw new Error(describeFloorLayoutProblem(problem));
   await prisma.syncState.upsert({
     where: { key: globalLayoutKey(a) },
     create: { key: globalLayoutKey(a), valueJson: { nodes } },
@@ -4765,12 +4905,14 @@ ipcHandle('requests:pollApprovedForTable', async (_e, input, ctx) => {
 });
 
 // Mark applied so we don’t re-apply
-ipcHandle('requests:markApplied', async (_e, input) => {
+ipcHandle('requests:markApplied', async (_e, input, ctx) => {
   const ids: number[] = Array.isArray(input?.ids) ? input.ids : [];
   if (!ids.length) return false;
-  await prisma.ticketRequest.updateMany({
-    where: { id: { in: ids }, status: 'APPROVED' as any },
-    data: { status: 'APPLIED' as any, decidedAt: new Date() },
-  } as any);
-  return true;
+  // Owner (or admin) only: see `markTicketRequestsApplied`.
+  const changed = await markTicketRequestsApplied({
+    ids,
+    actorUserId: resolveActorUserId(ctx, (input as any)?.ownerId),
+    actorIsAdmin: ctx?.session?.role === 'ADMIN',
+  });
+  return changed > 0;
 });

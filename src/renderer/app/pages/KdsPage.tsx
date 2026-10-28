@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import { loadPosRealtimeSync } from '../../utils/loadPosRealtimeSync';
 import { initRendererSentry } from '../../utils/sentryBrowser';
 import { BrandMark } from '../../components/BrandMark';
+import { Button } from '../../components/ui/Button';
 import { PageSpinner } from '../../components/PageSpinner';
 import {
   ALL_KDS_STATIONS,
@@ -215,6 +216,11 @@ export default function KdsPage() {
   const [tickets, setTickets] = useState<KdsTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  // The till asks this display for its pairing code (401 on `/kds/*`).
+  const [needsPairing, setNeedsPairing] = useState(false);
+  const [pairCode, setPairCode] = useState('');
+  const [pairBusy, setPairBusy] = useState(false);
+  const [pairErr, setPairErr] = useState<string | null>(null);
   const bumping = useRef<Set<number>>(new Set());
   const bumpingItems = useRef<Set<string>>(new Set());
   const errRef = useRef<string | null>(null);
@@ -811,6 +817,11 @@ export default function KdsPage() {
         setLoading(false);
       } catch (e: any) {
         if (!alive) return;
+        if (Number(e?.status) === 401 && window.api.kds.pair) {
+          setNeedsPairing(true);
+          setLoading(false);
+          return;
+        }
         setErr(e?.message || i18n.t('kds.loadFailed'));
         reportAppError(e, {
           fallback: i18n.t('kds.loadFailed'),
@@ -1266,6 +1277,75 @@ export default function KdsPage() {
       ? devBumpTicket.items[devBumpMenu.itemIdx]
       : undefined;
   const canDevBumpItem = kdsItemIsBumpable(devBumpItem, cooker);
+
+  const submitPairing = async () => {
+    const code = pairCode.trim();
+    if (!code || !window.api.kds.pair) return;
+    setPairBusy(true);
+    setPairErr(null);
+    try {
+      const ok = await window.api.kds.pair(code);
+      if (ok) {
+        setNeedsPairing(false);
+        setPairCode('');
+        setLoading(true);
+        window.location.reload();
+      } else {
+        setPairErr(i18n.t('kds.pairWrongCode'));
+      }
+    } catch (e: any) {
+      setPairErr(
+        Number(e?.status) === 429
+          ? i18n.t('login.tooManyAttempts')
+          : Number(e?.status) === 403
+            ? i18n.t('kds.pairWrongCode')
+            : String(e?.message || i18n.t('kds.loadFailed')),
+      );
+    } finally {
+      setPairBusy(false);
+    }
+  };
+
+  if (needsPairing) {
+    return (
+      <div className="min-h-dvh flex items-center justify-center pos-app pos-app--auth text-gray-100 px-6">
+        <form
+          className="flex w-full max-w-sm flex-col gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitPairing();
+          }}
+        >
+          <BrandMark size="lg" />
+          <div className="text-lg font-semibold">{i18n.t('kds.pairTitle')}</div>
+          <div className="text-sm text-gray-300">{i18n.t('kds.pairHint')}</div>
+          <input
+            className="pos-input text-center tabular"
+            inputMode="numeric"
+            autoFocus
+            value={pairCode}
+            onChange={(e) =>
+              setPairCode(
+                e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 12),
+              )
+            }
+            aria-label={i18n.t('kds.pairTitle')}
+          />
+          {pairErr && <div className="text-sm text-rose-300">{pairErr}</div>}
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            block
+            loading={pairBusy}
+            disabled={!pairCode.trim()}
+          >
+            {i18n.t('kds.pairSubmit')}
+          </Button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div

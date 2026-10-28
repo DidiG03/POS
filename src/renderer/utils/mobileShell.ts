@@ -53,6 +53,29 @@ export async function initMobileShell(): Promise<void> {
       // plugin missing — ignore
     }
 
+    // The on-screen keyboard must not cover the field being typed in (an
+    // item note sat under it). Edge-to-edge Android does not always resize
+    // the WebView, so the keyboard height pads the page and the focused
+    // field is scrolled into view.
+    try {
+      installKeyboardAvoidance(
+        (await import('@capacitor/keyboard')).Keyboard as any,
+      );
+    } catch {
+      // plugin missing — the focus scroll below still helps
+      installKeyboardAvoidance(null);
+    }
+
+    // Android Back moves around the app instead of closing it mid-order.
+    if (Cap.getPlatform?.() === 'android') {
+      try {
+        const { installNativeBackButton } = await import('./nativeBack');
+        await installNativeBackButton();
+      } catch {
+        // plugin missing (app built before `cap sync`) — ignore
+      }
+    }
+
     // Haptics for important outcomes (toasts), not every control tap.
     try {
       const { initButtonHaptics } = await import('./haptics');
@@ -108,6 +131,56 @@ export async function hideMobileSplash(): Promise<void> {
     if (!Cap?.isNativePlatform?.()) return;
     const { SplashScreen } = await import('@capacitor/splash-screen');
     await SplashScreen.hide({ fadeOutDuration: 180 });
+  } catch {
+    // ignore
+  }
+}
+
+function isTextField(el: EventTarget | null): el is HTMLElement {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  if (tag === 'TEXTAREA' || el.isContentEditable) return true;
+  if (tag !== 'INPUT') return false;
+  const type = String((el as HTMLInputElement).type || 'text');
+  return !['checkbox', 'radio', 'button', 'submit', 'range'].includes(type);
+}
+
+function revealFocused(): void {
+  const el = document.activeElement;
+  if (!isTextField(el)) return;
+  try {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  } catch {
+    el.scrollIntoView();
+  }
+}
+
+export function installKeyboardAvoidance(
+  keyboard: {
+    addListener: (
+      name: string,
+      cb: (info: { keyboardHeight?: number }) => void,
+    ) => unknown;
+  } | null,
+): void {
+  const root = document.documentElement;
+  document.addEventListener('focusin', (e) => {
+    if (!isTextField(e.target)) return;
+    // After the keyboard has animated in.
+    window.setTimeout(revealFocused, 320);
+  });
+  if (!keyboard) return;
+  try {
+    void keyboard.addListener('keyboardDidShow', (info) => {
+      const h = Math.max(0, Number(info?.keyboardHeight) || 0);
+      root.style.setProperty('--pos-keyboard-h', `${h}px`);
+      root.dataset.keyboard = 'open';
+      revealFocused();
+    });
+    void keyboard.addListener('keyboardDidHide', () => {
+      root.style.setProperty('--pos-keyboard-h', '0px');
+      delete root.dataset.keyboard;
+    });
   } catch {
     // ignore
   }

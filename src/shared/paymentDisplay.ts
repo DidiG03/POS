@@ -131,6 +131,25 @@ export function splitEvenly(
   return { guests: g, perPerson, lastPerson };
 }
 
+/**
+ * The guests' shares as they add up to the bill: "€7.13 + €7.12" for two,
+ * "3 × €5.00 + €4.99" for more, "2 × €7.00" when they come out even. A bare
+ * "2 × €7.13" for a €14.25 bill was a cent off and did not say who pays it.
+ */
+export function splitSharesText(
+  split: { guests: number; perPerson: number; lastPerson: number },
+  format: (amount: number) => string,
+): string {
+  const g = Math.max(1, Math.floor(split.guests));
+  if (g === 1) return format(split.lastPerson);
+  if (Math.abs(split.perPerson - split.lastPerson) < 0.005) {
+    return `${g} × ${format(split.perPerson)}`;
+  }
+  const head =
+    g === 2 ? format(split.perPerson) : `${g - 1} × ${format(split.perPerson)}`;
+  return `${head} + ${format(split.lastPerson)}`;
+}
+
 export function cashChangeDue(tendered: number, due: number): number {
   const paid = Number(tendered);
   const d = Number(due);

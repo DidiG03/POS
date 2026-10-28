@@ -51,6 +51,15 @@ function defaultTimeoutMs(level: ToastLevel): number {
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
   push: (t) => {
+    // The same message again (a repeated tap, a retry loop) refreshes the
+    // toast already showing instead of stacking a copy under it.
+    const twin = get().toasts.find(
+      (x) =>
+        x.level === t.level &&
+        (x.title || '') === (t.title || '') &&
+        x.message === t.message,
+    );
+    if (twin) get().remove(twin.id);
     const id = genId();
     const createdAt = Date.now();
     const timeoutMs =

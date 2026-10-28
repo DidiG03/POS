@@ -83,6 +83,8 @@ export default function AppLayout() {
     Boolean((window as any).__BROWSER_CLIENT__);
   const [netOk, setNetOk] = useState(true);
   const [backendOk, setBackendOk] = useState(true);
+  // Orders/payments saved on this device and not yet at the till.
+  const [queuedCount, setQueuedCount] = useState(0);
   const [queued, setQueued] = useState<number>(0);
   const [syncOk, setSyncOk] = useState<boolean>(true);
   const [loadUpdater, setLoadUpdater] = useState(false);
@@ -257,8 +259,30 @@ export default function AppLayout() {
     };
     tick();
     const t = window.setInterval(tick, 20_000);
+    window.addEventListener('pos:reconnect', tick);
     return () => {
       cancelled = true;
+      window.clearInterval(t);
+      window.removeEventListener('pos:reconnect', tick);
+    };
+  }, [isBrowserClient]);
+
+  useEffect(() => {
+    if (!isBrowserClient) return;
+    let cancelled = false;
+    const refresh = () => {
+      void getOfflineQueueCount()
+        .then((n) => {
+          if (!cancelled) setQueuedCount(Number(n) || 0);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    window.addEventListener('offline-queue:changed', refresh);
+    const t = window.setInterval(refresh, 10_000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('offline-queue:changed', refresh);
       window.clearInterval(t);
     };
   }, [isBrowserClient]);
@@ -300,10 +324,19 @@ export default function AppLayout() {
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
     const tick = async () => {
       if (isHidden()) return;
-      const notifs = await window.api.notifications
-        .list(user.id, true)
-        .catch(() => []);
-      if (!cancelled) setUnreadCount(notifs.length || 0);
+      const [notifs, pending] = await Promise.all([
+        window.api.notifications.list(user.id, true).catch(() => []),
+        // Requests waiting on this waiter's answer stay on the badge even
+        // after their notification was read.
+        window.api.requests?.listForOwner
+          ? window.api.requests.listForOwner(user.id).catch(() => [])
+          : Promise.resolve([]),
+      ]);
+      const unread = (Array.isArray(notifs) ? notifs : []).filter(
+        (n: any) => !/requested to add items/i.test(String(n?.message || '')),
+      ).length;
+      if (!cancelled)
+        setUnreadCount(unread + (Array.isArray(pending) ? pending.length : 0));
     };
     void tick();
     const t = window.setInterval(tick, 20000);
@@ -488,10 +521,36 @@ export default function AppLayout() {
         )}
       </Modal>
 
-      {isBrowserClient && (!netOk || !backendOk) && (
-        <div className="flex items-center justify-center gap-2 border-b border-amber-500/25 bg-amber-500/12 px-4 py-1.5 text-[12px] font-medium text-amber-200">
+      {isBrowserClient && (!netOk || !backendOk || queuedCount > 0) && (
+        <div
+          role="status"
+          className="flex items-center justify-center gap-2 border-b border-amber-500/25 bg-amber-500/12 px-4 py-1.5 text-[12px] font-medium text-amber-200"
+        >
           <IconWifiOff className="size-[15px] shrink-0" />
-          {t('layout.networkBanner')}
+          <span className="min-w-0">
+            {/* Wi-Fi up but the till silent is its own state: the waiter
+                needs to know it is the till, and how to try again. */}
+            {netOk && !backendOk
+              ? t('layout.tillUnreachable')
+              : !netOk
+                ? t('layout.networkBanner')
+                : ''}
+            {queuedCount > 0
+              ? ` ${t('layout.queuedWaiting', { count: queuedCount })}`
+              : ''}
+          </span>
+          {netOk && !backendOk ? (
+            <button
+              type="button"
+              className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 text-amber-100"
+              onClick={() => {
+                window.dispatchEvent(new Event('pos:reconnect'));
+                window.dispatchEvent(new Event('focus'));
+              }}
+            >
+              {t('common.retry')}
+            </button>
+          ) : null}
         </div>
       )}
 

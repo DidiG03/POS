@@ -36,6 +36,7 @@ import {
 import { toast } from '../../stores/toasts';
 import {
   classifyLanLoginError,
+  lanLoginTitleKey,
   lanLoginUserMessage,
 } from '../../utils/lanLoginError';
 import { captureRendererException } from '../../utils/sentryBrowser';
@@ -148,8 +149,8 @@ export default function LoginPage() {
     navigate(staffPosHomePath({ hasTables, clockOnly, kds }));
   };
 
-  const showLoginMessage = (message: string) => {
-    toast.error(message, { timeoutMs: 5_000 });
+  const showLoginMessage = (message: string, title?: string) => {
+    toast.error(message, { timeoutMs: 5_000, title });
   };
 
   const clearStoredPairing = () => {
@@ -271,13 +272,16 @@ export default function LoginPage() {
         setUser(user);
         goStaffHome(user, isKdsContext);
       } else {
-        showLoginMessage(t('login.invalidPin'));
+        setPin('');
+        showLoginMessage(t('login.invalidPin'), t('login.wrongPinTitle'));
       }
     } catch (e: unknown) {
       console.error(e);
       const kind = classifyLanLoginError(e);
       if (kind === 'pairing') clearStoredPairing();
-      showLoginMessage(lanLoginUserMessage(e, t));
+      // A wrong or locked PIN is retyped from scratch, never appended to.
+      if (kind === 'invalid_pin' || kind === 'locked') setPin('');
+      showLoginMessage(lanLoginUserMessage(e, t), t(lanLoginTitleKey(e)));
       if (kind === 'host' || kind === 'other') {
         captureRendererException(e, { source: 'login' });
       }

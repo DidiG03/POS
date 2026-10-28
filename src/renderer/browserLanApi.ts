@@ -19,6 +19,7 @@ import {
   recordSuccess,
   readRetryAttempts,
   setPreferredScheme,
+  isHostUnreachable,
 } from './utils/netQuality';
 import {
   emitPosSyncCatchup,
@@ -133,7 +134,20 @@ export function installBrowserLanApi(): void {
       // Host PIN first; the waiter token still works for merge saves.
       return hostApiToken() || readStoredToken(TOKEN_KEY_POS) || getToken();
     }
+    if (pathname.startsWith('/kds/')) {
+      // A kitchen display without a staff session uses its device token.
+      return getToken() || readKdsDeviceToken();
+    }
     return getToken();
+  }
+
+  const KDS_DEVICE_TOKEN_KEY = 'pos.kdsDeviceToken';
+  function readKdsDeviceToken(): string | null {
+    try {
+      return localStorage.getItem(KDS_DEVICE_TOKEN_KEY) || null;
+    } catch {
+      return null;
+    }
   }
 
   const pickBackend = () => {
@@ -180,6 +194,8 @@ export function installBrowserLanApi(): void {
    * into a queued retry the waiter has to wait out.
    */
   const LAN_PRINT_TIMEOUT_MS = 90_000;
+  /** Reads while the till is known to be unreachable. */
+  const UNREACHABLE_GET_TIMEOUT_MS = 2_500;
 
   function companionLanApi():
     | {
@@ -581,6 +597,15 @@ export function installBrowserLanApi(): void {
         es.addEventListener('users', (ev: any) => {
           applySseNamedEvent('users', ev?.data || '{}');
         });
+        // Printer down / back, same toast as on the till.
+        es.addEventListener('printer', (ev: any) => {
+          try {
+            const detail = JSON.parse(String(ev?.data || '{}'));
+            window.dispatchEvent(new CustomEvent('printer:event', { detail }));
+          } catch {
+            // ignore a malformed event
+          }
+        });
         es.addEventListener('apps-update', (ev: any) => {
           applySseNamedEvent('apps-update', ev?.data || '{}');
         });
@@ -732,6 +757,8 @@ export function installBrowserLanApi(): void {
     status: number;
     code?: string;
     permanent?: boolean;
+    data?: Record<string, unknown>;
+    retryAfterMs?: number;
     constructor(
       status: number,
       message?: string,
@@ -748,9 +775,12 @@ export function installBrowserLanApi(): void {
   // Extract `{ error, code, permanent }` from an error response body when
   // present so user-facing surfaces (e.g. fiscal 409) get the real message
   // instead of the bare HTTP status code.
-  async function readErrorMessage(
-    r: Response,
-  ): Promise<{ message?: string; code?: string; permanent?: boolean }> {
+  async function readErrorMessage(r: Response): Promise<{
+    message?: string;
+    code?: string;
+    permanent?: boolean;
+    body?: Record<string, unknown>;
+  }> {
     try {
       const ct = r.headers.get('content-type') || '';
       if (!ct.includes('application/json')) return {};
@@ -764,7 +794,7 @@ export function installBrowserLanApi(): void {
             : undefined;
       const code = typeof body.code === 'string' ? body.code : undefined;
       const permanent = body.permanent === true ? true : undefined;
-      return { message, code, permanent };
+      return { message, code, permanent, body };
     } catch {
       return {};
     }
@@ -837,7 +867,13 @@ export function installBrowserLanApi(): void {
       return 15_000;
     }
     if (path.includes('/print')) return LAN_PRINT_TIMEOUT_MS;
-    if (method === 'GET' || method === 'HEAD') return CLIENT_GET_TIMEOUT_MS;
+    if (method === 'GET' || method === 'HEAD') {
+      // Once the till has stopped answering, a read fails fast instead of
+      // holding the floor plan blank for 10 s per try (`isHostUnreachable`).
+      return isHostUnreachable()
+        ? UNREACHABLE_GET_TIMEOUT_MS
+        : CLIENT_GET_TIMEOUT_MS;
+    }
     return CLIENT_TIMEOUT_MS;
   }
 
@@ -846,7 +882,9 @@ export function installBrowserLanApi(): void {
     if (pathname === '/auth/login' || pathname === '/pairing/verify') return 1;
     // Never repeat a ledger rebuild: the second run would report a failure.
     if (VAULT_MAINTENANCE_PATHS.has(pathname)) return 1;
-    if (method === 'GET' || method === 'HEAD') return readRetryAttempts();
+    if (method === 'GET' || method === 'HEAD') {
+      return isHostUnreachable() ? 1 : readRetryAttempts();
+    }
     return 2;
   }
 
@@ -925,8 +963,15 @@ export function installBrowserLanApi(): void {
       }
       if (!r.ok) {
         maybeForceLogout(r.status, token, requestGeneration, path);
-        const { message, code, permanent } = await readErrorMessage(r);
-        throw new HttpError(r.status, message, code, permanent);
+        const { message, code, permanent, body } = await readErrorMessage(r);
+        const err = new HttpError(r.status, message, code, permanent);
+        // Extra fields (retryAfterMs, the stock or print details) for the
+        // screens that explain them.
+        if (body) err.data = body;
+        if (body && Number.isFinite(Number(body.retryAfterMs))) {
+          err.retryAfterMs = Number(body.retryAfterMs);
+        }
+        throw err;
       }
       if (base.startsWith('https:')) setPreferredScheme('https');
       else setPreferredScheme('http');
@@ -978,7 +1023,8 @@ export function installBrowserLanApi(): void {
         try {
           const resp = await goLan('/auth/login', {
             method: 'POST',
-            body: JSON.stringify({ pin, userId, pairingCode }),
+            // v2: a wrong PIN answers with the attempts left on this device.
+            body: JSON.stringify({ pin, userId, pairingCode, v: 2 }),
           });
           if (resp && typeof resp === 'object' && 'token' in resp) {
             const t = (resp as any).token;
@@ -987,6 +1033,17 @@ export function installBrowserLanApi(): void {
             return (resp as any).user ?? null;
           }
           if (resp == null) return null;
+          if (
+            resp &&
+            typeof resp === 'object' &&
+            (resp as any).code === 'WRONG_PIN'
+          ) {
+            const left = Number((resp as any).attemptsLeft);
+            throw Object.assign(new Error('Wrong PIN'), {
+              code: 'WRONG_PIN',
+              attemptsLeft: Number.isFinite(left) ? left : undefined,
+            });
+          }
           throw new Error(
             typeof resp === 'string' && resp.trim()
               ? resp.trim()
@@ -1571,9 +1628,43 @@ export function installBrowserLanApi(): void {
         });
       },
     },
+    print: {
+      async listRetries() {
+        return [];
+      },
+      async cancelRetry() {
+        return { ok: false, error: 'not available on this device' };
+      },
+      async listStationJobs() {
+        const rows = await goLan('/print/jobs');
+        return Array.isArray(rows) ? rows : [];
+      },
+      async reprintStationJob(id: number) {
+        const r = (await goLan('/print/jobs/reprint', {
+          method: 'POST',
+          body: JSON.stringify({ id }),
+        })) as any;
+        return { ok: Boolean(r?.ok), error: r?.error };
+      },
+    },
     kds: {
       async openWindow() {
         return false;
+      },
+      /** Pair this kitchen display with the till's pairing code. */
+      async pair(pairingCode: string) {
+        const r = (await goLan('/kds/pair', {
+          method: 'POST',
+          body: JSON.stringify({ pairingCode }),
+        })) as any;
+        const token = typeof r?.token === 'string' ? r.token : '';
+        if (!token) return false;
+        try {
+          localStorage.setItem(KDS_DEVICE_TOKEN_KEY, token);
+        } catch {
+          // ignore: the display asks again next launch
+        }
+        return true;
       },
       async listTickets(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();

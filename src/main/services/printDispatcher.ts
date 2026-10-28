@@ -44,6 +44,10 @@ import {
   sendToPrinterVerbose,
   type TicketPrintPayload,
 } from '../print';
+import {
+  notifyStationPrintFailed,
+  notifyStationPrintQueued,
+} from './printJobNotify';
 
 export type PrinterMode = 'NETWORK' | 'SYSTEM' | 'SERIAL';
 
@@ -479,14 +483,55 @@ async function buildOrderBuckets(
 /**
  * Backoff schedule for the persisted retry queue. The first element is
  * the wait BEFORE the SECOND attempt (because attempt 1 is the
- * synchronous live one), and so on. Total ceiling: ~4 minutes —
- * intentionally chosen to be longer than a typical printer
- * power-cycle / paper-reload but short enough that a stale ticket
- * doesn't surprise the kitchen 10 minutes later. Anything past the
- * last entry is treated as "permanent fail".
+ * synchronous live one), and so on.
+ *
+ * Receipts give up after ~4 minutes (the payment is recorded either way).
+ * Kitchen and bar slips used to give up on the same schedule: a printer
+ * that was off for five minutes lost every order sent meanwhile, nothing
+ * printed when it came back, and nobody was told. They now keep trying
+ * every {@link STATION_RETRY_EVERY_MS} for {@link STATION_RETRY_WINDOW_MS},
+ * so they print within seconds of the printer coming back, marked late.
  */
 const RETRY_DELAYS_MS = [5_000, 15_000, 60_000, 180_000];
 export const RETRY_MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1; // 5 incl. the live one
+const STATION_RETRY_DELAYS_MS = [5_000, 15_000];
+export const STATION_RETRY_EVERY_MS = 30_000;
+export const STATION_RETRY_WINDOW_MS = 2 * 60 * 60_000;
+
+/** Kitchen/bar slips (orders and voids), as opposed to guest receipts. */
+export function isStationSlip(payload: unknown): boolean {
+  const kind = String((payload as any)?.meta?.kind || '').toUpperCase();
+  return kind === 'ORDER';
+}
+
+/**
+ * What happens after `attempts` failed physical attempts of one job:
+ * wait `delayMs` and try again, or give up.
+ */
+export function printRetryPlan(input: {
+  attempts: number;
+  station: boolean;
+  /** When the job first failed (its row's createdAt). */
+  firstFailedAt: number;
+  now?: number;
+}): { status: 'RETRY'; delayMs: number } | { status: 'FAILED' } {
+  const attempts = Math.max(1, Number(input.attempts) || 1);
+  const now = input.now ?? Date.now();
+  if (input.station) {
+    if (now - input.firstFailedAt >= STATION_RETRY_WINDOW_MS) {
+      return { status: 'FAILED' };
+    }
+    return {
+      status: 'RETRY',
+      delayMs: STATION_RETRY_DELAYS_MS[attempts - 1] ?? STATION_RETRY_EVERY_MS,
+    };
+  }
+  if (attempts >= RETRY_MAX_ATTEMPTS) return { status: 'FAILED' };
+  return {
+    status: 'RETRY',
+    delayMs: RETRY_DELAYS_MS[attempts - 1] ?? RETRY_DELAYS_MS.at(-1)!,
+  };
+}
 
 export type RetryWakeup = (dueAtMs: number) => void;
 let retryWakeup: RetryWakeup | null = null;
@@ -509,26 +554,46 @@ function ticketTypeFor(payload: TicketPrintPayload): string {
 }
 
 /**
- * Persist a failed print as a RETRY row (or FAILED if exhausted).
+ * Persist a failed print as a RETRY row (or FAILED if exhausted). One row
+ * per job: the printer-station loop updates this row on every later
+ * attempt (see `printerStation.ts`), so the print log shows one line with
+ * its attempt count and final status instead of a FAILED row per try.
  *
  * `priorAttempts` is "how many physical attempts have already been made
- * including the one that just failed". So the very first retry row a
- * caller creates passes priorAttempts=1. The loop, when re-enqueueing
- * after a retry attempt, passes the row's existing `attempts + 1`.
+ * including the one that just failed", so a first failure passes 1.
+ *
+ * A kitchen slip entering the queue tells the till, every phone and the
+ * waiter who sent it (see `printJobNotify.ts`).
  */
 export async function enqueuePrintRetry(args: {
   payload: TicketPrintPayload;
   printerProfileId: string;
   error: string;
   priorAttempts: number;
+  printerName?: string;
 }): Promise<{ status: 'RETRY' | 'FAILED'; nextAttemptAt?: Date }> {
   const attempts = Math.max(1, Number(args.priorAttempts || 0));
-  if (attempts >= RETRY_MAX_ATTEMPTS) {
+  const station = isStationSlip(args.payload);
+  // When the order was sent, so a late print can say so.
+  const payload = {
+    ...args.payload,
+    meta: {
+      ...((args.payload as any)?.meta || {}),
+      sentAtIso:
+        (args.payload as any)?.meta?.sentAtIso || new Date().toISOString(),
+    },
+  } as TicketPrintPayload;
+  const plan = printRetryPlan({
+    attempts,
+    station,
+    firstFailedAt: Date.now(),
+  });
+  if (plan.status === 'FAILED') {
     try {
       await prisma.printJob.create({
         data: {
-          type: ticketTypeFor(args.payload) as any,
-          payloadJson: args.payload as any,
+          type: ticketTypeFor(payload) as any,
+          payloadJson: payload as any,
           status: 'FAILED' as any,
           attempts,
           lastError: args.error || null,
@@ -546,17 +611,22 @@ export async function enqueuePrintRetry(args: {
         `[PrinterRetry] FAILED row write rejected: ${e?.message || e}`,
       );
     }
+    if (station) {
+      await notifyStationPrintFailed({
+        payload,
+        printerName: args.printerName,
+        error: args.error,
+      });
+    }
     return { status: 'FAILED' };
   }
 
-  // RETRY_DELAYS_MS[0] is the gap between attempt 1 and attempt 2.
-  const delay = RETRY_DELAYS_MS[attempts - 1] ?? RETRY_DELAYS_MS.at(-1)!;
-  const nextAttemptAt = new Date(Date.now() + delay);
+  const nextAttemptAt = new Date(Date.now() + plan.delayMs);
   try {
     await prisma.printJob.create({
       data: {
-        type: ticketTypeFor(args.payload) as any,
-        payloadJson: args.payload as any,
+        type: ticketTypeFor(payload) as any,
+        payloadJson: payload as any,
         status: 'RETRY' as any,
         attempts,
         lastError: args.error || null,
@@ -566,7 +636,7 @@ export async function enqueuePrintRetry(args: {
     });
     console.log(
       `[PrinterRetry] Queued attempt #${attempts + 1} for printer=${args.printerProfileId} in ${Math.round(
-        delay / 1000,
+        plan.delayMs / 1000,
       )}s (error: ${args.error})`,
     );
   } catch (e: any) {
@@ -574,6 +644,9 @@ export async function enqueuePrintRetry(args: {
       `[PrinterRetry] RETRY row write rejected: ${e?.message || e}`,
     );
     return { status: 'FAILED' };
+  }
+  if (station) {
+    await notifyStationPrintQueued({ payload, printerName: args.printerName });
   }
 
   // Wake the loop early so it doesn't snooze through this retry.
@@ -762,6 +835,7 @@ export async function dispatchTicket(
       printerProfileId: profileId,
       error: error || 'transient print failure',
       priorAttempts,
+      printerName: pickPrinterProfile(settings, profileId)?.name,
     });
   };
 

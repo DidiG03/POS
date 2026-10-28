@@ -73,6 +73,14 @@ async function startRenderer() {
     installPosReadCache();
     installCompanionUpdaterBridge();
 
+    // Waiter phone: bring back the sign-in and unsent order if Android
+    // killed the app in the background (`durableNativeState.ts`).
+    {
+      const durable = await import('./utils/durableNativeState');
+      await durable.restoreDurableNativeState();
+      void durable.installDurableNativeState();
+    }
+
     if (typeof window !== 'undefined') {
       bootTrace('renderer:modules');
       installWakeUiRecovery();

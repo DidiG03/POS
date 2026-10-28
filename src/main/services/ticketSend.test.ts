@@ -11,6 +11,10 @@ const h = vi.hoisted(() => ({
   ensured: [] as string[],
   keyRows: [] as any[],
   sessionKey: 'Salla\u001f4\u001f2026' as string | null,
+  /** Menu by sku: name, price. Missing = not on the menu. */
+  menu: null as Map<string, { name: string; price: number }> | null,
+  floorOk: true,
+  stockError: null as any,
 }));
 
 vi.mock('@db/client', () => ({
@@ -28,7 +32,39 @@ vi.mock('@db/client', () => ({
         async ({ where }: any) => h.users.get(where.id) || null,
       ),
     },
+    menuItem: {
+      findMany: vi.fn(async ({ where }: any) =>
+        h.menu
+          ? (where.sku.in as string[])
+              .filter((sku) => h.menu!.has(sku))
+              .map((sku) => ({ sku, name: h.menu!.get(sku)!.name }))
+          : [],
+      ),
+    },
   },
+}));
+vi.mock('./linePricing', () => ({
+  // Menu price for known items; unknown ones reported, as the real one does.
+  repriceLinesFromMenu: vi.fn(async ({ items }: any) => {
+    if (!h.menu) return { items, issues: [] };
+    const issues: any[] = [];
+    const out = (items as any[]).map((l) => {
+      const m = h.menu!.get(String(l.sku));
+      if (!m) {
+        issues.push({ kind: 'unknown', sku: l.sku, name: l.name });
+        return l;
+      }
+      return { ...l, unitPrice: m.price };
+    });
+    return { items: out, issues };
+  }),
+}));
+vi.mock('./floorTables', () => ({
+  checkFloorTable: vi.fn(async () =>
+    h.floorOk
+      ? { ok: true }
+      : { ok: false, code: 'UNKNOWN_TABLE', error: 'There is no table "X1"' },
+  ),
 }));
 vi.mock('./core', () => ({
   withTableLock: (_a: string, _l: string, fn: () => any) => fn(),
@@ -49,11 +85,13 @@ vi.mock('./tableSession', () => ({
 }));
 vi.mock('./ticketLogWrite', () => ({
   writeTicketSnapshot: vi.fn(async (input: any) => {
+    if (h.stockError) throw h.stockError;
     h.written.push(input);
     return 'written';
   }),
 }));
 
+import { OutOfStockError } from './menuStock';
 import {
   linesNewToBill,
   recordTicketSend,
@@ -94,6 +132,9 @@ beforeEach(() => {
   h.ensured = [];
   h.keyRows = [];
   h.sessionKey = 'Salla\u001f4\u001f2026';
+  h.menu = null;
+  h.floorOk = true;
+  h.stockError = null;
 });
 
 describe('recordTicketSend', () => {
@@ -178,9 +219,10 @@ describe('recordTicketSend', () => {
 });
 
 describe('a screen still showing a closed bill', () => {
-  it('cannot start a new sitting with the old, paid lines', async () => {
+  it('drops the old, paid lines and still takes the new order', async () => {
     // The table was paid on another device; this phone's cart still has the
-    // coffee its earlier Send (old-send) put on that sitting.
+    // coffee its earlier Send (old-send) put on that sitting. Refusing the
+    // whole Send left the free table unusable from this phone.
     h.open = false;
     h.sessionKey = null;
     h.keyRows = [
@@ -193,7 +235,23 @@ describe('a screen still showing a closed bill', () => {
         { ...kafe, sendKey: 'old-send' },
         { ...birre, sendKey: 'new-send' },
       ],
-      addedItems: [birre],
+      addedItems: [{ ...birre, sendKey: 'new-send' }],
+      capturedAt: Date.now(),
+    });
+    expect(r).toMatchObject({ ok: true, written: true });
+    expect(h.written[0].items.map((l: any) => l.sku)).toEqual(['BIRRE']);
+  });
+
+  it('refuses a Send that only carries the old, paid lines', async () => {
+    h.open = false;
+    h.sessionKey = null;
+    h.keyRows = [
+      { idempotencyKey: 'old-send', sessionKey: 'Salla\u001f4\u001fyesterday' },
+    ];
+    const r = await recordTicketSend({
+      ...base,
+      idempotencyKey: 'new-send',
+      items: [{ ...kafe, sendKey: 'old-send' }],
       capturedAt: Date.now(),
     });
     expect(r).toMatchObject({ ok: false, code: 'TABLE_CLOSED' });
@@ -361,5 +419,82 @@ describe('validateTicketSendLines', () => {
     });
     expect(r).toMatchObject({ ok: false, code: 'INVALID_ORDER' });
     expect(h.written).toHaveLength(0);
+  });
+});
+
+describe('what the device may not decide', () => {
+  it('prices and names lines from the menu, not the phone', async () => {
+    h.menu = new Map([['RIB', { name: 'Ribeye', price: 24 }]]);
+    const r = await recordTicketSend({
+      ...base,
+      items: [
+        {
+          sku: 'RIB',
+          name: 'cheap steak',
+          qty: 1,
+          unitPrice: 0.01,
+          fired: true,
+        },
+      ],
+    });
+    expect(r).toMatchObject({ ok: true, written: true });
+    expect(h.written[0].items[0]).toMatchObject({
+      name: 'Ribeye',
+      unitPrice: 24,
+    });
+  });
+
+  it('refuses an item that is not on the menu', async () => {
+    h.menu = new Map([['RIB', { name: 'Ribeye', price: 24 }]]);
+    const r = await recordTicketSend({
+      ...base,
+      items: [{ sku: 'FAKE', name: 'Free lunch', qty: 1, unitPrice: 0 }],
+    });
+    expect(r).toMatchObject({ ok: false, code: 'INVALID_ORDER' });
+    expect(String((r as any).error)).toContain('not on the menu');
+    expect(h.written).toHaveLength(0);
+  });
+
+  it('keeps an off-menu line that is already on this bill', async () => {
+    h.menu = new Map([['RIB', { name: 'Ribeye', price: 24 }]]);
+    h.latest = {
+      createdAt: new Date(Date.now() - 60_000),
+      itemsJson: [
+        { sku: 'OLD', name: 'Old dish', qty: 1, unitPrice: 5, sendKey: 's0' },
+      ],
+    };
+    const r = await recordTicketSend({
+      ...base,
+      items: [
+        { sku: 'OLD', name: 'Old dish', qty: 1, unitPrice: 5, sendKey: 's0' },
+        {
+          sku: 'RIB',
+          name: 'Ribeye',
+          qty: 1,
+          unitPrice: 24,
+          sendKey: 'send-1',
+        },
+      ],
+    });
+    expect(r).toMatchObject({ ok: true, written: true });
+  });
+
+  it('refuses a table that is not on the floor plan', async () => {
+    h.floorOk = false;
+    const r = await recordTicketSend({ ...base, items: [kafe] });
+    expect(r).toMatchObject({ ok: false, code: 'UNKNOWN_TABLE' });
+    expect(h.ensured).toHaveLength(0);
+    expect(h.written).toHaveLength(0);
+  });
+
+  it('turns a stock refusal into a clear answer', async () => {
+    h.stockError = new OutOfStockError({ sku: 'RIB', name: 'Ribeye' }, 2, 3);
+    const r = await recordTicketSend({ ...base, items: [kafe] });
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'OUT_OF_STOCK',
+      stock: { sku: 'RIB', name: 'Ribeye', remaining: 2 },
+    });
+    expect(String((r as any).error)).toContain('Only 2 Ribeye left');
   });
 });

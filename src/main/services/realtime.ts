@@ -279,3 +279,23 @@ export function broadcastAppsUpdate(payload: AppsUpdatePayload): void {
   broadcastIpc('apps:update', payload);
   broadcastSse('apps-update', payload);
 }
+
+export type PrinterEventPayload = {
+  level?: 'error' | 'warn' | 'info';
+  /** `recovered` when a queued print went through after an outage. */
+  kind?: string;
+  message?: string;
+  detail?: string | null;
+  at?: number;
+  context?: Record<string, unknown>;
+};
+
+/**
+ * A printer problem (or its recovery), for the till's windows and every
+ * signed-in phone. Phones used to hear nothing: a kitchen printer could be
+ * down all evening and only the till showed it.
+ */
+export function broadcastPrinterEvent(payload: PrinterEventPayload): void {
+  broadcastIpc('printer:event', payload);
+  broadcastSse('printer', payload);
+}

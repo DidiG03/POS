@@ -21,6 +21,8 @@ import {
   shouldMergeLocalStagedOntoHydrated,
   snapshotTicketDraft,
   type TicketDraft,
+  NATIVE_TICKET_DRAFT_TTL_MS,
+  setTicketDraftTtlMs,
 } from '@shared/ticketDraft';
 import {
   coursesFromLineIds,
@@ -236,6 +238,15 @@ function appliedSeatLayout(
     activeCourseId: null,
     courses: [],
   };
+}
+
+// A waiter's own phone keeps the unsent cart for the whole sign-in.
+try {
+  if ((window as any)?.Capacitor?.isNativePlatform?.()) {
+    setTicketDraftTtlMs(NATIVE_TICKET_DRAFT_TTL_MS);
+  }
+} catch {
+  // not a browser (tests)
 }
 
 export const useTicketStore = create<TicketState>()(

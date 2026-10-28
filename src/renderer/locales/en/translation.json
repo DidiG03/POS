@@ -278,7 +278,18 @@
     "requestNumber": "{{area}} {{table}} – Request #{{id}}",
     "syncIndicatorOffline": "Offline",
     "syncIndicatorSyncing": "Syncing ({{count}})",
-    "syncIndicatorOnline": "Online"
+    "syncIndicatorOnline": "Online",
+    "actionNeeded": "Needs your answer",
+    "printerJobs": "Printer jobs",
+    "printerJobVoid": "void slip",
+    "printerJobPrinter": "printer",
+    "printerJobWaiting": "Not printed yet: waiting for the {{printer}} printer.",
+    "printerJobFailed": "Did not print on the {{printer}} printer.",
+    "printerJobReprint": "Reprint",
+    "printerJobReprintFailed": "Could not reprint. Check the printer and try again.",
+    "tillUnreachable": "Cannot reach the till. Check that it is on and on the same Wi-Fi.",
+    "queuedWaiting_one": "{{count}} order or payment is saved on this phone and will send when the till is back.",
+    "queuedWaiting_other": "{{count}} orders or payments are saved on this phone and will send when the till is back."
   },
   "adminLayout": {
     "panelTitle": "Admin",
@@ -360,7 +371,12 @@
     "startShiftTitle": "Start shift for {{name}}?",
     "shiftReopenBlocked": "This shift is closed. You can clock in again after {{when}}.",
     "resumeShiftBody": "You are signed in, but there is no open shift. Start one to keep working the floor.",
-    "failedLoadOccupied": "Loading occupied tables… (slow/offline network). Retrying…"
+    "failedLoadOccupied": "Loading occupied tables… (slow/offline network). Retrying…",
+    "invalidPinAttemptsLeft": "That PIN is incorrect. {{count}} attempts left on this device before sign-in locks.",
+    "tooManyAttemptsFor": "Too many wrong PINs on this device. Sign-in is locked for about {{minutes}} min, or sign in at the till.",
+    "wrongPinTitle": "Wrong PIN",
+    "lockedTitle": "Sign-in locked",
+    "failedTitle": "Sign-in failed"
   },
   "routes": {
     "loading": "Loading…",
@@ -435,7 +451,11 @@
   "kds": {
     "bumpFailed": "That ticket could not be bumped. Check the connection to the POS host.",
     "recallFailed": "Could not recall the ticket.",
-    "loadFailed": "Failed to load kitchen tickets."
+    "loadFailed": "Failed to load kitchen tickets.",
+    "pairTitle": "Pair this kitchen display",
+    "pairHint": "Enter the pairing code shown in OneTap Admin → Settings on the till.",
+    "pairSubmit": "Pair display",
+    "pairWrongCode": "That pairing code is not right. Check it in Admin → Settings."
   },
   "tables": {
     "loading": "Loading tables…",
@@ -807,7 +827,9 @@
     "startHere": "Start here — this box is the dining room. Tables snap to the grid. Use Preview floor to see how waiters view it.",
     "noLayoutYet": "No layout yet — ask an admin to set up this area in Settings → Table Areas.",
     "seatsMin": "A table needs at least 1 seat.",
-    "seatsMinOn": "Table {{label}} needs at least 1 seat."
+    "seatsMinOn": "Table {{label}} needs at least 1 seat.",
+    "duplicateLabel": "Another table in this area is already called {{label}}. Give each table its own name.",
+    "labelRequired": "Every table needs a name."
   },
   "fiscal": {
     "loadFailed": "Could not load the fiscal settings, so nothing was saved. Reopen this page and try again.",
@@ -1198,9 +1220,15 @@
     "clearTicketConfirmTitle": "Clear this order?",
     "clearTicketConfirmBody": "All items on this order will be removed.",
     "chooseTableFirst": "Choose a table",
-    "payFullSplit": "Pay full bill • {{amount}} ({{guests}} × {{per}})",
+    "payFullSplit": "Pay full bill • {{amount}} (guests split it {{shares}})",
     "requestPendingHint": "Request sent. Waiting for the table's waiter to accept it.",
-    "requestAddHint": "This table belongs to another waiter. Add items, then send them a request."
+    "requestAddHint": "This table belongs to another waiter. Add items, then send them a request.",
+    "soldOutBadge": "Sold out",
+    "inactiveBadge": "Unavailable",
+    "backLeaveUnsent_one": "{{count}} item is not sent yet. Leave this order? It stays saved on this phone.",
+    "backLeaveUnsent_other": "{{count}} items are not sent yet. Leave this order? They stay saved on this phone.",
+    "sendSavedOnPhone": "The till did not answer. The order is saved on this phone and will send when the till is back.",
+    "sendSavedOnPhoneTitle": "Will send when online"
   },
   "reservations": {
     "timeRequired": "Choose a time for the reservation.",
@@ -1512,7 +1540,11 @@
       "CLEANER": "Cleaner"
     },
     "adminPinTooCommon": "This PIN is too common. Choose one that is not 0000, 1111, 1234, 9999 or similar.",
-    "adminPinRuleHint": "4–6 digits. Common PINs such as 0000, 1111 or 1234 are not allowed."
+    "adminPinRuleHint": "4–6 digits. Common PINs such as 0000, 1111 or 1234 are not allowed.",
+    "vatOff": "Not tracked",
+    "vatOffHint": "VAT reporting is off in Settings, so no VAT is split out of sales.",
+    "lowStockItems": "Low stock items",
+    "staffPinRuleHint": "1–6 letters or digits (letters ignore case). Admin PINs must be 4–6 digits and not a common one like 1234."
   },
   "stockPanel": {
     "title": "Stock availability",
@@ -1890,5 +1922,11 @@
     "setupHint": "Use this on each tablet once. It saves this venue's IP, ports, and pairing code in the browser so staff don't re-enter them after restarting the POS or reopening the app (same device & browser).",
     "setupHintStore": "Use this on each extra till or tablet once. It saves this shop's IP, ports, and pairing code in the browser so staff don't re-enter them after restarting the POS or reopening the app (same device & browser).",
     "noWifi": "No Wi‑Fi IP detected. Connect this Mac to Wi‑Fi or Ethernet and reopen this page."
+  },
+  "printer": {
+    "title": "Printer",
+    "problemTitle": "Printer problem",
+    "receiptTitle": "Receipt",
+    "backTitle": "Printer back online"
   }
 }

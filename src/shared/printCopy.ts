@@ -48,6 +48,11 @@ type PrintCopy = {
   netSales: string;
   byPayment: string;
   endOfShift: string;
+  /** Kitchen slip banners: a void, a reprint, a slip printed late. */
+  voidBanner: string;
+  cancelledBanner: string;
+  reprintBanner: (sentAt: string) => string;
+  lateBanner: (sentAt: string) => string;
 };
 
 const EN: PrintCopy = {
@@ -87,6 +92,10 @@ const EN: PrintCopy = {
   netSales: 'Net sales',
   byPayment: 'By payment:',
   endOfShift: 'End of shift',
+  voidBanner: '*** VOID - DO NOT MAKE ***',
+  cancelledBanner: '*** ORDER CANCELLED ***',
+  reprintBanner: (at) => `REPRINT - sent ${at}`,
+  lateBanner: (at) => `LATE COPY - sent ${at}`,
 };
 
 const SQ: PrintCopy = {
@@ -125,6 +134,10 @@ const SQ: PrintCopy = {
   netSales: 'Shitje neto',
   byPayment: 'Sipas pagesës:',
   endOfShift: 'Fundi i turnit',
+  voidBanner: '*** ANULUAR - MOS E PERGATIT ***',
+  cancelledBanner: '*** POROSIA U ANULUA ***',
+  reprintBanner: (at) => `RIPRINTIM - derguar ${at}`,
+  lateBanner: (at) => `KOPJE E VONUAR - derguar ${at}`,
 };
 
 const METHOD: Record<PrintLang, Record<string, string>> = {

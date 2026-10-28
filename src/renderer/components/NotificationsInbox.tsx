@@ -57,6 +57,16 @@ export function NotificationsInbox({
         </div>
       ) : null}
       <div className={ready ? undefined : 'hidden'} aria-hidden={!ready}>
+        {/* Things someone has to act on come first: a colleague's request
+            used to sit below every "item voided" alert. */}
+        {hasTables ? (
+          <OwnerRequests
+            userId={userId}
+            refreshKey={refreshKey}
+            onReady={onRequestsReady}
+          />
+        ) : null}
+        <PrinterJobs refreshKey={refreshKey} />
         <NotificationsList
           userId={userId}
           admin={admin}
@@ -65,9 +75,6 @@ export function NotificationsInbox({
           onNavigate={onNavigate}
           onReady={onListReady}
         />
-        {hasTables ? (
-          <OwnerRequests userId={userId} onReady={onRequestsReady} />
-        ) : null}
       </div>
     </>
   );
@@ -126,9 +133,11 @@ function NotificationsList({
 
 function OwnerRequests({
   userId,
+  refreshKey = 0,
   onReady,
 }: {
   userId: number;
+  refreshKey?: number;
   onReady?: () => void;
 }) {
   const { t } = useTranslation();
@@ -161,13 +170,19 @@ function OwnerRequests({
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, refreshKey]);
 
   if (!rows.length) return null;
   return (
-    <div className="mt-2 border-t border-[var(--pos-border)] pt-2">
-      <div className="pos-section-label mb-1.5 px-1">
-        {t('layout.orderRequests')}
+    <div className="mb-2 border-b border-[var(--pos-border)] pb-2">
+      <div className="pos-section-label mb-1.5 flex items-center gap-2 px-1">
+        <span>{t('layout.orderRequests')}</span>
+        <span className="rounded-full bg-amber-500/20 px-1.5 text-[11px] font-semibold tabular-nums text-amber-300">
+          {rows.length}
+        </span>
+        <span className="text-[11px] font-normal text-amber-300">
+          {t('layout.actionNeeded')}
+        </span>
       </div>
       <ul className="space-y-1.5">
         {rows.map((r) => (
@@ -252,6 +267,94 @@ function OwnerRequests({
                 }}
               >
                 {t('common.reject')}
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Kitchen slips that did not print yet, with Reprint (`printJobs.ts`). */
+function PrinterJobs({ refreshKey = 0 }: { refreshKey?: number }) {
+  const { t } = useTranslation();
+  const [rows, setRows] = useState<import('@shared/ipc').StationPrintJobDTO[]>(
+    [],
+  );
+  const [busy, setBusy] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const list = window.api.print?.listStationJobs;
+    if (!list) return;
+    (async () => {
+      const r = await list().catch(() => []);
+      if (!cancelled) setRows(Array.isArray(r) ? r : []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  if (!rows.length) return null;
+  return (
+    <div className="mb-2 border-b border-[var(--pos-border)] pb-2">
+      <div className="pos-section-label mb-1.5 flex items-center gap-2 px-1">
+        <span>{t('layout.printerJobs')}</span>
+        <span className="rounded-full bg-rose-500/20 px-1.5 text-[11px] font-semibold tabular-nums text-rose-300">
+          {rows.length}
+        </span>
+      </div>
+      <ul className="space-y-1.5">
+        {rows.map((r) => (
+          <li key={r.id} className="pos-order-card !p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 truncate text-[13px] font-medium">
+                {[r.area, r.tableLabel].filter(Boolean).join(' ')}
+                {r.voidSlip ? ` · ${t('layout.printerJobVoid')}` : ''}
+              </div>
+              <span className="shrink-0 text-[11px] tabular-nums text-[color:var(--pos-fg-muted)]">
+                {formatNotificationTime(r.sentAt, t)}
+              </span>
+            </div>
+            <div className="mt-0.5 text-[12px] text-[color:var(--pos-fg-muted)]">
+              {r.status === 'RETRY'
+                ? t('layout.printerJobWaiting', {
+                    printer: r.printerName || t('layout.printerJobPrinter'),
+                  })
+                : t('layout.printerJobFailed', {
+                    printer: r.printerName || t('layout.printerJobPrinter'),
+                  })}
+            </div>
+            <div className="mt-1 truncate text-[12px]">
+              {r.items.map((it) => `${it.qty}× ${it.name}`).join(', ')}
+            </div>
+            <div className="mt-2">
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={busy != null}
+                loading={busy === r.id}
+                onClick={async () => {
+                  const reprint = window.api.print?.reprintStationJob;
+                  if (!reprint || busy != null) return;
+                  setBusy(r.id);
+                  try {
+                    const res = await reprint(r.id);
+                    if (!res?.ok) throw new Error(res?.error || '');
+                    setRows((prev) => prev.filter((x) => x.id !== r.id));
+                  } catch (e) {
+                    reportAppError(e, {
+                      fallback: t('layout.printerJobReprintFailed'),
+                      key: `print.reprint:${r.id}`,
+                    });
+                  } finally {
+                    setBusy(null);
+                  }
+                }}
+              >
+                {t('layout.printerJobReprint')}
               </Button>
             </div>
           </li>

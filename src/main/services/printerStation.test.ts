@@ -7,6 +7,8 @@ const h = vi.hoisted(() => ({
   print: vi.fn(),
   enqueue: vi.fn(async (_args: unknown) => ({ status: 'RETRY' })),
   mark: vi.fn(),
+  failedNotice: vi.fn(async (_args: unknown) => undefined),
+  event: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
@@ -18,18 +20,27 @@ vi.mock('@db/client', () => ({
 vi.mock('./core', () => ({
   coreServices: { readSettings: async () => ({}) },
 }));
-vi.mock('./printDispatcher', () => ({
-  RETRY_MAX_ATTEMPTS: 5,
-  dispatchTicket: vi.fn(),
-  enqueuePrintRetry: h.enqueue,
-  isTransientPrintError: (e?: string) => /timeout|refused/i.test(String(e)),
-  loadDuePrintRetries: h.loadDue,
-  markPrinterResult: h.mark,
-  nextPendingRetryAt: async () => null,
-  pickPrinterProfile: (_s: unknown, id: string) => ({ id }),
-  printWithProfile: h.print,
-  setRetryWakeup: vi.fn(),
+vi.mock('./printJobNotify', () => ({
+  notifyStationPrintFailed: h.failedNotice,
 }));
+vi.mock('./realtime', () => ({ broadcastPrinterEvent: h.event }));
+vi.mock('./printDispatcher', async () => {
+  const real = await vi.importActual<any>('./printDispatcher');
+  return {
+    RETRY_MAX_ATTEMPTS: 5,
+    dispatchTicket: vi.fn(),
+    enqueuePrintRetry: h.enqueue,
+    isStationSlip: real.isStationSlip,
+    printRetryPlan: real.printRetryPlan,
+    isTransientPrintError: (e?: string) => /timeout|refused/i.test(String(e)),
+    loadDuePrintRetries: h.loadDue,
+    markPrinterResult: h.mark,
+    nextPendingRetryAt: async () => null,
+    pickPrinterProfile: (_s: unknown, id: string) => ({ id }),
+    printWithProfile: h.print,
+    setRetryWakeup: vi.fn(),
+  };
+});
 
 import { runPrinterStationTickForTests as tick } from './printerStation';
 
@@ -77,5 +88,84 @@ describe('printer station retry pass', () => {
     h.print.mockResolvedValueOnce({ ok: true });
     await tick();
     expect(h.mark).toHaveBeenCalledWith('receipt', true, undefined);
+  });
+
+  it('keeps one row per job: a failed retry updates it, never adds a row', async () => {
+    h.loadDue.mockResolvedValueOnce([row(1, 'receipt')]);
+    h.print.mockResolvedValueOnce({ ok: false, error: 'connection timeout' });
+    await tick();
+    expect(h.enqueue).not.toHaveBeenCalled();
+    const write = h.update.mock.calls
+      .map((c: any) => c[0])
+      .find((a: any) => a.where.id === 1);
+    expect(write.data).toMatchObject({ status: 'RETRY', attempts: 2 });
+    expect(write.data.nextAttemptAt).toBeInstanceOf(Date);
+  });
+
+  it('keeps retrying a kitchen slip long after a receipt would give up', async () => {
+    h.loadDue.mockResolvedValueOnce([
+      {
+        ...row(1, 'kitchen'),
+        attempts: 9,
+        createdAt: new Date(Date.now() - 20 * 60_000),
+        payloadJson: {
+          area: 'A',
+          tableLabel: 'T2',
+          items: [],
+          meta: { kind: 'ORDER' },
+        },
+      },
+    ]);
+    h.print.mockResolvedValueOnce({ ok: false, error: 'connection refused' });
+    await tick();
+    const write = h.update.mock.calls
+      .map((c: any) => c[0])
+      .find((a: any) => a.where.id === 1);
+    expect(write.data.status).toBe('RETRY');
+    expect(h.failedNotice).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a kitchen slip after the window, and tells people', async () => {
+    h.loadDue.mockResolvedValueOnce([
+      {
+        ...row(1, 'kitchen'),
+        attempts: 200,
+        createdAt: new Date(Date.now() - 3 * 60 * 60_000),
+        payloadJson: {
+          area: 'A',
+          tableLabel: 'T2',
+          items: [],
+          meta: { kind: 'ORDER', userId: 7 },
+        },
+      },
+    ]);
+    h.print.mockResolvedValueOnce({ ok: false, error: 'connection refused' });
+    await tick();
+    const write = h.update.mock.calls
+      .map((c: any) => c[0])
+      .find((a: any) => a.where.id === 1);
+    expect(write.data.status).toBe('FAILED');
+    expect(h.failedNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a kitchen slip printed late, and says the printer is back', async () => {
+    const sentAtIso = new Date(Date.now() - 5 * 60_000).toISOString();
+    h.loadDue.mockResolvedValueOnce([
+      {
+        ...row(1, 'kitchen'),
+        payloadJson: {
+          area: 'A',
+          tableLabel: 'T2',
+          items: [],
+          meta: { kind: 'ORDER', sentAtIso },
+        },
+      },
+    ]);
+    h.print.mockResolvedValueOnce({ ok: true });
+    await tick();
+    expect(h.print.mock.calls[0][0].meta.lateSentAtIso).toBe(sentAtIso);
+    expect(h.event).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 'info', kind: 'recovered' }),
+    );
   });
 });

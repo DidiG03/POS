@@ -64,9 +64,13 @@ export function receiptFigures(
  * weighed item or a euro total is not, and rounding those to a whole unit
  * printed a different total from the fiscal invoice.
  */
-export function formatMoneyPlain(amount: unknown, group = ''): string {
+export function formatMoneyPlain(
+  amount: unknown,
+  group = '',
+  opts: { cents?: boolean } = {},
+): string {
   const v = roundMoney(amount);
-  const whole = Number.isInteger(v);
+  const whole = Number.isInteger(v) && !opts.cents;
   const [int, frac] = Math.abs(v)
     .toFixed(whole ? 0 : 2)
     .split('.');
