@@ -13,10 +13,13 @@ function reference(v: number): number {
 
 describe('roundMoney', () => {
   it('rounds every half cent up, as written', () => {
+    // One assertion at the end: 300k expect() calls outran the CI timeout.
+    const wrong: number[] = [];
     for (let k = 0; k < 300_000; k++) {
       const v = k / 1000;
-      expect(roundMoney(v)).toBe(reference(v));
+      if (roundMoney(v) !== reference(v)) wrong.push(v);
     }
+    expect(wrong.slice(0, 10)).toEqual([]);
   });
 
   it('fixes the cases binary floats used to take down a cent', () => {
