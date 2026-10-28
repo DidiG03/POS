@@ -341,7 +341,7 @@
     "firstAdminTitle": "Krijo admin-in e parë",
     "firstAdminHelp": "Zgjidh emrin dhe PIN-in për administratorin e parë në këtë POS.",
     "firstAdminNamePlaceholder": "Emri i adminit",
-    "firstAdminPinPlaceholder": "Fjalëkalimi (4+ shifra)",
+    "firstAdminPinPlaceholder": "PIN i adminit (4–6 shifra)",
     "firstAdminCreate": "Krijo admin",
     "firstAdminCreating": "Duke krijuar…",
     "firstAdminCreated": "Admini u krijua. Zgjidhe më poshtë dhe shkruaj PIN-in.",
@@ -427,7 +427,7 @@
     "title": "Porositë",
     "loading": "Duke ngarkuar porositë…",
     "empty": "Nuk ka bileta në kuzhinë",
-    "emptyHint": "Porositë që dërgon në kuzhinë shfaqen këtu. Ekrani i kuzhinës i heq kur janë gati.",
+    "emptyHint": "Artikujt shfaqen këtu pasi dërgohen në një stacion të ekranit të kuzhinës. Vetëm kategoritë e menusë me ekran KDS (Kuzhinë, Bar ose Ëmbëlsira) të vendosur te Admin → Menu dërgohen këtu. Ekrani i kuzhinës i heq kur janë gati.",
     "loadFailed": "Nuk u ngarkuan porositë e kuzhinës.",
     "cooking": "Duke u gatuar",
     "ready": "Gati"
@@ -689,7 +689,11 @@
     "save": "Ruaj zonat",
     "layoutTitle": "Plani · {{area}}",
     "done": "Gati",
-    "layoutHint": "Vendos tavolinat në dhomën me vija — kapen te rrjeta që skajet të përputhen. Përdor Shiko planin për pamjen e kamarierit, pastaj Ruaj planin ose Gati."
+    "layoutHint": "Vendos tavolinat në dhomën me vija — kapen te rrjeta që skajet të përputhen. Përdor Shiko planin për pamjen e kamarierit, pastaj Ruaj planin ose Gati.",
+    "emptyTitle": "Ende nuk ka zona tavolinash",
+    "emptyBody": "Krijo një zonë si Tarraca ose Salla kryesore, pastaj përdor Ndrysho planin për të vendosur tavolinat.",
+    "removeTitle": "Të hiqet zona “{{name}}”?",
+    "removeBody": "Tavolinat dhe plani i saj zhduken nga çdo pajisje e kamarierëve dhe pritësve."
   },
   "settingsPrinter": {
     "title": "Printerët",
@@ -801,7 +805,9 @@
     "diningRoom": "Salla e ngrënies",
     "entrance": "Hyrja",
     "startHere": "Fillo këtu — kjo kuti është salla. Tavolinat kapen te rrjeta. Përdor Shiko planin për pamjen e kamarierëve.",
-    "noLayoutYet": "Nuk ka plan ende — kërkoji një admin ta ngrerë këtë zonë te Cilësimet → Zonat e tavolinave."
+    "noLayoutYet": "Nuk ka plan ende — kërkoji një admin ta ngrerë këtë zonë te Cilësimet → Zonat e tavolinave.",
+    "seatsMin": "Një tavolinë duhet të ketë të paktën 1 vend.",
+    "seatsMinOn": "Tavolina {{label}} duhet të ketë të paktën 1 vend."
   },
   "fiscal": {
     "loadFailed": "Cilësimet e fiskalizimit nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
@@ -1098,7 +1104,7 @@
     "inEur": "≈ {{amount}}",
     "inAll": "≈ {{amount}} Lek",
     "eurRateHint": "1 € = {{rate}} Lek",
-    "eurRateMissing": "Vendos Kursin EUR te Admin → Preferencat për të shfaqur euron",
+    "eurRateMissing": "Vendos kursin e EUR te Admin → Preferencat për të shfaqur shumat në euro.",
     "cashReceived": "Para të marra",
     "cashReceivedPlaceholder": "Shuma e dhënë",
     "changeDue": "Kusuri",
@@ -1183,7 +1189,18 @@
     "transferFailedGeneric": "Transferi dështoi",
     "transferQueued": "Transferi u vendos në radhë — do të ekzekutohet kur lidhja kthehet",
     "destinationAriaSection": "Seksioni destinacion",
-    "destinationAriaTable": "Tavolina destinacion"
+    "destinationAriaTable": "Tavolina destinacion",
+    "stockLimitReached": "Vetëm {{count}} {{name}} në stok",
+    "outOfStockToast": "{{name}} nuk ka stok",
+    "unavailableToast": "{{name}} nuk është i disponueshëm tani",
+    "voidTicketConfirmTitle": "Të anulohet e gjithë fatura?",
+    "voidTicketConfirmBody": "Të gjithë artikujt në {{area}} {{label}} do të anulohen dhe tavolina do të lirohet.",
+    "clearTicketConfirmTitle": "Të pastrohet kjo porosi?",
+    "clearTicketConfirmBody": "Të gjithë artikujt e kësaj porosie do të hiqen.",
+    "chooseTableFirst": "Zgjidh një tavolinë",
+    "payFullSplit": "Paguaj të gjithë faturën • {{amount}} ({{guests}} × {{per}})",
+    "requestPendingHint": "Kërkesa u dërgua. Në pritje që kamarieri i tavolinës ta pranojë.",
+    "requestAddHint": "Kjo tavolinë i përket një kamarieri tjetër. Shto artikuj, pastaj dërgoji një kërkesë."
   },
   "reservations": {
     "timeRequired": "Zgjidhni orën e rezervimit.",
@@ -1493,7 +1510,9 @@
       "BARTENDER": "Kamerier bari",
       "BARBACK": "Ndihmës bari",
       "CLEANER": "Pastrues"
-    }
+    },
+    "adminPinTooCommon": "Ky PIN është shumë i zakonshëm. Zgjidh një që nuk është 0000, 1111, 1234, 9999 apo i ngjashëm.",
+    "adminPinRuleHint": "4–6 shifra. PIN-et e zakonshme si 0000, 1111 ose 1234 nuk lejohen."
   },
   "stockPanel": {
     "title": "Disponueshmëria e stokut",
@@ -1668,7 +1687,8 @@
     "vatUnsetTitle": "TVSH 0% do të thotë e pavendosur: ky artikull faturohet, printohet dhe fiskalizohet me normën standarde.",
     "vatUnsetNotice_one": "{{count}} artikull ka TVSH 0%. 0% do të thotë “e pavendosur”: faturohet, printohet dhe fiskalizohet me normën standarde ({{pct}}%). Vendos normën e saktë nëse është ndryshe.",
     "vatUnsetNotice_other": "{{count}} artikuj kanë TVSH 0%. 0% do të thotë “e pavendosur”: faturohen, printohen dhe fiskalizohen me normën standarde ({{pct}}%). Vendos normën e saktë për ata që ndryshojnë.",
-    "vatZeroHint": "0% do të thotë “e pavendosur”: faturohet dhe fiskalizohet me normën standarde."
+    "vatZeroHint": "0% do të thotë “e pavendosur”: faturohet dhe fiskalizohet me normën standarde.",
+    "vatRatePct": "Norma e TVSH-së (%)"
   },
   "adminReview": {
     "title": "Rishikim i biznesit",
@@ -1834,7 +1854,8 @@
     "requestRejectedTitle": "Kërkesa u refuzua",
     "shiftClosedTitle": "Turni u mbyll automatikisht",
     "receiptAuditTitle": "Fatura nuk u ruajt",
-    "fallbackTitle": "{{text}}"
+    "fallbackTitle": "{{text}}",
+    "pinSummaryCount": "PIN i gabuar në këtë llogari: {{count}} tentativa në {{minutes}} minutat e fundit."
   },
   "adminLan": {
     "loadFailed": "Cilësimet e rrjetit nuk u ngarkuan, ndaj nuk u ndryshua asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",

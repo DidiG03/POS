@@ -88,6 +88,7 @@ import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
+import { recordWrongPinAttempt } from './services/wrongPinAlert';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { isClockOnlyRole } from '@shared/utils/roles';
@@ -1346,7 +1347,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const loopback = isLoopback(remoteIp);
         if (!loopback) {
           const lockedFor = lanLoginIpLockedFor(remoteIp);
-          if (lockedFor > 0) return sendLoginLocked(res, lockedFor, corsOrigin);
+          if (lockedFor > 0) {
+            // Refused unchecked, but still an attempt: keep it in the log.
+            logSecurityEvent('lan_login_while_locked', {
+              remoteIp,
+              userId: Number(userId) || null,
+            });
+            return sendLoginLocked(res, lockedFor, corsOrigin);
+          }
         }
         let requirePairing = false;
         // If this is a LAN client (not loopback), gate web access first.
@@ -1416,15 +1424,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         const ok = await bcrypt.compare(normalizePin(pin), user.pinHash);
         if (!ok) {
-          await prisma.notification
-            .create({
-              data: {
-                userId: user.id,
-                type: 'SECURITY' as any,
-                message: 'Wrong PIN attempt on your account',
-              },
-            })
-            .catch(() => {});
+          await recordWrongPinAttempt(user.id);
           if (!loopback) {
             await failLanLogin(remoteIp, {
               reason: 'pin',

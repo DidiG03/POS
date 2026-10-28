@@ -7,6 +7,38 @@ export function parseEurExchangeRate(raw: unknown): number | null {
   return n;
 }
 
+/** Lek till: the euro quote and Kursi EUR only make sense here. */
+export function isLekCurrency(posCurrency: unknown): boolean {
+  const cur = String(posCurrency || '')
+    .trim()
+    .toUpperCase();
+  return cur === 'ALL' || cur === 'LEK';
+}
+
+const CURRENCY_PREFIX: Record<string, string> = {
+  EUR: '€',
+  USD: '$',
+  GBP: '£',
+  CHF: 'CHF ',
+};
+
+/**
+ * Put the venue currency on an already formatted amount ("12.50" →
+ * "€12.50", "1,200 L"). No currency set reads as euro, the app default.
+ */
+export function withCurrency(amountText: string, posCurrency: unknown): string {
+  const cur =
+    String(posCurrency || '')
+      .trim()
+      .toUpperCase() || 'EUR';
+  if (isLekCurrency(cur)) return `${amountText} L`;
+  const prefix = CURRENCY_PREFIX[cur];
+  if (prefix) return `${prefix}${amountText}`;
+  return /^[A-Z]{3}$/.test(cur)
+    ? `${amountText} ${cur}`
+    : `${cur}${amountText}`;
+}
+
 /**
  * Convert a POS amount using the ALL-per-EUR rate (Kursi EUR).
  * Only ALL ↔ EUR is defined — other POS currencies return nulls.

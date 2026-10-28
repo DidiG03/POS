@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  isLekCurrency,
+  withCurrency,
   cashChangeDue,
   cashTenderSuggestions,
   convertPosAmount,
@@ -131,5 +133,32 @@ describe('cashTenderSuggestions', () => {
 
   it('offers euro notes at or above due', () => {
     expect(cashTenderSuggestions(42, 'EUR')).toEqual([42, 45, 50, 60]);
+  });
+});
+
+describe('withCurrency', () => {
+  it('prefixes euro and other symbol currencies', () => {
+    expect(withCurrency('12.50', 'EUR')).toBe('€12.50');
+    expect(withCurrency('12', 'usd')).toBe('$12');
+  });
+
+  it('suffixes Lek and defaults an unset currency to euro', () => {
+    expect(withCurrency('1,200', 'ALL')).toBe('1,200 L');
+    expect(withCurrency('1,200', 'LEK')).toBe('1,200 L');
+    expect(withCurrency('9', '')).toBe('€9');
+    expect(withCurrency('9', null)).toBe('€9');
+  });
+
+  it('falls back to the ISO code for unknown currencies', () => {
+    expect(withCurrency('9', 'SEK')).toBe('9 SEK');
+  });
+});
+
+describe('isLekCurrency', () => {
+  it('matches ALL and LEK only', () => {
+    expect(isLekCurrency('all')).toBe(true);
+    expect(isLekCurrency('LEK')).toBe(true);
+    expect(isLekCurrency('EUR')).toBe(false);
+    expect(isLekCurrency('')).toBe(false);
   });
 });

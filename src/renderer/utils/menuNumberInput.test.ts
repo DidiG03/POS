@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   menuMoneyInput,
   menuNumberKeys,
-  menuVatInput,
+  menuVatPercentInput,
+  vatPercentField,
 } from './menuNumberInput';
 
 describe('menuMoneyInput', () => {
@@ -28,12 +29,25 @@ describe('menuMoneyInput', () => {
   });
 });
 
-describe('menuVatInput', () => {
-  it('accepts a fraction, a decimal comma or a percent', () => {
-    expect(menuVatInput('0.2')).toBe(0.2);
-    expect(menuVatInput('0,06')).toBe(0.06);
-    expect(menuVatInput('20')).toBe(0.2);
-    expect(menuVatInput('')).toBe(0);
+describe('menuVatPercentInput', () => {
+  it('reads the field as a percent, with a decimal comma too', () => {
+    expect(menuVatPercentInput('20')).toBe(0.2);
+    expect(menuVatPercentInput('6,5')).toBe(0.065);
+    expect(menuVatPercentInput('1')).toBe(0.01);
+    expect(menuVatPercentInput('')).toBe(0);
+  });
+
+  it('caps at 100%', () => {
+    expect(menuVatPercentInput('250')).toBe(1);
+  });
+});
+
+describe('vatPercentField', () => {
+  it('shows the stored fraction as a percent', () => {
+    expect(vatPercentField(0.2)).toBe('20');
+    expect(vatPercentField(0.065)).toBe('6.5');
+    expect(vatPercentField(0)).toBe('0');
+    expect(vatPercentField(undefined)).toBe('');
   });
 });
 

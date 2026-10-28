@@ -221,10 +221,12 @@ export function parseNotification(
   const finish = (parsed: ParsedNotification) => withPlace(parsed, raw);
 
   if (/wrong pin attempt/i.test(raw)) {
+    const run = raw.match(/\((\d+) in the last (\d+) minutes\)/i);
     return finish({
       kind: 'security',
       titleKey: 'inbox.pinTitle',
-      summaryKey: 'inbox.pinSummary',
+      summaryKey: run ? 'inbox.pinSummaryCount' : 'inbox.pinSummary',
+      ...(run ? { summaryParams: { count: run[1], minutes: run[2] } } : null),
       tone: 'danger',
     });
   }

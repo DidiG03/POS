@@ -341,7 +341,7 @@
     "firstAdminTitle": "Create first admin",
     "firstAdminHelp": "Choose a name and PIN for the first admin on this POS.",
     "firstAdminNamePlaceholder": "Admin name",
-    "firstAdminPinPlaceholder": "Password (4+ digits)",
+    "firstAdminPinPlaceholder": "Admin PIN (4–6 digits)",
     "firstAdminCreate": "Create admin",
     "firstAdminCreating": "Creating…",
     "firstAdminCreated": "Admin created. Select them below and enter your PIN.",
@@ -427,7 +427,7 @@
     "title": "Orders",
     "loading": "Loading orders…",
     "empty": "No kitchen tickets",
-    "emptyHint": "Orders you send to the kitchen appear here. The kitchen display bumps them when they are done.",
+    "emptyHint": "Items appear here once they are sent to a kitchen display station. Only menu categories with a KDS display (Kitchen, Bar or Dessert) set in Admin → Menu are routed here. The kitchen display bumps them when they are done.",
     "loadFailed": "Could not load kitchen tickets.",
     "cooking": "Cooking",
     "ready": "Ready"
@@ -689,7 +689,11 @@
     "save": "Save Areas",
     "layoutTitle": "Layout · {{area}}",
     "done": "Done",
-    "layoutHint": "Place tables on the dashed dining room — they snap to a block grid so edges line up. Use Preview floor to see the waiter view, then Save layout or Done."
+    "layoutHint": "Place tables on the dashed dining room — they snap to a block grid so edges line up. Use Preview floor to see the waiter view, then Save layout or Done.",
+    "emptyTitle": "No table areas yet",
+    "emptyBody": "Create an area such as Terrace or Main room, then use Edit layout to place its tables.",
+    "removeTitle": "Remove area “{{name}}”?",
+    "removeBody": "Its tables and floor layout disappear from every waiter and host device."
   },
   "settingsPrinter": {
     "title": "Printers",
@@ -801,7 +805,9 @@
     "diningRoom": "Dining room",
     "entrance": "Entrance",
     "startHere": "Start here — this box is the dining room. Tables snap to the grid. Use Preview floor to see how waiters view it.",
-    "noLayoutYet": "No layout yet — ask an admin to set up this area in Settings → Table Areas."
+    "noLayoutYet": "No layout yet — ask an admin to set up this area in Settings → Table Areas.",
+    "seatsMin": "A table needs at least 1 seat.",
+    "seatsMinOn": "Table {{label}} needs at least 1 seat."
   },
   "fiscal": {
     "loadFailed": "Could not load the fiscal settings, so nothing was saved. Reopen this page and try again.",
@@ -1098,7 +1104,7 @@
     "inEur": "≈ {{amount}}",
     "inAll": "≈ {{amount}} Lek",
     "eurRateHint": "1 € = {{rate}} Lek",
-    "eurRateMissing": "Set Kursi EUR in Admin → Preferences to show euros",
+    "eurRateMissing": "Add the EUR exchange rate in Admin → Preferences to show euro amounts.",
     "cashReceived": "Cash received",
     "cashReceivedPlaceholder": "Amount given",
     "changeDue": "Change",
@@ -1183,7 +1189,18 @@
     "transferFailedGeneric": "Transfer failed",
     "transferQueued": "Transfer queued — it will run when the connection is back",
     "destinationAriaSection": "Destination section",
-    "destinationAriaTable": "Destination table"
+    "destinationAriaTable": "Destination table",
+    "stockLimitReached": "Only {{count}} {{name}} left in stock",
+    "outOfStockToast": "{{name}} is out of stock",
+    "unavailableToast": "{{name}} is not available right now",
+    "voidTicketConfirmTitle": "Void the whole ticket?",
+    "voidTicketConfirmBody": "Every item on {{area}} {{label}} will be voided and the table freed.",
+    "clearTicketConfirmTitle": "Clear this order?",
+    "clearTicketConfirmBody": "All items on this order will be removed.",
+    "chooseTableFirst": "Choose a table",
+    "payFullSplit": "Pay full bill • {{amount}} ({{guests}} × {{per}})",
+    "requestPendingHint": "Request sent. Waiting for the table's waiter to accept it.",
+    "requestAddHint": "This table belongs to another waiter. Add items, then send them a request."
   },
   "reservations": {
     "timeRequired": "Choose a time for the reservation.",
@@ -1493,7 +1510,9 @@
       "BARTENDER": "Bartender",
       "BARBACK": "Barback",
       "CLEANER": "Cleaner"
-    }
+    },
+    "adminPinTooCommon": "This PIN is too common. Choose one that is not 0000, 1111, 1234, 9999 or similar.",
+    "adminPinRuleHint": "4–6 digits. Common PINs such as 0000, 1111 or 1234 are not allowed."
   },
   "stockPanel": {
     "title": "Stock availability",
@@ -1668,7 +1687,8 @@
     "vatUnsetTitle": "VAT 0% means not set: this item is charged, printed and filed at the default rate.",
     "vatUnsetNotice_one": "{{count}} item has VAT 0%. 0% means “not set”: it is charged, printed and filed with the tax service at the default rate ({{pct}}%). Set the real rate if it differs.",
     "vatUnsetNotice_other": "{{count}} items have VAT 0%. 0% means “not set”: they are charged, printed and filed with the tax service at the default rate ({{pct}}%). Set the real rate on any that differ.",
-    "vatZeroHint": "0% means “not set”: the default rate is charged and filed."
+    "vatZeroHint": "0% means “not set”: the default rate is charged and filed.",
+    "vatRatePct": "VAT rate (%)"
   },
   "adminReview": {
     "title": "Business Review",
@@ -1834,7 +1854,8 @@
     "requestRejectedTitle": "Request rejected",
     "shiftClosedTitle": "Shift auto-closed",
     "receiptAuditTitle": "Receipt could not be saved",
-    "fallbackTitle": "{{text}}"
+    "fallbackTitle": "{{text}}",
+    "pinSummaryCount": "Wrong PIN on this account: {{count}} attempts in the last {{minutes}} minutes."
   },
   "adminLan": {
     "loadFailed": "Could not load the network settings, so nothing was changed. Reopen this page and try again.",

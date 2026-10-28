@@ -48,11 +48,15 @@ export const TicketLineRow = memo(function TicketLineRow({
   const canSelect =
     hasTables && lineAcceptsComment(line, isTableOpen, showRequestOnly);
   const canEditNote = hasTables && !isVoided && Boolean(line.staged);
-  const hasNote = Boolean(String(line.note || '').trim());
-  const showNoteField = hasTables && (hasNote || (canEditNote && selected));
+  const noteText = String(line.note || '').trim();
+  const hasNote = Boolean(noteText);
   const noteLocked = Boolean(
     isVoided || (dimmed && !(showRequestOnly && line.staged)),
   );
+  // The input only while editing; otherwise the saved note reads as text
+  // under the line, so Enter visibly "saves" it.
+  const showNoteField = hasTables && canEditNote && selected && !noteLocked;
+  const showNoteText = hasTables && hasNote && !showNoteField;
   // Qty +/- belongs on unsent lines, including the first add before the
   // table is marked open (and counter tickets with no table at all).
   const showQtyStepper =
@@ -76,6 +80,9 @@ export const TicketLineRow = memo(function TicketLineRow({
         onToggleSelect(line.id);
       }}
       onKeyDown={(e) => {
+        // Keys typed in the note input bubble here; swallowing Space for the
+        // row's own toggle stripped every space out of item notes.
+        if (e.target !== e.currentTarget) return;
         if (!canSelect) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -209,16 +216,34 @@ export const TicketLineRow = memo(function TicketLineRow({
       </div>
       {showNoteField ? (
         <input
-          className={`mt-2 w-full pos-input px-2 py-1 text-[15px] font-light ${
-            noteLocked ? 'opacity-60 cursor-not-allowed' : ''
-          } ${isVoided ? 'line-through decoration-2' : ''}`}
+          className="mt-2 w-full pos-input px-2 py-1 text-[15px] font-light"
           placeholder={t('order.lineNotePlaceholder')}
           value={line.note ?? ''}
-          autoFocus={canEditNote && selected && !hasNote}
-          disabled={noteLocked}
+          autoFocus
+          maxLength={200}
+          enterKeyHint="done"
           onClick={(e) => e.stopPropagation()}
           onChange={(e) => onNoteChange(line.id, e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' && e.key !== 'Escape') return;
+            e.preventDefault();
+            const trimmed = String(line.note || '').trim();
+            if (trimmed !== (line.note ?? '')) onNoteChange(line.id, trimmed);
+            onToggleSelect(line.id);
+          }}
         />
+      ) : null}
+      {showNoteText ? (
+        <div
+          className={`mt-1.5 flex items-start gap-1.5 text-[14px] font-light leading-snug ${
+            dimmed ? 'ticket-line-muted' : ''
+          } ${isVoided ? 'line-through decoration-2' : ''}`}
+        >
+          <span className="font-bold leading-none text-amber-400" aria-hidden>
+            ↳
+          </span>
+          <span className="min-w-0 break-words">{noteText}</span>
+        </div>
       ) : null}
     </div>
   );

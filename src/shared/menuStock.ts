@@ -50,3 +50,19 @@ export function consumeUnits(qty: number | undefined): number {
   const raw = Number(qty ?? 1);
   return Number.isFinite(raw) && raw > 0 ? Math.ceil(raw) : 1;
 }
+
+/**
+ * Whether one more unit of an item fits in its counted stock. Stock is only
+ * taken off at Send, so units already staged on this sale count against it.
+ * `null` stock means the item is not counted and never blocks.
+ */
+export function stockAllowsAnother(
+  stockRemaining: number | null | undefined,
+  stagedUnits: number,
+): boolean {
+  if (stockRemaining == null) return true;
+  const left = Math.floor(Number(stockRemaining));
+  if (!Number.isFinite(left)) return true;
+  const staged = Math.max(0, Number(stagedUnits) || 0);
+  return staged + 1 <= left;
+}

@@ -68,3 +68,24 @@ export function staffPinError(
   if (isAdminPinRole(role)) return ADMIN_PIN_RE.test(p) ? null : 'adminDigits';
   return STAFF_PIN_RE.test(p) ? null : 'staffFormat';
 }
+
+/** Admin PINs the host refuses as too easy to guess. */
+export const COMMON_ADMIN_PINS: readonly string[] = [
+  '0000',
+  '1111',
+  '1234',
+  '12345',
+  '123456',
+  '9999',
+  '99999',
+  '999999',
+];
+
+/**
+ * True for an admin PIN on the common list. The admin forms check this
+ * before submitting, so the rule shows on the form instead of only as a
+ * host error after the fact.
+ */
+export function isCommonAdminPin(pin: unknown): boolean {
+  return COMMON_ADMIN_PINS.includes(normalizePin(pin));
+}

@@ -9,6 +9,7 @@ import {
   IconPrinter,
 } from '../../components/icons';
 import { formatEur } from '../../utils/format';
+import { isLekCurrency } from '@shared/paymentDisplay';
 import {
   cashChange,
   parseCashInput,
@@ -224,7 +225,7 @@ export function PaymentCheckout({
             <PaymentFxHint
               eurAmount={eurDue}
               eurExchangeRate={eurExchangeRate}
-              showRate
+              showRate={isLekCurrency(posCurrency)}
             />
             {totals.total !== totalDue || serviceChargeAmount > 0 ? (
               <div className="pos-pay-hero-breakdown">

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isCommonAdminPin,
   normalizePin,
   promotionNeedsNewPin,
   sanitizePinInput,
@@ -77,5 +78,14 @@ describe('promotionNeedsNewPin', () => {
         pin: '',
       }),
     ).toBe(false);
+  });
+});
+
+describe('isCommonAdminPin', () => {
+  it('flags the PINs the host refuses for admins', () => {
+    expect(isCommonAdminPin('1111')).toBe(true);
+    expect(isCommonAdminPin(' 1234 ')).toBe(true);
+    expect(isCommonAdminPin('4831')).toBe(false);
+    expect(isCommonAdminPin('')).toBe(false);
   });
 });

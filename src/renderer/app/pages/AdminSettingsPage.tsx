@@ -20,7 +20,8 @@ import {
 import { Button, IconButton } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Field, Input, Select, Textarea } from '../../components/ui/Field';
-import { Modal } from '../../components/ui/Modal';
+import { ConfirmDialog, Modal } from '../../components/ui/Modal';
+import { EmptyState } from '../../components/ui/Surface';
 import { Segmented } from '../../components/ui/Segmented';
 import { cn } from '../../components/ui/cn';
 import {
@@ -3965,6 +3966,8 @@ function AreasSettings() {
   const { t } = useTranslation();
   const [areas, setAreas] = useState<{ name: string; count: number }[]>([]);
   const [editingArea, setEditingArea] = useState<string | null>(null);
+  const [removeIdx, setRemoveIdx] = useState<number | null>(null);
+  const addArea = () => setAreas((arr) => [...arr, { name: '', count: 8 }]);
   const lastSavedRef = useRef('');
   // Saving sends the whole list; before it is loaded that is only the rows
   // added on screen, and every other area would be deleted.
@@ -4016,7 +4019,7 @@ function AreasSettings() {
           <IconButton
             label={t('settingsAreas.addArea')}
             icon={<IconPlus />}
-            onClick={() => setAreas((arr) => [...arr, { name: '', count: 8 }])}
+            onClick={addArea}
           />
         }
       />
@@ -4024,9 +4027,17 @@ function AreasSettings() {
       <div className="space-y-2">
         {areas.length === 0 ? (
           <SettingsCard>
-            <div className="text-[13px] text-gray-400">
-              {t('settingsAreas.help')}
-            </div>
+            <EmptyState
+              compact
+              title={t('settingsAreas.emptyTitle')}
+              description={t('settingsAreas.emptyBody')}
+              action={
+                <Button variant="primary" onClick={addArea}>
+                  <IconPlus />
+                  {t('settingsAreas.addArea')}
+                </Button>
+              }
+            />
           </SettingsCard>
         ) : (
           areas.map((a, idx) => (
@@ -4076,11 +4087,9 @@ function AreasSettings() {
                   {
                     label: t('common.remove'),
                     danger: true,
-                    onSelect: () => {
-                      const next = areas.filter((_, i) => i !== idx);
-                      setAreas(next);
-                      void persistAreas(next);
-                    },
+                    // Removing an area drops its tables from every
+                    // device, so ask first.
+                    onSelect: () => setRemoveIdx(idx),
                   },
                 ]}
               />
@@ -4088,6 +4097,26 @@ function AreasSettings() {
           ))
         )}
       </div>
+
+      <ConfirmDialog
+        open={removeIdx != null && Boolean(areas[removeIdx])}
+        title={t('settingsAreas.removeTitle', {
+          name: (removeIdx != null && areas[removeIdx]?.name) || '',
+        })}
+        body={t('settingsAreas.removeBody')}
+        confirmLabel={t('common.remove')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        onCancel={() => setRemoveIdx(null)}
+        onConfirm={() => {
+          const idx = removeIdx;
+          setRemoveIdx(null);
+          if (idx == null) return;
+          const next = areas.filter((_, i) => i !== idx);
+          setAreas(next);
+          void persistAreas(next);
+        }}
+      />
 
       {editingArea && (
         <AreaLayoutEditorModal

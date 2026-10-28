@@ -59,6 +59,9 @@ export function resolveFloorFitPadding(pad?: FloorFitPadding): {
   return { x, y };
 }
 
+/** Largest on-screen size (px) auto-fit may give a table. */
+export const MAX_FIT_TABLE_PX = 180;
+
 /**
  * Uniform contain-fit for the waiter/host floor. Preserves the layout's
  * aspect ratio so a plan designed on Admin does not stretch sideways on
@@ -82,6 +85,7 @@ export function computeFloorViewTransform(args: {
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
+  let largestTable = 0;
   for (const n of args.nodes) {
     if (!n) continue;
     // Both tables and areas use translate(-50%, -50%), so x/y is the
@@ -95,6 +99,7 @@ export function computeFloorViewTransform(args: {
     const halfH = isArea
       ? Math.max(0, Number(n.h || 0)) / 2
       : Math.max(32, Number(n.h || 64) / 2);
+    if (!isArea) largestTable = Math.max(largestTable, halfW * 2, halfH * 2);
     minX = Math.min(minX, x - halfW);
     minY = Math.min(minY, y - halfH);
     maxX = Math.max(maxX, x + halfW);
@@ -132,7 +137,11 @@ export function computeFloorViewTransform(args: {
   } else {
     fit = Math.min(scaleW, scaleH);
   }
-  fit = clamp(fit, minScale, maxScale);
+  // A floor with one or two tables fit-to-screen blew a single table up
+  // to fill the whole view. No table grows past a large touch target.
+  const tableCap =
+    largestTable > 0 ? MAX_FIT_TABLE_PX / largestTable : maxScale;
+  fit = clamp(fit, minScale, Math.max(minScale, Math.min(maxScale, tableCap)));
 
   return {
     scale: fit,
@@ -141,4 +150,11 @@ export function computeFloorViewTransform(args: {
     tx: (cw - bw * fit) / 2 - minX * fit,
     ty: (ch - bh * fit) / 2 - minY * fit,
   };
+}
+
+/** Seats left unset is fine (older layouts); an explicit 0 or less is not. */
+export function seatsInvalid(seats: unknown): boolean {
+  if (seats == null) return false;
+  const n = Number(seats);
+  return !Number.isFinite(n) || n < 1;
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   consumeUnits,
   inventoryLevelFromOnHand,
+  stockAllowsAnother,
   stockLinesFromTicketItems,
   storeOnHandWrite,
 } from './menuStock';
@@ -47,5 +48,19 @@ describe('consumeUnits', () => {
   it('ceils fractional qty', () => {
     expect(consumeUnits(1.2)).toBe(2);
     expect(consumeUnits(0)).toBe(1);
+  });
+});
+
+describe('stockAllowsAnother', () => {
+  it('never blocks an item whose stock is not counted', () => {
+    expect(stockAllowsAnother(null, 50)).toBe(true);
+    expect(stockAllowsAnother(undefined, 0)).toBe(true);
+  });
+
+  it('stops at the remaining count, including units already staged', () => {
+    expect(stockAllowsAnother(1, 0)).toBe(true);
+    expect(stockAllowsAnother(1, 1)).toBe(false);
+    expect(stockAllowsAnother(3, 2)).toBe(true);
+    expect(stockAllowsAnother(0, 0)).toBe(false);
   });
 });

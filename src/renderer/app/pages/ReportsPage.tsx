@@ -224,8 +224,10 @@ export default function ReportsPage() {
       new Intl.NumberFormat(undefined, {
         style: 'currency',
         currency: currency || 'EUR',
-        maximumFractionDigits: 0,
-        minimumFractionDigits: 0,
+        // Cents, as on the payment screen: whole euros turned an €11.25
+        // payment into €11 and a €12.50 void into €13.
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
       }),
     [currency],
   );

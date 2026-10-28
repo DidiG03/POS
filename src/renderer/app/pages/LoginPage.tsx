@@ -13,7 +13,7 @@ import {
 import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
-import { sanitizePinInput } from '@shared/staffPin';
+import { isCommonAdminPin, sanitizePinInput } from '@shared/staffPin';
 import { BrandMark } from '../../components/BrandMark';
 import { SpinnerGlyph } from '../../components/SpinnerGlyph';
 import { resolveBackendHost } from '../../utils/backendHost';
@@ -613,18 +613,32 @@ export default function LoginPage() {
                 value={firstAdminPin}
                 onChange={(e) =>
                   setFirstAdminPin(
-                    e.target.value.replace(/\D/g, '').slice(0, 8),
+                    e.target.value.replace(/\D/g, '').slice(0, 6),
                   )
                 }
                 inputMode="numeric"
                 autoComplete="new-password"
+                aria-invalid={isCommonAdminPin(firstAdminPin) || undefined}
               />
+              <div
+                className={`text-[12px] ${
+                  isCommonAdminPin(firstAdminPin)
+                    ? 'text-rose-300'
+                    : 'text-[color:var(--pos-fg-muted)]'
+                }`}
+              >
+                {isCommonAdminPin(firstAdminPin)
+                  ? t('adminOverview.adminPinTooCommon')
+                  : t('adminOverview.adminPinRuleHint')}
+              </div>
               <Button
                 variant="primary"
                 block
                 loading={creatingFirstAdmin}
                 disabled={
-                  firstAdminName.trim().length < 2 || firstAdminPin.length < 4
+                  firstAdminName.trim().length < 2 ||
+                  firstAdminPin.length < 4 ||
+                  isCommonAdminPin(firstAdminPin)
                 }
                 onClick={async () => {
                   setCreatingFirstAdmin(true);

@@ -26,7 +26,9 @@ import {
 import {
   parseEurExchangeRate,
   splitEvenly,
+  isLekCurrency,
   toEurAtRate,
+  withCurrency,
 } from '@shared/paymentDisplay';
 import { tableKey } from '@shared/utils/tableKey';
 import {
@@ -54,6 +56,7 @@ import { Modal } from '../../components/ui/Modal';
 import { PaymentCheckout } from '../components/PaymentCheckout';
 import { retryLazyImport } from '../../utils/lazyRetry';
 import { menuItemSoldByKg, withSoldByKgFlags } from '@shared/menuItemKg';
+import { consumeUnits, stockAllowsAnother } from '@shared/menuStock';
 import {
   courseNumber,
   kitchenSlipNeedsCourseBanner,
@@ -240,15 +243,6 @@ const MenuItemTile = memo(function MenuItemTile({
     showQtyBubble && qty > 0 ? (qty > 99 ? '99+' : String(qty)) : null;
   return (
     <div className="relative min-h-0 h-full">
-      {isLow ? (
-        <span
-          className="absolute top-1 left-1 z-10 flex h-7 w-7 items-center justify-center rounded-[var(--pos-btn-radius)] bg-black/35 text-amber-400 backdrop-blur-sm border border-amber-500/40 pointer-events-none"
-          title={labels.lowTitle}
-          aria-hidden
-        >
-          <IconAlert className="h-4 w-4 shrink-0" />
-        </span>
-      ) : null}
       {qtyShown ? (
         <span className="pos-menu-qty" aria-hidden>
           {qtyShown}
@@ -260,7 +254,10 @@ const MenuItemTile = memo(function MenuItemTile({
           isDisabled ? 'pos-menu-tile--disabled' : 'cursor-pointer'
         }`}
         style={isDisabled ? undefined : tileStyle}
-        disabled={isDisabled || locked}
+        // Out-of-stock tiles stay tappable so the tap can say why nothing
+        // was added; `onAdd` refuses them.
+        disabled={locked}
+        aria-disabled={isDisabled || undefined}
         title={
           isDisabled
             ? unavailableTitle
@@ -286,24 +283,31 @@ const MenuItemTile = memo(function MenuItemTile({
                 .join(', ')
         }
         onClick={() => {
-          if (isDisabled || locked) return;
+          if (locked) return;
           onAdd(item);
         }}
       >
+        {/* shrink-0: line-clamp's overflow lets a flex child collapse to
+            nothing, which hid the name on short low-stock tiles. */}
         <div
-          className={`font-medium pr-9 leading-snug line-clamp-3 ${isDisabled ? 'line-through' : ''}`}
+          className={`shrink-0 font-medium pr-7 leading-snug ${
+            isLow ? 'line-clamp-2' : 'line-clamp-3'
+          } ${isDisabled ? 'line-through' : ''}`}
         >
           {item.name}
         </div>
-        <div className="mt-auto pt-1">
-          <div className="text-sm tabular-nums">{item.price}</div>
-          {isLow && stockRem != null ? (
+        <div className="mt-auto flex min-w-0 items-baseline justify-between gap-1.5 pt-1">
+          <div className="shrink-0 text-sm tabular-nums">{item.price}</div>
+          {isLow ? (
             <div
-              className={`text-[11px] font-semibold mt-0.5 tabular-nums ${
+              className={`flex min-w-0 items-center gap-1 truncate text-[11px] font-semibold tabular-nums ${
                 uiTheme === 'light' ? 'text-amber-800' : 'text-amber-100/95'
               }`}
             >
-              {labels.remaining(stockRem)}
+              <IconAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {stockRem != null ? (
+                <span className="truncate">{labels.remaining(stockRem)}</span>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1186,6 +1190,8 @@ export default function OrderPage() {
   useEffect(() => {
     setSelectedLineId(null);
     setTicketLoadFailed(false);
+    // A sent request locks only that table's button, not the next one.
+    setRequestLocked(false);
   }, [selectedTable?.area, selectedTable?.label]);
 
   // One host read for the selected open table. Optimistic paint from the
@@ -1484,6 +1490,25 @@ export default function OrderPage() {
     });
   }
 
+  const [clearConfirm, setClearConfirm] = useState<{
+    voiding: boolean;
+  } | null>(null);
+  const clearConfirmResolveRef = useRef<((ok: boolean) => void) | null>(null);
+
+  function requestClearConfirm(voiding: boolean) {
+    setClearConfirm({ voiding });
+    return new Promise<boolean>((resolve) => {
+      clearConfirmResolveRef.current = resolve;
+    });
+  }
+
+  function resolveClearConfirm(ok: boolean) {
+    const resolve = clearConfirmResolveRef.current;
+    clearConfirmResolveRef.current = null;
+    setClearConfirm(null);
+    resolve?.(ok);
+  }
+
   function requestAdminApproval(action: string) {
     setApprovalModal({
       open: true,
@@ -1605,17 +1630,25 @@ export default function OrderPage() {
     Math.max(0, totalBeforeDiscount - discountAmount),
   );
   const formatAmount = useMemo(() => makeFormatAmount(), []);
+  /** Payment screen figures carry the venue currency (€12.50, 1,200 L). */
+  const formatMoney = useCallback(
+    (n: number) => withCurrency(formatAmount(n), posCurrency),
+    [formatAmount, posCurrency],
+  );
+  // Kursi EUR is Lek per euro: dividing a euro till's total by it made a
+  // nonsense "≈ €0.12" quote.
+  const eurQuoteRate = isLekCurrency(posCurrency) ? eurExchangeRate : null;
   const eurDue = useMemo(
-    () => toEurAtRate(totalDue, eurExchangeRate),
-    [totalDue, eurExchangeRate],
+    () => toEurAtRate(totalDue, eurQuoteRate),
+    [totalDue, eurQuoteRate],
   );
   const split = useMemo(
     () => splitEvenly(totalDue, splitGuestCount),
     [totalDue, splitGuestCount],
   );
   const eurPerPerson = useMemo(
-    () => (split ? toEurAtRate(split.perPerson, eurExchangeRate) : null),
-    [split, eurExchangeRate],
+    () => (split ? toEurAtRate(split.perPerson, eurQuoteRate) : null),
+    [split, eurQuoteRate],
   );
 
   useEffect(() => {
@@ -1770,11 +1803,56 @@ export default function OrderPage() {
     return m;
   }, [categories]);
 
+  const menuItemBySku = useMemo(() => {
+    const m = new Map<string, MenuItemDTO>();
+    for (const c of categories) {
+      for (const it of c.items) if (it.sku) m.set(it.sku, it);
+    }
+    return m;
+  }, [categories]);
+
+  /** False (with a warning) when one more unit would exceed counted stock. */
+  const stockFitsOneMore = useCallback(
+    (sku: string): boolean => {
+      const item = menuItemBySku.get(sku);
+      if (!item || item.stockRemaining == null) return true;
+      const staged = useTicketStore
+        .getState()
+        .lines.filter((l) => l.sku === sku && l.staged === true && !l.voided)
+        .reduce((sum, l) => sum + consumeUnits(l.qty), 0);
+      if (stockAllowsAnother(item.stockRemaining, staged)) return true;
+      toast.warn(
+        t('order.stockLimitReached', {
+          name: item.name,
+          count: Math.max(0, Math.floor(Number(item.stockRemaining))),
+        }),
+      );
+      return false;
+    },
+    [menuItemBySku, t],
+  );
+
+  const incrementWithinStock = useCallback(
+    (id: string) => {
+      const line = useTicketStore.getState().lines.find((l) => l.id === id);
+      if (line?.staged && !stockFitsOneMore(line.sku)) return;
+      increment(id);
+    },
+    [increment, stockFitsOneMore],
+  );
+
   const addMenuItemToSale = useCallback(
     (item: MenuItemDTO) => {
-      if (menuItemUnavailable(item) || ticketSyncing || busyAction != null) {
+      if (ticketSyncing || busyAction != null) return;
+      if (menuItemUnavailable(item)) {
+        toast.warn(
+          item.active
+            ? t('order.outOfStockToast', { name: item.name })
+            : t('order.unavailableToast', { name: item.name }),
+        );
         return;
       }
+      if (!menuItemSoldByKg(item) && !stockFitsOneMore(item.sku)) return;
       if (menuItemSoldByKg(item)) {
         setWeightModal({
           sku: item.sku,
@@ -1813,6 +1891,8 @@ export default function OrderPage() {
       activeSeatId,
       busyAction,
       categoryNameById,
+      stockFitsOneMore,
+      t,
       ticketSyncing,
     ],
   );
@@ -2717,7 +2797,7 @@ export default function OrderPage() {
         hasTables={hasTables}
         selected={selectedLineId === line.id}
         onToggleSelect={toggleLineSelect}
-        onIncrement={increment}
+        onIncrement={incrementWithinStock}
         onDecrement={decrement}
         onRemove={removeLine}
         onVoid={openVoidTarget}
@@ -2728,7 +2808,7 @@ export default function OrderPage() {
       decrement,
       formatAmount,
       hasTables,
-      increment,
+      incrementWithinStock,
       isTableOpen,
       openVoidTarget,
       removeLine,
@@ -3301,7 +3381,7 @@ export default function OrderPage() {
                     hasTables={hasTables}
                     selected={selectedLineId === line.id}
                     onToggleSelect={toggleLineSelect}
-                    onIncrement={increment}
+                    onIncrement={incrementWithinStock}
                     onDecrement={decrement}
                     onRemove={removeLine}
                     onVoid={openVoidTarget}
@@ -3371,65 +3451,79 @@ export default function OrderPage() {
                   );
                   if (showRequestOnly) {
                     const stagedCount = lines.filter((l) => l.staged).length;
+                    // Stays tappable with nothing staged: a disabled button
+                    // gave no hint why the request did nothing.
                     return (
-                      <button
-                        className="pos-ticket-pay"
-                        disabled={
-                          stagedCount === 0 ||
-                          requestLocked ||
-                          busyAction != null ||
-                          !connectionOk
-                        }
-                        onClick={async () => {
-                          if (busyAction != null) return;
-                          if (!selectedTable || !user?.id || !ownerId) return;
-                          const staged = lines.filter((l) => l.staged);
-                          if (staged.length === 0) {
-                            toast.warn(t('order.requestAddBefore'));
-                            return;
+                      <>
+                        <button
+                          className="pos-ticket-pay"
+                          disabled={
+                            requestLocked || busyAction != null || !connectionOk
                           }
-                          if (!connectionOk) {
-                            toast.warn(t('order.networkSlow'));
-                            return;
-                          }
-                          setBusyAction('request');
-                          // IMPORTANT: only request staged items (newly added), not the whole existing ticket.
-                          const items = staged.map((l) => ({
-                            sku: l.sku,
-                            name: l.name,
-                            qty: l.qty,
-                            unitPrice: l.unitPrice,
-                            vatRate: l.vatRate,
-                            note: l.note,
-                            // So the owner's screen routes it to the right
-                            // station (a drink to the bar, not the kitchen).
-                            station: l.station,
-                            categoryId: l.categoryId,
-                            categoryName: l.categoryName,
-                          }));
-                          try {
-                            await window.api.requests.create({
-                              requesterId: user.id,
-                              ownerId,
-                              area: selectedTable.area,
-                              tableLabel: selectedTable.label,
-                              items,
-                              note: null,
-                            });
-                            setRequestLocked(true);
-                            toast.success(t('order.requestSent'));
-                          } catch {
-                            toast.error(t('order.requestFailed'));
-                          } finally {
-                            setBusyAction(null);
-                          }
-                        }}
-                        type="button"
-                      >
-                        {busyAction === 'request'
-                          ? t('order.sending')
-                          : t('order.requestAddItems')}
-                      </button>
+                          onClick={async () => {
+                            if (busyAction != null) return;
+                            if (!selectedTable || !user?.id || !ownerId) return;
+                            const staged = lines.filter((l) => l.staged);
+                            if (staged.length === 0) {
+                              toast.warn(t('order.requestAddBefore'));
+                              return;
+                            }
+                            if (!connectionOk) {
+                              toast.warn(t('order.networkSlow'));
+                              return;
+                            }
+                            setBusyAction('request');
+                            // IMPORTANT: only request staged items (newly added), not the whole existing ticket.
+                            const items = staged.map((l) => ({
+                              sku: l.sku,
+                              name: l.name,
+                              qty: l.qty,
+                              unitPrice: l.unitPrice,
+                              vatRate: l.vatRate,
+                              note: l.note,
+                              // So the owner's screen routes it to the right
+                              // station (a drink to the bar, not the kitchen).
+                              station: l.station,
+                              categoryId: l.categoryId,
+                              categoryName: l.categoryName,
+                            }));
+                            try {
+                              const created = await window.api.requests.create({
+                                requesterId: user.id,
+                                ownerId,
+                                area: selectedTable.area,
+                                tableLabel: selectedTable.label,
+                                items,
+                                note: null,
+                              });
+                              // The till answers a refused request with false
+                              // rather than throwing.
+                              if (created === false) {
+                                toast.error(t('order.requestFailed'));
+                                return;
+                              }
+                              setRequestLocked(true);
+                              toast.success(t('order.requestSent'));
+                            } catch {
+                              toast.error(t('order.requestFailed'));
+                            } finally {
+                              setBusyAction(null);
+                            }
+                          }}
+                          type="button"
+                        >
+                          {busyAction === 'request'
+                            ? t('order.sending')
+                            : t('order.requestAddItems')}
+                        </button>
+                        <p className="text-center text-[12px] text-[color:var(--pos-fg-muted)]">
+                          {requestLocked
+                            ? t('order.requestPendingHint')
+                            : stagedCount === 0
+                              ? t('order.requestAddBefore')
+                              : t('order.requestAddHint')}
+                        </p>
+                      </>
                     );
                   }
                   const clearBtnLabel =
@@ -3463,25 +3557,38 @@ export default function OrderPage() {
                               toast.warn(t('order.networkSlow'));
                               return;
                             }
+                            const voiding = Boolean(
+                              selectedTable &&
+                                isOpen(selectedTable.area, selectedTable.label),
+                            );
+                            // Sent or voided lines are kitchen history: wiping
+                            // them needs the same approval as voiding one line.
+                            const hasSentLines = lines.some(
+                              (l) => l.staged !== true || l.voided === true,
+                            );
+                            if (!(await requestClearConfirm(voiding))) return;
                             setBusyAction('void');
                             try {
+                              let approvedByAdmin: {
+                                userId: number;
+                                userName: string;
+                                approvalToken?: string;
+                              } | null = null;
+                              if (
+                                approvalsCfg.requireManagerPinForVoid &&
+                                (voiding || hasSentLines)
+                              ) {
+                                const approved = await requestAdminApproval(
+                                  t('order.approvalVoidTicket'),
+                                );
+                                if (!approved) return;
+                                approvedByAdmin = approved;
+                              }
                               if (
                                 selectedTable &&
                                 isOpen(selectedTable.area, selectedTable.label)
                               ) {
                                 if (!user?.id) return;
-                                let approvedByAdmin: {
-                                  userId: number;
-                                  userName: string;
-                                  approvalToken?: string;
-                                } | null = null;
-                                if (approvalsCfg.requireManagerPinForVoid) {
-                                  const approved = await requestAdminApproval(
-                                    t('order.approvalVoidTicket'),
-                                  );
-                                  if (!approved) return;
-                                  approvedByAdmin = approved;
-                                }
                                 // Optimistic UI: immediately clear and mark table as free locally.
                                 setOpen(
                                   selectedTable.area,
@@ -3790,7 +3897,7 @@ export default function OrderPage() {
           split={split}
           eurPerPerson={eurPerPerson}
           paymentMethod={paymentMethod}
-          formatAmount={formatAmount}
+          formatAmount={formatMoney}
           posCurrency={posCurrency}
           printReceipt={printReceipt}
           managerPinHint={
@@ -3807,11 +3914,19 @@ export default function OrderPage() {
             addMode === 'seat' && payingSeatName
               ? t('order.paySeatWithTotal', {
                   label: payingSeatName,
-                  amount: formatAmount(totalDue),
+                  amount: formatMoney(totalDue),
                 })
-              : t('order.payWithTotal', {
-                  amount: formatAmount(totalDue),
-                })
+              : split && split.guests > 1
+                ? // Equal split is a guide only: one payment of the full
+                  // bill is taken, so say so instead of looking per-person.
+                  t('order.payFullSplit', {
+                    amount: formatMoney(totalDue),
+                    guests: split.guests,
+                    per: formatMoney(split.perPerson),
+                  })
+                : t('order.payWithTotal', {
+                    amount: formatMoney(totalDue),
+                  })
           }
           confirmEur={eurDue}
           onClose={() => setShowPayment(false)}
@@ -4244,12 +4359,21 @@ export default function OrderPage() {
                   (transferMode === 'WAITER'
                     ? !transferToUserId
                     : transferDestLoading ||
-                      !transferToArea.trim() ||
-                      !transferToLabel.trim() ||
-                      transferDestTableOptions.length === 0)
+                      !transferSectionNames.includes(transferToArea) ||
+                      // The select shows "(choose table)" for a label that is
+                      // not a free table (e.g. a stale T1), so only a listed
+                      // label counts as picked.
+                      !transferDestTableOptions.includes(transferToLabel))
                 }
                 onClick={async () => {
                   if (!selectedTable || !user?.id) return;
+                  if (
+                    transferMode === 'TABLE' &&
+                    !transferDestTableOptions.includes(transferToLabel)
+                  ) {
+                    setTransferError(t('order.chooseTableFirst'));
+                    return;
+                  }
                   setTransferBusy(true);
                   setTransferError(null);
                   let tableMoved = false;
@@ -4629,6 +4753,50 @@ export default function OrderPage() {
                 }}
               >
                 {t('order.confirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clearConfirm && (
+        <div className="pos-overlay" onClick={() => resolveClearConfirm(false)}>
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            className="pos-dialog w-full max-w-sm p-5 sm:rounded-[0.85rem]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="pos-dialog-title mb-2 text-center">
+              {clearConfirm.voiding
+                ? t('order.voidTicketConfirmTitle')
+                : t('order.clearTicketConfirmTitle')}
+            </h3>
+            <p className="mb-4 text-center text-sm text-[color:var(--pos-fg-muted)]">
+              {clearConfirm.voiding && selectedTable
+                ? t('order.voidTicketConfirmBody', {
+                    area: selectedTable.area,
+                    label: selectedTable.label,
+                  })
+                : t('order.clearTicketConfirmBody')}
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                className="pos-ticket-tool"
+                autoFocus
+                onClick={() => resolveClearConfirm(false)}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                className="pos-ticket-pay pos-ticket-pay--danger !w-auto flex-1"
+                onClick={() => resolveClearConfirm(true)}
+              >
+                {clearConfirm.voiding
+                  ? t('order.voidTicket')
+                  : t('order.clear')}
               </button>
             </div>
           </div>

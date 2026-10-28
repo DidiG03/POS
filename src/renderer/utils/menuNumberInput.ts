@@ -21,11 +21,22 @@ export function menuMoneyInput(raw: string): number {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-/** VAT as a fraction (0.2). "0,2" and "20" (a percent) both mean 20%. */
-export function menuVatInput(raw: string): number {
+/**
+ * VAT typed as a percent ("20", "6,5") → the stored fraction (0.2). The
+ * field used to show the fraction itself, and "0.2" read as 0.2% or 20%
+ * depending on who looked at it.
+ */
+export function menuVatPercentInput(raw: string): number {
   const n = Number(String(raw).replace(',', '.').trim());
   if (!Number.isFinite(n) || n < 0) return 0;
-  return n > 1 ? n / 100 : n;
+  return Math.round(Math.min(100, n) * 100) / 10_000;
+}
+
+/** Stored VAT fraction → the percent shown in the field (0.2 → "20"). */
+export function vatPercentField(rate: unknown): string {
+  const n = Number(rate);
+  if (!Number.isFinite(n) || n < 0) return '';
+  return String(Math.round(n * 100 * 100) / 100);
 }
 
 /** Keep digits and both separators while typing. */

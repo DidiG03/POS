@@ -4,7 +4,8 @@ import { type ParsedMenuRow, parseMenuWorkbook } from '../../utils/menuImport';
 import {
   menuMoneyInput,
   menuNumberKeys,
-  menuVatInput,
+  menuVatPercentInput,
+  vatPercentField,
 } from '../../utils/menuNumberInput';
 import { type KdsStation } from '@shared/kdsStations';
 import { normalizeProductCode } from '@shared/barcodeScan';
@@ -78,6 +79,13 @@ const CATEGORY_PRESETS = [
 ] as const;
 
 const OTHER_CATEGORY = '__OTHER__' as const;
+
+function isPresetName(name: string): boolean {
+  const n = String(name || '')
+    .trim()
+    .toLowerCase();
+  return CATEGORY_PRESETS.some((p) => p.toLowerCase() === n);
+}
 
 type NewCategorySelection =
   | (typeof CATEGORY_PRESETS)[number]
@@ -1434,7 +1442,7 @@ function AddItemForm({
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
-  const [vat, setVat] = useState('0.2');
+  const [vat, setVat] = useState('20');
   const [isKg, setIsKg] = useState(false);
   const [sku, setSku] = useState('');
   const [cost, setCost] = useState('');
@@ -1450,7 +1458,7 @@ function AddItemForm({
     onAdd({
       name: name.trim(),
       price: menuMoneyInput(price),
-      vatRate: vat ? menuVatInput(vat) : undefined,
+      vatRate: vat ? menuVatPercentInput(vat) : undefined,
       isKg,
       ...(hasTables ? {} : { sku: sku.trim() || undefined }),
       ...costPayload,
@@ -1501,15 +1509,15 @@ function AddItemForm({
           />
         </Field>
         <Field
-          label={t('adminMenu.vatRate')}
+          label={t('adminMenu.vatRatePct')}
           hint={
-            vat.trim() !== '' && vatRateUnset(menuVatInput(vat))
+            vat.trim() !== '' && vatRateUnset(menuVatPercentInput(vat))
               ? t('adminMenu.vatZeroHint')
               : undefined
           }
         >
           <Input
-            placeholder="0.2"
+            placeholder="20"
             inputMode="decimal"
             value={vat}
             onChange={(e) => setVat(menuNumberKeys(e.target.value))}
@@ -1571,6 +1579,11 @@ function CategoryEditor({
   const { t } = useTranslation();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [name, setName] = useState(category.name);
+  // A name typed under "Other…" is a real category name, not a legacy
+  // one: keep it editable as text instead of labelling it "Legacy:".
+  const [customName, setCustomName] = useState(
+    () => !isPresetName(category.name),
+  );
   const [color, setColor] = useState<string>(
     String(category.color || '#374151'),
   );
@@ -1584,6 +1597,7 @@ function CategoryEditor({
 
   useEffect(() => {
     setName(category.name);
+    setCustomName(!isPresetName(category.name));
     const next = String(category.color || '#374151');
     setColor(next);
     setColorText(next);
@@ -1628,25 +1642,37 @@ function CategoryEditor({
           error={nameTaken ? t('adminMenu.nameTaken') : undefined}
         >
           {hasTables ? (
-            <Select
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={disabled}
-            >
-              {!CATEGORY_PRESETS.some(
-                (p) =>
-                  p.toLowerCase() === String(category.name || '').toLowerCase(),
-              ) && (
-                <option value={category.name}>
-                  {t('adminMenu.legacy', { name: category.name })}
-                </option>
-              )}
-              {CATEGORY_PRESETS.map((n) => (
-                <option key={n} value={n}>
-                  {presetLabel(t, n)}
-                </option>
-              ))}
-            </Select>
+            <div className="space-y-2">
+              <Select
+                value={customName ? OTHER_CATEGORY : name}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  if (next === OTHER_CATEGORY) {
+                    setCustomName(true);
+                    if (isPresetName(name)) setName('');
+                    return;
+                  }
+                  setCustomName(false);
+                  setName(next);
+                }}
+                disabled={disabled}
+              >
+                {CATEGORY_PRESETS.map((n) => (
+                  <option key={n} value={n}>
+                    {presetLabel(t, n)}
+                  </option>
+                ))}
+                <option value={OTHER_CATEGORY}>{t('adminMenu.other')}</option>
+              </Select>
+              {customName ? (
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder={t('adminMenu.categoryNamePlaceholder')}
+                  disabled={disabled}
+                />
+              ) : null}
+            </div>
           ) : (
             <Input
               value={name}
@@ -1702,11 +1728,11 @@ function CategoryEditor({
       <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:justify-end">
         <Button
           block
-          disabled={disabled || nameTaken}
+          disabled={disabled || nameTaken || !nextName}
           onClick={() => {
             const norm =
               normalizeColorInput(colorText) ?? (color ? String(color) : null);
-            if (nameTaken) return;
+            if (nameTaken || !nextName) return;
             onSave({
               name: name.trim(),
               color: norm,
@@ -1934,7 +1960,7 @@ function EditItemModal({
   const [name, setName] = useState(item.name);
   const [sku, setSku] = useState(item.sku || '');
   const [price, setPrice] = useState(String(item.price));
-  const [vat, setVat] = useState(String(item.vatRate ?? 0.2));
+  const [vat, setVat] = useState(vatPercentField(item.vatRate ?? 0.2));
   const [isKg, setIsKg] = useState(Boolean(item.isKg));
   const [active, setActive] = useState(Boolean(item.active));
   const [stockLevel, setStockLevel] = useState<StockLevel>(
@@ -1968,7 +1994,7 @@ function EditItemModal({
     setName(item.name);
     setSku(item.sku || '');
     setPrice(String(item.price));
-    setVat(String(item.vatRate ?? 0.2));
+    setVat(vatPercentField(item.vatRate ?? 0.2));
     setIsKg(Boolean(item.isKg));
     setActive(Boolean(item.active));
     setStockLevel(normalizeStock(item.stockLevel));
@@ -2056,15 +2082,15 @@ function EditItemModal({
             />
           </Field>
           <Field
-            label={t('adminMenu.vatRate')}
+            label={t('adminMenu.vatRatePct')}
             hint={
-              vat.trim() !== '' && vatRateUnset(menuVatInput(vat))
+              vat.trim() !== '' && vatRateUnset(menuVatPercentInput(vat))
                 ? t('adminMenu.vatZeroHint')
                 : undefined
             }
           >
             <Input
-              placeholder="0.2"
+              placeholder="20"
               inputMode="decimal"
               value={vat}
               onChange={(e) => setVat(menuNumberKeys(e.target.value))}
@@ -2076,7 +2102,7 @@ function EditItemModal({
         {!hasTables ? (
           <ItemCostFields
             sellPrice={price}
-            vatRate={menuVatInput(vat)}
+            vatRate={menuVatPercentInput(vat)}
             showSellPrice={false}
             lines={costLines}
             onChangeLines={setCostLines}
@@ -2192,7 +2218,7 @@ function EditItemModal({
             } = {
               name: name.trim(),
               price: menuMoneyInput(price),
-              vatRate: menuVatInput(vat),
+              vatRate: menuVatPercentInput(vat),
               isKg,
               active,
             };

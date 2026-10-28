@@ -5,7 +5,9 @@ import {
   isFloorCanvasFitReady,
   isFloorLayoutPending,
   isFloorLayoutVacant,
+  MAX_FIT_TABLE_PX,
   resolveFloorFitPadding,
+  seatsInvalid,
 } from './floorLayoutState';
 
 describe('floorLayoutState', () => {
@@ -34,6 +36,19 @@ describe('floorLayoutState', () => {
   it('resolves asymmetric fit padding for waiter overlays', () => {
     expect(resolveFloorFitPadding(72)).toEqual({ x: 72, y: 72 });
     expect(resolveFloorFitPadding({ x: 8, y: 88 })).toEqual({ x: 8, y: 88 });
+  });
+
+  it('does not blow a lone table up to fill the view', () => {
+    const view = computeFloorViewTransform({
+      canvasW: 1200,
+      canvasH: 800,
+      nodes: [{ x: 200, y: 200, w: 80, h: 80 }],
+      fitPadding: 24,
+    });
+    expect(view.scale * 80).toBeLessThanOrEqual(MAX_FIT_TABLE_PX + 0.001);
+    // Still centred in the canvas.
+    expect(view.tx + 200 * view.scale).toBeCloseTo(600, 3);
+    expect(view.ty + 200 * view.scale).toBeCloseTo(400, 3);
   });
 
   it('fits the floor uniformly so wide desktops do not stretch gaps', () => {
@@ -91,5 +106,12 @@ describe('floorLayoutState', () => {
         nodes: [{ x: 10, y: 10, w: 64, h: 64 }],
       }),
     ).toEqual(FLOOR_VIEW_IDENTITY);
+  });
+
+  it('requires at least one seat once seats are set', () => {
+    expect(seatsInvalid(undefined)).toBe(false);
+    expect(seatsInvalid(1)).toBe(false);
+    expect(seatsInvalid(0)).toBe(true);
+    expect(seatsInvalid(-2)).toBe(true);
   });
 });

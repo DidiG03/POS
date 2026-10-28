@@ -23,6 +23,7 @@ import {
   isFloorCanvasFitReady,
   isFloorLayoutPending,
   isFloorLayoutVacant,
+  seatsInvalid,
   type FloorFitPadding,
 } from '../../utils/floorLayoutState';
 import { reportAppError } from '../../utils/reportAppError';
@@ -896,6 +897,15 @@ export default function FloorCanvas({
       setSaveError(t('tables.layoutLoadFailed'));
       return;
     }
+    const noSeats = nodes.find(
+      (n) => isFloorTableNode(n) && seatsInvalid(n.seats),
+    );
+    if (noSeats) {
+      setSaveError(
+        t('settingsFloor.seatsMinOn', { label: noSeats.label || '' }),
+      );
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     try {
@@ -1709,9 +1719,13 @@ function Inspector({
 }) {
   const { t } = useTranslation();
   const [label, setLabel] = useState(node?.label ?? '');
+  const [seatsDraft, setSeatsDraft] = useState('');
   useEffect(() => {
     setLabel(node?.label ?? '');
   }, [node?.id, node?.label]);
+  useEffect(() => {
+    setSeatsDraft('');
+  }, [node?.id]);
   if (!node) return null;
   const isTable = isFloorTableNode(node);
   return (
@@ -1791,18 +1805,38 @@ function Inspector({
               <div className="text-xs opacity-70 mb-1">Seats</div>
               <input
                 type="number"
-                min={0}
+                min={1}
                 max={20}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm"
-                value={Number(node.seats ?? 0) || ''}
+                step={1}
+                className={`w-full bg-gray-900 border rounded px-2 py-1.5 text-sm ${
+                  seatsInvalid(node.seats)
+                    ? 'border-rose-500'
+                    : 'border-gray-700'
+                }`}
+                value={
+                  node.seats == null
+                    ? ''
+                    : Number(node.seats) > 0
+                      ? Number(node.seats)
+                      : seatsDraft
+                }
                 placeholder="—"
+                aria-invalid={seatsInvalid(node.seats) || undefined}
                 onChange={(e) => {
-                  const n = Number(e.target.value);
+                  setSeatsDraft(e.target.value);
+                  const n = Math.floor(Number(e.target.value));
+                  // 0 is kept (not dropped to "unset") so Save can refuse
+                  // it: a table needs at least one seat.
                   onChange(node.id, {
-                    seats: Number.isFinite(n) && n > 0 ? n : undefined,
+                    seats: Number.isFinite(n) && n > 0 ? Math.min(20, n) : 0,
                   } as Partial<FloorTableNode>);
                 }}
               />
+              {seatsInvalid(node.seats) ? (
+                <div className="mt-1 text-[11px] text-rose-300">
+                  {t('settingsFloor.seatsMin')}
+                </div>
+              ) : null}
             </div>
             <div>
               <div className="text-xs opacity-70 mb-1">Color</div>

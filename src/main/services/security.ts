@@ -11,6 +11,7 @@
 import { IpcMainInvokeEvent } from 'electron';
 import {
   isAdminPinRole,
+  isCommonAdminPin,
   normalizePin,
   promotionNeedsNewPin,
   staffPinError,
@@ -220,17 +221,7 @@ export function validatePin(
   // Only reject weak admin PINs when creating/updating (not during login).
   // Staff may pick a single character, so a "common PIN" list is moot there.
   if (rejectWeak && isAdminPinRole(role)) {
-    const weakPins = [
-      '0000',
-      '1111',
-      '1234',
-      '12345',
-      '123456',
-      '9999',
-      '99999',
-      '999999',
-    ];
-    if (weakPins.includes(pinStr)) {
+    if (isCommonAdminPin(pinStr)) {
       return {
         valid: false,
         error: 'PIN is too common. Please choose a different PIN.',

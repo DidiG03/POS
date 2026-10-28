@@ -37,6 +37,15 @@ describe('parseNotification', () => {
     expect(parsed.detail).toMatch(/never reached easyPos/i);
   });
 
+  it('carries the attempt count of a numbered wrong PIN', () => {
+    const parsed = parseNotification(
+      'Wrong PIN attempt on your account (3 in the last 15 minutes)',
+    );
+    expect(parsed.kind).toBe('security');
+    expect(parsed.summaryKey).toBe('inbox.pinSummaryCount');
+    expect(parsed.summaryParams).toEqual({ count: '3', minutes: '15' });
+  });
+
   it('classifies a wrong PIN', () => {
     const parsed = parseNotification('Wrong PIN attempt on your account');
     expect(parsed).toMatchObject({

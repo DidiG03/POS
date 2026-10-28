@@ -236,6 +236,7 @@ import {
   listMyVoidedTickets,
 } from './services/staffReports';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
+import { recordWrongPinAttempt } from './services/wrongPinAlert';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
 import { ensureKdsLocalSchema } from './services/kdsSchema';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
@@ -1785,6 +1786,12 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
   const pinValidation = validatePin(pin, false); // rejectWeak = false for login
   if (!pinValidation.valid) {
     logSecurityEvent('invalid_pin_format', { senderId: _e.sender.id, userId });
+    // Still a wrong PIN for the picked account: it used to skip the alert,
+    // so the owner saw fewer alerts than attempts.
+    if (userId) {
+      await recordWrongPinAttempt(Number(userId));
+      await throttleAfterPinFailure(_e.sender.id, 'auth:loginWithPin');
+    }
     throw new Error(pinValidation.error || 'Invalid PIN format');
   }
 
@@ -1808,15 +1815,7 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
       return userData;
     }
     // record a security notification for the targeted user
-    await prisma.notification
-      .create({
-        data: {
-          userId: user.id,
-          type: 'SECURITY' as any,
-          message: 'Wrong PIN attempt on your account',
-        },
-      })
-      .catch(() => {});
+    await recordWrongPinAttempt(user.id);
     await throttleAfterPinFailure(_e.sender.id, 'auth:loginWithPin');
   }
 
@@ -3587,6 +3586,8 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     if (!logged || typeof logged !== 'object') return logged;
     if ('ok' in logged && logged.ok === false) return logged;
     if (!('written' in logged) || !logged.written) return { ok: true };
+    const kdsFireForSend =
+      'kdsFireItems' in logged ? logged.kdsFireItems : kdsFireItems;
 
     try {
       broadcastTicketsChanged({
@@ -3607,7 +3608,8 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
             area: sanitizedArea,
             tableLabel: sanitizedTableLabel,
             items: items ?? [],
-            fireItems: kdsFireItems,
+            // The host's own "new on the bill" list, as the phone route uses.
+            fireItems: kdsFireForSend,
             note: sanitizedNote,
             courseLabel:
               typeof (payload as any)?.kdsCourseLabel === 'string'

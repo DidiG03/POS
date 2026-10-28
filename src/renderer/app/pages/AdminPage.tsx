@@ -16,6 +16,7 @@ import {
   promotionNeedsNewPin,
   sanitizePinInput,
   staffPinError,
+  isCommonAdminPin,
 } from '@shared/staffPin';
 import { reportAppError } from '../../utils/reportAppError';
 import { IconClose } from '../../components/icons';
@@ -202,6 +203,36 @@ export default function AdminPage() {
   // Simplified view: hide sales trends entirely
 
   const myId = me?.id ?? null;
+  // Overview used to load once on open, so payments taken afterwards left
+  // Revenue at 0 and Paid at "—" (Reports reads the same paid sales but
+  // polls). Reload on ticket/table changes and every 30s while visible.
+  const [reloadTick, setReloadTick] = useState(0);
+  useEffect(() => {
+    let timer: number | null = null;
+    const bump = () => {
+      if (timer != null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        setReloadTick((n) => n + 1);
+      }, 800);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') bump();
+    };
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible') bump();
+    }, 30_000);
+    window.addEventListener('pos:ticketsChanged', bump);
+    window.addEventListener('pos:tablesChanged', bump);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      window.clearInterval(poll);
+      window.removeEventListener('pos:ticketsChanged', bump);
+      window.removeEventListener('pos:tablesChanged', bump);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -289,7 +320,7 @@ export default function AdminPage() {
     return () => {
       cancelled = true;
     };
-  }, [me?.id, me?.role, t]);
+  }, [me?.id, me?.role, reloadTick, t]);
 
   useEffect(() => {
     if (params.get('focus') !== 'staff') return;
@@ -1291,6 +1322,10 @@ function AddStaffModal({
       );
       return;
     }
+    if (isAdminPinRole(role) && isCommonAdminPin(pin)) {
+      setError(t('adminOverview.adminPinTooCommon'));
+      return;
+    }
     const parsedSalary = parseSalaryAmountInput(salary);
     if (!parsedSalary.ok) {
       setError(t('adminOverview.salaryInvalid'));
@@ -1371,6 +1406,11 @@ function AddStaffModal({
                 ? 'adminOverview.adminPinDigits'
                 : 'adminOverview.pinDigits',
             )}
+            hint={
+              isAdminPinRole(role)
+                ? t('adminOverview.adminPinRuleHint')
+                : undefined
+            }
           >
             <Input
               placeholder={t(
@@ -1515,6 +1555,10 @@ function EditStaffModal({
       );
       return;
     }
+    if (pin && isAdminPinRole(role) && isCommonAdminPin(pin)) {
+      setError(t('adminOverview.adminPinTooCommon'));
+      return;
+    }
     if (!parsedSalary.ok) {
       setError(t('adminOverview.salaryInvalid'));
       setAdvancedOpen(true);
@@ -1598,7 +1642,11 @@ function EditStaffModal({
           </Field>
           <Field
             label={t('adminOverview.newPin')}
-            hint={t('adminOverview.newPinHint')}
+            hint={
+              isAdminPinRole(role)
+                ? `${t('adminOverview.newPinHint')} ${t('adminOverview.adminPinRuleHint')}`
+                : t('adminOverview.newPinHint')
+            }
           >
             <Input
               placeholder={t(
