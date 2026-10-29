@@ -88,7 +88,10 @@ const api: Api = {
       reason: string;
       approvedByAdminId?: number;
       approvedByAdminToken?: string;
+      idempotencyKey?: string;
     }) => ipcRenderer.invoke('admin:correctSale', input),
+    printFiscalReceipt: (input: { orderId: number }) =>
+      ipcRenderer.invoke('admin:printFiscalReceipt', input),
     listNotifications: (input?: {
       userId?: number;
       onlyUnread?: boolean;

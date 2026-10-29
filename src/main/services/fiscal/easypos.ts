@@ -555,6 +555,13 @@ export async function testEasyPosConnection(
   }
 }
 
+/**
+ * Characters of the token (and of its ids) the admin screen may show: enough
+ * to tell two tokens apart, not enough to help anyone who reads the screen.
+ * It showed the last 12.
+ */
+export const FISCAL_TOKEN_HINT_CHARS = 4;
+
 export function getFiscalTokenHint(settings: SettingsDTO): {
   configured: boolean;
   suffix?: string;
@@ -563,18 +570,22 @@ export function getFiscalTokenHint(settings: SettingsDTO): {
 } {
   const token = String((settings as any)?.fiscal?.authToken || '').trim();
   if (!token) return { configured: false };
+  // A short token would be given away by its tail: just "set".
+  if (token.length < 16) return { configured: true };
   try {
     const payload = JSON.parse(
       Buffer.from(token.split('.')[1] || '', 'base64url').toString('utf8'),
     );
+    const tail = (v: unknown) =>
+      String(v || '').slice(-FISCAL_TOKEN_HINT_CHARS) || undefined;
     return {
       configured: true,
-      suffix: token.slice(-12),
-      tokenId: String(payload?.tokenId || '').slice(-8) || undefined,
-      deviceTail: String(payload?.deviceId || '').slice(-8) || undefined,
+      suffix: tail(token),
+      tokenId: tail(payload?.tokenId),
+      deviceTail: tail(payload?.deviceId),
     };
   } catch {
-    return { configured: true, suffix: token.slice(-12) };
+    return { configured: true, suffix: token.slice(-FISCAL_TOKEN_HINT_CHARS) };
   }
 }
 

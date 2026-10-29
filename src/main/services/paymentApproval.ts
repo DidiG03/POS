@@ -12,7 +12,11 @@
  */
 import type { PrintTicketErr } from './paymentSettle';
 
-export type PaymentAdjustment = 'discount' | 'serviceChargeRemoval';
+export type PaymentAdjustment =
+  | 'discount'
+  | 'serviceChargeRemoval'
+  /** Take a payment fiskalizimi refused; its invoice goes to review. */
+  | 'fiscalRefusalDefer';
 
 const EPS = 0.005;
 
@@ -42,6 +46,9 @@ export function paymentApprovalsNeeded(
   ) {
     needed.push('serviceChargeRemoval');
   }
+  // Always behind a PIN, whatever the venue's settings: it takes money for
+  // a sale the tax service has not accepted.
+  if (m.fiscalRefusalDefer === true) needed.push('fiscalRefusalDefer');
   return needed;
 }
 
@@ -49,7 +56,13 @@ export function paymentApprovalRefusal(
   needed: PaymentAdjustment[],
 ): PrintTicketErr {
   const what = needed
-    .map((n) => (n === 'discount' ? 'discount' : 'service charge removal'))
+    .map((n) =>
+      n === 'discount'
+        ? 'discount'
+        : n === 'serviceChargeRemoval'
+          ? 'service charge removal'
+          : 'payment fiskalizimi refused',
+    )
     .join(' and ');
   return {
     ok: false,

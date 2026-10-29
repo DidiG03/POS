@@ -83,3 +83,39 @@ describe('formatMoneyPlain', () => {
     expect(formatMoneyPlain(10.075)).toBe('10.08');
   });
 });
+
+describe('VAT by rate (QA F8)', () => {
+  const opts = { vatEnabled: true, defaultVatRate: 0.2 };
+
+  it('lists each rate with its taxable base and VAT, adding up to the totals', () => {
+    const items = [
+      { name: 'Steak', qty: 1, unitPrice: 1200, vatRate: 0.2 },
+      { name: 'Bread', qty: 3, unitPrice: 110, vatRate: 0.1 },
+      { name: 'Water', qty: 2, unitPrice: 150, vatRate: 0.06 },
+    ];
+    const f = receiptFigures(
+      items,
+      { serviceChargeAmount: 181, discountAmount: 97, totalAfter: 1914 },
+      opts,
+    );
+    expect(f.vatByRate.map((r) => r.rate)).toEqual([0.2, 0.1, 0.06]);
+    const sum = (k: 'base' | 'vat') =>
+      Math.round(f.vatByRate.reduce((t, r) => t + r[k], 0) * 100) / 100;
+    expect(sum('vat')).toBe(f.vat);
+    expect(sum('base')).toBe(f.net);
+    for (const r of f.vatByRate) {
+      // Each row's VAT is its rate on its base, to the cent.
+      expect(Math.abs(r.vat - r.base * r.rate)).toBeLessThan(0.02);
+    }
+  });
+
+  it('has one row for a single-rate bill and none with VAT off', () => {
+    const items = [{ name: 'Kafe', qty: 2, unitPrice: 100, vatRate: 0.2 }];
+    const f = receiptFigures(items, { totalAfter: 200 }, opts);
+    expect(f.vatByRate).toEqual([{ rate: 0.2, base: f.net, vat: f.vat }]);
+    expect(
+      receiptFigures(items, { totalAfter: 200 }, { ...opts, vatEnabled: false })
+        .vatByRate,
+    ).toEqual([]);
+  });
+});

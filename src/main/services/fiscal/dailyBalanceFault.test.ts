@@ -35,7 +35,7 @@ vi.mock('./transport', () => ({
 
 import { createEasyPosSale } from './easypos';
 import { classifyFiscalAttempt } from './classify';
-import { dayKeyLocal } from '../kdsRetention';
+import { fiscalDayKey } from './clock';
 
 const settings = {
   fiscal: {
@@ -126,7 +126,7 @@ describe('fault 123 (opening float not declared)', () => {
   });
 
   it('declares again when a stale local record says it was declared', async () => {
-    store.set(`fiscal:balance:initiate:dev:gh537ez280:${dayKeyLocal()}`, {
+    store.set(`fiscal:balance:initiate:dev:gh537ez280:${fiscalDayKey()}`, {
       operation: 'initiate',
       docId: 'bal-old-00001',
       state: 'COMPLETE',

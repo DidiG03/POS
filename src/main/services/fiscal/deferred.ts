@@ -34,7 +34,7 @@ import {
 import { notifyAdminsAndActor } from '../adminAlerts';
 import { prisma } from '@db/client';
 import { ensureDailyBalanceForCash } from './balance';
-import { fiscalConfig } from './config';
+import { fiscalConfig, latestFiscalSettings } from './config';
 import type { FiscalDocInfo } from './completion';
 import { isLeftoverTestWork, sameFiscalEnvironment } from './environment';
 
@@ -268,10 +268,18 @@ export async function transmitDueDeferredInvoices(
     // One claim at a time, under the lock a reversal also takes: a sale
     // cancelled while it waits here is seen as ABANDONED below and never
     // sent, and one cancelled while it is being sent waits for the outcome.
+    // With the settings as they are now: a URL changed during this pass
+    // applies to the next invoice, not the next pass.
+    const latest = await latestFiscalSettings(settings);
+    if ((latest as any)?.fiscal?.enabled !== true) break;
+    if (!sameFiscalEnvironment(madeOn, fiscalConfig(latest).environment)) {
+      waitingElsewhere += 1;
+      continue;
+    }
     try {
       const sent = await withFiscalClaimLock(
         idempotencyKey,
-        () => transmitOne(settings, idempotencyKey, record, draft, now),
+        () => transmitOne(latest, idempotencyKey, record, draft, now),
         1_000,
       );
       if (sent === 'sent') registered += 1;
@@ -359,6 +367,12 @@ async function transmitOne(
       }).catch(() => undefined);
       return 'not-sent';
     }
+    // The guest left with the pending receipt: say the fiscal one is ready.
+    const { noticeLateFiscalReceipt } = await import('../fiscalReceiptReprint');
+    await noticeLateFiscalReceipt({
+      saleKey,
+      nivf: result.nivf || undefined,
+    }).catch(() => undefined);
     return 'sent';
   } catch (e: any) {
     const message = String(e?.message || e);

@@ -1592,8 +1592,15 @@ export function installBrowserLanApi(): void {
         reason: string;
         approvedByAdminId: number;
         approvedByAdminToken: string;
+        idempotencyKey?: string;
       }) {
         return await goLan('/admin/correct-sale', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
+      },
+      async printFiscalReceipt(input: { orderId: number }) {
+        return await goLan('/admin/print-fiscal-receipt', {
           method: 'POST',
           body: JSON.stringify(input ?? {}),
         });

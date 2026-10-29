@@ -45,6 +45,11 @@ import {
 const ESC = Buffer.from([0x1b]);
 const GS = Buffer.from([0x1d]);
 
+/** 0.2 → "20", 0.065 → "6.5". */
+function vatPercentText(rate: number): string {
+  return String(Math.round(Number(rate || 0) * 10000) / 100);
+}
+
 /**
  * Pulse the cash drawer connected to the receipt printer (ESC p).
  * Pin 2 (m=0) is the Epson-compatible default used by most RJ-11 tills.
@@ -645,8 +650,19 @@ export function buildEscposTicket(
     lines.push(
       ...twoCol(copy.subtotal, formatMoneyEscpos(figures.net), layout),
     );
-    if (vatEnabled)
+    if (vatEnabled) {
       lines.push(...twoCol(copy.vat, formatMoneyEscpos(figures.vat), layout));
+      // Per rate: what each rate taxed and the VAT on it.
+      for (const row of figures.vatByRate) {
+        lines.push(
+          ...twoCol(
+            `  ${copy.vatRateRow(vatPercentText(row.rate), formatMoneyEscpos(row.base))}`,
+            formatMoneyEscpos(row.vat),
+            layout,
+          ),
+        );
+      }
+    }
     lines.push(cmdBold(true));
     // Double height only on restaurant slips, so TOTAL and the amount stay
     // on one line of the normal column grid.
@@ -675,8 +691,10 @@ export function buildEscposTicket(
     }
   }
 
-  // Payment section (only for payment receipts)
-  if (kind === 'PAYMENT') {
+  // Payment section (payment receipts, and the slip of a corrective or
+  // cancellation invoice, which carries its own fiscal codes and QR).
+  const correction = kind === 'CORRECTION';
+  if (kind === 'PAYMENT' || correction) {
     const method = printPaymentMethod(
       lang,
       String(meta?.method || meta?.paymentMethod || ''),
@@ -685,9 +703,22 @@ export function buildEscposTicket(
     lines.push(escposText(`${layout.sep}\n`));
     lines.push(cmdAlign('center'));
     lines.push(cmdBold(true));
-    lines.push(escposText(`${copy.paid}\n`));
+    lines.push(
+      escposText(
+        `${correction ? copy.correctionTitle(String(meta?.correctionKind || '')) : copy.paid}\n`,
+      ),
+    );
     lines.push(cmdBold(false));
     lines.push(cmdAlign('left'));
+    const corrects = String(meta?.correctsNslf || '').trim();
+    if (correction && corrects) {
+      for (const ln of wrapEscposText(
+        `${copy.correctsInvoice}: ${corrects}`,
+        layout.cols,
+      )) {
+        lines.push(escposText(`${ln}\n`));
+      }
+    }
     if (method) lines.push(escposText(`${copy.method}: ${method}\n`));
     if (approvedBy) lines.push(escposText(`${copy.approved}: ${approvedBy}\n`));
 
@@ -787,7 +818,12 @@ export function buildEscposTicket(
   // Cash payment receipts: kick the till drawer on the receipt printer
   // before cutting so NETWORK / SERIAL / CUPS-raw paths all open it.
   // Use the raw method (CASH), not the localized label (e.g. PARA).
-  if (kind === 'PAYMENT' && paymentMethodRaw === 'CASH') {
+  // Not for a reprint (a late fiscal receipt): no money changes hands.
+  if (
+    kind === 'PAYMENT' &&
+    paymentMethodRaw === 'CASH' &&
+    (meta as any)?.reprint !== true
+  ) {
     lines.push(cmdOpenCashDrawer(0));
   }
   lines.push(GS, Buffer.from('V'), Buffer.from([0x41]), Buffer.from([0x10])); // partial cut
@@ -890,10 +926,18 @@ export function buildHtmlReceipt(
     issuedAt: meta?.paidAt,
     total: totalFinal,
   });
+  const correctionTitle =
+    kind === 'CORRECTION'
+      ? `<div class="sep"></div><div class="paid">${safe(copy.correctionTitle(String(meta?.correctionKind || '')))}</div>${String(meta?.correctsNslf || '').trim() ? `<div class="small">${safe(copy.correctsInvoice)}: ${safe(String(meta?.correctsNslf))}</div>` : ''}`
+      : '';
+  const fiscalKind = kind === 'CORRECTION' ? 'PAYMENT' : kind;
   const fiscalBlock =
-    kind === 'PAYMENT' && meta?.fiscalEnabled && isFiscalPending(meta as any)
+    correctionTitle +
+    (fiscalKind === 'PAYMENT' &&
+    meta?.fiscalEnabled &&
+    isFiscalPending(meta as any)
       ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalPendingTitle)}</div><div class="small">${safe(copy.fiscalPendingBody)}</div>`
-      : kind === 'PAYMENT' &&
+      : fiscalKind === 'PAYMENT' &&
           meta?.fiscalEnabled &&
           isFiscalRegistered(meta as any)
         ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalRegistered)}</div>${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalDocLines(
@@ -904,7 +948,7 @@ export function buildHtmlReceipt(
             .join(
               '',
             )}${fiscalQr ? `<div class="small"><a href="${safe(fiscalQr)}">${safe(fiscalQr)}</a></div>` : ''}`
-        : '';
+        : '');
   const payMethod = printPaymentMethod(
     lang,
     String(meta?.method || meta?.paymentMethod || ''),
@@ -986,6 +1030,7 @@ export function buildHtmlReceipt(
     ${discountLine}
     <div class="row"><div class="left">${safe(copy.subtotal)}</div><div class="right">${safe(formatMoney(subtotal, currency))}</div></div>
     ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
+    ${vatEnabled ? figures.vatByRate.map((row) => `<div class="row small"><div class="left">${safe(copy.vatRateRow(vatPercentText(row.rate), formatMoney(row.base, currency)))}</div><div class="right">${safe(formatMoney(row.vat, currency))}</div></div>`).join('\n') : ''}
     <div class="row total"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>${
       fx.lek != null
         ? `<div class="row"><div class="left">${safe(copy.totalLek)}</div><div class="right">${safe(formatMoney(fx.lek, 'ALL'))}</div></div>`

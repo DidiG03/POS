@@ -593,3 +593,62 @@ describe('escposQrCode', () => {
     expect(buf[idx + 7]).toBeGreaterThanOrEqual(5);
   });
 });
+
+describe('fiscal receipt additions (QA F7, F8)', () => {
+  const settings = {
+    restaurantName: 'Test',
+    currency: 'ALL',
+    printLanguage: 'en',
+    defaultVatRate: 0.2,
+    fiscal: { enabled: true, nipt: 'L12345678A' },
+  } as any;
+
+  it('prints the VAT per rate under the VAT total', () => {
+    const buf = buildEscposTicket(
+      {
+        area: 'Salla',
+        tableLabel: 'T1',
+        items: [
+          { name: 'Steak', qty: 1, unitPrice: 1200, vatRate: 0.2 },
+          { name: 'Bread', qty: 1, unitPrice: 110, vatRate: 0.1 },
+        ],
+        meta: { kind: 'PAYMENT', vatEnabled: true, totalAfter: 1310 },
+      } as any,
+      settings,
+    );
+    const text = buf.toString('latin1');
+    expect(text).toMatch(/VAT 20% on 1000(\.00)? +200(\.00)?\n/);
+    expect(text).toMatch(/VAT 10% on 100(\.00)? +10(\.00)?\n/);
+  });
+
+  it('prints a corrective slip with its own codes and the invoice it corrects', () => {
+    const buf = buildEscposTicket(
+      {
+        area: 'Salla',
+        tableLabel: 'T1',
+        items: [{ name: 'Kafe', qty: 1, unitPrice: 500 }],
+        meta: {
+          kind: 'CORRECTION',
+          correctionKind: 'CORRECTIVE',
+          correctsNslf: 'IIC-ORIGINAL',
+          totalAfter: 500,
+          fiscalEnabled: true,
+          fiscalStatus: 'accepted',
+          fiscalNivf: 'NIVF-CORR',
+          fiscalNslf: 'IIC-CORR',
+          fiscalLink:
+            'https://efiskalizimi-app-test.tatime.gov.al/x?iic=IIC-CORR',
+        },
+      } as any,
+      settings,
+    );
+    const text = buf.toString('latin1');
+    expect(text).toContain('CORRECTIVE INVOICE');
+    expect(text).toContain('Corrects NSLF: IIC-ORIGINAL');
+    expect(text).toContain('NIVF: NIVF-CORR');
+    expect(text).toContain('FISKALIZUAR');
+    // A QR (GS ( k) is printed for the verification link.
+    expect(buf.includes(Buffer.from([0x1d, 0x28, 0x6b]))).toBe(true);
+    expect(text).not.toContain('PAID');
+  });
+});

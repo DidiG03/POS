@@ -699,29 +699,87 @@ export function buildEasyPosCloudInvoiceDraft(
     articles = reconciled.articles;
     invoiceRebate = reconciled.invoiceRebate;
   }
+  // Filed in lekë, converted here (`invoiceInLek`), so the lines and the
+  // payment are added up from the same rounded figures.
+  const lek = invoiceInLek(articles, invoiceRebate, settings);
   const draft: EasyPosCloudInvoiceDraft = {
     docId: ensureDocId(options),
-    articles,
-    payment: buildPaymentArray(articles, invoiceRebate, payload),
+    articles: lek.articles,
+    payment: buildPaymentArray(lek.articles, lek.invoiceRebate, payload),
   };
-  if (invoiceRebate) draft.invoiceRebate = invoiceRebate;
+  if (lek.invoiceRebate) draft.invoiceRebate = lek.invoiceRebate;
   const { operatorCode } = fiscalArticleSettings(settings);
   if (operatorCode) draft.operatorCode = operatorCode;
-  // ALL is the default for Albanian fiscalisation and is omitted entirely.
-  // This used to default to EUR when `settings.currency` was unset, which
-  // sent a foreign-currency invoice for a business selling in lekë.
+  return draft;
+}
+
+/**
+ * An invoice's lines in lekë, the currency the tax service files in.
+ *
+ * A venue selling in euro used to send euro prices with `currency.exRate`
+ * and let easyPos convert them. easyPos converts and rounds each line and
+ * the payment on their own, so with a rate like 97.37 the two came out a
+ * cent apart (7285.23 against 7285.22) and the invoice was refused every
+ * time; whole-number rates happened to add up. Now each unit price (and
+ * each rebate in value) is converted and rounded to the cent once, here,
+ * and the total and the payment are derived from those rounded lines, so
+ * they always agree.
+ *
+ * ALL is returned as is. Any other currency needs its rate against ALL;
+ * `buildCurrency` turns a missing one into a clear error rather than an
+ * invoice filed at the wrong value.
+ */
+export function invoiceInLek(
+  articles: EasyPosInvoiceDraft['articles'],
+  invoiceRebate: Rebate | undefined,
+  settings: SettingsDTO,
+): {
+  articles: EasyPosInvoiceDraft['articles'];
+  invoiceRebate?: Rebate;
+  /** The document total in lekë: what the payment must add up to. */
+  amount: number;
+  /** The rate used, or null when the venue sells in lekë. */
+  rate: number | null;
+} {
   const currency = String(settings.currency || DEFAULT_CURRENCY)
     .trim()
     .toUpperCase();
-  // Any non-ALL currency needs a rate against ALL — not just EUR. The old
-  // code sent `{ code }` with no `exRate` for every other currency, which
-  // the API rejects (and which would misvalue the invoice if it did not).
   const built = buildCurrency({
     code: currency,
     exRate: exchangeRateFor(settings, currency),
   });
-  if (built) draft.currency = built;
-  return draft;
+  if (!built || built.code === DEFAULT_CURRENCY || !built.exRate) {
+    return {
+      articles,
+      ...(invoiceRebate ? { invoiceRebate } : {}),
+      amount: invoiceTotalOf(articles, invoiceRebate),
+      rate: null,
+    };
+  }
+  const rate = Number(built.exRate);
+  const toLek = (value: number) => roundMoney(Number(value || 0) * rate);
+  const convertRebate = (rebate: Rebate | undefined): Rebate | undefined => {
+    if (!rebate) return undefined;
+    if (rebate.inValue != null) {
+      return { ...rebate, inValue: toLek(Number(rebate.inValue)) };
+    }
+    return { ...rebate };
+  };
+  const converted = articles.map((article) => {
+    const rebate = convertRebate(article.rebate);
+    return {
+      ...article,
+      price: toLek(article.price),
+      ...(rebate ? { rebate } : {}),
+    };
+  });
+  const rebate = convertRebate(invoiceRebate);
+  return {
+    articles: converted,
+    ...(rebate ? { invoiceRebate: rebate } : {}),
+    amount: invoiceTotalOf(converted, rebate),
+    rate,
+  };
 }
 
 /**

@@ -27,9 +27,43 @@ export function normalizeBaseUrl(baseUrl: string): string {
     .replace(/\/+$/g, '');
 }
 
+/**
+ * The easyPos Cloud hosts, and the environment each one is. Matched
+ * exactly against the URL's host: searching the whole string sent the
+ * token and the cloud headers to any URL that merely contained one of
+ * these names (`https://api.dev.easypos.al.example.com/`,
+ * `https://evil.test/?api.easypos.al`).
+ */
+export const EASYPOS_CLOUD_HOSTS: Readonly<Record<string, 'dev' | 'prod'>> = {
+  'api.dev.easypos.al': 'dev',
+  'api.easypos.al': 'prod',
+};
+
+/** The cloud environment of a base URL, or null for anything else. */
+function cloudEnvironmentOf(baseUrl: string): 'dev' | 'prod' | null {
+  let url: URL;
+  try {
+    url = new URL(normalizeBaseUrl(baseUrl));
+  } catch {
+    return null;
+  }
+  // The token travels to easyPos over TLS only.
+  if (url.protocol !== 'https:') return null;
+  if (url.username || url.password) return null;
+  if (url.port && url.port !== '443') return null;
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  return Object.prototype.hasOwnProperty.call(EASYPOS_CLOUD_HOSTS, host)
+    ? EASYPOS_CLOUD_HOSTS[host]
+    : null;
+}
+
+/** Mentions easyPos Cloud anywhere (for refusing lookalikes). */
+export function looksLikeEasyPosCloud(baseUrl: string): boolean {
+  return /easypos\.al/i.test(String(baseUrl || ''));
+}
+
 export function isEasyPosCloudApi(baseUrl: string): boolean {
-  const u = normalizeBaseUrl(baseUrl).toLowerCase();
-  return u.includes('api.easypos.al') || u.includes('api.dev.easypos.al');
+  return cloudEnvironmentOf(baseUrl) !== null;
 }
 
 /**
@@ -40,10 +74,7 @@ export function isEasyPosCloudApi(baseUrl: string): boolean {
  * prod call failing forever.
  */
 export function fiscalEnvironmentOf(baseUrl: string): FiscalEnvironment {
-  const u = normalizeBaseUrl(baseUrl).toLowerCase();
-  if (u.includes('api.dev.easypos.al')) return 'dev';
-  if (u.includes('api.easypos.al')) return 'prod';
-  return 'local';
+  return cloudEnvironmentOf(baseUrl) ?? 'local';
 }
 
 /**
@@ -103,6 +134,17 @@ export function assertFiscalConfigured(settings: SettingsDTO): void {
   if (!baseUrl) {
     throw new Error('Fiscal middleware base URL is not configured.');
   }
+  if (!cloud && looksLikeEasyPosCloud(baseUrl)) {
+    // Not one of the easyPos hosts, but made to look like one: the token
+    // must not go there, as cloud or as local middleware.
+    throw new Error(
+      `The fiscal URL "${baseUrl}" is not an easyPos Cloud address (${Object.keys(
+        EASYPOS_CLOUD_HOSTS,
+      )
+        .map((h) => `https://${h}`)
+        .join(' or ')}). Fix it in Admin → Fiskalizimi.`,
+    );
+  }
   if (!authToken) {
     throw new Error('Fiscal middleware authorization token is not configured.');
   }
@@ -121,4 +163,32 @@ export function assertFiscalConfigured(settings: SettingsDTO): void {
       `Operator code "${operatorCode}" is not in the format the tax service issues (two letters, three digits, two letters, three digits — e.g. gh537ez280).`,
     );
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * The settings as they are now
+ * ------------------------------------------------------------------ */
+
+let settingsSource: (() => Promise<SettingsDTO | null | undefined>) | null =
+  null;
+
+/**
+ * Where fiskalizimi reads the current settings from. Set once at start-up
+ * (the till's settings store). Retries used to keep the settings they were
+ * started with, so after the easyPos URL was changed the queue went on
+ * sending to the old one.
+ */
+export function setFiscalSettingsSource(
+  source: (() => Promise<SettingsDTO | null | undefined>) | null,
+): void {
+  settingsSource = source;
+}
+
+/** The current settings, or `fallback` when none can be read. */
+export async function latestFiscalSettings(
+  fallback: SettingsDTO,
+): Promise<SettingsDTO> {
+  if (!settingsSource) return fallback;
+  const fresh = await settingsSource().catch(() => null);
+  return fresh || fallback;
 }

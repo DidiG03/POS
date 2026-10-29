@@ -56,6 +56,10 @@ vi.mock('@db/client', () => ({
       }),
     },
     saleCorrection: {
+      findUnique: vi.fn(
+        async ({ where }: any) =>
+          db.corrections.find((c) => c.id === Number(where.id)) ?? null,
+      ),
       create: vi.fn(async ({ data }: any) => {
         const row = { id: db.nextCorrectionId++, ...data };
         db.corrections.push(row);
@@ -73,15 +77,36 @@ vi.mock('@db/client', () => ({
           update: async ({ where, data }: any) => {
             Object.assign(db.orders.get(Number(where.id)), data);
           },
+          // Conditional, like SQL: only a sale not already VOID.
+          updateMany: async ({ where, data }: any) => {
+            const order = db.orders.get(Number(where.id));
+            if (!order || order.status === where.status?.not) {
+              return { count: 0 };
+            }
+            Object.assign(order, data);
+            return { count: 1 };
+          },
         },
         orderItem: {
           updateMany: async ({ where, data }: any) => {
+            let count = 0;
             for (const id of where.id.in) {
               const item = db.items.get(Number(id));
-              if (item && item.orderId === where.orderId) {
-                Object.assign(item, data);
-              }
+              if (!item || item.orderId !== where.orderId) continue;
+              if ('voidedAt' in where && item.voidedAt != null) continue;
+              Object.assign(item, data);
+              count += 1;
             }
+            return { count };
+          },
+        },
+        syncState: {
+          create: async ({ data }: any) => {
+            if (kv.has(data.key)) {
+              throw Object.assign(new Error('unique'), { code: 'P2002' });
+            }
+            kv.set(data.key, data.valueJson);
+            return data;
           },
         },
         menuItem: {
@@ -163,7 +188,10 @@ vi.mock('./adminAlerts', () => ({
   }),
 }));
 
-const { claims } = vi.hoisted(() => ({ claims: new Map<string, any>() }));
+const { claims, locks } = vi.hoisted(() => ({
+  claims: new Map<string, any>(),
+  locks: new Map<string, Promise<unknown>>(),
+}));
 
 vi.mock('./fiscal/claims', () => ({
   flagFiscalCorrectionRequired: vi.fn(async (input: any) => {
@@ -177,7 +205,19 @@ vi.mock('./fiscal/claims', () => ({
     });
     return true;
   }),
-  withFiscalClaimLock: vi.fn(async (_key: string, fn: () => any) => fn()),
+  // Serialises per key, as the real lock does.
+  withFiscalClaimLock: vi.fn((key: string, fn: () => any) => {
+    const prev = locks.get(key) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    locks.set(
+      key,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }),
   annotateFiscalClaimUnlocked: vi.fn(async (key: string, patch: any) => {
     claims.set(key, { ...(claims.get(key) || {}), ...patch });
   }),
@@ -201,6 +241,13 @@ const { registerCorrectiveInvoice } = vi.hoisted(() => ({
 
 vi.mock('./fiscal/corrective', () => ({
   registerCorrectiveInvoice,
+}));
+
+const { printed } = vi.hoisted(() => ({ printed: [] as any[] }));
+vi.mock('./printDispatcher', () => ({
+  fireDispatchTicket: vi.fn((payload: any) => {
+    printed.push(payload);
+  }),
 }));
 
 import {
@@ -262,6 +309,8 @@ beforeEach(() => {
   flagged.length = 0;
   notified.length = 0;
   claims.clear();
+  locks.clear();
+  printed.length = 0;
   registerCorrectiveInvoice.mockClear();
 });
 
@@ -919,5 +968,132 @@ describe('corrections that hit an outage', () => {
       [...kv.keys()].some((k) => k.startsWith('fiscal:correction-retry:')),
     ).toBe(false);
     expect(flagged[0]?.queued).toBe(false);
+  });
+});
+
+describe('applySaleCorrection — the same request twice at once (QA F1)', () => {
+  function fiscalOn() {
+    vi.mocked(coreServices.readSettings).mockResolvedValue({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+    } as any);
+    registerCorrectiveInvoice.mockImplementation((async () => {
+      // easyPos takes a moment: the second request arrives meanwhile.
+      await new Promise((r) => setTimeout(r, 5));
+      return {
+        kind: 'complete',
+        docId: 'corr-once',
+        identifiers: { iic: 'IIC-C', fic: 'NIVF-C' },
+      };
+    }) as never);
+  }
+  const request = {
+    orderId: 1,
+    kind: 'CORRECTIVE' as const,
+    itemIds: [11],
+    reason: 'Coffee charged twice',
+  };
+
+  it('files one corrective for two identical requests with the same key', async () => {
+    seedSale();
+    fiscalOn();
+    const [a, b] = await Promise.all([
+      applySaleCorrection({ ...request, idempotencyKey: 'corr-key-1' }),
+      applySaleCorrection({ ...request, idempotencyKey: 'corr-key-1' }),
+    ]);
+    expect(registerCorrectiveInvoice).toHaveBeenCalledTimes(1);
+    expect(db.corrections).toHaveLength(1);
+    // The repeat gets the original result.
+    expect(b).toEqual(a);
+    expect(a).toMatchObject({ ok: true, corrective: { state: 'FILED' } });
+    // And so does a later retry of the same key.
+    expect(
+      await applySaleCorrection({ ...request, idempotencyKey: 'corr-key-1' }),
+    ).toEqual(a);
+    expect(registerCorrectiveInvoice).toHaveBeenCalledTimes(1);
+    vi.mocked(coreServices.readSettings).mockResolvedValue({
+      defaultVatRate: 0.2,
+    } as any);
+  });
+
+  it('never corrects a line twice, even under different keys', async () => {
+    seedSale();
+    fiscalOn();
+    const [a, b] = await Promise.all([
+      applySaleCorrection({ ...request, idempotencyKey: 'k-a' }),
+      applySaleCorrection({ ...request, idempotencyKey: 'k-b' }),
+    ]);
+    expect(registerCorrectiveInvoice).toHaveBeenCalledTimes(1);
+    expect(db.corrections).toHaveLength(1);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    expect([a, b].find((r) => !r.ok)).toEqual({
+      ok: false,
+      error: 'line-already-void',
+    });
+    vi.mocked(coreServices.readSettings).mockResolvedValue({
+      defaultVatRate: 0.2,
+    } as any);
+  });
+
+  it('cancels a sale once when two cancellations race', async () => {
+    seedSale();
+    const results = await Promise.all([
+      applySaleCorrection({ orderId: 1, kind: 'CANCEL', reason: 'Twice' }),
+      applySaleCorrection({ orderId: 1, kind: 'CANCEL', reason: 'Twice' }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(db.corrections).toHaveLength(1);
+  });
+});
+
+describe('the slip of a filed correction (QA F7)', () => {
+  it('prints a corrective fiscal receipt with its codes, QR and the invoice it corrects', async () => {
+    seedSale();
+    vi.mocked(coreServices.readSettings).mockResolvedValue({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+    } as any);
+    registerCorrectiveInvoice.mockResolvedValueOnce({
+      kind: 'complete',
+      docId: 'corr-slip',
+      identifiers: {
+        iic: 'IIC-CORR',
+        fic: 'NIVF-CORR',
+        link: 'https://efiskalizimi-app-test.tatime.gov.al/invoice-check/#/verify?iic=IIC-CORR',
+      },
+    } as never);
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee charged twice',
+    });
+    await vi.waitFor(() => expect(printed).toHaveLength(1));
+    const slip = printed[0];
+    expect(slip.meta).toMatchObject({
+      kind: 'CORRECTION',
+      correctionKind: 'CORRECTIVE',
+      correctsNslf: 'IIC-1',
+      fiscalNivf: 'NIVF-CORR',
+      fiscalNslf: 'IIC-CORR',
+      totalAfter: 500,
+    });
+    expect(slip.meta.fiscalLink).toContain('IIC-CORR');
+    expect(slip.items).toEqual([{ name: 'Kafe', qty: 1, unitPrice: 500 }]);
+    vi.mocked(coreServices.readSettings).mockResolvedValue({
+      defaultVatRate: 0.2,
+    } as any);
+  });
+
+  it('prints nothing for a correction that was not filed', async () => {
+    seedSale();
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee charged twice',
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(printed).toHaveLength(0);
   });
 });

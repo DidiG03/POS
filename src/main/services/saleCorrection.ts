@@ -43,7 +43,7 @@ import {
   buildCorrectionDifferenceLines,
   invoiceBandTotals,
   bandChangeBetween,
-  buildRestatedInvoiceLines,
+  invoiceInLek,
 } from './fiscal/mapInvoice';
 import { cancelInvoice } from './fiscal/cancel';
 import { checkFiscalDocStatus } from './fiscal/easypos';
@@ -264,6 +264,9 @@ export interface FiledCancellation {
   nslf?: string;
   /** NIVF of the cancellation document. */
   nivf?: string;
+  /** Verification link / QR payload of the filed document, for its slip. */
+  link?: string;
+  qrCode?: string;
   detail: string;
   /**
    * NOT_FILED only: the request never reached easyPos (offline, outage), so
@@ -325,6 +328,8 @@ async function fileCancellation(input: {
         docId,
         nslf: outcome.identifiers.iic,
         nivf: outcome.identifiers.fic,
+        link: outcome.identifiers.link,
+        qrCode: outcome.identifiers.qrCode,
         detail: `Cancellation filed · NIVF ${outcome.identifiers.fic} · docId ${docId}`,
       };
     }
@@ -350,10 +355,78 @@ async function fileCancellation(input: {
   }
 }
 
+/**
+ * The slip of a filed cancellation or corrective invoice: what was taken
+ * off, the refund, the document's own NIVF/NSLF and QR, and the invoice it
+ * corrects. Nothing was printed for these, so the guest (and the till's
+ * paper trail) had no fiscal receipt for the reversal. Best-effort: a
+ * printer problem never undoes the filing. Kind `CORRECTION`, so it never
+ * reads as a sale (`ensureSettledSaleFromPrintJob` takes PAYMENT only).
+ */
+export async function printCorrectionSlip(
+  correctionId: number,
+  filed: FiledCancellation,
+): Promise<boolean> {
+  try {
+    const correction: any = await prisma.saleCorrection.findUnique({
+      where: { id: correctionId },
+    } as any);
+    if (!correction) return false;
+    const order: any = await prisma.order.findUnique({
+      where: { id: Number(correction.orderId) },
+      include: { payments: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    } as any);
+    const payment = Array.isArray(order?.payments) ? order.payments[0] : null;
+    const struck = Array.isArray(correction.itemsJson)
+      ? (correction.itemsJson as any[])
+      : [];
+    const refund = Math.max(0, -roundMoney(num(correction.amountDelta)));
+    const settings: any = await coreServices.readSettings();
+    const { fireDispatchTicket } = await import('./printDispatcher');
+    fireDispatchTicket(
+      {
+        area: String(order?.area || ''),
+        tableLabel: String(order?.tableLabel || ''),
+        covers: null,
+        items: struck.map((l) => ({
+          name: String(l?.name || 'Item'),
+          qty: num(l?.qty) || 1,
+          unitPrice: num(l?.unitPrice),
+        })),
+        note: String(correction.reason || '') || null,
+        meta: {
+          kind: 'CORRECTION',
+          correctionKind: String(correction.kind || ''),
+          correctsNslf:
+            String(correction.originalNslf || payment?.fiscalNslf || '') ||
+            undefined,
+          method: String(payment?.method || ''),
+          totalAfter: refund,
+          vatEnabled: order?.vatEnabled === true,
+          paidAt: new Date().toISOString(),
+          fiscalEnabled: true,
+          fiscalStatus: 'accepted',
+          fiscalNslf: filed.nslf,
+          fiscalNivf: filed.nivf,
+          fiscalLink: filed.link,
+          fiscalQrCode: filed.qrCode,
+        },
+      } as any,
+      settings,
+      { persistRetryOnTransientFailure: true },
+    );
+    return true;
+  } catch (e) {
+    console.warn('[sale-correction] slip not printed:', e);
+    return false;
+  }
+}
+
 async function stampFiledCorrection(
   correctionId: number,
   filed: FiledCancellation,
 ): Promise<void> {
+  void printCorrectionSlip(correctionId, filed);
   await prisma.saleCorrection
     .update({
       where: { id: correctionId },
@@ -479,12 +552,15 @@ async function fileCorrective(input: {
       };
     }
     const method = mapPaymentMethod(input.method || 'CASH');
+    // In lekë, like the invoice it corrects (`invoiceInLek`): a euro venue
+    // used to file a corrective's euro amounts as lekë.
+    const lek = invoiceInLek(articles, undefined, input.settings);
     const outcome = await registerCorrectiveInvoice(
       input.settings,
       {
         docId,
-        articles,
-        payment: [{ type: method as any, amount }],
+        articles: lek.articles,
+        payment: [{ type: method as any, amount: lek.amount }],
         original: {
           iic: input.iic,
           eic: input.eic,
@@ -500,6 +576,8 @@ async function fileCorrective(input: {
         docId,
         nslf: outcome.identifiers.iic,
         nivf: outcome.identifiers.fic,
+        link: outcome.identifiers.link,
+        qrCode: outcome.identifiers.qrCode,
         detail: `Corrective filed · NIVF ${outcome.identifiers.fic} · docId ${docId}`,
       };
     }
@@ -856,7 +934,7 @@ async function reverseUnsentInvoice(input: {
   });
 }
 
-export async function applySaleCorrection(input: {
+export interface ApplySaleCorrectionInput {
   orderId: number;
   kind: SaleCorrectionKind;
   itemIds?: readonly number[] | null;
@@ -868,11 +946,117 @@ export async function applySaleCorrection(input: {
    * ticket (e.g. printed by mistake) never sold its goods.
    */
   restockStore?: boolean;
-}): Promise<ApplyCorrectionResult> {
+  /**
+   * The request's key. A repeat (a double tap, a retried request) gets the
+   * first one's result instead of a second correction.
+   */
+  idempotencyKey?: string | null;
+}
+
+/** Where a correction request's key and its result are kept. */
+export const CORRECTION_KEY_PREFIX = 'fiscal:correction-key:';
+
+/** Raised inside the correction transaction when the lines moved under it. */
+class CorrectionRaceError extends Error {
+  constructor(readonly error: SaleCorrectionError) {
+    super(error);
+  }
+}
+
+/**
+ * Reverse a settled sale, once.
+ *
+ * QA filed two corrective invoices (−4.00 twice) for one line from two
+ * identical requests sent together: each read the line as live, each
+ * created its own correction, and each got its own docId. Now
+ *   - corrections of one sale run one at a time (`withFiscalClaimLock`),
+ *     and the sale is read inside that turn;
+ *   - the lines are struck, and the sale voided, only if they are still
+ *     live, in the same transaction that records the correction, so a line
+ *     already corrected (or being corrected) is refused, never filed twice;
+ *   - the request's key is claimed in that transaction too, and a repeat
+ *     of it answers with the first result.
+ */
+export async function applySaleCorrection(
+  input: ApplySaleCorrectionInput,
+): Promise<ApplyCorrectionResult> {
   const orderId = Number(input.orderId);
   if (!Number.isFinite(orderId) || orderId <= 0) {
     return { ok: false, error: 'not-found' };
   }
+  const requestKey = String(input.idempotencyKey || '')
+    .trim()
+    .slice(0, 200);
+  return withFiscalClaimLock(`sale-correction:${orderId}`, async () => {
+    if (requestKey) {
+      const prior = await readCorrectionKey(requestKey);
+      if (prior) return prior;
+    }
+    const result = await applySaleCorrectionNow(input, requestKey);
+    if (requestKey && result.ok) {
+      await saveCorrectionKey(requestKey, orderId, result).catch(
+        () => undefined,
+      );
+    }
+    return result;
+  });
+}
+
+async function readCorrectionKey(
+  key: string,
+): Promise<ApplyCorrectionResult | null> {
+  const row = await prisma.syncState
+    .findUnique({ where: { key: `${CORRECTION_KEY_PREFIX}${key}` } })
+    .catch(() => null);
+  const value = (row as any)?.valueJson;
+  if (!value || typeof value !== 'object') return null;
+  if (value.result && typeof value.result === 'object') {
+    return value.result as ApplyCorrectionResult;
+  }
+  // Claimed, but the first request ended before its result was stored (a
+  // crash mid-filing): the correction exists, so answer with it.
+  const correctionId = Number(value.correctionId);
+  return Number.isFinite(correctionId) && correctionId > 0
+    ? {
+        ok: true,
+        correctionId,
+        kind: value.kind as SaleCorrectionKind,
+        amountDelta: num(value.amountDelta),
+        needsFiling: true,
+      }
+    : null;
+}
+
+async function saveCorrectionKey(
+  key: string,
+  orderId: number,
+  result: ApplyCorrectionResult,
+): Promise<void> {
+  const fullKey = `${CORRECTION_KEY_PREFIX}${key}`;
+  const valueJson = {
+    orderId,
+    ...(result.ok
+      ? {
+          correctionId: result.correctionId,
+          kind: result.kind,
+          amountDelta: result.amountDelta,
+        }
+      : {}),
+    result,
+    savedAt: new Date().toISOString(),
+  } as any;
+  await prisma.syncState.upsert({
+    where: { key: fullKey },
+    create: { key: fullKey, valueJson },
+    update: { valueJson },
+  });
+}
+
+async function applySaleCorrectionNow(
+  input: ApplySaleCorrectionInput,
+  requestKey: string,
+): Promise<ApplyCorrectionResult> {
+  const orderId = Number(input.orderId);
 
   const order = await prisma.order
     .findUnique({
@@ -928,65 +1112,94 @@ export async function applySaleCorrection(input: {
   const payment = latestPayment;
   const now = new Date();
 
-  const correctionId = await prisma.$transaction(async (tx: any) => {
-    if (plan.struckItemIds.length > 0) {
-      await tx.orderItem.updateMany({
-        where: { id: { in: plan.struckItemIds }, orderId },
-        data: { voidedAt: now },
-      });
-      if (input.restockStore) {
-        const struck = new Set(plan.struckItemIds);
-        await restockMenuStockForLines(
-          tx,
-          ((order as any).items || [])
-            .filter((it: any) => struck.has(Number(it.id)))
-            .map((it: any) => ({
-              sku: String(it.sku || ''),
-              qty: num(it.qty),
-            })),
-        );
+  let correctionId: number;
+  try {
+    correctionId = await prisma.$transaction(async (tx: any) => {
+      if (plan.struckItemIds.length > 0) {
+        // Only lines still live: one corrected (or being corrected) by
+        // another request is not struck, or filed, a second time.
+        const struck = await tx.orderItem.updateMany({
+          where: { id: { in: plan.struckItemIds }, orderId, voidedAt: null },
+          data: { voidedAt: now },
+        });
+        if (Number(struck?.count) !== plan.struckItemIds.length) {
+          throw new CorrectionRaceError('line-already-void');
+        }
+        if (input.restockStore) {
+          const struck = new Set(plan.struckItemIds);
+          await restockMenuStockForLines(
+            tx,
+            ((order as any).items || [])
+              .filter((it: any) => struck.has(Number(it.id)))
+              .map((it: any) => ({
+                sku: String(it.sku || ''),
+                qty: num(it.qty),
+              })),
+          );
+        }
       }
-    }
-    if (plan.cancelsSale) {
-      // The filed figures are left alone: VOID is what excludes the sale, and
-      // an audit needs to still show what the guest was charged.
-      await tx.order.update({
-        where: { id: orderId },
-        data: { status: 'VOID', voidedAt: now },
-      });
-    } else {
-      await tx.order.update({
-        where: { id: orderId },
+      if (plan.cancelsSale) {
+        // The filed figures are left alone: VOID is what excludes the sale, and
+        // an audit needs to still show what the guest was charged.
+        const voided = await tx.order.updateMany({
+          where: { id: orderId, status: { not: 'VOID' } },
+          data: { status: 'VOID', voidedAt: now },
+        });
+        if (Number(voided?.count) !== 1) {
+          throw new CorrectionRaceError('already-void');
+        }
+      } else {
+        await tx.order.update({
+          where: { id: orderId },
+          data: {
+            subtotal: plan.nextSubtotal,
+            vatAmount: plan.nextVat,
+            total: plan.nextTotal,
+            serviceChargeAmount: plan.nextServiceCharge,
+            discountAmount: plan.nextDiscount,
+          },
+        });
+      }
+      const created = await tx.saleCorrection.create({
         data: {
-          subtotal: plan.nextSubtotal,
-          vatAmount: plan.nextVat,
-          total: plan.nextTotal,
-          serviceChargeAmount: plan.nextServiceCharge,
-          discountAmount: plan.nextDiscount,
+          orderId,
+          kind: plan.kind,
+          reason: plan.reason,
+          amountDelta: plan.amountDelta,
+          itemsJson: plan.struckLines.map((l) => ({
+            id: l.id,
+            name: l.name || '',
+            qty: num(l.qty),
+            unitPrice: num(l.unitPrice),
+          })),
+          actorUserId: Number(input.actorUserId) || null,
+          approvedById: Number(input.approvedById) || null,
+          originalNslf: String(payment?.fiscalNslf || '').trim() || null,
+          originalNivf: String(payment?.fiscalNivf || '').trim() || null,
         },
+        select: { id: true },
       });
-    }
-    const created = await tx.saleCorrection.create({
-      data: {
-        orderId,
-        kind: plan.kind,
-        reason: plan.reason,
-        amountDelta: plan.amountDelta,
-        itemsJson: plan.struckLines.map((l) => ({
-          id: l.id,
-          name: l.name || '',
-          qty: num(l.qty),
-          unitPrice: num(l.unitPrice),
-        })),
-        actorUserId: Number(input.actorUserId) || null,
-        approvedById: Number(input.approvedById) || null,
-        originalNslf: String(payment?.fiscalNslf || '').trim() || null,
-        originalNivf: String(payment?.fiscalNivf || '').trim() || null,
-      },
-      select: { id: true },
+      if (requestKey) {
+        // Claimed with the correction: a crash before the result is stored
+        // still answers a repeat with this correction, not a new one.
+        await tx.syncState.create({
+          data: {
+            key: `${CORRECTION_KEY_PREFIX}${requestKey}`,
+            valueJson: {
+              orderId,
+              correctionId: Number(created.id),
+              kind: plan.kind,
+              amountDelta: plan.amountDelta,
+            } as any,
+          },
+        });
+      }
+      return Number(created.id);
     });
-    return Number(created.id);
-  });
+  } catch (e) {
+    if (e instanceof CorrectionRaceError) return { ok: false, error: e.error };
+    throw e;
+  }
 
   const docId = String(payment?.idempotencyKey || '').trim();
   let iic = String(payment?.fiscalNslf || '').trim();

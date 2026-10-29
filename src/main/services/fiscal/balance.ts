@@ -15,7 +15,8 @@
  * It is not tied to the POS' own shift concept. A shift is an app idea;
  * a business day is the tax service's, and a venue that runs two shifts a
  * day must not declare two opening balances. The day key is the local
- * calendar date, matching how the rest of this codebase closes a day.
+ * calendar date in Albania, by easyPos' clock when the till's has drifted
+ * (`clock.ts`), not the till PC's own zone and clock.
  *
  * It does not close the balance. The API has no balance-close route, so
  * there is nothing to call at end of day and no state machine that waits
@@ -38,7 +39,7 @@ import { assessCompletion, type FiscalIdentifiers } from './completion';
 import { classifyFiscalAttempt, isNotFoundStatus } from './classify';
 import { backoffDelayMs, defaultSleep, type Sleep } from './backoff';
 import { fiscalConfig } from './config';
-import { dayKeyLocal } from '../kdsRetention';
+import { clockDriftToReport, fiscalDayKey } from './clock';
 
 const KEY_PREFIX = 'fiscal:balance:';
 
@@ -315,7 +316,7 @@ export async function initiateDailyBalance(
   input: InitiateBalanceInput,
   options?: BalanceOptions,
 ): Promise<BalanceOutcome> {
-  const dayKey = String(input.dayKey || dayKeyLocal());
+  const dayKey = String(input.dayKey || fiscalDayKey());
   const deviceKey = deviceKeyOf(settings);
   const storageKey = initiateKey(deviceKey, dayKey);
   const amount = assertAllAmount(input.amount, 'initiate');
@@ -362,7 +363,7 @@ export async function initiateDailyBalance(
 /** Whether today's opening balance has been declared on this device. */
 export async function isDailyBalanceDeclared(
   settings: SettingsDTO,
-  dayKey = dayKeyLocal(),
+  dayKey = fiscalDayKey(),
 ): Promise<boolean> {
   const record = await readRecord(initiateKey(deviceKeyOf(settings), dayKey));
   return record?.state === 'COMPLETE';
@@ -421,7 +422,9 @@ export async function ensureDailyBalanceForCash(
     refuted?: boolean;
   },
 ): Promise<BalanceOutcome> {
-  const dayKey = dayKeyLocal();
+  const drift = clockDriftToReport();
+  if (drift != null) void reportClockDrift(drift);
+  const dayKey = fiscalDayKey();
   const storageKey = initiateKey(deviceKeyOf(settings), dayKey);
   let existing = await readRecord(storageKey);
 
@@ -498,6 +501,22 @@ export async function ensureDailyBalanceForCash(
 }
 
 /**
+ * The till's clock is off against easyPos'. The fiscal day is already
+ * worked out from easyPos' clock; receipts and reports still print the
+ * till's, so someone has to set it right.
+ */
+async function reportClockDrift(offsetMs: number): Promise<void> {
+  const minutes = Math.round(Math.abs(offsetMs) / 60_000);
+  const way = offsetMs > 0 ? 'behind' : 'ahead of';
+  console.warn(`[fiscal] till clock is ${minutes} min ${way} easyPos`);
+  const { notifyAdminsAndActor } = await import('../adminAlerts');
+  await notifyAdminsAndActor({
+    message: `This till's clock is about ${minutes} minute(s) ${way} the fiskalizimi service. The fiscal day follows the service's clock, but receipts and reports use the till's: set the computer's date, time and time zone (Europe/Tirane) correctly.`,
+    type: 'SECURITY',
+  }).catch(() => undefined);
+}
+
+/**
  * Record that admins have been told about today's missing declaration, and
  * report whether this is the first time.
  *
@@ -506,7 +525,7 @@ export async function ensureDailyBalanceForCash(
  */
 export async function markDailyBalanceAlerted(
   settings: SettingsDTO,
-  dayKey = dayKeyLocal(),
+  dayKey = fiscalDayKey(),
 ): Promise<boolean> {
   const storageKey = initiateKey(deviceKeyOf(settings), dayKey);
   const existing = await readRecord(storageKey);
@@ -583,7 +602,7 @@ async function movement(
   const record: BalanceRecord = {
     operation,
     docId,
-    dayKey: existing?.dayKey || dayKeyLocal(),
+    dayKey: existing?.dayKey || fiscalDayKey(),
     deviceKey: deviceKeyOf(settings),
     amount,
     state: 'PENDING',
