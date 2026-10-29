@@ -213,8 +213,11 @@ const MenuItemTile = memo(function MenuItemTile({
   labels,
   onAdd,
   onToggleFav,
+  formatPrice,
 }: {
   item: MenuItemDTO;
+  /** The page's money formatter: two decimals and the venue currency. */
+  formatPrice: (n: number) => string;
   isFav: boolean;
   locked: boolean;
   uiTheme: PosUiTheme;
@@ -306,7 +309,9 @@ const MenuItemTile = memo(function MenuItemTile({
           {item.name}
         </div>
         <div className="mt-auto flex min-w-0 items-baseline justify-between gap-1.5 pt-1">
-          <div className="shrink-0 text-sm tabular-nums">{item.price}</div>
+          <div className="shrink-0 text-sm tabular-nums">
+            {formatPrice(Number(item.price))}
+          </div>
           {isDisabled ? (
             // Spelled out: a dimmed, struck-through tile alone did not say
             // why it could not be ordered.
@@ -663,6 +668,12 @@ export default function OrderPage() {
   const [ticketLoaded, setTicketLoaded] = useState(false);
   /** The host's bill could not be read — distinct from "the bill is empty". */
   const [ticketLoadFailed, setTicketLoadFailed] = useState(false);
+  /**
+   * The bill read failed because the till was out of reach. Not a bill we
+   * cannot see: the ticket keeps what this phone has, sends are queued, and
+   * the read is retried when the connection is back.
+   */
+  const [billOffline, setBillOffline] = useState(false);
   const [ticketReloadNonce, setTicketReloadNonce] = useState(0);
   const [showCovers, setShowCovers] = useState(false);
   const [coversValue, setCoversValue] = useState('');
@@ -1146,10 +1157,14 @@ export default function OrderPage() {
         expectedTotal,
       });
       if (decision.kind === 'unreadable') {
-        setTicketLoadFailed(true);
+        // Offline is the offline banner's to say; blocking Send here
+        // contradicted "Will send when online" next to it.
+        setBillOffline(decision.offline === true);
+        setTicketLoadFailed(decision.offline !== true);
         return;
       }
       setTicketLoadFailed(false);
+      setBillOffline(false);
       if (decision.kind === 'hydrate' || decision.kind === 'voided') {
         useTicketStore
           .getState()
@@ -1216,9 +1231,25 @@ export default function OrderPage() {
     transferringFromRef.current = null;
   }, [selectedTable?.area, selectedTable?.label]);
 
+  // Read the bill again once the till can be reached.
+  useEffect(() => {
+    if (!billOffline) return;
+    const retry = () => setTicketReloadNonce((n) => n + 1);
+    window.addEventListener('online', retry);
+    window.addEventListener('pos:reconnect', retry);
+    // Re-armed by each reload (the nonce) while the till stays away.
+    const timer = window.setTimeout(retry, 10_000);
+    return () => {
+      window.removeEventListener('online', retry);
+      window.removeEventListener('pos:reconnect', retry);
+      window.clearTimeout(timer);
+    };
+  }, [billOffline, ticketReloadNonce]);
+
   useEffect(() => {
     setSelectedLineId(null);
     setTicketLoadFailed(false);
+    setBillOffline(false);
     // A sent request locks only that table's button, not the next one.
     setRequestLocked(false);
   }, [selectedTable?.area, selectedTable?.label]);
@@ -1516,6 +1547,19 @@ export default function OrderPage() {
     pin: string;
     error: string | null;
   }>({ open: false, action: '', kind: 'MANAGER', pin: '', error: null });
+  // A refused manager PIN: locked, or wrong with the tries left (the till
+  // answers both like a refused sign-in).
+  const approvalPinError = (r: unknown): string => {
+    const res = (r || {}) as { code?: string; attemptsLeft?: number };
+    if (res.code === 'APPROVAL_LOCKED') return t('order.approvalLocked');
+    const wrong =
+      approvalModal.kind === 'ADMIN'
+        ? t('order.invalidAdminPin')
+        : t('order.invalidManagerPin');
+    return typeof res.attemptsLeft === 'number'
+      ? `${wrong} ${t('order.pinAttemptsLeft', { count: res.attemptsLeft })}`
+      : wrong;
+  };
   const approvalResolveRef = useRef<
     | ((
         v: { userId: number; userName: string; approvalToken?: string } | null,
@@ -2736,6 +2780,9 @@ export default function OrderPage() {
           // Not at the till yet: say so, instead of "Order sent. Kitchen
           // printer will retry" (offline, nothing had reached the till).
           sendQueued = true;
+          // And keep the lines on the ticket, marked pending, until the
+          // till's bill has them (`carryPendingOntoHydrated`).
+          useTicketStore.getState().markLinesPending(fireIds);
           toast.warn(t('order.sendSavedOnPhone'), {
             title: t('order.sendSavedOnPhoneTitle'),
           });
@@ -3248,6 +3295,7 @@ export default function OrderPage() {
                   labels={menuTileLabels}
                   onAdd={addMenuItemToSale}
                   onToggleFav={toggleFavSku}
+                  formatPrice={formatMoney}
                 />
               ))}
               {Array.from({ length: itemPad }, (_, i) => (
@@ -3412,6 +3460,14 @@ export default function OrderPage() {
             data-keyboard-pad
           >
             <div className="flex min-h-full flex-col space-y-2">
+              {billOffline && isTableOpen && !billUnknown ? (
+                <div
+                  role="status"
+                  className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] leading-snug text-amber-200"
+                >
+                  {t('order.billOffline')}
+                </div>
+              ) : null}
               {billUnknown ? (
                 <div role="alert" className="pos-alert p-3">
                   <div className="text-sm font-semibold text-red-200">
@@ -5026,6 +5082,8 @@ export default function OrderPage() {
                     tableLabel: label,
                     actorRole: user.role,
                     item: {
+                      // The till voids this exact line, by its id.
+                      lineId: vt.id,
                       name: vt.name,
                       qty: vt.qty,
                       unitPrice: vt.unitPrice,
@@ -5300,12 +5358,7 @@ export default function OrderPage() {
                   if (!r?.ok) {
                     setApprovalModal((s) => ({
                       ...s,
-                      error:
-                        (r as any)?.code === 'APPROVAL_LOCKED'
-                          ? t('order.approvalLocked')
-                          : approvalModal.kind === 'ADMIN'
-                            ? t('order.invalidAdminPin')
-                            : t('order.invalidManagerPin'),
+                      error: approvalPinError(r),
                     }));
                     return;
                   }
@@ -5369,12 +5422,7 @@ export default function OrderPage() {
                     if (!r?.ok) {
                       setApprovalModal((s) => ({
                         ...s,
-                        error:
-                          (r as any)?.code === 'APPROVAL_LOCKED'
-                            ? t('order.approvalLocked')
-                            : approvalModal.kind === 'ADMIN'
-                              ? t('order.invalidAdminPin')
-                              : t('order.invalidManagerPin'),
+                        error: approvalPinError(r),
                       }));
                       return;
                     }

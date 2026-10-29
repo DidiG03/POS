@@ -1075,11 +1075,31 @@ export function installBrowserLanApi(): void {
         }
       },
       async verifyManagerPin(pin: string) {
-        const r = await goLan('/auth/verify-manager-pin', {
-          method: 'POST',
-          body: JSON.stringify({ pin }),
-        });
-        return r && typeof r === 'object' ? r : { ok: false };
+        try {
+          const r = await goLan('/auth/verify-manager-pin', {
+            method: 'POST',
+            body: JSON.stringify({ pin }),
+          });
+          return r && typeof r === 'object' ? r : { ok: false };
+        } catch (e) {
+          // 401 wrong PIN (with the attempts left) or 429 locked, as for
+          // sign-in. The approval dialog reads them as a refusal.
+          if (
+            e instanceof HttpError &&
+            (e.status === 401 || e.status === 429)
+          ) {
+            const left = Number(e.data?.attemptsLeft);
+            const lockedMs = Number(e.data?.retryAfterMs);
+            const locked = e.status === 429 || lockedMs > 0;
+            return {
+              ok: false,
+              code: locked ? 'APPROVAL_LOCKED' : 'WRONG_PIN',
+              attemptsLeft: Number.isFinite(left) ? left : undefined,
+              retryAfterMs: lockedMs > 0 ? lockedMs : undefined,
+            };
+          }
+          throw e;
+        }
       },
       async createUser(input: any) {
         return await goLan('/auth/create-user', {

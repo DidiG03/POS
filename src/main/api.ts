@@ -18,11 +18,17 @@ import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { resolveHostIntent } from '@shared/tableIntent';
 import { isStoreCounterArea } from '@shared/editionCapabilities';
 import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
-import { voidTicketItem, voidWholeTicket } from './services/ticketVoid';
+import { checkOrderSlip } from './services/orderSlip';
+import { currentSittingCovers } from './services/sittingCovers';
+import {
+  itemVoidReplay,
+  voidTicketItem,
+  voidWholeTicket,
+} from './services/ticketVoid';
 import { revokeSessionsForUser } from './services/ipcSession';
 import { resolveLanTokenSubject } from './services/lanAuth';
 import { coreServices } from './services/core';
-import { verifyManagerPin } from './services/managerPin';
+import { checkManagerPinFromLan } from './services/managerPinLan';
 import { classifyPrinterError } from './print';
 import {
   approvalScope,
@@ -75,11 +81,7 @@ import {
   sseCatchupIfMissed,
 } from './services/realtime';
 import { getFloorSnapshot } from './services/floorSnapshot';
-import {
-  asTicketLogItems,
-  rowIsInOpenSession,
-  ticketCreatedAtIso,
-} from '@shared/ticketLogItems';
+import { asTicketLogItems, ticketCreatedAtIso } from '@shared/ticketLogItems';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
@@ -238,7 +240,6 @@ import {
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
-  getTableSessionStartedAt,
 } from './services/tableSession';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
@@ -1677,7 +1678,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               corsOrigin,
             );
           }
-          if (attempt?.ok) attempt.succeed();
+          // Not `succeed`: a right PIN must not wipe this device's earlier
+          // misses (pairing, unknown accounts) from the shared budget.
+          if (attempt?.ok) attempt.release();
         } finally {
           if (attempt?.ok) attempt.release();
         }
@@ -1914,26 +1917,33 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/auth/verify-manager-pin') {
         // For LAN host API, do not trust x-forwarded-for (clients can spoof it).
         const remoteIp = String(req.socket.remoteAddress || '').trim();
+        const lan = !isLoopback(remoteIp);
         const { pin } = await parseJson(req);
-        const result = await verifyManagerPin({
+        // Answered like `/auth/login`, on the same attempt budget
+        // (`managerPinLan.ts`). It used to be 200 `{ ok: false }`.
+        const answer = await checkManagerPinFromLan({
           pin,
-          source: remoteIp,
-          lan: !isLoopback(remoteIp),
+          remoteIp,
+          lan,
+          onLocked: () =>
+            logSecurityEvent('manager_pin_while_locked', { remoteIp }),
+          onFail: (outcome) =>
+            failLanLogin(remoteIp, outcome, { reason: 'pin' }),
         });
-        if (!result.ok) {
-          return send(
+        if (answer.kind === 'locked') {
+          return sendLoginLocked(res, answer.lockedForMs, corsOrigin);
+        }
+        if (answer.kind === 'wrong-pin') {
+          return sendWrongPin(
             res,
-            200,
-            result.lockedForMs
-              ? {
-                  ok: false,
-                  code: 'APPROVAL_LOCKED',
-                  retryAfterMs: result.lockedForMs,
-                }
-              : { ok: false },
+            {
+              attemptsLeft: answer.attemptsLeft ?? undefined,
+              lockedForMs: answer.lockedForMs,
+            },
             corsOrigin,
           );
         }
+        const result = { admin: answer.admin };
         const approvalToken = await issueApprovalToken(secret, {
           userId: result.admin.id,
           role: 'ADMIN',
@@ -2184,7 +2194,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }).catch(() => undefined);
           }
         }
-        return send(res, 201, { ok: true }, corsOrigin);
+        // The Send key its kitchen slip is printed under (`orderSlip.ts`);
+        // made up by the till when the Send came without one.
+        return send(
+          res,
+          201,
+          'written' in result && result.written
+            ? { ok: true, sendKey: result.sendKey }
+            : { ok: true },
+          corsOrigin,
+        );
       }
       if (req.method === 'GET' && pathname === '/tickets/latest') {
         const area = String(parsed.query.area || '');
@@ -2825,6 +2844,22 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             { ok: false, error: 'invalid payload' },
             corsOrigin,
           );
+        // A kitchen slip prints what its Send put on the bill, or nothing
+        // (`orderSlip.ts`).
+        const slip = await checkOrderSlip({
+          area: requested.area,
+          tableLabel: requested.tableLabel,
+          meta: requested.meta,
+        });
+        if (slip.kind === 'refuse') {
+          return send(
+            res,
+            409,
+            { ok: false, code: slip.code, error: slip.error, permanent: true },
+            corsOrigin,
+          );
+        }
+        if (slip.kind === 'print') requested.items = slip.items;
         const payKindHint = String(requested?.meta?.kind || '').toUpperCase();
         const runLanPrint = async () => {
           const settings = await coreServices.readSettings();
@@ -3255,8 +3290,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           approvedByAdminToken,
           idempotencyKey: voidKey,
         } = await parseJson(req);
-        if (!userId || !area || !tableLabel || !item?.name)
+        if (
+          !userId ||
+          !area ||
+          !tableLabel ||
+          !item ||
+          typeof item !== 'object'
+        )
           return send(res, 400, 'invalid', corsOrigin);
+        // A void names the bill line it takes off (`ticketLineIds.ts`).
+        // Picking one by name or item code voided the wrong Espresso.
+        if (!String(item.lineId ?? '').trim())
+          return send(
+            res,
+            400,
+            {
+              error: 'line_id_required',
+              code: 'LINE_ID_REQUIRED',
+              message: 'Refresh the table and void the line again.',
+              permanent: true,
+            },
+            corsOrigin,
+          );
         if (auth && Number(userId) !== auth.userId && auth.role !== 'ADMIN')
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
         // Enforce admin approval for voids if enabled.
@@ -3348,12 +3403,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const usesApproval =
           auth?.role !== 'ADMIN' && Boolean(approvedByAdminToken);
         // A replay of a void that already landed is answered before the
-        // approval is looked at: the first delivery used it up.
-        if (voidKey) {
-          const prior = await prisma.ticketLog
-            .findFirst({ where: { idempotencyKey: String(voidKey) } as any })
-            .catch(() => null);
-          if (prior) return send(res, 200, 'ok', corsOrigin);
+        // approval is looked at: the first delivery used it up. The same
+        // key on another line is not a replay, and nothing was voided.
+        {
+          const replay = await itemVoidReplay(
+            voidKey ? String(voidKey) : null,
+            item,
+          );
+          if (replay === 'same') return send(res, 200, 'ok', corsOrigin);
+          if (replay === 'other-line') {
+            return send(
+              res,
+              409,
+              {
+                error: 'void_key_reused',
+                code: 'VOID_KEY_REUSED',
+                message:
+                  'This void request was already used for another line. Nothing was voided.',
+                permanent: true,
+              },
+              corsOrigin,
+            );
+          }
         }
         if (
           usesApproval &&
@@ -3394,7 +3465,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           idempotencyKey: voidKey ? String(voidKey) : null,
           report: voidReport,
         });
-        if ((voided === 'paid' || voided === 'not-found') && usesApproval) {
+        if (voided !== 'ok' && voided !== 'duplicate' && usesApproval) {
           await releaseLanApproval(secret, approvedByAdminToken, voidScope);
         }
         if (voided === 'paid') {
@@ -3411,8 +3482,22 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         // A retry of a void that already landed: nothing more to record.
         if (voided === 'duplicate') return send(res, 200, 'ok', corsOrigin);
-        // Nothing on the bill matched: no audit entry, no kitchen change.
-        if (voided === 'not-found') return send(res, 200, 'ok', corsOrigin);
+        // No live line with that id: nothing changed, and the phone must
+        // not show it as voided.
+        if (voided === 'not-found' || voided === 'no-line-id') {
+          return send(
+            res,
+            409,
+            {
+              error: 'line_not_found',
+              code: 'LINE_NOT_FOUND',
+              message:
+                'That line is no longer on the bill. Refresh the table and try again.',
+              permanent: true,
+            },
+            corsOrigin,
+          );
+        }
 
         const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
         await notifyAdminsAndActor({
@@ -4377,25 +4462,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const area = String(parsed.query.area || '');
         const label = String(parsed.query.label || '');
         if (!area || !label) return send(res, 400, 'invalid', corsOrigin);
-        const sessionStart = await getTableSessionStartedAt(area, label);
-        if (!sessionStart) return send(res, 200, null, corsOrigin);
-        const sqlHit = await prisma.covers
-          .findFirst({
-            where: { area, label, createdAt: { gte: sessionStart } },
-            orderBy: { id: 'desc' },
-          })
-          .catch(() => null);
-        if (sqlHit) return send(res, 200, sqlHit.covers ?? null, corsOrigin);
-        const recent = await prisma.covers.findMany({
-          where: { area, label },
-          orderBy: { id: 'desc' },
-          take: 20,
-        });
-        const row = recent.find(
-          (r: { createdAt: Date; covers?: number | null }) =>
-            rowIsInOpenSession(r.createdAt, sessionStart.getTime()),
+        return send(
+          res,
+          200,
+          await currentSittingCovers(area, label),
+          corsOrigin,
         );
-        return send(res, 200, row?.covers ?? null, corsOrigin);
       }
 
       // Admin overview and trends

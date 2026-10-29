@@ -68,7 +68,9 @@ describe('tablet login bounce guards', () => {
   it('PIN submit waits until session storage has hydrated', () => {
     const src = read('src/renderer/app/pages/LoginPage.tsx');
     expect(src).toContain('hasHydrated');
-    expect(src).toContain('disabled={!hasHydrated}');
+    expect(src).toContain('disabled={!hasHydrated ||');
+    // QA round 4: an empty PIN never reaches the server.
+    expect(src).toContain('pin.trim().length < 1');
     expect(src).toContain('isClockCaptureEnabled');
     expect(src).toContain('invalidateCache(POS_CACHE.settings)');
     expect(src).toContain('applyHostPosUiTheme');

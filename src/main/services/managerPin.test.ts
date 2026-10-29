@@ -68,7 +68,10 @@ describe('verifyManagerPin', () => {
 
   it('locks a phone after repeated misses, and the right PIN is then not checked', async () => {
     for (let i = 0; i < LOCK_AFTER_FAILURES - 1; i++) {
-      expect(await tryPin('0000')).toEqual({ ok: false });
+      expect(await tryPin('0000')).toEqual({
+        ok: false,
+        attemptsLeft: LOCK_AFTER_FAILURES - 1 - i,
+      });
     }
     expect(await tryPin('0000')).toMatchObject({
       ok: false,
@@ -105,7 +108,10 @@ describe('verifyManagerPin', () => {
   });
 
   it('a malformed PIN counts as a miss', async () => {
-    expect(await tryPin('abc')).toEqual({ ok: false });
+    expect(await tryPin('abc')).toEqual({
+      ok: false,
+      attemptsLeft: LOCK_AFTER_FAILURES - 1,
+    });
     expect(sleeps).toEqual([250]);
   });
 });

@@ -65,6 +65,8 @@ export function isLanAuthBootstrapPath(path?: string | null): boolean {
   const pathname = String(path || '').split('?')[0];
   return (
     pathname === '/auth/login' ||
+    // A wrong manager PIN is 401 too; the waiter stays signed in.
+    pathname === '/auth/verify-manager-pin' ||
     pathname === '/pairing/verify' ||
     pathname === '/auth/users' ||
     pathname === '/events/login' ||

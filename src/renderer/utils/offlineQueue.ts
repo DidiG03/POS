@@ -736,6 +736,41 @@ export function withIdempotencyKey(op: OfflineOp, args: any): any {
   return { ...args, idempotencyKey: newIdempotencyKey() };
 }
 
+/**
+ * How many things the waiter did that are still queued, for "N orders or
+ * payments saved". One Send queues up to four writes (the table open, the
+ * order, its kitchen slip, the guest count), and counting writes told the
+ * waiter three orders were waiting after one. A Send's slip, and table or
+ * guest-count writes for a table that also has an order or payment queued,
+ * are part of that action.
+ */
+export function countQueuedActions(
+  items: ReadonlyArray<Pick<OfflineQueueItem, 'op' | 'args'>>,
+): number {
+  const sendKeys = new Set(
+    items
+      .filter((it) => it.op === 'tickets.log')
+      .map((it) => String(it.args?.idempotencyKey ?? '').trim())
+      .filter(Boolean),
+  );
+  const busyTables = new Set<string>();
+  for (const it of items) {
+    if (it.op === 'tables.setOpen' || it.op === 'covers.save') continue;
+    for (const k of queuedItemTables(it)) busyTables.add(k);
+  }
+  let n = 0;
+  for (const it of items) {
+    if (it.op === 'tickets.print') {
+      const sendKey = String(it.args?.meta?.sendKey ?? '').trim();
+      if (sendKey && sendKeys.has(sendKey)) continue;
+    } else if (it.op === 'tables.setOpen' || it.op === 'covers.save') {
+      if (queuedItemTables(it).some((k) => busyTables.has(k))) continue;
+    }
+    n += 1;
+  }
+  return n;
+}
+
 /** The tables a queued write touches, as `area\u0001label` keys. */
 export function queuedItemTables(item: {
   op: OfflineOp;
@@ -1043,9 +1078,12 @@ class OfflineQueue {
     );
   }
 
+  /** Waiter actions still queued (see {@link countQueuedActions}). */
   async getPendingCount(): Promise<number> {
-    const items = await this.getAll();
-    return items.length;
+    const items = (await this.getAll())
+      .map(this.normalize)
+      .filter((it): it is OfflineQueueItem => it !== null);
+    return countQueuedActions(items);
   }
 
   /** Queued writes that only this waiter (or an admin) can deliver. */
@@ -1090,7 +1128,7 @@ class OfflineQueue {
         startedAt: this.syncStartedAt,
       })
     )
-      return { sent: 0, remaining: await this.getPendingCount() };
+      return { sent: 0, remaining: (await this.getAll()).length };
     this.syncing = true;
     this.syncStartedAt = Date.now();
     const pass = ++this.syncPass;
@@ -1620,7 +1658,22 @@ export async function tryOrQueue<T = unknown>(
   }
   // Same key for the live attempt and every replay of it.
   args = withIdempotencyKey(op, args);
-  if (ORDERED_OPS.has(op)) await drainTableBacklog(op, args);
+  // A kitchen slip prints what its Send put on the bill; the till refuses
+  // one whose Send it has not had. While that Send is still queued here,
+  // the slip waits behind it instead of going out first.
+  const orderSlip =
+    op === 'tickets.print' &&
+    String(args?.meta?.kind || '').toUpperCase() === 'ORDER';
+  if (ORDERED_OPS.has(op) || orderSlip) await drainTableBacklog(op, args);
+  if (
+    orderSlip &&
+    (await offlineQueue
+      .hasOrderedWorkFor(queuedItemTables({ op, args }))
+      .catch(() => false))
+  ) {
+    await offlineQueue.enqueue(op, args, options);
+    return { queued: true };
+  }
   if (shouldEnqueueWithoutLiveAttempt(op)) {
     await offlineQueue.enqueue(op, args, options);
     return { queued: true };

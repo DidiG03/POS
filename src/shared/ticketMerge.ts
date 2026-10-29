@@ -20,7 +20,12 @@
  *     and go through their own route; a `voided` flag in a snapshot beyond
  *     what the bill already records is ignored. (A void the till refused
  *     used to come back on the waiter's next Send and stick.)
+ *   - The lines a Send fires are new, live lines. Carrying the bill's voids
+ *     and payments over never lands on them: a second Espresso ordered after
+ *     the first was voided used to be written as voided itself (printed,
+ *     never billed, and never counted off stock).
  */
+import { lineIdOf } from './ticketLineIds';
 import {
   restoreMissingServerLines,
   ticketDraftLineKey,
@@ -66,6 +71,8 @@ function isLive(line: MergeLine): boolean {
 export function carryVoidAndPaid<T extends MergeLine>(
   result: T[],
   bill: readonly MergeLine[],
+  /** Lines this Send fires: never converted (they are new orders). */
+  isNew: (line: T) => boolean = () => false,
 ): { items: T[]; changed: boolean } {
   const want = new Map<string, { voided: number; paid: number }>();
   for (const line of bill) {
@@ -104,7 +111,7 @@ export function carryVoidAndPaid<T extends MergeLine>(
   for (const line of result) {
     const key = ticketDraftLineKey(line);
     const d = deficit.get(key);
-    if (!d || !isLive(line)) {
+    if (!d || !isLive(line) || isNew(line)) {
       out.push(line);
       continue;
     }
@@ -117,6 +124,18 @@ export function carryVoidAndPaid<T extends MergeLine>(
       left = roundQty(left - take);
     }
     if (left > EPS) out.push({ ...line, qty: roundQty(left) });
+  }
+  // Still short (the snapshot has no live copy to convert, or only this
+  // Send's own lines): keep the bill's voided and paid lines as they are.
+  for (const line of bill) {
+    const flag =
+      line.paid === true ? 'paid' : line.voided === true ? 'voided' : null;
+    if (!flag) continue;
+    const d = deficit.get(ticketDraftLineKey(line));
+    if (!d || d[flag] <= EPS) continue;
+    const take = Math.min(qtyOf(line), d[flag]);
+    out.push({ ...(line as T), qty: roundQty(take) });
+    d[flag] = roundQty(d[flag] - take);
   }
   return { items: out, changed: true };
 }
@@ -239,17 +258,87 @@ export function mergeTicketSend<T extends MergeLine>(input: {
 
   // Lines this Send fired are new; only the rest can stand in for lines
   // already on the bill (see restoreMissingServerLines).
-  const onBill = key
-    ? input.incoming.filter((l) => l.sendKey !== key)
-    : input.incoming;
+  const isNew = (l: MergeLine) => Boolean(key) && l.sendKey === key;
+  let incoming: MergeLine[] = input.incoming;
+  if (key && incoming.some((l) => isNew(l) && !isLive(l))) {
+    incoming = incoming.map((l) =>
+      isNew(l) && !isLive(l) ? { ...l, voided: false, paid: false } : l,
+    );
+  }
+  const onBill = key ? incoming.filter((l) => !isNew(l)) : incoming;
   const restored = restoreMissingServerLines<MergeLine>(
-    input.incoming,
+    incoming,
     latest,
     onBill,
   );
   const capped = capVoidsToBill(restored, latest);
-  const carried = carryVoidAndPaid(capped.items, latest);
+  const carried = carryVoidAndPaid(capped.items, latest, isNew);
   const changed =
     restored !== input.incoming || capped.changed || carried.changed;
   return { items: carried.items, mode: changed ? 'restored' : 'as-sent' };
+}
+
+/**
+ * The lines a Send without a Send key orders (older clients, scripts). Such
+ * a Send carries the bill as the device saw it, so what it orders is what it
+ * has beyond the live bill:
+ *   - a line naming a line on the bill (its `lineId`, or the `sendKey` of
+ *     the Send that put it there) is that line, not a new order;
+ *   - the rest is compared, item by item, with the live sent lines the
+ *     device did not name. Anything beyond them is new.
+ * Voided and paid lines on the bill are not live: ordering an Espresso
+ * after the last one was voided is a new Espresso. Lines the device sends
+ * as voided, paid or held are not orders.
+ *
+ * Each new line is its own line (`qty` beyond the bill), so two Sends of
+ * the same item stay two lines, each with its own Send.
+ */
+export function keylessSendLines<T extends MergeLine>(
+  incoming: readonly T[],
+  latest: readonly MergeLine[],
+): T[] {
+  const billIds = new Set(latest.map(lineIdOf).filter(Boolean));
+  const billKeys = new Set(
+    latest.map((l) => String(l.sendKey || '').trim()).filter(Boolean),
+  );
+  const named = new Set<string>();
+  const namedKeys = new Set<string>();
+  const loose: T[] = [];
+  for (const line of incoming) {
+    const id = lineIdOf(line);
+    const sendKey = String(line.sendKey || '').trim();
+    if (id && billIds.has(id)) named.add(id);
+    else if (sendKey && billKeys.has(sendKey)) namedKeys.add(sendKey);
+    else loose.push(line);
+  }
+  const pool = new Map<string, number>();
+  for (const line of latest) {
+    if (!isLive(line) || line.fired === false) continue;
+    if (named.has(lineIdOf(line))) continue;
+    if (namedKeys.has(String(line.sendKey || '').trim())) continue;
+    const key = ticketDraftLineKey(line);
+    pool.set(key, roundQty((pool.get(key) || 0) + qtyOf(line)));
+  }
+  const out: T[] = [];
+  for (const line of loose) {
+    if (!isLive(line) || line.fired === false) continue;
+    const key = ticketDraftLineKey(line);
+    const onBill = pool.get(key) || 0;
+    const qty = qtyOf(line);
+    const take = Math.min(qty, onBill);
+    if (take > EPS) pool.set(key, roundQty(onBill - take));
+    const left = roundQty(qty - take);
+    if (left <= EPS) continue;
+    const fresh = {
+      ...line,
+      qty: left,
+      voided: false,
+      paid: false,
+      fired: true,
+    };
+    delete (fresh as MergeLine).lineId;
+    delete (fresh as MergeLine).sendKey;
+    out.push(fresh);
+  }
+  return out;
 }

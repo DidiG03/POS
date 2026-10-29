@@ -13,6 +13,13 @@ export type TicketDraftLine = {
   voided?: boolean;
   paid?: boolean;
   fired?: boolean;
+  /**
+   * Sent from this device but not on the till's bill yet: the Send is in
+   * the offline queue. Shown as pending, and kept through bill reloads and
+   * open-table syncs until the till's bill carries its `sendKey`.
+   */
+  pending?: boolean;
+  sendKey?: string;
 };
 
 export type TicketDraft = {
@@ -65,6 +72,20 @@ export function draftHasLiveBill(
   );
 }
 
+/** Queued Sends the till has not seen: never dropped with a stale bill. */
+export function draftHasPendingLines(
+  draft: { lines?: TicketDraftLine[] } | null | undefined,
+): boolean {
+  return (draft?.lines || []).some(
+    (l) => l.pending === true && l.voided !== true,
+  );
+}
+
+/** Only the queued lines of `lines` (what survives a stale bill). */
+export function pendingLinesOnly<T extends TicketDraftLine>(lines: T[]): T[] {
+  return lines.filter((l) => l.pending === true && l.voided !== true);
+}
+
 export function shouldKeepTicketDraft(
   draft:
     | { lines?: TicketDraftLine[]; savedAt?: number | null }
@@ -74,6 +95,7 @@ export function shouldKeepTicketDraft(
   opts?: { keepLiveBill?: boolean },
 ): boolean {
   if (!draft) return false;
+  if (draftHasPendingLines(draft)) return true;
   if (draftHasLiveBill(draft)) return opts?.keepLiveBill !== false;
   return isTicketDraftFresh(draft.savedAt, now);
 }
@@ -175,7 +197,9 @@ export function bindTicketTable<
       return {
         ...state,
         addMode: empty.addMode,
-        lines: empty.lines as T['lines'],
+        // The till says the table is free, but it has not had this phone's
+        // queued Send yet: those lines stay.
+        lines: pendingLinesOnly(state.lines) as T['lines'],
         courses: empty.courses as T['courses'],
         seats: empty.seats as T['seats'],
         activeCourseId: empty.activeCourseId,
@@ -194,7 +218,13 @@ export function bindTicketTable<
   }
   const loaded = nextKey ? drafts[nextKey] : null;
   const keepLiveBill = nextKey ? opts?.keepLiveBill !== false : false;
-  if (nextKey && !keepLiveBill && loaded && draftHasLiveBill(loaded)) {
+  if (
+    nextKey &&
+    !keepLiveBill &&
+    loaded &&
+    draftHasLiveBill(loaded) &&
+    !draftHasPendingLines(loaded)
+  ) {
     delete drafts[nextKey];
   }
   if (loaded && shouldKeepTicketDraft(loaded, now, { keepLiveBill })) {
@@ -315,7 +345,7 @@ export function mergeLocalStagedOntoHydrated<T extends TicketDraftLine>(
   hydrated: T[],
   local: T[],
 ): T[] {
-  const out: T[] = [...hydrated];
+  const out: T[] = carryPendingOntoHydrated(hydrated, local);
   const stagedAt = new Map<string, number>();
   out.forEach((line, i) => {
     if (line.voided === true || line.staged !== true) return;
@@ -336,6 +366,28 @@ export function mergeLocalStagedOntoHydrated<T extends TicketDraftLine>(
     }
   }
   return out;
+}
+
+/**
+ * Lines whose Send is still in this device's offline queue stay on the
+ * ticket, marked pending, until the till's bill has their Send (then the
+ * till's copy is the line). A bill reload used to drop them: they were no
+ * longer unsent, and not on the till yet, so the ticket showed 0.00.
+ */
+export function carryPendingOntoHydrated<T extends TicketDraftLine>(
+  hydrated: T[],
+  local: T[],
+): T[] {
+  const onBill = new Set(
+    hydrated.map((l) => String(l.sendKey || '').trim()).filter(Boolean),
+  );
+  const pending = local.filter(
+    (l) =>
+      l.pending === true &&
+      l.voided !== true &&
+      !onBill.has(String(l.sendKey || '').trim()),
+  );
+  return pending.length ? [...hydrated, ...pending] : hydrated;
 }
 
 export function shouldKeepLocalDraftOnEmptyLog(
@@ -409,4 +461,70 @@ export function applyLocalPaidOntoHydrated<T extends TicketDraftLine>(
       ? { ...line, paid: true }
       : line,
   );
+}
+
+/** Waiters whose set-aside carts a device keeps (see {@link switchTicketDraftUser}). */
+export const MAX_STASHED_DRAFT_USERS = 20;
+
+/**
+ * Unsent carts belong to the waiter who built them.
+ *
+ * Carts were kept per table only, so on a shared phone the next waiter to
+ * sign in inherited them: a colleague's request on the owner's table (lines
+ * waiting for the owner's approval) showed up as the owner's own unsent
+ * lines, counted in the total and ready to Send. On sign-in as someone else
+ * the carts on screen are set aside under their waiter and that waiter's
+ * own carts, if any, come back. The bill itself is reloaded from the till.
+ *
+ * A device whose carts have no waiter yet (saved before this existed) gives
+ * them to the first waiter who signs in.
+ */
+export function switchTicketDraftUser<
+  T extends TicketDraft & {
+    boundKey: string | null;
+    drafts: Record<string, TicketDraft>;
+    draftUserId?: number | null;
+    userDrafts?: Record<string, Record<string, TicketDraft>>;
+  },
+>(state: T, userId: number | null | undefined, now = Date.now()): T {
+  const next = Number(userId);
+  if (!Number.isInteger(next) || next <= 0) return state;
+  const prev = state.draftUserId;
+  if (prev === next) return state;
+  if (prev == null) return { ...state, draftUserId: next };
+  const stash: Record<string, Record<string, TicketDraft>> = {
+    ...(state.userDrafts || {}),
+  };
+  const mine = pruneStaleTicketDrafts(
+    {
+      ...state.drafts,
+      ...(state.boundKey
+        ? { [state.boundKey]: { ...snapshotTicketDraft(state), savedAt: now } }
+        : {}),
+    },
+    now,
+  );
+  delete stash[String(prev)];
+  if (Object.keys(mine).length) stash[String(prev)] = mine;
+  const restored = pruneStaleTicketDrafts(stash[String(next)] || {}, now);
+  delete stash[String(next)];
+  const keep = Object.keys(stash).slice(-MAX_STASHED_DRAFT_USERS);
+  const userDrafts: Record<string, Record<string, TicketDraft>> = {};
+  for (const k of keep) userDrafts[k] = stash[k];
+  const empty = emptyTicketDraft();
+  return {
+    ...state,
+    addMode: empty.addMode,
+    lines: empty.lines as T['lines'],
+    courses: empty.courses as T['courses'],
+    seats: empty.seats as T['seats'],
+    activeCourseId: empty.activeCourseId,
+    activeSeatId: empty.activeSeatId,
+    orderNote: empty.orderNote,
+    boundKey: null,
+    drafts: restored,
+    draftUserId: next,
+    userDrafts,
+    savedAt: now,
+  };
 }

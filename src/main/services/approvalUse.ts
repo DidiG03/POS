@@ -38,9 +38,9 @@ export function approvalScope(
 }
 
 /**
- * Line identity for a void scope: everything the void matches the line by
- * (`voidLine.ts`), not just the item or its Send key, which every line of
- * one Send shares.
+ * Line identity for a void scope: the bill line's id, plus what the line
+ * shows (so an approval asked for one dish cannot be spent on another), not
+ * just its Send key, which every line of one Send shares.
  */
 export function voidLineIdentity(item: unknown): string {
   const it = (item || {}) as Record<string, unknown>;
@@ -48,6 +48,7 @@ export function voidLineIdentity(item: unknown): string {
   const num = (v: unknown) =>
     Number.isFinite(Number(v)) ? String(Math.round(Number(v) * 100)) : '';
   return [
+    text(it.lineId),
     text(it.sku),
     text(it.name),
     num(it.unitPrice),

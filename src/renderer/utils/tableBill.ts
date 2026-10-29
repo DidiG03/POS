@@ -13,7 +13,8 @@ export type TableBillPeek = {
 };
 
 export type HostBillDecision =
-  | { kind: 'unreadable' }
+  /** `offline`: the till was out of reach; the read proves nothing. */
+  | { kind: 'unreadable'; offline?: boolean }
   | { kind: 'hydrate'; items: TicketReadItems; note: string }
   | { kind: 'keep' }
   | { kind: 'voided'; items: TicketReadItems; note: string }
@@ -91,7 +92,9 @@ export function decideHostBill(opts: {
   expectedTotal?: number | null;
 }): HostBillDecision {
   if (!opts.read.ok) {
-    return { kind: 'unreadable' };
+    return opts.read.offline
+      ? { kind: 'unreadable', offline: true }
+      : { kind: 'unreadable' };
   }
   const items = opts.read.items;
   if (hostBillHasLiveLines(items)) {

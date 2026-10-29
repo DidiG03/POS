@@ -63,6 +63,7 @@ import {
   nextPrintRouteName,
   normalizePrintRoutes,
 } from '@shared/printRoutes';
+import { makeFormatAmount } from '../../utils/format';
 
 type SectionKey =
   | 'printer'
@@ -2024,7 +2025,9 @@ function FiscalReviewPanel() {
                         : t('fiscal.reviewKindUnknown')}
                 </span>
                 {row.total != null ? (
-                  <span>{Math.round(Number(row.total))}</span>
+                  <span className="tabular-nums">
+                    {makeFormatAmount()(Number(row.total))}
+                  </span>
                 ) : null}
                 <span className="opacity-60">
                   {new Date(row.updatedAt).toLocaleString()}

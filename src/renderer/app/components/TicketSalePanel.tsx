@@ -5,19 +5,16 @@ import {
   fiscalOriginalVerifyUrl,
   fiscalVoidVerifyUrl,
 } from '@shared/fiscalReceipt';
-import { roundMoney } from '@shared/money';
+import { makeFormatAmount } from '../../utils/format';
 import { FiscalVerifyQr } from '../../components/FiscalVerifyQr';
 import { Badge, Button, Field, Input } from '../../components/ui';
 import { toast } from '../../stores/toasts';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 
 /** Always two decimals: rounding to whole units showed a 12.50 void as 13. */
+const formatAmount = makeFormatAmount();
 function fmtAmount(n: number): string {
-  const v = Number(n || 0);
-  if (!Number.isFinite(v)) return '—';
-  const [int, frac] = Math.abs(roundMoney(v)).toFixed(2).split('.');
-  const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${v < 0 ? '-' : ''}${grouped}.${frac}`;
+  return Number.isFinite(Number(n || 0)) ? formatAmount(Number(n || 0)) : '—';
 }
 
 /**

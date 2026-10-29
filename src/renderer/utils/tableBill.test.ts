@@ -263,3 +263,20 @@ describe('peekTableBillTotal', () => {
     expect(peekTableBillTotal('Salla', 'T9')).toBeNull();
   });
 });
+
+describe('decideHostBill offline (QA round 4, #2)', () => {
+  it('a read that never reached the till is offline, not an unknown bill', () => {
+    const base = {
+      currentLines: [{ voided: false }],
+      hasCovers: true,
+      suppressClose: false,
+      withinPostSendGrace: false,
+    };
+    expect(
+      decideHostBill({ ...base, read: { ok: false, offline: true } }),
+    ).toEqual({ kind: 'unreadable', offline: true });
+    expect(decideHostBill({ ...base, read: { ok: false } })).toEqual({
+      kind: 'unreadable',
+    });
+  });
+});

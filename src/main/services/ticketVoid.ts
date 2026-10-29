@@ -16,6 +16,8 @@
 import { prisma } from '@db/client';
 import { planItemVoid, planTicketVoid } from '@shared/voidPaid';
 import type { VoidTargetLine } from '@shared/voidLine';
+import { asTicketLogItems } from '@shared/ticketLogItems';
+import { lineIdOf, withLineIds } from '@shared/ticketLineIds';
 import { withTableLock } from './core';
 import { applyTableOpenState } from './tableOpen';
 import { findLatestTicketLogForCurrentSession } from './tableSession';
@@ -45,10 +47,40 @@ export type ItemVoidOutcome =
   | 'duplicate'
   /** The line is paid; only an admin correction can reverse it. */
   | 'paid'
-  /** Nothing on the current bill matches. */
-  | 'not-found';
+  /** No live line on the current bill has that id. */
+  | 'not-found'
+  /** The void did not name a line (`lineId`). Nothing was changed. */
+  | 'no-line-id';
 
 export type TicketVoidOutcome = 'ok' | 'duplicate' | 'paid';
+
+/**
+ * What an item void's idempotency key says about this request:
+ *   - `new`: the key has not been used;
+ *   - `same`: this void already landed (a retry); answer it as done;
+ *   - `other-line`: the key already voided a different line. Nothing is
+ *     done, and the caller must say so: answering "ok" made the phone
+ *     believe a second line was off the bill.
+ */
+export async function itemVoidReplay(
+  idempotencyKey: string | null | undefined,
+  item: VoidTargetLine | null | undefined,
+): Promise<'new' | 'same' | 'other-line'> {
+  const key = String(idempotencyKey || '').trim();
+  if (!key) return 'new';
+  const prior = await prisma.ticketLog
+    .findFirst({ where: { idempotencyKey: key } as any })
+    .catch(() => null);
+  if (!prior) return 'new';
+  const struck = asTicketLogItems((prior as any).itemsJson).find(
+    (l: any) => l && l.voidKey === key,
+  );
+  // Rows from before voids were stamped, or a whole-ticket void: a retry.
+  if (!struck) return 'same';
+  return lineIdOf(struck) === String(item?.lineId ?? '').trim()
+    ? 'same'
+    : 'other-line';
+}
 
 async function alreadyApplied(idempotencyKey: string): Promise<boolean> {
   if (!idempotencyKey) return false;
@@ -103,17 +135,27 @@ export async function voidTicketItem(input: {
       input.area,
       input.tableLabel,
     );
-    const items = Array.isArray(sitting?.itemsJson)
-      ? ([...(sitting!.itemsJson as any[])] as any[])
+    const before = sitting
+      ? withLineIds(asTicketLogItems(sitting.itemsJson) as any[], {
+          seed: (sitting as any).id,
+        })
       : [];
+    const items = [...before];
     const plan = planItemVoid(items, input.item);
+    if (plan.outcome === 'no-line-id') return 'no-line-id' as const;
     if (plan.outcome === 'paid') return 'paid' as const;
     if (!sitting || plan.outcome !== 'ok') return 'not-found' as const;
-    items[plan.index] = { ...items[plan.index], voided: true };
+    // The key on the line lets a reuse of it for another line be told
+    // apart from a retry (`itemVoidReplay`).
+    items[plan.index] = {
+      ...items[plan.index],
+      voided: true,
+      ...(key ? { voidKey: key } : {}),
+    };
     if (input.report) {
       input.report.qty = Number(items[plan.index]?.qty) || 0;
       input.report.name = String(items[plan.index]?.name || '');
-      input.report.line = { ...(sitting!.itemsJson as any[])[plan.index] };
+      input.report.line = { ...before[plan.index] };
     }
     const written = await writeVoidedVersion(
       sitting,
@@ -122,7 +164,7 @@ export async function voidTicketItem(input: {
       key,
     );
     if (written === 'duplicate') return 'duplicate' as const;
-    await restoreStockForVoided([(sitting!.itemsJson as any[])[plan.index]]);
+    await restoreStockForVoided([before[plan.index]]);
     return 'ok' as const;
   });
 }
