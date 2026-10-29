@@ -49,15 +49,33 @@ describe('one approval, one action', () => {
     expect(claimApprovalUse({ ...base, scope: line('Water') })).toBe(false);
   });
 
-  it('accepts a retry of the same void (offline queue replay)', () => {
+  it('is used up by its first use, whatever key the next request carries', () => {
     const base = {
       tokenId: 'tok',
       expiresAt: EXP,
       now: T0,
-      idempotencyKey: 'a',
+      idempotencyKey: 'same-key',
     };
     expect(claimApprovalUse({ ...base, scope: line('Water') })).toBe(true);
-    expect(claimApprovalUse({ ...base, scope: line('Water') })).toBe(true);
+    // QA round 3: one token + one key voided two different lines.
+    expect(claimApprovalUse({ ...base, scope: line('Wine') })).toBe(false);
+    expect(claimApprovalUse({ ...base, scope: line('Water') })).toBe(false);
+  });
+
+  it('tells two lines of one Send apart', () => {
+    const a = voidLineIdentity({
+      sku: 'BEER',
+      name: 'Beer',
+      unitPrice: 3,
+      sendKey: 's1',
+    });
+    const b = voidLineIdentity({
+      sku: 'BEER',
+      name: 'Beer',
+      unitPrice: 4,
+      sendKey: 's1',
+    });
+    expect(a).not.toBe(b);
   });
 
   it('a released claim can be used again', () => {

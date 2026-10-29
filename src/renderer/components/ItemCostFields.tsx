@@ -13,22 +13,12 @@ import { Button, IconButton } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { IconPlus, IconTrash } from './icons';
 import { cn } from './ui/cn';
+import { formatMoney } from '@shared/paymentDisplay';
 import { useCostVat } from '../utils/costVat';
 
 export function formatCostMoney(amount: number, currency: string): string {
-  const n = Math.round(Number.isFinite(amount) ? amount : 0);
-  const cur = String(currency || 'EUR').trim() || 'EUR';
-  const iso = /^[A-Z]{3}$/i.test(cur) ? cur.toUpperCase() : 'EUR';
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: iso,
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(n);
-  } catch {
-    return `${n} ${cur}`;
-  }
+  // Shared format: two decimals and the currency (`paymentDisplay.ts`).
+  return formatMoney(Number.isFinite(amount) ? amount : 0, currency || 'EUR');
 }
 
 export function formatMarginPct(pct: number | null): string {

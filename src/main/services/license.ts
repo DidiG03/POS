@@ -14,6 +14,7 @@ import {
 } from '@shared/editionCapabilities';
 import { resolveStoredLicenseRecord } from './licenseEditionPersist';
 import { parseStoredLicenseStatus } from './licenseStatus';
+import { licenseBypassAllowed } from './devSwitches';
 
 export type LicenseStatus = 'ACTIVE' | 'PAST_DUE' | 'PAUSED';
 
@@ -84,7 +85,10 @@ function billingBase(): string {
 }
 
 export function isLicenseRequired(): boolean {
-  if (String(process.env.POS_LICENSE_BYPASS || '').trim() === '1') {
+  // Development only: the packaged release always checks (`devSwitches.ts`).
+  if (
+    licenseBypassAllowed(process.env.POS_LICENSE_BYPASS, !isUnpackagedDev())
+  ) {
     return false;
   }
   // Unpackaged `npm run dev` skips the license gate so LAN tablets stay

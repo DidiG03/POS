@@ -857,6 +857,8 @@ export function installBrowserLanApi(): void {
     if (pathname === '/auth/login' || pathname === '/pairing/verify') {
       return IS_NATIVE_SHELL ? 12_000 : 6_000;
     }
+    // Heartbeat: a till that does not answer in 3 s counts as a miss.
+    if (pathname === '/health') return 3_000;
     if (VAULT_MAINTENANCE_PATHS.has(pathname)) {
       // Rebuilding the ledger copies every row; a busy till takes a while.
       return 180_000;
@@ -879,7 +881,12 @@ export function installBrowserLanApi(): void {
 
   function lanRequestAttempts(path: string, method: string): number {
     const pathname = String(path || '').split('?')[0];
-    if (pathname === '/auth/login' || pathname === '/pairing/verify') return 1;
+    if (
+      pathname === '/auth/login' ||
+      pathname === '/pairing/verify' ||
+      pathname === '/health'
+    )
+      return 1;
     // Never repeat a ledger rebuild: the second run would report a failure.
     if (VAULT_MAINTENANCE_PATHS.has(pathname)) return 1;
     if (method === 'GET' || method === 'HEAD') {
@@ -1052,6 +1059,17 @@ export function installBrowserLanApi(): void {
         } catch (e) {
           if (isPairingRejectedError(e)) {
             throw new Error('Pairing code required');
+          }
+          // 401 WRONG_PIN carries the attempts left and any lockout.
+          if (e instanceof HttpError && e.code === 'WRONG_PIN') {
+            const left = Number(e.data?.attemptsLeft);
+            const lockedMs = Number(e.data?.retryAfterMs);
+            throw Object.assign(new Error('Wrong PIN'), {
+              code: lockedMs > 0 ? 'LOGIN_LOCKED' : 'WRONG_PIN',
+              status: lockedMs > 0 ? 429 : 401,
+              attemptsLeft: Number.isFinite(left) ? left : undefined,
+              retryAfterMs: lockedMs > 0 ? lockedMs : undefined,
+            });
           }
           throw e;
         }

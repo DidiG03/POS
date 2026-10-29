@@ -1,4 +1,5 @@
 import { roundMoney } from './pricing';
+import { formatMoneyPlain } from './receiptFigures';
 
 /** Fiscal "Kursi EUR" is ALL per 1 EUR (edited under Preferences). */
 export function parseEurExchangeRate(raw: unknown): number | null {
@@ -37,6 +38,19 @@ export function withCurrency(amountText: string, posCurrency: unknown): string {
   return /^[A-Z]{3}$/.test(cur)
     ? `${amountText} ${cur}`
     : `${cur}${amountText}`;
+}
+
+/**
+ * The one money format for screens: two decimals and the currency, always
+ * ("€18.00", "1,200.00 L"). Screens used to trim cents on whole amounts in
+ * some places and not others ("18" next to "31.50", "€18" next to "€14.25").
+ */
+export function formatMoney(amount: unknown, posCurrency: unknown): string {
+  const n = Number(amount);
+  return withCurrency(
+    formatMoneyPlain(Number.isFinite(n) ? n : 0, ',', { cents: true }),
+    posCurrency,
+  );
 }
 
 /**

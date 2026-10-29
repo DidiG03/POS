@@ -1,3 +1,4 @@
+import { formatMoney as formatSharedMoney } from '@shared/paymentDisplay';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -1174,16 +1175,8 @@ export default function AdminPage() {
 function formatMoney(amount: number, currency: string): string {
   const n = Number(amount || 0);
   if (!Number.isFinite(n)) return '—';
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currency || 'EUR',
-      maximumFractionDigits: 0,
-      minimumFractionDigits: 0,
-    }).format(Math.round(n));
-  } catch {
-    return `${Math.round(n)} ${currency || 'EUR'}`;
-  }
+  // Shared format: two decimals and the currency (`paymentDisplay.ts`).
+  return formatSharedMoney(n, currency || 'EUR');
 }
 
 function Stat({

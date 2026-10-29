@@ -68,6 +68,7 @@ import { planTicketVoid } from '@shared/voidPaid';
 import {
   claimApprovalFor,
   isApprovalValidFor,
+  verifyApprovalToken,
   issueApprovalToken,
 } from './services/approvalTokens';
 import { actorIdentityAllows, resolveActorUserId } from './services/ipcActor';
@@ -205,6 +206,7 @@ import {
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import { checkFloorTable } from './services/floorTables';
+import { markRepeatedKitchenSlip } from './services/slipRepeat';
 import { countLowStockMenuItems } from './services/menuStock';
 import { isStoreCounterArea } from '@shared/editionCapabilities';
 import {
@@ -2631,10 +2633,26 @@ ipcHandle('print:cancelRetry', async (_e, payload) => {
 });
 
 // Kitchen slips that have not printed; any POS staff may reprint one.
-ipcHandle('print:listStationJobs', async () => listStationPrintJobs());
-ipcHandle('print:reprintStationJob', async (_e, payload) =>
-  reprintStationPrintJob(Number((payload as any)?.id || 0)),
+ipcHandle('print:listStationJobs', async (_e, _input, ctx) =>
+  listStationPrintJobs({
+    userId: Number(ctx?.session?.userId || 0),
+    role: ctx?.session?.role,
+  }),
 );
+ipcHandle('print:reprintStationJob', async (_e, payload, ctx) => {
+  const id = Number((payload as any)?.id || 0);
+  const r = await reprintStationPrintJob(id, {
+    userId: Number(ctx?.session?.userId || 0),
+    role: ctx?.session?.role,
+  });
+  if (r.ok) {
+    logSecurityEvent('print_job_reprinted', {
+      jobId: id,
+      userId: ctx?.session?.userId ?? null,
+    });
+  }
+  return r;
+});
 
 ipcHandle('system:openExternal', async (_e, payload) => {
   try {
@@ -3109,7 +3127,9 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
     }
 
     // Kitchen / station chits: claim the idempotency key, then print
-    // without holding Send on every printer's connect timeout.
+    // without holding Send on every printer's connect timeout. The same
+    // order sent again prints as a copy (`slipRepeat.ts`).
+    await markRepeatedKitchenSlip(payload);
     await persistAudit('SENT');
     fireDispatchTicket(payload, settings as any, dispatchOpts, (result) => {
       void reportDispatchFailure(result);
@@ -4056,6 +4076,24 @@ ipcHandle('kds:bumpItem', async (_e, input) => {
   }
 });
 
+/**
+ * " (approved by: Ana)" for a void's audit line, from the verified approval
+ * token and this database, never from the name or id the caller sent.
+ */
+async function verifiedApproverSuffix(
+  actorIsAdmin: boolean,
+  token: unknown,
+): Promise<string> {
+  if (actorIsAdmin) return '';
+  const grant = verifyApprovalToken(token);
+  if (!grant) return '';
+  const admin = await prisma.user
+    .findUnique({ where: { id: grant.userId } })
+    .catch(() => null);
+  const name = String((admin as any)?.displayName || '').trim();
+  return ` (approved by: ${name || `admin #${grant.userId}`})`;
+}
+
 // Void item: records a notification and returns true
 ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   const userId = Number(input?.userId);
@@ -4066,8 +4104,6 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   const item = input?.item as any;
   const approvedByAdminId =
     input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
-  const approvedByAdminName =
-    input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
   const approvedByAdminToken = String(
     (input as any)?.approvedByAdminToken || '',
   );
@@ -4150,6 +4186,14 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
     voidLineIdentity(item),
   );
   const usesApproval = !actorIsAdmin && Boolean(approvedByAdminToken);
+  // A replay of a void that already landed is answered before the
+  // approval is looked at: the approval was used up by the first delivery.
+  if (voidItemKey.trim()) {
+    const prior = await prisma.ticketLog
+      .findFirst({ where: { idempotencyKey: voidItemKey.trim() } as any })
+      .catch(() => null);
+    if (prior) return true;
+  }
   if (
     usesApproval &&
     !claimApprovalFor(
@@ -4183,7 +4227,7 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   // Nothing on the bill matched: no audit entry, no kitchen change.
   if (voided === 'not-found') return true;
 
-  const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
+  const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
     .create({ data: { userId, type: 'OTHER' as any, message } })
@@ -4245,8 +4289,6 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   const reason = String(input?.reason || '');
   const approvedByAdminId =
     input?.approvedByAdminId != null ? Number(input.approvedByAdminId) : null;
-  const approvedByAdminName =
-    input?.approvedByAdminName != null ? String(input.approvedByAdminName) : '';
   const approvedByAdminToken = String(
     (input as any)?.approvedByAdminToken || '',
   );
@@ -4343,7 +4385,7 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
     return false;
   }
 
-  const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${approvedByAdminName || `admin#${approvedByAdminId}`})` : ''}`;
+  const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
     .create({ data: { userId, type: 'OTHER' as any, message } })

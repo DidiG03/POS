@@ -29,8 +29,36 @@ export type StationPrintJobDTO = {
   userId: number | null;
 };
 
-/** Kitchen slips still waiting to print or given up on, newest first. */
+export type PrintJobActor = { userId: number; role?: string | null };
+
+function isManager(actor: PrintJobActor): boolean {
+  return String(actor.role || '').toUpperCase() === 'ADMIN';
+}
+
+/**
+ * Who may reprint a job: the waiter who sent it, or an admin. Anyone else
+ * could put a colleague's (or an already printed) order through the
+ * kitchen again. A job that already printed is for an admin only.
+ */
+export function reprintAllowed(input: {
+  actor: PrintJobActor;
+  jobUserId: number | null;
+  status: string;
+}): boolean {
+  if (isManager(input.actor)) return true;
+  if (String(input.status) === 'SENT') return false;
+  return (
+    input.jobUserId != null &&
+    Number(input.jobUserId) === Number(input.actor.userId)
+  );
+}
+
+/**
+ * Kitchen slips still waiting to print or given up on, newest first. A
+ * waiter sees their own; an admin sees every one.
+ */
 export async function listStationPrintJobs(
+  actor?: PrintJobActor,
   now = Date.now(),
 ): Promise<StationPrintJobDTO[]> {
   const rows = (await prisma.printJob
@@ -49,6 +77,13 @@ export async function listStationPrintJobs(
   for (const r of rows) {
     const p = (r.payloadJson || {}) as any;
     if (!isStationSlip(p)) continue;
+    if (
+      actor &&
+      !isManager(actor) &&
+      Number(p?.meta?.userId) !== Number(actor.userId)
+    ) {
+      continue;
+    }
     out.push({
       id: Number(r.id),
       status: String(r.status) === 'RETRY' ? 'RETRY' : 'FAILED',
@@ -79,6 +114,7 @@ export async function listStationPrintJobs(
  */
 export async function reprintStationPrintJob(
   id: number,
+  actor: PrintJobActor,
 ): Promise<{ ok: boolean; error?: string }> {
   const row = (await prisma.printJob
     .findUnique({ where: { id: Number(id) } })
@@ -86,7 +122,28 @@ export async function reprintStationPrintJob(
   if (!row || !isStationSlip(row.payloadJson)) {
     return { ok: false, error: 'That print job no longer exists.' };
   }
-  if (String(row.status) === 'SENT') return { ok: true };
+  if (
+    !reprintAllowed({
+      actor,
+      jobUserId: Number(row.payloadJson?.meta?.userId) || null,
+      status: String(row.status),
+    })
+  ) {
+    return {
+      ok: false,
+      error:
+        String(row.status) === 'SENT'
+          ? 'That slip already printed. Ask a manager to reprint it.'
+          : 'Only the waiter who sent this order or a manager can reprint it.',
+    };
+  }
+  const who = (await prisma.user
+    .findUnique({ where: { id: Number(actor.userId) } })
+    .catch(() => null)) as any;
+  const whoName = String(who?.displayName || `#${actor.userId}`);
+  console.log(
+    `[print] job #${row.id} reprinted by ${whoName} (user ${actor.userId})`,
+  );
   const settings = await coreServices.readSettings();
   const p = row.payloadJson as any;
   const meta = { ...(p.meta || {}) };
@@ -97,11 +154,12 @@ export async function reprintStationPrintJob(
       where: { id: row.id },
       data: {
         status: 'SENT' as any,
-        lastError: 'Reprinted by staff',
+        lastError: `Reprinted by ${whoName}`,
         nextAttemptAt: null,
       } as any,
     })
     .catch(() => {});
+  meta.reprintedById = Number(actor.userId) || null;
   const r = await dispatchTicket({ ...p, meta }, settings as any, {
     persistRetryOnTransientFailure: true,
   });

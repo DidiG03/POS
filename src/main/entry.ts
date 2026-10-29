@@ -6,6 +6,7 @@ import {
   copySqliteGroup,
   resolvePackagedSqliteSource,
 } from './services/packagedSqlite';
+import { effectiveVaultFlag } from './services/devSwitches';
 import { isDiskProtectionOff } from './services/vault/protectionOff';
 
 app.setName('OneTap POS');
@@ -145,23 +146,25 @@ function ensurePackagedDefaults() {
 ensurePackagedDefaults();
 ensureSqliteDbFile();
 ensurePrismaModulePath();
-// The owner turned Disk protection off in Admin (see vault/protectionOff).
-try {
-  if (
-    app.isPackaged &&
-    !String(process.env.POS_VAULT || '').trim() &&
-    isDiskProtectionOff(app.getPath('userData'))
-  ) {
-    process.env.POS_VAULT = '0';
+// Packaged: encryption is on unless the owner turned Disk protection off in
+// Admin (see vault/protectionOff); a POS_VAULT=0 in the environment is
+// ignored (`devSwitches.ts`). Development keeps whatever POS_VAULT says.
+{
+  let protectionOff = false;
+  try {
+    protectionOff =
+      app.isPackaged && isDiskProtectionOff(app.getPath('userData'));
+  } catch {
+    // ignore — protection stays on
   }
-} catch {
-  // ignore — protection stays on
-}
-if (app.isPackaged && String(process.env.POS_VAULT || '').trim() !== '0') {
-  if (!String(process.env.POS_VAULT || '').trim()) {
-    process.env.POS_VAULT = '1';
-  }
-  process.env.POS_VAULT_LOCK = '1';
+  const flag = effectiveVaultFlag({
+    packaged: app.isPackaged,
+    envValue: process.env.POS_VAULT,
+    protectionOff,
+  });
+  if (flag === undefined) delete process.env.POS_VAULT;
+  else process.env.POS_VAULT = flag;
+  if (app.isPackaged && flag !== '0') process.env.POS_VAULT_LOCK = '1';
 }
 try {
   process.env.POS_USER_DATA = app.getPath('userData');

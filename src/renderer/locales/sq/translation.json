@@ -372,11 +372,12 @@
     "shiftReopenBlocked": "Turni është mbyllur. Mund të hysh përsëri pas {{when}}.",
     "resumeShiftBody": "Je i futur, por nuk ka turn të hapur. Nise turnin për të vazhduar punën në sallë.",
     "failedLoadOccupied": "Duke ngarkuar tavolinat e zëna… (rrjet i ngadaltë/jashtë linje). Duke riprovuar…",
-    "invalidPinAttemptsLeft": "PIN i pasaktë. Edhe {{count}} përpjekje në këtë pajisje para se hyrja të bllokohet.",
     "tooManyAttemptsFor": "Shumë PIN të gabuar në këtë pajisje. Hyrja është e bllokuar për rreth {{minutes}} min, ose hyni te arka.",
     "wrongPinTitle": "PIN i gabuar",
     "lockedTitle": "Hyrja e bllokuar",
-    "failedTitle": "Hyrja dështoi"
+    "failedTitle": "Hyrja dështoi",
+    "invalidPinAttemptsLeft_one": "PIN i pasaktë. Edhe 1 përpjekje në këtë pajisje para se hyrja të bllokohet.",
+    "invalidPinAttemptsLeft_other": "PIN i pasaktë. Edhe {{count}} përpjekje në këtë pajisje para se hyrja të bllokohet."
   },
   "routes": {
     "loading": "Duke u ngarkuar…",
@@ -1228,7 +1229,9 @@
     "backLeaveUnsent_one": "{{count}} artikull nuk është dërguar ende. Të dilni nga kjo porosi? Mbetet e ruajtur në këtë telefon.",
     "backLeaveUnsent_other": "{{count}} artikuj nuk janë dërguar ende. Të dilni nga kjo porosi? Mbeten të ruajtura në këtë telefon.",
     "sendSavedOnPhone": "Arka nuk u përgjigj. Porosia është ruajtur në këtë telefon dhe do dërgohet kur arka të kthehet.",
-    "sendSavedOnPhoneTitle": "Do dërgohet kur të ketë lidhje"
+    "sendSavedOnPhoneTitle": "Do dërgohet kur të ketë lidhje",
+    "requestPendingCount_one": "{{count}} e kërkuar",
+    "requestPendingCount_other": "{{count}} të kërkuara"
   },
   "reservations": {
     "timeRequired": "Zgjidhni orën e rezervimit.",

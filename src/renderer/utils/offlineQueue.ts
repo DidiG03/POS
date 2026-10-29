@@ -393,6 +393,42 @@ function computeBackoffMs(attempts: number): number {
   return jitter(Math.min(30_000, 1000 * Math.pow(2, Math.min(8, attempts))));
 }
 
+/**
+ * Longest one replay may take. A Wi-Fi link that stalls without closing can
+ * leave a request that never settles (the WebView does not always honour
+ * its abort); the whole queue then waited on it until the app was killed.
+ */
+export const REPLAY_TIMEOUT_MS = 30_000;
+/** A pass running longer than this is stuck; the next one may start. */
+export const SYNC_STUCK_MS = 90_000;
+
+/** `p`, or a network-shaped failure after `ms` (the request may still land; replays are keyed). */
+export function withReplayTimeout<T>(
+  p: Promise<T>,
+  ms = REPLAY_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new TypeError('Failed to fetch (replay timed out)')),
+      ms,
+    );
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** True when a new sync pass may start. */
+export function syncPassMayStart(input: {
+  syncing: boolean;
+  startedAt: number;
+  now?: number;
+}): boolean {
+  if (!input.syncing) return true;
+  return (input.now ?? Date.now()) - input.startedAt > SYNC_STUCK_MS;
+}
+
 export const OFFLINE_WAKE_MIN_MS = 250;
 export const OFFLINE_WAKE_MAX_MS = 30_000;
 /** After an offline abort, items may still be due now — wait this long, don't hammer. */
@@ -819,6 +855,9 @@ class OfflineQueue {
   private startupTimer: number | null = null;
   private wakeTimer: number | null = null;
   private syncing = false;
+  private syncStartedAt = 0;
+  /** Bumped per pass, so a stuck pass that wakes up late cannot clear a newer pass's flag. */
+  private syncPass = 0;
   // Serialises store read-modify-write critical sections (enqueue, the
   // commit phase of sync, retryFailed) so two writers can't clobber each
   // other's changes. Network I/O deliberately runs OUTSIDE this lock.
@@ -1045,9 +1084,16 @@ class OfflineQueue {
   }
 
   async sync(): Promise<{ sent: number; remaining: number }> {
-    if (this.syncing)
+    if (
+      !syncPassMayStart({
+        syncing: this.syncing,
+        startedAt: this.syncStartedAt,
+      })
+    )
       return { sent: 0, remaining: await this.getPendingCount() };
     this.syncing = true;
+    this.syncStartedAt = Date.now();
+    const pass = ++this.syncPass;
     let sent = 0;
     try {
       const raw = await this.getAll();
@@ -1112,7 +1158,9 @@ class OfflineQueue {
               ? it.args.idempotencyKey
               : it.id,
           };
-          await dispatcher(args, { attempt: (it.attempts || 0) + 1 });
+          await withReplayTimeout(
+            dispatcher(args, { attempt: (it.attempts || 0) + 1 }),
+          );
           removedIds.add(it.id);
           sent += 1;
           touched = true;
@@ -1193,7 +1241,7 @@ class OfflineQueue {
       this.armWake(leftover.filter((it) => !isHeldForOwner(it, signedIn)));
       return { sent, remaining: leftover.length };
     } finally {
-      this.syncing = false;
+      if (pass === this.syncPass) this.syncing = false;
     }
   }
 

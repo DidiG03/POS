@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
+import { isSessionFresh } from '../../stores/sessionPersist';
 import { useAdminSessionStore } from '../../stores/adminSession';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { hydrateLicenseEditionFromSettings } from '../../utils/hydrateLicenseEdition';
@@ -148,6 +149,18 @@ export default function LoginPage() {
     });
     navigate(staffPosHomePath({ hasTables, clockOnly, kds }));
   };
+
+  // Android kills a backgrounded Waiter app and relaunches it on this
+  // screen; the sign-in (12 h, kept on the phone) is still valid, so go
+  // straight back to work instead of asking for the PIN again. Shared tills
+  // and browsers keep asking.
+  useEffect(() => {
+    if (!hasHydrated || isAdminContext || isKdsContext) return;
+    if (!(window as any).Capacitor?.isNativePlatform?.()) return;
+    const s = useSessionStore.getState();
+    if (!s.user || !isSessionFresh(s.expiresAtMs)) return;
+    goStaffHome(s.user as any, false);
+  }, [hasHydrated]);
 
   const showLoginMessage = (message: string, title?: string) => {
     toast.error(message, { timeoutMs: 5_000, title });

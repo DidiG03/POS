@@ -1,13 +1,14 @@
 import { formatMoneyPlain } from '@shared/receiptFigures';
-/** Whole amounts grouped as before; cents shown only when there are some. */
+import { formatMoney } from '@shared/paymentDisplay';
+/** Amount text (no currency), grouped, always two decimals. */
 export function makeFormatAmount() {
-  return (n: number) => formatMoneyPlain(Number.isFinite(n) ? n : 0, ',');
+  return (n: number) =>
+    formatMoneyPlain(Number.isFinite(n) ? n : 0, ',', { cents: true });
 }
 
-/** Euro amount for dual-currency tips — whole euros, no trailing cents. */
+/** Euro amount for dual-currency totals, two decimals like every other amount. */
 export function formatEur(amount: number): string {
-  const v = Math.round(Number.isFinite(amount) ? amount : 0);
-  return `€${String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+  return formatMoney(amount, 'EUR');
 }
 
 /** Format a number with at most `maxFractionDigits` decimal places (avoids float noise). */
@@ -24,26 +25,7 @@ export function formatNumberMaxDecimals(
   });
 }
 
+/** Kept for its callers (floor tiles, review); same format as everywhere. */
 export function formatMoneyCompact(currency: string, amount: number) {
-  const a = Number.isFinite(amount) ? amount : 0;
-  const rounded = Math.round(a);
-  const cur = String(currency || '')
-    .trim()
-    .toUpperCase();
-  // Prefer ISO currency formatting when possible
-  if (/^[A-Z]{3}$/.test(cur)) {
-    try {
-      return new Intl.NumberFormat(undefined, {
-        style: 'currency',
-        currency: cur,
-        maximumFractionDigits: 0,
-        minimumFractionDigits: 0,
-      }).format(rounded);
-    } catch {
-      // fall through
-    }
-  }
-  // Fallback: treat short non-alnum as symbol (€, £, $)
-  const looksSymbol = cur.length <= 2 && /[^A-Z0-9]/.test(cur);
-  return looksSymbol ? `${cur}${rounded}` : `${cur || 'EUR'} ${rounded}`;
+  return formatMoney(amount, currency);
 }

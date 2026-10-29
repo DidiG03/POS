@@ -372,11 +372,12 @@
     "shiftReopenBlocked": "This shift is closed. You can clock in again after {{when}}.",
     "resumeShiftBody": "You are signed in, but there is no open shift. Start one to keep working the floor.",
     "failedLoadOccupied": "Loading occupied tables… (slow/offline network). Retrying…",
-    "invalidPinAttemptsLeft": "That PIN is incorrect. {{count}} attempts left on this device before sign-in locks.",
     "tooManyAttemptsFor": "Too many wrong PINs on this device. Sign-in is locked for about {{minutes}} min, or sign in at the till.",
     "wrongPinTitle": "Wrong PIN",
     "lockedTitle": "Sign-in locked",
-    "failedTitle": "Sign-in failed"
+    "failedTitle": "Sign-in failed",
+    "invalidPinAttemptsLeft_one": "That PIN is incorrect. 1 attempt left on this device before sign-in locks.",
+    "invalidPinAttemptsLeft_other": "That PIN is incorrect. {{count}} attempts left on this device before sign-in locks."
   },
   "routes": {
     "loading": "Loading…",
@@ -1228,7 +1229,9 @@
     "backLeaveUnsent_one": "{{count}} item is not sent yet. Leave this order? It stays saved on this phone.",
     "backLeaveUnsent_other": "{{count}} items are not sent yet. Leave this order? They stay saved on this phone.",
     "sendSavedOnPhone": "The till did not answer. The order is saved on this phone and will send when the till is back.",
-    "sendSavedOnPhoneTitle": "Will send when online"
+    "sendSavedOnPhoneTitle": "Will send when online",
+    "requestPendingCount_one": "{{count}} requested",
+    "requestPendingCount_other": "{{count}} requested"
   },
   "reservations": {
     "timeRequired": "Choose a time for the reservation.",

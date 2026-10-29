@@ -95,7 +95,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /kds/ticket-detail': { allow: 'session' },
   'GET /kds/cooker-mode': { allow: 'session' },
   'GET /kds/enabled-stations': { allow: 'session' },
-  'GET /kds/debug': { allow: 'public', note: 'kiosk reachability probe' },
+  'GET /kds/debug': {
+    allow: 'public',
+    note: 'till discovery probe: app id and name only; counts need a session or paired display',
+  },
   'POST /kds/bump': { allow: 'session' },
   'POST /kds/bump-item': { allow: 'session' },
   'POST /kds/recall': { allow: 'session' },

@@ -126,3 +126,21 @@ export function lanBases(httpBase: string, httpsBase: string): string[] {
   if (preferredScheme === 'http') return [httpBase];
   return [httpBase, httpsBase];
 }
+
+/** Till heartbeat while it answers (phones / browsers). */
+export const HEARTBEAT_OK_MS = 5_000;
+/** Longest gap between heartbeats while the till is silent. */
+export const HEARTBEAT_MAX_MS = 30_000;
+/** Misses in a row before the till is shown as unreachable. */
+export const HEARTBEAT_MISSES_FOR_DOWN = 2;
+
+/**
+ * When to ping the till next: every 5 s while it answers, then backing off
+ * (5, 10, 20, 30 s…) while it does not, so a dead till is not hammered but
+ * its return is still noticed within half a minute.
+ */
+export function heartbeatDelayMs(misses: number): number {
+  const n = Math.max(0, Math.floor(Number(misses) || 0));
+  if (n === 0) return HEARTBEAT_OK_MS;
+  return Math.min(HEARTBEAT_MAX_MS, HEARTBEAT_OK_MS * 2 ** (n - 1));
+}

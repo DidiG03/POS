@@ -54,7 +54,10 @@ import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
-import { reportAppError } from '../../utils/reportAppError';
+import {
+  isTransientNetworkError,
+  reportAppError,
+} from '../../utils/reportAppError';
 import { PageSpinner } from '../../components/PageSpinner';
 import { Modal } from '../../components/ui/Modal';
 import { PaymentCheckout } from '../components/PaymentCheckout';
@@ -896,10 +899,19 @@ export default function OrderPage() {
    */
   const ticketFullySettled =
     activeLines.length > 0 && activeLines.every((l) => l.paid === true);
+  // On a colleague's table, lines this waiter added are a request until the
+  // owner approves it: they are not on the bill yet, so they stay out of the
+  // ticket's count and total (they used to show as "Ticket (5)", total 37).
   const billableLines = useMemo(
-    () => lines.filter((l) => !l.voided && !l.paid),
-    [lines],
+    () =>
+      lines.filter(
+        (l) => !l.voided && !l.paid && !(showRequestOnly && l.staged),
+      ),
+    [lines, showRequestOnly],
   );
+  const pendingRequestCount = showRequestOnly
+    ? lines.filter((l) => l.staged && !l.voided).length
+    : 0;
   const payLines = useMemo(() => {
     if (showPayment && addMode === 'seat' && paySeatId) {
       return unpaidLinesForSeat(lines, paySeatId);
@@ -2623,6 +2635,11 @@ export default function OrderPage() {
           .then(
             () => undefined,
             (e: unknown) => {
+              // Unreachable till: the Send below is queued and says so
+              // ("Will send when online"); a red "Failed to fetch" next to
+              // it contradicted that. The till opens the table itself when
+              // the queued Send lands.
+              if (isTransientNetworkError(e)) return;
               reportAppError(e, {
                 fallback: t('order.toastTryAgain'),
                 key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
@@ -2663,6 +2680,8 @@ export default function OrderPage() {
       const printMeta = {
         userId: user.id,
         kind: isFireOrder ? ('ORDER' as const) : ('TICKET' as const),
+        // Lets the till tell a repeat of this Send's slip from a new order.
+        sendKey: isFireOrder ? sendKey : undefined,
         vatEnabled,
         courseLabel: isFireOrder ? courseLabel : undefined,
         serviceChargeEnabled: serviceChargeCfg.enabled,
@@ -3047,11 +3066,14 @@ export default function OrderPage() {
             onClick={() => setMobilePane('ticket')}
             type="button"
           >
-            {lines.length
+            {lines.length - pendingRequestCount > 0
               ? t(hasTables ? 'order.ticketCount' : 'order.cartCount', {
-                  count: lines.length,
+                  count: lines.length - pendingRequestCount,
                 })
               : t(hasTables ? 'order.ticket' : 'order.cart')}
+            {pendingRequestCount > 0
+              ? ` · ${t('order.requestPendingCount', { count: pendingRequestCount })}`
+              : ''}
           </button>
         </div>
       </div>

@@ -10,6 +10,7 @@ import {
   parseEurExchangeRate,
   splitEvenly,
   splitSharesText,
+  formatMoney,
   toEurAtRate,
 } from './paymentDisplay';
 
@@ -174,5 +175,14 @@ describe('splitSharesText', () => {
   });
   it('keeps the short form when the split is even', () => {
     expect(splitSharesText(splitEvenly(14, 2)!, eur)).toBe('2 × €7.00');
+  });
+});
+
+describe('formatMoney (QA round 3)', () => {
+  it('always shows two decimals and the currency', () => {
+    expect(formatMoney(18, 'EUR')).toBe('€18.00');
+    expect(formatMoney(0, 'EUR')).toBe('€0.00');
+    expect(formatMoney(31.5, 'EUR')).toBe('€31.50');
+    expect(formatMoney(1200, 'ALL')).toBe('1,200.00 L');
   });
 });

@@ -25,8 +25,13 @@ import {
   getFailedSyncItems,
   getOfflineQueueCount,
   getQueuedCountForOwner,
+  offlineQueue,
 } from '../utils/offlineQueue';
-import { isHostUnreachable } from '../utils/netQuality';
+import {
+  HEARTBEAT_MISSES_FOR_DOWN,
+  heartbeatDelayMs,
+  isHostUnreachable,
+} from '../utils/netQuality';
 import { Button } from '../components/ui/Button';
 import { ConfirmDialog, Modal } from '../components/ui/Modal';
 import { EmptyState } from '../components/ui/Surface';
@@ -241,29 +246,87 @@ export default function AppLayout() {
     };
   }, [isBrowserClient, t]);
 
+  // Till heartbeat (phones / browsers). The status dot used to stay green
+  // after the till dropped until some action failed, and a queue waiting
+  // for the till was only retried after a relaunch. A light `/health` ping
+  // every 5 s (backing off while the till is silent) now drives the dot,
+  // the banner, and an immediate queue drain the moment the till answers.
+  // Also re-checks on Retry, Wi-Fi changes and when the app comes back.
   useEffect(() => {
     if (!isBrowserClient) return;
     let cancelled = false;
+    let misses = 0;
+    let timer: number | null = null;
+    let wasDown = false;
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    const schedule = () => {
+      if (cancelled) return;
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => void tick(), heartbeatDelayMs(misses));
+    };
     const tick = async () => {
-      if (isHidden()) return;
+      if (cancelled) return;
+      if (isHidden()) return schedule();
       try {
         const ping = (window.api as any).health?.ping;
         if (typeof ping === 'function') await ping();
         else await window.api.settings.get();
-        if (!cancelled) setBackendOk(true);
+        if (cancelled) return;
+        misses = 0;
+        setBackendOk(true);
+        // Back from an outage, or items still waiting: send them now.
+        if (wasDown || (await getOfflineQueueCount().catch(() => 0)) > 0) {
+          void offlineQueue.sync().catch(() => undefined);
+        }
+        wasDown = false;
       } catch {
-        if (!cancelled) setBackendOk(!isHostUnreachable());
+        if (cancelled) return;
+        misses += 1;
+        if (misses >= HEARTBEAT_MISSES_FOR_DOWN || isHostUnreachable()) {
+          wasDown = true;
+          setBackendOk(false);
+        }
       }
+      schedule();
     };
-    tick();
-    const t = window.setInterval(tick, 20_000);
-    window.addEventListener('pos:reconnect', tick);
+    const now = () => {
+      misses = Math.min(misses, 1);
+      void tick();
+    };
+    void tick();
+    window.addEventListener('pos:reconnect', now);
+    window.addEventListener('online', now);
+    const onVisible = () => {
+      if (!isHidden()) now();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    let removeNative: (() => void) | null = null;
+    void (async () => {
+      try {
+        if (!(window as any).Capacitor?.isNativePlatform?.()) return;
+        const [{ App }, { Network }] = await Promise.all([
+          import('@capacitor/app'),
+          import('@capacitor/network'),
+        ]);
+        const a = await App.addListener('resume', now);
+        const n = await Network.addListener('networkStatusChange', now);
+        removeNative = () => {
+          void a.remove();
+          void n.remove();
+        };
+        if (cancelled) removeNative();
+      } catch {
+        // plugins missing (app built before `cap sync`)
+      }
+    })();
     return () => {
       cancelled = true;
-      window.clearInterval(t);
-      window.removeEventListener('pos:reconnect', tick);
+      if (timer != null) window.clearTimeout(timer);
+      window.removeEventListener('pos:reconnect', now);
+      window.removeEventListener('online', now);
+      document.removeEventListener('visibilitychange', onVisible);
+      removeNative?.();
     };
   }, [isBrowserClient]);
 
@@ -470,8 +533,11 @@ export default function AppLayout() {
     navItems.find((item) => item.isActive)?.label ||
     (flushTablesFloor ? t('layout.tables') : t('brand.product'));
 
-  const syncTone = !syncOk ? 'danger' : queued > 0 ? 'warn' : 'accent';
-  const syncTitle = !syncOk
+  // On a phone the local queue count alone said "Online" while the till
+  // was gone; the heartbeat decides there.
+  const linkOk = syncOk && (!isBrowserClient || (netOk && backendOk));
+  const syncTone = !linkOk ? 'danger' : queued > 0 ? 'warn' : 'accent';
+  const syncTitle = !linkOk
     ? t('common.offlineCannotReach')
     : queued > 0
       ? t('common.syncingQueued')
@@ -539,13 +605,15 @@ export default function AppLayout() {
               ? ` ${t('layout.queuedWaiting', { count: queuedCount })}`
               : ''}
           </span>
-          {netOk && !backendOk ? (
+          {(netOk && !backendOk) || queuedCount > 0 ? (
             <button
               type="button"
               className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 text-amber-100"
               onClick={() => {
                 window.dispatchEvent(new Event('pos:reconnect'));
                 window.dispatchEvent(new Event('focus'));
+                // Send what is waiting now, not on the next backoff tick.
+                void offlineQueue.sync().catch(() => undefined);
               }}
             >
               {t('common.retry')}
@@ -640,7 +708,7 @@ export default function AppLayout() {
               title={syncTitle}
               className="pos-status-chip--bare hidden sm:inline-flex"
             >
-              {!syncOk
+              {!linkOk
                 ? t('layout.syncIndicatorOffline')
                 : queued > 0
                   ? t('layout.syncIndicatorSyncing', { count: queued })
@@ -652,7 +720,7 @@ export default function AppLayout() {
             <span
               className={cn(
                 'mr-1 inline-block size-2 rounded-full sm:hidden',
-                !syncOk
+                !linkOk
                   ? 'bg-rose-400'
                   : queued > 0
                     ? 'bg-amber-400'

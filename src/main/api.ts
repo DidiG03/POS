@@ -84,6 +84,7 @@ import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import { checkFloorTable } from './services/floorTables';
+import { markRepeatedKitchenSlip } from './services/slipRepeat';
 import { countLowStockMenuItems } from './services/menuStock';
 import {
   checkPaymentOwnership,
@@ -161,6 +162,7 @@ import {
   ACCOUNT_LOCK_MS,
   IP_LOCK_MS,
   beginLanLoginAttempt,
+  lanLoginDeviceLockedFor,
   lanLoginIpLockedFor,
   type LanLoginFailure,
 } from './services/lanLoginThrottle';
@@ -672,6 +674,36 @@ function sendLoginLocked(
 }
 
 /**
+ * A wrong PIN: 401 with how many tries this device has left and, once it
+ * is locked, for how long. It used to be a 200 with a null body (attempts
+ * only for clients that asked), which scripts and older screens read as
+ * "no user" rather than a refusal.
+ */
+function sendWrongPin(
+  res: http.ServerResponse,
+  info: { attemptsLeft?: number; lockedForMs?: number },
+  corsOrigin?: string | null,
+) {
+  const lockedForMs = Math.max(0, Number(info.lockedForMs) || 0);
+  if (lockedForMs > 0) {
+    res.setHeader('Retry-After', String(Math.ceil(lockedForMs / 1000)));
+  }
+  return send(
+    res,
+    401,
+    {
+      ok: false,
+      error: 'Wrong PIN',
+      code: 'WRONG_PIN',
+      attemptsLeft: info.attemptsLeft ?? null,
+      locked: lockedForMs > 0,
+      retryAfterMs: lockedForMs > 0 ? lockedForMs : null,
+    },
+    corsOrigin,
+  );
+}
+
+/**
  * Report a failed LAN login or pairing attempt (already counted by its
  * reservation), slow the answer down, and tell admins when a device or an
  * account gets locked out.
@@ -882,6 +914,29 @@ async function claimLanApproval(
     expiresAt: approved.expiresAtMs,
     anyKeyInScope: opts.anyKeyInScope,
   });
+}
+
+/**
+ * " (approved by: Ana)" for a void's audit line, from the verified
+ * approval and this database, never from the name or id the phone sent
+ * (an absent name used to print as "admin#1"). Empty when the actor is an
+ * admin or no valid approval came with the request.
+ */
+async function verifiedApproverSuffix(
+  secret: string,
+  auth: AuthContext,
+  token: unknown,
+): Promise<string> {
+  if (auth?.role === 'ADMIN') return '';
+  const tok = String(token || '').trim();
+  if (!tok) return '';
+  const approved = await verifyApprovalToken(secret, tok);
+  if (!approved) return '';
+  const admin = await prisma.user
+    .findUnique({ where: { id: approved.userId } })
+    .catch(() => null);
+  const name = String((admin as any)?.displayName || '').trim();
+  return ` (approved by: ${name || `admin #${approved.userId}`})`;
 }
 
 async function releaseLanApproval(
@@ -1541,17 +1596,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           ? { id: Number(userId), active: true }
           : { active: true };
         const user = await prisma.user.findFirst({ where });
-        // Clients that understand it get attempts left with a wrong PIN;
-        // older ones still expect the bare `null`.
-        const wantsStatus = Number(body?.v) >= 2;
         if (!user) {
+          let attemptsLeft: number | undefined;
           if (!loopback) {
             const attempt = beginLanLoginAttempt(remoteIp, 0);
             if (!attempt.ok)
               return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
-            await failLanLogin(remoteIp, attempt.fail(), { reason: 'user' });
+            const outcome = attempt.fail();
+            attemptsLeft = outcome.attemptsLeft;
+            await failLanLogin(remoteIp, outcome, { reason: 'user' });
           }
-          return send(res, 200, null, corsOrigin);
+          // Same answer as a wrong PIN: an unknown account is not revealed.
+          return sendWrongPin(res, { attemptsLeft }, corsOrigin);
         }
         // Pairing is checked BEFORE the PIN. Checking it after made the
         // answer differ between a wrong PIN (null) and a right PIN with no
@@ -1612,12 +1668,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 targetName: String(user.displayName || ''),
               });
             }
-            return send(
+            return sendWrongPin(
               res,
-              200,
-              wantsStatus
-                ? { ok: false, code: 'WRONG_PIN', attemptsLeft }
-                : null,
+              {
+                attemptsLeft,
+                lockedForMs: lanLoginDeviceLockedFor(remoteIp, user.id),
+              },
               corsOrigin,
             );
           }
@@ -2484,10 +2540,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
       }
       if (req.method === 'GET' && pathname === '/kds/debug') {
-        const ok = await ensureKdsLocalSchema();
+        // Anyone on the Wi-Fi may learn that this is a till and its name:
+        // kitchen displays find tills that way before they are paired. Row
+        // counts and schema state are for a paired display, staff or the
+        // till itself only.
         const settings: any = await coreServices
           .readSettings()
           .catch(() => ({}));
+        const probe = {
+          app: 'code-orbit-pos',
+          restaurantName:
+            String(settings?.restaurantName || '').trim() || undefined,
+        };
+        const token = pickBearerToken(req, parsed);
+        const trusted =
+          isLoopback(String((req.socket as any)?.remoteAddress || '')) ||
+          Boolean(
+            token &&
+              ((await verifyToken(secret, token)) ||
+                (await verifyKdsDeviceToken(secret, token))),
+          );
+        if (!trusted) return send(res, 200, probe, corsOrigin);
+        const ok = await ensureKdsLocalSchema();
         const counts: any = {
           ticketLog: await prisma.ticketLog.count().catch(() => 0),
         };
@@ -2505,13 +2579,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(
           res,
           200,
-          {
-            app: 'code-orbit-pos',
-            schemaReady: ok,
-            counts,
-            restaurantName:
-              String(settings?.restaurantName || '').trim() || undefined,
-          },
+          { ...probe, schemaReady: ok, counts },
           corsOrigin,
         );
       }
@@ -2571,14 +2639,32 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       // Kitchen slips that have not printed, and printing one again.
       if (req.method === 'GET' && pathname === '/print/jobs') {
-        return send(res, 200, await listStationPrintJobs(), corsOrigin);
+        return send(
+          res,
+          200,
+          await listStationPrintJobs({
+            userId: Number(auth?.userId || 0),
+            role: auth?.role,
+          }),
+          corsOrigin,
+        );
       }
       if (req.method === 'POST' && pathname === '/print/jobs/reprint') {
         const body = await parseJson(req);
         const id = Number(body?.id || 0);
         if (!id)
           return send(res, 400, { ok: false, error: 'invalid id' }, corsOrigin);
-        return send(res, 200, await reprintStationPrintJob(id), corsOrigin);
+        const reprinted = await reprintStationPrintJob(id, {
+          userId: Number(auth?.userId || 0),
+          role: auth?.role,
+        });
+        if (reprinted.ok) {
+          logSecurityEvent('print_job_reprinted', {
+            jobId: id,
+            userId: auth?.userId ?? null,
+          });
+        }
+        return send(res, reprinted.ok ? 200 : 403, reprinted, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/print/list') {
         return send(res, 200, await listHostSystemPrinters(), corsOrigin);
@@ -3101,6 +3187,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // be a bare OK even when every slip had failed, so the phone never
           // showed "printer will retry". A printer still connecting after
           // the budget is reported later through the printer event.
+          // The same order posted again prints as a copy (`slipRepeat.ts`).
+          await markRepeatedKitchenSlip(fiscalPayload);
           await persistLanAudit('SENT');
           const printed = await new Promise<boolean | null>((resolve) => {
             const budget = setTimeout(
@@ -3164,7 +3252,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           tableLabel,
           item,
           approvedByAdminId,
-          approvedByAdminName,
           approvedByAdminToken,
           idempotencyKey: voidKey,
         } = await parseJson(req);
@@ -3260,6 +3347,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         );
         const usesApproval =
           auth?.role !== 'ADMIN' && Boolean(approvedByAdminToken);
+        // A replay of a void that already landed is answered before the
+        // approval is looked at: the first delivery used it up.
+        if (voidKey) {
+          const prior = await prisma.ticketLog
+            .findFirst({ where: { idempotencyKey: String(voidKey) } as any })
+            .catch(() => null);
+          if (prior) return send(res, 200, 'ok', corsOrigin);
+        }
         if (
           usesApproval &&
           !(await claimLanApproval(
@@ -3319,7 +3414,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // Nothing on the bill matched: no audit entry, no kitchen change.
         if (voided === 'not-found') return send(res, 200, 'ok', corsOrigin);
 
-        const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
+        const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
         await notifyAdminsAndActor({
           message,
           actorUserId: Number(userId),
@@ -3380,7 +3475,6 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           tableLabel,
           reason,
           approvedByAdminId,
-          approvedByAdminName,
           approvedByAdminToken,
           idempotencyKey: voidKey,
         } = await parseJson(req);
@@ -3521,7 +3615,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             corsOrigin,
           );
         }
-        const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${approvedByAdminId ? ` (approved by: ${String(approvedByAdminName || `admin#${approvedByAdminId}`)})` : ''}`;
+        const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
         await notifyAdminsAndActor({
           message,
           actorUserId: Number(userId),

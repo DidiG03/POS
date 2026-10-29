@@ -6,6 +6,7 @@ import {
   isPairingRejectedError,
   lanLoginErrorCopyKey,
   lanLoginUserMessage,
+  loginAttemptsLeft,
 } from './lanLoginError';
 
 describe('lanLoginError', () => {
@@ -86,5 +87,26 @@ describe('lanLoginError', () => {
     });
     expect(classifyLanLoginError(locked)).toBe('locked');
     expect(lanLoginErrorCopyKey('locked')).toBe('login.tooManyAttempts');
+  });
+});
+
+describe('wrong PIN and lockout copy (QA round 3)', () => {
+  const t = (key: string, opts?: any) =>
+    `${key}${opts?.count != null ? `:${opts.count}` : ''}${opts?.minutes ? `:${opts.minutes}` : ''}`;
+  it('always says how many attempts are left', () => {
+    const e = Object.assign(new Error('Wrong PIN'), { attemptsLeft: 8 });
+    expect(lanLoginUserMessage(e, t)).toBe('login.invalidPinAttemptsLeft:8');
+    const fromBody = Object.assign(new Error('Wrong PIN'), {
+      status: 401,
+      data: { attemptsLeft: 3 },
+    });
+    expect(loginAttemptsLeft(fromBody)).toBe(3);
+  });
+  it('says how long sign-in is locked', () => {
+    const e = Object.assign(new Error('locked'), {
+      status: 429,
+      retryAfterMs: 4 * 60_000 + 1,
+    });
+    expect(lanLoginUserMessage(e, t)).toBe('login.tooManyAttemptsFor:5');
   });
 });

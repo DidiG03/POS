@@ -7,9 +7,11 @@
  * the action, the table and the line — and a token already claimed for
  * another scope is refused.
  *
- * The same action retried (the phone's offline queue replaying a void whose
- * answer was lost) carries the same idempotency key and is still accepted;
- * the action itself is idempotent, so the retry changes nothing.
+ * A token is consumed by its first use, whatever idempotency key a later
+ * request carries: one approval with one key used to void two different
+ * lines. The routes answer a replay of a void that already landed (same
+ * idempotency key on the bill) before they get here, so the offline queue's
+ * retry of a lost answer still succeeds without a second claim.
  *
  * Kept in memory: a restart drops the claims, and the tokens with them (the
  * till's tokens live in memory too, and the LAN ones expire in five minutes).
@@ -35,15 +37,28 @@ export function approvalScope(
   return [action, ...parts.map((p) => String(p ?? '').trim())].join('|');
 }
 
-/** Line identity for a void scope: its Send key, else its name. */
+/**
+ * Line identity for a void scope: everything the void matches the line by
+ * (`voidLine.ts`), not just the item or its Send key, which every line of
+ * one Send shares.
+ */
 export function voidLineIdentity(item: unknown): string {
   const it = (item || {}) as Record<string, unknown>;
-  return String(it.lineId || it.sendKey || it.sku || it.name || '').trim();
+  const text = (v: unknown) => String(v ?? '').trim();
+  const num = (v: unknown) =>
+    Number.isFinite(Number(v)) ? String(Math.round(Number(v) * 100)) : '';
+  return [
+    text(it.sku),
+    text(it.name),
+    num(it.unitPrice),
+    text(it.note),
+    num(it.qty ?? 1),
+  ].join('~');
 }
 
 /**
- * Claim `tokenId` for `scope`. True when this is its first use, or a retry
- * of that same use (same scope and idempotency key).
+ * Claim `tokenId` for `scope`. True only for its first use, or (with
+ * `anyKeyInScope`) another request for the same scope.
  */
 export function claimApprovalUse(input: {
   tokenId: string;
@@ -72,8 +87,7 @@ export function claimApprovalUse(input: {
     return true;
   }
   if (existing.scope !== input.scope) return false;
-  if (input.anyKeyInScope) return true;
-  return key !== '' && existing.keys.has(key);
+  return Boolean(input.anyKeyInScope);
 }
 
 /**

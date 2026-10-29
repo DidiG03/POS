@@ -99,7 +99,13 @@ type LoginCopy = (
 
 /** Wrong-PIN attempts left on this device, when the till said. */
 export function loginAttemptsLeft(error: unknown): number | null {
-  const n = Number((error as { attemptsLeft?: unknown } | null)?.attemptsLeft);
+  const e = error as {
+    attemptsLeft?: unknown;
+    data?: { attemptsLeft?: unknown };
+  } | null;
+  const raw = e?.attemptsLeft ?? e?.data?.attemptsLeft;
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
@@ -121,7 +127,7 @@ export function lanLoginUserMessage(error: unknown, t: LoginCopy): string {
   if (kind === 'pairing') return t('login.pairingRequired');
   if (kind === 'invalid_pin') {
     const left = loginAttemptsLeft(error);
-    return left != null && left <= 5
+    return left != null
       ? t('login.invalidPinAttemptsLeft', { count: left })
       : t('login.invalidPin');
   }
