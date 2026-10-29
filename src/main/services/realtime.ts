@@ -82,10 +82,6 @@ export function advanceSseEventIdForTests(n = 1): void {
   sseEventId += n;
 }
 
-export function currentSseEventId(): number {
-  return sseEventId;
-}
-
 export function formatSseEvent(
   eventName: string,
   payload: unknown,

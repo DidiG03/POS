@@ -189,10 +189,6 @@ function requireClient(): any {
   return inner;
 }
 
-export function isPrismaOpen(): boolean {
-  return inner != null;
-}
-
 /** True while the till vault has not opened Prisma yet. */
 export function isSqliteLocked(): boolean {
   return !inner && isVaultLockEnabled();

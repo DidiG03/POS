@@ -13,8 +13,8 @@
  * same document must never be in flight together — the provider answers
  * "another request is processing", and worse, a status check that races the
  * register it is checking on can report "not found" for an invoice that is
- * being written as we ask. The lock covers every route so a cancel, a PDF
- * or a replay cannot slip between them either.
+ * being written as we ask. The lock covers every route so a cancel or a
+ * replay cannot slip between them either.
  */
 
 import type { SettingsDTO } from '@shared/ipc';
@@ -28,13 +28,8 @@ import {
 import type {
   BalanceRequest,
   CancelInvoiceRequest,
-  GetOperatorsRequest,
-  GetTaxpayersRequest,
-  InvoicePdfRequest,
   InvoiceStatusRequest,
-  OperatorRecord,
   RegisterInvoiceRequest,
-  TaxpayerRecord,
 } from './apiTypes';
 
 export const FISCAL_ROUTES = {
@@ -48,8 +43,6 @@ export const FISCAL_ROUTES = {
   getTaxpayers: '/utilities/get-taxpayers',
   getOperators: '/utilities/get-operators',
 } as const;
-
-export type FiscalRoute = (typeof FISCAL_ROUTES)[keyof typeof FISCAL_ROUTES];
 
 /** Per-request timeout. Generous: the tax service is slow under load. */
 export const REQUEST_TIMEOUT_MS = 20_000;
@@ -118,11 +111,6 @@ export function withDocIdLock<T>(
     if (inFlightByDocId.get(key) === guard) inFlightByDocId.delete(key);
   });
   return next;
-}
-
-/** True while any request for this docId is in flight. Diagnostics only. */
-export function isDocIdBusy(docId: string): boolean {
-  return inFlightByDocId.has(String(docId || '').trim());
 }
 
 /** Test seam. Never call from application code. */
@@ -301,14 +289,6 @@ export function postInvoiceStatus(
   return postFiscal(settings, FISCAL_ROUTES.status, request, options);
 }
 
-export function postInvoicePdf(
-  settings: SettingsDTO,
-  request: InvoicePdfRequest,
-  options?: PostOptions,
-): Promise<FiscalHttpResult> {
-  return postFiscal(settings, FISCAL_ROUTES.pdf, request, options);
-}
-
 export function postBalanceInitiate(
   settings: SettingsDTO,
   request: BalanceRequest,
@@ -331,63 +311,4 @@ export function postBalanceWithdraw(
   options?: PostOptions,
 ): Promise<FiscalHttpResult> {
   return postFiscal(settings, FISCAL_ROUTES.balanceWithdraw, request, options);
-}
-
-export function postGetTaxpayers(
-  settings: SettingsDTO,
-  request: GetTaxpayersRequest,
-  options?: PostOptions,
-): Promise<FiscalHttpResult> {
-  return postFiscal(settings, FISCAL_ROUTES.getTaxpayers, request, options);
-}
-
-export function postGetOperators(
-  settings: SettingsDTO,
-  request: GetOperatorsRequest = {},
-  options?: PostOptions,
-): Promise<FiscalHttpResult> {
-  return postFiscal(settings, FISCAL_ROUTES.getOperators, request, options);
-}
-
-/* ------------------------------------------------------------------ *
- * List extraction
- * ------------------------------------------------------------------ */
-
-/**
- * Utilities routes have shipped their payload bare, under `response`, and
- * under a named key. Read all three rather than guessing.
- */
-function extractList(data: unknown, keys: string[]): unknown[] {
-  if (Array.isArray(data)) return data;
-  const body = (data || {}) as Record<string, unknown>;
-  for (const key of keys) {
-    if (Array.isArray(body[key])) return body[key] as unknown[];
-  }
-  const nested = body.response;
-  if (Array.isArray(nested)) return nested;
-  if (nested && typeof nested === 'object') {
-    for (const key of keys) {
-      const value = (nested as Record<string, unknown>)[key];
-      if (Array.isArray(value)) return value as unknown[];
-    }
-  }
-  const dataKey = body.data;
-  if (Array.isArray(dataKey)) return dataKey;
-  return [];
-}
-
-export function readTaxpayers(data: unknown): TaxpayerRecord[] {
-  return extractList(data, [
-    'taxpayers',
-    'items',
-    'results',
-  ]) as TaxpayerRecord[];
-}
-
-export function readOperators(data: unknown): OperatorRecord[] {
-  return extractList(data, [
-    'operators',
-    'items',
-    'results',
-  ]) as OperatorRecord[];
 }

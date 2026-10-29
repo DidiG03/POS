@@ -194,9 +194,6 @@ export function encodeEscposText(s: string): Buffer {
 export const ESC_POS_PC850 = Buffer.from([0x1b, 0x74, 0x02]);
 /** ESC M 0 — Font A (12×24), 48 glyphs across 80mm paper. */
 export const ESC_POS_FONT_A = Buffer.from([0x1b, 0x4d, 0x00]);
-/** ESC M 1 — Font B (9×17), smaller type for kitchen order lines. */
-export const ESC_POS_FONT_B = Buffer.from([0x1b, 0x4d, 0x01]);
-
 const GS = Buffer.from([0x1d]);
 
 /**

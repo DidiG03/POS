@@ -26,7 +26,7 @@
 import type { SettingsDTO } from '@shared/ipc';
 import { prisma } from '@db/client';
 import { roundMoney } from '@shared/pricing';
-import { DEFAULT_CURRENCY, type BalanceRequest } from './apiTypes';
+import type { BalanceRequest } from './apiTypes';
 import { assertValidDocId, newDocId } from './docId';
 import {
   postBalanceDeposit,
@@ -630,5 +630,3 @@ export function withdrawCash(
 ): Promise<BalanceOutcome> {
   return movement(settings, 'withdraw', input, options);
 }
-
-export const BALANCE_CURRENCY = DEFAULT_CURRENCY;

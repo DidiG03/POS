@@ -78,20 +78,6 @@ export type ElectronicProcess =
   /** Partial / final invoicing. */
   | 'P11';
 
-export const ELECTRONIC_PROCESSES: readonly ElectronicProcess[] = [
-  'P1',
-  'P2',
-  'P3',
-  'P4',
-  'P5',
-  'P6',
-  'P7',
-  'P8',
-  'P9',
-  'P10',
-  'P11',
-];
-
 /** Processes whose extra required fields we enforce before sending. */
 export const PROCESS_REQUIRING_PREPAID: readonly ElectronicProcess[] = ['P4'];
 export const PROCESS_REQUIRING_IIC_REF: readonly ElectronicProcess[] = [
@@ -266,38 +252,11 @@ export interface InvoiceStatusRequest {
   docId: string;
 }
 
-export type PdfType = 'A4' | 'receipt' | 'eInvoice';
-export type PdfPaperWidth = 58 | 80 | 110;
-export type PdfLang = 'sq' | 'en';
-
-export const PDF_TYPES: readonly PdfType[] = ['A4', 'receipt', 'eInvoice'];
-export const PDF_PAPER_WIDTHS: readonly PdfPaperWidth[] = [58, 80, 110];
-export const PDF_LANGS: readonly PdfLang[] = ['sq', 'en'];
-
-export interface InvoicePdfRequest {
-  docId: string;
-  pdfType: PdfType;
-  /** `receipt` only. */
-  paperWidth?: PdfPaperWidth;
-  lang?: PdfLang;
-}
-
 /** Cash balance operations. Amounts are always in ALL. */
 export interface BalanceRequest {
   docId: string;
   amount: number;
   operatorCode?: string;
-  [extra: string]: unknown;
-}
-
-export interface GetTaxpayersRequest {
-  searchTerm: string;
-}
-
-export const TAXPAYER_SEARCH_MIN_LENGTH = 3;
-export const TAXPAYER_SEARCH_MAX_LENGTH = 200;
-
-export interface GetOperatorsRequest {
   [extra: string]: unknown;
 }
 
@@ -347,19 +306,5 @@ export interface FiscalApiResponse {
   message?: string;
   error?: ApiErrorEnvelope;
   response?: Record<string, unknown>;
-  [extra: string]: unknown;
-}
-
-export interface TaxpayerRecord {
-  nuis?: string;
-  name?: string;
-  address?: string;
-  city?: string;
-  [extra: string]: unknown;
-}
-
-export interface OperatorRecord {
-  operatorCode?: string;
-  name?: string;
   [extra: string]: unknown;
 }

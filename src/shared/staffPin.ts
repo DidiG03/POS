@@ -12,7 +12,6 @@
  */
 
 export const STAFF_PIN_MAX_LENGTH = 6;
-export const ADMIN_PIN_MIN_LENGTH = 4;
 
 const STAFF_PIN_RE = /^[0-9a-z]{1,6}$/;
 const ADMIN_PIN_RE = /^\d{4,6}$/;

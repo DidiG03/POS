@@ -184,19 +184,6 @@ export function sanitizeString(
 }
 
 /**
- * Sanitize string array (e.g., for notes, names)
- */
-export function sanitizeStringArray(
-  input: (string | null | undefined)[] | null | undefined,
-  maxLength = 500,
-): string[] {
-  if (!Array.isArray(input)) return [];
-  return input
-    .map((item) => sanitizeString(item, maxLength))
-    .filter((s) => s.length > 0);
-}
-
-/**
  * Validate PIN format and complexity.
  * Staff: 1–6 letters or digits. Admin: 4–6 digits (see `@shared/staffPin`).
  * Omit `role` at login — the stored hash is the real check there.
@@ -268,19 +255,4 @@ export function sanitizeNumber(
   if (min !== undefined && num < min) return min;
   if (max !== undefined && num > max) return max;
   return num;
-}
-
-/**
- * Hash sensitive data (for logging, not storage)
- */
-export function hashSensitive(data: string): string {
-  // Simple hash for logging (not cryptographic)
-  // For actual password hashing, use bcrypt
-  let hash = 0;
-  for (let i = 0; i < data.length; i++) {
-    const char = data.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0');
 }

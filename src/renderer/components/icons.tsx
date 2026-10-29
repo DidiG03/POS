@@ -8,9 +8,7 @@ import {
   Bell,
   BookOpen,
   Building2,
-  Calendar,
   Check,
-  ChefHat,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -21,7 +19,6 @@ import {
   CloudDownload,
   Copy,
   CreditCard,
-  Download,
   Flame,
   GripVertical,
   Heart,
@@ -32,10 +29,7 @@ import {
   ListFilter,
   Lock,
   LogOut,
-  Merge,
-  Minus,
   Monitor,
-  MoreHorizontal,
   MoreVertical,
   MousePointer2,
   Package,
@@ -48,13 +42,11 @@ import {
   Settings,
   ShoppingCart,
   SlidersHorizontal,
-  Split,
   Ticket,
   Trash2,
   TrendingUp,
   TriangleAlert,
   Upload,
-  User,
   Users,
   Utensils,
   Wifi,
@@ -97,19 +89,16 @@ export const IconClose = glyph(X);
 export const IconSearch = glyph(Search);
 export const IconCopy = glyph(Copy);
 export const IconPlus = glyph(Plus);
-export const IconMinus = glyph(Minus);
 export const IconCheck = glyph(Check);
 export const IconTrash = glyph(Trash2);
 export const IconEdit = glyph(Pencil);
 export const IconSettings = glyph(Settings);
 export const IconUsers = glyph(Users);
-export const IconUser = glyph(User);
 export const IconPrinter = glyph(Printer);
 export const IconChart = glyph(TrendingUp);
 export const IconList = glyph(List);
 export const IconGrid = glyph(LayoutGrid);
 export const IconRefresh = glyph(RefreshCw);
-export const IconCalendar = glyph(Calendar);
 export const IconFilter = glyph(ListFilter);
 export const IconChevronLeft = glyph(ChevronLeft);
 export const IconChevronRight = glyph(ChevronRight);
@@ -123,17 +112,12 @@ export const IconCash = glyph(Banknote);
 export const IconBox = glyph(Package);
 export const IconTicket = glyph(Ticket);
 export const IconMenuBook = glyph(BookOpen);
-export const IconKitchen = glyph(ChefHat);
-export const IconSplit = glyph(Split);
-export const IconMerge = glyph(Merge);
 export const IconGrip = glyph(GripVertical);
-export const IconMore = glyph(MoreHorizontal);
 export const IconMoreVertical = glyph(MoreVertical);
 export const IconKebab = IconMoreVertical;
 export const IconLock = glyph(Lock);
 export const IconWifiOff = glyph(WifiOff);
 export const IconWifi = glyph(Wifi);
-export const IconDownload = glyph(Download);
 export const IconUpload = glyph(Upload);
 export const IconMoveRight = glyph(ArrowRight);
 export const IconOrderDefault = glyph(MousePointer2);

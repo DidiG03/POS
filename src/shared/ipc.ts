@@ -359,7 +359,6 @@ export const LoginWithPinInputSchema = z.object({
   userId: z.number().optional(),
   pairingCode: z.string().min(4).max(12).optional(),
 });
-export type LoginWithPinInput = z.infer<typeof LoginWithPinInputSchema>;
 
 export const CreateUserInputSchema = z.object({
   displayName: z.string().min(1),

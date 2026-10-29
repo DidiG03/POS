@@ -1758,10 +1758,6 @@ export async function getFailedSyncItems(): Promise<FailedSyncItem[]> {
   return await offlineQueue.getFailed();
 }
 
-export async function getFailedSyncCount(): Promise<number> {
-  return await offlineQueue.getFailedCount();
-}
-
 export async function retryFailedSyncItem(
   id: string,
 ): Promise<{ requeued: boolean }> {

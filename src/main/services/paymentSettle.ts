@@ -20,8 +20,6 @@ export type PrintTicketErr = {
   permanent?: boolean;
 };
 
-export type PrintTicketResult = PrintTicketOk | PrintTicketErr;
-
 export function paymentShouldCloseTable(meta: unknown): boolean {
   const m = (meta || {}) as {
     kind?: string;

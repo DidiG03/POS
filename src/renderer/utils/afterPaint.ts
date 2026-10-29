@@ -14,10 +14,3 @@ export function afterPaint(cb: () => void): () => void {
     if (inner) cancelAnimationFrame(inner);
   };
 }
-
-export function waitForPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    const cancel = afterPaint(() => resolve());
-    void cancel;
-  });
-}

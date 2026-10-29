@@ -7,12 +7,7 @@
 
 import { isStoreCounterArea } from './editionCapabilities';
 import { roundMoney } from './pricing';
-import {
-  effectiveVatRate,
-  splitChargedNetVat,
-  splitGrossVat,
-  sumTicketLinesNetVat,
-} from './ticketRevenue';
+import { splitChargedNetVat, sumTicketLinesNetVat } from './ticketRevenue';
 import { resolveVatEnabledFromMeta } from './vatFromFiscal';
 
 export type LedgerPaymentMethod = 'CASH' | 'CARD' | 'MIXED';
@@ -128,24 +123,6 @@ export function ledgerLinesFromPayload(payload: unknown): LedgerLineInput[] {
     });
   }
   return out;
-}
-
-/** Line VAT for a stored qty × unitPrice (gross, VAT-inclusive). */
-export function lineVatAmount(
-  qty: number,
-  unitPrice: number,
-  vatRate: number,
-  vatEnabled: boolean,
-): { net: number; vat: number; gross: number } {
-  const gross = roundMoney(Number(qty || 0) * Number(unitPrice || 0));
-  if (!vatEnabled) return { net: gross, vat: 0, gross };
-  const rate = effectiveVatRate(vatRate, 0);
-  const split = splitGrossVat(gross, rate);
-  return {
-    net: roundMoney(split.net),
-    vat: roundMoney(split.vat),
-    gross,
-  };
 }
 
 export function cashChangeDue(amountPaid: unknown, total: number): number {

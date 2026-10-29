@@ -38,9 +38,6 @@ export const LOCK_AFTER_FAILURES = 10;
 export const IP_LOCK_MS = 5 * 60_000;
 export const ACCOUNT_LOCK_AFTER_FAILURES = 20;
 export const ACCOUNT_LOCK_MS = 15 * 60_000;
-/** Kept for callers and alerts that still say "admin". */
-export const ADMIN_LOCK_AFTER_FAILURES = ACCOUNT_LOCK_AFTER_FAILURES;
-export const ADMIN_LOCK_MS = ACCOUNT_LOCK_MS;
 export const IP_SPRAY_LOCK_AFTER_FAILURES = 30;
 export const DELAY_STEP_MS = 250;
 export const DELAY_MAX_MS = 2_000;
@@ -112,15 +109,13 @@ export function lanLoginAccountLockedFor(
   return remaining(byAccount.get(Number(userId)), now);
 }
 
-export const lanLoginAdminLockedFor = lanLoginAccountLockedFor;
-
 export interface LanLoginFailure {
   /** Pause to apply before answering, so guessing stays slow. */
   delayMs: number;
   /** True when this failure just locked the account on this device. */
   ipLocked: boolean;
   /** True when this failure just locked the account everywhere. */
-  adminLocked: boolean;
+  accountLocked: boolean;
   /** True when this failure just locked the whole device. */
   deviceLocked: boolean;
   /** Failures left on this device before the account locks here. */
@@ -201,7 +196,7 @@ export function beginLanLoginAttempt(
       const out: LanLoginFailure = {
         delayMs: 0,
         ipLocked: false,
-        adminLocked: false,
+        accountLocked: false,
         deviceLocked: false,
         attemptsLeft: 0,
       };
@@ -226,7 +221,7 @@ export function beginLanLoginAttempt(
           account.lockedUntil <= at
         ) {
           account.lockedUntil = at + ACCOUNT_LOCK_MS;
-          out.adminLocked = true;
+          out.accountLocked = true;
         }
       }
       // Back off on whichever budget is most used: a guesser rotating
@@ -237,34 +232,6 @@ export function beginLanLoginAttempt(
       return out;
     },
   };
-}
-
-/**
- * Record one failed attempt outside a reservation (kept for callers that
- * have nothing to check, and for tests).
- */
-export function recordLanLoginFailure(
-  ip: string,
-  opts: { adminUserId?: number | null; userId?: number | null } = {},
-  now = Date.now(),
-): LanLoginFailure {
-  const uid = Number(opts.userId || opts.adminUserId || 0);
-  const attempt = beginLanLoginAttempt(ip, uid, now);
-  if (!attempt.ok) {
-    return {
-      delayMs: DELAY_MAX_MS,
-      ipLocked: false,
-      adminLocked: false,
-      deviceLocked: false,
-      attemptsLeft: 0,
-    };
-  }
-  return attempt.fail(now);
-}
-
-/** A successful login from this IP clears its unknown-account misses. */
-export function clearLanLoginFailures(ip: string): void {
-  byDevice.delete(deviceKey(ip, 0));
 }
 
 /** Test seam. */

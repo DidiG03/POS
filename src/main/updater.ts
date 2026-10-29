@@ -683,10 +683,6 @@ export function registerUpdateListener(window: BrowserWindow): void {
   });
 }
 
-export function unregisterUpdateListener(window: BrowserWindow): void {
-  updateCheckListeners.delete(window);
-}
-
 export function cleanup(): void {
   if (updateCheckInterval) {
     clearInterval(updateCheckInterval);

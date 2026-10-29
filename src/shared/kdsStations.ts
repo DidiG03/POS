@@ -23,8 +23,3 @@ export function kdsStationLabel(station: KdsStation): string {
       return station;
   }
 }
-
-export function kdsCategoryLinkLabel(station?: KdsStation | null): string {
-  if (!station) return 'Not on KDS';
-  return kdsStationLabel(station);
-}

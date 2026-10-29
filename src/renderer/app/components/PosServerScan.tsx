@@ -14,10 +14,7 @@ import {
   discoverPosHostsInBrowser,
   probePosHttp,
 } from '../../utils/discoverPosHosts';
-import {
-  POS_OPEN_SERVER_SCAN,
-  notifyBackendHostChanged,
-} from '../../utils/posServerScanEvent';
+import { notifyBackendHostChanged } from '../../utils/posServerScanEvent';
 import { invalidateHostScopedCaches } from '../../utils/posReadCache';
 import { IconClose } from '../../components/icons';
 import { PosHostPicker } from './PosHostPicker';
@@ -211,16 +208,4 @@ export function PosServerScanOverlay({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
-}
-
-/** Mount once at the app root so a long-press on the logo can reopen Scan. */
-export function PosServerScanHost() {
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    const onOpen = () => setOpen(true);
-    window.addEventListener(POS_OPEN_SERVER_SCAN, onOpen);
-    return () => window.removeEventListener(POS_OPEN_SERVER_SCAN, onOpen);
-  }, []);
-  if (!open) return null;
-  return <PosServerScanOverlay onClose={() => setOpen(false)} />;
 }

@@ -125,14 +125,6 @@ export function writeStoredLicense(next: StoredLicense): void {
   fs.writeFileSync(licenseFilePath(), JSON.stringify(next, null, 2), 'utf8');
 }
 
-export function clearStoredLicense(): void {
-  try {
-    fs.unlinkSync(licenseFilePath());
-  } catch {
-    // ignore
-  }
-}
-
 async function billingFetch(url: string, init: RequestInit): Promise<Response> {
   // Electron's Node `fetch` (undici) often hangs on TLS to Vercel; Chromium's
   // net.fetch uses the same stack as the rest of the app.
