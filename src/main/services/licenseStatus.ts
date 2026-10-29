@@ -12,6 +12,7 @@ export function licenseStatusForRenderer<T extends { key?: string }>(
   revealKey: boolean,
 ): Omit<T, 'key'> & { key?: string } {
   if (revealKey) return st;
-  const { key: _key, ...rest } = st;
+  const rest: Omit<T, 'key'> & { key?: string } = { ...st };
+  delete rest.key;
   return rest;
 }

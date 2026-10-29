@@ -27,7 +27,9 @@ export function intentAtFromAge(ageMs: number, now = Date.now()): number {
 /**
  * `intentAgeMs` is the current client. `intentAt` above 1e11 is an older
  * client that still sent its own clock; keep that value so a half-upgraded
- * phone can still open a table.
+ * phone can still open a table, but never later than the till's now (a fast
+ * phone clock would otherwise win every open/close race) nor older than
+ * `MAX_TABLE_INTENT_AGE_MS`.
  */
 export function resolveHostIntent(
   input: { intentAgeMs?: unknown; intentAt?: unknown },
@@ -38,6 +40,8 @@ export function resolveHostIntent(
     if (Number.isFinite(age) && age >= 0) return intentAtFromAge(age, now);
   }
   const legacy = Number(input.intentAt);
-  if (Number.isFinite(legacy) && legacy > 1e11) return legacy;
+  if (Number.isFinite(legacy) && legacy > 1e11) {
+    return Math.max(now - MAX_TABLE_INTENT_AGE_MS, Math.min(legacy, now));
+  }
   return undefined;
 }

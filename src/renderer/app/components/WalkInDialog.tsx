@@ -83,7 +83,6 @@ export default function WalkInDialog({
     }
     setTableLabel(freeSorted[0] || '');
     // freeSorted is read on open; occupancy while open is handled below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialTableLabel, t]);
 
   // If a selected table becomes occupied while the dialog is open, drop it.

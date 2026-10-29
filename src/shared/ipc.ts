@@ -67,8 +67,6 @@ export interface SettingsDTO {
     language?: 'en' | 'sq';
     /** Till appearance. Default dark. */
     theme?: 'light' | 'dark';
-    /** @deprecated VAT follows `fiscal.enabled`; not stored in preferences. */
-    vatEnabled?: boolean;
     serviceCharge?: {
       enabled?: boolean;
       mode?: 'PERCENT' | 'AMOUNT';
