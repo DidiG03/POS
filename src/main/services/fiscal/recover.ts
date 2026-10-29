@@ -53,7 +53,11 @@ import {
   type CompletionTarget,
   type FiscalIdentifiers,
 } from './completion';
-import { fiscalConfig, type FiscalEnvironment } from './config';
+import {
+  fiscalConfig,
+  latestFiscalSettings,
+  type FiscalEnvironment,
+} from './config';
 import {
   FiscalValidationError,
   validateCancelInvoice,
@@ -96,6 +100,23 @@ export interface RecoveryOptions {
    * `/invoice/status` first and send only if the docId is absent.
    */
   statusFirst?: boolean;
+  /**
+   * A waiter is holding the payment screen. Each request gets
+   * `LIVE_REQUEST_TIMEOUT_MS`; a connection error comes back as not sent at
+   * once (no backoff and resend); and a send that got no answer is not
+   * chased with status polls but handed back marked `checkStatusFirst`, so
+   * the sale is queued and the pending receipt prints in seconds. easyPos
+   * accepting the connection and never answering held the screen ~111 s.
+   */
+  live?: boolean;
+  /** Per-request timeout. Defaults to `LIVE_REQUEST_TIMEOUT_MS` when live. */
+  requestTimeoutMs?: number;
+  /**
+   * The current settings, read before every request. The URL or token can
+   * change in Settings while a document is being retried; the settings the
+   * sequence started with are only the fallback.
+   */
+  readSettings?: () => Promise<SettingsDTO | null | undefined>;
   /** Test seams. */
   sleep?: Sleep;
   random?: () => number;
@@ -153,6 +174,10 @@ export type RecoveryResult =
     };
 
 const DEFAULT_MAX_SEND_ATTEMPTS = 3;
+/** Per-request timeout while a waiter waits (`RecoveryOptions.live`). */
+export const LIVE_REQUEST_TIMEOUT_MS = 6_000;
+/** Whole budget of a live payment's recovery. */
+export const LIVE_DEADLINE_MS = 15_000;
 const DEFAULT_MAX_STATUS_POLLS = 4;
 /**
  * A till cannot hold the guest at the card machine indefinitely. Past this,
@@ -203,11 +228,26 @@ async function driveRecovery(input: {
   docId: string;
   target: CompletionTarget;
   sendPhase: 'register' | 'cancel';
-  send: (authToken?: string) => Promise<FiscalHttpResult>;
+  send: (
+    settings: SettingsDTO,
+    post: { authToken?: string; timeoutMs?: number },
+  ) => Promise<FiscalHttpResult>;
   options?: RecoveryOptions;
 }): Promise<RecoveryResult> {
-  const { settings, docId, target, send, sendPhase } = input;
+  const { docId, target, send, sendPhase } = input;
   const options = input.options || {};
+  const live = options.live === true;
+  const timeoutMs =
+    options.requestTimeoutMs ?? (live ? LIVE_REQUEST_TIMEOUT_MS : undefined);
+  let settings = input.settings;
+  /** Settings as they are now (`RecoveryOptions.readSettings`). */
+  const current = async (): Promise<SettingsDTO> => {
+    const fresh = options.readSettings
+      ? await options.readSettings().catch(() => null)
+      : await latestFiscalSettings(settings);
+    if (fresh) settings = fresh;
+    return settings;
+  };
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
   const random = options.random;
@@ -219,7 +259,10 @@ async function driveRecovery(input: {
     0,
     options.maxStatusPolls ?? DEFAULT_MAX_STATUS_POLLS,
   );
-  const deadlineMs = Math.max(0, options.deadlineMs ?? DEFAULT_DEADLINE_MS);
+  const deadlineMs = Math.max(
+    0,
+    options.deadlineMs ?? (live ? LIVE_DEADLINE_MS : DEFAULT_DEADLINE_MS),
+  );
   const backoffOptions = {
     baseMs: options.backoffBaseMs ?? BACKOFF_BASE_MS,
     capMs: options.backoffCapMs ?? BACKOFF_CAP_MS,
@@ -243,7 +286,10 @@ async function driveRecovery(input: {
     sendAttempts++;
     emit(phase, `POST ${sendPhase} attempt ${sendAttempts} for docId ${docId}`);
     try {
-      return { source: sendPhase, result: await send(authToken) };
+      return {
+        source: sendPhase,
+        result: await send(await current(), { authToken, timeoutMs }),
+      };
     } catch (e) {
       return { source: sendPhase, error: e };
     }
@@ -258,7 +304,11 @@ async function driveRecovery(input: {
     try {
       return {
         source: 'status',
-        result: await postInvoiceStatus(settings, { docId }, { authToken }),
+        result: await postInvoiceStatus(
+          await current(),
+          { docId },
+          { authToken, timeoutMs },
+        ),
       };
     } catch (e) {
       return { source: 'status', error: e };
@@ -353,6 +403,23 @@ async function driveRecovery(input: {
       !attempt.result;
     if (attempt.source !== 'status' && !neverReached) mayExist = true;
 
+    // Live: a waiter is waiting (`RecoveryOptions.live`).
+    if (live && attempt.source !== 'status' && !attempt.result) {
+      // Never reached easyPos: nothing was sent, so it can go out later
+      // as it is. Waiting through backoff and resends only held the screen.
+      if (neverReached && !mayExist) {
+        return {
+          kind: 'not-registered',
+          docId,
+          message: classification.message,
+          sendAttempts,
+          statusPolls,
+        };
+      }
+      // Sent, never answered: queue it to be checked before it is sent again.
+      if (!neverReached) return deferChecked(classification.message);
+    }
+
     // A completed document ends everything, whichever call reported it.
     if (attempt.result) {
       const verdict = assessCompletion(target, attempt.result.data);
@@ -415,7 +482,7 @@ async function driveRecovery(input: {
     // may still have stored the invoice, so it is not posted again until
     // status says the docId is absent.
     if (classification.action === 'renew-token') {
-      const environment = fiscalConfig(settings).environment;
+      const environment = fiscalConfig(await current()).environment;
       let renewed: string | null | undefined = null;
       let detail = classification.message;
       if (renewals < MAX_TOKEN_RENEWALS && options.onTokenRenew) {
@@ -570,7 +637,7 @@ export function registerInvoiceWithRecovery(
       docId,
       target,
       sendPhase: 'register',
-      send: (authToken) => postRegisterInvoice(settings, frozen, { authToken }),
+      send: (latest, post) => postRegisterInvoice(latest, frozen, post),
       options,
     }),
   );
@@ -601,7 +668,7 @@ export function cancelInvoiceWithRecovery(
       docId,
       target,
       sendPhase: 'cancel',
-      send: (authToken) => postCancelInvoice(settings, frozen, { authToken }),
+      send: (latest, post) => postCancelInvoice(latest, frozen, post),
       options,
     }),
   );

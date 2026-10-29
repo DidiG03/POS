@@ -535,8 +535,11 @@ async function registerUnderClaim(input: {
 
   try {
     const result = statusFirst
-      ? await createEasyPosSale(settings, draft, { statusFirst: true })
-      : await createEasyPosSale(settings, draft);
+      ? await createEasyPosSale(settings, draft, {
+          statusFirst: true,
+          live: true,
+        })
+      : await createEasyPosSale(settings, draft, { live: true });
     const storedResult = {
       nslf: result.nslf || undefined,
       nivf: result.nivf || undefined,
@@ -603,6 +606,43 @@ async function registerUnderClaim(input: {
           message,
         };
       }
+      // A manager chose to take the payment anyway (`fiscalRefusalDefer`,
+      // checked with the payment's approval): the sale is recorded, this
+      // exact invoice is queued to be sent again, and it is on the review
+      // list until it is filed. A refusal used to leave the table open with
+      // no way to take the money.
+      if (meta.fiscalRefusalDefer === true) {
+        const queued = await commitDeferredFiscalClaim(
+          docId,
+          decision.attemptId,
+          message,
+          JSON.parse(JSON.stringify(draft)),
+          new Date(Date.now() + REFUSED_RETRY_AFTER_MS).toISOString(),
+          { releaseOnFailure: true },
+        );
+        if (queued) {
+          await notifyFiscalReviewNeeded({
+            idempotencyKey: docId,
+            area,
+            tableLabel,
+            actorUserId: Number(meta.userId || 0) || undefined,
+            message: `Payment taken with a manager's approval although fiskalizimi refused the invoice: ${message} The invoice is queued and will be sent again; fix the cause in Settings › Fiskalizimi.`,
+          }).catch(() => undefined);
+          return {
+            kind: 'deferred',
+            payload: withFiscalMeta(
+              payload,
+              {
+                status: 'pending',
+                warning:
+                  'Fiskalizimi refused this invoice. The sale is recorded and the invoice is on the review list in Settings › Fiskalizimi.',
+              },
+              settings,
+            ),
+            message,
+          };
+        }
+      }
       await settleFiscalClaimFailed(docId, decision.attemptId, message).catch(
         () => undefined,
       );
@@ -621,6 +661,9 @@ async function registerUnderClaim(input: {
     return review(message);
   }
 }
+
+/** A refused invoice taken anyway is sent again after this long. */
+export const REFUSED_RETRY_AFTER_MS = 15 * 60_000;
 
 /**
  * How far back to look for the invoice a void is undoing when the table is

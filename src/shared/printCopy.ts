@@ -24,6 +24,8 @@ type PrintCopy = {
   colAmount: string;
   subtotal: string;
   vat: string;
+  /** One row of the VAT breakdown: "VAT 20% on 1,000.00". */
+  vatRateRow: (pct: string, base: string) => string;
   service: string;
   servicePct: (pct: number) => string;
   discount: string;
@@ -33,6 +35,10 @@ type PrintCopy = {
   totalEur: string;
   currency: string;
   paid: string;
+  /** Title of a corrective (`CORRECTIVE`) or cancellation (`CANCEL`) slip. */
+  correctionTitle: (kind: string) => string;
+  /** The invoice a correction reverses. */
+  correctsInvoice: string;
   method: string;
   approved: string;
   note: string;
@@ -67,6 +73,7 @@ const EN: PrintCopy = {
   colAmount: 'Amount',
   subtotal: 'Subtotal',
   vat: 'VAT',
+  vatRateRow: (pct, base) => `VAT ${pct}% on ${base}`,
   service: 'Service charge',
   servicePct: (pct) => `Service (${pct}%)`,
   discount: 'Discount',
@@ -76,6 +83,9 @@ const EN: PrintCopy = {
   totalEur: 'EUR',
   currency: 'Currency',
   paid: 'PAID',
+  correctionTitle: (kind) =>
+    kind === 'CANCEL' ? 'CANCELLATION INVOICE' : 'CORRECTIVE INVOICE',
+  correctsInvoice: 'Corrects NSLF',
   method: 'Method',
   approved: 'Approved',
   note: 'Note',
@@ -110,6 +120,7 @@ const SQ: PrintCopy = {
   colAmount: 'Vlera',
   subtotal: 'Nëntotali',
   vat: 'TVSH',
+  vatRateRow: (pct, base) => `TVSH ${pct}% mbi ${base}`,
   service: 'Shërbimi',
   servicePct: (pct) => `Shërbimi (${pct}%)`,
   discount: 'Zbritje',
@@ -119,6 +130,9 @@ const SQ: PrintCopy = {
   totalEur: 'EUR',
   currency: 'Valuta',
   paid: 'E PAGUAR',
+  correctionTitle: (kind) =>
+    kind === 'CANCEL' ? 'FATURË ANULIMI' : 'FATURË KORRIGJUESE',
+  correctsInvoice: 'Korrigjon NSLF',
   method: 'Metoda',
   approved: 'Aprovuar',
   note: 'Shënim',

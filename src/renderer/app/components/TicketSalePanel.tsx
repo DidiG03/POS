@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { FiscalSaleDTO } from '@shared/ipc';
 import {
@@ -6,6 +6,7 @@ import {
   fiscalVoidVerifyUrl,
 } from '@shared/fiscalReceipt';
 import { makeFormatAmount } from '../../utils/format';
+import { newIdempotencyKey } from '../../utils/idempotency';
 import { FiscalVerifyQr } from '../../components/FiscalVerifyQr';
 import { Badge, Button, Field, Input } from '../../components/ui';
 import { toast } from '../../stores/toasts';
@@ -41,6 +42,10 @@ export function TicketSalePanel({
   const [pin, setPin] = useState('');
   const [pending, setPending] = useState<'CANCEL' | 'CORRECTIVE' | null>(null);
   const [busy, setBusy] = useState(false);
+  const [printingReceipt, setPrintingReceipt] = useState(false);
+  // One key per correction: a double tap or a retried request is answered
+  // with the first one's result, never filed twice.
+  const requestKey = useRef(newIdempotencyKey());
 
   const canCorrect = Boolean(window.api.admin.correctSale);
 
@@ -72,6 +77,7 @@ export function TicketSalePanel({
     setReason('');
     setPin('');
     setPending(null);
+    requestKey.current = newIdempotencyKey();
   };
 
   const submit = async () => {
@@ -90,6 +96,7 @@ export function TicketSalePanel({
         reason: reason.trim(),
         approvedByAdminId: approval.userId,
         approvedByAdminToken: approval.approvalToken,
+        idempotencyKey: requestKey.current,
       });
       if (!result?.ok) {
         toast.error(t('fiscal.salesFailed', { error: result?.error || '' }));
@@ -154,6 +161,34 @@ export function TicketSalePanel({
             <div>
               {t('fiscal.salesNslf')}: {sale.fiscalNslf}
             </div>
+          ) : null}
+          {sale.fiscalNivf && window.api.admin.printFiscalReceipt ? (
+            // A sale filed after the guest left (queued) only ever had the
+            // pending receipt; this prints the one with the codes and QR.
+            <Button
+              size="sm"
+              className="mt-1 font-sans"
+              disabled={printingReceipt}
+              onClick={async () => {
+                setPrintingReceipt(true);
+                try {
+                  const r = await window.api.admin.printFiscalReceipt?.({
+                    orderId: sale.orderId,
+                  });
+                  if (r?.ok && r.printed) {
+                    toast.success(t('fiscal.salesReceiptPrinted'));
+                  } else {
+                    toast.error(t('fiscal.salesReceiptNotPrinted'));
+                  }
+                } catch {
+                  toast.error(t('fiscal.salesReceiptNotPrinted'));
+                } finally {
+                  setPrintingReceipt(false);
+                }
+              }}
+            >
+              {t('fiscal.salesPrintReceipt')}
+            </Button>
           ) : null}
         </div>
       ) : (

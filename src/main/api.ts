@@ -25,6 +25,7 @@ import {
   voidTicketItem,
   voidWholeTicket,
 } from './services/ticketVoid';
+import { printFiscalReceiptForSale } from './services/fiscalReceiptReprint';
 import { revokeSessionsForUser } from './services/ipcSession';
 import { resolveLanTokenSubject } from './services/lanAuth';
 import { coreServices } from './services/core';
@@ -4566,6 +4567,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // Admin app (LAN): void or correct a settled sale. Same rule as the
       // till's `admin:correctSale`: an ADMIN session for the screen, plus a
       // fresh admin PIN approval for the write.
+      if (req.method === 'POST' && pathname === '/admin/print-fiscal-receipt') {
+        // Admin only (`lanPolicy.ts`).
+        const body = await parseJson(req);
+        const result = await printFiscalReceiptForSale(Number(body?.orderId));
+        if (result.ok) {
+          logSecurityEvent('fiscal_receipt_reprinted', {
+            orderId: Number(body?.orderId),
+            userId: auth?.userId ?? null,
+          });
+        }
+        return send(res, 200, result, corsOrigin);
+      }
       if (req.method === 'POST' && pathname === '/admin/correct-sale') {
         const body = await parseJson(req);
         const kind = String(body?.kind || '').toUpperCase();
@@ -4624,6 +4637,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           actorUserId: auth?.userId ?? aid,
           approvedById: aid,
           restockStore: storePlanBlocksTables(),
+          idempotencyKey: String(body?.idempotencyKey || '') || null,
         });
         return send(res, 200, result, corsOrigin);
       }

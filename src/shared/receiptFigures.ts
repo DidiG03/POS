@@ -10,9 +10,11 @@
  */
 import { roundMoney } from './money';
 import {
+  effectiveVatRate,
   lineGross,
   liveTicketLines,
   splitChargedNetVat,
+  splitGrossVat,
 } from './ticketRevenue';
 
 export interface ReceiptFigures {
@@ -25,6 +27,56 @@ export interface ReceiptFigures {
   /** `total − vat`. */
   net: number;
   vat: number;
+  /**
+   * The VAT split by rate, highest rate first: what each rate taxed (`base`,
+   * net of VAT) and the VAT on it. The rows add up to `net` and `vat`
+   * exactly. Empty with VAT off.
+   */
+  vatByRate: Array<{ rate: number; base: number; vat: number }>;
+}
+
+/**
+ * Per-rate rows for {@link ReceiptFigures.vatByRate}. Each line's share of
+ * the charged total (service and discount spread like `splitChargedNetVat`)
+ * is grouped by rate; whatever the cent rounding leaves goes on the largest
+ * band, so the rows match the Subtotal and VAT printed above them.
+ */
+function vatRows(
+  live: ReturnType<typeof liveTicketLines>,
+  total: number,
+  goods: number,
+  net: number,
+  vat: number,
+  defaultVatRate: number,
+): ReceiptFigures['vatByRate'] {
+  if (!(goods > 0)) return [];
+  const factor = total / goods;
+  const byRate = new Map<number, number>();
+  for (const it of live) {
+    const rate = effectiveVatRate((it as any)?.vatRate, defaultVatRate);
+    const key = Math.round(Math.max(0, rate) * 10000) / 10000;
+    byRate.set(key, (byRate.get(key) || 0) + lineGross(it) * factor);
+  }
+  const rows = [...byRate.entries()]
+    .map(([rate, gross]) => {
+      const split = splitGrossVat(gross, rate);
+      return {
+        rate,
+        base: roundMoney(split.net),
+        vat: roundMoney(split.vat),
+        gross,
+      };
+    })
+    .sort((a, b) => b.rate - a.rate);
+  if (rows.length === 0) return [];
+  const biggest = rows.reduce((a, b) => (b.gross > a.gross ? b : a));
+  biggest.vat = roundMoney(
+    biggest.vat + vat - rows.reduce((t, r) => t + r.vat, 0),
+  );
+  biggest.base = roundMoney(
+    biggest.base + net - rows.reduce((t, r) => t + r.base, 0),
+  );
+  return rows.map(({ rate, base, vat: v }) => ({ rate, base, vat: v }));
 }
 
 function money(value: unknown): number {
@@ -48,13 +100,17 @@ export function receiptFigures(
   const vat = opts.vatEnabled
     ? roundMoney(splitChargedNetVat(live, total, true, opts.defaultVatRate).vat)
     : 0;
+  const net = roundMoney(total - vat);
   return {
     goods,
     service,
     discount,
     total,
-    net: roundMoney(total - vat),
+    net,
     vat,
+    vatByRate: opts.vatEnabled
+      ? vatRows(live, total, goods, net, vat, opts.defaultVatRate)
+      : [],
   };
 }
 

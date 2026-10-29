@@ -19,6 +19,7 @@
  */
 
 import { Agent, fetch as undiciFetch } from 'undici';
+import { noteProviderDate } from './clock';
 
 /**
  * Idle time before we close a connection ourselves. Comfortably under the
@@ -26,6 +27,14 @@ import { Agent, fetch as undiciFetch } from 'undici';
  * invoice down a connection the server has already dropped.
  */
 export const EASYPOS_KEEP_ALIVE_MS = 30_000;
+
+/**
+ * Time to open a connection. undici's default is 10 s; a host that drops
+ * the connection attempt then held a payment that long before it could
+ * be queued. A connect timeout proves nothing was sent (`classify.ts`), so
+ * the sale is queued at once and sent as it is later.
+ */
+export const EASYPOS_CONNECT_TIMEOUT_MS = 4_000;
 
 /** Skip a warm-up when the pool was used this recently. */
 const WARM_SKIP_WITHIN_MS = 20_000;
@@ -41,6 +50,7 @@ function easyPosAgent(): Agent {
       keepAliveTimeout: EASYPOS_KEEP_ALIVE_MS,
       keepAliveMaxTimeout: EASYPOS_KEEP_ALIVE_MS,
       connections: 4,
+      connect: { timeout: EASYPOS_CONNECT_TIMEOUT_MS },
     });
   }
   return agent;
@@ -49,6 +59,7 @@ function easyPosAgent(): Agent {
 export interface EasyPosResponse {
   ok: boolean;
   status: number;
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }
 
@@ -61,8 +72,15 @@ export async function easyPosFetch(
     signal?: AbortSignal;
   },
 ): Promise<EasyPosResponse> {
+  const sentAt = Date.now();
   try {
-    return await undiciFetch(url, { ...init, dispatcher: easyPosAgent() });
+    const res = await undiciFetch(url, {
+      ...init,
+      dispatcher: easyPosAgent(),
+    });
+    // easyPos' clock, for the fiscal day (`clock.ts`).
+    noteProviderDate(res.headers?.get('date'), sentAt, Date.now());
+    return res;
   } finally {
     lastActivityAt = Date.now();
   }

@@ -291,6 +291,44 @@ describe('fiscalizePaymentOnce', () => {
     expect(await readFiscalClaim(KEY)).toBeNull();
   });
 
+  it('takes a refused payment when a manager approved it, invoice queued for review (QA F2)', async () => {
+    const err = taggedError(
+      'HTTP 400 · totals differ 7285.23/7285.22',
+      'not-registered',
+    );
+    err.fiscalRetryable = false;
+    createSale.mockRejectedValue(err);
+
+    // First the plain refusal: the table stays open.
+    const refused = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(refused.kind).toBe('rejected');
+
+    // Pay again under the same key with the manager's go-ahead.
+    const taken = await fiscalizePaymentOnce(
+      payment({
+        meta: {
+          kind: 'PAYMENT',
+          method: 'CARD',
+          totalAfter: 300,
+          userId: 7,
+          fiscalRefusalDefer: true,
+        },
+      }),
+      settings,
+      { idempotencyKey: KEY },
+    );
+    expect(taken.kind).toBe('deferred');
+    if (taken.kind !== 'deferred') throw new Error('unreachable');
+    expect(taken.payload.meta?.fiscalStatus).toBe('pending');
+    const claim = await readFiscalClaim(KEY);
+    // Queued with its exact draft, to be sent again once the cause is fixed.
+    expect(claim?.state).toBe('DEFERRED');
+    expect(claim?.draft).toBeTruthy();
+    expect(notifications.some((n) => n.message.includes('manager'))).toBe(true);
+  });
+
   it('does not retry a rejection that can never succeed', async () => {
     const err = taggedError('HTTP 400 · unknown articleId', 'not-registered');
     err.fiscalRetryable = false;
@@ -663,6 +701,8 @@ describe('fiscalizePaymentOnce — one invoice per sale', () => {
     expect(second.kind).toBe('ok');
     expect(createSale).toHaveBeenLastCalledWith(settings, expect.anything(), {
       statusFirst: true,
+      // A waiter is waiting: short timeouts (QA F3).
+      live: true,
     });
     expect((await readFiscalClaim(KEY))?.result?.nivf).toBe('NIVF-S');
   });
@@ -687,6 +727,6 @@ describe('fiscalizePaymentOnce — one invoice per sale', () => {
       status: 'accepted',
     });
     await fiscalizePaymentOnce(payment(), settings, { idempotencyKey: KEY });
-    expect(createSale.mock.calls[0]).toHaveLength(2);
+    expect(createSale.mock.calls[0][2]).toEqual({ live: true });
   });
 });

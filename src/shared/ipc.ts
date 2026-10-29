@@ -1175,7 +1175,16 @@ export interface ApiAdmin {
     reason: string;
     approvedByAdminId?: number;
     approvedByAdminToken?: string;
+    /** One per correction form: a repeat answers with the first result. */
+    idempotencyKey?: string;
   }): Promise<CorrectSaleResultDTO>;
+  /** Print a filed sale's fiscal receipt again (late filings). */
+  printFiscalReceipt?(input: {
+    orderId: number;
+  }): Promise<
+    | { ok: true; printed: boolean }
+    | { ok: false; error: 'not-found' | 'not-fiscalized' | 'no-receipt' }
+  >;
   listNotifications(input?: {
     userId?: number;
     onlyUnread?: boolean;

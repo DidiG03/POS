@@ -84,6 +84,7 @@ export function PaymentCheckout({
   confirmEur,
   onClose,
   onConfirm,
+  notice,
 }: {
   open: boolean;
   busy: boolean;
@@ -131,6 +132,8 @@ export function PaymentCheckout({
   confirmEur: number | null;
   onClose: () => void;
   onConfirm: () => void;
+  /** Shown above the Pay button (a refused invoice and what to do). */
+  notice?: ReactNode;
 }) {
   const { t } = useTranslation();
   const [itemsOpen, setItemsOpen] = useState(false);
@@ -510,6 +513,7 @@ export function PaymentCheckout({
               <span aria-hidden className="pos-pay-switch-knob" />
             </button>
           </div>
+          {notice}
           <button
             type="button"
             className="pos-pay-confirm"

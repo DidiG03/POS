@@ -27,13 +27,24 @@ vi.mock('@db/client', () => {
       update: async ({ where, data }: any) => {
         Object.assign(db.orders.get(Number(where.id)), data);
       },
+      updateMany: async ({ where, data }: any) => {
+        const order = db.orders.get(Number(where.id));
+        if (!order || order.status === where.status?.not) return { count: 0 };
+        Object.assign(order, data);
+        return { count: 1 };
+      },
     },
     orderItem: {
       updateMany: async ({ where, data }: any) => {
+        let count = 0;
         for (const id of where.id.in) {
           const item = db.items.get(Number(id));
-          if (item && item.orderId === where.orderId) Object.assign(item, data);
+          if (!item || item.orderId !== where.orderId) continue;
+          if ('voidedAt' in where && item.voidedAt != null) continue;
+          Object.assign(item, data);
+          count += 1;
         }
+        return { count };
       },
     },
     saleCorrection: {

@@ -203,6 +203,7 @@ import {
   startFiscalDeferLoop,
   stopFiscalDeferLoop,
 } from './services/fiscal/deferred';
+import { setFiscalSettingsSource } from './services/fiscal/config';
 import { transferTableLocal } from './services/tableTransfer';
 import { setTableOpenWithSideEffects } from './services/tableOpen';
 import { checkFloorTable } from './services/floorTables';
@@ -346,6 +347,7 @@ import { stockLinesFromPayload } from './services/ticketLogWrite';
 import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
 import { checkOrderSlip } from './services/orderSlip';
 import { currentSittingCovers } from './services/sittingCovers';
+import { printFiscalReceiptForSale } from './services/fiscalReceiptReprint';
 import {
   itemVoidReplay,
   voidTicketItem,
@@ -1522,6 +1524,8 @@ async function startHostDatabaseAndServicesOp(): Promise<void> {
   // Local printer retry queue (LAN API is independent).
   try {
     startPrinterStationLoop();
+    // Fiskalizimi retries read the settings as they are at each attempt.
+    setFiscalSettingsSource(() => coreServices.readSettings() as any);
     startFiscalDeferLoop();
     // Notifications: automatically delete notifications older than 1 week (DB retention).
     startNotificationRetentionLoop(prisma, { days: 7 });
@@ -4543,8 +4547,14 @@ ipcHandle('admin:correctSale', async (_e, input, ctx) => {
     actorUserId: resolveActorUserId(ctx, approvedByAdminId),
     approvedById: approvedByAdminId,
     restockStore: storePlanBlocksTables(),
+    idempotencyKey: String((input as any)?.idempotencyKey || '') || null,
   });
 });
+
+// A late-filed invoice's receipt with its NIVF and QR (`fiscalReceiptReprint`).
+ipcHandle('admin:printFiscalReceipt', async (_e, input) =>
+  printFiscalReceiptForSale(Number((input as any)?.orderId)),
+);
 
 ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   return listAdminTicketsByUser(input);

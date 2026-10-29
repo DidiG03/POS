@@ -711,6 +711,17 @@ export default function OrderPage() {
     value: 10,
   });
   const [applyServiceCharge, setApplyServiceCharge] = useState<boolean>(true);
+  /**
+   * Fiskalizimi refused the last payment. Pay again retries it under the
+   * same key; with a manager's approval the payment is taken and the invoice
+   * goes to the review list (`fiscalRefusalDefer`), so the table is never
+   * stuck unpaid.
+   */
+  const [fiscalRefusal, setFiscalRefusal] = useState<{
+    key: string;
+    message: string;
+    approved?: { userId: number; userName: string; approvalToken?: string };
+  } | null>(null);
   const [voidTarget, setVoidTarget] = useState<{
     id: string;
     name: string;
@@ -4095,7 +4106,45 @@ export default function OrderPage() {
                   })
           }
           confirmEur={eurDue}
-          onClose={() => setShowPayment(false)}
+          notice={
+            fiscalRefusal ? (
+              <div role="alert" className="pos-alert mb-2 p-3 text-[13px]">
+                <div className="font-semibold text-red-200">
+                  {t('order.fiscalRefusedTitle')}
+                </div>
+                <div className="mt-1 break-words text-red-100/80">
+                  {fiscalRefusal.message}
+                </div>
+                <div className="mt-1 text-red-100/80">
+                  {fiscalRefusal.approved
+                    ? t('order.fiscalRefusedDeferReady')
+                    : t('order.fiscalRefusedHint')}
+                </div>
+                {!fiscalRefusal.approved ? (
+                  <button
+                    type="button"
+                    className="pos-btn mt-2"
+                    disabled={busyAction != null}
+                    onClick={async () => {
+                      const approved = await requestManagerApproval(
+                        t('order.approveFiscalDefer'),
+                      );
+                      if (!approved) return;
+                      setFiscalRefusal((cur) =>
+                        cur ? { ...cur, approved } : cur,
+                      );
+                    }}
+                  >
+                    {t('order.fiscalRefusedDefer')}
+                  </button>
+                ) : null}
+              </div>
+            ) : null
+          }
+          onClose={() => {
+            setFiscalRefusal(null);
+            setShowPayment(false);
+          }}
           onPaySeat={(id) => {
             setPaySeatId(id);
             setDiscountType('NONE');
@@ -4135,7 +4184,12 @@ export default function OrderPage() {
                 userName: string;
                 approvalToken?: string;
               } | null = null;
-              if (needsDiscountApproval || needsServiceRemovalApproval) {
+              // Taking a refused payment: the manager approved it from the
+              // refusal notice, and that approval covers this payment.
+              const deferRefused = fiscalRefusal?.approved ?? null;
+              if (deferRefused) {
+                managerApprovedBy = deferRefused;
+              } else if (needsDiscountApproval || needsServiceRemovalApproval) {
                 managerApprovedBy = await requestManagerApproval(
                   needsDiscountApproval && needsServiceRemovalApproval
                     ? t('order.approveDiscountAndSc')
@@ -4179,7 +4233,10 @@ export default function OrderPage() {
                     )
                   : undefined;
               paidSeatLabel = payingSeatLabel;
-              const paymentIdempotencyKey = newIdempotencyKey();
+              // Pay again after a refusal is the same sale: same key, same
+              // invoice docId.
+              const paymentIdempotencyKey =
+                fiscalRefusal?.key || newIdempotencyKey();
               // Process the payment + receipt synchronously so
               // the user sees a real "Processing…" state. The
               // IPC handler `tickets:print` is bounded:
@@ -4250,6 +4307,7 @@ export default function OrderPage() {
                       closeTable,
                       seatLabel: payingSeatLabel,
                       seatId: paySeatId || undefined,
+                      ...(deferRefused ? { fiscalRefusalDefer: true } : {}),
                     },
                   },
                   { liveOnly: true },
@@ -4263,6 +4321,7 @@ export default function OrderPage() {
                   });
                 } else {
                   paymentAccepted = true;
+                  setFiscalRefusal(null);
                   const printed = (payResult.result as any)?.printed;
                   if ((payResult.result as any)?.fiscalPending) {
                     toast.warn(t('order.paymentRecordedFiscalQueued'));
@@ -4281,6 +4340,16 @@ export default function OrderPage() {
                 } else if (String(e?.code || '') === 'BILL_CHANGED') {
                   toast.error(t('order.billChanged'), {
                     title: t('order.paymentBlocked'),
+                  });
+                } else if (String(e?.code || '') === 'FISCAL_REJECTED') {
+                  // Not a dead end: the notice offers Pay again and, with a
+                  // manager, taking the payment with the invoice on review.
+                  setFiscalRefusal({
+                    key: paymentIdempotencyKey,
+                    message: String(e?.message || '').trim(),
+                  });
+                  toast.error(t('order.fiscalRefusedHint'), {
+                    title: t('order.fiscalRefusedTitle'),
                   });
                 } else {
                   const detail = String(e?.message || '').trim();

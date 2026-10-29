@@ -110,3 +110,39 @@ describe('checkPaymentApproval', () => {
     ).toBeNull();
   });
 });
+
+describe('taking a payment fiskalizimi refused (QA F2)', () => {
+  it('always needs a manager, whatever the venue settings', async () => {
+    const meta = { kind: 'PAYMENT', fiscalRefusalDefer: true };
+    const relaxed = {
+      security: {
+        approvals: {
+          requireManagerPinForDiscount: false,
+          requireManagerPinForServiceChargeRemoval: false,
+        },
+      },
+    };
+    expect(paymentApprovalsNeeded(relaxed, meta)).toEqual([
+      'fiscalRefusalDefer',
+    ]);
+    const refused = await checkPaymentApproval({
+      settings: relaxed,
+      meta,
+      actorIsAdmin: false,
+      approvalIsValid: async () => false,
+    });
+    expect(refused?.code).toBe('APPROVAL_REQUIRED');
+    expect(
+      await checkPaymentApproval({
+        settings: relaxed,
+        meta: {
+          ...meta,
+          managerApprovalToken: 'tok',
+          managerApprovedById: 1,
+        },
+        actorIsAdmin: false,
+        approvalIsValid: async () => true,
+      }),
+    ).toBeNull();
+  });
+});

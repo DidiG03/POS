@@ -83,6 +83,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // handler — the panel session alone must not be enough to void money.
   'admin:listFiscalSales': { allow: ADMIN },
   'admin:correctSale': { allow: ADMIN },
+  'admin:printFiscalReceipt': { allow: ADMIN },
   'admin:markAllNotificationsRead': { allow: ADMIN },
 
   // ----------------------------------------------------------------- auth

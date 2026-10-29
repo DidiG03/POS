@@ -61,7 +61,7 @@ import {
   withdrawCash,
 } from './balance';
 import { __resetDocIdLocks, FISCAL_ROUTES } from './client';
-import { dayKeyLocal } from '../kdsRetention';
+import { fiscalDayKey } from './clock';
 
 const settings = {
   fiscal: {
@@ -389,7 +389,7 @@ describe('isAlreadyDeclared', () => {
 
 describe('ensureDailyBalanceForCash — easyPos says the float is missing', () => {
   it('declares straight away, cooldown or not', async () => {
-    const key = initiateKey(deviceKeyOf(settings), dayKeyLocal());
+    const key = initiateKey(deviceKeyOf(settings), fiscalDayKey());
     store.set(key, {
       valueJson: {
         operation: 'initiate',

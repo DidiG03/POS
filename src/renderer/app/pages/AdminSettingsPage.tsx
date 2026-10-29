@@ -65,6 +65,19 @@ import {
 } from '@shared/printRoutes';
 import { makeFormatAmount } from '../../utils/format';
 
+/** The easyPos test service, by exact host (not a substring of the URL). */
+function isEasyPosDevUrl(raw: string): boolean {
+  try {
+    const url = new URL(String(raw || '').trim());
+    return (
+      url.protocol === 'https:' &&
+      url.hostname.toLowerCase() === 'api.dev.easypos.al'
+    );
+  } catch {
+    return false;
+  }
+}
+
 type SectionKey =
   | 'printer'
   | 'areas'
@@ -1672,7 +1685,7 @@ function FiscalSettings() {
                     !enabled ||
                     testing ||
                     testingMinimal ||
-                    !baseUrl.toLowerCase().includes('api.dev.easypos.al'),
+                    !isEasyPosDevUrl(baseUrl),
                 },
               ]}
             />
