@@ -191,8 +191,10 @@ export default function LoginPage() {
       showLoginMessage(t('login.loginFailed'));
       return;
     }
-    if (pin.length < 1) {
-      showLoginMessage(t('login.pinTooShort'));
+    // Nothing typed: say so here. The button is disabled too; the Enter
+    // key still lands here, and the server is not asked.
+    if (pin.trim().length < 1) {
+      toast.info(t('login.pinTooShort'), { timeoutMs: 3_000 });
       return;
     }
     // Drop focus from the PIN/pairing input BEFORE we kick off the async
@@ -879,7 +881,7 @@ export default function LoginPage() {
                 size="lg"
                 block
                 loading={submitting}
-                disabled={!hasHydrated}
+                disabled={!hasHydrated || pin.trim().length < 1}
                 onClick={onSubmit}
               >
                 {t('login.loginSubmit')}

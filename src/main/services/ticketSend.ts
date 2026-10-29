@@ -28,10 +28,12 @@ import { prisma } from '@db/client';
 import { asTicketLogItems, ticketLogCreatedAtMs } from '@shared/ticketLogItems';
 import { intentAtFromAge } from '@shared/tableIntent';
 import {
+  keylessSendLines,
   mergeTicketSend,
   type MergeLine,
   type TicketSendMergeMode,
 } from '@shared/ticketMerge';
+import { newTicketLineId, withLineIds } from '@shared/ticketLineIds';
 import { coreServices, withTableLock } from './core';
 import { ensureOccupiedForTicketWrite } from './tableOpen';
 import { occupancyIntentIsStale } from './tableOccupancy';
@@ -68,6 +70,12 @@ export type TicketSendResult =
   | {
       ok: true;
       written: true;
+      /**
+       * The Send key on the lines this write fired: the caller's, or one the
+       * till made up for a Send that came without one. A kitchen slip for
+       * this Send prints these lines (`orderSlip.ts`).
+       */
+      sendKey: string;
       sessionKey: string | null;
       mode: TicketSendMergeMode;
       /**
@@ -485,15 +493,39 @@ export async function recordTicketSend(
       : Number.NaN;
     const stale =
       hasCapture && Number.isFinite(latestAt) && latestAt > capturedAt;
-    const merged = mergeTicketSend({
-      incoming: (Array.isArray(input.items) ? input.items : []) as MergeLine[],
-      latest: latestItems,
-      stale,
-      sendKey: idempotencyKey || null,
-      addedItems: Array.isArray(input.addedItems)
-        ? (input.addedItems as MergeLine[])
-        : null,
-    });
+    // A Send without a key (older clients, scripts) cannot say which of its
+    // lines are new, so the till works it out (`keylessSendLines`) and keys
+    // them itself. Its lines were folded into voided ones on the bill and
+    // stock never counted them.
+    const sendKey = idempotencyKey || `srv-${newTicketLineId()}`;
+    let merged: { items: MergeLine[]; mode: TicketSendMergeMode };
+    if (idempotencyKey) {
+      merged = mergeTicketSend({
+        incoming: (Array.isArray(input.items)
+          ? input.items
+          : []) as MergeLine[],
+        latest: latestItems,
+        stale,
+        sendKey: idempotencyKey,
+        addedItems: Array.isArray(input.addedItems)
+          ? (input.addedItems as MergeLine[])
+          : null,
+      });
+    } else {
+      const added = keylessSendLines(
+        (Array.isArray(input.items) ? input.items : []) as MergeLine[],
+        latestItems,
+      ).map((l) => ({ ...l, sendKey }));
+      merged = added.length
+        ? mergeTicketSend({
+            incoming: added,
+            latest: latestItems,
+            stale: true,
+            sendKey,
+            addedItems: added,
+          })
+        : { items: latestItems, mode: 'already-included' };
+    }
     if (merged.mode !== 'as-sent') {
       console.warn(
         `[tickets] ${area} ${tableLabel}: Send merged with the bill (${merged.mode})`,
@@ -526,6 +558,7 @@ export async function recordTicketSend(
       }
       merged.items = priced.items as unknown as MergeLine[];
     }
+    merged.items = withLineIds(merged.items);
     const firedNow = linesNewToBill(merged.items, latestItems);
 
     const sessionKey = await getCurrentTableSessionKey(area, tableLabel).catch(
@@ -537,10 +570,11 @@ export async function recordTicketSend(
         userId: Number(input.userId),
         area,
         tableLabel,
-        covers: input.covers,
+        // A Send without a guest count keeps the sitting's.
+        covers: input.covers ?? (latest as any)?.covers ?? null,
         items: merged.items,
         note: input.note,
-        idempotencyKey,
+        idempotencyKey: sendKey,
         sessionKey,
         stockConsumeLines: firedNow
           ? firedNow.map((l) => ({ sku: l.sku, qty: Number(l.qty) }))
@@ -564,6 +598,7 @@ export async function recordTicketSend(
     return {
       ok: true as const,
       written: true as const,
+      sendKey,
       sessionKey,
       mode: merged.mode,
       firedNow,

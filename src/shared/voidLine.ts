@@ -11,6 +11,8 @@
  */
 
 export interface VoidTargetLine {
+  /** The bill line's id (`ticketLineIds.ts`). What a bill void goes by. */
+  lineId?: string | null;
   sku?: string | null;
   name?: string | null;
   note?: string | null;

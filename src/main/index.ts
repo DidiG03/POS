@@ -330,7 +330,6 @@ dotenv.config();
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
-  getTableSessionStartedAt,
 } from './services/tableSession';
 import { notifyAutoVoidedTable } from './services/autoVoidAlert';
 import {
@@ -345,12 +344,14 @@ import {
 } from './services/ticketRequests';
 import { stockLinesFromPayload } from './services/ticketLogWrite';
 import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
-import { voidTicketItem, voidWholeTicket } from './services/ticketVoid';
+import { checkOrderSlip } from './services/orderSlip';
+import { currentSittingCovers } from './services/sittingCovers';
 import {
-  asTicketLogItems,
-  rowIsInOpenSession,
-  ticketCreatedAtIso,
-} from '@shared/ticketLogItems';
+  itemVoidReplay,
+  voidTicketItem,
+  voidWholeTicket,
+} from './services/ticketVoid';
+import { asTicketLogItems, ticketCreatedAtIso } from '@shared/ticketLogItems';
 import { splitTableKey } from '@shared/utils/tableKey';
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
@@ -2786,9 +2787,23 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
 
   const area = String(input?.area || '');
   const tableLabel = String(input?.tableLabel || '');
-  const items = (input?.items as any[]) || [];
+  let items = (input?.items as any[]) || [];
   const recordOnly = Boolean((input as any)?.recordOnly);
   if (!area || !tableLabel || items.length === 0) return false;
+  // A kitchen slip prints what its Send put on the bill, or nothing
+  // (`orderSlip.ts`).
+  {
+    const slip = await checkOrderSlip({
+      area,
+      tableLabel,
+      meta: (input as any)?.meta,
+    });
+    if (slip.kind === 'refuse') {
+      console.warn(`[print] ${area} ${tableLabel}: ${slip.error}`);
+      return false;
+    }
+    if (slip.kind === 'print') items = slip.items;
+  }
   const kindHint = String((input as any)?.meta?.kind || '').toUpperCase();
 
   const runPrint = async () => {
@@ -4107,7 +4122,9 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   const approvedByAdminToken = String(
     (input as any)?.approvedByAdminToken || '',
   );
-  if (!userId || !area || !tableLabel || !item?.name) return false;
+  // A void names the bill line it takes off (`ticketLineIds.ts`).
+  if (!userId || !area || !tableLabel || !String(item?.lineId ?? '').trim())
+    return false;
 
   // Enforce admin PIN approval for voids if enabled in settings.
   // In cloud mode, pass actorRole from the renderer since cloud user IDs may not exist locally.
@@ -4188,11 +4205,11 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   const usesApproval = !actorIsAdmin && Boolean(approvedByAdminToken);
   // A replay of a void that already landed is answered before the
   // approval is looked at: the approval was used up by the first delivery.
-  if (voidItemKey.trim()) {
-    const prior = await prisma.ticketLog
-      .findFirst({ where: { idempotencyKey: voidItemKey.trim() } as any })
-      .catch(() => null);
-    if (prior) return true;
+  // The same key on another line is not a replay: nothing is voided.
+  {
+    const replay = await itemVoidReplay(voidItemKey, item);
+    if (replay === 'same') return true;
+    if (replay === 'other-line') return false;
   }
   if (
     usesApproval &&
@@ -4218,14 +4235,13 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
     idempotencyKey: voidItemKey,
     report: voidReport,
   });
-  if ((voided === 'paid' || voided === 'not-found') && usesApproval) {
+  if (voided !== 'ok' && voided !== 'duplicate' && usesApproval) {
     releaseApprovalUse(approvedByAdminToken, approvalScopeKey);
   }
-  if (voided === 'paid') return false;
   // A retry of a void that already landed: nothing more to record.
   if (voided === 'duplicate') return true;
-  // Nothing on the bill matched: no audit entry, no kitchen change.
-  if (voided === 'not-found') return true;
+  // Paid, or no live line with that id: nothing changed.
+  if (voided !== 'ok') return false;
 
   const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
   // Notify actor + all admins (anti-theft audit trail)
@@ -4762,28 +4778,9 @@ ipcHandle('covers:save', async (_e, { area, label, covers }) => {
   return true;
 });
 
-ipcHandle('covers:getLast', async (_e, { area, label }) => {
-  // Scope to the current sitting. An unoccupied table has no guest count.
-  const sessionStart = await getTableSessionStartedAt(area, label);
-  if (!sessionStart) return null;
-  const sqlHit = await prisma.covers
-    .findFirst({
-      where: { area, label, createdAt: { gte: sessionStart } },
-      orderBy: { id: 'desc' },
-    })
-    .catch(() => null);
-  if (sqlHit) return sqlHit.covers ?? null;
-  const recent = await prisma.covers.findMany({
-    where: { area, label },
-    orderBy: { id: 'desc' },
-    take: 20,
-  });
-  const startMs = sessionStart.getTime();
-  const row = recent.find((r: { createdAt: Date; covers?: number | null }) =>
-    rowIsInOpenSession(r.createdAt, startMs),
-  );
-  return row?.covers ?? null;
-});
+ipcHandle('covers:getLast', async (_e, { area, label }) =>
+  currentSittingCovers(String(area || ''), String(label || '')),
+);
 
 // Layout persistence via SyncState.
 //

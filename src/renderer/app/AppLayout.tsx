@@ -77,6 +77,8 @@ export default function AppLayout() {
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
+  /** The last count could not be refreshed (offline): shown dimmed. */
+  const [unreadStale, setUnreadStale] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const flushTablesFloor = location.pathname.includes('/app/tables');
@@ -387,19 +389,30 @@ export default function AppLayout() {
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
     const tick = async () => {
       if (isHidden()) return;
-      const [notifs, pending] = await Promise.all([
-        window.api.notifications.list(user.id, true).catch(() => []),
-        // Requests waiting on this waiter's answer stay on the badge even
-        // after their notification was read.
-        window.api.requests?.listForOwner
-          ? window.api.requests.listForOwner(user.id).catch(() => [])
-          : Promise.resolve([]),
-      ]);
+      let notifs: unknown;
+      let pending: unknown;
+      try {
+        [notifs, pending] = await Promise.all([
+          window.api.notifications.list(user.id, true),
+          // Requests waiting on this waiter's answer stay on the badge even
+          // after their notification was read.
+          window.api.requests?.listForOwner
+            ? window.api.requests.listForOwner(user.id)
+            : Promise.resolve([]),
+        ]);
+      } catch {
+        // Offline or the till is away: keep the last count (it read as 0
+        // and the badge vanished), dimmed until the next good refresh.
+        if (!cancelled) setUnreadStale(true);
+        return;
+      }
       const unread = (Array.isArray(notifs) ? notifs : []).filter(
         (n: any) => !/requested to add items/i.test(String(n?.message || '')),
       ).length;
-      if (!cancelled)
+      if (!cancelled) {
         setUnreadCount(unread + (Array.isArray(pending) ? pending.length : 0));
+        setUnreadStale(false);
+      }
     };
     void tick();
     const t = window.setInterval(tick, 20000);
@@ -513,7 +526,11 @@ export default function AppLayout() {
   const notificationsActive =
     location.pathname.startsWith('/app/notifications');
   const mobileNavItems = useMemo(() => {
-    const items = navItems.map((item) => ({ ...item, badge: 0 }));
+    const items = navItems.map((item) => ({
+      ...item,
+      badge: 0,
+      badgeStale: false,
+    }));
     if (!user) return items;
     const notif = {
       to: '/app/notifications',
@@ -521,12 +538,21 @@ export default function AppLayout() {
       Icon: IconBell,
       isActive: notificationsActive,
       badge: unreadCount,
+      badgeStale: unreadStale,
     };
     const saleIdx = items.findIndex((item) => item.to === saleTo);
     if (saleIdx >= 0) items.splice(saleIdx + 1, 0, notif);
     else items.push(notif);
     return items;
-  }, [navItems, notificationsActive, saleTo, t, unreadCount, user]);
+  }, [
+    navItems,
+    notificationsActive,
+    saleTo,
+    t,
+    unreadCount,
+    unreadStale,
+    user,
+  ]);
   const showMobileTabBar = mobileNavItems.length > 0;
   const pageTitle =
     mobileNavItems.find((item) => item.isActive)?.label ||
@@ -757,7 +783,12 @@ export default function AppLayout() {
             >
               <IconBell />
               {unreadCount > 0 && (
-                <span className="absolute right-1.5 top-1.5 flex min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[14px] text-white tabular">
+                <span
+                  className={`absolute right-1.5 top-1.5 flex min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[14px] text-white tabular ${unreadStale ? 'opacity-60' : ''}`}
+                  title={
+                    unreadStale ? t('common.notificationsStale') : undefined
+                  }
+                >
                   {unreadCount > 9 ? '9+' : unreadCount}
                 </span>
               )}
@@ -885,7 +916,14 @@ export default function AppLayout() {
               <span className="relative inline-flex">
                 <item.Icon className="pos-icon size-5" />
                 {item.badge > 0 ? (
-                  <span className="absolute -right-2.5 -top-1 flex min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[14px] text-white tabular">
+                  <span
+                    className={`absolute -right-2.5 -top-1 flex min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[14px] text-white tabular ${item.badgeStale ? 'opacity-60' : ''}`}
+                    title={
+                      item.badgeStale
+                        ? t('common.notificationsStale')
+                        : undefined
+                    }
+                  >
                     {item.badge > 9 ? '9+' : item.badge}
                   </span>
                 ) : null}

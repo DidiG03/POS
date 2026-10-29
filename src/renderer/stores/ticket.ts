@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { useSessionStore } from './session';
 import { ticketLineId } from '@shared/utils/ticketLineId';
 import { isImmediateFireStation } from '@shared/ticketCourseFire';
 import {
@@ -11,8 +12,10 @@ import {
   bindTicketTable,
   draftHasLiveBill,
   emptyTicketDraft,
+  carryPendingOntoHydrated,
   mergeLocalStagedOntoHydrated,
   moveTicketDraft,
+  pendingLinesOnly,
   pruneStaleTicketDrafts,
   pruneLiveBillsForClosedTables,
   revivePersistedTicketDraft,
@@ -20,6 +23,7 @@ import {
   shouldKeepLocalDraftOnEmptyLog,
   shouldMergeLocalStagedOntoHydrated,
   snapshotTicketDraft,
+  switchTicketDraftUser,
   type TicketDraft,
   NATIVE_TICKET_DRAFT_TTL_MS,
   setTicketDraftTtlMs,
@@ -67,6 +71,8 @@ export interface TicketLine {
    * Send it already has (carried by a later one) from a new one.
    */
   sendKey?: string;
+  /** Its Send is waiting in the offline queue (see `ticketDraft.ts`). */
+  pending?: boolean;
 }
 
 export type TicketLogItem = {
@@ -87,6 +93,11 @@ export type TicketLogItem = {
   paid?: boolean;
   /** See {@link TicketLine.sendKey}. */
   sendKey?: string;
+  /**
+   * The bill line's id, set by the till (`ticketLineIds.ts`). A hydrated
+   * line keeps it as its `id`; a void names the line by it.
+   */
+  lineId?: string;
 };
 
 export function toTicketLogLine(
@@ -109,6 +120,7 @@ export function toTicketLogLine(
     fired: extra?.fired,
     paid: l.paid === true,
     ...(l.sendKey ? { sendKey: l.sendKey } : {}),
+    lineId: l.id,
   };
 }
 
@@ -122,11 +134,17 @@ interface TicketState {
   addMode: OrderAddMode;
   boundKey: string | null;
   drafts: Record<string, TicketDraft>;
+  /** The waiter `drafts` and the cart on screen belong to. */
+  draftUserId: number | null;
+  /** Other waiters' carts on this device, by user id (`switchTicketDraftUser`). */
+  userDrafts: Record<string, Record<string, TicketDraft>>;
   savedAt: number | null;
   hasHydrated: boolean;
   setHasHydrated: (v: boolean) => void;
   setAddMode: (mode: OrderAddMode) => void;
   bindTable: (key: string | null, opts?: { keepLiveBill?: boolean }) => void;
+  /** A waiter signed in: their own carts, never the last waiter's. */
+  bindUser: (userId: number | null | undefined) => void;
   /** After a table transfer: bind `toKey` with the source's pre-move draft. */
   moveDraft: (fromKey: string, toKey: string, draft: TicketDraft) => void;
   dropOrphanLiveBills: (openKeys: string[]) => void;
@@ -156,6 +174,8 @@ interface TicketState {
   markLinesAsSent: (ids: string[], sendKey?: string) => void;
   /** Undo {@link markLinesAsSent} when a Send fails after optimistic unstage. */
   markLinesAsStaged: (ids: string[]) => void;
+  /** The Send of these lines was queued offline: show them as pending. */
+  markLinesPending: (ids: string[]) => void;
   ensureCourses: () => void;
   addCourse: () => void;
   removeCourse: (courseId: string) => void;
@@ -261,6 +281,8 @@ export const useTicketStore = create<TicketState>()(
       addMode: 'default' as OrderAddMode,
       boundKey: null,
       drafts: {},
+      draftUserId: null,
+      userDrafts: {},
       savedAt: null,
       hasHydrated: false,
       setHasHydrated: (v) => set({ hasHydrated: v }),
@@ -276,6 +298,8 @@ export const useTicketStore = create<TicketState>()(
       },
       bindTable: (key, opts) =>
         set((s) => bindTicketTable(s, key, Date.now(), opts)),
+      bindUser: (userId) =>
+        set((s) => switchTicketDraftUser(s, userId, Date.now())),
       moveDraft: (fromKey, toKey, draft) =>
         set((s) => moveTicketDraft(s, fromKey, toKey, draft, Date.now())),
       dropOrphanLiveBills: (openKeys) =>
@@ -289,7 +313,8 @@ export const useTicketStore = create<TicketState>()(
           const empty = emptyTicketDraft();
           return {
             addMode: empty.addMode,
-            lines: empty.lines as TicketLine[],
+            // Queued Sends the till has not had yet stay on the ticket.
+            lines: pendingLinesOnly(s.lines),
             courses: empty.courses,
             seats: empty.seats,
             activeCourseId: empty.activeCourseId,
@@ -428,7 +453,7 @@ export const useTicketStore = create<TicketState>()(
             return s;
           }
           const fromLog: TicketLine[] = logged.map((it) => ({
-            id: ticketLineId(it.name),
+            id: String(it.lineId || '').trim() || ticketLineId(it.name),
             sku: it.sku || it.name,
             name: it.name,
             unitPrice: Number(it.unitPrice),
@@ -450,7 +475,7 @@ export const useTicketStore = create<TicketState>()(
           }));
           const merged = shouldMergeLocalStagedOntoHydrated(fromLog)
             ? mergeLocalStagedOntoHydrated(fromLog, s.lines)
-            : fromLog;
+            : carryPendingOntoHydrated(fromLog, s.lines);
           const lines = applyLocalPaidOntoHydrated(merged, s.lines);
           const courses = coursesFromLineIds(lines, s.courses);
           const seats = seatsFromLineIds(lines, s.seats);
@@ -505,7 +530,18 @@ export const useTicketStore = create<TicketState>()(
           return {
             lines: s.lines.map((l) =>
               staged.has(l.id) && l.voided !== true && l.paid !== true
-                ? { ...l, staged: true }
+                ? { ...l, staged: true, pending: false }
+                : l,
+            ),
+          };
+        }),
+      markLinesPending: (ids) =>
+        set((s) => {
+          const queued = new Set(ids);
+          return {
+            lines: s.lines.map((l) =>
+              queued.has(l.id) && l.voided !== true
+                ? { ...l, pending: true }
                 : l,
             ),
           };
@@ -648,6 +684,8 @@ export const useTicketStore = create<TicketState>()(
           addMode: s.addMode,
           boundKey: s.boundKey,
           savedAt: now,
+          draftUserId: s.draftUserId,
+          userDrafts: s.userDrafts,
           drafts: pruneStaleTicketDrafts(
             {
               ...s.drafts,
@@ -661,8 +699,12 @@ export const useTicketStore = create<TicketState>()(
         const raw = persisted as TicketDraft & {
           drafts?: Record<string, TicketDraft>;
           boundKey?: string | null;
+          draftUserId?: number | null;
+          userDrafts?: Record<string, Record<string, TicketDraft>>;
         };
         return revivePersistedTicketDraft({
+          draftUserId: raw?.draftUserId ?? null,
+          userDrafts: raw?.userDrafts || {},
           addMode: raw?.addMode || 'default',
           lines: (raw?.lines || []) as TicketLine[],
           courses: raw?.courses || [],
@@ -706,8 +748,19 @@ function finishTicketHydration(): void {
   const next = useTicketStore.getState();
   if (next.addMode === 'course') next.ensureCourses();
   if (next.addMode === 'seat') next.ensureSeats();
+  // Carts saved under another waiter are not this one's.
+  next.bindUser(useSessionStore.getState().user?.id);
   useTicketStore.setState({ hasHydrated: true });
 }
+
+// A waiter signing in gets their own carts, never the last waiter's
+// (`switchTicketDraftUser`). Signing out keeps them for when they return.
+useSessionStore.subscribe((state, prev) => {
+  const id = state.user?.id;
+  if (id == null || id === prev.user?.id) return;
+  if (!useTicketStore.getState().hasHydrated) return;
+  useTicketStore.getState().bindUser(id);
+});
 
 if (!useTicketStore.persist) {
   useTicketStore.setState({ hasHydrated: true });

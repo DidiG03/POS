@@ -1,8 +1,10 @@
 import { prisma } from '@db/client';
 import {
+  asTicketLogItems,
   rowIsInOpenSession,
   ticketLogCreatedAtMs,
 } from '@shared/ticketLogItems';
+import { withLineIds } from '@shared/ticketLineIds';
 import { getOpenedAt } from './tableOccupancy';
 
 /** Lower bound for `(area, label)` rows tied to the current POS session. */
@@ -105,10 +107,19 @@ export async function findLatestTicketLogSince(
   });
   // Prisma client is typed as `any` in this process; pin the row through so
   // callers still see `itemsJson` / `note` / `userId`.
-  return pickLatestSessionTicket(
+  const latest = pickLatestSessionTicket(
     recent as Array<{ id: number; createdAt: unknown }>,
     since ? since.getTime() : null,
   ) as (typeof recent)[number] | null;
+  // Every line of the bill is addressed by its id (`ticketLineIds.ts`);
+  // rows written before ids existed get ones derived from the row.
+  if (latest && (latest as any).itemsJson != null) {
+    (latest as any).itemsJson = withLineIds(
+      asTicketLogItems((latest as any).itemsJson),
+      { seed: (latest as any).id },
+    );
+  }
+  return latest;
 }
 
 /**

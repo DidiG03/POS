@@ -8,12 +8,32 @@ import {
   readFloorSnapshot,
 } from './posReadCache';
 import { peekTableBill } from './tableBill';
+import { isTransientNetworkError } from './reportAppError';
 
 export type TicketReadItems = Array<Record<string, unknown>>;
 
 export type TicketRead =
   | { ok: true; items: TicketReadItems; note: string }
-  | { ok: false };
+  /**
+   * `offline`: the till could not be reached at all (no network, timeout),
+   * as opposed to a till that answered with a bill we cannot use.
+   */
+  | { ok: false; offline?: boolean };
+
+/** The read failed because the till was out of reach, not because of it. */
+export function readFailedOffline(e: unknown): boolean {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return true;
+  }
+  if (isTransientNetworkError(e)) return true;
+  const err = (e || {}) as {
+    code?: unknown;
+    name?: unknown;
+    message?: unknown;
+  };
+  if (String(err.code || '') === 'TILL_UNREACHABLE') return true;
+  return /abort|time(d)? ?out/i.test(`${err.name || ''} ${err.message || ''}`);
+}
 
 export type TicketReadDeps = {
   fetch: (area: string, label: string) => Promise<unknown>;
@@ -101,8 +121,8 @@ export async function readTicketForTable(
   let latest: unknown;
   try {
     latest = await deps.fetch(area, label);
-  } catch {
-    return { ok: false };
+  } catch (e) {
+    return readFailedOffline(e) ? { ok: false, offline: true } : { ok: false };
   }
   const items = itemsOf(latest);
   if (items.length > 0) {
@@ -139,8 +159,8 @@ export async function readTicketForTable(
     const peeked = peekTableBill(area, label);
     if (peeked) return { ok: true, ...peeked };
     return { ok: true, items: confirmedItems, note: noteOf(confirmed) };
-  } catch {
-    return { ok: false };
+  } catch (e) {
+    return readFailedOffline(e) ? { ok: false, offline: true } : { ok: false };
   }
 }
 

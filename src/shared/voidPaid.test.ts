@@ -7,49 +7,58 @@ import {
 } from './voidPaid';
 
 describe('planItemVoid', () => {
-  it('voids an unpaid line', () => {
-    const items = [{ name: 'Byrek', qty: 1, unitPrice: 300 }];
+  it('voids the line with that id', () => {
+    const items = [
+      { lineId: 'a', name: 'Byrek', qty: 1, unitPrice: 300 },
+      { lineId: 'b', name: 'Byrek', qty: 1, unitPrice: 300 },
+    ];
 
-    expect(
-      planItemVoid(items, { name: 'Byrek', qty: 1, unitPrice: 300 }),
-    ).toEqual({ outcome: 'ok', index: 0 });
+    expect(planItemVoid(items, { lineId: 'b', name: 'Byrek' })).toEqual({
+      outcome: 'ok',
+      index: 1,
+    });
   });
 
   it('refuses a line that has been paid for', () => {
-    const items = [{ name: 'Byrek', qty: 1, unitPrice: 300, paid: true }];
+    const items = [
+      { lineId: 'a', name: 'Byrek', qty: 1, unitPrice: 300, paid: true },
+    ];
+
+    expect(planItemVoid(items, { lineId: 'a' })).toEqual({ outcome: 'paid' });
+  });
+
+  it('never falls back to another line with the same name', () => {
+    // Seat 1 paid for their coffee; seat 2 has not. A void of the paid one
+    // is refused, not moved onto the one still owed.
+    const items = [
+      { lineId: 'a', name: 'Kafe', qty: 1, unitPrice: 150, paid: true },
+      { lineId: 'b', name: 'Kafe', qty: 1, unitPrice: 150 },
+    ];
+
+    expect(planItemVoid(items, { lineId: 'a', name: 'Kafe' })).toEqual({
+      outcome: 'paid',
+    });
+    expect(planItemVoid(items, { lineId: 'zz', name: 'Kafe' })).toEqual({
+      outcome: 'not-found',
+    });
+  });
+
+  it('does not void by name alone', () => {
+    const items = [{ lineId: 'a', name: 'Byrek', qty: 1, unitPrice: 300 }];
 
     expect(
       planItemVoid(items, { name: 'Byrek', qty: 1, unitPrice: 300 }),
-    ).toEqual({ outcome: 'paid' });
+    ).toEqual({ outcome: 'no-line-id' });
   });
 
-  it('voids the unpaid copy when the same dish appears twice', () => {
-    // Seat 1 paid for their coffee; seat 2 has not. Voiding "Kafe" must take
-    // the one still owed, never rewrite the settled one.
+  it('does not void an already voided line again', () => {
     const items = [
-      { name: 'Kafe', qty: 1, unitPrice: 150, paid: true },
-      { name: 'Kafe', qty: 1, unitPrice: 150 },
+      { lineId: 'a', name: 'Kafe', qty: 1, unitPrice: 150, voided: true },
     ];
 
-    expect(
-      planItemVoid(items, { name: 'Kafe', qty: 1, unitPrice: 150 }),
-    ).toEqual({ outcome: 'ok', index: 1 });
-  });
-
-  it('reports a missing line as not-found rather than paid', () => {
-    const items = [{ name: 'Byrek', qty: 1, unitPrice: 300, paid: true }];
-
-    expect(
-      planItemVoid(items, { name: 'Sallatë', qty: 1, unitPrice: 500 }),
-    ).toEqual({ outcome: 'not-found' });
-  });
-
-  it('does not resurrect an already voided line', () => {
-    const items = [{ name: 'Kafe', qty: 1, unitPrice: 150, voided: true }];
-
-    expect(
-      planItemVoid(items, { name: 'Kafe', qty: 1, unitPrice: 150 }),
-    ).toEqual({ outcome: 'not-found' });
+    expect(planItemVoid(items, { lineId: 'a' })).toEqual({
+      outcome: 'not-found',
+    });
   });
 });
 

@@ -78,6 +78,13 @@ describe('one approval, one action', () => {
     expect(a).not.toBe(b);
   });
 
+  it('tells two identical lines apart by their bill line id', () => {
+    const line = { sku: 'ESP', name: 'Espresso', unitPrice: 1.5, qty: 1 };
+    expect(voidLineIdentity({ ...line, lineId: 'a' })).not.toBe(
+      voidLineIdentity({ ...line, lineId: 'b' }),
+    );
+  });
+
   it('a released claim can be used again', () => {
     const base = { tokenId: 'tok', expiresAt: EXP, now: T0 };
     expect(

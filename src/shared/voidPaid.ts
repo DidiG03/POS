@@ -11,7 +11,8 @@
  * kitchen is cooking, with the manager PIN, including on a table where other
  * seats have already paid.
  */
-import { matchVoidableLine, type VoidTargetLine } from './voidLine';
+import type { VoidTargetLine } from './voidLine';
+import { findLineIndexById } from './ticketLineIds';
 
 export function isPaidTicketLine(line: unknown): boolean {
   return (line as { paid?: unknown } | null | undefined)?.paid === true;
@@ -32,28 +33,28 @@ export type ItemVoidPlan =
   | { outcome: 'ok'; index: number }
   /** The line the waiter picked has been paid for. Refuse. */
   | { outcome: 'paid' }
-  /** Nothing on the ticket matches. */
-  | { outcome: 'not-found' };
+  /** No live line on the ticket has that id. */
+  | { outcome: 'not-found' }
+  /** The void did not say which line (no `lineId`). */
+  | { outcome: 'no-line-id' };
 
+/**
+ * The line a void takes off: the one with the target's `lineId`, never one
+ * picked by name, item code or price. Matching by contents could not tell a
+ * voided Espresso from the next one ordered, or two Sends of the same item.
+ */
 export function planItemVoid(
   items: readonly unknown[] | null | undefined,
   target: VoidTargetLine | null | undefined,
 ): ItemVoidPlan {
+  const lineId = String(target?.lineId ?? '').trim();
+  if (!lineId) return { outcome: 'no-line-id' };
   const list = Array.isArray(items) ? items : [];
-  // Hiding paid lines behind the existing "already voided" rule keeps the
-  // indexes aligned with the caller's array while steering the match to a
-  // line that may still be voided.
-  const unpaidOnly = list.map((line) =>
-    isPaidTicketLine(line) ? { ...(line as object), voided: true } : line,
-  );
-  const unpaid = matchVoidableLine(unpaidOnly, target);
-  if (unpaid.index !== -1) return { outcome: 'ok', index: unpaid.index };
-
-  const anyLine = matchVoidableLine(list, target);
-  if (anyLine.index !== -1 && isPaidTicketLine(list[anyLine.index])) {
-    return { outcome: 'paid' };
-  }
-  return { outcome: 'not-found' };
+  const index = findLineIndexById(list, lineId);
+  if (index === -1) return { outcome: 'not-found' };
+  if (isPaidTicketLine(list[index])) return { outcome: 'paid' };
+  if (!isLiveTicketLine(list[index])) return { outcome: 'not-found' };
+  return { outcome: 'ok', index };
 }
 
 export type TicketVoidPlan<T> =

@@ -105,7 +105,15 @@ function NotificationsList({
     if (!userId) return;
     let cancelled = false;
     (async () => {
-      const all = await window.api.notifications.list(userId).catch(() => []);
+      let all: unknown;
+      try {
+        all = await window.api.notifications.list(userId);
+      } catch {
+        // Offline: keep what is shown and the badge's last count; an empty
+        // list here used to zero the badge.
+        if (!cancelled) onReadyRef.current?.();
+        return;
+      }
       if (cancelled) return;
       const rows = Array.isArray(all) ? all : [];
       setItems(rows);

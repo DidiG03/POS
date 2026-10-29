@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   capVoidsToBill,
   carryVoidAndPaid,
+  keylessSendLines,
   mergeTicketSend,
   type MergeLine,
 } from './ticketMerge';
@@ -239,5 +240,67 @@ describe('firing a held course from a stale Send', () => {
     });
     expect(live(out.items)).toEqual({ Tave: 3 });
     expect(out.items.every((l) => l.fired === true)).toBe(true);
+  });
+});
+
+describe('keylessSendLines', () => {
+  const kafe = { sku: 'K', name: 'Kafe', qty: 1, unitPrice: 1, fired: true };
+
+  it('orders what the snapshot has beyond the live bill, as its own line', () => {
+    const bill = [{ ...kafe, lineId: 'a', sendKey: 's1' }];
+    expect(keylessSendLines([{ ...kafe, qty: 2 }], bill)).toEqual([
+      { ...kafe, qty: 1, voided: false, paid: false },
+    ]);
+  });
+
+  it('a voided line on the bill does not absorb a new order', () => {
+    const bill = [{ ...kafe, lineId: 'a', voided: true }];
+    expect(keylessSendLines([kafe], bill)).toEqual([
+      { ...kafe, voided: false, paid: false },
+    ]);
+  });
+
+  it('lines named by id or Send key are the bill, not new orders', () => {
+    const bill = [
+      { ...kafe, lineId: 'a', sendKey: 's1' },
+      { ...kafe, lineId: 'b', sendKey: 's2' },
+    ];
+    expect(
+      keylessSendLines(
+        [
+          { ...kafe, lineId: 'a' },
+          { ...kafe, sendKey: 's2' },
+        ],
+        bill,
+      ),
+    ).toEqual([]);
+  });
+
+  it('ignores lines sent as voided, paid or held', () => {
+    expect(
+      keylessSendLines(
+        [
+          { ...kafe, voided: true },
+          { ...kafe, paid: true },
+          { ...kafe, fired: false },
+        ],
+        [],
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("mergeTicketSend keeps this Send's lines live", () => {
+  it('does not carry a bill void onto the line this Send fires', () => {
+    const kafe = { sku: 'K', name: 'Kafe', qty: 1, unitPrice: 1, fired: true };
+    const out = mergeTicketSend({
+      incoming: [{ ...kafe, sendKey: 'k2' }],
+      latest: [{ ...kafe, sendKey: 'k1', voided: true }],
+      stale: false,
+      sendKey: 'k2',
+      addedItems: [{ ...kafe, sendKey: 'k2' }],
+    });
+    expect(out.items.find((l) => l.sendKey === 'k2')?.voided).not.toBe(true);
+    expect(out.items.find((l) => l.sendKey === 'k1')?.voided).toBe(true);
   });
 });

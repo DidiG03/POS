@@ -81,7 +81,12 @@ export type ManagerPinApproval = { id: number; displayName: string };
 
 export type ManagerPinResult =
   | { ok: true; admin: ManagerPinApproval }
-  | { ok: false; lockedForMs?: number };
+  | {
+      ok: false;
+      lockedForMs?: number;
+      /** From the network: misses left before this source is locked. */
+      attemptsLeft?: number;
+    };
 
 export interface VerifyManagerPinInput {
   pin: unknown;
@@ -199,7 +204,12 @@ export async function verifyManagerPin(
 
   await sleep(Math.min(DELAY_MAX_MS, c.failures * DELAY_STEP_MS));
   const nowLocked = managerPinLockedFor(source, input.lan, now);
-  return nowLocked > 0 ? { ok: false, lockedForMs: nowLocked } : { ok: false };
+  const attemptsLeft = input.lan
+    ? { attemptsLeft: Math.max(0, LOCK_AFTER_FAILURES - c.failures) }
+    : {};
+  return nowLocked > 0
+    ? { ok: false, lockedForMs: nowLocked, ...attemptsLeft }
+    : { ok: false, ...attemptsLeft };
 }
 
 /** Test seam. */

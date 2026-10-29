@@ -45,6 +45,8 @@ export const TicketLineRow = memo(function TicketLineRow({
   const dimmed = (isTableOpen && !line.staged) || line.paid === true;
   const isVoided = line.voided === true;
   const isPaid = line.paid === true;
+  // Its Send is still queued on this phone: not on the till's bill yet.
+  const isPending = line.pending === true && !isVoided && !isPaid;
   const canSelect =
     hasTables && lineAcceptsComment(line, isTableOpen, showRequestOnly);
   const canEditNote = hasTables && !isVoided && Boolean(line.staged);
@@ -99,6 +101,10 @@ export const TicketLineRow = memo(function TicketLineRow({
             {isPaid ? (
               <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
                 {t('order.seatPaid')}
+              </span>
+            ) : isPending ? (
+              <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-amber-300">
+                {t('order.linePending')}
               </span>
             ) : null}
           </div>
@@ -164,7 +170,7 @@ export const TicketLineRow = memo(function TicketLineRow({
             </button>
           ) : null}
           {isTableOpen && !showRequestOnly ? (
-            isVoided ? (
+            isVoided || isPending ? (
               <div className="w-11" aria-hidden />
             ) : line.staged ? (
               <button
