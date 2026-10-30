@@ -1,5 +1,6 @@
 import { coreServices, withTableLock } from './core';
 import { applyTableOpenState } from './tableOpen';
+import { recordPaidLinesOnBill } from './paidLines';
 
 export const TABLE_ALREADY_PAID = 'TABLE_ALREADY_PAID';
 
@@ -76,6 +77,35 @@ export async function closeTableAfterAcceptedPayment(
   label: string,
 ): Promise<void> {
   await applyTableOpenState(area, label, false);
+}
+
+/**
+ * After a payment is recorded: close the table, or (a seat's share, table
+ * left open) flag the lines it paid on the bill (`paidLines.ts`). Must run
+ * while holding `withTableLock` for this table, before the lock is released,
+ * so no Send can land between the sale and the bill knowing about it.
+ */
+export async function settleTableAfterPayment(input: {
+  area: string;
+  tableLabel: string;
+  closeTable: boolean;
+  items: unknown[];
+  userId: number;
+  paymentKey?: string | null;
+}): Promise<void> {
+  if (input.closeTable) {
+    await closeTableAfterAcceptedPayment(input.area, input.tableLabel);
+    return;
+  }
+  await recordPaidLinesOnBill({
+    area: input.area,
+    tableLabel: input.tableLabel,
+    items: input.items,
+    userId: input.userId,
+    paymentKey: input.paymentKey,
+  }).catch((e) => {
+    console.warn('[payment] could not flag paid lines on the bill:', e);
+  });
 }
 
 /**

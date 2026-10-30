@@ -103,7 +103,7 @@ import {
   floorLayoutProblem,
 } from '@shared/floorLayoutCheck';
 import {
-  closeTableAfterAcceptedPayment,
+  settleTableAfterPayment,
   closeTableAfterIdempotentPayment,
   isPaymentReprint,
   paymentPrintAccepted,
@@ -3201,11 +3201,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             });
             await persistLanAudit(r.ok ? 'SENT' : 'FAILED');
             const closeTable = paymentShouldCloseTable(payload?.meta);
-            if (closeTable) {
-              await closeTableAfterAcceptedPayment(
-                payload.area,
-                payload.tableLabel,
-              );
+            if (payKind === 'PAYMENT' && !isPaymentReprint(payload?.meta)) {
+              await settleTableAfterPayment({
+                area: payload.area,
+                tableLabel: payload.tableLabel,
+                closeTable,
+                items: payload.items,
+                userId: Number(auth?.userId || 0),
+                paymentKey: printIdempotencyKey,
+              });
             }
             return send(
               res,

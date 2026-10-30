@@ -244,7 +244,7 @@ import {
   eraseTicketsConfirmMatches,
 } from './services/eraseTickets';
 import {
-  closeTableAfterAcceptedPayment,
+  settleTableAfterPayment,
   closeTableAfterIdempotentPayment,
   paymentPrintAccepted,
   paymentShouldCloseTable,
@@ -3041,8 +3041,15 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       }
       if (kind === 'PAYMENT') {
         const closeTable = paymentShouldCloseTable(payload?.meta);
-        if (closeTable) {
-          await closeTableAfterAcceptedPayment(area, tableLabel);
+        if (!isPaymentReprint(meta)) {
+          await settleTableAfterPayment({
+            area,
+            tableLabel,
+            closeTable,
+            items: payload.items,
+            userId: Number(ctx?.session?.userId || 0),
+            paymentKey: idempotencyKey,
+          });
         }
         return paymentPrintAccepted(true, closeTable, fiscalExtra);
       }
@@ -3139,8 +3146,15 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       await reportDispatchFailure(result);
       await persistAudit(result.ok ? 'SENT' : 'FAILED');
       const closeTable = paymentShouldCloseTable(payload?.meta);
-      if (closeTable) {
-        await closeTableAfterAcceptedPayment(area, tableLabel);
+      if (kind === 'PAYMENT' && !isPaymentReprint(meta)) {
+        await settleTableAfterPayment({
+          area,
+          tableLabel,
+          closeTable,
+          items: payload.items,
+          userId: Number(ctx?.session?.userId || 0),
+          paymentKey: idempotencyKey,
+        });
       }
       return paymentPrintAccepted(result.ok, closeTable, fiscalExtra);
     }
