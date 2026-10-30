@@ -378,7 +378,10 @@
     "lockedTitle": "Hyrja e bllokuar",
     "failedTitle": "Hyrja dështoi",
     "invalidPinAttemptsLeft_one": "PIN i pasaktë. Edhe 1 përpjekje në këtë pajisje para se hyrja të bllokohet.",
-    "invalidPinAttemptsLeft_other": "PIN i pasaktë. Edhe {{count}} përpjekje në këtë pajisje para se hyrja të bllokohet."
+    "invalidPinAttemptsLeft_other": "PIN i pasaktë. Edhe {{count}} përpjekje në këtë pajisje para se hyrja të bllokohet.",
+    "pairDevice": "Lidh këtë pajisje",
+    "pairDeviceHint": "Kjo pajisje nuk është lidhur ende me arkën. Shkruani kodin e lidhjes që shfaqet te Admin.",
+    "pairDeviceFailed": "Kodi i lidhjes nuk u pranua. Kontrollojeni te Admin dhe provoni sërish."
   },
   "routes": {
     "loading": "Duke u ngarkuar…",

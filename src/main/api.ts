@@ -18,6 +18,15 @@ import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { resolveHostIntent } from '@shared/tableIntent';
 import { isStoreCounterArea } from '@shared/editionCapabilities';
 import {
+  DEVICE_TOKEN_HEADER,
+  PAIRED_DEVICE_PATHS,
+  PAIRING_REQUIRED,
+  PAIRING_REQUIRED_MESSAGE,
+  bootSettingsForSignIn,
+  issueDeviceToken,
+  verifyDeviceToken,
+} from './services/lanPreAuth';
+import {
   APP_UPDATE_REQUIRED,
   APP_VERSION_HEADER,
   MIN_WAITER_APP_VERSION,
@@ -988,9 +997,6 @@ async function verifyToken(
   return resolveLanTokenSubject({ userId, issuedAtMs });
 }
 
-/** How long a paired kitchen display stays paired. */
-const KDS_DEVICE_TTL_SECONDS = 365 * 24 * 60 * 60;
-
 /**
  * Credential a kitchen display gets for entering the pairing code once.
  *
@@ -999,49 +1005,37 @@ const KDS_DEVICE_TTL_SECONDS = 365 * 24 * 60 * 60;
  * KDS settings. The token carries a fingerprint of the pairing code it was
  * issued for, so changing the code in Admin un-pairs every display.
  */
-function pairingFingerprint(secret: string, pairingCode: string): string {
-  return base64url(hmacSha256(secret, `kds:${pairingCode}`)).slice(0, 16);
-}
-
 function issueKdsDeviceToken(secret: string, pairingCode: string): string {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const now = Math.floor(Date.now() / 1000);
-  const payload = base64url(
-    JSON.stringify({
-      purpose: 'kds_device',
-      pc: pairingFingerprint(secret, pairingCode),
-      iat: now,
-      exp: now + KDS_DEVICE_TTL_SECONDS,
-    }),
-  );
-  const body = `${header}.${payload}`;
-  return `${body}.${base64url(hmacSha256(secret, body))}`;
+  return issueDeviceToken(secret, pairingCode, 'kds_device');
 }
 
 async function verifyKdsDeviceToken(
   secret: string,
   token: string,
 ): Promise<boolean> {
-  const parts = String(token || '').split('.');
-  if (parts.length !== 3) return false;
-  const [h, p, s] = parts;
-  const expected = base64url(hmacSha256(secret, `${h}.${p}`));
-  if (s.length !== expected.length) return false;
-  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(s)))
-    return false;
-  let payload: any;
-  try {
-    const b64 = p.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
-    payload = JSON.parse(Buffer.from(b64 + pad, 'base64').toString('utf8'));
-  } catch {
-    return false;
-  }
-  if (String(payload?.purpose || '') !== 'kds_device') return false;
-  if (typeof payload.exp === 'number' && payload.exp < Date.now() / 1000)
-    return false;
   const code = await getOrCreatePairingCode().catch(() => '');
-  return Boolean(code) && payload.pc === pairingFingerprint(secret, code);
+  return verifyDeviceToken(secret, token, code, ['kds_device']);
+}
+
+/**
+ * A paired phone, tablet or kitchen display (`lanPreAuth.ts`): its device
+ * token comes in `X-POS-Device`, or `?device=` on an EventSource.
+ */
+async function isPairedDevice(
+  secret: string,
+  req: http.IncomingMessage,
+  parsed: url.UrlWithParsedQuery,
+): Promise<boolean> {
+  const header = req.headers[DEVICE_TOKEN_HEADER];
+  const query = parsed.query?.device;
+  const token = String(
+    (Array.isArray(header) ? header[0] : header) ||
+      (Array.isArray(query) ? query[0] : query) ||
+      '',
+  ).trim();
+  if (!token) return false;
+  const code = await getOrCreatePairingCode().catch(() => '');
+  return verifyDeviceToken(secret, token, code, ['lan_device', 'kds_device']);
 }
 
 /**
@@ -1483,6 +1477,32 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
       // PIN screen on iOS/Android has no JWT yet. Same staff names as
       // GET /auth/users, live, without exposing tables/tickets.
+      // The staff list and its live updates: a paired device, a signed-in
+      // session, or the till itself (`lanPreAuth.ts`). They were open to
+      // anyone on the Wi-Fi.
+      if (req.method === 'GET' && PAIRED_DEVICE_PATHS.has(pathname)) {
+        const remoteIp = String((req.socket as any)?.remoteAddress || '');
+        if (
+          !isLoopback(remoteIp) &&
+          !(await isPairedDevice(secret, req, parsed))
+        ) {
+          const token = pickBearerToken(req, parsed);
+          const session = token ? await verifyToken(secret, token) : null;
+          if (!session) {
+            return send(
+              res,
+              401,
+              {
+                ok: false,
+                code: PAIRING_REQUIRED,
+                error: PAIRING_REQUIRED_MESSAGE,
+              },
+              corsOrigin,
+            );
+          }
+        }
+      }
+
       if (req.method === 'GET' && pathname === '/events/login') {
         setSecurityHeaders(res, corsOrigin || null);
         res.setHeader(
@@ -1543,9 +1563,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               { ok: false, error: 'lan disabled' },
               corsOrigin,
             );
-          if (!requirePairing) return send(res, 200, { ok: true }, corsOrigin);
+          // A paired device gets a token for the pre-sign-in reads
+          // (`lanPreAuth.ts`), bound to the current pairing code.
+          const paired = async () => ({
+            ok: true,
+            deviceToken: issueDeviceToken(
+              secret,
+              await getOrCreatePairingCode(),
+              'lan_device',
+            ),
+          });
+          if (!requirePairing)
+            return send(res, 200, await paired(), corsOrigin);
           if (isLoopback(remoteIp))
-            return send(res, 200, { ok: true }, corsOrigin);
+            return send(res, 200, await paired(), corsOrigin);
           const attempt = beginLanLoginAttempt(remoteIp, 0);
           if (!attempt.ok)
             return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
@@ -1564,7 +1595,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               );
             }
             attempt.succeed();
-            return send(res, 200, { ok: true }, corsOrigin);
+            return send(res, 200, await paired(), corsOrigin);
           } finally {
             attempt.release();
           }
@@ -1735,6 +1766,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               createdAt: user.createdAt.toISOString(),
             },
             token,
+            // Signing in pairs the device: it may list staff afterwards.
+            deviceToken: issueDeviceToken(
+              secret,
+              await getOrCreatePairingCode(),
+              'lan_device',
+            ),
           },
           corsOrigin,
         );
@@ -4411,7 +4448,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const result = withLicenseEdition({
           ...presented,
         } as Record<string, unknown>) as any;
-        return send(res, 200, result, corsOrigin);
+        // Not signed in: only what the sign-in screen paints. Fiscal
+        // configuration and printer addresses need a session.
+        const signedIn =
+          Boolean(auth) ||
+          isLoopback(String((req.socket as any)?.remoteAddress || ''));
+        return send(
+          res,
+          200,
+          signedIn ? result : bootSettingsForSignIn(result),
+          corsOrigin,
+        );
       }
       // Offline outbox status (for tablets / browser clients)
       if (req.method === 'GET' && pathname === '/offline/status') {

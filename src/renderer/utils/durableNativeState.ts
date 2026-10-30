@@ -14,6 +14,7 @@ const DURABLE_KEYS = [
   'pos-ticket',
   'pos_api_token',
   'pos_pairing_code',
+  'pos_lan_device_token',
   'pos_backend_host',
   'pos_backend_http',
   'pos_backend_https',

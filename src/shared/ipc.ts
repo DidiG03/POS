@@ -588,6 +588,11 @@ export interface ApiAuth {
   endSession(): Promise<boolean>;
   createUser(input: CreateUserInput): Promise<UserDTO>;
   listUsers(input?: { includeAdmins?: boolean }): Promise<UserDTO[]>;
+  /**
+   * Phones and tablets only: pair with the till's pairing code so the staff
+   * list can be read before sign-in. The till itself has no such step.
+   */
+  pairDevice?(pairingCode: string): Promise<boolean>;
   updateUser(input: UpdateUserInput): Promise<UserDTO>;
   syncStaffFromApi(url?: string): Promise<number>;
   deleteUser(input: DeleteUserInput): Promise<boolean>;
