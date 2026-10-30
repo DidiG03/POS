@@ -11,9 +11,10 @@
  *      which put a paid sitting's bill back on the floor to be charged again.
  *   3. The table is opened if needed, in the same lock as the write.
  *   4. Another waiter's sitting is refused unless the actor is an admin.
- *   5. The Send is merged with the bill already there
- *      (see `mergeTicketSend`), so a late or concurrent Send cannot drop
- *      items, undo a void, or charge a paid line again.
+ *   5. The Send's new lines are added to the bill already there
+ *      (see `mergeTicketSend`). A Send never changes a line the bill has,
+ *      so a late or concurrent Send cannot drop items, undo a void, or
+ *      charge a paid line again.
  *
  * Step 2 also drops lines from a sitting that has ended: a screen left on a
  * table that another device paid would otherwise start a new sitting with
@@ -25,10 +26,9 @@
  * same transaction as the bill write.
  */
 import { prisma } from '@db/client';
-import { asTicketLogItems, ticketLogCreatedAtMs } from '@shared/ticketLogItems';
+import { asTicketLogItems } from '@shared/ticketLogItems';
 import { intentAtFromAge } from '@shared/tableIntent';
 import {
-  keylessSendLines,
   mergeTicketSend,
   type MergeLine,
   type TicketSendMergeMode,
@@ -488,49 +488,20 @@ export async function recordTicketSend(
     const latestItems = latest
       ? (asTicketLogItems((latest as any).itemsJson) as MergeLine[])
       : [];
-    const latestAt = latest
-      ? ticketLogCreatedAtMs((latest as any).createdAt)
-      : Number.NaN;
-    const stale =
-      hasCapture && Number.isFinite(latestAt) && latestAt > capturedAt;
-    // A Send without a key (older clients, scripts) cannot say which of its
-    // lines are new, so the till works it out (`keylessSendLines`) and keys
-    // them itself. Its lines were folded into voided ones on the bill and
-    // stock never counted them.
+    // A Send without a key (older clients, scripts) gets one from the till,
+    // so its lines are keyed, counted and printed like any other Send's.
     const sendKey = idempotencyKey || `srv-${newTicketLineId()}`;
-    let merged: { items: MergeLine[]; mode: TicketSendMergeMode };
-    if (idempotencyKey) {
-      merged = mergeTicketSend({
+    const merged: { items: MergeLine[]; mode: TicketSendMergeMode } =
+      mergeTicketSend({
         incoming: (Array.isArray(input.items)
           ? input.items
           : []) as MergeLine[],
         latest: latestItems,
-        stale,
-        sendKey: idempotencyKey,
+        sendKey,
         addedItems: Array.isArray(input.addedItems)
           ? (input.addedItems as MergeLine[])
           : null,
       });
-    } else {
-      const added = keylessSendLines(
-        (Array.isArray(input.items) ? input.items : []) as MergeLine[],
-        latestItems,
-      ).map((l) => ({ ...l, sendKey }));
-      merged = added.length
-        ? mergeTicketSend({
-            incoming: added,
-            latest: latestItems,
-            stale: true,
-            sendKey,
-            addedItems: added,
-          })
-        : { items: latestItems, mode: 'already-included' };
-    }
-    if (merged.mode !== 'as-sent') {
-      console.warn(
-        `[tickets] ${area} ${tableLabel}: Send merged with the bill (${merged.mode})`,
-      );
-    }
     // Everything in this Send is already on the bill (a replay, or a later
     // Send carried it): nothing to write, cook or count.
     if (merged.mode === 'already-included') {
