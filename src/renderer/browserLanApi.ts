@@ -35,6 +35,12 @@ import {
   writeLanToken,
 } from './utils/lanAuthToken';
 import { isPairingRejectedError } from './utils/lanLoginError';
+import {
+  APP_UPDATE_REQUIRED,
+  APP_VERSION,
+  APP_VERSION_HEADER,
+} from '@shared/appVersion';
+import { POS_APP_UPDATE_REQUIRED } from './utils/appUpdateEvent';
 import { syncTabletToHostVersion } from './utils/syncTabletToHostVersion';
 
 export function installBrowserLanApi(): void {
@@ -931,6 +937,8 @@ export function installBrowserLanApi(): void {
     const method = String(opts?.method || 'GET').toUpperCase();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      // The till tells an app older than it supports to update.
+      [APP_VERSION_HEADER]: APP_VERSION,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(IS_NATIVE_SHELL
         ? { 'X-POS-Client': 'native' }
@@ -972,6 +980,15 @@ export function installBrowserLanApi(): void {
         maybeForceLogout(r.status, token, requestGeneration, path);
         const { message, code, permanent, body } = await readErrorMessage(r);
         const err = new HttpError(r.status, message, code, permanent);
+        if (code === APP_UPDATE_REQUIRED) {
+          try {
+            window.dispatchEvent(
+              new CustomEvent(POS_APP_UPDATE_REQUIRED, { detail: { message } }),
+            );
+          } catch {
+            // the error itself still reaches the caller
+          }
+        }
         // Extra fields (retryAfterMs, the stock or print details) for the
         // screens that explain them.
         if (body) err.data = body;

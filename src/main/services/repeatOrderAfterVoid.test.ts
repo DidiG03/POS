@@ -349,3 +349,23 @@ describe('phones that send only their new lines (QA round 5, #2)', () => {
     });
   }
 });
+
+describe('kitchen slips from older phones (QA round 5, #3)', () => {
+  it('a slip without a Send key asks for an app update, and its Send still lands', async () => {
+    // A phone before 0.2.98: keyless Send, then a slip with no Send key.
+    const r: any = await recordTicketSend({
+      userId: 7,
+      ...table,
+      covers: 2,
+      note: null,
+      items: [espresso],
+    });
+    expect(r.written).toBe(true);
+    expect(r.sendKey).toMatch(/^srv-/);
+    const slip: any = await slipFor();
+    expect(slip).toMatchObject({ kind: 'refuse', code: 'APP_UPDATE_REQUIRED' });
+    expect(slip.error).toMatch(/Update the app/);
+    // The till's own key prints that Send's line.
+    expect(((await slipFor(r.sendKey)) as any).items).toHaveLength(1);
+  });
+});

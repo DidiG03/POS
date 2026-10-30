@@ -17,6 +17,13 @@ import {
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { resolveHostIntent } from '@shared/tableIntent';
 import { isStoreCounterArea } from '@shared/editionCapabilities';
+import {
+  APP_UPDATE_REQUIRED,
+  APP_VERSION_HEADER,
+  MIN_WAITER_APP_VERSION,
+  appUpdateRequiredMessage,
+  appVersionTooOld,
+} from '@shared/appVersion';
 import { recordTicketSend, ticketCapturedAt } from './services/ticketSend';
 import { checkOrderSlip } from './services/orderSlip';
 import { currentSittingCovers } from './services/sittingCovers';
@@ -1113,7 +1120,9 @@ function setSecurityHeaders(
       // backend can recognise the native app and bypass the browser-only
       // "Allow Web access" gate. The WebView's CORS preflight will refuse
       // to send the actual request unless this header is listed here.
-      'Content-Type, Authorization, Idempotency-Key, X-POS-Client, If-None-Match',
+      // `X-POS-App-Version` lets the till tell an outdated app to update.
+      // `X-POS-Device` is the pairing token for the pre-login reads.
+      'Content-Type, Authorization, Idempotency-Key, X-POS-Client, X-POS-App-Version, X-POS-Device, If-None-Match',
     );
     res.setHeader('Access-Control-Expose-Headers', 'ETag, Content-Encoding');
     res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
@@ -1218,6 +1227,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
         return;
+      }
+
+      // An app too old for this till is told to update, not served half a
+      // feature set (`appVersion.ts`). `/health` still answers so it can
+      // learn the minimum.
+      {
+        const reported = req.headers[APP_VERSION_HEADER.toLowerCase()];
+        if (
+          pathname !== '/health' &&
+          appVersionTooOld(Array.isArray(reported) ? reported[0] : reported)
+        ) {
+          return send(
+            res,
+            426,
+            {
+              ok: false,
+              code: APP_UPDATE_REQUIRED,
+              error: appUpdateRequiredMessage(),
+              minVersion: MIN_WAITER_APP_VERSION,
+              permanent: true,
+            },
+            corsOrigin,
+          );
+        }
       }
 
       // Live LAN gate: if web access is disabled, reject any non-loopback
@@ -1481,6 +1514,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             ok: true,
             t: Date.now(),
             appVersion: app.getVersion(),
+            minAppVersion: MIN_WAITER_APP_VERSION,
           },
           corsOrigin,
         );

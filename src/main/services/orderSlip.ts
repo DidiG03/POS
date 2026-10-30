@@ -6,10 +6,15 @@
  * voided line: the slip came out, the guest was never billed for it, and
  * stock never counted it. Now the slip is looked up on the bill by its Send
  * key (`meta.sendKey`, stamped on every line that Send fired) and prints
- * those lines, as the till recorded them. No key, or nothing live on the
- * bill under it: no slip.
+ * those lines, as the till recorded them. Nothing live on the bill under
+ * the key: no slip. No key at all: an app too old to print slips, told to
+ * update.
  */
 import { asTicketLogItems } from '@shared/ticketLogItems';
+import {
+  APP_UPDATE_REQUIRED,
+  appUpdateRequiredMessage,
+} from '@shared/appVersion';
 import { findLatestTicketLogForCurrentSession } from './tableSession';
 
 export const ORDER_NOT_ON_BILL_MESSAGE =
@@ -20,8 +25,15 @@ export type OrderSlipCheck =
   | { kind: 'not-order' }
   /** Print these lines: what the Send put on the bill. */
   | { kind: 'print'; items: Record<string, unknown>[] }
-  /** Refuse: nothing on the bill for this Send. */
-  | { kind: 'refuse'; code: 'ORDER_NOT_ON_BILL'; error: string };
+  /**
+   * Refuse: nothing on the bill for this Send, or (no Send key at all) an
+   * app too old to say which Send the slip is for.
+   */
+  | {
+      kind: 'refuse';
+      code: 'ORDER_NOT_ON_BILL' | typeof APP_UPDATE_REQUIRED;
+      error: string;
+    };
 
 export async function checkOrderSlip(input: {
   area: string;
@@ -38,7 +50,16 @@ export async function checkOrderSlip(input: {
     error: ORDER_NOT_ON_BILL_MESSAGE,
   };
   const sendKey = String(meta.sendKey ?? '').trim();
-  if (!sendKey) return refuse;
+  // Builds before 0.2.98 print slips without the Send key. Their Sends are
+  // still taken (the till keys them), but the slip cannot be matched to
+  // one: say what fixes it instead of a silent "not on the bill".
+  if (!sendKey) {
+    return {
+      kind: 'refuse',
+      code: APP_UPDATE_REQUIRED,
+      error: appUpdateRequiredMessage(),
+    };
+  }
   const latest = await findLatestTicketLogForCurrentSession(
     input.area,
     input.tableLabel,

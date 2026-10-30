@@ -1943,5 +1943,9 @@
     "problemTitle": "Printer problem",
     "receiptTitle": "Receipt",
     "backTitle": "Printer back online"
+  },
+  "app": {
+    "updateRequiredTitle": "Update the app",
+    "updateRequired": "This app is too old for this till. Update OneTap and sign in again."
   }
 }

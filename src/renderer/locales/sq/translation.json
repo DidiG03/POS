@@ -1943,5 +1943,9 @@
     "problemTitle": "Problem me printerin",
     "receiptTitle": "Fatura",
     "backTitle": "Printeri u lidh përsëri"
+  },
+  "app": {
+    "updateRequiredTitle": "Përditësoni aplikacionin",
+    "updateRequired": "Ky version i aplikacionit është shumë i vjetër për këtë arkë. Përditësoni OneTap dhe hyni sërish."
   }
 }
