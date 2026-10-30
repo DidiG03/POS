@@ -338,6 +338,10 @@ export interface TicketPrintMeta {
   fiscalQrCode?: string;
   /** Seller NIPT used in the CIS verification QR. */
   fiscalTin?: string;
+  /** The lekë total the invoice was filed for; printed as the LEK total. */
+  fiscalTotalLek?: number;
+  /** Set when the invoice was filed after the sale (deferred). */
+  fiscalFiledLateAt?: string;
   /**
    * The registered invoice's number and codes (number, business unit, TCR,
    * operator, software), printed under FISKALIZUAR.

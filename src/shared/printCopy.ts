@@ -39,6 +39,8 @@ type PrintCopy = {
   correctionTitle: (kind: string) => string;
   /** The invoice a correction reverses. */
   correctsInvoice: string;
+  /** Top of a receipt printed again: not a new sale. */
+  receiptCopyBanner: string;
   method: string;
   approved: string;
   note: string;
@@ -86,6 +88,7 @@ const EN: PrintCopy = {
   correctionTitle: (kind) =>
     kind === 'CANCEL' ? 'CANCELLATION INVOICE' : 'CORRECTIVE INVOICE',
   correctsInvoice: 'Corrects NSLF',
+  receiptCopyBanner: '*** COPY - REPRINT ***',
   method: 'Method',
   approved: 'Approved',
   note: 'Note',
@@ -133,6 +136,7 @@ const SQ: PrintCopy = {
   correctionTitle: (kind) =>
     kind === 'CANCEL' ? 'FATURË ANULIMI' : 'FATURË KORRIGJUESE',
   correctsInvoice: 'Korrigjon NSLF',
+  receiptCopyBanner: '*** KOPJE - RIPRINTIM ***',
   method: 'Metoda',
   approved: 'Aprovuar',
   note: 'Shënim',

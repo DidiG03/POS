@@ -1703,10 +1703,18 @@ export function installBrowserLanApi(): void {
         approvedByAdminToken: string;
         idempotencyKey?: string;
       }) {
-        return await goLan('/admin/correct-sale', {
-          method: 'POST',
-          body: JSON.stringify(input ?? {}),
-        });
+        try {
+          return await goLan('/admin/correct-sale', {
+            method: 'POST',
+            body: JSON.stringify(input ?? {}),
+          });
+        } catch (e) {
+          // 409: already reversed by another request; the body says why.
+          if (e instanceof HttpError && e.status === 409 && e.data) {
+            return e.data;
+          }
+          throw e;
+        }
       },
       async printFiscalReceipt(input: { orderId: number }) {
         return await goLan('/admin/print-fiscal-receipt', {

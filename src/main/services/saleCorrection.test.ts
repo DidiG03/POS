@@ -1080,6 +1080,8 @@ describe('the slip of a filed correction (QA F7)', () => {
     });
     expect(slip.meta.fiscalLink).toContain('IIC-CORR');
     expect(slip.items).toEqual([{ name: 'Kafe', qty: 1, unitPrice: 500 }]);
+    // QA round 5, F7b: the lekë taken back, as filed (printed negative).
+    expect(slip.meta.fiscalTotalLek).toBe(-500);
     vi.mocked(coreServices.readSettings).mockResolvedValue({
       defaultVatRate: 0.2,
     } as any);

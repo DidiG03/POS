@@ -68,6 +68,21 @@ export type SaleCorrectionError =
   /** Striking every remaining line is a cancellation; file it as one. */
   | 'use-cancel';
 
+/**
+ * HTTP status for a correction answer. A repeat of the same request (same
+ * key) gets the first answer back; a different request for an invoice or
+ * line that was already reversed is a conflict, not a success.
+ */
+export function saleCorrectionHttpStatus(
+  result: { ok: boolean; error?: string } | null | undefined,
+): 200 | 409 {
+  if (result && result.ok === false) {
+    if (result.error === 'already-void' || result.error === 'line-already-void')
+      return 409;
+  }
+  return 200;
+}
+
 export type SaleCorrectionPlan = {
   kind: SaleCorrectionKind;
   reason: string;

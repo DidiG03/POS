@@ -81,6 +81,57 @@ function clockTime(iso: unknown): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/**
+ * LEK and EUR totals for a guest receipt. A fiscalized receipt prints the
+ * lekë total the invoice was filed for (`fiscalTotalLek`), not its own
+ * one-step conversion, which could differ by a few qindarka.
+ */
+export function receiptDualTotals(
+  total: number,
+  meta: any,
+  settings: unknown,
+  /** -1 for a corrective slip: the amounts go back to the guest. */
+  sign: 1 | -1 = 1,
+): { lek: number | null; eur: number | null } {
+  const fx = dualTotalsFromSettings(total, settings);
+  const out = {
+    lek: fx.lek == null ? null : roundMoney(sign * fx.lek),
+    eur: fx.eur == null ? null : roundMoney(sign * fx.eur),
+  };
+  const filed = Number(meta?.fiscalTotalLek);
+  if (
+    meta?.fiscalEnabled &&
+    meta?.fiscalTotalLek != null &&
+    Number.isFinite(filed)
+  ) {
+    // Filed amounts carry their own sign (a corrective's are negative).
+    return { ...out, lek: roundMoney(filed) };
+  }
+  return out;
+}
+
+/**
+ * The time a receipt shows: when it was first printed. A copy of a paid
+ * receipt (a reprint, a late fiscal receipt) shows the sale's time, not
+ * the moment it is printed again.
+ */
+function receiptTime(payload: TicketPrintPayload, kind: string): Date {
+  if (payload.printedAtIso) return new Date(payload.printedAtIso);
+  const paidAt = new Date(String((payload.meta as any)?.paidAt || ''));
+  if (isReceiptCopy(kind, payload.meta) && Number.isFinite(paidAt.getTime())) {
+    return paidAt;
+  }
+  return new Date();
+}
+
+/** A customer receipt printed again: marked COPY - REPRINT on top. */
+export function isReceiptCopy(kind: string, meta: any): boolean {
+  return (
+    (kind === 'PAYMENT' || kind === 'RECEIPT') &&
+    (meta?.reprint === true || Boolean(meta?.reprintOfIso))
+  );
+}
+
 /** VOID / REPRINT / LATE line on top of a kitchen slip, or null. */
 export function kitchenSlipBanner(
   meta: any,
@@ -289,6 +340,10 @@ export function fiscalDocLines(meta: any, settings?: any): string[] {
     val(doc.sellerNuis) ||
     val(meta?.fiscalTin) ||
     fiscalTinFromSettings(settings);
+  const lateAt = new Date(val(meta?.fiscalFiledLateAt));
+  const filedLate = Number.isFinite(lateAt.getTime())
+    ? formatDateTime(lateAt)
+    : '';
   return [
     val(doc.invoiceNumber) && `Nr. i faturës: ${val(doc.invoiceNumber)}`,
     nipt && `NIPT: ${nipt}`,
@@ -296,6 +351,9 @@ export function fiscalDocLines(meta: any, settings?: any): string[] {
     val(doc.businessUnitCode) && `Njësia: ${val(doc.businessUnitCode)}`,
     val(doc.tcrCode) && `TCR: ${val(doc.tcrCode)}`,
     val(doc.softwareCode) && `Softi: ${val(doc.softwareCode)}`,
+    // Filed after the sale (an outage): the receipt shows the sale's time
+    // above, and when the tax service registered it here.
+    filedLate && `Fiskalizuar me vonesë: ${filedLate}`,
   ].filter(Boolean) as string[];
 }
 
@@ -405,9 +463,7 @@ export function buildEscposTicket(
     : rawPayload;
   const meta: any = payload.meta || {};
 
-  const now = payload.printedAtIso
-    ? new Date(payload.printedAtIso)
-    : new Date();
+  const now = receiptTime(payload, kindEarly);
   const nowStr = formatDateTime(now);
   const lang = printLangFromSettings(settings);
   const copy = printCopyFromSettings(settings);
@@ -466,6 +522,14 @@ export function buildEscposTicket(
     if (bizPhone) subtitleLines.push(...wrapEscposText(bizPhone, layout.cols));
     for (const ln of subtitleLines) lines.push(escposText(`${ln}\n`));
     lines.push(escposText(`${layout.sep}\n`));
+    // A receipt printed again (a late fiscal receipt, a reprint from
+    // Reports) must not pass for a second sale or a second invoice.
+    if (isReceiptCopy(kind, meta)) {
+      lines.push(cmdBold(true));
+      lines.push(escposText(`${copy.receiptCopyBanner}\n`));
+      lines.push(cmdBold(false));
+      lines.push(escposText(`${layout.sep}\n`));
+    }
   }
   lines.push(cmdAlign('left'));
   // Avoid Unicode bullets / fancy separators (often render as garbage on ESC/POS)
@@ -574,6 +638,10 @@ export function buildEscposTicket(
     lines.push(cmdBold(true));
   }
   const orderLayout = kitchenItemLayout(layout);
+  // A corrective or cancellation takes money back: its lines and totals
+  // print negative, as filed (the figures below stay positive amounts).
+  const sign = kind === 'CORRECTION' ? -1 : 1;
+  const signed = (n: number) => formatMoneyEscpos(sign * n);
   for (const it of itemsToPrint) {
     const qty = Number(it.qty || 1);
     const linePrice = printedLineTotal(it);
@@ -594,16 +662,16 @@ export function buildEscposTicket(
     } else if (guestSlip && !hidePrices) {
       for (const ln of guestItemRow(
         String(it.name || ''),
-        String(qty),
+        String(sign * qty),
         formatMoneyEscpos(Number(it.unitPrice || 0)),
-        formatMoneyEscpos(linePrice),
+        signed(linePrice),
         layout,
       )) {
         lines.push(escposText(`${ln}\n`));
       }
     } else {
-      const left = `${qty} x ${String(it.name || '')}`;
-      const right = hidePrices ? '' : formatMoneyEscpos(linePrice);
+      const left = `${sign * qty} x ${String(it.name || '')}`;
+      const right = hidePrices ? '' : signed(linePrice);
       lines.push(...twoCol(left, right, layout));
       if (it.note) {
         for (const ln of wrapEscposText(
@@ -647,17 +715,15 @@ export function buildEscposTicket(
         ...twoCol(label, '-' + formatMoneyEscpos(discountAmt), layout),
       );
     }
-    lines.push(
-      ...twoCol(copy.subtotal, formatMoneyEscpos(figures.net), layout),
-    );
+    lines.push(...twoCol(copy.subtotal, signed(figures.net), layout));
     if (vatEnabled) {
-      lines.push(...twoCol(copy.vat, formatMoneyEscpos(figures.vat), layout));
+      lines.push(...twoCol(copy.vat, signed(figures.vat), layout));
       // Per rate: what each rate taxed and the VAT on it.
       for (const row of figures.vatByRate) {
         lines.push(
           ...twoCol(
-            `  ${copy.vatRateRow(vatPercentText(row.rate), formatMoneyEscpos(row.base))}`,
-            formatMoneyEscpos(row.vat),
+            `  ${copy.vatRateRow(vatPercentText(row.rate), signed(row.base))}`,
+            signed(row.vat),
             layout,
           ),
         );
@@ -667,13 +733,14 @@ export function buildEscposTicket(
     // Double height only on restaurant slips, so TOTAL and the amount stay
     // on one line of the normal column grid.
     lines.push(cmdTextSize(customerReceipt && !guestSlip ? 'lg' : 'md'));
-    lines.push(...twoCol(copy.total, formatMoneyEscpos(totalFinal), layout));
+    lines.push(...twoCol(copy.total, signed(totalFinal), layout));
     lines.push(cmdTextSize(bodySize));
     lines.push(cmdBold(false));
     // Guest receipts (paid or unpaid bill) show LEK + EUR when Kursi EUR
-    // is set — fiscalization is unrelated.
-    if (kind === 'PAYMENT' || kind === 'RECEIPT') {
-      const fx = dualTotalsFromSettings(totalFinal, settings);
+    // is set — fiscalization is unrelated. A corrective slip shows the lekë
+    // it took back, as filed.
+    if (kind === 'PAYMENT' || kind === 'RECEIPT' || kind === 'CORRECTION') {
+      const fx = receiptDualTotals(totalFinal, meta, settings, sign);
       if (fx.lek != null) {
         lines.push(...twoCol(copy.totalLek, formatMoneyEscpos(fx.lek), layout));
       }
@@ -841,9 +908,7 @@ export function buildHtmlReceipt(
     ? withoutKitchenNotes(rawPayload)
     : rawPayload;
 
-  const now = payload.printedAtIso
-    ? new Date(payload.printedAtIso)
-    : new Date();
+  const now = receiptTime(payload, kindEarly);
   const nowStr = formatDateTime(now);
   const lang = printLangFromSettings(settings);
   const copy = printCopyFromSettings(settings);
@@ -881,14 +946,16 @@ export function buildHtmlReceipt(
   const scAmt = figures.service;
   const discountAmt = figures.discount;
   const totalFinal = figures.total;
+  // A corrective or cancellation takes money back: negative, as filed.
+  const sign: 1 | -1 = kind === 'CORRECTION' ? -1 : 1;
   const fx =
-    kind === 'PAYMENT' || kind === 'RECEIPT'
-      ? dualTotalsFromSettings(totalFinal, settings)
+    kind === 'PAYMENT' || kind === 'RECEIPT' || kind === 'CORRECTION'
+      ? receiptDualTotals(totalFinal, meta, settings, sign)
       : { lek: null, eur: null };
 
   const rows = items
     .map((it) => {
-      const qty = Number(it.qty || 1);
+      const qty = sign * Number(it.qty || 1);
       const line = printedLineTotal(it);
       const note = it.note ? `<div class="note">- ${safe(it.note)}</div>` : '';
       const right =
@@ -896,7 +963,7 @@ export function buildHtmlReceipt(
           ? safe(String(qty))
           : hidePrices
             ? ''
-            : safe(formatMoney(line, currency));
+            : safe(formatMoney(sign * line, currency));
       const left =
         kind === 'ORDER' ? safe(it.name) : safe(`${qty} x ${it.name}`);
       const rowClass = kind === 'ORDER' ? 'row orderItem' : 'row';
@@ -1019,7 +1086,8 @@ export function buildHtmlReceipt(
     ${seatLabel ? `<div class="paid">${safe(seatLabel.toUpperCase())}</div>` : ''}
     ${payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area), lang))}: ${safe(payload.userName)}</div>` : ''}
     <div class="small">${safe(nowStr)}</div>
-    <div class="sep"></div>`
+    <div class="sep"></div>
+    ${isReceiptCopy(kind, meta) ? `<div class="paid">${safe(copy.receiptCopyBanner)}</div><div class="sep"></div>` : ''}`
     }
     ${rows}
     ${
@@ -1028,10 +1096,10 @@ export function buildHtmlReceipt(
         : `<div class="sep"></div>
     ${scLine}
     ${discountLine}
-    <div class="row"><div class="left">${safe(copy.subtotal)}</div><div class="right">${safe(formatMoney(subtotal, currency))}</div></div>
-    ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(vat, currency))}</div></div>` : ''}
-    ${vatEnabled ? figures.vatByRate.map((row) => `<div class="row small"><div class="left">${safe(copy.vatRateRow(vatPercentText(row.rate), formatMoney(row.base, currency)))}</div><div class="right">${safe(formatMoney(row.vat, currency))}</div></div>`).join('\n') : ''}
-    <div class="row total"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(totalFinal, currency))}</div></div>${
+    <div class="row"><div class="left">${safe(copy.subtotal)}</div><div class="right">${safe(formatMoney(sign * subtotal, currency))}</div></div>
+    ${vatEnabled ? `<div class="row"><div class="left">${safe(copy.vat)}</div><div class="right">${safe(formatMoney(sign * vat, currency))}</div></div>` : ''}
+    ${vatEnabled ? figures.vatByRate.map((row) => `<div class="row small"><div class="left">${safe(copy.vatRateRow(vatPercentText(row.rate), formatMoney(sign * row.base, currency)))}</div><div class="right">${safe(formatMoney(sign * row.vat, currency))}</div></div>`).join('\n') : ''}
+    <div class="row total"><div class="left">${safe(copy.total)}</div><div class="right">${safe(formatMoney(sign * totalFinal, currency))}</div></div>${
       fx.lek != null
         ? `<div class="row"><div class="left">${safe(copy.totalLek)}</div><div class="right">${safe(formatMoney(fx.lek, 'ALL'))}</div></div>`
         : ''

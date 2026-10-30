@@ -17,6 +17,7 @@ import {
 import { salaryFromUser, salaryWriteData } from '@shared/staffSalary';
 import { resolveHostIntent } from '@shared/tableIntent';
 import { isStoreCounterArea } from '@shared/editionCapabilities';
+import { saleCorrectionHttpStatus } from '@shared/saleCorrection';
 import {
   DEVICE_TOKEN_HEADER,
   PAIRED_DEVICE_PATHS,
@@ -4505,6 +4506,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
           return send(res, 200, result, corsOrigin);
         } catch (e: any) {
+          if (e?.code === 'INVALID_FISCAL_URL') {
+            return send(
+              res,
+              400,
+              { ok: false, code: e.code, error: String(e.message) },
+              corsOrigin,
+            );
+          }
           // Report the cause: a bare "failed to update settings" left owners
           // (and us) with nothing to go on.
           console.error('settings update failed', e);
@@ -4724,7 +4733,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           restockStore: storePlanBlocksTables(),
           idempotencyKey: String(body?.idempotencyKey || '') || null,
         });
-        return send(res, 200, result, corsOrigin);
+        // Already reversed by another request: 409, not 200 `{ ok: false }`.
+        const status = saleCorrectionHttpStatus(result);
+        return send(
+          res,
+          status,
+          status === 409
+            ? { ...result, code: 'ALREADY_CORRECTED', permanent: true }
+            : result,
+          corsOrigin,
+        );
       }
       if (req.method === 'POST' && pathname === '/admin/erase-tickets') {
         const body = await parseJson(req);

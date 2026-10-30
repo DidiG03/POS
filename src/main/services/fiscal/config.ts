@@ -62,6 +62,35 @@ export function looksLikeEasyPosCloud(baseUrl: string): boolean {
   return /easypos\.al/i.test(String(baseUrl || ''));
 }
 
+/**
+ * Why a fiscal base URL cannot be used, or null. Checked when the settings
+ * are saved, not only when the first invoice is sent: a lookalike of the
+ * easyPos hosts (`https://api.easypos.al.example.com`, plain http, another
+ * port) used to be stored and only refused at the next sale.
+ */
+export function fiscalBaseUrlProblem(baseUrl: string): string | null {
+  const raw = normalizeBaseUrl(baseUrl);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return `The fiscal URL "${raw}" is not a web address.`;
+    }
+  } catch {
+    return `The fiscal URL "${raw}" is not a valid address.`;
+  }
+  if (looksLikeEasyPosCloud(raw) && !isEasyPosCloudApi(raw)) {
+    // Not one of the easyPos hosts, but made to look like one: the token
+    // must not go there, as cloud or as local middleware.
+    return `The fiscal URL "${raw}" is not an easyPos Cloud address (${Object.keys(
+      EASYPOS_CLOUD_HOSTS,
+    )
+      .map((h) => `https://${h}`)
+      .join(' or ')}).`;
+  }
+  return null;
+}
+
 export function isEasyPosCloudApi(baseUrl: string): boolean {
   return cloudEnvironmentOf(baseUrl) !== null;
 }
@@ -134,17 +163,8 @@ export function assertFiscalConfigured(settings: SettingsDTO): void {
   if (!baseUrl) {
     throw new Error('Fiscal middleware base URL is not configured.');
   }
-  if (!cloud && looksLikeEasyPosCloud(baseUrl)) {
-    // Not one of the easyPos hosts, but made to look like one: the token
-    // must not go there, as cloud or as local middleware.
-    throw new Error(
-      `The fiscal URL "${baseUrl}" is not an easyPos Cloud address (${Object.keys(
-        EASYPOS_CLOUD_HOSTS,
-      )
-        .map((h) => `https://${h}`)
-        .join(' or ')}). Fix it in Admin → Fiskalizimi.`,
-    );
-  }
+  const problem = fiscalBaseUrlProblem(baseUrl);
+  if (problem) throw new Error(`${problem} Fix it in Admin → Fiskalizimi.`);
   if (!authToken) {
     throw new Error('Fiscal middleware authorization token is not configured.');
   }
