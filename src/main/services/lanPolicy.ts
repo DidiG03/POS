@@ -168,6 +168,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /admin/print-fiscal-receipt': { allow: ADMIN },
   'GET /settings/fiscal-token-hint': { allow: ADMIN },
   'POST /settings/fiscal-test': { allow: ADMIN },
+  'POST /fiscal/cash-declaration': { allow: ADMIN },
   'POST /settings/fiscal-test-minimal': { allow: ADMIN },
   'GET /settings/fiscal-reviews': { allow: ADMIN },
   'POST /settings/fiscal-reviews': { allow: ADMIN },

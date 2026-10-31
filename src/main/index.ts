@@ -2438,6 +2438,12 @@ ipcHandle('network:getIps', async () => {
   return listLanIpv4Addresses();
 });
 
+// Cash declared to the tax service (see `/fiscal/cash-declaration`).
+ipcHandle('fiscal:declareCash', async (_e, input) => {
+  const { declareCash } = await import('./services/fiscal/cashDrawer');
+  return declareCash((await readSettings()) as any, input || {});
+});
+
 ipcHandle('settings:testFiscalConnection', async () => {
   const settings = await coreServices.readSettings();
   return await testFiscalConnection(settings as any);

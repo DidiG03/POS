@@ -1362,6 +1362,18 @@ export function installBrowserLanApi(): void {
       async testFiscalConnection() {
         return await goLan('/settings/fiscal-test', { method: 'POST' });
       },
+      async declareCash(input: any) {
+        try {
+          return await goLan('/fiscal/cash-declaration', {
+            method: 'POST',
+            body: JSON.stringify(input || {}),
+          });
+        } catch (e: any) {
+          // 400 carries the reason (fiscalization off, refused by easyPos).
+          if (e?.data?.error) return { ok: false, ...e.data };
+          throw e;
+        }
+      },
       async testFiscalMinimalInvoice() {
         return await goLan('/settings/fiscal-test-minimal', { method: 'POST' });
       },

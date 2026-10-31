@@ -30,6 +30,11 @@ const api: Api = {
       ipcRenderer.invoke('settings:testPrintProfile', profile),
     testFiscalConnection: () =>
       ipcRenderer.invoke('settings:testFiscalConnection'),
+    declareCash: (input: {
+      kind: 'opening' | 'deposit' | 'withdraw';
+      amount: number;
+      requestKey?: string;
+    }) => ipcRenderer.invoke('fiscal:declareCash', input),
     getFiscalTokenHint: () => ipcRenderer.invoke('settings:getFiscalTokenHint'),
     testFiscalMinimalInvoice: () =>
       ipcRenderer.invoke('settings:testFiscalMinimalInvoice'),

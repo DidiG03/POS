@@ -246,6 +246,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'settings:getFiscalTokenHint': { allow: ADMIN },
   'settings:setPrinter': { allow: ADMIN },
   'settings:testFiscalConnection': { allow: ADMIN },
+  'fiscal:declareCash': { allow: ADMIN },
   'settings:testFiscalMinimalInvoice': { allow: ADMIN },
   'settings:listFiscalReviews': { allow: ADMIN },
   'settings:resolveFiscalReview': { allow: ADMIN },

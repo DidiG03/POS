@@ -2790,6 +2790,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const settings = await coreServices.readSettings();
         return send(res, 200, getFiscalTokenHint(settings as any), corsOrigin);
       }
+      // Cash declared to the tax service: the counted opening float, cash
+      // put in, cash taken out (admins; `fiscal/cashDrawer.ts`).
+      if (req.method === 'POST' && pathname === '/fiscal/cash-declaration') {
+        const body = (await parseJson(req)) || {};
+        const settings = await coreServices.readSettings();
+        const { declareCash } = await import('./services/fiscal/cashDrawer');
+        const result = await declareCash(settings as any, body);
+        return send(res, result.ok ? 200 : 400, result, corsOrigin);
+      }
       if (req.method === 'POST' && pathname === '/settings/fiscal-test') {
         const settings = await coreServices.readSettings();
         return send(

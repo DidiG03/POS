@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { newIdempotencyKey } from '../../utils/idempotency';
 import type {
   FiscalReviewDTO,
   NetworkPrinterDTO,
@@ -1953,6 +1954,8 @@ function FiscalSettings() {
                   {t('fiscal.openingFloatHelp')}
                 </div>
               </label>
+
+              {enabled ? <CashDeclarations /> : null}
             </div>
           </SettingsCard>
         </div>
@@ -4627,6 +4630,107 @@ function LanSettings() {
           </SettingsCard>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Cash declared to the tax service by hand (QA round 6, fiscal): the
+ * opening float as counted, and cash put in or taken out during the day.
+ */
+function CashDeclarations() {
+  const { t } = useTranslation();
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+  const declare = async (kind: 'opening' | 'deposit' | 'withdraw') => {
+    const n = Number(String(amount).replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0 || (kind !== 'opening' && n <= 0)) {
+      setStatus({ ok: false, text: t('fiscal.cashAmountInvalid') });
+      return;
+    }
+    const api = (window.api.settings as any).declareCash as
+      | ((input: any) => Promise<any>)
+      | undefined;
+    if (!api) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const r = await api({ kind, amount: n, requestKey: newIdempotencyKey() });
+      if (r?.ok) {
+        setStatus({
+          ok: true,
+          text:
+            r.kind === 'already-declared'
+              ? t('fiscal.cashAlreadyDeclared')
+              : t('fiscal.cashDeclared'),
+        });
+        setAmount('');
+      } else {
+        setStatus({
+          ok: false,
+          text: String(r?.error || t('fiscal.cashFailed')),
+        });
+      }
+    } catch (e: any) {
+      setStatus({
+        ok: false,
+        text: String(e?.message || t('fiscal.cashFailed')),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="block">
+      <div className="text-sm mb-1">{t('fiscal.cashDeclarations')}</div>
+      <div className="text-[11px] opacity-60 mb-2">
+        {t('fiscal.cashDeclarationsHelp')}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="bg-gray-700 rounded px-3 py-2 w-36"
+          inputMode="decimal"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="0 L"
+          aria-label={t('fiscal.cashDeclarations')}
+          disabled={busy}
+        />
+        <button
+          type="button"
+          className="pos-btn"
+          disabled={busy}
+          onClick={() => void declare('opening')}
+        >
+          {t('fiscal.cashOpening')}
+        </button>
+        <button
+          type="button"
+          className="pos-btn"
+          disabled={busy}
+          onClick={() => void declare('deposit')}
+        >
+          {t('fiscal.cashIn')}
+        </button>
+        <button
+          type="button"
+          className="pos-btn"
+          disabled={busy}
+          onClick={() => void declare('withdraw')}
+        >
+          {t('fiscal.cashOut')}
+        </button>
+      </div>
+      {status ? (
+        <div
+          className={`text-[12px] mt-1 ${status.ok ? 'text-emerald-300' : 'text-rose-300'}`}
+        >
+          {status.text}
+        </div>
+      ) : null}
     </div>
   );
 }

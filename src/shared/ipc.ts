@@ -699,6 +699,18 @@ export interface ApiSettings {
       productId?: string;
     }[]
   >;
+  /**
+   * Declare cash to the tax service: the counted opening float, cash put
+   * in or taken out (lekë). Admins only.
+   */
+  declareCash?(input: {
+    kind: 'opening' | 'deposit' | 'withdraw';
+    amount: number;
+    requestKey?: string;
+  }): Promise<
+    | { ok: true; kind: string; docId: string; fcdc?: string }
+    | { ok: false; error: string; docId?: string }
+  >;
   /** Ping the configured fiscal middleware (easyPos local API). */
   testFiscalConnection?(): Promise<{
     ok: boolean;
