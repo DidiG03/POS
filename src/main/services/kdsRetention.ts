@@ -35,8 +35,10 @@ async function cleanupOrphanKdsRows(tx: any) {
   await tx.$executeRawUnsafe(
     `DELETE FROM "KdsTicket" WHERE NOT EXISTS (SELECT 1 FROM "KdsTicketStation" WHERE "ticketId" = "KdsTicket"."id");`,
   );
+  // Only closed orders: a table still seated keeps its order (and its
+  // number) after "Clear Done", or its next Send would start a new one.
   await tx.$executeRawUnsafe(
-    `DELETE FROM "KdsOrder" WHERE NOT EXISTS (SELECT 1 FROM "KdsTicket" WHERE "orderId" = "KdsOrder"."id");`,
+    `DELETE FROM "KdsOrder" WHERE "closedAt" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "KdsTicket" WHERE "orderId" = "KdsOrder"."id");`,
   );
 }
 

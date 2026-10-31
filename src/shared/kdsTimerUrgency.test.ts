@@ -3,6 +3,7 @@ import {
   kdsElapsedSeconds,
   kdsTimerUrgencyFromElapsed,
   kdsTimerUrgencyFromIso,
+  oldestWaitingFiredAt,
 } from './kdsTimerUrgency';
 
 describe('kdsTimerUrgency', () => {
@@ -34,5 +35,54 @@ describe('kdsTimerUrgency', () => {
 
   it('returns null for invalid ISO', () => {
     expect(kdsTimerUrgencyFromIso('not-a-date')).toBeNull();
+  });
+});
+
+describe('oldestWaitingFiredAt', () => {
+  const card = '2026-10-31T12:00:00.000Z';
+  const later = '2026-10-31T12:25:00.000Z';
+
+  it('a card whose early lines are done times the line sent later', () => {
+    expect(
+      oldestWaitingFiredAt(
+        [
+          { name: 'Soup', bumped: true },
+          { name: 'Fries', kdsFiredAt: later },
+        ],
+        card,
+        { cooker: false },
+      ),
+    ).toBe(later);
+  });
+
+  it('a line still waiting from the first Send keeps the card age', () => {
+    expect(
+      oldestWaitingFiredAt(
+        [{ name: 'Soup' }, { name: 'Fries', kdsFiredAt: later }],
+        card,
+        { cooker: false },
+      ),
+    ).toBe(card);
+  });
+
+  it('on the cooker screen, cooked lines no longer count', () => {
+    expect(
+      oldestWaitingFiredAt(
+        [
+          { name: 'Soup', cookerBumped: true },
+          { name: 'Fries', kdsFiredAt: later },
+        ],
+        card,
+        { cooker: true },
+      ),
+    ).toBe(later);
+  });
+
+  it('nothing waiting: the card time', () => {
+    expect(
+      oldestWaitingFiredAt([{ name: 'Soup', voided: true }], card, {
+        cooker: false,
+      }),
+    ).toBe(card);
   });
 });

@@ -261,6 +261,7 @@ import {
   listMyPaidTickets,
   listMyVoidedTickets,
 } from './services/staffReports';
+import { bumpKdsItem, bumpKdsTicket } from './services/kdsBump';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { recordWrongPinAttempt } from './services/wrongPinAlert';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
@@ -278,7 +279,6 @@ import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
   listWaiterFloorOrders,
-  notifyKdsTicketChanged,
 } from './services/kdsList';
 import {
   ALL_KDS_STATIONS,
@@ -315,16 +315,8 @@ import {
   startKdsRetentionLoop,
   stopKdsRetentionLoop,
 } from './services/kdsRetention';
-import {
-  recallKdsTicket,
-  bumpAllStationItemsInJson,
-} from './services/kdsRecall';
-import {
-  bumpReadyKitchenItems,
-  cookerBumpAllKitchenItems,
-  cookerBumpSingleKitchenItem,
-  isTwoStageKitchen,
-} from '@shared/kdsCooker';
+import { recallKdsTicket } from './services/kdsRecall';
+import { isTwoStageKitchen } from '@shared/kdsCooker';
 
 dotenv.config();
 
@@ -3890,89 +3882,18 @@ ipcHandle('kds:debug', async () => {
   return out;
 });
 
-ipcHandle('kds:bump', async (_e, input) => {
+ipcHandle('kds:bump', async (_e, input, ctx) => {
   assertKdsEnabled();
-  const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
-  const ticketId = Number((input as any)?.ticketId || 0);
-  const cooker = Boolean((input as any)?.cooker);
-  const bumpedById = Number((input as any)?.userId || 0) || null;
-  if (!ticketId) return false;
-  // IMPORTANT: KDS is always local (even when POS is in cloud mode).
-
   await ensureKdsLocalSchema();
   try {
-    const now = new Date();
-    const bumpedAt = now.toISOString();
-    const cookerEnabled = await getCookerEnabled();
-    const twoStage = isTwoStageKitchen(station, cookerEnabled);
-    const ticket = await (prisma as any).kdsTicket
-      .findUnique({
-        where: { id: ticketId },
-        include: { order: true },
-      })
-      .catch(() => null);
-
-    // Two-stage KITCHEN: the cooker screen only flags items `cookerBumped`
-    // (stage 1) and never completes the station; the main screen finalises
-    // just the cooked lines (stage 2).
-    if (twoStage && ticket) {
-      const itemsAll: any[] = Array.isArray(ticket.itemsJson)
-        ? ticket.itemsJson
-        : [];
-      if (cooker) {
-        const nextItems = cookerBumpAllKitchenItems(itemsAll, bumpedAt);
-        await (prisma as any).kdsTicket.update({
-          where: { id: ticketId },
-          data: { itemsJson: nextItems },
-        });
-        notifyKdsTicketChanged(ticket);
-        return true;
-      }
-      const nextItems = bumpReadyKitchenItems(itemsAll, bumpedAt);
-      await (prisma as any).kdsTicket.update({
-        where: { id: ticketId },
-        data: { itemsJson: nextItems },
-      });
-      const remaining = nextItems.filter(
-        (x: any) =>
-          !x?.voided &&
-          !x?.bumped &&
-          String(x?.station || '').toUpperCase() === station,
-      );
-      if (remaining.length === 0) {
-        await (prisma as any).kdsTicketStation.updateMany({
-          where: { ticketId, station, status: 'NEW' },
-          data: {
-            status: 'DONE',
-            bumpedAt: now,
-            ...(bumpedById ? { bumpedById } : {}),
-          },
-        });
-      }
-      notifyKdsTicketChanged(ticket);
-      return true;
-    }
-
-    if (ticket) {
-      const itemsAll: any[] = Array.isArray(ticket.itemsJson)
-        ? ticket.itemsJson
-        : [];
-      const nextItems = bumpAllStationItemsInJson(itemsAll, station, bumpedAt);
-      await (prisma as any).kdsTicket.update({
-        where: { id: ticketId },
-        data: { itemsJson: nextItems },
-      });
-    }
-    const updated = await (prisma as any).kdsTicketStation.updateMany({
-      where: { ticketId, station, status: 'NEW' },
-      data: {
-        status: 'DONE',
-        bumpedAt: now,
-        ...(bumpedById ? { bumpedById } : {}),
-      },
+    const outcome = await bumpKdsTicket({
+      station: (input as any)?.station,
+      ticketId: (input as any)?.ticketId,
+      cooker: Boolean((input as any)?.cooker),
+      // Who bumped: the signed-in user, not whatever id the screen sent.
+      bumpedById: ctx.session?.userId,
     });
-    if (ticket) notifyKdsTicketChanged(ticket);
-    return Boolean(updated?.count);
+    return outcome === 'ok';
   } catch {
     return false;
   }
@@ -4027,83 +3948,18 @@ ipcHandle('kds:setCookerMode', async (_e, input) => {
   }
 });
 
-ipcHandle('kds:bumpItem', async (_e, input) => {
+ipcHandle('kds:bumpItem', async (_e, input, ctx) => {
   assertKdsEnabled();
-  const station = String((input as any)?.station || 'KITCHEN').toUpperCase();
-  const ticketId = Number((input as any)?.ticketId || 0);
-  const itemIdx = Number((input as any)?.itemIdx ?? -1);
-  const cooker = Boolean((input as any)?.cooker);
-  const bumpedById = Number((input as any)?.userId || 0) || null;
-  if (!ticketId || !Number.isFinite(itemIdx) || itemIdx < 0) return false;
   await ensureKdsLocalSchema();
-  const now = new Date();
   try {
-    const cookerEnabled = await getCookerEnabled();
-    const twoStage = isTwoStageKitchen(station, cookerEnabled);
-    const ticket = await (prisma as any).kdsTicket
-      .findUnique({
-        where: { id: ticketId },
-        include: { order: true },
-      })
-      .catch(() => null);
-    if (!ticket) return false;
-    const itemsAll: any[] = Array.isArray(ticket.itemsJson)
-      ? ticket.itemsJson
-      : [];
-    if (itemIdx >= itemsAll.length) return false;
-    const it = itemsAll[itemIdx];
-    if (!it) return false;
-    if (String(it?.station || '').toUpperCase() !== station) return false;
-    if (it?.voided) return true;
-
-    // Two-stage KITCHEN: the cooker screen flags `cookerBumped` (stage 1); the
-    // main screen is blocked from finalising a line the cook hasn't finished.
-    if (twoStage && cooker) {
-      if (it?.cookerBumped) return true;
-      const nextItems = cookerBumpSingleKitchenItem(
-        itemsAll,
-        itemIdx,
-        now.toISOString(),
-      );
-      await (prisma as any).kdsTicket.update({
-        where: { id: ticketId },
-        data: { itemsJson: nextItems },
-      });
-      notifyKdsTicketChanged(ticket);
-      return true;
-    }
-    if (twoStage && !cooker && !it?.cookerBumped) {
-      // Locked: the cook must bump it first.
-      return false;
-    }
-
-    if (it?.bumped) return true;
-    const nextItems = itemsAll.slice();
-    nextItems[itemIdx] = { ...it, bumped: true, bumpedAt: now.toISOString() };
-    await (prisma as any).kdsTicket.update({
-      where: { id: ticketId },
-      data: { itemsJson: nextItems },
+    const outcome = await bumpKdsItem({
+      station: (input as any)?.station,
+      ticketId: (input as any)?.ticketId,
+      itemIdx: (input as any)?.itemIdx,
+      cooker: Boolean((input as any)?.cooker),
+      bumpedById: ctx.session?.userId,
     });
-
-    // If no remaining items for this station, auto-complete the station ticket.
-    const remaining = nextItems.filter(
-      (x: any) =>
-        !x?.voided &&
-        !x?.bumped &&
-        String(x?.station || '').toUpperCase() === station,
-    );
-    if (remaining.length === 0) {
-      await (prisma as any).kdsTicketStation.updateMany({
-        where: { ticketId, station, status: 'NEW' },
-        data: {
-          status: 'DONE',
-          bumpedAt: now,
-          ...(bumpedById ? { bumpedById } : {}),
-        },
-      });
-    }
-    notifyKdsTicketChanged(ticket);
-    return true;
+    return outcome === 'ok';
   } catch {
     return false;
   }
@@ -4292,7 +4148,14 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   } catch {
     // best-effort
   }
-  await applyKdsVoidItem({ userId, area, tableLabel, item }).catch(() => false);
+  // The bill line actually voided (with its line id), so the kitchen strikes
+  // that line and not a same-named one.
+  await applyKdsVoidItem({
+    userId,
+    area,
+    tableLabel,
+    item: voidReport.line ?? item,
+  }).catch(() => false);
   await notifyOwnerOfVoid({ area, tableLabel, actorUserId: userId, message });
   if (voidReport.line) {
     void printVoidSlip({

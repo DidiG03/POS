@@ -13,7 +13,7 @@ function fakePrisma(rows: any[]) {
       updateMany: stationUpdateMany,
     },
     kdsTicket: { update: ticketUpdate },
-    $transaction: vi.fn(async (ops: any[]) => ops),
+    $transaction: vi.fn(async (fn: (tx: any) => unknown) => fn(prisma)),
   };
   return { prisma, ticketUpdate };
 }

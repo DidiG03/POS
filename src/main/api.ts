@@ -132,6 +132,11 @@ import {
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
+import {
+  bumpKdsItem,
+  bumpKdsTicket,
+  type KdsBumpOutcome,
+} from './services/kdsBump';
 import { createKdsTicketFromLog } from './services/kdsCreateTicket';
 import { recordWrongPinAttempt } from './services/wrongPinAlert';
 import { applyKdsVoidItem, applyKdsVoidTicket } from './services/kdsVoid';
@@ -245,7 +250,6 @@ import {
   formatKdsTicketListRows,
   getKdsTicketDetail,
   listWaiterFloorOrders,
-  notifyKdsTicketChanged,
 } from './services/kdsList';
 import {
   enabledStationsFromSettings,
@@ -277,16 +281,8 @@ import {
   listMyPaidTickets,
   listMyVoidedTickets,
 } from './services/staffReports';
-import {
-  recallKdsTicket,
-  bumpAllStationItemsInJson,
-} from './services/kdsRecall';
-import {
-  bumpReadyKitchenItems,
-  cookerBumpAllKitchenItems,
-  cookerBumpSingleKitchenItem,
-  isTwoStageKitchen,
-} from '@shared/kdsCooker';
+import { recallKdsTicket } from './services/kdsRecall';
+import { isTwoStageKitchen } from '@shared/kdsCooker';
 
 /**
  * KITCHEN always runs the two-stage cook → pass (cooker) flow — it's the
@@ -460,6 +456,23 @@ function send(
 
   res.writeHead(code);
   res.end(body);
+}
+
+/**
+ * A kitchen bump's answer. `locked`: the pass tried to finish a line the
+ * cook has not (423, as before). An already-done card is `ok`.
+ */
+function sendKdsBumpOutcome(
+  res: http.ServerResponse,
+  outcome: KdsBumpOutcome,
+  corsOrigin?: string | null,
+) {
+  if (outcome === 'ok') return send(res, 200, { ok: true }, corsOrigin);
+  if (outcome === 'locked')
+    return send(res, 423, { ok: false, error: 'locked' }, corsOrigin);
+  if (outcome === 'not-found')
+    return send(res, 404, { ok: false, error: 'not found' }, corsOrigin);
+  return send(res, 400, { ok: false, error: 'invalid' }, corsOrigin);
 }
 
 /**
@@ -2421,81 +2434,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
         const { station, ticketId, cooker } = await parseJson(req);
-        const st = String(station || 'KITCHEN').toUpperCase();
-        const id = Number(ticketId || 0);
-        if (!id) return send(res, 400, { error: 'invalid' }, corsOrigin);
-        const now = new Date();
-        const bumpedAt = now.toISOString();
-        const cookerEnabled = await getCookerEnabledFromSettings();
-        const twoStage = isTwoStageKitchen(st, cookerEnabled);
-        const ticket = await (prisma as any).kdsTicket
-          .findUnique({
-            where: { id },
-            include: { order: true },
-          })
-          .catch(() => null);
-
-        // Two-stage KITCHEN: cooker screen only flags `cookerBumped` (stage 1);
-        // the main screen finalises just the cooked lines (stage 2).
-        if (twoStage && ticket) {
-          const itemsAll: any[] = Array.isArray(ticket.itemsJson)
-            ? ticket.itemsJson
-            : [];
-          if (cooker) {
-            await (prisma as any).kdsTicket.update({
-              where: { id },
-              data: {
-                itemsJson: cookerBumpAllKitchenItems(itemsAll, bumpedAt),
-              },
-            });
-            notifyKdsTicketChanged(ticket);
-            return send(res, 200, { ok: true }, corsOrigin);
-          }
-          const nextItems = bumpReadyKitchenItems(itemsAll, bumpedAt);
-          await (prisma as any).kdsTicket.update({
-            where: { id },
-            data: { itemsJson: nextItems },
-          });
-          const remaining = nextItems.filter(
-            (x: any) =>
-              !x?.voided &&
-              !x?.bumped &&
-              String(x?.station || '').toUpperCase() === st,
-          );
-          if (remaining.length === 0) {
-            await (prisma as any).kdsTicketStation.updateMany({
-              where: { ticketId: id, station: st, status: 'NEW' },
-              data: {
-                status: 'DONE',
-                bumpedAt: now,
-                bumpedById: auth?.userId || null,
-              },
-            });
-          }
-          notifyKdsTicketChanged(ticket);
-          return send(res, 200, { ok: true }, corsOrigin);
-        }
-
-        if (ticket) {
-          const itemsAll: any[] = Array.isArray(ticket.itemsJson)
-            ? ticket.itemsJson
-            : [];
-          const nextItems = bumpAllStationItemsInJson(itemsAll, st, bumpedAt);
-          await (prisma as any).kdsTicket.update({
-            where: { id },
-            data: { itemsJson: nextItems },
-          });
-        }
-        const updated = await (prisma as any).kdsTicketStation.updateMany({
-          where: { ticketId: id, station: st, status: 'NEW' },
-          data: {
-            status: 'DONE',
-            bumpedAt: now,
-            bumpedById: auth?.userId || null,
-          },
+        const outcome = await bumpKdsTicket({
+          station,
+          ticketId,
+          cooker: Boolean(cooker),
+          bumpedById: auth?.userId,
         });
-        if (ticket) notifyKdsTicketChanged(ticket);
-        return send(res, 200, { ok: Boolean(updated?.count) }, corsOrigin);
+        return sendKdsBumpOutcome(res, outcome, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/kds/recall') {
         const ok = await ensureKdsLocalSchema();
@@ -2523,78 +2468,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
         const { station, ticketId, itemIdx, cooker } = await parseJson(req);
-        const st = String(station || 'KITCHEN').toUpperCase();
-        const id = Number(ticketId || 0);
-        const idx = Number(itemIdx ?? -1);
-        if (!id || !Number.isFinite(idx) || idx < 0)
-          return send(res, 400, { error: 'invalid' }, corsOrigin);
-        const now = new Date();
-        const cookerEnabled = await getCookerEnabledFromSettings();
-        const twoStage = isTwoStageKitchen(st, cookerEnabled);
-        const ticket = await (prisma as any).kdsTicket
-          .findUnique({
-            where: { id },
-            include: { order: true },
-          })
-          .catch(() => null);
-        if (!ticket) return send(res, 404, { error: 'not found' }, corsOrigin);
-        const itemsAll: any[] = Array.isArray(ticket.itemsJson)
-          ? ticket.itemsJson
-          : [];
-        if (idx >= itemsAll.length)
-          return send(res, 400, { error: 'invalid' }, corsOrigin);
-        const it = itemsAll[idx];
-        if (!it || String(it?.station || '').toUpperCase() !== st)
-          return send(res, 400, { error: 'invalid' }, corsOrigin);
-
-        // Two-stage KITCHEN: cooker flags `cookerBumped`; main is blocked from
-        // finalising a line the cook hasn't finished yet.
-        if (twoStage && cooker) {
-          if (!it?.voided && !it?.cookerBumped) {
-            await (prisma as any).kdsTicket.update({
-              where: { id },
-              data: {
-                itemsJson: cookerBumpSingleKitchenItem(
-                  itemsAll,
-                  idx,
-                  now.toISOString(),
-                ),
-              },
-            });
-          }
-          notifyKdsTicketChanged(ticket);
-          return send(res, 200, { ok: true }, corsOrigin);
-        }
-        if (twoStage && !cooker && !it?.voided && !it?.cookerBumped) {
-          return send(res, 423, { ok: false, error: 'locked' }, corsOrigin);
-        }
-
-        if (!it?.voided && !it?.bumped) {
-          const next = itemsAll.slice();
-          next[idx] = { ...it, bumped: true, bumpedAt: now.toISOString() };
-          await (prisma as any).kdsTicket.update({
-            where: { id },
-            data: { itemsJson: next },
-          });
-          const remaining = next.filter(
-            (x: any) =>
-              !x?.voided &&
-              !x?.bumped &&
-              String(x?.station || '').toUpperCase() === st,
-          );
-          if (remaining.length === 0) {
-            await (prisma as any).kdsTicketStation.updateMany({
-              where: { ticketId: id, station: st, status: 'NEW' },
-              data: {
-                status: 'DONE',
-                bumpedAt: now,
-                bumpedById: auth?.userId || null,
-              },
-            });
-          }
-        }
-        notifyKdsTicketChanged(ticket);
-        return send(res, 200, { ok: true }, corsOrigin);
+        const outcome = await bumpKdsItem({
+          station,
+          ticketId,
+          itemIdx,
+          cooker: Boolean(cooker),
+          bumpedById: auth?.userId,
+        });
+        return sendKdsBumpOutcome(res, outcome, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/kds/cooker-mode') {
         const enabled = await getCookerEnabledFromSettings();
@@ -3596,11 +3477,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             whole: false,
           });
         }
+        // The bill line actually voided (with its line id), so the kitchen
+        // strikes that line and not a same-named one.
         await applyKdsVoidItem({
           userId: Number(userId),
           area: String(area),
           tableLabel: String(tableLabel),
-          item,
+          item: voidReport.line ?? item,
         }).catch(() => false);
         try {
           broadcastTicketsChanged({
