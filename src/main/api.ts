@@ -741,11 +741,11 @@ async function failLanLogin(
     reason: opts.reason,
     userId: opts.userId ?? null,
     ipLocked: outcome.ipLocked,
-    accountLocked: outcome.adminLocked,
+    accountLocked: outcome.accountLocked,
     deviceLocked: outcome.deviceLocked,
   });
   const who = opts.targetName || (opts.userId ? `#${opts.userId}` : '');
-  const what = outcome.adminLocked
+  const what = outcome.accountLocked
     ? `LAN sign-in for "${who}" is locked on every device for ${Math.round(ACCOUNT_LOCK_MS / 60_000)} minutes`
     : outcome.deviceLocked
       ? `LAN sign-in from ${remoteIp || 'an unknown device'} is locked for ${Math.round(IP_LOCK_MS / 60_000)} minutes`

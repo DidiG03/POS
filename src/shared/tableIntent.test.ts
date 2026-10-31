@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ageSinceTap, intentAtFromAge, resolveHostIntent } from './tableIntent';
+import {
+  MAX_TABLE_INTENT_AGE_MS,
+  ageSinceTap,
+  intentAtFromAge,
+  resolveHostIntent,
+} from './tableIntent';
 
 const NOW = 1_790_000_000_000;
 
@@ -26,5 +31,12 @@ describe('table intent clock', () => {
   it('still accepts an older client that sent its own clock', () => {
     expect(resolveHostIntent({ intentAt: NOW - 2_000 }, NOW)).toBe(NOW - 2_000);
     expect(resolveHostIntent({}, NOW)).toBeUndefined();
+  });
+
+  it("keeps an older client's clock within the till's now and the age cap", () => {
+    expect(resolveHostIntent({ intentAt: NOW + 60_000 }, NOW)).toBe(NOW);
+    expect(
+      resolveHostIntent({ intentAt: NOW - 10 * MAX_TABLE_INTENT_AGE_MS }, NOW),
+    ).toBe(NOW - MAX_TABLE_INTENT_AGE_MS);
   });
 });

@@ -143,5 +143,3 @@ export function captureMessage(
     console.error('[Sentry] Failed to capture message', error);
   }
 }
-
-export const sentryEnabled = () => enabled;

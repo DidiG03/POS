@@ -9,7 +9,9 @@ import { localDayStart } from './kdsRetention';
 
 function unbumpItem(it: any) {
   if (!it?.bumped) return it;
-  const { bumped, bumpedAt, ...rest } = it;
+  const rest = { ...it };
+  delete rest.bumped;
+  delete rest.bumpedAt;
   return rest;
 }
 

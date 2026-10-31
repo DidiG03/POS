@@ -85,10 +85,6 @@ function withVaultOp<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export function isVaultOpen(): boolean {
-  return unlockedDek != null;
-}
-
 export function isVaultRequired(): boolean {
   const flag = String(process.env.POS_VAULT || '').trim();
   if (flag === '0') return false;

@@ -298,11 +298,3 @@ export async function persistCompanionBackendHost(input: {
     notifyBackendHostChanged();
   }
 }
-
-/** @deprecated Use persistCompanionBackendHost */
-export async function persistKdsBackendHost(input: {
-  host: string;
-  httpPort: number;
-}): Promise<void> {
-  return persistCompanionBackendHost(input);
-}

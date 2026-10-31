@@ -67,8 +67,6 @@ export interface SettingsDTO {
     language?: 'en' | 'sq';
     /** Till appearance. Default dark. */
     theme?: 'light' | 'dark';
-    /** @deprecated VAT follows `fiscal.enabled`; not stored in preferences. */
-    vatEnabled?: boolean;
     serviceCharge?: {
       enabled?: boolean;
       mode?: 'PERCENT' | 'AMOUNT';
@@ -363,7 +361,6 @@ export const LoginWithPinInputSchema = z.object({
   userId: z.number().optional(),
   pairingCode: z.string().min(4).max(12).optional(),
 });
-export type LoginWithPinInput = z.infer<typeof LoginWithPinInputSchema>;
 
 export const CreateUserInputSchema = z.object({
   displayName: z.string().min(1),

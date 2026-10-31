@@ -400,8 +400,5 @@ export function stopPrinterStationLoop(): void {
   started = false;
 }
 
-/** Allow callers to check exhaustion bound — used by tests + future UI. */
-export const PRINT_RETRY_MAX_ATTEMPTS = RETRY_MAX_ATTEMPTS;
-
 /** Tests only: one pass of the loop. */
 export const runPrinterStationTickForTests = tick;

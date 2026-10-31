@@ -50,26 +50,6 @@ export function paidSalesNotOnTickets<T extends { orderId: number }>(
   return sales.filter((sale) => !usedOrderIds.has(Number(sale.orderId)));
 }
 
-/** @deprecated use keepCanonicalPaidOrders */
-export function dedupePaidOrdersBySettlement<
-  T extends {
-    id?: number;
-    userId?: number | null;
-    area?: string | null;
-    tableLabel?: string | null;
-    total?: number | null;
-    closedAt?: unknown;
-    createdAt?: unknown;
-    payments?: Array<{
-      metaJson?: unknown;
-      fiscalNslf?: string | null;
-      fiscalNivf?: string | null;
-    }>;
-  },
->(orders: T[]): T[] {
-  return keepCanonicalPaidOrders(orders);
-}
-
 export type AdminTicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
 
 /**
@@ -395,7 +375,7 @@ async function staffLedger(
     take: 8000,
   }).catch(() => []);
   const sittings = staffSittings(logs as any[]);
-  const allOrders = dedupePaidOrdersBySettlement(
+  const allOrders = keepCanonicalPaidOrders(
     await loadPaidOrders({
       startIso: lookbackIso,
       endIso: input?.endIso,

@@ -13,7 +13,6 @@ import {
   lanLoginAccountLockedFor,
   lanLoginDeviceLockedFor,
   lanLoginIpLockedFor,
-  recordLanLoginFailure,
 } from './lanLoginThrottle';
 
 const T0 = 1_790_000_000_000;
@@ -90,7 +89,7 @@ describe('LAN login throttle', () => {
     for (let i = 0; i < ACCOUNT_LOCK_AFTER_FAILURES; i++) {
       const r = failOnce(`10.0.1.${i}`, 7);
       expect(r.ipLocked).toBe(false);
-      locked = r.adminLocked;
+      locked = r.accountLocked;
     }
     expect(locked).toBe(true);
     expect(lanLoginAccountLockedFor(7, T0)).toBe(ACCOUNT_LOCK_MS);
@@ -117,7 +116,7 @@ describe('LAN login throttle', () => {
 
   it('pairing misses (account 0) lock the device for sign-in', () => {
     for (let i = 0; i < LOCK_AFTER_FAILURES; i++) {
-      recordLanLoginFailure('10.0.0.5', {}, T0);
+      failOnce('10.0.0.5', 0);
     }
     expect(lanLoginIpLockedFor('10.0.0.5', T0)).toBe(IP_LOCK_MS);
   });

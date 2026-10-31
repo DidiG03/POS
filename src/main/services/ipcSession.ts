@@ -293,17 +293,6 @@ export async function pruneExpiredSessions(): Promise<number> {
   return removed;
 }
 
-/**
- * Constant-time comparison helper for callers that need to check a token
- * against a known value without leaking length/prefix through timing.
- */
-export function tokensMatch(a: string, b: string): boolean {
-  const bufA = Buffer.from(hashToken(String(a || '')), 'hex');
-  const bufB = Buffer.from(hashToken(String(b || '')), 'hex');
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
 /** Test seam: forget everything held in memory. */
 export function __resetSessionsForTests(): void {
   sessionsByTokenHash.clear();

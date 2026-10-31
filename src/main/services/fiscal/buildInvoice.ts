@@ -1,12 +1,11 @@
 /**
  * Builders for each document type the API accepts.
  *
- * One builder per type rather than a single bag of optional fields,
- * because the types are not variations on a theme — an ORDER must have no
- * payment, a SUMMARY must have no articles, an EXPORT must have a foreign
- * buyer and a supply period. Expressing that as "pass whatever you have"
- * is how a SUMMARY ends up carrying articles and the tax service rejects
- * an invoice the till has already collected money for.
+ * The till files normal sales, electronic invoices and correctives. One
+ * builder per type rather than a single bag of optional fields: expressing
+ * the types as "pass whatever you have" is how a document ends up carrying
+ * fields its type forbids and the tax service rejects an invoice the till
+ * has already collected money for.
  *
  * Every builder validates before returning, so an invalid document cannot
  * reach the point of having a docId spent on it.
@@ -24,15 +23,12 @@ import {
   type InvoicePayment,
   type Rebate,
   type RegisterInvoiceRequest,
-  type SummaryInvoiceRef,
-  type SupplyPeriod,
 } from './apiTypes';
 import { assertValidDocId } from './docId';
 import {
   assertValidRegisterInvoice,
   computeInvoiceTotal,
   normalizeNuis,
-  TOTAL_TOLERANCE,
 } from './validate';
 
 export interface BaseInvoiceInput {
@@ -132,146 +128,6 @@ export function buildNormalInvoice(
     ...base(input),
     articles: input.articles,
     payment: input.payment,
-  };
-  assertValidRegisterInvoice(request);
-  return request;
-}
-
-/* ------------------------------------------------------------------ *
- * ORDER
- * ------------------------------------------------------------------ */
-
-export interface OrderInvoiceInput extends BaseInvoiceInput {
-  articles: InvoiceArticle[];
-}
-
-/**
- * An order: articles with no payment at all.
- *
- * `payment` is not set to `[]` — the key is absent, which is what makes
- * the API generate the document as an ORDER. An empty array is a payment
- * array that fails the total check.
- */
-export function buildOrderInvoice(
-  input: OrderInvoiceInput,
-): RegisterInvoiceRequest {
-  const request: RegisterInvoiceRequest = {
-    ...base(input, 'ORDER'),
-    articles: input.articles,
-  };
-  assertValidRegisterInvoice(request);
-  return request;
-}
-
-/* ------------------------------------------------------------------ *
- * SUMMARY
- * ------------------------------------------------------------------ */
-
-export interface SummaryInvoiceInput extends BaseInvoiceInput {
-  /** IICs of the ORDER invoices being settled. */
-  summaryInvoices: SummaryInvoiceRef[];
-  /** Must equal the referenced ORDER total exactly. */
-  total: number;
-  payment: InvoicePayment[];
-}
-
-/**
- * A summary invoice settling previously issued ORDER documents.
- *
- * Carries no articles; the totals come from the referenced orders. The
- * stated total is checked against the payment array here, and the caller is
- * responsible for it matching the orders — see `assertSummaryMatchesOrders`.
- */
-export function buildSummaryInvoice(
-  input: SummaryInvoiceInput,
-): RegisterInvoiceRequest {
-  const request: RegisterInvoiceRequest = {
-    ...base(input, 'SUMMARY'),
-    summaryInvoices: input.summaryInvoices,
-    total: roundMoney(input.total),
-    payment: input.payment,
-  };
-  assertValidRegisterInvoice(request);
-  return request;
-}
-
-/**
- * Confirm a SUMMARY's total against the orders it references.
- *
- * The API requires an exact match and rejects the document otherwise. This
- * is separate from the builder because it needs the order totals, which
- * only the caller can look up.
- */
-export function assertSummaryMatchesOrders(input: {
-  total: number;
-  orderTotals: number[];
-}): void {
-  const orders = roundMoney(
-    input.orderTotals.reduce((sum, n) => sum + (Number(n) || 0), 0),
-  );
-  const stated = roundMoney(input.total);
-  if (Math.abs(roundMoney(stated - orders)) > TOTAL_TOLERANCE) {
-    throw new Error(
-      `A SUMMARY invoice must equal the ORDER invoices it settles: stated ${stated.toFixed(2)}, referenced orders total ${orders.toFixed(2)}.`,
-    );
-  }
-}
-
-/* ------------------------------------------------------------------ *
- * SELFISSUE
- * ------------------------------------------------------------------ */
-
-export interface SelfIssueInvoiceInput extends BaseInvoiceInput {
-  articles: InvoiceArticle[];
-  payment: InvoicePayment[];
-  selfIssueType: string;
-  /** On a self-issued invoice the "buyer" block carries the supplier. */
-  buyer: InvoiceBuyer;
-  reverseCharge: boolean;
-}
-
-export function buildSelfIssueInvoice(
-  input: SelfIssueInvoiceInput,
-): RegisterInvoiceRequest {
-  const request: RegisterInvoiceRequest = {
-    ...base(input, 'SELFISSUE'),
-    articles: input.articles,
-    payment: input.payment,
-    selfIssueType: String(input.selfIssueType || '').trim(),
-    reverseCharge: input.reverseCharge === true,
-  };
-  assertValidRegisterInvoice(request);
-  return request;
-}
-
-/* ------------------------------------------------------------------ *
- * EXPORT
- * ------------------------------------------------------------------ */
-
-export interface ExportInvoiceInput extends BaseInvoiceInput {
-  articles: InvoiceArticle[];
-  payment: InvoicePayment[];
-  /** Must be foreign. */
-  buyer: InvoiceBuyer;
-  supplyPeriod: SupplyPeriod;
-}
-
-/**
- * An export invoice. Every line is forced to the export band `J` — leaving
- * a domestic code on an export line is accepted by nobody and is the
- * easiest way to file an export as a taxable domestic sale.
- */
-export function buildExportInvoice(
-  input: ExportInvoiceInput,
-): RegisterInvoiceRequest {
-  const request: RegisterInvoiceRequest = {
-    ...base(input, 'EXPORT'),
-    articles: input.articles.map((article) => ({
-      ...article,
-      vatCode: 'J' as const,
-    })),
-    payment: input.payment,
-    supplyPeriod: input.supplyPeriod,
   };
   assertValidRegisterInvoice(request);
   return request;
@@ -384,27 +240,6 @@ export function buildCorrectiveInvoice(
   };
   assertValidRegisterInvoice(request);
   return request;
-}
-
-/**
- * P9/P10 reference an invoice that must itself have an EIC.
- *
- * A corrective pointed at a non-electronic invoice is rejected by the tax
- * service, and the reason it gives is not obviously about the reference.
- */
-export function assertCorrectiveTargetIsElectronic(input: {
-  process: ElectronicProcess;
-  targetEic?: string;
-  targetIic?: string;
-}): void {
-  if (input.process !== 'P9' && input.process !== 'P10') return;
-  if (!String(input.targetEic || '').trim()) {
-    throw new Error(
-      `Process ${input.process} must reference an electronic invoice, but invoice ${
-        input.targetIic || '(unknown IIC)'
-      } has no EIC recorded. It cannot be corrected or cancelled electronically.`,
-    );
-  }
 }
 
 /** The total a built request declares. Exposed for reporting and receipts. */

@@ -32,6 +32,7 @@ import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { TicketSalePanel } from '../components/TicketSalePanel';
 import { PageSpinner } from '../../components/PageSpinner';
 import { addDays } from '../../utils/calendarMath';
+import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 
 type TicketStatus = 'PAID' | 'VOIDED' | 'ACTIVE' | 'TRANSFERRED';
 
@@ -632,7 +633,7 @@ export default function AdminUserTicketsPage() {
         if (cancelled) return;
         const sc = s?.preferences?.serviceCharge || {};
         setPrefs({
-          vatEnabled: Boolean(s?.fiscal?.enabled),
+          vatEnabled: isVatEnabledFromSettings(s),
           serviceCharge: {
             enabled: Boolean(sc.enabled),
             mode:

@@ -5,7 +5,6 @@ import {
   type KdsStation,
 } from '@shared/kdsStations';
 import {
-  COOKER_STATION,
   isTwoStageKitchen,
   kdsStationRowVisible,
   ticketLogLooksFullyVoided,
@@ -247,7 +246,6 @@ export async function getKdsTicketDetail(
   const o = row.order;
   const area = String(o?.area || '');
   const tableLabel = String(o?.tableLabel || '');
-  const tableKey = `${area}:${tableLabel}`;
 
   const ownerId = await getSessionOwnerId(area, tableLabel);
   const userIds = [Number(row.userId), ownerId != null ? ownerId : 0].filter(
