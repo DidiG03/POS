@@ -9,6 +9,7 @@
  * checked here, when saved, with a message the owner can act on.
  */
 import { fiscalEnvironmentOf, type FiscalEnvironment } from './fiscal/config';
+import { paymentTypeMapProblem } from './fiscal/paymentMethod';
 
 /** The currencies the till can sell in (the Admin currency list). */
 export const SUPPORTED_CURRENCIES = [
@@ -152,6 +153,11 @@ export function assertSettingsPatch(
         FISCAL_ADDRESS_REQUIRED,
       );
     }
+  }
+
+  if (input.fiscal && has(input.fiscal, 'paymentTypeMap')) {
+    const problem = paymentTypeMapProblem(input.fiscal.paymentTypeMap);
+    if (problem) refuse(problem);
   }
 
   if (!input.fiscal || typeof input.fiscal !== 'object') return undefined;

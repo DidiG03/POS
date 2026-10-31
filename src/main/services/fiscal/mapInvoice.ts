@@ -404,10 +404,12 @@ function buildPaymentArray(
   articles: EasyPosInvoiceDraft['articles'],
   invoiceRebate: Rebate | undefined,
   payload: TicketPrintPayload,
+  settings?: SettingsDTO,
 ): Array<{ type: string; amount: number }> {
   const meta: any = payload.meta || {};
   const method = mapPaymentMethod(
     String(meta.method || meta.paymentMethod || 'CASH'),
+    settings,
   );
   const fromLines =
     articles.length > 0 ? invoiceTotalOf(articles, invoiceRebate) : undefined;
@@ -709,7 +711,12 @@ function cloudInvoiceBody(
   const lek = invoiceInLek(articles, invoiceRebate, settings);
   return {
     articles: lek.articles,
-    payment: buildPaymentArray(lek.articles, lek.invoiceRebate, payload),
+    payment: buildPaymentArray(
+      lek.articles,
+      lek.invoiceRebate,
+      payload,
+      settings,
+    ),
     ...(lek.invoiceRebate ? { invoiceRebate: lek.invoiceRebate } : {}),
   };
 }
@@ -869,6 +876,7 @@ export function buildEasyPosInvoiceDraft(
   const meta: any = payload.meta || {};
   const method = mapPaymentMethod(
     String(meta.method || meta.paymentMethod || 'CASH'),
+    settings,
   );
   const totalAfter = Number(meta.totalAfter);
   const total = Number(meta.total);

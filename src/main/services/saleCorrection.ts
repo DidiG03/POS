@@ -594,7 +594,7 @@ async function fileCorrective(input: {
         detail: `Corrective not filed automatically: the struck lines total ${amount.toFixed(2)} but the sale changes by ${input.amountDelta.toFixed(2)}. File it in easyPos.`,
       };
     }
-    const method = mapPaymentMethod(input.method || 'CASH');
+    const method = mapPaymentMethod(input.method || 'CASH', input.settings);
     // In lekë, like the invoice it corrects (`invoiceInLek`): a euro venue
     // used to file a corrective's euro amounts as lekë.
     const lek = invoiceInLek(articles, undefined, input.settings);

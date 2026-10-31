@@ -90,6 +90,30 @@ describe('QA round 6, #3: three items at 3.333 € on a 10.00 € receipt', () =
   });
 });
 
+describe('QA round 6: a gift card payment is filed as the venue maps it', () => {
+  it('SVOUCHER when mapped, OTHER when not', () => {
+    const payload = {
+      ...sale([{ name: 'Kafe', qty: 1, unitPrice: 2 }]),
+    };
+    payload.meta.method = 'GIFT_CARD';
+    const plain = buildEasyPosCloudInvoiceDraft(payload, euroVenue(100), {
+      docId: 'doc-gift-1',
+    });
+    expect(plain.payment.map((p) => p.type)).toEqual(['OTHER']);
+    const mapped = {
+      ...euroVenue(100),
+      fiscal: {
+        ...(euroVenue(100) as any).fiscal,
+        paymentTypeMap: { GIFT_CARD: 'SVOUCHER' },
+      },
+    } as SettingsDTO;
+    const draft = buildEasyPosCloudInvoiceDraft(payload, mapped, {
+      docId: 'doc-gift-2',
+    });
+    expect(draft.payment.map((p) => p.type)).toEqual(['SVOUCHER']);
+  });
+});
+
 describe('F6b: a lookalike easyPos address is refused when saved', () => {
   it.each([
     'https://api.easypos.al.example.com/fiscalisation-service/v1',
