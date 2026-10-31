@@ -96,7 +96,7 @@ const EN: PrintCopy = {
   poweredBy: 'Powered by OneTap POS',
   fiscalPendingTitle: 'FISKALIZIMI NE PRITJE',
   fiscalPendingBody:
-    'Invoice will be sent to the tax service when the connection is back.',
+    'Not yet fiscalised: no fiscal code yet. The invoice will be sent to the tax service, and the fiscal receipt can then be printed.',
   fiscalRegistered: 'FISKALIZUAR',
   shiftReport: 'SHIFT REPORT',
   opened: 'Opened',
@@ -143,7 +143,8 @@ const SQ: PrintCopy = {
   thankYou: 'Faleminderit!',
   poweredBy: 'Mundësuar nga OneTap POS',
   fiscalPendingTitle: 'FISKALIZIMI NË PRITJE',
-  fiscalPendingBody: 'Fatura do të dërgohet te tatimet kur të kthehet lidhja.',
+  fiscalPendingBody:
+    'E pafiskalizuar ende: pa kod fiskal. Fatura do të dërgohet te tatimet dhe më pas mund të printohet fatura fiskale.',
   fiscalRegistered: 'FISKALIZUAR',
   shiftReport: 'RAPORTI I TURNIT',
   opened: 'Hapur',

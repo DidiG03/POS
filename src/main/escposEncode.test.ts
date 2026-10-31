@@ -750,6 +750,36 @@ describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
     expect(text).toMatch(/VAT +-83\.33/);
   });
 
+  it.each(['failed', 'review', 'unconfirmed', undefined])(
+    'QA round 6: a fiscal receipt without codes (status %s) says it is not yet fiscalised',
+    (fiscalStatus) => {
+      const meta: Record<string, unknown> = {
+        fiscalStatus,
+        fiscalNivf: undefined,
+        fiscalNslf: undefined,
+      };
+      const text = buildEscposTicket(paid(meta), settings).toString('latin1');
+      expect(text).toContain('FISKALIZIMI NE PRITJE');
+      expect(text).toContain('Not yet fiscalised');
+      expect(text).not.toContain('NIVF:');
+      expect(buildHtmlReceipt(paid(meta), settings)).toContain(
+        'Not yet fiscalised',
+      );
+    },
+  );
+
+  it('QA round 6: a venue that does not fiscalise prints no such mark', () => {
+    const text = buildEscposTicket(
+      paid({
+        fiscalEnabled: undefined,
+        fiscalNivf: undefined,
+        fiscalStatus: undefined,
+      }),
+      settings,
+    ).toString('latin1');
+    expect(text).not.toContain('FISKALIZIMI NE PRITJE');
+  });
+
   it('QA round 6: a corrective slip states its invoice number, NIPT, operator, TCR and software code', () => {
     const text = buildEscposTicket(
       {

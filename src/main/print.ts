@@ -17,7 +17,7 @@ import {
 import {
   fiscalTinFromSettings,
   fiscalVerificationQr,
-  isFiscalPending,
+  receiptNotYetFiscalised,
   isFiscalRegistered,
 } from '@shared/fiscalReceipt';
 import { dualTotalsFromSettings } from '@shared/paymentDisplay';
@@ -793,7 +793,7 @@ export function buildEscposTicket(
     const fiscalNslf = String(meta?.fiscalNslf || '').trim();
     const fiscalLink = String(meta?.fiscalLink || '').trim();
     const fiscalQrCode = String((meta as any)?.fiscalQrCode || '').trim();
-    if (meta?.fiscalEnabled && isFiscalPending(meta as any)) {
+    if (receiptNotYetFiscalised(meta as any)) {
       lines.push(escposText(`${layout.sep}\n`));
       lines.push(cmdAlign('center'));
       lines.push(cmdBold(true));
@@ -1000,9 +1000,7 @@ export function buildHtmlReceipt(
   const fiscalKind = kind === 'CORRECTION' ? 'PAYMENT' : kind;
   const fiscalBlock =
     correctionTitle +
-    (fiscalKind === 'PAYMENT' &&
-    meta?.fiscalEnabled &&
-    isFiscalPending(meta as any)
+    (fiscalKind === 'PAYMENT' && receiptNotYetFiscalised(meta as any)
       ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalPendingTitle)}</div><div class="small">${safe(copy.fiscalPendingBody)}</div>`
       : fiscalKind === 'PAYMENT' &&
           meta?.fiscalEnabled &&
