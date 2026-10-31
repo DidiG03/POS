@@ -107,6 +107,8 @@ const api: Api = {
     getReview: (input) => ipcRenderer.invoke('admin:getReview', input),
   },
   kds: {
+    actionLog: (limit?: number) =>
+      ipcRenderer.invoke('kds:actionLog', { limit }),
     openWindow: () => ipcRenderer.invoke('kds:openWindow'),
     listTickets: (input: {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';

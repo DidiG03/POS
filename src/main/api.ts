@@ -283,6 +283,12 @@ import {
   listMyVoidedTickets,
 } from './services/staffReports';
 import { recallKdsTicket } from './services/kdsRecall';
+import {
+  KDS_MANAGER_REQUIRED,
+  kdsClearAllowedWithoutPin,
+  listKdsActions,
+  recordKdsAction,
+} from './services/kdsPermissions';
 import { isTwoStageKitchen } from '@shared/kdsCooker';
 
 /**
@@ -457,6 +463,18 @@ function send(
 
   res.writeHead(code);
   res.end(body);
+}
+
+/** Who a kitchen request came from, for the kitchen action log. */
+function kdsActor(auth: AuthContext): {
+  actorUserId: number | null;
+  via: 'display' | 'staff';
+} {
+  const role = String((auth as any)?.role || '').toUpperCase();
+  const userId = Number((auth as any)?.userId || 0) || null;
+  return role === 'KDS' || !userId
+    ? { actorUserId: null, via: 'display' }
+    : { actorUserId: userId, via: 'staff' };
 }
 
 /**
@@ -2441,6 +2459,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           cooker: Boolean(cooker),
           bumpedById: auth?.userId,
         });
+        void recordKdsAction({
+          action: 'bump',
+          station: String(station || 'KITCHEN'),
+          ticketId: Number(ticketId) || null,
+          itemIdx: null,
+          ...kdsActor(auth),
+          result: outcome,
+        });
         return sendKdsBumpOutcome(res, outcome, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/kds/recall') {
@@ -2453,16 +2479,68 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           itemIdx,
           cooker: Boolean(cooker),
         });
+        void recordKdsAction({
+          action: 'recall',
+          station: String(station || 'KITCHEN'),
+          ticketId: Number(result?.ticketId || ticketId) || null,
+          itemIdx: itemIdx != null ? Number(itemIdx) : null,
+          ...kdsActor(auth),
+          result: result?.ok ? 'ok' : 'nothing',
+        });
         return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/kds/clear-done') {
         const ok = await ensureKdsLocalSchema();
         if (!ok) return send(res, 503, { error: 'kds not ready' }, corsOrigin);
-        const { station } = await parseJson(req);
+        const { station, managerPin } = await parseJson(req);
+        // Deleting a station's finished cards needs a manager: signed in,
+        // or their PIN entered on the display (QA round 6, #8).
+        let approvedById: number | null = null;
+        if (!kdsClearAllowedWithoutPin(auth?.role)) {
+          const remoteIp = String(req.socket.remoteAddress || '').trim();
+          const answer = String(managerPin ?? '').trim()
+            ? await checkManagerPinFromLan({
+                pin: managerPin,
+                remoteIp,
+                lan: !isLoopback(remoteIp),
+                onFail: (outcome) =>
+                  failLanLogin(remoteIp, outcome, {
+                    reason: 'pin',
+                  }),
+              })
+            : null;
+          if (answer?.kind !== 'approved') {
+            return send(
+              res,
+              403,
+              {
+                ok: false,
+                code: KDS_MANAGER_REQUIRED,
+                error: managerPin
+                  ? 'Wrong manager PIN.'
+                  : 'A manager has to approve clearing the Done cards.',
+                ...(answer?.kind === 'locked'
+                  ? { lockedForMs: answer.lockedForMs }
+                  : {}),
+              },
+              corsOrigin,
+            );
+          }
+          approvedById = answer.admin.id;
+        }
         const result = await purgeKdsDoneTicketsForStation(
           prisma,
           String(station || 'KITCHEN'),
         );
+        void recordKdsAction({
+          action: 'clear-done',
+          station: String(station || 'KITCHEN'),
+          ticketId: null,
+          itemIdx: null,
+          ...kdsActor(auth),
+          approvedById,
+          result: `${result.purgedDoneRows} cleared`,
+        });
         return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/kds/bump-item') {
@@ -2476,7 +2554,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           cooker: Boolean(cooker),
           bumpedById: auth?.userId,
         });
+        void recordKdsAction({
+          action: 'bump-item',
+          station: String(station || 'KITCHEN'),
+          ticketId: Number(ticketId) || null,
+          itemIdx: Number(itemIdx),
+          ...kdsActor(auth),
+          result: outcome,
+        });
         return sendKdsBumpOutcome(res, outcome, corsOrigin);
+      }
+      // Who bumped, recalled and cleared what (admins only).
+      if (req.method === 'GET' && pathname === '/kds/action-log') {
+        const limit = Number(parsed.query.limit || 200);
+        return send(res, 200, await listKdsActions(limit), corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/kds/cooker-mode') {
         const enabled = await getCookerEnabledFromSettings();

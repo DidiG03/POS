@@ -156,6 +156,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'covers:save': { allow: POS },
 
   // ------------------------------------------------------------------ kds
+  'kds:actionLog': { allow: ADMIN },
   'kds:bump': { allow: KITCHEN, windows: KDS_WINDOWS },
   'kds:bumpItem': { allow: KITCHEN, windows: KDS_WINDOWS },
   'kds:clearDone': { allow: KITCHEN, windows: KDS_WINDOWS },

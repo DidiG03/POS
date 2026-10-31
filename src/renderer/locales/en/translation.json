@@ -461,6 +461,10 @@
     "pairHint": "Enter the pairing code shown in OneTap Admin → Settings on the till.",
     "pairSubmit": "Pair display",
     "pairFindTill": "Find another till",
+    "clearPinTitle": "Manager PIN",
+    "clearPinHint": "Clearing the Done cards needs a manager. Enter a manager PIN.",
+    "clearPinSubmit": "Clear Done",
+    "clearPinWrong": "Wrong manager PIN.",
     "pairWrongCode": "That pairing code is not right. Check it in Admin → Settings."
   },
   "tables": {

@@ -1017,6 +1017,8 @@ export interface KdsTicketDetailDTO {
 
 export interface ApiKds {
   openWindow(): Promise<boolean>;
+  /** Admins: who bumped, recalled and cleared what, newest first. */
+  actionLog?(limit?: number): Promise<unknown[]>;
   /** LAN kitchen displays only: pair with the till's pairing code. */
   pair?(pairingCode: string): Promise<boolean>;
   listTickets(input: {
@@ -1053,7 +1055,15 @@ export interface ApiKds {
   }): Promise<boolean>;
   clearDone(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
-  }): Promise<{ ok: boolean; purgedDoneRows: number }>;
+    /** A manager's PIN: clearing needs a manager (QA round 6, #8). */
+    managerPin?: string;
+  }): Promise<{
+    ok: boolean;
+    purgedDoneRows: number;
+    /** `MANAGER_REQUIRED`: ask for a manager PIN and try again. */
+    code?: string;
+    error?: string;
+  }>;
   getTicketDetail(input: {
     ticketId: number;
   }): Promise<KdsTicketDetailDTO | null>;

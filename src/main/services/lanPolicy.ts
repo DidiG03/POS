@@ -30,6 +30,8 @@ export interface LanRoutePolicy {
   note?: string;
 }
 
+import { KDS_STAFF_ROLES } from './kdsPermissions';
+
 const ADMIN = ['ADMIN'] as const;
 const POS = ['ADMIN', 'CASHIER', 'WAITER'] as const;
 const POS_AND_HOST = ['ADMIN', 'CASHIER', 'WAITER', 'HOST'] as const;
@@ -99,10 +101,13 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
     allow: 'public',
     note: 'till discovery probe: app id and name only; counts need a session or paired display',
   },
-  'POST /kds/bump': { allow: 'session' },
-  'POST /kds/bump-item': { allow: 'session' },
-  'POST /kds/recall': { allow: 'session' },
-  'POST /kds/clear-done': { allow: 'session' },
+  // Kitchen and bar staff or a paired display; not waiters (QA round 6,
+  // #8). Clear Done also needs a manager (`kdsPermissions.ts`).
+  'POST /kds/bump': { allow: KDS_STAFF_ROLES },
+  'POST /kds/bump-item': { allow: KDS_STAFF_ROLES },
+  'POST /kds/recall': { allow: KDS_STAFF_ROLES },
+  'POST /kds/clear-done': { allow: KDS_STAFF_ROLES },
+  'GET /kds/action-log': { allow: ADMIN },
   'POST /kds/cooker-mode': { allow: ['ADMIN', 'KDS'] },
   'GET /kds/floor-orders': { allow: POS },
 

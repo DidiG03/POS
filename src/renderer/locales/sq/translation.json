@@ -461,6 +461,10 @@
     "pairHint": "Shkruani kodin e lidhjes që shfaqet te OneTap Admin → Cilësimet në arkë.",
     "pairSubmit": "Lidh ekranin",
     "pairFindTill": "Gjej një arkë tjetër",
+    "clearPinTitle": "PIN i menaxherit",
+    "clearPinHint": "Pastrimi i kartave të përfunduara kërkon një menaxher. Vendos PIN-in e menaxherit.",
+    "clearPinSubmit": "Pastro të përfunduarat",
+    "clearPinWrong": "PIN i gabuar i menaxherit.",
     "pairWrongCode": "Kodi i lidhjes nuk është i saktë. Kontrollojeni te Admin → Cilësimet."
   },
   "tables": {

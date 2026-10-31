@@ -1869,13 +1869,30 @@ export function installBrowserLanApi(): void {
       },
       async clearDone(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();
-        const r = await goLan('/kds/clear-done', {
-          method: 'POST',
-          body: JSON.stringify({ station }),
-        });
+        let r: any;
+        try {
+          r = await goLan('/kds/clear-done', {
+            method: 'POST',
+            body: JSON.stringify({
+              station,
+              ...(input?.managerPin ? { managerPin: input.managerPin } : {}),
+            }),
+          });
+        } catch (e: any) {
+          // 403 MANAGER_REQUIRED: the display asks for a manager PIN.
+          if (e?.data?.code) {
+            return {
+              ok: false,
+              purgedDoneRows: 0,
+              code: String(e.data.code),
+              error: String(e.data.error || ''),
+            };
+          }
+          throw e;
+        }
         return {
-          ok: Boolean((r as any)?.ok),
-          purgedDoneRows: Number((r as any)?.purgedDoneRows || 0),
+          ok: Boolean(r?.ok),
+          purgedDoneRows: Number(r?.purgedDoneRows || 0),
         };
       },
       async bumpItem(input: any) {
