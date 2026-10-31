@@ -215,6 +215,26 @@ export async function closedSittingLines(input: {
   return { sendKeys, lineIds };
 }
 
+/**
+ * The lines a Send adds itself: fired under its own key, or new held
+ * course lines (no key, never on a bill). Null when the Send has no key,
+ * so its new lines cannot be told from its copy of the bill.
+ */
+export function ownLinesOfSend(
+  items: unknown,
+  sendKey: string,
+): unknown[] | null {
+  const key = String(sendKey || '').trim();
+  if (!key) return null;
+  return (Array.isArray(items) ? items : []).filter((raw) => {
+    const l = (raw || {}) as MergeLine;
+    if (l.voided === true || l.paid === true) return false;
+    const lineKey = String(l.sendKey || '').trim();
+    if (lineKey) return lineKey === key;
+    return l.fired === false && !lineIdOf(raw);
+  });
+}
+
 export const ORDER_AFTER_CLOSE_MESSAGE =
   'This table was closed after the order was taken (paid, voided or moved). Open the table again and send the order again if it is still wanted.';
 
@@ -495,14 +515,32 @@ export async function recordTicketSend(
       }
     }
 
-    // 2b. The table was closed after this order was taken, or after it
-    // reached the till (a payment committed while it waited for the lock).
-    {
+    // 2b. The table was closed or reopened after this order was taken, or
+    // after it reached the till (a payment committed while it waited for
+    // the lock). The phone's copy of the bill is then a copy of a bill that
+    // was paid: only the lines this Send itself adds may go on, and they go
+    // on a new bill. Anything else on it (the paid lines) would come back
+    // unpaid and be charged again.
+    if (await occupancyIntentIsStale(area, tableLabel, capturedAt)) {
+      const own = ownLinesOfSend(input.items, idempotencyKey);
       const open = await coreServices.isTableOpen(area, tableLabel);
-      if (
-        !open &&
-        (await occupancyIntentIsStale(area, tableLabel, capturedAt))
-      ) {
+      if (own) {
+        if (!own.length) {
+          return {
+            ok: false as const,
+            error: ORDER_AFTER_CLOSE_MESSAGE,
+            code: 'TABLE_CLOSED' as const,
+          };
+        }
+        input.items = own;
+        if (Array.isArray(input.addedItems)) {
+          input.addedItems = ownLinesOfSend(
+            input.addedItems,
+            idempotencyKey,
+          ) as unknown[];
+        }
+      } else if (!open) {
+        // A Send without a key cannot tell its new lines from the old bill.
         return {
           ok: false as const,
           error: ORDER_AFTER_CLOSE_MESSAGE,

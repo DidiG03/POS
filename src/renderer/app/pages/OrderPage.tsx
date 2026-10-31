@@ -54,10 +54,7 @@ import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
-import {
-  isTransientNetworkError,
-  reportAppError,
-} from '../../utils/reportAppError';
+import { reportAppError } from '../../utils/reportAppError';
 import { PageSpinner } from '../../components/PageSpinner';
 import { Modal } from '../../components/ui/Modal';
 import { PaymentCheckout } from '../components/PaymentCheckout';
@@ -2676,31 +2673,13 @@ export default function OrderPage() {
         selectedTable.area,
         selectedTable.label,
       );
-      // Best-effort occupancy on the client; the host also opens inside
-      // tickets.log. Prefer a direct await (not the 4s-budgeted queue) so a
-      // slow LAN phone does not Send against a still-closed table. Runs
-      // alongside the bill read: neither needs the other, and in sequence
-      // they cost every Send an extra Wi-Fi round trip.
-      let tableOpened: Promise<void> = Promise.resolve();
+      // The till opens the table itself, inside the Send, under the table
+      // lock. Opening it from here too raced a payment on another device:
+      // the open landed just after the payment and started a new sitting
+      // for the paid bill. Only the local floor is marked open.
       if (hasStaged) {
         suppressFreeOnEmptyRef.current = true;
         setOpen(selectedTable.area, selectedTable.label, true);
-        tableOpened = window.api.tables
-          .setOpen(selectedTable.area, selectedTable.label, true, 0)
-          .then(
-            () => undefined,
-            (e: unknown) => {
-              // Unreachable till: the Send below is queued and says so
-              // ("Will send when online"); a red "Failed to fetch" next to
-              // it contradicted that. The till opens the table itself when
-              // the queued Send lands.
-              if (isTransientNetworkError(e)) return;
-              reportAppError(e, {
-                fallback: t('order.toastTryAgain'),
-                key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-              });
-            },
-          );
       }
       const onServer = await onServerRead;
       const logItems = restoreMissingServerLines(
@@ -2748,7 +2727,6 @@ export default function OrderPage() {
 
       let sendQueued = false;
       if (hasStaged) {
-        await tableOpened;
         const logResult = await logTicket({
           userId: user.id,
           area: selectedTable.area,
