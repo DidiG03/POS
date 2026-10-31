@@ -47,10 +47,18 @@ vi.mock('@db/client', () => ({
   },
 }));
 
+const isTableOpen = vi.fn();
+const broadcastTicketsChanged = vi.fn();
+
 vi.mock('./core', () => ({
   coreServices: {
     readSettings: (...a: any[]) => readSettings(...a),
+    isTableOpen: (...a: any[]) => isTableOpen(...a),
   },
+}));
+
+vi.mock('./realtime', () => ({
+  broadcastTicketsChanged: (...a: any[]) => broadcastTicketsChanged(...a),
 }));
 
 vi.mock('./kdsSchema', () => ({
@@ -76,6 +84,7 @@ describe('createKdsTicketFromLog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     userFindUnique.mockResolvedValue({ id: 1 });
+    isTableOpen.mockResolvedValue(true);
     readSettings.mockResolvedValue({
       kds: { stations: { KITCHEN: true, BAR: true } },
     });
@@ -116,10 +125,48 @@ describe('createKdsTicketFromLog', () => {
       data: {
         itemsJson: [
           { name: 'Soup', qty: 1, station: 'KITCHEN' },
-          { name: 'Steak', qty: 1, categoryId: 1, station: 'KITCHEN' },
+          {
+            name: 'Steak',
+            qty: 1,
+            categoryId: 1,
+            station: 'KITCHEN',
+            kdsFiredAt: expect.any(String),
+          },
         ],
       },
     });
+    // Screens refresh once the card exists, not only after the Send.
+    expect(broadcastTicketsChanged).toHaveBeenCalledWith(
+      expect.objectContaining({ area: 'Sallon', tableLabel: 'T1' }),
+    );
+  });
+
+  it('a Send that reaches the kitchen after the table was paid opens a closed order', async () => {
+    isTableOpen.mockResolvedValue(false);
+    kdsOrderFindFirst.mockResolvedValue(null);
+    kdsDayCounterUpsert.mockResolvedValue({ lastNo: 3 });
+    kdsOrderCreate.mockImplementation(async (a: any) => ({
+      id: 11,
+      ...a.data,
+    }));
+    kdsTicketFindMany.mockResolvedValue([]);
+    kdsTicketCreate.mockResolvedValue({ id: 101 });
+
+    const result = await createKdsTicketFromLog({
+      userId: 1,
+      area: 'Sallon',
+      tableLabel: 'T3',
+      items: [{ name: 'Pasta', qty: 1, categoryId: 1 }],
+      note: null,
+    });
+
+    // Still cooked: the card is created and NEW.
+    expect(result).toEqual({ orderNo: 4, ticketId: 101 });
+    expect(kdsTicketStationCreate).toHaveBeenCalledWith({
+      data: { ticketId: 101, station: 'KITCHEN', status: 'NEW' },
+    });
+    // But the order is closed, so the next party starts a new one.
+    expect(kdsOrderCreate.mock.calls[0][0].data.closedAt).toBeInstanceOf(Date);
   });
 
   it('creates a ticket when none is NEW on the open order', async () => {

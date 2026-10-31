@@ -37,7 +37,11 @@ vi.mock('./kdsSchema', () => ({
   ensureKdsLocalSchema: vi.fn().mockResolvedValue(true),
 }));
 
-import { applyKdsVoidItem, applyKdsVoidTicket } from './kdsVoid';
+import {
+  applyKdsVoidItem,
+  applyKdsVoidTicket,
+  pickKdsLineToVoid,
+} from './kdsVoid';
 
 describe('applyKdsVoidItem', () => {
   beforeEach(() => {
@@ -96,10 +100,102 @@ describe('applyKdsVoidItem', () => {
     expect(ok).toBe(true);
     expect(kdsTicketStationUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { ticketId: 42, status: 'NEW' },
+        where: { ticketId: 42, status: 'NEW', station: 'KITCHEN' },
         data: expect.objectContaining({ status: 'DONE' }),
       }),
     );
+  });
+
+  it("closes only the struck line's station; the bar keeps its card", async () => {
+    kdsTicketFindMany.mockResolvedValue([
+      {
+        id: 42,
+        itemsJson: [
+          { name: 'Burger', qty: 1, station: 'KITCHEN' },
+          { name: 'Cake', qty: 1, station: 'DESSERT' },
+        ],
+      },
+    ]);
+    await applyKdsVoidItem({
+      userId: 1,
+      area: 'Main',
+      tableLabel: 'T1',
+      item: { name: 'Burger' },
+    });
+    expect(kdsTicketStationUpdateMany).toHaveBeenCalledTimes(1);
+    expect(kdsTicketStationUpdateMany.mock.calls[0][0].where).toEqual({
+      ticketId: 42,
+      status: 'NEW',
+      station: 'KITCHEN',
+    });
+  });
+
+  it('strikes the line with the voided bill line id, not the served twin', async () => {
+    kdsTicketFindMany.mockResolvedValue([
+      {
+        id: 42,
+        itemsJson: [
+          {
+            name: 'Espresso',
+            unitPrice: 2,
+            station: 'BAR',
+            lineId: 'a',
+            bumped: true,
+          },
+          { name: 'Espresso', unitPrice: 2, station: 'BAR', lineId: 'b' },
+        ],
+      },
+    ]);
+    await applyKdsVoidItem({
+      userId: 1,
+      area: 'Main',
+      tableLabel: 'T1',
+      item: { name: 'Espresso', unitPrice: 2, lineId: 'b' },
+    });
+    const items = kdsTicketUpdate.mock.calls[0][0].data.itemsJson;
+    expect(items[0].voided).toBeUndefined();
+    expect(items[1].voided).toBe(true);
+  });
+});
+
+describe('pickKdsLineToVoid', () => {
+  it('without ids, prefers a line the kitchen has not finished', () => {
+    const pick = pickKdsLineToVoid(
+      [
+        {
+          itemsJson: [
+            { name: 'Soup', unitPrice: 5, bumped: true },
+            { name: 'Soup', unitPrice: 5 },
+          ],
+        },
+      ],
+      { name: 'Soup', unitPrice: 5 },
+    );
+    expect(pick?.index).toBe(1);
+  });
+
+  it('falls back to a finished line when nothing else matches', () => {
+    const pick = pickKdsLineToVoid(
+      [{ itemsJson: [{ name: 'Soup', unitPrice: 5, bumped: true }] }],
+      { name: 'Soup', unitPrice: 5 },
+    );
+    expect(pick?.index).toBe(0);
+  });
+
+  it('never strikes another bill line that has its own id', () => {
+    const pick = pickKdsLineToVoid(
+      [{ itemsJson: [{ name: 'Soup', unitPrice: 5, lineId: 'x' }] }],
+      { name: 'Soup', unitPrice: 5, lineId: 'y' },
+    );
+    expect(pick).toBeNull();
+  });
+
+  it('a card written before line ids still matches loosely', () => {
+    const pick = pickKdsLineToVoid(
+      [{ itemsJson: [{ name: 'Soup', unitPrice: 5 }] }],
+      { name: 'Soup', unitPrice: 5, lineId: 'y' },
+    );
+    expect(pick?.index).toBe(0);
   });
 });
 

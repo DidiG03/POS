@@ -58,3 +58,27 @@ export function kdsTimerUrgencyCardAccent(urgency: KdsTimerUrgency): string {
       return 'border-l-4 border-l-rose-500';
   }
 }
+
+/**
+ * When the oldest dish still waiting on a card was sent. Lines added to a
+ * card later carry their own time (`kdsFiredAt`); the rest were sent with
+ * the card. Once the early lines are done, a card holding only a dish sent
+ * a minute ago shows a minute, not the card's age.
+ */
+export function oldestWaitingFiredAt(
+  items: any[],
+  ticketFiredAt: string | null,
+  opts: { cooker: boolean },
+): string | null {
+  let oldest: number | null = null;
+  for (const it of Array.isArray(items) ? items : []) {
+    if (it?.voided || it?.bumped) continue;
+    if (opts.cooker && it?.cookerBumped) continue;
+    const own = new Date(String(it?.kdsFiredAt || '')).getTime();
+    const base = new Date(String(ticketFiredAt || '')).getTime();
+    const at = Number.isFinite(own) ? own : base;
+    if (!Number.isFinite(at)) continue;
+    if (oldest == null || at < oldest) oldest = at;
+  }
+  return oldest == null ? ticketFiredAt : new Date(oldest).toISOString();
+}

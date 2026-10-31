@@ -47,7 +47,7 @@ function recallSingleStationItemInJson(
 }
 
 async function recallWholeTicketRow(
-  prisma: PrismaClient,
+  db: any,
   station: string,
   row: { ticketId: number; ticket: any },
 ) {
@@ -59,20 +59,18 @@ async function recallWholeTicketRow(
     return unbumpItem(it);
   });
 
-  await (prisma as any).$transaction([
-    (prisma as any).kdsTicket.update({
-      where: { id: row.ticketId },
-      data: { itemsJson: nextItems },
-    }),
-    (prisma as any).kdsTicketStation.updateMany({
-      where: { ticketId: row.ticketId, station, status: 'DONE' },
-      data: {
-        status: 'NEW',
-        bumpedAt: null,
-        bumpedById: null,
-      },
-    }),
-  ]);
+  await db.kdsTicket.update({
+    where: { id: row.ticketId },
+    data: { itemsJson: nextItems },
+  });
+  await db.kdsTicketStation.updateMany({
+    where: { ticketId: row.ticketId, station, status: 'DONE' },
+    data: {
+      status: 'NEW',
+      bumpedAt: null,
+      bumpedById: null,
+    },
+  });
 
   return { ok: true as const, ticketId: row.ticketId };
 }
@@ -82,19 +80,15 @@ function cookerBumpedAtMs(it: any): number {
   return Number.isFinite(t) ? t : 0;
 }
 
-async function persistCookerItems(
-  prisma: PrismaClient,
-  ticketId: number,
-  items: any[],
-) {
-  await (prisma as any).kdsTicket.update({
+async function persistCookerItems(db: any, ticketId: number, items: any[]) {
+  await db.kdsTicket.update({
     where: { id: ticketId },
     data: { itemsJson: items },
   });
 }
 
 async function recallCookerTicket(
-  prisma: PrismaClient,
+  db: any,
   input: {
     station: string;
     ticketId: number | null;
@@ -106,7 +100,7 @@ async function recallCookerTicket(
   const itemIdx = input.itemIdx;
 
   const loadNewRow = async (id: number) =>
-    (prisma as any).kdsTicketStation
+    db.kdsTicketStation
       .findFirst({
         where: { ticketId: id, station, status: 'NEW' },
         include: { ticket: true },
@@ -122,7 +116,7 @@ async function recallCookerTicket(
     if (itemIdx >= itemsAll.length)
       return { ok: false as const, ticketId: null };
     const nextItems = cookerUnbumpSingleKitchenItem(itemsAll, itemIdx);
-    await persistCookerItems(prisma, ticketId, nextItems);
+    await persistCookerItems(db, ticketId, nextItems);
     return { ok: true as const, ticketId, itemRecalled: true as const };
   }
 
@@ -133,14 +127,14 @@ async function recallCookerTicket(
       ? row.ticket.itemsJson
       : [];
     await persistCookerItems(
-      prisma,
+      db,
       ticketId,
       cookerUnbumpAllKitchenItems(itemsAll),
     );
     return { ok: true as const, ticketId };
   }
 
-  const rows = await (prisma as any).kdsTicketStation
+  const rows = await db.kdsTicketStation
     .findMany({
       where: { station, status: 'NEW' },
       include: { ticket: true },
@@ -173,7 +167,7 @@ async function recallCookerTicket(
   }
   if (!best?.ticketId) return { ok: false as const, ticketId: null };
   await persistCookerItems(
-    prisma,
+    db,
     best.ticketId,
     cookerUnbumpAllKitchenItems(best.items),
   );
@@ -197,87 +191,103 @@ export async function recallKdsTicket(
       : null;
 
   try {
-    if (input.cooker && station === COOKER_STATION) {
-      return await recallCookerTicket(prisma, { station, ticketId, itemIdx });
-    }
-
-    if (ticketId && itemIdx != null && itemIdx >= 0) {
-      const row = await (prisma as any).kdsTicketStation
-        .findFirst({
-          where: { ticketId, station, status: 'DONE' },
-          include: { ticket: true },
-        })
-        .catch(() => null);
-      if (!row?.ticket) return { ok: false as const, ticketId: null };
-
-      const itemsAll: any[] = Array.isArray(row.ticket.itemsJson)
-        ? row.ticket.itemsJson
-        : [];
-      if (itemIdx >= itemsAll.length)
-        return { ok: false as const, ticketId: null };
-
-      const it = itemsAll[itemIdx];
-      if (!it || String(it?.station || '').toUpperCase() !== station) {
-        return { ok: false as const, ticketId: null };
-      }
-
-      const nextItems = recallSingleStationItemInJson(
-        itemsAll,
+    // Read and write in one transaction: a Send or void that lands between
+    // them would otherwise be overwritten by the stale card.
+    return await (prisma as any).$transaction((db: any) =>
+      recallInTransaction(db, {
         station,
+        ticketId,
         itemIdx,
-      );
-
-      await (prisma as any).$transaction([
-        (prisma as any).kdsTicket.update({
-          where: { id: ticketId },
-          data: { itemsJson: nextItems },
-        }),
-        (prisma as any).kdsTicketStation.updateMany({
-          where: { ticketId, station, status: 'DONE' },
-          data: {
-            status: 'NEW',
-            bumpedAt: null,
-            bumpedById: null,
-          },
-        }),
-      ]);
-
-      return { ok: true as const, ticketId, itemRecalled: true as const };
-    }
-
-    if (ticketId) {
-      const row = await (prisma as any).kdsTicketStation
-        .findFirst({
-          where: { ticketId, station, status: 'DONE' },
-          include: { ticket: true },
-        })
-        .catch(() => null);
-      if (!row) return { ok: false as const, ticketId: null };
-      return await recallWholeTicketRow(prisma, station, row);
-    }
-
-    // A void closes its cards as DONE too; recalling one of those brings
-    // back a card with nothing left to cook. Take the last real bump.
-    const rows = await (prisma as any).kdsTicketStation
-      .findMany({
-        where: {
-          station,
-          status: 'DONE',
-          bumpedAt: { gte: localDayStart() },
-        },
-        orderBy: { bumpedAt: 'desc' },
-        include: { ticket: true },
-        take: 20,
-      })
-      .catch(() => []);
-    const row = (rows || []).find((r: any) =>
-      (Array.isArray(r?.ticket?.itemsJson) ? r.ticket.itemsJson : []).some(
-        (it: any) => stationMatches(it, station) && !it?.voided,
-      ),
+        cooker: Boolean(input.cooker),
+      }),
     );
-    if (!row) return { ok: false as const, ticketId: null };
-    return await recallWholeTicketRow(prisma, station, row);
   } catch {
     return { ok: false as const, ticketId: null };
   }
+}
+
+async function recallInTransaction(
+  db: any,
+  input: {
+    station: string;
+    ticketId: number | null;
+    itemIdx: number | null;
+    cooker: boolean;
+  },
+) {
+  const { station, ticketId, itemIdx } = input;
+  if (input.cooker && station === COOKER_STATION) {
+    return await recallCookerTicket(db, { station, ticketId, itemIdx });
+  }
+
+  if (ticketId && itemIdx != null && itemIdx >= 0) {
+    const row = await db.kdsTicketStation
+      .findFirst({
+        where: { ticketId, station, status: 'DONE' },
+        include: { ticket: true },
+      })
+      .catch(() => null);
+    if (!row?.ticket) return { ok: false as const, ticketId: null };
+
+    const itemsAll: any[] = Array.isArray(row.ticket.itemsJson)
+      ? row.ticket.itemsJson
+      : [];
+    if (itemIdx >= itemsAll.length)
+      return { ok: false as const, ticketId: null };
+
+    const it = itemsAll[itemIdx];
+    if (!it || String(it?.station || '').toUpperCase() !== station) {
+      return { ok: false as const, ticketId: null };
+    }
+
+    const nextItems = recallSingleStationItemInJson(itemsAll, station, itemIdx);
+
+    await db.kdsTicket.update({
+      where: { id: ticketId },
+      data: { itemsJson: nextItems },
+    });
+    await db.kdsTicketStation.updateMany({
+      where: { ticketId, station, status: 'DONE' },
+      data: {
+        status: 'NEW',
+        bumpedAt: null,
+        bumpedById: null,
+      },
+    });
+
+    return { ok: true as const, ticketId, itemRecalled: true as const };
+  }
+
+  if (ticketId) {
+    const row = await db.kdsTicketStation
+      .findFirst({
+        where: { ticketId, station, status: 'DONE' },
+        include: { ticket: true },
+      })
+      .catch(() => null);
+    if (!row) return { ok: false as const, ticketId: null };
+    return await recallWholeTicketRow(db, station, row);
+  }
+
+  // A void closes its cards as DONE too; recalling one of those brings
+  // back a card with nothing left to cook. Take the last real bump.
+  const rows = await db.kdsTicketStation
+    .findMany({
+      where: {
+        station,
+        status: 'DONE',
+        bumpedAt: { gte: localDayStart() },
+      },
+      orderBy: { bumpedAt: 'desc' },
+      include: { ticket: true },
+      take: 20,
+    })
+    .catch(() => []);
+  const row = (rows || []).find((r: any) =>
+    (Array.isArray(r?.ticket?.itemsJson) ? r.ticket.itemsJson : []).some(
+      (it: any) => stationMatches(it, station) && !it?.voided,
+    ),
+  );
+  if (!row) return { ok: false as const, ticketId: null };
+  return await recallWholeTicketRow(db, station, row);
 }

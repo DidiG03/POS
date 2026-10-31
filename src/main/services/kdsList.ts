@@ -13,6 +13,7 @@ import {
 } from '@shared/kdsCooker';
 import { splitTableKey } from '@shared/utils/tableKey';
 import { kdsStationListWhere } from './kdsRetention';
+import { oldestWaitingFiredAt } from '@shared/kdsTimerUrgency';
 import {
   floorItemsFromTicket,
   type KdsFloorOrder,
@@ -191,19 +192,30 @@ export async function formatKdsTicketListRows(
         return null;
       }
 
+      const ticketFiredAt: string | null = t?.firedAt?.toISOString?.() ?? null;
       return {
         ticketId: t?.id,
         orderNo: o?.orderNo,
         area,
         tableLabel,
         waiterName,
-        firedAt: t?.firedAt?.toISOString?.() ?? null,
+        firedAt:
+          status === 'NEW'
+            ? oldestWaitingFiredAt(items, ticketFiredAt, {
+                cooker: twoStage && Boolean(options.cooker),
+              })
+            : ticketFiredAt,
         note: t?.note ?? null,
         items,
         bumpedAt: r?.bumpedAt?.toISOString?.() ?? null,
       };
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort((a: any, b: any) =>
+      status === 'NEW'
+        ? String(a.firedAt || '').localeCompare(String(b.firedAt || ''))
+        : 0,
+    );
 }
 
 export type KdsTicketDetailDTO = {

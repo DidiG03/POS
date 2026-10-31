@@ -7,6 +7,7 @@ import {
 import { coreServices } from './core';
 import { dayKeyLocal } from './kdsRetention';
 import { ensureKdsLocalSchema } from './kdsSchema';
+import { broadcastTicketsChanged } from './realtime';
 import {
   decorateKdsTicketItemsFromCategory,
   enabledStationsFromSettings,
@@ -74,7 +75,14 @@ async function upsertKdsTicket(opts: {
     const prev = Array.isArray(existingTicket.itemsJson)
       ? (existingTicket.itemsJson as any[])
       : [];
-    const merged = [...prev, ...opts.decorated];
+    // Lines added to a card already in the kitchen carry their own fire
+    // time, so the card's timer is not already late for a dish sent now
+    // (`kdsList.ts`).
+    const firedAt = opts.now.toISOString();
+    const merged = [
+      ...prev,
+      ...opts.decorated.map((it) => ({ ...it, kdsFiredAt: firedAt })),
+    ];
     await opts.tx.kdsTicket.update({
       where: { id: existingTicket.id },
       data: { itemsJson: merged },
@@ -175,6 +183,13 @@ export async function createKdsTicketFromLog(
 
   const now = new Date();
   const dayKey = dayKeyLocal(now);
+  // This runs after the Send's table lock is released. When the table was
+  // paid and closed in between, the dishes still go to the kitchen, but on
+  // an order that is already closed: left open, it would take the next
+  // party's Sends onto this party's order number.
+  const tableOpen = await coreServices
+    .isTableOpen(input.area, input.tableLabel)
+    .catch(() => true);
 
   const created = await (prisma as any).$transaction(async (tx: any) => {
     let safeUserId: number | null = null;
@@ -213,6 +228,7 @@ export async function createKdsTicketFromLog(
           area: input.area,
           tableLabel: input.tableLabel,
           openedAt: now,
+          ...(tableOpen ? {} : { closedAt: now }),
         },
       });
     }
@@ -234,5 +250,19 @@ export async function createKdsTicketFromLog(
     return last;
   });
 
+  // The Send already told every screen the table changed, but before this
+  // card existed: kitchen screens and the waiters' Orders board would wait
+  // for their next poll to show it.
+  if (created) {
+    try {
+      broadcastTicketsChanged({
+        area: input.area,
+        tableLabel: input.tableLabel,
+        userId: Number(input.userId) || null,
+      });
+    } catch {
+      // best-effort
+    }
+  }
   return created;
 }
