@@ -67,6 +67,29 @@ describe('F2b: the lekë total on the receipt is the filed one', () => {
   });
 });
 
+describe('QA round 6, #3: three items at 3.333 € on a 10.00 € receipt', () => {
+  it('files 980.00 L at 98, the receipt total in lekë, not 979.89 or 980.87', () => {
+    const settings = euroVenue(98);
+    const payload = sale([
+      { name: 'Kafe', qty: 1, unitPrice: 3.333 },
+      { name: 'Kafe', qty: 1, unitPrice: 3.333 },
+      { name: 'Kafe', qty: 1, unitPrice: 3.333 },
+    ]);
+    expect(payload.meta.totalAfter).toBe(10);
+    const draft = buildEasyPosCloudInvoiceDraft(payload, settings, {
+      docId: 'doc-three-dp',
+    });
+    const filed = roundMoney(
+      draft.payment.reduce((t, p) => t + Number(p.amount), 0),
+    );
+    expect(filed).toBe(980);
+    // What the receipt prints in lekë is the filed amount.
+    expect(filedLekTotal(payload, settings)).toBe(980);
+    // Every filed unit price is the cent price converted.
+    for (const a of draft.articles.slice(0, 3)) expect(a.price).toBe(326.34);
+  });
+});
+
 describe('F6b: a lookalike easyPos address is refused when saved', () => {
   it.each([
     'https://api.easypos.al.example.com/fiscalisation-service/v1',

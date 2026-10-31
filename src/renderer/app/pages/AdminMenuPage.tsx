@@ -7,6 +7,7 @@ import {
   menuVatPercentInput,
   vatPercentField,
 } from '../../utils/menuNumberInput';
+import { menuPriceProblem } from '@shared/menuPrice';
 import { type KdsStation } from '@shared/kdsStations';
 import { normalizeProductCode } from '@shared/barcodeScan';
 import { PageSpinner } from '../../components/PageSpinner';
@@ -1447,7 +1448,11 @@ function AddItemForm({
   const [sku, setSku] = useState('');
   const [cost, setCost] = useState('');
 
-  const canSubmit = name.trim().length > 0 && price.length > 0 && !disabled;
+  // Same rules as the till (`menuPrice.ts`): cents, above 0, a maximum.
+  const priceProblem =
+    price.trim() !== '' ? menuPriceProblem(menuMoneyInput(price)) : null;
+  const canSubmit =
+    name.trim().length > 0 && price.length > 0 && !priceProblem && !disabled;
 
   function submit() {
     const costNum = menuMoneyInput(cost);
@@ -1499,7 +1504,7 @@ function AddItemForm({
       ) : null}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field label={t('adminMenu.price')}>
+        <Field label={t('adminMenu.price')} error={priceProblem}>
           <Input
             placeholder="0"
             inputMode="decimal"
@@ -2033,8 +2038,14 @@ function EditItemModal({
     : stockQty.trim() === '' ||
       (Number.isFinite(stockQtyNum) && stockQtyNum >= 0);
 
+  const priceProblem =
+    price.trim() !== '' ? menuPriceProblem(menuMoneyInput(price)) : null;
   const canSubmit =
-    name.trim().length > 0 && price.length > 0 && !disabled && stockQtyOk;
+    name.trim().length > 0 &&
+    price.length > 0 &&
+    !priceProblem &&
+    !disabled &&
+    stockQtyOk;
 
   return (
     <Modal
@@ -2072,7 +2083,7 @@ function EditItemModal({
         ) : null}
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label={t('adminMenu.price')}>
+          <Field label={t('adminMenu.price')} error={priceProblem}>
             <Input
               placeholder="0"
               inputMode="decimal"

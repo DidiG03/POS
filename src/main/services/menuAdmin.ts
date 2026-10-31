@@ -1,5 +1,6 @@
 import { prisma } from '@db/client';
 import { normalizeProductCode } from '@shared/barcodeScan';
+import { assertMenuPrice } from '@shared/menuPrice';
 import {
   CreateMenuItemInputSchema,
   UpdateMenuItemInputSchema,
@@ -173,6 +174,7 @@ async function nextAvailableSku(preferred: string): Promise<string> {
 }
 
 export async function createMenuItemFromInput(payload: unknown) {
+  assertMenuPrice((payload as { price?: unknown } | null)?.price);
   const input = CreateMenuItemInputSchema.parse(payload);
   const category = await prisma.category.findUnique({
     where: { id: Number(input.categoryId) },
@@ -236,6 +238,9 @@ export async function createMenuItemFromInput(payload: unknown) {
 }
 
 export async function updateMenuItemFromInput(payload: unknown) {
+  // An edit that leaves the price out keeps the one already saved.
+  const price = (payload as { price?: unknown } | null)?.price;
+  if (price !== undefined) assertMenuPrice(price);
   const input = UpdateMenuItemInputSchema.parse(payload);
   await expireStaleMenuStock(prisma);
 

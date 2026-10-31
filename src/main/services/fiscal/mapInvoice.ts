@@ -361,7 +361,11 @@ function buildArticles(
       // Weighed items are sold in kilograms (UN/CEFACT KGM); filing 0.35
       // "pieces" misstates the unit on the invoice.
       soldIn: (it as any).soldByKg === true ? SOLD_BY_KG_UNIT : soldIn,
-      price: Number(it.unitPrice || 0),
+      // To the cent, as the till charges it. A menu price of 3.333 (saved
+      // before prices were limited to cents) converted to lekë per unit
+      // filed 3 × 326.63 + a cent's adjustment = 980.87 L for a 10.00 €
+      // receipt; from 3.33 the lines and the receipt agree (980.00 L).
+      price: roundMoney(Number(it.unitPrice || 0)),
       units: qty,
     });
   }
