@@ -1,6 +1,6 @@
 import type { SettingsDTO } from '@shared/ipc';
 import type { TicketPrintPayload } from '../../print';
-import { fiscalConfig } from './config';
+import { operatorCodeFor, fiscalConfig } from './config';
 import { mapPaymentMethod } from './paymentMethod';
 import { assertVatCode } from './vatConfig';
 import { buildCurrency } from './buildInvoice';
@@ -733,7 +733,9 @@ export function buildEasyPosCloudInvoiceDraft(
     payment: body.payment,
   };
   if (body.invoiceRebate) draft.invoiceRebate = body.invoiceRebate;
-  const { operatorCode } = fiscalArticleSettings(settings);
+  // The staff member taking the payment, under their own code if they
+  // have one (`operatorCodeFor`).
+  const operatorCode = operatorCodeFor(settings, (payload.meta as any)?.userId);
   if (operatorCode) draft.operatorCode = operatorCode;
   return draft;
 }

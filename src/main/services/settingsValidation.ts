@@ -8,7 +8,11 @@
  * refused by the live service, or worse, the other way round). These are
  * checked here, when saved, with a message the owner can act on.
  */
-import { fiscalEnvironmentOf, type FiscalEnvironment } from './fiscal/config';
+import {
+  fiscalEnvironmentOf,
+  operatorCodesProblem,
+  type FiscalEnvironment,
+} from './fiscal/config';
 import { paymentTypeMapProblem } from './fiscal/paymentMethod';
 
 /** The currencies the till can sell in (the Admin currency list). */
@@ -155,6 +159,10 @@ export function assertSettingsPatch(
     }
   }
 
+  if (input.fiscal && has(input.fiscal, 'operatorCodes')) {
+    const problem = operatorCodesProblem(input.fiscal.operatorCodes);
+    if (problem) refuse(problem);
+  }
   if (input.fiscal && has(input.fiscal, 'paymentTypeMap')) {
     const problem = paymentTypeMapProblem(input.fiscal.paymentTypeMap);
     if (problem) refuse(problem);

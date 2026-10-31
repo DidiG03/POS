@@ -156,6 +156,43 @@ export function isValidOperatorCode(raw: string): boolean {
   return OPERATOR_CODE_PATTERN.test(String(raw || '').trim());
 }
 
+/**
+ * The operator a staff member's invoices are filed under: their own code
+ * from `fiscal.operatorCodes` (by user id), else the venue's default.
+ * Every waiter used to be filed under the one default operator (QA round
+ * 6, fiscal). Each code must be registered for that person with the tax
+ * service; the till only checks its form.
+ */
+export function operatorCodeFor(
+  settings: SettingsDTO,
+  userId: unknown,
+): string {
+  const codes = (settings as any)?.fiscal?.operatorCodes;
+  const id = Number(userId);
+  if (codes && typeof codes === 'object' && Number.isFinite(id) && id > 0) {
+    const own = normalizeOperatorCode(String(codes[String(id)] ?? ''));
+    if (own && isValidOperatorCode(own)) return own;
+  }
+  return fiscalConfig(settings).operatorCode;
+}
+
+/** Why `fiscal.operatorCodes` cannot be saved, or null. */
+export function operatorCodesProblem(codes: unknown): string | null {
+  if (codes === null || codes === undefined) return null;
+  if (typeof codes !== 'object' || Array.isArray(codes)) {
+    return 'Operator codes must be listed per staff member.';
+  }
+  for (const [userId, code] of Object.entries(codes as object)) {
+    const c = String(code ?? '').trim();
+    if (!c) continue;
+    if (!/^\d+$/.test(userId)) return `"${userId}" is not a staff member.`;
+    if (!isValidOperatorCode(c)) {
+      return `"${c}" is not an operator code (two letters, three digits, two letters, three digits, e.g. ab123cd456).`;
+    }
+  }
+  return null;
+}
+
 export function fiscalConfig(settings: SettingsDTO): ResolvedFiscalConfig {
   const fiscal = (settings as any)?.fiscal || {};
   const baseUrl = normalizeBaseUrl(String(fiscal.baseUrl || ''));

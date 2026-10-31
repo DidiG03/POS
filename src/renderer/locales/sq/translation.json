@@ -876,6 +876,8 @@
     "operatorId": "Kodi i operatorit",
     "operatorIdPlaceholder": "I detyrueshëm për cloud — p.sh. gh537ez280",
     "operatorIdHelp": "Nga Postman ose fatura e suksesshme (fusha operatorCode).",
+    "staffOperatorCodes": "Kodi i operatorit për çdo punonjës",
+    "staffOperatorCodesHelp": "Faturat fiskalizohen me kodin e punonjësit që merr pagesën. Lëreni bosh për operatorin e parazgjedhur. Çdo kod duhet të jetë i regjistruar për atë person në tatime.",
     "nipt": "NIPT",
     "niptPlaceholder": "p.sh. L12345678A",
     "niptHelp": "Numri juaj tatimor. Kodi QR i faqes së tatimeve nuk hap faturën pa të.",

@@ -876,6 +876,8 @@
     "operatorId": "Operator code",
     "operatorIdPlaceholder": "Required for cloud — e.g. gh537ez280",
     "operatorIdHelp": "From Postman or the successful invoice JSON (operatorCode field).",
+    "staffOperatorCodes": "Operator code per staff member",
+    "staffOperatorCodesHelp": "Invoices are filed under the code of whoever takes the payment. Leave blank to use the default operator. Each code must be registered for that person with the tax service.",
     "nipt": "NIPT",
     "niptPlaceholder": "e.g. L12345678A",
     "niptHelp": "Your business tax number. The tax-site QR cannot open an invoice without it.",

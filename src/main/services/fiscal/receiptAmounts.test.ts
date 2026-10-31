@@ -8,7 +8,11 @@ import { roundMoney } from '@shared/pricing';
 import { saleCorrectionHttpStatus } from '@shared/saleCorrection';
 import { dualTotalsFromSettings } from '@shared/paymentDisplay';
 import { buildEasyPosCloudInvoiceDraft, filedLekTotal } from './mapInvoice';
-import { assertFiscalConfigured, fiscalBaseUrlProblem } from './config';
+import {
+  assertFiscalConfigured,
+  fiscalBaseUrlProblem,
+  operatorCodesProblem,
+} from './config';
 
 const euroVenue = (rate: number) =>
   ({
@@ -111,6 +115,44 @@ describe('QA round 6: a gift card payment is filed as the venue maps it', () => 
       docId: 'doc-gift-2',
     });
     expect(draft.payment.map((p) => p.type)).toEqual(['SVOUCHER']);
+  });
+});
+
+describe('QA round 6: invoices filed under the paying staff member', () => {
+  const withCodes = {
+    ...euroVenue(100),
+    fiscal: {
+      ...(euroVenue(100) as any).fiscal,
+      operatorCodes: { '7': 'ab123cd456', '8': 'not-a-code' },
+    },
+  } as SettingsDTO;
+  const paidBy = (userId: number) => {
+    const p = sale([{ name: 'Kafe', qty: 1, unitPrice: 2 }]);
+    p.meta.userId = userId;
+    return p;
+  };
+
+  it('uses their own operator code', () => {
+    const d = buildEasyPosCloudInvoiceDraft(paidBy(7), withCodes, {
+      docId: 'doc-op-7',
+    });
+    expect(d.operatorCode).toBe('ab123cd456');
+  });
+
+  it('falls back to the default without one (or with a malformed one)', () => {
+    for (const id of [9, 8]) {
+      const d = buildEasyPosCloudInvoiceDraft(paidBy(id), withCodes, {
+        docId: `doc-op-${id}`,
+      });
+      expect(d.operatorCode).toBe('gh537ez280');
+    }
+  });
+
+  it('a malformed code is refused when saved', () => {
+    expect(operatorCodesProblem({ '7': 'ab123' })).toMatch(
+      /not an operator code/,
+    );
+    expect(operatorCodesProblem({ '7': 'ab123cd456', '8': '' })).toBeNull();
   });
 });
 
