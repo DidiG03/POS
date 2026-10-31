@@ -151,6 +151,6 @@ describe('LAN API wiring (QA round 5, F1b, F6b)', () => {
       'utf8',
     );
     expect(api).toContain('saleCorrectionHttpStatus(result)');
-    expect(api).toMatch(/INVALID_FISCAL_URL[\s\S]{0,200}400/);
+    expect(api).toMatch(/INVALID_FISCAL_URL[\s\S]{0,400}400/);
   });
 });

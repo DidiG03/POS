@@ -135,3 +135,38 @@ describe('fiscal address and token', () => {
     ).toBeUndefined();
   });
 });
+
+describe('seller address for fiscal receipts', () => {
+  it('turning fiscalization on needs the business address', () => {
+    expect(() =>
+      assertSettingsPatch({ fiscal: { enabled: true } }, { fiscal: {} }),
+    ).toThrow(expect.objectContaining({ code: 'FISCAL_ADDRESS_REQUIRED' }));
+  });
+
+  it('with an address saved, or sent in the same save, it is fine', () => {
+    expect(() =>
+      assertSettingsPatch(
+        { fiscal: { enabled: true } },
+        { businessInfo: { address: 'Rr. Myslym Shyri 10, Tiranë' } },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSettingsPatch(
+        {
+          fiscal: { enabled: true },
+          businessInfo: { address: 'Rr. Myslym Shyri 10' },
+        },
+        {},
+      ),
+    ).not.toThrow();
+  });
+
+  it('a venue already fiscalising keeps saving its settings', () => {
+    expect(() =>
+      assertSettingsPatch(
+        { fiscal: { enabled: true, defaultSoldIn: 'XPP' } },
+        { fiscal: { enabled: true } },
+      ),
+    ).not.toThrow();
+  });
+});

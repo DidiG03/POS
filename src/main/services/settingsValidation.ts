@@ -25,6 +25,7 @@ export const EXCHANGE_RATE_MIN = 0.01;
 export const EXCHANGE_RATE_MAX = 1000;
 
 export const INVALID_SETTINGS = 'INVALID_SETTINGS';
+export const FISCAL_ADDRESS_REQUIRED = 'FISCAL_ADDRESS_REQUIRED';
 export const FISCAL_TOKEN_ENVIRONMENT_MISMATCH =
   'FISCAL_TOKEN_ENVIRONMENT_MISMATCH';
 
@@ -134,6 +135,23 @@ export function assertSettingsPatch(
   for (const rate of rates) {
     const problem = exchangeRateProblem(rate);
     if (problem) refuse(problem);
+  }
+
+  // A fiscal receipt states the seller's address; the receipt header prints
+  // it from Settings → About (`print.ts`). Turning fiscalization on without
+  // one printed receipts with no seller address (QA round 6, fiscal).
+  const switchingOn =
+    input.fiscal?.enabled === true && current?.fiscal?.enabled !== true;
+  if (switchingOn) {
+    const address = has(input.businessInfo, 'address')
+      ? input.businessInfo.address
+      : current?.businessInfo?.address;
+    if (!String(address ?? '').trim()) {
+      refuse(
+        "Enter the business address (Settings → About) before turning on fiscalization: fiscal receipts must show the seller's address.",
+        FISCAL_ADDRESS_REQUIRED,
+      );
+    }
   }
 
   if (!input.fiscal || typeof input.fiscal !== 'object') return undefined;

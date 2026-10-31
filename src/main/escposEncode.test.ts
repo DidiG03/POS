@@ -749,4 +749,38 @@ describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
     expect(text).toMatch(/LEK[^\n]* +-500\.00/);
     expect(text).toMatch(/VAT +-83\.33/);
   });
+
+  it('QA round 6: a corrective slip states its invoice number, NIPT, operator, TCR and software code', () => {
+    const text = buildEscposTicket(
+      {
+        area: 'Salla',
+        tableLabel: 'T1',
+        items: [{ name: 'Kafe', qty: 1, unitPrice: 500, vatRate: 0.2 }],
+        meta: {
+          kind: 'CORRECTION',
+          correctionKind: 'CANCELLATION',
+          correctsNslf: 'IIC-ORIGINAL',
+          vatEnabled: true,
+          totalAfter: 500,
+          fiscalEnabled: true,
+          fiscalStatus: 'accepted',
+          fiscalNivf: 'NIVF-CORR',
+          fiscalNslf: 'IIC-CORR',
+          fiscalDoc: {
+            invoiceNumber: '12/2026/qq038ml699',
+            operatorCode: 'gh537ez280',
+            tcrCode: 'qq038ml699',
+            softwareCode: 'ab123cd456',
+          },
+        },
+      } as any,
+      settings,
+    ).toString('latin1');
+    expect(text).toContain('12/2026/qq038ml699');
+    // NIPT from the settings when the answer did not carry it.
+    expect(text).toContain('NIPT: L12345678A');
+    expect(text).toContain('gh537ez280');
+    expect(text).toContain('TCR: qq038ml699');
+    expect(text).toContain('ab123cd456');
+  });
 });
