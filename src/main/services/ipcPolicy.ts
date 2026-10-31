@@ -222,6 +222,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'requests:approve': { allow: POS },
   'requests:create': { allow: POS },
   'requests:listForOwner': { allow: 'session' },
+  'requests:listMine': { allow: POS },
   'requests:markApplied': { allow: POS },
   'requests:pollApprovedForTable': { allow: POS },
   'requests:reject': { allow: POS },

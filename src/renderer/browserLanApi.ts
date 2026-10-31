@@ -2099,6 +2099,10 @@ export function installBrowserLanApi(): void {
           method: 'POST',
           body: JSON.stringify({ ids }),
         }).then(() => true),
+      listMine: async (area: string, tableLabel: string) =>
+        goLan(
+          `/requests/mine?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
+        ),
     },
   };
   (window as any).__BROWSER_CLIENT__ = true;

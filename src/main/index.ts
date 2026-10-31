@@ -332,6 +332,7 @@ import {
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
+  listRequesterTicketRequests,
   decideTicketRequest,
   markTicketRequestsApplied,
 } from './services/ticketRequests';
@@ -4768,7 +4769,7 @@ ipcHandle('requests:create', async (_e, input, ctx) => {
   // to be whoever is signed in, as on the phone route.
   if (!actorIdentityAllows(ctx, Number(requesterId))) return false;
 
-  await createTicketRequest({
+  const made = await createTicketRequest({
     requesterId: Number(requesterId),
     ownerId: Number(ownerId),
     area: String(area),
@@ -4776,7 +4777,19 @@ ipcHandle('requests:create', async (_e, input, ctx) => {
     items,
     note,
   });
-  return true;
+  return { ok: true, ...made };
+});
+
+// The signed-in waiter's own requests for one table (see `/requests/mine`).
+ipcHandle('requests:listMine', async (_e, input, ctx) => {
+  assertDiningFloorEnabled();
+  const requesterId = Number(ctx.session?.userId || 0);
+  if (!requesterId) return [];
+  return listRequesterTicketRequests({
+    requesterId,
+    area: String(input?.area || ''),
+    tableLabel: String(input?.tableLabel || ''),
+  });
 });
 
 // List pending requests for owner

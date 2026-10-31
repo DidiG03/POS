@@ -1085,6 +1085,8 @@
     "networkSlow": "Network is slow/offline. Please wait and try again.",
     "requestAddBefore": "Add items (new lines) before sending a request",
     "requestSent": "Request sent to the owner",
+    "requestApproved": "Your request was approved and added to the table.",
+    "requestRejected": "Your request was not approved.",
     "requestFailed": "Request failed (network slow). Please try again.",
     "voidTicket": "Void Ticket",
     "voidingBtn": "Voiding…",

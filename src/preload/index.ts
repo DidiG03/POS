@@ -299,6 +299,8 @@ const api: Api = {
       }),
     markApplied: (ids: number[]) =>
       ipcRenderer.invoke('requests:markApplied', { ids }),
+    listMine: (area: string, tableLabel: string) =>
+      ipcRenderer.invoke('requests:listMine', { area, tableLabel }),
   },
   network: {
     getIps: () => ipcRenderer.invoke('network:getIps'),

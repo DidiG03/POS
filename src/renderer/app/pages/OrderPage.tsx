@@ -55,6 +55,7 @@ import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { reportAppError } from '../../utils/reportAppError';
+import { requestedLinesState } from '../../utils/requestedLines';
 import { PageSpinner } from '../../components/PageSpinner';
 import { Modal } from '../../components/ui/Modal';
 import { PaymentCheckout } from '../components/PaymentCheckout';
@@ -1261,6 +1262,50 @@ export default function OrderPage() {
     // A sent request locks only that table's button, not the next one.
     setRequestLocked(false);
   }, [selectedTable?.area, selectedTable?.label]);
+
+  // Lines this waiter asked the table's owner for (QA round 6, #6): while
+  // the request is pending the button stays locked, also after leaving and
+  // reopening the table; once the owner decides, the lines leave this
+  // phone (approved ones are on the owner's bill). Read from the till.
+  const stagedRequestKey = showRequestOnly
+    ? lines
+        .filter((l) => l.staged && !l.voided)
+        .map((l) => l.id)
+        .join(',')
+    : '';
+  useEffect(() => {
+    if (!stagedRequestKey || !selectedTable) return;
+    const listMine = window.api.requests.listMine;
+    if (!listMine) return;
+    const { area, label } = selectedTable;
+    const stagedIds = stagedRequestKey.split(',');
+    let cancelled = false;
+    const check = async () => {
+      const mine = await listMine(area, label).catch(() => null);
+      if (cancelled || !Array.isArray(mine)) return;
+      const { pending, decided } = requestedLinesState(stagedIds, mine);
+      setRequestLocked(pending.size > 0);
+      if (decided.size === 0) return;
+      for (const id of decided.keys()) removeLine(id);
+      const approved = [...decided.values()].some((d) => d === 'APPROVED');
+      if (approved) toast.success(t('order.requestApproved'));
+      else toast.warn(t('order.requestRejected'));
+    };
+    // Re-armed after each read (no interval on this page's render path).
+    let timer: number | undefined;
+    const loop = () => {
+      void check().finally(() => {
+        if (!cancelled) timer = window.setTimeout(loop, 5_000);
+      });
+    };
+    loop();
+    window.addEventListener('pos:ticketsChanged', check);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('pos:ticketsChanged', check);
+    };
+  }, [stagedRequestKey, selectedTable, removeLine, t]);
 
   // One host read for the selected open table. Optimistic paint from the
   // floor cache, then confirm — never treat "no cache" as an empty bill.
@@ -3604,6 +3649,8 @@ export default function OrderPage() {
                             setBusyAction('request');
                             // IMPORTANT: only request staged items (newly added), not the whole existing ticket.
                             const items = staged.map((l) => ({
+                              // Lets the till refuse the same line twice.
+                              requestLineId: l.id,
                               sku: l.sku,
                               name: l.name,
                               qty: l.qty,

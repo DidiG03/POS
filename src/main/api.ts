@@ -267,6 +267,7 @@ import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
   decideTicketRequest,
+  listRequesterTicketRequests,
   markTicketRequestsApplied,
 } from './services/ticketRequests';
 import { stockLinesFromPayload } from './services/ticketLogWrite';
@@ -3767,7 +3768,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
         // Shared with the till: notifies the owner, and a retried POST
         // does not create the same request twice.
-        await createTicketRequest({
+        const made = await createTicketRequest({
           requesterId: Number(requesterId),
           ownerId: Number(ownerId),
           area: String(area),
@@ -3775,7 +3776,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           items,
           note,
         });
-        return send(res, 200, 'ok', corsOrigin);
+        return send(res, 200, { ok: true, ...made }, corsOrigin);
+      }
+      // The signed-in waiter's own requests for a table: the phone learns
+      // from it when one was decided and clears the requested lines.
+      if (req.method === 'GET' && pathname === '/requests/mine') {
+        const rows = await listRequesterTicketRequests({
+          requesterId: Number(auth?.userId || 0),
+          area: String(parsed.query.area || ''),
+          tableLabel: String(parsed.query.table || ''),
+        });
+        return send(res, 200, rows, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/requests/list-for-owner') {
         const ownerId = Number(parsed.query.ownerId || 0);

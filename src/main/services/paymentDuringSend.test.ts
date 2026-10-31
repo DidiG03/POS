@@ -291,7 +291,9 @@ describe('a Send that arrives while the table is being paid', () => {
     // Its copy of the bill has the Espresso without its Send key or line
     // id: nothing ties it to the paid sitting except that it is not one of
     // this Send's lines.
-    const { sendKey: _k, lineId: _id, ...unkeyed } = paidLine;
+    const unkeyed = { ...paidLine };
+    delete unkeyed.sendKey;
+    delete unkeyed.lineId;
     const sent = await send({
       key: 'k-cap',
       // A phone that lists no added lines (the whole cart is the Send).

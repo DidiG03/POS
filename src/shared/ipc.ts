@@ -631,6 +631,13 @@ export interface ApiRequests {
     tableLabel: string,
   ): Promise<Array<{ id: number; items: any[]; note?: string | null }>>;
   markApplied(ids: number[]): Promise<boolean>;
+  /** The signed-in waiter's own requests for a table, newest first. */
+  listMine?(
+    area: string,
+    tableLabel: string,
+  ): Promise<
+    Array<{ id: number; status: string; lineIds: string[]; createdAt: string }>
+  >;
 }
 
 // Shifts

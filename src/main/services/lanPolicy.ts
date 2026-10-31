@@ -194,6 +194,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /requests/poll-approved': { allow: POS },
   'POST /requests/approve': { allow: POS },
   'POST /requests/create': { allow: POS },
+  'GET /requests/mine': { allow: POS },
   'POST /requests/mark-applied': { allow: POS },
   'POST /requests/reject': { allow: POS },
 

@@ -1085,6 +1085,8 @@
     "networkSlow": "Rrjeti është i ngadaltë/jashtë linje. Prisni dhe riprovoni.",
     "requestAddBefore": "Shto artikuj (rreshta të rinj) para se të dërgosh kërkesën",
     "requestSent": "Kërkesa u dërgua te pronari",
+    "requestApproved": "Kërkesa juaj u miratua dhe u shtua në tavolinë.",
+    "requestRejected": "Kërkesa juaj nuk u miratua.",
     "requestFailed": "Kërkesa dështoi (rrjet i ngadaltë). Riprovo.",
     "voidTicket": "Anulo biletën",
     "voidingBtn": "Duke anuluar…",
