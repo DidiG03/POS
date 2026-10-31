@@ -22,11 +22,12 @@ import {
   isHostUnreachable,
 } from './utils/netQuality';
 import {
+  POS_CACHE,
   emitPosSyncCatchup,
   emitPosSyncCatchupSoon,
 } from './utils/posReadCache';
 import { POS_BACKEND_HOST_CHANGED } from './utils/posServerScanEvent';
-import { clearInflight, dedupe } from './utils/swrCache';
+import { clearInflight, dedupe, invalidateCache } from './utils/swrCache';
 import {
   lanAuthGeneration,
   lanDedupeKey,
@@ -35,6 +36,12 @@ import {
   writeLanToken,
 } from './utils/lanAuthToken';
 import { isPairingRejectedError } from './utils/lanLoginError';
+import {
+  APP_UPDATE_REQUIRED,
+  APP_VERSION,
+  APP_VERSION_HEADER,
+} from '@shared/appVersion';
+import { POS_APP_UPDATE_REQUIRED } from './utils/appUpdateEvent';
 import { syncTabletToHostVersion } from './utils/syncTabletToHostVersion';
 
 export function installBrowserLanApi(): void {
@@ -109,6 +116,8 @@ export function installBrowserLanApi(): void {
       }
       clearInflight('lan:');
       clearLanGetEtags();
+      // Settings read before sign-in are the sign-in subset (`lanPreAuth`).
+      invalidateCache(POS_CACHE.settings);
     } catch (e) {
       void e;
     }
@@ -139,6 +148,34 @@ export function installBrowserLanApi(): void {
       return getToken() || readKdsDeviceToken();
     }
     return getToken();
+  }
+
+  // A paired phone or tablet (`lanPreAuth.ts` on the till): lets it list
+  // staff before anyone signs in. Changing the pairing code un-pairs it.
+  const LAN_DEVICE_TOKEN_KEY = 'pos_lan_device_token';
+  function readLanDeviceToken(): string | null {
+    try {
+      return localStorage.getItem(LAN_DEVICE_TOKEN_KEY) || null;
+    } catch {
+      return null;
+    }
+  }
+  function storeLanDeviceToken(resp: unknown): boolean {
+    const t = (resp as { deviceToken?: unknown } | null)?.deviceToken;
+    if (typeof t !== 'string' || t.length < 10) return false;
+    try {
+      localStorage.setItem(LAN_DEVICE_TOKEN_KEY, t);
+    } catch {
+      // asked again next launch
+    }
+    return true;
+  }
+  function storedPairingCode(): string {
+    try {
+      return localStorage.getItem('pos_pairing_code') || '';
+    } catch {
+      return '';
+    }
   }
 
   const KDS_DEVICE_TOKEN_KEY = 'pos.kdsDeviceToken';
@@ -488,7 +525,9 @@ export function installBrowserLanApi(): void {
       ? `/events?token=${encodeURIComponent(token)}${
           client ? `&client=${client}` : ''
         }`
-      : `/events/login${client ? `?client=${client}` : ''}`;
+      : `/events/login?${[client ? `client=${client}` : '', deviceQuery()]
+          .filter(Boolean)
+          .join('&')}`;
     es = {
       readyState: 0,
       close() {
@@ -535,7 +574,9 @@ export function installBrowserLanApi(): void {
         const url = token
           ? `${getHttpBase()}/events?token=${encodeURIComponent(token)}` +
             (nativeQ ? `&${nativeQ}` : '')
-          : `${getHttpBase()}/events/login${nativeQ ? `?${nativeQ}` : ''}`;
+          : `${getHttpBase()}/events/login?${[nativeQ, deviceQuery()]
+              .filter(Boolean)
+              .join('&')}`;
         es = new EventSource(url);
         lastSseEventAt = Date.now();
 
@@ -931,7 +972,12 @@ export function installBrowserLanApi(): void {
     const method = String(opts?.method || 'GET').toUpperCase();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      // The till tells an app older than it supports to update.
+      [APP_VERSION_HEADER]: APP_VERSION,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(readLanDeviceToken()
+        ? { 'X-POS-Device': readLanDeviceToken()! }
+        : {}),
       ...(IS_NATIVE_SHELL
         ? { 'X-POS-Client': 'native' }
         : (window as any).__ADMIN_APP__
@@ -972,6 +1018,15 @@ export function installBrowserLanApi(): void {
         maybeForceLogout(r.status, token, requestGeneration, path);
         const { message, code, permanent, body } = await readErrorMessage(r);
         const err = new HttpError(r.status, message, code, permanent);
+        if (code === APP_UPDATE_REQUIRED) {
+          try {
+            window.dispatchEvent(
+              new CustomEvent(POS_APP_UPDATE_REQUIRED, { detail: { message } }),
+            );
+          } catch {
+            // the error itself still reaches the caller
+          }
+        }
         // Extra fields (retryAfterMs, the stock or print details) for the
         // screens that explain them.
         if (body) err.data = body;
@@ -1022,6 +1077,25 @@ export function installBrowserLanApi(): void {
     return execute();
   }
 
+  async function pairDevice(pairingCode: string): Promise<boolean> {
+    try {
+      const resp = await goLan('/pairing/verify', {
+        method: 'POST',
+        body: JSON.stringify({ pairingCode: String(pairingCode || '') }),
+      });
+      if (!storeLanDeviceToken(resp)) return false;
+      clearInflight('lan:');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function deviceQuery(): string {
+    const t = readLanDeviceToken();
+    return t ? `device=${encodeURIComponent(t)}` : '';
+  }
+
   (window as any).api = {
     auth: {
       async loginWithPin(pin: string, userId?: number, pairingCode?: string) {
@@ -1035,6 +1109,7 @@ export function installBrowserLanApi(): void {
           });
           if (resp && typeof resp === 'object' && 'token' in resp) {
             const t = (resp as any).token;
+            storeLanDeviceToken(resp);
             if (typeof t === 'string' && t.length > 10) setToken(t);
             startSse();
             return (resp as any).user ?? null;
@@ -1140,7 +1215,21 @@ export function installBrowserLanApi(): void {
             }
           }
         }
-        return await goLan('/auth/users');
+        try {
+          return await goLan('/auth/users');
+        } catch (e) {
+          // Not paired yet: pair with the code this device already used
+          // (or none, where the venue does not ask for one) and try again.
+          if (!(e instanceof HttpError && e.code === 'PAIRING_REQUIRED')) {
+            throw e;
+          }
+          if (!(await pairDevice(storedPairingCode()))) throw e;
+          return await goLan('/auth/users');
+        }
+      },
+      /** Pair this phone or tablet with the till's pairing code. */
+      async pairDevice(pairingCode: string) {
+        return pairDevice(pairingCode);
       },
       async updateUser(input: any) {
         return await goLan('/auth/update-user', {
@@ -1614,10 +1703,18 @@ export function installBrowserLanApi(): void {
         approvedByAdminToken: string;
         idempotencyKey?: string;
       }) {
-        return await goLan('/admin/correct-sale', {
-          method: 'POST',
-          body: JSON.stringify(input ?? {}),
-        });
+        try {
+          return await goLan('/admin/correct-sale', {
+            method: 'POST',
+            body: JSON.stringify(input ?? {}),
+          });
+        } catch (e) {
+          // 409: already reversed by another request; the body says why.
+          if (e instanceof HttpError && e.status === 409 && e.data) {
+            return e.data;
+          }
+          throw e;
+        }
       },
       async printFiscalReceipt(input: { orderId: number }) {
         return await goLan('/admin/print-fiscal-receipt', {

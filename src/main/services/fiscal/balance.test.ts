@@ -409,3 +409,41 @@ describe('ensureDailyBalanceForCash — easyPos says the float is missing', () =
     expect(r.kind).toBe('complete');
   });
 });
+
+describe('the cash balance around midnight in Tirana (QA F9)', () => {
+  beforeEach(async () => {
+    const { __resetFiscalClock } = await import('./clock');
+    __resetFiscalClock();
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  it('declares once per Albanian day, whatever the till clock zone says', async () => {
+    fetchMock.mockResolvedValue(json(200, { fcdc: 'C-DAY' }));
+    // 22:59:30 UTC on 28 Oct is 23:59:30 in Tirana: still the 28th.
+    vi.setSystemTime(new Date('2026-10-28T22:59:30Z'));
+    const first = await ensureDailyBalanceForCash(
+      settings,
+      { openingFloat: 5000 },
+      fast,
+    );
+    expect(first.kind).toBe('complete');
+    expect(fiscalDayKey()).toBe('2026-10-28');
+    vi.setSystemTime(new Date('2026-10-28T22:59:50Z'));
+    expect(
+      (await ensureDailyBalanceForCash(settings, { openingFloat: 5000 }, fast))
+        .kind,
+    ).toBe('already-declared');
+    // 23:00:30 UTC is still the 28th in UTC, but 00:00:30 on the 29th in
+    // Tirana: a new business day, so a new declaration before cash sales.
+    vi.setSystemTime(new Date('2026-10-28T23:00:30Z'));
+    expect(fiscalDayKey()).toBe('2026-10-29');
+    const next = await ensureDailyBalanceForCash(
+      settings,
+      { openingFloat: 5000 },
+      fast,
+    );
+    expect(next.kind).toBe('complete');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+});

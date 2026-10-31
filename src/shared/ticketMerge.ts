@@ -1,36 +1,34 @@
 /**
  * How the till applies one Send to the bill it already holds.
  *
- * A Send carries the whole bill as the sending device saw it. Writing that
- * snapshot as-is let the last writer win: a Send queued offline and replayed
- * after a newer one, or two devices adding to the same table, silently took
- * items off the bill the kitchen had already made, and a void that landed in
- * between came back as a live line. The till holds the table lock while it
- * decides, so this is the one place where "what is on the bill" is settled.
+ * The bill on the till is the record. A Send can only add to it: new lines
+ * it fires, and course lines it holds for later. Everything else in the
+ * Send's copy of the bill is ignored.
  *
- * Rules, all applied against the latest bill of the current sitting:
- *   - A line only leaves the bill by being voided or paid, each through its
- *     own channel. Live lines the Send does not account for are kept.
- *   - Voids and payments recorded on the bill stay voided and paid.
- *   - A Send built before the latest bill was written (`stale`) only adds the
- *     lines it fired (`addedItems`); the rest of its snapshot is out of date.
- *   - Lines fired by this Send carry `sendKey`. If the bill already holds
- *     any of them, a later Send included this one and nothing is added again.
- *   - A Send cannot void. Voids need a manager PIN and leave an audit trail,
- *     and go through their own route; a `voided` flag in a snapshot beyond
- *     what the bill already records is ignored. (A void the till refused
- *     used to come back on the waiter's next Send and stick.)
- *   - The lines a Send fires are new, live lines. Carrying the bill's voids
- *     and payments over never lands on them: a second Espresso ordered after
- *     the first was voided used to be written as voided itself (printed,
- *     never billed, and never counted off stock).
+ * The till used to reconcile the Send's whole snapshot with the bill, item
+ * by item: lines the Send "accounted for" stood in for bill lines, and
+ * voids and payments were carried across onto matching lines. Matching by
+ * item is what broke. A phone that sent only its new Espresso had it folded
+ * into the voided one (printed and taken off stock, never billed), and a
+ * Send that raced a payment wrote the paid lines back as unpaid.
+ *
+ * Rules, against the latest bill of the current sitting:
+ *   - Lines leave the bill, or change state, only through their own route
+ *     (void, payment, transfer). A Send never voids, pays or un-pays.
+ *   - A line naming a bill line (its `lineId`, or the `sendKey` of the Send
+ *     that put it there) is that line, whatever the Send says about it.
+ *   - The lines a Send fires are new lines, appended with its Send key:
+ *     `addedItems` when the device lists them, else every fired, live line
+ *     that names nothing on the bill. They are never matched to bill lines
+ *     of the same item.
+ *   - Firing a held course line marks that line fired (by `lineId`, or the
+ *     same item among the held lines) instead of adding a second copy.
+ *   - Held lines the bill does not have yet are added, still held.
+ *   - A Send whose key is already on the bill was carried by an earlier
+ *     write: nothing is added again.
  */
 import { lineIdOf } from './ticketLineIds';
-import {
-  restoreMissingServerLines,
-  ticketDraftLineKey,
-  type TicketDraftLine,
-} from './ticketDraft';
+import { ticketDraftLineKey, type TicketDraftLine } from './ticketDraft';
 
 export type MergeLine = TicketDraftLine & {
   sendKey?: string;
@@ -38,13 +36,11 @@ export type MergeLine = TicketDraftLine & {
 };
 
 export type TicketSendMergeMode =
-  /** Written as sent: nothing on the bill was missing from it. */
+  /** First write of the sitting. */
   | 'as-sent'
-  /** Lines or voids/payments from the bill were put back. */
-  | 'restored'
-  /** Built on an older bill: only its new lines were added. */
-  | 'stale-delta'
-  /** A later Send already carried these lines; the bill is unchanged. */
+  /** New lines appended to the bill. */
+  | 'appended'
+  /** This Send is already on the bill, or adds nothing: nothing to write. */
   | 'already-included';
 
 const EPS = 1e-9;
@@ -63,121 +59,6 @@ function isLive(line: MergeLine): boolean {
 }
 
 /**
- * Make sure every quantity the bill records as voided or paid is voided or
- * paid in `result` too, converting live lines of the same item (splitting a
- * line when only part of it is needed). A stale snapshot cannot resurrect
- * a voided item or charge a paid one again.
- */
-export function carryVoidAndPaid<T extends MergeLine>(
-  result: T[],
-  bill: readonly MergeLine[],
-  /** Lines this Send fires: never converted (they are new orders). */
-  isNew: (line: T) => boolean = () => false,
-): { items: T[]; changed: boolean } {
-  const want = new Map<string, { voided: number; paid: number }>();
-  for (const line of bill) {
-    if (line.voided !== true && line.paid !== true) continue;
-    const key = ticketDraftLineKey(line);
-    const entry = want.get(key) || { voided: 0, paid: 0 };
-    // A paid line that was later voided counts as paid: money was taken.
-    if (line.paid === true) entry.paid += qtyOf(line);
-    else entry.voided += qtyOf(line);
-    want.set(key, entry);
-  }
-  if (want.size === 0) return { items: result, changed: false };
-
-  const have = new Map<string, { voided: number; paid: number }>();
-  for (const line of result) {
-    if (line.voided !== true && line.paid !== true) continue;
-    const key = ticketDraftLineKey(line);
-    const entry = have.get(key) || { voided: 0, paid: 0 };
-    if (line.paid === true) entry.paid += qtyOf(line);
-    else entry.voided += qtyOf(line);
-    have.set(key, entry);
-  }
-
-  const deficit = new Map<string, { voided: number; paid: number }>();
-  for (const [key, w] of want) {
-    const h = have.get(key) || { voided: 0, paid: 0 };
-    const d = {
-      paid: Math.max(0, w.paid - h.paid),
-      voided: Math.max(0, w.voided - h.voided),
-    };
-    if (d.paid > EPS || d.voided > EPS) deficit.set(key, d);
-  }
-  if (deficit.size === 0) return { items: result, changed: false };
-
-  const out: T[] = [];
-  for (const line of result) {
-    const key = ticketDraftLineKey(line);
-    const d = deficit.get(key);
-    if (!d || !isLive(line) || isNew(line)) {
-      out.push(line);
-      continue;
-    }
-    let left = qtyOf(line);
-    for (const flag of ['paid', 'voided'] as const) {
-      const take = Math.min(left, d[flag]);
-      if (take <= EPS) continue;
-      out.push({ ...line, qty: roundQty(take), [flag]: true });
-      d[flag] = roundQty(d[flag] - take);
-      left = roundQty(left - take);
-    }
-    if (left > EPS) out.push({ ...line, qty: roundQty(left) });
-  }
-  // Still short (the snapshot has no live copy to convert, or only this
-  // Send's own lines): keep the bill's voided and paid lines as they are.
-  for (const line of bill) {
-    const flag =
-      line.paid === true ? 'paid' : line.voided === true ? 'voided' : null;
-    if (!flag) continue;
-    const d = deficit.get(ticketDraftLineKey(line));
-    if (!d || d[flag] <= EPS) continue;
-    const take = Math.min(qtyOf(line), d[flag]);
-    out.push({ ...(line as T), qty: roundQty(take) });
-    d[flag] = roundQty(d[flag] - take);
-  }
-  return { items: out, changed: true };
-}
-
-/**
- * Undo voids in `result` that the bill does not record. Per item, at most
- * the bill's voided quantity stays voided; any more is live again.
- */
-export function capVoidsToBill<T extends MergeLine>(
-  result: T[],
-  bill: readonly MergeLine[],
-): { items: T[]; changed: boolean } {
-  const allowed = new Map<string, number>();
-  for (const line of bill) {
-    if (line.voided !== true || line.paid === true) continue;
-    const key = ticketDraftLineKey(line);
-    allowed.set(key, (allowed.get(key) || 0) + qtyOf(line));
-  }
-  let changed = false;
-  const out: T[] = [];
-  for (const line of result) {
-    if (line.voided !== true || line.paid === true) {
-      out.push(line);
-      continue;
-    }
-    const key = ticketDraftLineKey(line);
-    const left = allowed.get(key) || 0;
-    const qty = qtyOf(line);
-    if (qty <= left + EPS) {
-      allowed.set(key, roundQty(left - qty));
-      out.push(line);
-      continue;
-    }
-    changed = true;
-    allowed.set(key, 0);
-    if (left > EPS) out.push({ ...line, qty: roundQty(left) });
-    out.push({ ...line, qty: roundQty(qty - left), voided: false });
-  }
-  return { items: changed ? out : result, changed };
-}
-
-/**
  * Add the lines a Send fired to `bill`. A held course line is already on
  * the bill unfired; firing it marks that line fired instead of adding a
  * second copy.
@@ -186,6 +67,17 @@ function applyFiredDelta(bill: MergeLine[], added: MergeLine[]): MergeLine[] {
   const out = bill.map((l) => ({ ...l }));
   const extra: MergeLine[] = [];
   for (const line of added) {
+    const id = lineIdOf(line);
+    const byId = id ? out.findIndex((l) => lineIdOf(l) === id) : -1;
+    if (byId >= 0) {
+      // The device names the held line it fires. Any other line with this
+      // id is already sent: never added twice, never changed.
+      const held = out[byId];
+      if (held.fired === false && isLive(held)) {
+        out[byId] = { ...held, fired: true, sendKey: line.sendKey };
+      }
+      continue;
+    }
     const key = ticketDraftLineKey(line);
     let left = qtyOf(line);
     for (let i = 0; i < out.length && left > EPS; i++) {
@@ -213,16 +105,95 @@ function applyFiredDelta(bill: MergeLine[], added: MergeLine[]): MergeLine[] {
 }
 
 /**
+ * The lines one Send fires: new orders, stamped with `sendKey`.
+ */
+export function firedLinesOfSend<T extends MergeLine>(input: {
+  incoming: readonly T[];
+  latest: readonly MergeLine[];
+  sendKey: string;
+  /** The lines the device says this Send fires. Absent from older clients. */
+  addedItems?: readonly T[] | null;
+}): MergeLine[] {
+  const key = input.sendKey;
+  const billKeys = new Set(
+    input.latest.map((l) => String(l.sendKey || '').trim()).filter(Boolean),
+  );
+  const fired = (l: MergeLine) => isLive(l) && l.fired !== false;
+  if (Array.isArray(input.addedItems)) {
+    return input.addedItems
+      .filter((l) => l && fired(l))
+      .map((l) => ({ ...l, fired: true, sendKey: key }));
+  }
+  // No list: every fired line that names nothing on the bill is new. Lines
+  // the bill already has (by id, or by the Send that put them there) are
+  // the device's copy of the bill.
+  const billIds = new Set(input.latest.map(lineIdOf).filter(Boolean));
+  const out: MergeLine[] = [];
+  for (const line of input.incoming) {
+    if (!line || !fired(line)) continue;
+    const lineKey = String(line.sendKey || '').trim();
+    if (lineKey !== key) {
+      if (billIds.has(lineIdOf(line))) continue;
+      if (lineKey && billKeys.has(lineKey)) continue;
+    }
+    const fresh: MergeLine = { ...line, fired: true, sendKey: key };
+    // The till numbers new lines itself.
+    if (lineKey !== key) delete fresh.lineId;
+    out.push(fresh);
+  }
+  return out;
+}
+
+/**
+ * Held (not yet fired) course lines of the Send that the bill does not have.
+ * Compared only with the bill's own held lines: a held line is never matched
+ * to a sent, voided or paid one.
+ */
+function newHeldLines(
+  incoming: readonly MergeLine[],
+  latest: readonly MergeLine[],
+  firedIds: Set<string>,
+): MergeLine[] {
+  const billIds = new Set(latest.map(lineIdOf).filter(Boolean));
+  const billKeys = new Set(
+    latest.map((l) => String(l.sendKey || '').trim()).filter(Boolean),
+  );
+  const pool = new Map<string, number>();
+  for (const line of latest) {
+    if (line.fired !== false || !isLive(line)) continue;
+    const k = ticketDraftLineKey(line);
+    pool.set(k, roundQty((pool.get(k) || 0) + qtyOf(line)));
+  }
+  const out: MergeLine[] = [];
+  for (const line of incoming) {
+    if (!line || line.fired !== false || !isLive(line)) continue;
+    const id = lineIdOf(line);
+    if (id && (billIds.has(id) || firedIds.has(id))) continue;
+    const lineKey = String(line.sendKey || '').trim();
+    if (lineKey && billKeys.has(lineKey)) continue;
+    const k = ticketDraftLineKey(line);
+    const onBill = pool.get(k) || 0;
+    const qty = qtyOf(line);
+    const take = Math.min(qty, onBill);
+    if (take > EPS) pool.set(k, roundQty(onBill - take));
+    const left = roundQty(qty - take);
+    if (left <= EPS) continue;
+    const held: MergeLine = { ...line, qty: left, fired: false };
+    delete held.sendKey;
+    out.push(held);
+  }
+  return out;
+}
+
+/**
  * The bill to write for one Send. `latest` is the newest bill of the
  * current sitting (empty when the sitting has none yet).
  */
 export function mergeTicketSend<T extends MergeLine>(input: {
   incoming: T[];
   latest: readonly MergeLine[];
-  /** The Send was built before `latest` was written. */
-  stale: boolean;
-  /** This Send's idempotency key, stamped on the lines it fired. */
-  sendKey?: string | null;
+  /** This Send's key, stamped on the lines it fires. */
+  sendKey: string;
   /** The lines this Send fired. Absent from older clients. */
   addedItems?: T[] | null;
 }): { items: MergeLine[]; mode: TicketSendMergeMode } {
@@ -232,113 +203,22 @@ export function mergeTicketSend<T extends MergeLine>(input: {
     l.fired === undefined ? { ...l, fired: true } : l,
   );
   const key = String(input.sendKey || '').trim();
-  const added = Array.isArray(input.addedItems) ? input.addedItems : null;
-
-  if (latest.length === 0) {
-    const capped = capVoidsToBill(input.incoming, []);
-    return {
-      items: capped.items,
-      mode: capped.changed ? 'restored' : 'as-sent',
-    };
-  }
-
-  if (key && added && latest.some((l) => l.sendKey === key)) {
+  if (key && latest.some((l) => l.sendKey === key)) {
     return { items: latest, mode: 'already-included' };
   }
-
-  if (input.stale && added) {
-    return {
-      items: applyFiredDelta(
-        latest,
-        added.map((l) => ({ ...l, sendKey: key || l.sendKey })),
-      ),
-      mode: 'stale-delta',
-    };
-  }
-
-  // Lines this Send fired are new; only the rest can stand in for lines
-  // already on the bill (see restoreMissingServerLines).
-  const isNew = (l: MergeLine) => Boolean(key) && l.sendKey === key;
-  let incoming: MergeLine[] = input.incoming;
-  if (key && incoming.some((l) => isNew(l) && !isLive(l))) {
-    incoming = incoming.map((l) =>
-      isNew(l) && !isLive(l) ? { ...l, voided: false, paid: false } : l,
-    );
-  }
-  const onBill = key ? incoming.filter((l) => !isNew(l)) : incoming;
-  const restored = restoreMissingServerLines<MergeLine>(
-    incoming,
+  const fired = firedLinesOfSend({
+    incoming: input.incoming || [],
     latest,
-    onBill,
-  );
-  const capped = capVoidsToBill(restored, latest);
-  const carried = carryVoidAndPaid(capped.items, latest, isNew);
-  const changed =
-    restored !== input.incoming || capped.changed || carried.changed;
-  return { items: carried.items, mode: changed ? 'restored' : 'as-sent' };
-}
-
-/**
- * The lines a Send without a Send key orders (older clients, scripts). Such
- * a Send carries the bill as the device saw it, so what it orders is what it
- * has beyond the live bill:
- *   - a line naming a line on the bill (its `lineId`, or the `sendKey` of
- *     the Send that put it there) is that line, not a new order;
- *   - the rest is compared, item by item, with the live sent lines the
- *     device did not name. Anything beyond them is new.
- * Voided and paid lines on the bill are not live: ordering an Espresso
- * after the last one was voided is a new Espresso. Lines the device sends
- * as voided, paid or held are not orders.
- *
- * Each new line is its own line (`qty` beyond the bill), so two Sends of
- * the same item stay two lines, each with its own Send.
- */
-export function keylessSendLines<T extends MergeLine>(
-  incoming: readonly T[],
-  latest: readonly MergeLine[],
-): T[] {
-  const billIds = new Set(latest.map(lineIdOf).filter(Boolean));
-  const billKeys = new Set(
-    latest.map((l) => String(l.sendKey || '').trim()).filter(Boolean),
-  );
-  const named = new Set<string>();
-  const namedKeys = new Set<string>();
-  const loose: T[] = [];
-  for (const line of incoming) {
-    const id = lineIdOf(line);
-    const sendKey = String(line.sendKey || '').trim();
-    if (id && billIds.has(id)) named.add(id);
-    else if (sendKey && billKeys.has(sendKey)) namedKeys.add(sendKey);
-    else loose.push(line);
+    sendKey: key,
+    addedItems: input.addedItems,
+  });
+  const firedIds = new Set(fired.map(lineIdOf).filter(Boolean));
+  const held = newHeldLines(input.incoming || [], latest, firedIds);
+  if (!fired.length && !held.length) {
+    return { items: latest, mode: 'already-included' };
   }
-  const pool = new Map<string, number>();
-  for (const line of latest) {
-    if (!isLive(line) || line.fired === false) continue;
-    if (named.has(lineIdOf(line))) continue;
-    if (namedKeys.has(String(line.sendKey || '').trim())) continue;
-    const key = ticketDraftLineKey(line);
-    pool.set(key, roundQty((pool.get(key) || 0) + qtyOf(line)));
-  }
-  const out: T[] = [];
-  for (const line of loose) {
-    if (!isLive(line) || line.fired === false) continue;
-    const key = ticketDraftLineKey(line);
-    const onBill = pool.get(key) || 0;
-    const qty = qtyOf(line);
-    const take = Math.min(qty, onBill);
-    if (take > EPS) pool.set(key, roundQty(onBill - take));
-    const left = roundQty(qty - take);
-    if (left <= EPS) continue;
-    const fresh = {
-      ...line,
-      qty: left,
-      voided: false,
-      paid: false,
-      fired: true,
-    };
-    delete (fresh as MergeLine).lineId;
-    delete (fresh as MergeLine).sendKey;
-    out.push(fresh);
-  }
-  return out;
+  return {
+    items: [...applyFiredDelta(latest, fired), ...held],
+    mode: latest.length ? 'appended' : 'as-sent',
+  };
 }

@@ -46,7 +46,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /auth/login': { allow: 'public', note: 'issues the token' },
   'GET /auth/users': {
     allow: 'public',
-    note: 'staff picker on the login screen',
+    note: 'staff picker; needs a paired device, a session or the till (lanPreAuth.ts)',
   },
   'GET /events': {
     allow: 'session',
@@ -54,13 +54,13 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   },
   'GET /events/login': {
     allow: 'public',
-    note: 'staff-picker live updates before PIN; only users + ping',
+    note: 'staff-picker live updates; needs a paired device, a session or the till',
   },
 
   // -------------------------------------------------------- boot-time reads
   'GET /settings': {
     allow: 'public',
-    note: 'locale, currency, areas; credentials are redacted before sending',
+    note: 'without a session only the sign-in subset (lanPreAuth.ts); credentials always redacted',
   },
   'GET /offline/status': { allow: 'public' },
   'GET /billing/status': {

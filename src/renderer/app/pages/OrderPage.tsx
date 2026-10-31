@@ -4215,6 +4215,8 @@ export default function OrderPage() {
                 categoryName: (l as any).categoryName,
                 courseId: (l as any).courseId || null,
                 seatId: (l as any).seatId || null,
+                // The bill line it pays: the till flags it paid at commit.
+                lineId: l.id,
               }));
               const payingIds = payLines.map((l) => l.id);
               const closeTable =

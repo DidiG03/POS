@@ -652,3 +652,101 @@ describe('fiscal receipt additions (QA F7, F8)', () => {
     expect(text).not.toContain('PAID');
   });
 });
+
+describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
+  const settings = {
+    restaurantName: 'Test',
+    currency: 'ALL',
+    printLanguage: 'en',
+    defaultVatRate: 0.2,
+    fiscal: { enabled: true, nipt: 'L12345678A' },
+  } as any;
+  const paid = (meta: Record<string, unknown> = {}) =>
+    ({
+      area: 'Salla',
+      tableLabel: 'T1',
+      items: [{ name: 'Kafe', qty: 2, unitPrice: 150, vatRate: 0.2 }],
+      meta: {
+        kind: 'PAYMENT',
+        method: 'CASH',
+        vatEnabled: true,
+        totalAfter: 300,
+        paidAt: '2026-10-28T19:05:00.000Z',
+        fiscalEnabled: true,
+        fiscalStatus: 'accepted',
+        fiscalNivf: 'NIVF-1',
+        fiscalNslf: 'NSLF-1',
+        ...meta,
+      },
+    }) as any;
+
+  it('F4a: a reprinted fiscal receipt says it is a copy; the original does not', () => {
+    const original = buildEscposTicket(paid(), settings).toString('latin1');
+    expect(original).not.toContain('COPY');
+    const copy = buildEscposTicket(paid({ reprint: true }), settings);
+    expect(copy.toString('latin1')).toContain('*** COPY - REPRINT ***');
+    // ...and opens no drawer.
+    expect(copy.includes(cmdOpenCashDrawer(0))).toBe(false);
+    const html = buildHtmlReceipt(paid({ reprint: true }), settings);
+    expect(html).toContain('COPY - REPRINT');
+  });
+
+  it('F4b: a late-filed receipt shows the sale time and when it was filed', () => {
+    const text = buildEscposTicket(
+      paid({ reprint: true, fiscalFiledLateAt: '2026-10-29T07:30:00.000Z' }),
+      settings,
+    ).toString('latin1');
+    const sale = new Date('2026-10-28T19:05:00.000Z');
+    const hhmm = `${String(sale.getHours()).padStart(2, '0')}:${String(sale.getMinutes()).padStart(2, '0')}`;
+    expect(text).toContain(hhmm);
+    expect(text).toMatch(/Fiskalizuar me vones.: /);
+  });
+
+  it('F2b: prints the lekë total that was filed, not its own conversion', () => {
+    const eur = {
+      ...settings,
+      currency: 'EUR',
+      preferences: { eurExchangeRate: 97.53 },
+    };
+    const text = buildEscposTicket(
+      paid({ fiscalTotalLek: 292.59 }),
+      eur,
+    ).toString('latin1');
+    expect(text).toMatch(/292\.59/);
+    // 3.00 EUR × 97.53 converted in one step would be 292.59 too; prove
+    // the filed figure wins when they differ.
+    const differs = buildEscposTicket(
+      paid({ fiscalTotalLek: 292.62 }),
+      eur,
+    ).toString('latin1');
+    expect(differs).toMatch(/292\.62/);
+    expect(differs).not.toMatch(/292\.59/);
+  });
+
+  it('F7b: a corrective slip prints negative amounts and the lekë taken back', () => {
+    const text = buildEscposTicket(
+      {
+        area: 'Salla',
+        tableLabel: 'T1',
+        items: [{ name: 'Kafe', qty: 1, unitPrice: 500, vatRate: 0.2 }],
+        meta: {
+          kind: 'CORRECTION',
+          correctionKind: 'CORRECTIVE',
+          correctsNslf: 'IIC-ORIGINAL',
+          vatEnabled: true,
+          totalAfter: 500,
+          fiscalEnabled: true,
+          fiscalStatus: 'accepted',
+          fiscalNivf: 'NIVF-CORR',
+          fiscalNslf: 'IIC-CORR',
+          fiscalTotalLek: -500,
+        },
+      } as any,
+      settings,
+    ).toString('latin1');
+    expect(text).toMatch(/Kafe +-1 +500\.00 +-500\.00/);
+    expect(text).toMatch(/TOTAL +-500\.00/);
+    expect(text).toMatch(/LEK[^\n]* +-500\.00/);
+    expect(text).toMatch(/VAT +-83\.33/);
+  });
+});

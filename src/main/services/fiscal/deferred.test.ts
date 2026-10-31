@@ -432,3 +432,30 @@ describe('test and live easyPos kept apart', () => {
     expect(createSale).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('the deferred queue reads the settings again for each invoice (QA F5)', () => {
+  it('sends the next invoice to the URL changed in the meantime', async () => {
+    const { setFiscalSettingsSource } = await import('./config');
+    const OLD = 'https://api.dev.easypos.al/fiscalisation-service/v1';
+    const NEW = 'https://api.dev.easypos.al/fiscalisation-service/v2';
+    let current: any = { fiscal: { enabled: true, baseUrl: OLD } };
+    setFiscalSettingsSource(async () => current);
+    try {
+      deferred('inv-first', { createdAt: '2026-10-01T10:00:00.000Z' });
+      deferred('inv-second', { createdAt: '2026-10-01T10:01:00.000Z' });
+      const seen: string[] = [];
+      createSale.mockImplementation(async (s: any) => {
+        seen.push(String(s?.fiscal?.baseUrl || ''));
+        // The admin fixes the URL while the first invoice is being sent.
+        current = { fiscal: { enabled: true, baseUrl: NEW } };
+        return { nslf: 'N', nivf: 'F', link: '', status: 'accepted' };
+      });
+      await transmitDueDeferredInvoices({
+        fiscal: { enabled: true, baseUrl: OLD },
+      } as unknown as SettingsDTO);
+      expect(seen).toEqual([OLD, NEW]);
+    } finally {
+      setFiscalSettingsSource(null);
+    }
+  });
+});

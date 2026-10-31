@@ -378,7 +378,10 @@
     "lockedTitle": "Sign-in locked",
     "failedTitle": "Sign-in failed",
     "invalidPinAttemptsLeft_one": "That PIN is incorrect. 1 attempt left on this device before sign-in locks.",
-    "invalidPinAttemptsLeft_other": "That PIN is incorrect. {{count}} attempts left on this device before sign-in locks."
+    "invalidPinAttemptsLeft_other": "That PIN is incorrect. {{count}} attempts left on this device before sign-in locks.",
+    "pairDevice": "Pair this device",
+    "pairDeviceHint": "This device is not paired with the till yet. Enter the pairing code shown in Admin.",
+    "pairDeviceFailed": "That pairing code was not accepted. Check it in Admin and try again."
   },
   "routes": {
     "loading": "Loading…",
@@ -1943,5 +1946,9 @@
     "problemTitle": "Printer problem",
     "receiptTitle": "Receipt",
     "backTitle": "Printer back online"
+  },
+  "app": {
+    "updateRequiredTitle": "Update the app",
+    "updateRequired": "This app is too old for this till. Update OneTap and sign in again."
   }
 }

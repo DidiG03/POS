@@ -320,6 +320,10 @@ export default function LoginPage() {
   const { setUser } = useSessionStore();
   const { setUser: setAdminUser } = useAdminSessionStore();
   const [reloadNonce, setReloadNonce] = useState(0);
+  // The till lists staff only to a paired device (`lanPreAuth.ts`).
+  const [needsDevicePairing, setNeedsDevicePairing] = useState(false);
+  const [devicePairingCode, setDevicePairingCode] = useState('');
+  const [pairingDevice, setPairingDevice] = useState(false);
   const [firstAdminName, setFirstAdminName] = useState('');
   const [firstAdminPin, setFirstAdminPin] = useState('');
   const [creatingFirstAdmin, setCreatingFirstAdmin] = useState(false);
@@ -379,6 +383,15 @@ export default function LoginPage() {
       try {
         users = await usersP;
       } catch (e: any) {
+        if (String(e?.code || '') === 'PAIRING_REQUIRED') {
+          setNeedsDevicePairing(true);
+          setNotice(t('login.pairDeviceHint'));
+          setStaff([]);
+          setOpenIds([]);
+          setOpenShiftKnown(true);
+          if (!cancelled) setStaffLoading(false);
+          return;
+        }
         const message = lanLoginUserMessage(e, t);
         setNotice(message);
         toast.error(message, { timeoutMs: 5_000 });
@@ -616,6 +629,48 @@ export default function LoginPage() {
           {notice && (
             <div className="pos-alert shrink-0 !border-amber-500/30 !bg-amber-500/10 p-3 text-[13px] text-amber-200">
               {notice}
+            </div>
+          )}
+          {!showPin && !staffLoading && needsDevicePairing && (
+            <div className="flex shrink-0 flex-col gap-3">
+              <Input
+                inputMode="numeric"
+                placeholder={t('login.pairingPlaceholder')}
+                value={devicePairingCode}
+                maxLength={12}
+                onChange={(e) => setDevicePairingCode(e.target.value)}
+                autoComplete="off"
+              />
+              <Button
+                variant="primary"
+                block
+                loading={pairingDevice}
+                disabled={devicePairingCode.trim().length < 4}
+                onClick={async () => {
+                  const code = devicePairingCode.trim();
+                  setPairingDevice(true);
+                  try {
+                    const ok = await window.api.auth.pairDevice?.(code);
+                    if (!ok) {
+                      showLoginMessage(t('login.pairDeviceFailed'));
+                      return;
+                    }
+                    try {
+                      localStorage.setItem(PAIRING_STORAGE_KEY, code);
+                    } catch {
+                      // asked again next time
+                    }
+                    setPairingCode(code);
+                    setNeedsDevicePairing(false);
+                    setNotice(null);
+                    setReloadNonce((n) => n + 1);
+                  } finally {
+                    setPairingDevice(false);
+                  }
+                }}
+              >
+                {t('login.pairDevice')}
+              </Button>
             </div>
           )}
           {!showPin && !staffLoading && needsFirstAdmin && (

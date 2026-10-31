@@ -677,11 +677,12 @@ export function bandChangeBetween(
   return out;
 }
 
-export function buildEasyPosCloudInvoiceDraft(
+/** The lines, rebate and payment an invoice for `payload` is filed with. */
+function cloudInvoiceBody(
   payload: TicketPrintPayload,
   settings: SettingsDTO,
-  options?: BuildDraftOptions,
-): EasyPosCloudInvoiceDraft {
+  onAdjustment?: BuildDraftOptions['onAdjustment'],
+): Pick<EasyPosCloudInvoiceDraft, 'articles' | 'payment' | 'invoiceRebate'> {
   let articles = buildArticles(payload, settings);
   if (articles.length === 0) {
     throw new Error('Cannot fiscalize an empty ticket.');
@@ -694,7 +695,7 @@ export function buildEasyPosCloudInvoiceDraft(
       invoiceRebate,
       totalAfter,
       settings,
-      options?.onAdjustment,
+      onAdjustment,
     );
     articles = reconciled.articles;
     invoiceRebate = reconciled.invoiceRebate;
@@ -702,15 +703,56 @@ export function buildEasyPosCloudInvoiceDraft(
   // Filed in lekë, converted here (`invoiceInLek`), so the lines and the
   // payment are added up from the same rounded figures.
   const lek = invoiceInLek(articles, invoiceRebate, settings);
-  const draft: EasyPosCloudInvoiceDraft = {
-    docId: ensureDocId(options),
+  return {
     articles: lek.articles,
     payment: buildPaymentArray(lek.articles, lek.invoiceRebate, payload),
+    ...(lek.invoiceRebate ? { invoiceRebate: lek.invoiceRebate } : {}),
   };
-  if (lek.invoiceRebate) draft.invoiceRebate = lek.invoiceRebate;
+}
+
+export function buildEasyPosCloudInvoiceDraft(
+  payload: TicketPrintPayload,
+  settings: SettingsDTO,
+  options?: BuildDraftOptions,
+): EasyPosCloudInvoiceDraft {
+  const body = cloudInvoiceBody(payload, settings, options?.onAdjustment);
+  const draft: EasyPosCloudInvoiceDraft = {
+    docId: ensureDocId(options),
+    articles: body.articles,
+    payment: body.payment,
+  };
+  if (body.invoiceRebate) draft.invoiceRebate = body.invoiceRebate;
   const { operatorCode } = fiscalArticleSettings(settings);
   if (operatorCode) draft.operatorCode = operatorCode;
   return draft;
+}
+
+/**
+ * The total in lekë this payload is filed for, or null when the venue
+ * sells in lekë (the receipt total already is that amount).
+ *
+ * The invoice converts each line to lekë and rounds it there
+ * (`invoiceInLek`); converting the receipt's total in one step instead
+ * differed from the filed total by a few qindarka. The receipt prints this.
+ */
+export function filedLekTotal(
+  payload: TicketPrintPayload,
+  settings: SettingsDTO,
+): number | null {
+  const currency = String(settings?.currency || DEFAULT_CURRENCY)
+    .trim()
+    .toUpperCase();
+  if (currency === DEFAULT_CURRENCY) return null;
+  try {
+    const body = cloudInvoiceBody(payload, settings);
+    const paid = (body.payment || []).reduce(
+      (sum, p) => sum + Number(p?.amount || 0),
+      0,
+    );
+    return roundMoney(paid);
+  } catch {
+    return null;
+  }
 }
 
 /**

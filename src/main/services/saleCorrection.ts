@@ -267,6 +267,8 @@ export interface FiledCancellation {
   /** Verification link / QR payload of the filed document, for its slip. */
   link?: string;
   qrCode?: string;
+  /** FILED corrective: the amount filed, in lekë (negative). */
+  amountLek?: number;
   detail: string;
   /**
    * NOT_FILED only: the request never reached easyPos (offline, outage), so
@@ -363,6 +365,20 @@ async function fileCancellation(input: {
  * printer problem never undoes the filing. Kind `CORRECTION`, so it never
  * reads as a sale (`ensureSettledSaleFromPrintJob` takes PAYMENT only).
  */
+/** The lekë a filed corrective or cancellation took back (negative). */
+export function correctionLekTotal(
+  filed: Pick<FiledCancellation, 'amountLek'>,
+  payment: { metaJson?: unknown } | null | undefined,
+): number | undefined {
+  if (Number.isFinite(Number(filed.amountLek)) && filed.amountLek != null) {
+    return roundMoney(-Math.abs(Number(filed.amountLek)));
+  }
+  const original = Number((payment?.metaJson as any)?.fiscalTotalLek);
+  return Number.isFinite(original) && original > 0
+    ? roundMoney(-original)
+    : undefined;
+}
+
 export async function printCorrectionSlip(
   correctionId: number,
   filed: FiledCancellation,
@@ -388,10 +404,12 @@ export async function printCorrectionSlip(
         area: String(order?.area || ''),
         tableLabel: String(order?.tableLabel || ''),
         covers: null,
+        // Positive here; the slip prints them negative (`kind: CORRECTION`).
         items: struck.map((l) => ({
           name: String(l?.name || 'Item'),
           qty: num(l?.qty) || 1,
           unitPrice: num(l?.unitPrice),
+          vatRate: l?.vatRate,
         })),
         note: String(correction.reason || '') || null,
         meta: {
@@ -410,6 +428,9 @@ export async function printCorrectionSlip(
           fiscalNivf: filed.nivf,
           fiscalLink: filed.link,
           fiscalQrCode: filed.qrCode,
+          // The lekë taken back, as filed: the corrective's own amount, or
+          // all of what the cancelled invoice declared.
+          fiscalTotalLek: correctionLekTotal(filed, payment),
         },
       } as any,
       settings,
@@ -578,6 +599,7 @@ async function fileCorrective(input: {
         nivf: outcome.identifiers.fic,
         link: outcome.identifiers.link,
         qrCode: outcome.identifiers.qrCode,
+        amountLek: lek.amount,
         detail: `Corrective filed · NIVF ${outcome.identifiers.fic} · docId ${docId}`,
       };
     }

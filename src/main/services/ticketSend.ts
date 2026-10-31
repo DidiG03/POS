@@ -11,9 +11,10 @@
  *      which put a paid sitting's bill back on the floor to be charged again.
  *   3. The table is opened if needed, in the same lock as the write.
  *   4. Another waiter's sitting is refused unless the actor is an admin.
- *   5. The Send is merged with the bill already there
- *      (see `mergeTicketSend`), so a late or concurrent Send cannot drop
- *      items, undo a void, or charge a paid line again.
+ *   5. The Send's new lines are added to the bill already there
+ *      (see `mergeTicketSend`). A Send never changes a line the bill has,
+ *      so a late or concurrent Send cannot drop items, undo a void, or
+ *      charge a paid line again.
  *
  * Step 2 also drops lines from a sitting that has ended: a screen left on a
  * table that another device paid would otherwise start a new sitting with
@@ -25,15 +26,14 @@
  * same transaction as the bill write.
  */
 import { prisma } from '@db/client';
-import { asTicketLogItems, ticketLogCreatedAtMs } from '@shared/ticketLogItems';
+import { asTicketLogItems } from '@shared/ticketLogItems';
 import { intentAtFromAge } from '@shared/tableIntent';
 import {
-  keylessSendLines,
   mergeTicketSend,
   type MergeLine,
   type TicketSendMergeMode,
 } from '@shared/ticketMerge';
-import { newTicketLineId, withLineIds } from '@shared/ticketLineIds';
+import { lineIdOf, newTicketLineId, withLineIds } from '@shared/ticketLineIds';
 import { coreServices, withTableLock } from './core';
 import { ensureOccupiedForTicketWrite } from './tableOpen';
 import { occupancyIntentIsStale } from './tableOccupancy';
@@ -133,42 +133,86 @@ export const BILL_FROM_CLOSED_SITTING_MESSAGE =
   'This screen still shows a bill that was already closed (paid, voided or moved). Reopen the table to see its current bill.';
 
 /**
- * Send keys in `items` that belong to a different sitting than the current
- * one. A line's `sendKey` is the idempotency key of the Send that fired it,
- * so the TicketLog row with that key says which sitting it was on. Keys the
- * till has never seen (a Send still queued on the phone, or one that was
- * refused) prove nothing and are ignored.
+ * Lines in `items` that belong to a different sitting than the current one,
+ * by Send key or line id.
+ *
+ * A line's `sendKey` is the idempotency key of the Send that fired it, so
+ * the TicketLog row with that key says which sitting it was on. Rows are
+ * compacted to the newest few per sitting, though, so the key's own row can
+ * be gone; the last bills of earlier sittings at this table still list every
+ * line they had (`sendKey` and `lineId`). Keys and ids the till has never
+ * seen (a Send still queued on the phone, or one that was refused) prove
+ * nothing and are ignored.
  */
-export async function closedSittingSendKeys(input: {
+export async function closedSittingLines(input: {
+  area: string;
+  tableLabel: string;
   items: unknown[];
   ownKey: string;
   latestItems: MergeLine[];
   sessionKey: string | null;
-}): Promise<Set<string>> {
-  const onBill = new Set(
+}): Promise<{ sendKeys: Set<string>; lineIds: Set<string> }> {
+  const none = { sendKeys: new Set<string>(), lineIds: new Set<string>() };
+  const onBillKeys = new Set(
     input.latestItems.map((l) => String(l.sendKey || '')).filter(Boolean),
   );
-  const foreign = new Set<string>();
+  const onBillIds = new Set(input.latestItems.map(lineIdOf).filter(Boolean));
+  const foreignKeys = new Set<string>();
+  const foreignIds = new Set<string>();
   for (const raw of input.items) {
     const key = String((raw as MergeLine)?.sendKey || '').trim();
-    if (key && key !== input.ownKey && !onBill.has(key)) foreign.add(key);
+    if (key && key !== input.ownKey && !onBillKeys.has(key)) {
+      foreignKeys.add(key);
+    }
+    const id = lineIdOf(raw);
+    if (id && !onBillIds.has(id)) foreignIds.add(id);
   }
-  if (foreign.size === 0) return new Set();
-  const rows = (await prisma.ticketLog
+  if (foreignKeys.size === 0 && foreignIds.size === 0) return none;
+  const otherSitting = (sessionKey: unknown) =>
+    ((sessionKey as string | null | undefined) ?? null) !== input.sessionKey;
+
+  const sendKeys = new Set<string>();
+  const lineIds = new Set<string>();
+  if (foreignKeys.size) {
+    const rows = (await prisma.ticketLog
+      .findMany({
+        where: { idempotencyKey: { in: [...foreignKeys].slice(0, 50) } } as any,
+        select: { sessionKey: true, idempotencyKey: true } as any,
+      })
+      .catch(() => [])) as Array<{
+      sessionKey?: string | null;
+      idempotencyKey?: string | null;
+    }>;
+    for (const r of rows) {
+      const key = String(r.idempotencyKey || '');
+      if (key && otherSitting(r.sessionKey)) sendKeys.add(key);
+    }
+  }
+  const recent = (await prisma.ticketLog
     .findMany({
-      where: { idempotencyKey: { in: [...foreign].slice(0, 50) } } as any,
-      select: { sessionKey: true, idempotencyKey: true } as any,
-    })
+      where: { area: input.area, tableLabel: input.tableLabel },
+      orderBy: { id: 'desc' },
+      take: 40,
+      select: { id: true, sessionKey: true, itemsJson: true } as any,
+    } as any)
     .catch(() => [])) as Array<{
+    id: number;
     sessionKey?: string | null;
-    idempotencyKey?: string | null;
+    itemsJson?: unknown;
   }>;
-  return new Set(
-    rows
-      .filter((r) => (r.sessionKey ?? null) !== input.sessionKey)
-      .map((r) => String(r.idempotencyKey || ''))
-      .filter(Boolean),
-  );
+  for (const row of recent) {
+    if (!otherSitting(row.sessionKey)) continue;
+    const lines = withLineIds(asTicketLogItems(row.itemsJson) as MergeLine[], {
+      seed: row.id,
+    });
+    for (const l of lines) {
+      const key = String(l.sendKey || '').trim();
+      if (key && foreignKeys.has(key)) sendKeys.add(key);
+      const id = lineIdOf(l);
+      if (id && foreignIds.has(id)) lineIds.add(id);
+    }
+  }
+  return { sendKeys, lineIds };
 }
 
 export const ORDER_AFTER_CLOSE_MESSAGE =
@@ -379,8 +423,12 @@ export async function recordTicketSend(
   const area = input.area;
   const tableLabel = input.tableLabel;
   const idempotencyKey = String(input.idempotencyKey || '').trim();
-  const capturedAt = Number(input.capturedAt);
-  const hasCapture = Number.isFinite(capturedAt) && capturedAt > 0;
+  // When the order was taken. A Send that does not say (older clients,
+  // scripts) counts from when it reached the till: it must not land on a
+  // table that a payment closed while it was waiting for the table lock.
+  const captured = Number(input.capturedAt);
+  const capturedAt =
+    Number.isFinite(captured) && captured > 0 ? captured : Date.now();
 
   return withTableLock(area, tableLabel, async () => {
     // 1. Inside the lock: two deliveries of one Send can arrive together.
@@ -413,7 +461,9 @@ export async function recordTicketSend(
         area,
         tableLabel,
       ).catch(() => null);
-      const closedKeys = await closedSittingSendKeys({
+      const closed = await closedSittingLines({
+        area,
+        tableLabel,
         items: Array.isArray(input.items) ? input.items : [],
         ownKey: idempotencyKey,
         latestItems: current
@@ -423,15 +473,17 @@ export async function recordTicketSend(
           () => null,
         ),
       });
-      if (closedKeys.size) {
+      if (closed.sendKeys.size || closed.lineIds.size) {
         const fromOpenSitting = (raw: unknown) =>
-          !closedKeys.has(String((raw as MergeLine)?.sendKey || '').trim());
+          !closed.sendKeys.has(
+            String((raw as MergeLine)?.sendKey || '').trim(),
+          ) && !closed.lineIds.has(lineIdOf(raw));
         input.items = (input.items as unknown[]).filter(fromOpenSitting);
         if (Array.isArray(input.addedItems)) {
           input.addedItems = input.addedItems.filter(fromOpenSitting);
         }
         console.warn(
-          `[tickets] ${area} ${tableLabel}: dropped ${closedKeys.size} Send(s) from a closed sitting`,
+          `[tickets] ${area} ${tableLabel}: dropped lines of a closed sitting`,
         );
         if (!input.items.length) {
           return {
@@ -443,8 +495,9 @@ export async function recordTicketSend(
       }
     }
 
-    // 2b. The table was closed after this order was taken.
-    if (hasCapture) {
+    // 2b. The table was closed after this order was taken, or after it
+    // reached the till (a payment committed while it waited for the lock).
+    {
       const open = await coreServices.isTableOpen(area, tableLabel);
       if (
         !open &&
@@ -488,49 +541,20 @@ export async function recordTicketSend(
     const latestItems = latest
       ? (asTicketLogItems((latest as any).itemsJson) as MergeLine[])
       : [];
-    const latestAt = latest
-      ? ticketLogCreatedAtMs((latest as any).createdAt)
-      : Number.NaN;
-    const stale =
-      hasCapture && Number.isFinite(latestAt) && latestAt > capturedAt;
-    // A Send without a key (older clients, scripts) cannot say which of its
-    // lines are new, so the till works it out (`keylessSendLines`) and keys
-    // them itself. Its lines were folded into voided ones on the bill and
-    // stock never counted them.
+    // A Send without a key (older clients, scripts) gets one from the till,
+    // so its lines are keyed, counted and printed like any other Send's.
     const sendKey = idempotencyKey || `srv-${newTicketLineId()}`;
-    let merged: { items: MergeLine[]; mode: TicketSendMergeMode };
-    if (idempotencyKey) {
-      merged = mergeTicketSend({
+    const merged: { items: MergeLine[]; mode: TicketSendMergeMode } =
+      mergeTicketSend({
         incoming: (Array.isArray(input.items)
           ? input.items
           : []) as MergeLine[],
         latest: latestItems,
-        stale,
-        sendKey: idempotencyKey,
+        sendKey,
         addedItems: Array.isArray(input.addedItems)
           ? (input.addedItems as MergeLine[])
           : null,
       });
-    } else {
-      const added = keylessSendLines(
-        (Array.isArray(input.items) ? input.items : []) as MergeLine[],
-        latestItems,
-      ).map((l) => ({ ...l, sendKey }));
-      merged = added.length
-        ? mergeTicketSend({
-            incoming: added,
-            latest: latestItems,
-            stale: true,
-            sendKey,
-            addedItems: added,
-          })
-        : { items: latestItems, mode: 'already-included' };
-    }
-    if (merged.mode !== 'as-sent') {
-      console.warn(
-        `[tickets] ${area} ${tableLabel}: Send merged with the bill (${merged.mode})`,
-      );
-    }
     // Everything in this Send is already on the bill (a replay, or a later
     // Send carried it): nothing to write, cook or count.
     if (merged.mode === 'already-included') {

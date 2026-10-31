@@ -136,10 +136,10 @@ const table = { area: 'Salla', tableLabel: 'Q1' };
 const espresso = { sku: 'ESP', name: 'Espresso', qty: 1, unitPrice: 1.5 };
 
 /**
- * A QA script's Send: no Send key, and the bill as it sees it (the live
- * lines, by item) plus what it orders now.
+ * A QA script's Send: no Send key, and the bill as it read it (the live
+ * lines, with their ids) plus what it orders now.
  */
-async function keylessSend(items: any[] = [...liveBySku(), espresso]) {
+async function keylessSend(items: any[] = [...live(), espresso]) {
   const r = await recordTicketSend({
     userId: 7,
     ...table,
@@ -149,12 +149,6 @@ async function keylessSend(items: any[] = [...liveBySku(), espresso]) {
   });
   expect(r.ok).toBe(true);
   return r as any;
-}
-
-function liveBySku(): any[] {
-  const qty = new Map<string, number>();
-  for (const l of live()) qty.set(l.sku, (qty.get(l.sku) ?? 0) + l.qty);
-  return [...qty].map(([sku, n]) => ({ ...espresso, sku, qty: n }));
 }
 
 function bill(): any[] {
@@ -228,7 +222,7 @@ describe('repeat order after a void', () => {
       ...table,
       covers: 2,
       note: null,
-      items: [...liveBySku(), espresso],
+      items: [...live(), espresso],
     });
     expect(fourth).toMatchObject({ ok: false, code: 'OUT_OF_STOCK' });
     expect(live()).toHaveLength(3);
@@ -247,7 +241,8 @@ describe('repeat order after a void', () => {
     const r = await keylessSend();
     expect(r.written).toBe(true);
     expect(bill()).toHaveLength(2);
-    expect(bill()[1]).toMatchObject({ sku: 'ESP', voided: false });
+    expect(bill()[1]).toMatchObject({ sku: 'ESP' });
+    expect(bill()[1].voided).not.toBe(true);
     expect(h.stock.get('ESP')).toBe(2);
   });
 
@@ -308,5 +303,69 @@ describe('two Sends of the same item (#10)', () => {
     expect(again.written).toBe(false);
     expect(bill()).toHaveLength(1);
     expect(h.stock.get('ESP')).toBe(2);
+  });
+});
+
+describe('phones that send only their new lines (QA round 5, #2)', () => {
+  /** A ≤0.2.98 phone: keyed, but its payload is just this Send's line. */
+  async function deltaSend(key: string, withAdded = true) {
+    const line = { ...espresso, fired: true, sendKey: key };
+    const r: any = await recordTicketSend({
+      userId: 7,
+      ...table,
+      covers: 2,
+      note: null,
+      idempotencyKey: key,
+      items: [line],
+      addedItems: withAdded ? [line] : null,
+    });
+    expect(r.ok).toBe(true);
+    return r;
+  }
+
+  for (const withAdded of [true, false]) {
+    it(`a repeat after a void is billed, printed and counted once (addedItems: ${withAdded})`, async () => {
+      await deltaSend('k1', withAdded);
+      expect(await voidLine(bill()[0].lineId, 'void-1')).toBe('ok');
+      expect(h.stock.get('ESP')).toBe(3);
+
+      await deltaSend('k2', withAdded);
+      await deltaSend('k3', withAdded);
+      // QA: the bill showed 1 while the slips and stock counted 3.
+      expect(bill()).toHaveLength(3);
+      expect(live().map((l) => l.sendKey)).toEqual(['k2', 'k3']);
+      expect(bill()[0]).toMatchObject({ sendKey: 'k1', voided: true });
+      expect(h.stock.get('ESP')).toBe(1);
+      for (const key of ['k2', 'k3']) {
+        const slip: any = await slipFor(key);
+        expect(slip.kind).toBe('print');
+        expect(slip.items).toHaveLength(1);
+      }
+      // A replayed Send changes nothing and counts nothing.
+      const again = await deltaSend('k3', withAdded);
+      expect(again.written).toBe(false);
+      expect(bill()).toHaveLength(3);
+      expect(h.stock.get('ESP')).toBe(1);
+    });
+  }
+});
+
+describe('kitchen slips from older phones (QA round 5, #3)', () => {
+  it('a slip without a Send key asks for an app update, and its Send still lands', async () => {
+    // A phone before 0.2.98: keyless Send, then a slip with no Send key.
+    const r: any = await recordTicketSend({
+      userId: 7,
+      ...table,
+      covers: 2,
+      note: null,
+      items: [espresso],
+    });
+    expect(r.written).toBe(true);
+    expect(r.sendKey).toMatch(/^srv-/);
+    const slip: any = await slipFor();
+    expect(slip).toMatchObject({ kind: 'refuse', code: 'APP_UPDATE_REQUIRED' });
+    expect(slip.error).toMatch(/Update the app/);
+    // The till's own key prints that Send's line.
+    expect(((await slipFor(r.sendKey)) as any).items).toHaveLength(1);
   });
 });

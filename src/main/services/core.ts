@@ -244,7 +244,21 @@ export const coreServices = {
       merged.fiscal = { ...(current.fiscal || {}), ...input.fiscal };
       // Switching between the easyPos test and live services: whatever is
       // still queued stays with the service it was made for.
-      const { fiscalEnvironmentOf } = await import('./fiscal/config');
+      const { fiscalBaseUrlProblem, fiscalEnvironmentOf } = await import(
+        './fiscal/config'
+      );
+      // A lookalike easyPos address is refused here, not at the next sale.
+      if (Object.prototype.hasOwnProperty.call(input.fiscal, 'baseUrl')) {
+        const problem = fiscalBaseUrlProblem(
+          String(input.fiscal.baseUrl || ''),
+        );
+        if (problem) {
+          throw Object.assign(new Error(problem), {
+            code: 'INVALID_FISCAL_URL',
+            statusCode: 400,
+          });
+        }
+      }
       const before = String((current as any)?.fiscal?.baseUrl || '').trim();
       const after = String(merged.fiscal?.baseUrl || '').trim();
       if (

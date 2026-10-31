@@ -36,6 +36,8 @@ import {
 } from '../stores/sessionPersist';
 import { syncTabletToHostVersion } from '../utils/syncTabletToHostVersion';
 import { bootTrace } from '@shared/bootTrace';
+import { POS_APP_UPDATE_REQUIRED } from '../utils/appUpdateEvent';
+import { toast } from '../stores/toasts';
 
 const router = createHashRouter(routes);
 
@@ -467,6 +469,30 @@ function PosServerScanHostGate() {
   );
 }
 
+/**
+ * The till said this app is too old for it (`appVersion.ts`). Say so once
+ * a minute at most, wherever the user is (the sign-in screen included).
+ */
+function AppUpdateNotice() {
+  const { t } = useTranslation();
+  useEffect(() => {
+    let last = 0;
+    const onUpdate = (e: Event) => {
+      const now = Date.now();
+      if (now - last < 60_000) return;
+      last = now;
+      const message = String((e as CustomEvent)?.detail?.message || '');
+      toast.error(message || t('app.updateRequired'), {
+        title: t('app.updateRequiredTitle'),
+        timeoutMs: 15_000,
+      });
+    };
+    window.addEventListener(POS_APP_UPDATE_REQUIRED, onUpdate);
+    return () => window.removeEventListener(POS_APP_UPDATE_REQUIRED, onUpdate);
+  }, [t]);
+  return null;
+}
+
 export function BootRoot() {
   return (
     <I18nextProvider i18n={i18n}>
@@ -479,6 +505,7 @@ export function BootRoot() {
                 <Root />
               </MaybeLicenseGate>
               <PosServerScanHostGate />
+              <AppUpdateNotice />
               <React.Suspense fallback={null}>
                 <Toaster />
               </React.Suspense>

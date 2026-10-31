@@ -1,6 +1,10 @@
 import type { SettingsDTO } from '@shared/ipc';
 import type { TicketPrintPayload } from '../../print';
-import { buildEasyPosInvoiceDraft, type DraftAdjustment } from './mapInvoice';
+import {
+  buildEasyPosInvoiceDraft,
+  filedLekTotal,
+  type DraftAdjustment,
+} from './mapInvoice';
 import {
   assertFiscalConfigured,
   createEasyPosSale,
@@ -224,6 +228,11 @@ function withFiscalMeta(
       fiscalDoc: result.doc || undefined,
       fiscalWarning: result.warning || undefined,
       fiscalStatus: result.status,
+      // The lekë total the invoice was filed for; the receipt prints this,
+      // not its own conversion (`filedLekTotal`).
+      fiscalTotalLek: settings
+        ? (filedLekTotal(payload, settings) ?? undefined)
+        : undefined,
     },
   };
 }

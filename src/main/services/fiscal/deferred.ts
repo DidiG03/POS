@@ -33,6 +33,7 @@ import {
 } from './easypos';
 import { notifyAdminsAndActor } from '../adminAlerts';
 import { prisma } from '@db/client';
+import { filedLekTotal } from './mapInvoice';
 import { ensureDailyBalanceForCash } from './balance';
 import { fiscalConfig, latestFiscalSettings } from './config';
 import type { FiscalDocInfo } from './completion';
@@ -100,6 +101,15 @@ export async function stampFiscalIdentifiersOnSale(
     if (result.doc) meta.fiscalDoc = result.doc;
     meta.fiscalStatus = result.status || 'accepted';
     delete meta.fiscalWarning;
+    // Filed after the sale: the receipt keeps the sale's time (`paidAt`)
+    // and says when the invoice was registered. easyPos takes no issue time
+    // or subsequent-delivery field (unknown fields are refused with 400),
+    // so the registration time is the tax service's own.
+    meta.fiscalFiledLateAt = new Date().toISOString();
+    if (meta.fiscalTotalLek == null) {
+      const lek = filedLekTotal({ ...payload, meta } as any, settings as any);
+      if (lek != null) meta.fiscalTotalLek = lek;
+    }
     await prisma.printJob
       .update({
         where: { id: (job as any).id },

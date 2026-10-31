@@ -199,7 +199,7 @@ describe('recordTicketSend', () => {
       addedItems: [{ ...birre, sku: 'UJE', name: 'Uje' }],
       capturedAt: Date.now() - 30_000,
     });
-    expect(r).toMatchObject({ ok: true, written: true, mode: 'stale-delta' });
+    expect(r).toMatchObject({ ok: true, written: true, mode: 'appended' });
     expect(h.written[0].items.map((l: any) => l.name)).toEqual([
       'Kafe',
       'Birre',
@@ -210,11 +210,24 @@ describe('recordTicketSend', () => {
   it('keeps the bill’s voids even from a Send built before them', async () => {
     h.latest = {
       createdAt: new Date(Date.now() - 60_000),
-      itemsJson: [{ ...birre, voided: true }, kafe],
+      itemsJson: [
+        { ...birre, voided: true, lineId: 'b1' },
+        { ...kafe, lineId: 'k1' },
+      ],
     };
-    await recordTicketSend({ ...base, items: [birre, kafe] });
-    const live = h.written[0].items.filter((l: any) => !l.voided);
-    expect(live.map((l: any) => l.name)).toEqual(['Kafe']);
+    // The device still shows the Birre live; it names the bill's lines.
+    await recordTicketSend({
+      ...base,
+      items: [
+        { ...birre, lineId: 'b1' },
+        { ...kafe, lineId: 'k1' },
+        { ...kafe, sku: 'UJE', name: 'Uje' },
+      ],
+    });
+    const items = h.written[0].items;
+    expect(items.find((l: any) => l.lineId === 'b1').voided).toBe(true);
+    const live = items.filter((l: any) => !l.voided);
+    expect(live.map((l: any) => l.name)).toEqual(['Kafe', 'Uje']);
   });
 });
 
@@ -329,7 +342,7 @@ describe('what the kitchen gets', () => {
     expect(h.written[0].stockConsumeLines).toEqual([{ sku: 'BIRRE', qty: 1 }]);
   });
 
-  it('a later Send carrying a queued one cooks both, once', async () => {
+  it('a later Send does not carry a queued one: each cooks its own lines', async () => {
     const r: any = await recordTicketSend({
       ...base,
       idempotencyKey: 's2',
@@ -339,16 +352,27 @@ describe('what the kitchen gets', () => {
       ],
       addedItems: [birre],
     });
-    expect(r.firedNow.map((l: any) => l.name)).toEqual(['Kafe', 'Birre']);
+    expect(r.firedNow.map((l: any) => l.name)).toEqual(['Birre']);
+    // The queued Send lands next and adds (and cooks) its own line.
+    h.latest = { createdAt: new Date(), itemsJson: h.written[0].items };
+    const queued: any = await recordTicketSend({
+      ...base,
+      idempotencyKey: 's1',
+      items: [{ ...kafe, sendKey: 's1' }],
+      addedItems: [kafe],
+    });
+    expect(queued.firedNow.map((l: any) => l.name)).toEqual(['Kafe']);
   });
 
-  it('falls back to the payload for older phones without Send keys', async () => {
+  it('keys a Send from an older phone without Send keys, and counts its lines', async () => {
     const r: any = await recordTicketSend({
       ...base,
+      idempotencyKey: null,
       items: [kafe],
-      stockConsumeLines: [{ sku: 'KAFE', qty: 1 }],
+      stockConsumeLines: [{ sku: 'IGNORED', qty: 9 }],
     });
-    expect(r.firedNow).toBeNull();
+    expect(r.sendKey).toMatch(/^srv-/);
+    expect(r.firedNow.map((l: any) => l.sendKey)).toEqual([r.sendKey]);
     expect(h.written[0].stockConsumeLines).toEqual([{ sku: 'KAFE', qty: 1 }]);
   });
 
