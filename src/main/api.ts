@@ -4389,7 +4389,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
           return send(res, 200, result, corsOrigin);
         } catch (e: any) {
-          if (e?.code === 'INVALID_FISCAL_URL') {
+          if (
+            e?.code === 'INVALID_FISCAL_URL' ||
+            e?.code === 'INVALID_SETTINGS' ||
+            e?.code === 'FISCAL_TOKEN_ENVIRONMENT_MISMATCH'
+          ) {
             return send(
               res,
               400,

@@ -196,6 +196,9 @@ export const coreServices = {
 
   async updateSettings(input: any) {
     const current = await this.readSettings();
+    // Refused before anything is merged (`settingsValidation.ts`).
+    const { assertSettingsPatch } = await import('./settingsValidation');
+    const tokenEnvironment = assertSettingsPatch(input, current as any);
     const merged = { ...current, ...input };
     if (input?.businessInfo)
       merged.businessInfo = {
@@ -242,6 +245,9 @@ export const coreServices = {
       };
     if (input?.fiscal) {
       merged.fiscal = { ...(current.fiscal || {}), ...input.fiscal };
+      if (tokenEnvironment !== undefined) {
+        (merged.fiscal as any).tokenEnvironment = tokenEnvironment;
+      }
       // Switching between the easyPos test and live services: whatever is
       // still queued stays with the service it was made for.
       const { fiscalBaseUrlProblem, fiscalEnvironmentOf } = await import(

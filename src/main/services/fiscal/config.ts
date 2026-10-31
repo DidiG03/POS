@@ -79,16 +79,41 @@ export function fiscalBaseUrlProblem(baseUrl: string): string | null {
   } catch {
     return `The fiscal URL "${raw}" is not a valid address.`;
   }
+  const cloudHosts = Object.keys(EASYPOS_CLOUD_HOSTS)
+    .map((h) => `https://${h}`)
+    .join(' or ');
   if (looksLikeEasyPosCloud(raw) && !isEasyPosCloudApi(raw)) {
     // Not one of the easyPos hosts, but made to look like one: the token
     // must not go there, as cloud or as local middleware.
-    return `The fiscal URL "${raw}" is not an easyPos Cloud address (${Object.keys(
-      EASYPOS_CLOUD_HOSTS,
-    )
-      .map((h) => `https://${h}`)
-      .join(' or ')}).`;
+    return `The fiscal URL "${raw}" is not an easyPos Cloud address (${cloudHosts}).`;
+  }
+  // Allow-list: the easyPos Cloud hosts, or local fiscal middleware on this
+  // machine or the venue's network. Any other host on the internet would
+  // be sent the fiscal token with every invoice (QA round 6, #4).
+  if (!isEasyPosCloudApi(raw) && !isLocalMiddlewareHost(raw)) {
+    return `The fiscal URL "${raw}" is not allowed. Use ${cloudHosts}, or local fiscal middleware on this network.`;
   }
   return null;
+}
+
+/** This machine or a private (venue) network address. */
+function isLocalMiddlewareHost(baseUrl: string): boolean {
+  let host = '';
+  try {
+    host = new URL(normalizeBaseUrl(baseUrl)).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === 'localhost' || host === '[::1]' || host === '::1') return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return host.endsWith('.local');
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return (
+    a === 127 ||
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
 }
 
 export function isEasyPosCloudApi(baseUrl: string): boolean {
