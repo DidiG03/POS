@@ -56,6 +56,7 @@ import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
 import { reportAppError } from '../../utils/reportAppError';
 import { requestedLinesState } from '../../utils/requestedLines';
+import { POS_HOST_BACK } from '../../utils/hostBackEvent';
 import { PageSpinner } from '../../components/PageSpinner';
 import { Modal } from '../../components/ui/Modal';
 import { PaymentCheckout } from '../components/PaymentCheckout';
@@ -2090,10 +2091,13 @@ export default function OrderPage() {
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
+    // Started while the till was away: load the menu when it answers.
+    window.addEventListener(POS_HOST_BACK, refresh);
     return () => {
       cancelled = true;
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
+      window.removeEventListener(POS_HOST_BACK, refresh);
     };
   }, []);
 
