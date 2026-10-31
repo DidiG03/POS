@@ -283,6 +283,7 @@
     "actionNeeded": "Kërkon përgjigjen tuaj",
     "printerJobs": "Punët e printerit",
     "printerJobVoid": "fletë anulimi",
+    "printerJobReceipt": "faturë klienti",
     "printerJobPrinter": "printeri",
     "printerJobWaiting": "Ende pa printuar: në pritje të printerit {{printer}}.",
     "printerJobFailed": "Nuk u printua te printeri {{printer}}.",

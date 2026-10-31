@@ -321,6 +321,9 @@ function PrinterJobs({ refreshKey = 0 }: { refreshKey?: number }) {
               <div className="min-w-0 truncate text-[13px] font-medium">
                 {[r.area, r.tableLabel].filter(Boolean).join(' ')}
                 {r.voidSlip ? ` · ${t('layout.printerJobVoid')}` : ''}
+                {(r as { kind?: string }).kind === 'receipt'
+                  ? ` · ${t('layout.printerJobReceipt')}`
+                  : ''}
               </div>
               <span className="shrink-0 text-[11px] tabular-nums text-[color:var(--pos-fg-muted)]">
                 {formatNotificationTime(r.sentAt, t)}

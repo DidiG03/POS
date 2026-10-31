@@ -283,6 +283,7 @@
     "actionNeeded": "Needs your answer",
     "printerJobs": "Printer jobs",
     "printerJobVoid": "void slip",
+    "printerJobReceipt": "guest receipt",
     "printerJobPrinter": "printer",
     "printerJobWaiting": "Not printed yet: waiting for the {{printer}} printer.",
     "printerJobFailed": "Did not print on the {{printer}} printer.",
