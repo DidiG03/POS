@@ -52,6 +52,13 @@ import {
 import i18n from '../../i18n/config';
 import { pollIntervalMs } from '../../utils/netQuality';
 import { reportAppError } from '../../utils/reportAppError';
+import { useSessionStore } from '../../stores/session';
+import {
+  KDS_PAIRING_REQUIRED_EVENT,
+  isKdsApp,
+  kdsShouldShowPairing,
+  readKdsDeviceToken,
+} from '../../utils/kdsPairing';
 import {
   IconCheck,
   IconChevronLeft,
@@ -216,8 +223,24 @@ export default function KdsPage() {
   const [tickets, setTickets] = useState<KdsTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  // The till asks this display for its pairing code (401 on `/kds/*`).
-  const [needsPairing, setNeedsPairing] = useState(false);
+  // The till asks this display for its pairing code (401 on `/kds/*`), or
+  // it has never been paired: no device token and no staff session.
+  const [needsPairing, setNeedsPairing] = useState(() =>
+    kdsShouldShowPairing({
+      kdsApp: isKdsApp(),
+      hasDeviceToken: Boolean(readKdsDeviceToken()),
+      hasSession: Boolean(useSessionStore.getState().sessionToken),
+    }),
+  );
+  useEffect(() => {
+    const onPairingRequired = () => {
+      setNeedsPairing(true);
+      setLoading(false);
+    };
+    window.addEventListener(KDS_PAIRING_REQUIRED_EVENT, onPairingRequired);
+    return () =>
+      window.removeEventListener(KDS_PAIRING_REQUIRED_EVENT, onPairingRequired);
+  }, []);
   const [pairCode, setPairCode] = useState('');
   const [pairBusy, setPairBusy] = useState(false);
   const [pairErr, setPairErr] = useState<string | null>(null);
@@ -1342,6 +1365,18 @@ export default function KdsPage() {
           >
             {i18n.t('kds.pairSubmit')}
           </Button>
+          {isKdsApp() ? (
+            // Wrong till, or the till moved: scan the network for it again.
+            <Button
+              type="button"
+              variant="ghost"
+              size="lg"
+              block
+              onClick={() => navigate('/kds-setup')}
+            >
+              {i18n.t('kds.pairFindTill')}
+            </Button>
+          ) : null}
         </form>
       </div>
     );

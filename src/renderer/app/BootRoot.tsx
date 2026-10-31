@@ -220,8 +220,10 @@ function Root() {
         void (window as any).api?.auth?.endSession?.().catch(() => undefined);
       }
       try {
-        window.location.hash =
-          shell === 'admin'
+        // The kitchen display has no waiter sign-in to go back to.
+        window.location.hash = (window as any).__KDS_APP__
+          ? '#/kds'
+          : shell === 'admin'
             ? '#/admin'
             : shell === 'reservations'
               ? '#/reservations'

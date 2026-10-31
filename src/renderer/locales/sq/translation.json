@@ -460,6 +460,7 @@
     "pairTitle": "Lidh këtë ekran kuzhine",
     "pairHint": "Shkruani kodin e lidhjes që shfaqet te OneTap Admin → Cilësimet në arkë.",
     "pairSubmit": "Lidh ekranin",
+    "pairFindTill": "Gjej një arkë tjetër",
     "pairWrongCode": "Kodi i lidhjes nuk është i saktë. Kontrollojeni te Admin → Cilësimet."
   },
   "tables": {

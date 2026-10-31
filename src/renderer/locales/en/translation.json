@@ -460,6 +460,7 @@
     "pairTitle": "Pair this kitchen display",
     "pairHint": "Enter the pairing code shown in OneTap Admin → Settings on the till.",
     "pairSubmit": "Pair display",
+    "pairFindTill": "Find another till",
     "pairWrongCode": "That pairing code is not right. Check it in Admin → Settings."
   },
   "tables": {

@@ -37,6 +37,14 @@ import {
 } from './utils/lanAuthToken';
 import { isPairingRejectedError } from './utils/lanLoginError';
 import {
+  KDS_DEVICE_TOKEN_KEY,
+  KDS_PAIRING_REQUIRED_EVENT,
+  clearKdsDeviceToken,
+  isKdsApp,
+  kdsPairingRequiredOn401,
+  readKdsDeviceToken,
+} from './utils/kdsPairing';
+import {
   APP_UPDATE_REQUIRED,
   APP_VERSION,
   APP_VERSION_HEADER,
@@ -175,15 +183,6 @@ export function installBrowserLanApi(): void {
       return localStorage.getItem('pos_pairing_code') || '';
     } catch {
       return '';
-    }
-  }
-
-  const KDS_DEVICE_TOKEN_KEY = 'pos.kdsDeviceToken';
-  function readKdsDeviceToken(): string | null {
-    try {
-      return localStorage.getItem(KDS_DEVICE_TOKEN_KEY) || null;
-    } catch {
-      return null;
     }
   }
 
@@ -868,6 +867,17 @@ export function installBrowserLanApi(): void {
     requestGeneration: number,
     path: string,
   ) {
+    // An unpaired (or un-paired by a new pairing code) kitchen display: ask
+    // it to pair. Signing it "out" sent it to the waiter Select Staff screen.
+    if (kdsPairingRequiredOn401(status, path, isKdsApp())) {
+      if (!getToken()) clearKdsDeviceToken();
+      try {
+        window.dispatchEvent(new CustomEvent(KDS_PAIRING_REQUIRED_EVENT));
+      } catch {
+        // ignore
+      }
+      return;
+    }
     if (
       shouldForceLogoutOn401(
         status,
