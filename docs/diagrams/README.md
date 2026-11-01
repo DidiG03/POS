@@ -8,6 +8,11 @@ How the POS works, drawn from the code. Made for reading on an iPad
 | 1 | `01-system-map` | Which apps exist and how they connect (till, Waiter, Admin, KDS, printers, easyPos, billing) |
 | 2 | `02-order-lifecycle` | Sign in → order → Send → kitchen → pay → closed table |
 | 3 | `03-payment-fiskalizimi` | Everything that happens when someone taps Pay |
+| 4 | `04-data-model` | What the till stores and how the tables relate |
+| 5 | `05-signin-security` | Sign-in on the till vs phones, lockouts, roles, approvals, encryption |
+| 6 | `06-shifts` | Clocking in and out, and the shift summary slip |
+| 7 | `07-reports` | Which report screen reads which data |
+| 8 | `08-live-offline` | Live updates, the phone's offline queue, slow Wi-Fi, no internet |
 
 - `*.mmd`: the sources (Mermaid). Edit these.
 - `export/onetap-pos-diagrams.pdf`: all diagrams, one page each (A3). Best for
@@ -20,7 +25,8 @@ otherwise.
 
 ## Re-export after editing
 
-Rendering uses Mermaid with the ELK layout (diagram 1) and dagre (2, 3), in
+Rendering uses Mermaid with the ELK layout by default and dagre where a
+file's front matter asks for it (`layout: dagre`), in
 the Chromium that Playwright drives. One-time setup, outside the repo:
 
 ```bash

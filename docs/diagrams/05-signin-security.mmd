@@ -1,0 +1,48 @@
+%% 5. Sign-in & security: who may do what, from where.
+flowchart TB
+  subgraph LANDOOR["Network door · phones, tablets, Admin, KDS (LAN HTTP)"]
+    direction TB
+    L1["Pair the device<br/>pairing code from Admin → device token<br/>(new code = every device unpaired)<br/><i>lanPreAuth.ts</i>"] --> L2["Staff list visible"]
+    L2 --> L3["Tap name + PIN<br/>(pairing code checked first;<br/>admins exempt)"]
+    L3 --> L4{"PIN matches?"}
+    L4 -- no --> L5["Throttle <i>lanLoginThrottle.ts</i><br/>10 misses, account + device → 5 min lock<br/>20 misses, account → 15 min lock everywhere<br/>admins alerted"]
+    L4 -- yes --> L6["Signed token, 12 h<br/>re-checked on EVERY request:<br/>user still active · role as of now ·<br/>not revoked · <i>lanAuth.ts</i>"]
+    L6 --> L7["Every route checked against<br/>one allow-list · <i>lanPolicy.ts</i>"]
+  end
+
+  subgraph TILLDOOR["Till door · the till's own windows (IPC)"]
+    direction TB
+    T1["Tap name + PIN"] --> T2{"PIN matches?<br/>(bcrypt)"}
+    T2 -- no --> T3["Short delay grows with each miss<br/>alert to the account owner + admins<br/><i>wrongPinAlert.ts</i>"]
+    T2 -- yes --> T4["Session created in the host,<br/>bound to this window, 12 h<br/><i>ipcSession.ts</i>"]
+    T4 --> T5["Every IPC call checked against<br/>one allow-list: public / signed in / admin<br/><i>ipcPolicy.ts + ipcGuard.ts</i>"]
+  end
+
+  subgraph ROLES["Where each role lands"]
+    direction LR
+    R1["ADMIN<br/>OneTap Admin app only<br/>(refused on the POS)"]
+    R2["WAITER · CASHIER<br/>POS: tables, orders, pay, reports<br/>cashier may pay any table"]
+    R3["HOST<br/>Reservations only"]
+    R4["Kitchen & support roles<br/>KP, chefs, runner, bartender,<br/>barback, busser, cleaner<br/>→ clock in/out (kitchen: KDS)"]
+  end
+
+  subgraph EXTRA["Extra protection"]
+    direction LR
+    M1["Manager approval<br/>manager PIN → token valid 5 min,<br/>one action (void, discount)<br/>PIN guessing throttled<br/><i>managerPin.ts, approvalTokens.ts</i>"]
+    M2["Encrypted database (vault)<br/>key unlocked by the computer's login<br/>(Windows DPAPI / Mac Keychain)<br/>or a passphrase; recovery key<br/><i>services/vault/</i>"]
+    M3["Per-waiter fiskalizimi switch<br/>needs that waiter's PIN<br/>every change → admins alerted"]
+  end
+
+  T5 --> ROLES
+  L7 --> ROLES
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef decide fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef extra fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  class T1,L1,L2,L3,R1,R2,R3,R4 step
+  class T2,L4 decide
+  class T4,T5,L6,L7 good
+  class T3,L5 bad
+  class M1,M2,M3 extra

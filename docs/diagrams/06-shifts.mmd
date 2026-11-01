@@ -1,0 +1,46 @@
+---
+config:
+  layout: dagre
+---
+%% 6. Shifts & clock-in: from sign-in to the shift summary slip.
+%% Two columns: clocking in (left) and clocking out (right).
+flowchart LR
+  subgraph IN["Clocking in"]
+    direction TB
+    S0{"Clock in/out on?<br/>(Admin › Settings)"}
+    S0 -- no --> N0["Staff sign in and work;<br/>no shifts recorded"]
+    S0 -- yes --> S1["Sign-in screen shows<br/>Not clocked in · Clocked in"]
+    S1 --> S2["Tap name + PIN"]
+    S2 --> S3{"Shift<br/>already open?"}
+    S3 -- yes --> W["Work<br/>waiter / cashier: tables<br/>support roles: Clock page"]
+    S3 -- no --> S4["'Start shift for …?'<br/>confirm"]
+    S4 --> S5{"Reopen<br/>cooldown?"}
+    S5 -- "still blocked" --> S6["Refused: 'you can clock<br/>in again after …'<br/>(optional setting: N hours<br/>after the last shift)"]
+    S5 -- ok --> S7[("DayShift opened<br/>one per person: a double tap<br/>cannot open two<br/><i>shiftClock.ts</i>")]
+    S7 --> W
+  end
+
+  subgraph OUT["Clocking out"]
+    direction TB
+    O1["Tap your name<br/>in the header"]
+    O1 -- "hold 5 s instead" --> FS["Per-waiter<br/>fiskalizimi switch"]
+    O1 --> O2{"Still own an<br/>open table?"}
+    O2 -- yes --> O3["Blocked: close or<br/>transfer your tables<br/>(admin can force-close)"]
+    O2 -- no --> O4["Confirm clock out"]
+    O4 --> O5[("DayShift closed")]
+    O5 --> O6["Shift totals from the<br/>saved sales: orders · net ·<br/>VAT · gross · by method"]
+    O6 --> O7["Totals stored on the shift<br/>+ summary slip printed"]
+  end
+
+  IN -- "end of shift" --> OUT
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef decide fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class S1,S2,S4,W,O1,O4,O6,O7 step
+  class S0,S3,S5,O2 decide
+  class S7,O5 good
+  class S6,O3 bad
+  class N0,FS note

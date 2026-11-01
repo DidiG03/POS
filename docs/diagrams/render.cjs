@@ -7,6 +7,11 @@ const titles = {
   '01-system-map': '1 · System map: apps and connections',
   '02-order-lifecycle': '2 · Life of an order',
   '03-payment-fiskalizimi': '3 · Payment & fiskalizimi',
+  '04-data-model': '4 · Data model: what the till stores',
+  '05-signin-security': '5 · Sign-in & security',
+  '06-shifts': '6 · Shifts & clock-in',
+  '07-reports': '7 · Reports: which screen reads what',
+  '08-live-offline': '8 · Live updates & offline',
 };
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
