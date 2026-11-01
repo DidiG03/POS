@@ -132,7 +132,14 @@ export async function listMyPaidTickets(
         user: { select: { displayName: true } },
       },
     })
-    .catch(() => []);
+    .catch((e: unknown) => {
+      // An empty list here reads as "no sales today" — the screen must
+      // show the failure instead (Reports prints the message).
+      console.warn('[reports] paid tickets query failed:', e);
+      throw new Error(
+        `Could not read paid tickets: ${String((e as any)?.message || e)}`,
+      );
+    });
 
   const settings = await coreServices.readSettings().catch(() => ({}));
   const paidVatEnabled = isVatEnabledFromSettings(settings);
@@ -268,7 +275,13 @@ export async function listMyVoidedTickets(
         orderBy: { createdAt: 'desc' },
         take,
       })
-      .catch(() => []),
+      .catch((e: unknown) => {
+        // Same as paid tickets: a failure must not look like "none today".
+        console.warn('[reports] voided tickets query failed:', e);
+        throw new Error(
+          `Could not read voided tickets: ${String((e as any)?.message || e)}`,
+        );
+      }),
     prisma.user.findUnique({ where: { id: userId } }).catch(() => null),
   ]);
 
