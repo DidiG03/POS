@@ -39,6 +39,11 @@ import { EmptyState } from '../components/ui/Surface';
 import { StatusChip } from '../components/ui/Badge';
 import { cn } from '../components/ui/cn';
 import { loadPosRealtimeSync } from '../utils/loadPosRealtimeSync';
+import { useLongPress } from '../utils/useLongPress';
+import { WaiterFiscalDialog } from './components/WaiterFiscalDialog';
+
+/** Holding your name in the header this long opens the fiskalizimi switch. */
+const FISCAL_HOLD_MS = 5_000;
 import { initRendererSentry } from '../utils/sentryBrowser';
 import {
   IconBell,
@@ -75,6 +80,27 @@ const NotificationsInbox = lazy(() =>
 export default function AppLayout() {
   const { t } = useTranslation();
   const { user, setUser } = useSessionStore();
+  // Hold your name in the header for 5 s to switch fiskalizimi on or off
+  // for your own payments (`WaiterFiscalDialog`, `waiterFiscal.ts`).
+  const [fiscalDialogOpen, setFiscalDialogOpen] = useState(false);
+  const nameHold = useLongPress(
+    user ? () => setFiscalDialogOpen(true) : undefined,
+    FISCAL_HOLD_MS,
+  );
+  // Fills under the name while it is held, so the hold is visibly working.
+  const nameHoldBar = (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute bottom-0 left-1.5 h-0.5 rounded-full bg-[var(--pos-accent)]"
+      style={{
+        width: nameHold.holding ? 'calc(100% - 0.75rem)' : 0,
+        opacity: nameHold.holding ? 1 : 0,
+        transition: nameHold.holding
+          ? `width ${FISCAL_HOLD_MS}ms linear`
+          : 'none',
+      }}
+    />
+  );
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -655,6 +681,15 @@ export default function AppLayout() {
         </div>
       )}
 
+      <WaiterFiscalDialog
+        staff={
+          fiscalDialogOpen && user
+            ? { id: Number(user.id), displayName: String(user.displayName) }
+            : null
+        }
+        onClose={() => setFiscalDialogOpen(false)}
+      />
+
       <header
         // Safe-area-top (notch / status-bar) is applied in `.pos-header`.
         className="pos-header safe-x flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1"
@@ -677,11 +712,13 @@ export default function AppLayout() {
               {hasOpen && captureClock ? (
                 <button
                   type="button"
-                  className="min-w-0 truncate rounded-[var(--pos-btn-radius)] px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)]"
-                  style={{ minHeight: 0 }}
+                  className="relative min-w-0 truncate rounded-[var(--pos-btn-radius)] px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)]"
                   title={t('layout.clockOut')}
                   aria-label={t('layout.clockOut')}
+                  {...nameHold.handlers}
+                  style={{ ...nameHold.handlers.style, minHeight: 0 }}
                   onClick={() => {
+                    if (nameHold.consumeClick()) return;
                     if (!clockOnly) {
                       const { openMap } = useTableStatus.getState();
                       const anyOpen = Object.values(openMap).some(Boolean);
@@ -703,10 +740,16 @@ export default function AppLayout() {
                   }}
                 >
                   {user.displayName}
+                  {nameHoldBar}
                 </button>
               ) : (
-                <div className="min-w-0 truncate px-1.5 text-[13px] font-medium text-[color:var(--pos-fg-muted)]">
+                <div
+                  className="relative min-w-0 truncate px-1.5 text-[13px] font-medium text-[color:var(--pos-fg-muted)]"
+                  {...nameHold.handlers}
+                  onClick={nameHold.consumeClick}
+                >
                   {user.displayName}
+                  {nameHoldBar}
                 </div>
               )}
             </>

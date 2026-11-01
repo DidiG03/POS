@@ -565,12 +565,26 @@ export interface ApiMenu {
   deleteItem(id: number): Promise<boolean>;
 }
 
+export type UserFiscalResult =
+  | { ok: true; enabled: boolean; changed: boolean }
+  | { ok: false; code: 'WRONG_PIN' | 'NOT_FOUND' | 'INVALID' | 'LOCKED' };
+
 export interface ApiAuth {
   loginWithPin(
     pin: string,
     userId?: number,
     pairingCode?: string,
   ): Promise<UserDTO | null>;
+  /**
+   * Read (no `enabled`) or set fiskalizimi for one staff member's payments.
+   * Needs that staff member's PIN. Opened from the waiter POS header by
+   * holding your name for five seconds.
+   */
+  manageUserFiscal?(input: {
+    userId: number;
+    pin: string;
+    enabled?: boolean;
+  }): Promise<UserFiscalResult>;
   verifyManagerPin(pin: string): Promise<{
     ok: boolean;
     userId?: number;

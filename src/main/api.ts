@@ -149,6 +149,10 @@ import {
   auditFiscalToggle,
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
+import {
+  fiscalSettingsForActor,
+  manageWaiterFiscal,
+} from './services/waiterFiscal';
 import { authorizeLanRoute } from './services/lanPolicy';
 import {
   authorizeCreateUser,
@@ -1809,6 +1813,69 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
+      // Waiter POS header: hold your name for 5 s to switch fiskalizimi off or on
+      // for that person (`waiterFiscal.ts`). Same reach as the staff list
+      // (paired device, session, or the till) plus that person's PIN, on
+      // the login attempt budget.
+      if (req.method === 'POST' && pathname === '/auth/user-fiscal') {
+        const remoteIp = String((req.socket as any)?.remoteAddress || '');
+        const loopback = isLoopback(remoteIp);
+        if (!loopback && !(await isPairedDevice(secret, req, parsed))) {
+          const token = pickBearerToken(req, parsed);
+          const session = token ? await verifyToken(secret, token) : null;
+          if (!session) {
+            return send(
+              res,
+              401,
+              {
+                ok: false,
+                code: PAIRING_REQUIRED,
+                error: PAIRING_REQUIRED_MESSAGE,
+              },
+              corsOrigin,
+            );
+          }
+        }
+        const body = (await parseJson(req)) || {};
+        const targetId = Number(body.userId) || 0;
+        const attempt = loopback
+          ? null
+          : beginLanLoginAttempt(remoteIp, targetId);
+        if (attempt && !attempt.ok) {
+          return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+        }
+        try {
+          const result = await manageWaiterFiscal({
+            userId: body.userId,
+            pin: body.pin,
+            enabled: body.enabled,
+            source: 'lan',
+          });
+          if (!result.ok && result.code === 'WRONG_PIN') {
+            await recordWrongPinAttempt(targetId);
+            let attemptsLeft: number | undefined;
+            if (attempt?.ok) {
+              const outcome = attempt.fail();
+              attemptsLeft = outcome.attemptsLeft;
+              await failLanLogin(remoteIp, outcome, {
+                reason: 'pin',
+                userId: targetId,
+              });
+            }
+            return sendWrongPin(
+              res,
+              {
+                attemptsLeft,
+                lockedForMs: lanLoginDeviceLockedFor(remoteIp, targetId),
+              },
+              corsOrigin,
+            );
+          }
+          return send(res, result.ok ? 200 : 400, result, corsOrigin);
+        } finally {
+          if (attempt?.ok) attempt.release();
+        }
+      }
       if (req.method === 'GET' && pathname === '/auth/users') {
         // Local-first: always use local DB for users
         const users = await prisma.user.findMany({ orderBy: { id: 'asc' } });
@@ -1876,6 +1943,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         '/pairing/verify',
         '/auth/login',
         '/auth/users',
+        '/auth/user-fiscal',
         '/events/login',
         '/menu/categories',
         // Kitchen displays sign in with a device token from `/kds/pair`
@@ -3126,8 +3194,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
             // Same guard as the till: an invoice left by an interrupted
             // attempt for this sitting must not get a sibling.
-            const sitting = await sittingFiscalGate({
+            // Fiskalizimi can be switched off for one waiter
+            // (`waiterFiscal.ts`).
+            const fiscalSettings = await fiscalSettingsForActor(
               settings,
+              Number(auth?.userId || 0) ||
+                Number(payload?.meta?.userId || 0) ||
+                null,
+            );
+            const sitting = await sittingFiscalGate({
+              settings: fiscalSettings,
               area: payload.area,
               tableLabel: payload.tableLabel,
               meta: payload?.meta,
@@ -3148,7 +3224,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
             const outcome = await fiscalizePaymentOnce(
               payload,
-              settings as any,
+              fiscalSettings as any,
               {
                 idempotencyKey: printIdempotencyKey || undefined,
                 adoptDocId: sitting.adoptDocId,
