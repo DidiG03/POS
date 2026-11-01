@@ -39,6 +39,11 @@ import { EmptyState } from '../components/ui/Surface';
 import { StatusChip } from '../components/ui/Badge';
 import { cn } from '../components/ui/cn';
 import { loadPosRealtimeSync } from '../utils/loadPosRealtimeSync';
+import { useLongPress } from '../utils/useLongPress';
+import { WaiterFiscalDialog } from './components/WaiterFiscalDialog';
+
+/** Holding your name in the header this long opens the fiskalizimi switch. */
+const FISCAL_HOLD_MS = 5_000;
 import { initRendererSentry } from '../utils/sentryBrowser';
 import {
   IconBell,
@@ -75,6 +80,13 @@ const NotificationsInbox = lazy(() =>
 export default function AppLayout() {
   const { t } = useTranslation();
   const { user, setUser } = useSessionStore();
+  // Hold your name in the header for 5 s to switch fiskalizimi on or off
+  // for your own payments (`WaiterFiscalDialog`, `waiterFiscal.ts`).
+  const [fiscalDialogOpen, setFiscalDialogOpen] = useState(false);
+  const nameHold = useLongPress(
+    user ? () => setFiscalDialogOpen(true) : undefined,
+    FISCAL_HOLD_MS,
+  );
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -655,6 +667,15 @@ export default function AppLayout() {
         </div>
       )}
 
+      <WaiterFiscalDialog
+        staff={
+          fiscalDialogOpen && user
+            ? { id: Number(user.id), displayName: String(user.displayName) }
+            : null
+        }
+        onClose={() => setFiscalDialogOpen(false)}
+      />
+
       <header
         // Safe-area-top (notch / status-bar) is applied in `.pos-header`.
         className="pos-header safe-x flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1"
@@ -677,11 +698,13 @@ export default function AppLayout() {
               {hasOpen && captureClock ? (
                 <button
                   type="button"
-                  className="min-w-0 truncate rounded-[var(--pos-btn-radius)] px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)]"
+                  className="min-w-0 select-none truncate rounded-[var(--pos-btn-radius)] px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)] [-webkit-touch-callout:none]"
                   style={{ minHeight: 0 }}
                   title={t('layout.clockOut')}
                   aria-label={t('layout.clockOut')}
+                  {...nameHold.handlers}
                   onClick={() => {
+                    if (nameHold.consumeClick()) return;
                     if (!clockOnly) {
                       const { openMap } = useTableStatus.getState();
                       const anyOpen = Object.values(openMap).some(Boolean);
@@ -705,7 +728,11 @@ export default function AppLayout() {
                   {user.displayName}
                 </button>
               ) : (
-                <div className="min-w-0 truncate px-1.5 text-[13px] font-medium text-[color:var(--pos-fg-muted)]">
+                <div
+                  className="min-w-0 select-none truncate px-1.5 text-[13px] font-medium text-[color:var(--pos-fg-muted)] [-webkit-touch-callout:none]"
+                  {...nameHold.handlers}
+                  onClick={nameHold.consumeClick}
+                >
                   {user.displayName}
                 </div>
               )}

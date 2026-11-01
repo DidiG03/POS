@@ -101,7 +101,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
     rateLimit: { maxAttempts: 30, windowMs: 60 * 1000 },
   },
   'auth:logoutAdmin': { allow: 'public' },
-  // Sign-in screen per-waiter fiskalizimi switch; the handler checks that
+  // Waiter POS per-waiter fiskalizimi switch; the handler checks that
   // waiter's PIN, so it is rate-limited like a login.
   'auth:manageUserFiscal': {
     allow: 'public',

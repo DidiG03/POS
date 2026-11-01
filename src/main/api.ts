@@ -1813,7 +1813,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
-      // Sign-in screen: hold a name for 5 s to switch fiskalizimi off or on
+      // Waiter POS header: hold your name for 5 s to switch fiskalizimi off or on
       // for that person (`waiterFiscal.ts`). Same reach as the staff list
       // (paired device, session, or the till) plus that person's PIN, on
       // the login attempt budget.

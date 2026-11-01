@@ -3,9 +3,9 @@
  *
  * Fiskalizimi is a venue-wide setting (`settings.fiscal.enabled`). On top of
  * it, each staff member can have it switched off for the payments they take:
- * on the waiter POS sign-in screen, holding a name for five seconds opens a
- * dialog where, after that person's PIN, fiskalizimi can be turned off or
- * back on for them alone.
+ * on the waiter POS, holding your own name in the top-left corner of the
+ * header for five seconds opens a dialog where, after your PIN, fiskalizimi
+ * can be turned off or back on for you alone.
  *
  * Only exceptions are stored (the ids of staff with it switched OFF), so a
  * new waiter always starts with fiskalizimi on, and the venue-wide switch

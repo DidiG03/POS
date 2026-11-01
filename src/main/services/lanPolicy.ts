@@ -52,7 +52,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   },
   'POST /auth/user-fiscal': {
     allow: 'public',
-    note: 'per-waiter fiskalizimi switch on the sign-in screen; needs a paired device, a session or the till, plus that waiter PIN (waiterFiscal.ts)',
+    note: 'per-waiter fiskalizimi switch (hold your name in the POS header); needs a paired device, a session or the till, plus that waiter PIN (waiterFiscal.ts)',
   },
   'GET /events': {
     allow: 'session',

@@ -69,7 +69,7 @@ export function isLanAuthBootstrapPath(path?: string | null): boolean {
     pathname === '/auth/verify-manager-pin' ||
     pathname === '/pairing/verify' ||
     pathname === '/auth/users' ||
-    // Sign-in screen per-waiter fiskalizimi switch: a wrong PIN is 401.
+    // Waiter POS per-waiter fiskalizimi switch: a wrong PIN is 401.
     pathname === '/auth/user-fiscal' ||
     pathname === '/events/login' ||
     pathname === '/health'

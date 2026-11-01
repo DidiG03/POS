@@ -1847,7 +1847,7 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
   return null;
 });
 
-// Sign-in screen: hold a name for 5 s to switch fiskalizimi off or on for
+// Waiter POS header: hold your name for 5 s to switch fiskalizimi off or on for
 // that person (`waiterFiscal.ts`). Their own PIN is required.
 ipcHandle('auth:manageUserFiscal', async (_e, payload) => {
   const result = await manageWaiterFiscal({

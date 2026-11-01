@@ -6,8 +6,8 @@ import { Button, Modal, Switch } from '../../components/ui';
 import { toast } from '../../stores/toasts';
 
 /**
- * Per-waiter fiskalizimi switch, opened from the sign-in screen by holding a
- * staff name for five seconds. The waiter's PIN unlocks it; the switch then
+ * Per-waiter fiskalizimi switch, opened by holding your name in the top-left
+ * corner of the waiter POS header for five seconds. The waiter's PIN unlocks it; the switch then
  * turns fiskalizimi off or on for the payments that waiter takes.
  */
 export function WaiterFiscalDialog({

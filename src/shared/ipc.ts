@@ -577,8 +577,8 @@ export interface ApiAuth {
   ): Promise<UserDTO | null>;
   /**
    * Read (no `enabled`) or set fiskalizimi for one staff member's payments.
-   * Needs that staff member's PIN. Opened from the sign-in screen by holding
-   * a name for five seconds.
+   * Needs that staff member's PIN. Opened from the waiter POS header by
+   * holding your name for five seconds.
    */
   manageUserFiscal?(input: {
     userId: number;
