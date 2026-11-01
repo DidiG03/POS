@@ -52,6 +52,27 @@ export function isFiscalRegistered(
   return Boolean(text(meta?.fiscalNivf));
 }
 
+/**
+ * A fiscal venue's receipt without its fiscal codes: it prints the "not
+ * yet fiscalised" mark. Only `pending` (or a warning) used to; a receipt
+ * printed while the invoice was failed, under review or unconfirmed had
+ * neither the mark nor any code (QA round 6, fiscal).
+ */
+export function receiptNotYetFiscalised(
+  meta:
+    | {
+        fiscalEnabled?: boolean;
+        fiscalStatus?: string;
+        fiscalNivf?: string;
+        fiscalWarning?: string;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!meta || meta.fiscalEnabled !== true) return false;
+  return !isFiscalRegistered(meta);
+}
+
 export function fiscalTinFromSettings(settings: unknown): string {
   return text((settings as any)?.fiscal?.nipt);
 }

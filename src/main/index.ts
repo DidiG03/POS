@@ -316,6 +316,12 @@ import {
   stopKdsRetentionLoop,
 } from './services/kdsRetention';
 import { recallKdsTicket } from './services/kdsRecall';
+import {
+  KDS_MANAGER_REQUIRED,
+  kdsClearAllowedWithoutPin,
+  listKdsActions,
+  recordKdsAction,
+} from './services/kdsPermissions';
 import { isTwoStageKitchen } from '@shared/kdsCooker';
 
 dotenv.config();
@@ -332,6 +338,7 @@ import {
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
+  listRequesterTicketRequests,
   decideTicketRequest,
   markTicketRequestsApplied,
 } from './services/ticketRequests';
@@ -2431,6 +2438,12 @@ ipcHandle('network:getIps', async () => {
   return listLanIpv4Addresses();
 });
 
+// Cash declared to the tax service (see `/fiscal/cash-declaration`).
+ipcHandle('fiscal:declareCash', async (_e, input) => {
+  const { declareCash } = await import('./services/fiscal/cashDrawer');
+  return declareCash((await readSettings()) as any, input || {});
+});
+
 ipcHandle('settings:testFiscalConnection', async () => {
   const settings = await coreServices.readSettings();
   return await testFiscalConnection(settings as any);
@@ -3893,30 +3906,88 @@ ipcHandle('kds:bump', async (_e, input, ctx) => {
       // Who bumped: the signed-in user, not whatever id the screen sent.
       bumpedById: ctx.session?.userId,
     });
+    void recordKdsAction({
+      action: 'bump',
+      station: String((input as any)?.station || 'KITCHEN'),
+      ticketId: Number((input as any)?.ticketId) || null,
+      itemIdx: null,
+      actorUserId: Number(ctx.session?.userId || 0) || null,
+      via: 'till',
+      result: outcome,
+    });
     return outcome === 'ok';
   } catch {
     return false;
   }
 });
 
-ipcHandle('kds:recall', async (_e, input) => {
+ipcHandle('kds:recall', async (_e, input, ctx) => {
   assertKdsEnabled();
   await ensureKdsLocalSchema();
-  return recallKdsTicket(prisma, {
-    station: String((input as any)?.station || 'KITCHEN'),
+  const station = String((input as any)?.station || 'KITCHEN');
+  const result = await recallKdsTicket(prisma, {
+    station,
     ticketId: (input as any)?.ticketId,
     itemIdx: (input as any)?.itemIdx,
     cooker: Boolean((input as any)?.cooker),
   });
+  void recordKdsAction({
+    action: 'recall',
+    station,
+    ticketId: Number(result?.ticketId || (input as any)?.ticketId) || null,
+    itemIdx:
+      (input as any)?.itemIdx != null ? Number((input as any).itemIdx) : null,
+    actorUserId: Number(ctx.session?.userId || 0) || null,
+    via: 'till',
+    result: result?.ok ? 'ok' : 'nothing',
+  });
+  return result;
 });
 
-ipcHandle('kds:clearDone', async (_e, input) => {
+// Clearing a station's Done cards needs a manager: signed in as one, or
+// their PIN entered on the display (QA round 6, #8).
+ipcHandle('kds:clearDone', async (_e, input, ctx) => {
   assertKdsEnabled();
   await ensureKdsLocalSchema();
-  return purgeKdsDoneTicketsForStation(
-    prisma,
-    String((input as any)?.station || 'KITCHEN'),
-  );
+  const station = String((input as any)?.station || 'KITCHEN');
+  let approvedById: number | null = null;
+  if (!kdsClearAllowedWithoutPin(ctx.session?.role)) {
+    const pin = String((input as any)?.managerPin ?? '').trim();
+    const verified = pin
+      ? await verifyManagerPin({
+          pin,
+          source: `till:${Number(_e.sender.id || 0)}`,
+          lan: false,
+        })
+      : null;
+    if (!verified?.ok) {
+      return {
+        ok: false,
+        code: KDS_MANAGER_REQUIRED,
+        error: pin
+          ? 'Wrong manager PIN.'
+          : 'A manager has to approve clearing the Done cards.',
+      };
+    }
+    approvedById = verified.admin.id;
+  }
+  const result = await purgeKdsDoneTicketsForStation(prisma, station);
+  void recordKdsAction({
+    action: 'clear-done',
+    station,
+    ticketId: null,
+    itemIdx: null,
+    actorUserId: Number(ctx.session?.userId || 0) || null,
+    via: 'till',
+    approvedById,
+    result: `${result.purgedDoneRows} cleared`,
+  });
+  return result;
+});
+
+// Who bumped, recalled and cleared what (admins only).
+ipcHandle('kds:actionLog', async (_e, input) => {
+  return listKdsActions(Number((input as any)?.limit || 200));
 });
 
 // KDS: read/set the POS-host "cooker" (two-stage kitchen) master switch.
@@ -3958,6 +4029,15 @@ ipcHandle('kds:bumpItem', async (_e, input, ctx) => {
       itemIdx: (input as any)?.itemIdx,
       cooker: Boolean((input as any)?.cooker),
       bumpedById: ctx.session?.userId,
+    });
+    void recordKdsAction({
+      action: 'bump-item',
+      station: String((input as any)?.station || 'KITCHEN'),
+      ticketId: Number((input as any)?.ticketId) || null,
+      itemIdx: Number((input as any)?.itemIdx),
+      actorUserId: Number(ctx.session?.userId || 0) || null,
+      via: 'till',
+      result: outcome,
     });
     return outcome === 'ok';
   } catch {
@@ -4768,7 +4848,7 @@ ipcHandle('requests:create', async (_e, input, ctx) => {
   // to be whoever is signed in, as on the phone route.
   if (!actorIdentityAllows(ctx, Number(requesterId))) return false;
 
-  await createTicketRequest({
+  const made = await createTicketRequest({
     requesterId: Number(requesterId),
     ownerId: Number(ownerId),
     area: String(area),
@@ -4776,7 +4856,19 @@ ipcHandle('requests:create', async (_e, input, ctx) => {
     items,
     note,
   });
-  return true;
+  return { ok: true, ...made };
+});
+
+// The signed-in waiter's own requests for one table (see `/requests/mine`).
+ipcHandle('requests:listMine', async (_e, input, ctx) => {
+  assertDiningFloorEnabled();
+  const requesterId = Number(ctx.session?.userId || 0);
+  if (!requesterId) return [];
+  return listRequesterTicketRequests({
+    requesterId,
+    area: String(input?.area || ''),
+    tableLabel: String(input?.tableLabel || ''),
+  });
 });
 
 // List pending requests for owner

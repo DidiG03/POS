@@ -29,6 +29,7 @@ function lazyPage<T extends { default: React.ComponentType<any> }>(
 }
 
 const LoginPage = lazyPage(() => import('./app/pages/LoginPage'));
+import { isKdsApp } from './utils/kdsPairing';
 const AppLayout = lazyPage(() => import('./app/AppLayout'));
 const AdminLayout = lazyPage(() => import('./app/AdminLayout'));
 const ReservationsLayout = lazyPage(() => import('./app/ReservationsLayout'));
@@ -515,7 +516,12 @@ function RequireKdsAccess({ children }: { children: React.ReactElement }) {
 export const routes: RouteObject[] = [
   {
     path: '/',
-    element: withSuspenseNoFallback(<LoginPage />),
+    // The kitchen display app never shows the waiter Select Staff screen.
+    element: isKdsApp() ? (
+      <Navigate to="/kds" replace />
+    ) : (
+      withSuspenseNoFallback(<LoginPage />)
+    ),
   },
   {
     path: '/app',

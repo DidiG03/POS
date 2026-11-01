@@ -54,10 +54,9 @@ import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
 import { toast } from '../../stores/toasts';
-import {
-  isTransientNetworkError,
-  reportAppError,
-} from '../../utils/reportAppError';
+import { reportAppError } from '../../utils/reportAppError';
+import { requestedLinesState } from '../../utils/requestedLines';
+import { POS_HOST_BACK } from '../../utils/hostBackEvent';
 import { PageSpinner } from '../../components/PageSpinner';
 import { Modal } from '../../components/ui/Modal';
 import { PaymentCheckout } from '../components/PaymentCheckout';
@@ -1265,6 +1264,50 @@ export default function OrderPage() {
     setRequestLocked(false);
   }, [selectedTable?.area, selectedTable?.label]);
 
+  // Lines this waiter asked the table's owner for (QA round 6, #6): while
+  // the request is pending the button stays locked, also after leaving and
+  // reopening the table; once the owner decides, the lines leave this
+  // phone (approved ones are on the owner's bill). Read from the till.
+  const stagedRequestKey = showRequestOnly
+    ? lines
+        .filter((l) => l.staged && !l.voided)
+        .map((l) => l.id)
+        .join(',')
+    : '';
+  useEffect(() => {
+    if (!stagedRequestKey || !selectedTable) return;
+    const listMine = window.api.requests.listMine;
+    if (!listMine) return;
+    const { area, label } = selectedTable;
+    const stagedIds = stagedRequestKey.split(',');
+    let cancelled = false;
+    const check = async () => {
+      const mine = await listMine(area, label).catch(() => null);
+      if (cancelled || !Array.isArray(mine)) return;
+      const { pending, decided } = requestedLinesState(stagedIds, mine);
+      setRequestLocked(pending.size > 0);
+      if (decided.size === 0) return;
+      for (const id of decided.keys()) removeLine(id);
+      const approved = [...decided.values()].some((d) => d === 'APPROVED');
+      if (approved) toast.success(t('order.requestApproved'));
+      else toast.warn(t('order.requestRejected'));
+    };
+    // Re-armed after each read (no interval on this page's render path).
+    let timer: number | undefined;
+    const loop = () => {
+      void check().finally(() => {
+        if (!cancelled) timer = window.setTimeout(loop, 5_000);
+      });
+    };
+    loop();
+    window.addEventListener('pos:ticketsChanged', check);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('pos:ticketsChanged', check);
+    };
+  }, [stagedRequestKey, selectedTable, removeLine, t]);
+
   // One host read for the selected open table. Optimistic paint from the
   // floor cache, then confirm — never treat "no cache" as an empty bill.
   useEffect(() => {
@@ -2048,10 +2091,13 @@ export default function OrderPage() {
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
+    // Started while the till was away: load the menu when it answers.
+    window.addEventListener(POS_HOST_BACK, refresh);
     return () => {
       cancelled = true;
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
+      window.removeEventListener(POS_HOST_BACK, refresh);
     };
   }, []);
 
@@ -2676,31 +2722,13 @@ export default function OrderPage() {
         selectedTable.area,
         selectedTable.label,
       );
-      // Best-effort occupancy on the client; the host also opens inside
-      // tickets.log. Prefer a direct await (not the 4s-budgeted queue) so a
-      // slow LAN phone does not Send against a still-closed table. Runs
-      // alongside the bill read: neither needs the other, and in sequence
-      // they cost every Send an extra Wi-Fi round trip.
-      let tableOpened: Promise<void> = Promise.resolve();
+      // The till opens the table itself, inside the Send, under the table
+      // lock. Opening it from here too raced a payment on another device:
+      // the open landed just after the payment and started a new sitting
+      // for the paid bill. Only the local floor is marked open.
       if (hasStaged) {
         suppressFreeOnEmptyRef.current = true;
         setOpen(selectedTable.area, selectedTable.label, true);
-        tableOpened = window.api.tables
-          .setOpen(selectedTable.area, selectedTable.label, true, 0)
-          .then(
-            () => undefined,
-            (e: unknown) => {
-              // Unreachable till: the Send below is queued and says so
-              // ("Will send when online"); a red "Failed to fetch" next to
-              // it contradicted that. The till opens the table itself when
-              // the queued Send lands.
-              if (isTransientNetworkError(e)) return;
-              reportAppError(e, {
-                fallback: t('order.toastTryAgain'),
-                key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-              });
-            },
-          );
       }
       const onServer = await onServerRead;
       const logItems = restoreMissingServerLines(
@@ -2748,7 +2776,6 @@ export default function OrderPage() {
 
       let sendQueued = false;
       if (hasStaged) {
-        await tableOpened;
         const logResult = await logTicket({
           userId: user.id,
           area: selectedTable.area,
@@ -3626,6 +3653,8 @@ export default function OrderPage() {
                             setBusyAction('request');
                             // IMPORTANT: only request staged items (newly added), not the whole existing ticket.
                             const items = staged.map((l) => ({
+                              // Lets the till refuse the same line twice.
+                              requestLineId: l.id,
                               sku: l.sku,
                               name: l.name,
                               qty: l.qty,

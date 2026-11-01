@@ -114,6 +114,7 @@ export async function sittingFiscalGate(input: {
       total: Number(input.meta?.totalAfter),
       method: mapPaymentMethod(
         String(input.meta?.method || input.meta?.paymentMethod || 'CASH'),
+        input.settings,
       ),
       idempotencyKey: key,
     });
@@ -275,6 +276,7 @@ async function ensureCashBalanceDeclared(
     if (!fiscalConfig(settings).cloud) return;
     const method = mapPaymentMethod(
       String(meta.method || meta.paymentMethod || 'CASH'),
+      settings,
     );
     if (method !== 'CASH') return;
 
@@ -486,6 +488,7 @@ async function registerUnderClaim(input: {
       saleKey: input.saleKey,
       method: mapPaymentMethod(
         String(meta.method || meta.paymentMethod || 'CASH'),
+        settings,
       ),
       environment: fiscalConfig(settings).environment,
     });

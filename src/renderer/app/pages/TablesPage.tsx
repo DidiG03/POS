@@ -1,3 +1,4 @@
+import { POS_HOST_BACK } from '../../utils/hostBackEvent';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
@@ -383,10 +384,14 @@ export default function TablesPage() {
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
+    // Started while the till was away: load the floor when it answers.
+    const onHostBack = () => void load();
+    window.addEventListener(POS_HOST_BACK, onHostBack);
     return () => {
       cancelled = true;
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
+      window.removeEventListener(POS_HOST_BACK, onHostBack);
     };
   }, []);
 

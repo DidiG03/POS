@@ -52,6 +52,13 @@ import {
 import i18n from '../../i18n/config';
 import { pollIntervalMs } from '../../utils/netQuality';
 import { reportAppError } from '../../utils/reportAppError';
+import { useSessionStore } from '../../stores/session';
+import {
+  KDS_PAIRING_REQUIRED_EVENT,
+  isKdsApp,
+  kdsShouldShowPairing,
+  readKdsDeviceToken,
+} from '../../utils/kdsPairing';
 import {
   IconCheck,
   IconChevronLeft,
@@ -216,11 +223,33 @@ export default function KdsPage() {
   const [tickets, setTickets] = useState<KdsTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  // The till asks this display for its pairing code (401 on `/kds/*`).
-  const [needsPairing, setNeedsPairing] = useState(false);
+  // The till asks this display for its pairing code (401 on `/kds/*`), or
+  // it has never been paired: no device token and no staff session.
+  const [needsPairing, setNeedsPairing] = useState(() =>
+    kdsShouldShowPairing({
+      kdsApp: isKdsApp(),
+      hasDeviceToken: Boolean(readKdsDeviceToken()),
+      hasSession: Boolean(useSessionStore.getState().sessionToken),
+    }),
+  );
+  useEffect(() => {
+    const onPairingRequired = () => {
+      setNeedsPairing(true);
+      setLoading(false);
+    };
+    window.addEventListener(KDS_PAIRING_REQUIRED_EVENT, onPairingRequired);
+    return () =>
+      window.removeEventListener(KDS_PAIRING_REQUIRED_EVENT, onPairingRequired);
+  }, []);
   const [pairCode, setPairCode] = useState('');
   const [pairBusy, setPairBusy] = useState(false);
   const [pairErr, setPairErr] = useState<string | null>(null);
+  // Manager PIN asked for by "Clear Done" (QA round 6, #8); null = closed.
+  const [clearPin, setClearPin] = useState<{
+    pin: string;
+    err: string | null;
+    busy: boolean;
+  } | null>(null);
   const bumping = useRef<Set<number>>(new Set());
   const bumpingItems = useRef<Set<string>>(new Set());
   const errRef = useRef<string | null>(null);
@@ -756,6 +785,13 @@ export default function KdsPage() {
     const refocus = () => {
       if (!document.hasFocus()) return;
       const active = document.activeElement;
+      // A dialog that takes typing (the manager PIN for Clear Done).
+      if (
+        active instanceof HTMLElement &&
+        active.closest('[data-kds-keep-focus]')
+      ) {
+        return;
+      }
       if (
         active instanceof HTMLInputElement ||
         active instanceof HTMLTextAreaElement ||
@@ -1185,6 +1221,11 @@ export default function KdsPage() {
               const res = await window.api.kds.clearDone({
                 station: stationRef.current,
               });
+              // Clearing needs a manager: ask for a PIN on the display.
+              if (res?.code === 'MANAGER_REQUIRED') {
+                setClearPin({ pin: '', err: null, busy: false });
+                return;
+              }
               if (!res?.ok) {
                 setErr(
                   'Could not clear Done tickets. Restart the POS app on the host PC, then try again.',
@@ -1306,6 +1347,96 @@ export default function KdsPage() {
     }
   };
 
+  const submitClearPin = async () => {
+    if (!clearPin || clearPin.busy) return;
+    const pin = clearPin.pin.trim();
+    if (!pin) return;
+    setClearPin({ ...clearPin, busy: true, err: null });
+    try {
+      const res = await window.api.kds.clearDone({
+        station: stationRef.current,
+        managerPin: pin,
+      });
+      if (!res?.ok) {
+        setClearPin({
+          pin: '',
+          busy: false,
+          err: res?.error || i18n.t('kds.clearPinWrong'),
+        });
+        return;
+      }
+      setClearPin(null);
+      setErr(null);
+      // The Done tab reloads like after any change on the till.
+      window.dispatchEvent(new Event('pos:ticketsChanged'));
+    } catch (e: any) {
+      setClearPin({
+        pin: '',
+        busy: false,
+        err: String(e?.message || i18n.t('kds.clearPinWrong')),
+      });
+    }
+  };
+
+  const clearPinModal = clearPin ? (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6"
+      data-kds-keep-focus
+    >
+      <form
+        className="flex w-full max-w-xs flex-col gap-3 rounded-xl bg-gray-900 p-5 text-gray-100"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submitClearPin();
+        }}
+      >
+        <div className="text-lg font-semibold">
+          {i18n.t('kds.clearPinTitle')}
+        </div>
+        <div className="text-sm text-gray-300">
+          {i18n.t('kds.clearPinHint')}
+        </div>
+        <input
+          className="pos-input text-center tabular"
+          type="password"
+          inputMode="numeric"
+          autoComplete="off"
+          autoFocus
+          value={clearPin.pin}
+          onChange={(e) =>
+            setClearPin({
+              ...clearPin,
+              pin: e.target.value.replace(/\D/g, '').slice(0, 6),
+            })
+          }
+          aria-label={i18n.t('kds.clearPinTitle')}
+        />
+        {clearPin.err && (
+          <div className="text-sm text-rose-300">{clearPin.err}</div>
+        )}
+        <Button
+          type="submit"
+          variant="primary"
+          size="lg"
+          block
+          loading={clearPin.busy}
+          disabled={!clearPin.pin.trim()}
+        >
+          {i18n.t('kds.clearPinSubmit')}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="lg"
+          block
+          onClick={() => setClearPin(null)}
+        >
+          {i18n.t('common.cancel')}
+        </Button>
+      </form>
+    </div>
+  ) : null;
+
   if (needsPairing) {
     return (
       <div className="min-h-dvh flex items-center justify-center pos-app pos-app--auth text-gray-100 px-6">
@@ -1342,6 +1473,18 @@ export default function KdsPage() {
           >
             {i18n.t('kds.pairSubmit')}
           </Button>
+          {isKdsApp() ? (
+            // Wrong till, or the till moved: scan the network for it again.
+            <Button
+              type="button"
+              variant="ghost"
+              size="lg"
+              block
+              onClick={() => navigate('/kds-setup')}
+            >
+              {i18n.t('kds.pairFindTill')}
+            </Button>
+          ) : null}
         </form>
       </div>
     );
@@ -1355,6 +1498,7 @@ export default function KdsPage() {
       tabIndex={-1}
       className="h-full min-h-screen bg-gray-950 text-gray-100 p-4 flex flex-col outline-none"
     >
+      {clearPinModal}
       <div className="flex items-center justify-between gap-4 mb-3">
         <div className="flex items-center gap-3 min-w-0">
           <BrandMark size="sm" compact subtitle={title} />

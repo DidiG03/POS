@@ -30,6 +30,11 @@ const api: Api = {
       ipcRenderer.invoke('settings:testPrintProfile', profile),
     testFiscalConnection: () =>
       ipcRenderer.invoke('settings:testFiscalConnection'),
+    declareCash: (input: {
+      kind: 'opening' | 'deposit' | 'withdraw';
+      amount: number;
+      requestKey?: string;
+    }) => ipcRenderer.invoke('fiscal:declareCash', input),
     getFiscalTokenHint: () => ipcRenderer.invoke('settings:getFiscalTokenHint'),
     testFiscalMinimalInvoice: () =>
       ipcRenderer.invoke('settings:testFiscalMinimalInvoice'),
@@ -107,6 +112,8 @@ const api: Api = {
     getReview: (input) => ipcRenderer.invoke('admin:getReview', input),
   },
   kds: {
+    actionLog: (limit?: number) =>
+      ipcRenderer.invoke('kds:actionLog', { limit }),
     openWindow: () => ipcRenderer.invoke('kds:openWindow'),
     listTickets: (input: {
       station: 'KITCHEN' | 'BAR' | 'DESSERT';
@@ -299,6 +306,8 @@ const api: Api = {
       }),
     markApplied: (ids: number[]) =>
       ipcRenderer.invoke('requests:markApplied', { ids }),
+    listMine: (area: string, tableLabel: string) =>
+      ipcRenderer.invoke('requests:listMine', { area, tableLabel }),
   },
   network: {
     getIps: () => ipcRenderer.invoke('network:getIps'),

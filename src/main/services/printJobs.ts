@@ -1,16 +1,21 @@
 /**
- * Kitchen slips that have not printed, for staff to see and reprint.
+ * Kitchen slips and guest receipts that have not printed, for staff to see
+ * and print again.
  *
  * A slip stuck in the retry queue, or given up on, was only visible in the
  * database. Staff now see them under Printer jobs (notifications panel) and
- * can print one again, marked REPRINT with the time it was first sent.
+ * can print one again, marked REPRINT with the time it was first sent. A
+ * guest receipt that never printed was left out of the list entirely (QA
+ * round 6, #9); it is listed too, and printed again as the receipt itself
+ * (it never printed, so it is not a copy).
  */
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import {
   dispatchTicket,
-  isStationSlip,
+  isGuestReceipt,
   pickPrinterProfile,
+  printJobIsWatched,
 } from './printDispatcher';
 
 export const PRINT_JOBS_LOOKBACK_MS = 12 * 60 * 60_000;
@@ -25,6 +30,8 @@ export type StationPrintJobDTO = {
   tableLabel: string;
   items: Array<{ name: string; qty: number }>;
   voidSlip: boolean;
+  /** `receipt` for a guest receipt, bill or corrective slip. */
+  kind: 'order' | 'receipt';
   sentAt: string;
   userId: number | null;
 };
@@ -76,7 +83,7 @@ export async function listStationPrintJobs(
   const out: StationPrintJobDTO[] = [];
   for (const r of rows) {
     const p = (r.payloadJson || {}) as any;
-    if (!isStationSlip(p)) continue;
+    if (!printJobIsWatched(p)) continue;
     if (
       actor &&
       !isManager(actor) &&
@@ -99,6 +106,7 @@ export async function listStationPrintJobs(
         qty: Number(it?.qty) || 1,
       })),
       voidSlip: Boolean(p?.meta?.voidSlip),
+      kind: isGuestReceipt(p) ? 'receipt' : 'order',
       sentAt: String(p?.meta?.sentAtIso || new Date(r.createdAt).toISOString()),
       userId: Number(p?.meta?.userId) || null,
     });
@@ -119,7 +127,7 @@ export async function reprintStationPrintJob(
   const row = (await prisma.printJob
     .findUnique({ where: { id: Number(id) } })
     .catch(() => null)) as any;
-  if (!row || !isStationSlip(row.payloadJson)) {
+  if (!row || !printJobIsWatched(row.payloadJson)) {
     return { ok: false, error: 'That print job no longer exists.' };
   }
   if (
@@ -148,7 +156,11 @@ export async function reprintStationPrintJob(
   const p = row.payloadJson as any;
   const meta = { ...(p.meta || {}) };
   delete meta.lateSentAtIso;
-  meta.reprintOfIso = meta.sentAtIso || new Date(row.createdAt).toISOString();
+  // A receipt that never printed goes out as the receipt; a kitchen slip
+  // says it is a reprint and when it was first sent.
+  if (!isGuestReceipt(p)) {
+    meta.reprintOfIso = meta.sentAtIso || new Date(row.createdAt).toISOString();
+  }
   await prisma.printJob
     .update({
       where: { id: row.id },

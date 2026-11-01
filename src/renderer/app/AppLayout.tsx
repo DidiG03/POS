@@ -1,3 +1,4 @@
+import { announceHostBack, hostCameBack } from '../utils/hostBackEvent';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   lazy,
@@ -260,6 +261,9 @@ export default function AppLayout() {
     let misses = 0;
     let timer: number | null = null;
     let wasDown = false;
+    // Any failed check, including the first one at an offline start: the
+    // next answer tells the screens to reload (`hostBackEvent.ts`).
+    let hadFailure = false;
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
     const schedule = () => {
@@ -277,6 +281,8 @@ export default function AppLayout() {
         if (cancelled) return;
         misses = 0;
         setBackendOk(true);
+        if (hostCameBack({ hadFailure, ok: true })) announceHostBack();
+        hadFailure = false;
         // Back from an outage, or items still waiting: send them now.
         if (wasDown || (await getOfflineQueueCount().catch(() => 0)) > 0) {
           void offlineQueue.sync().catch(() => undefined);
@@ -285,6 +291,7 @@ export default function AppLayout() {
       } catch {
         if (cancelled) return;
         misses += 1;
+        hadFailure = true;
         if (misses >= HEARTBEAT_MISSES_FOR_DOWN || isHostUnreachable()) {
           wasDown = true;
           setBackendOk(false);

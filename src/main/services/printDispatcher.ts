@@ -505,6 +505,22 @@ export function isStationSlip(payload: unknown): boolean {
 }
 
 /**
+ * A slip for the guest: the receipt, the bill before paying, a corrective
+ * slip. Given up on, it used to go FAILED in silence and stay out of
+ * Printer jobs (QA round 6, #9): it is listed and alerted now, like a
+ * kitchen slip, and can be printed again.
+ */
+export function isGuestReceipt(payload: unknown): boolean {
+  const kind = String((payload as any)?.meta?.kind || '').toUpperCase();
+  return kind === 'PAYMENT' || kind === 'TICKET' || kind === 'CORRECTION';
+}
+
+/** Jobs staff are told about and shown under Printer jobs. */
+export function printJobIsWatched(payload: unknown): boolean {
+  return isStationSlip(payload) || isGuestReceipt(payload);
+}
+
+/**
  * What happens after `attempts` failed physical attempts of one job:
  * wait `delayMs` and try again, or give up.
  */
@@ -611,7 +627,7 @@ export async function enqueuePrintRetry(args: {
         `[PrinterRetry] FAILED row write rejected: ${e?.message || e}`,
       );
     }
-    if (station) {
+    if (printJobIsWatched(payload)) {
       await notifyStationPrintFailed({
         payload,
         printerName: args.printerName,
@@ -645,7 +661,7 @@ export async function enqueuePrintRetry(args: {
     );
     return { status: 'FAILED' };
   }
-  if (station) {
+  if (printJobIsWatched(payload)) {
     await notifyStationPrintQueued({ payload, printerName: args.printerName });
   }
 

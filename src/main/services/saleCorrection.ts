@@ -62,7 +62,8 @@ import {
   type SaleCorrectionError,
   type SaleCorrectionKind,
 } from '@shared/saleCorrection';
-import { tinFromVerifyUrl } from '@shared/fiscalReceipt';
+import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
+import type { FiscalDocInfo } from './fiscal/completion';
 import { restockMenuStockForLines } from './menuStock';
 
 export type FiscalSaleRow = {
@@ -269,6 +270,12 @@ export interface FiledCancellation {
   qrCode?: string;
   /** FILED corrective: the amount filed, in lekë (negative). */
   amountLek?: number;
+  /**
+   * The filed document's own numbering and codes (invoice number, NIPT,
+   * operator, TCR, software), as easyPos returned them: the corrective
+   * slip prints them like a receipt does (QA round 6, fiscal).
+   */
+  doc?: FiscalDocInfo;
   detail: string;
   /**
    * NOT_FILED only: the request never reached easyPos (offline, outage), so
@@ -332,6 +339,7 @@ async function fileCancellation(input: {
         nivf: outcome.identifiers.fic,
         link: outcome.identifiers.link,
         qrCode: outcome.identifiers.qrCode,
+        ...(outcome.identifiers.doc ? { doc: outcome.identifiers.doc } : {}),
         detail: `Cancellation filed · NIVF ${outcome.identifiers.fic} · docId ${docId}`,
       };
     }
@@ -428,6 +436,20 @@ export async function printCorrectionSlip(
           fiscalNivf: filed.nivf,
           fiscalLink: filed.link,
           fiscalQrCode: filed.qrCode,
+          // Invoice number, NIPT, operator, TCR and software code lines,
+          // like the receipt (they were missing from corrective slips). The
+          // operator is the one the document was filed under.
+          fiscalDoc: {
+            ...(filed.doc || {}),
+            operatorCode:
+              filed.doc?.operatorCode ||
+              fiscalConfig(settings).operatorCode ||
+              undefined,
+          },
+          fiscalTin:
+            filed.doc?.sellerNuis ||
+            fiscalTinFromSettings(settings) ||
+            undefined,
           // The lekë taken back, as filed: the corrective's own amount, or
           // all of what the cancelled invoice declared.
           fiscalTotalLek: correctionLekTotal(filed, payment),
@@ -572,7 +594,7 @@ async function fileCorrective(input: {
         detail: `Corrective not filed automatically: the struck lines total ${amount.toFixed(2)} but the sale changes by ${input.amountDelta.toFixed(2)}. File it in easyPos.`,
       };
     }
-    const method = mapPaymentMethod(input.method || 'CASH');
+    const method = mapPaymentMethod(input.method || 'CASH', input.settings);
     // In lekë, like the invoice it corrects (`invoiceInLek`): a euro venue
     // used to file a corrective's euro amounts as lekë.
     const lek = invoiceInLek(articles, undefined, input.settings);
@@ -599,6 +621,7 @@ async function fileCorrective(input: {
         nivf: outcome.identifiers.fic,
         link: outcome.identifiers.link,
         qrCode: outcome.identifiers.qrCode,
+        ...(outcome.identifiers.doc ? { doc: outcome.identifiers.doc } : {}),
         amountLek: lek.amount,
         detail: `Corrective filed · NIVF ${outcome.identifiers.fic} · docId ${docId}`,
       };

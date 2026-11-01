@@ -56,6 +56,59 @@ export async function decideTicketRequest(input: {
   return true;
 }
 
+/** How far back a waiter's requests for a table are remembered (a sitting). */
+export const REQUEST_LINE_MEMORY_MS = 13 * 60 * 60 * 1000;
+
+/** The phone's id for a requested line (`requestLineId`), or ''. */
+export function requestLineIdOf(item: unknown): string {
+  return String((item as { requestLineId?: unknown })?.requestLineId ?? '')
+    .trim()
+    .slice(0, 80);
+}
+
+export type RequesterTicketRequest = {
+  id: number;
+  status: string;
+  lineIds: string[];
+  createdAt: string;
+};
+
+/**
+ * This waiter's requests for one table in the last sitting, newest first:
+ * the phone reads it to learn when a request was decided, and drops the
+ * requested lines then.
+ */
+export async function listRequesterTicketRequests(input: {
+  requesterId: number;
+  area: string;
+  tableLabel: string;
+  now?: number;
+}): Promise<RequesterTicketRequest[]> {
+  const requesterId = Number(input.requesterId);
+  if (!Number.isFinite(requesterId) || requesterId <= 0) return [];
+  const now = input.now ?? Date.now();
+  const rows = (await prisma.ticketRequest
+    .findMany({
+      where: {
+        requesterId,
+        area: String(input.area),
+        tableLabel: String(input.tableLabel),
+        createdAt: { gte: new Date(now - REQUEST_LINE_MEMORY_MS) },
+      },
+      orderBy: { id: 'desc' },
+      take: 50,
+    } as any)
+    .catch(() => [])) as any[];
+  return rows.map((r) => ({
+    id: Number(r.id),
+    status: String(r.status),
+    lineIds: (Array.isArray(r.itemsJson) ? r.itemsJson : [])
+      .map(requestLineIdOf)
+      .filter(Boolean),
+    createdAt: new Date(r.createdAt).toISOString(),
+  }));
+}
+
 /** A repeat of the same request inside this window is a retry, not a second ask. */
 export const REQUEST_RETRY_WINDOW_MS = 60_000;
 
@@ -82,7 +135,31 @@ export async function createTicketRequest(input: {
   const area = String(input.area);
   const tableLabel = String(input.tableLabel);
   const note = input.note ? String(input.note) : null;
-  const itemsKey = JSON.stringify(input.items ?? []);
+  let items = Array.isArray(input.items) ? input.items : [];
+
+  // Each line the phone asks for carries its own id. A line already in one
+  // of this waiter's requests for this table, whatever became of it, is not
+  // asked for again: after an approval the phone used to keep the line and
+  // re-enable Request, and the same items were added twice (QA round 6, #6).
+  const ids = items.map(requestLineIdOf).filter(Boolean);
+  if (ids.length) {
+    const earlier = await listRequesterTicketRequests({
+      requesterId: input.requesterId,
+      area,
+      tableLabel,
+      now,
+    });
+    const askedIn = new Map<string, number>();
+    for (const r of earlier) {
+      for (const id of r.lineIds) if (!askedIn.has(id)) askedIn.set(id, r.id);
+    }
+    const fresh = items.filter((it) => !askedIn.has(requestLineIdOf(it)));
+    if (fresh.length === 0) {
+      return { id: askedIn.get(ids[0]) as number, created: false };
+    }
+    items = fresh;
+  }
+  const itemsKey = JSON.stringify(items);
 
   const recent = (await prisma.ticketRequest
     .findMany({
@@ -111,7 +188,7 @@ export async function createTicketRequest(input: {
       ownerId: Number(input.ownerId),
       area,
       tableLabel,
-      itemsJson: input.items as any,
+      itemsJson: items as any,
       note,
       status: 'PENDING' as any,
     },

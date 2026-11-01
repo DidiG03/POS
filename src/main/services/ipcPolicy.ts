@@ -156,6 +156,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'covers:save': { allow: POS },
 
   // ------------------------------------------------------------------ kds
+  'kds:actionLog': { allow: ADMIN },
   'kds:bump': { allow: KITCHEN, windows: KDS_WINDOWS },
   'kds:bumpItem': { allow: KITCHEN, windows: KDS_WINDOWS },
   'kds:clearDone': { allow: KITCHEN, windows: KDS_WINDOWS },
@@ -222,6 +223,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'requests:approve': { allow: POS },
   'requests:create': { allow: POS },
   'requests:listForOwner': { allow: 'session' },
+  'requests:listMine': { allow: POS },
   'requests:markApplied': { allow: POS },
   'requests:pollApprovedForTable': { allow: POS },
   'requests:reject': { allow: POS },
@@ -244,6 +246,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'settings:getFiscalTokenHint': { allow: ADMIN },
   'settings:setPrinter': { allow: ADMIN },
   'settings:testFiscalConnection': { allow: ADMIN },
+  'fiscal:declareCash': { allow: ADMIN },
   'settings:testFiscalMinimalInvoice': { allow: ADMIN },
   'settings:listFiscalReviews': { allow: ADMIN },
   'settings:resolveFiscalReview': { allow: ADMIN },

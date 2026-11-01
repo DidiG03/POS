@@ -21,9 +21,24 @@ function where(payload: any): string {
   return [area, label].filter(Boolean).join(' ') || 'a table';
 }
 
+function isGuestSlip(payload: any): boolean {
+  const kind = String(payload?.meta?.kind || '').toUpperCase();
+  return kind === 'PAYMENT' || kind === 'TICKET' || kind === 'CORRECTION';
+}
+
 function printerLabel(name?: string | null, payload?: any): string {
   const n = String(name || payload?.meta?.routeLabel || '').trim();
-  return n ? `The ${n} printer` : 'A kitchen printer';
+  if (n) return `The ${n} printer`;
+  return isGuestSlip(payload) ? 'The receipt printer' : 'A kitchen printer';
+}
+
+/** What did not print: the guest receipt, the bill, a void slip or an order. */
+function slipNoun(payload: any): string {
+  const kind = String(payload?.meta?.kind || '').toUpperCase();
+  if (kind === 'PAYMENT') return 'guest receipt';
+  if (kind === 'TICKET') return 'bill';
+  if (kind === 'CORRECTION') return 'corrective slip';
+  return payload?.meta?.voidSlip ? 'void slip' : 'order';
 }
 
 async function notifyUser(userId: unknown, message: string): Promise<void> {
@@ -39,12 +54,11 @@ export async function notifyStationPrintQueued(input: {
   printerName?: string | null;
 }): Promise<void> {
   const printer = printerLabel(input.printerName, input.payload);
-  const isVoid = Boolean(input.payload?.meta?.voidSlip);
   try {
     broadcastPrinterEvent({
       level: 'error',
-      kind: 'station',
-      message: `${printer} is offline. Slips will print when it is back.`,
+      kind: isGuestSlip(input.payload) ? 'receipt' : 'station',
+      message: `${printer} is offline. ${isGuestSlip(input.payload) ? 'Receipts' : 'Slips'} will print when it is back.`,
       at: Date.now(),
       context: {
         area: input.payload?.area,
@@ -57,7 +71,7 @@ export async function notifyStationPrintQueued(input: {
   }
   await notifyUser(
     input.payload?.meta?.userId,
-    `${printer} is offline: the ${isVoid ? 'void slip' : 'order'} for ${where(input.payload)} has not printed yet. It will print when the printer is back.`,
+    `${printer} is offline: the ${slipNoun(input.payload)} for ${where(input.payload)} has not printed yet. It will print when the printer is back.`,
   );
 }
 
@@ -67,11 +81,13 @@ export async function notifyStationPrintFailed(input: {
   error?: string | null;
 }): Promise<void> {
   const printer = printerLabel(input.printerName, input.payload);
-  const message = `${printer} could not print the ${input.payload?.meta?.voidSlip ? 'void slip' : 'order'} for ${where(input.payload)}. Tell the kitchen, or reprint it from Printer jobs.`;
+  const message = isGuestSlip(input.payload)
+    ? `${printer} could not print the ${slipNoun(input.payload)} for ${where(input.payload)}. Print it again from Printer jobs.`
+    : `${printer} could not print the ${slipNoun(input.payload)} for ${where(input.payload)}. Tell the kitchen, or reprint it from Printer jobs.`;
   try {
     broadcastPrinterEvent({
       level: 'error',
-      kind: 'station',
+      kind: isGuestSlip(input.payload) ? 'receipt' : 'station',
       message,
       detail: input.error || null,
       at: Date.now(),

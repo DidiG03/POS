@@ -25,10 +25,10 @@ vi.mock('@db/client', () => ({
           .filter(
             (r) =>
               r.requesterId === where.requesterId &&
-              r.ownerId === where.ownerId &&
+              (where.ownerId === undefined || r.ownerId === where.ownerId) &&
               r.area === where.area &&
               r.tableLabel === where.tableLabel &&
-              r.status === where.status &&
+              (where.status === undefined || r.status === where.status) &&
               r.createdAt >= where.createdAt.gte,
           )
           .reverse(),
@@ -165,5 +165,66 @@ describe('createTicketRequest', () => {
     await createTicketRequest(ask);
     await createTicketRequest({ ...ask, items: [{ name: 'Uje', qty: 1 }] });
     expect(requests.size).toBe(2);
+  });
+});
+
+describe('the same requested line twice (QA round 6, #6)', () => {
+  const line = (id: string, name = 'Kafe') => ({
+    requestLineId: id,
+    name,
+    qty: 1,
+  });
+  const ask = (items: any[]) => ({
+    requesterId: 3,
+    ownerId: 5,
+    area: 'Salla',
+    tableLabel: '4',
+    items,
+    note: null,
+  });
+
+  beforeEach(() => {
+    requests.clear();
+    notifications.length = 0;
+  });
+
+  it('after approval, asking for the same line again creates nothing', async () => {
+    const first = await createTicketRequest(ask([line('l1')]));
+    expect(
+      await decideTicketRequest({
+        id: first.id,
+        ownerId: 5,
+        decision: 'APPROVED',
+      }),
+    ).toBe(true);
+    const again = await createTicketRequest(ask([line('l1')]));
+    expect(again).toEqual({ id: first.id, created: false });
+    expect(requests.size).toBe(1);
+  });
+
+  it('long after (outside the retry window), still not twice', async () => {
+    const first = await createTicketRequest(ask([line('l1')]));
+    const later = await createTicketRequest({
+      ...ask([line('l1')]),
+      now: Date.now() + 10 * 60_000,
+    });
+    expect(later).toEqual({ id: first.id, created: false });
+  });
+
+  it('a request with old and new lines asks only for the new ones', async () => {
+    await createTicketRequest(ask([line('l1')]));
+    const next = await createTicketRequest(
+      ask([line('l1'), line('l2', 'Uje')]),
+    );
+    expect(next.created).toBe(true);
+    expect(requests.get(next.id).itemsJson.map((i: any) => i.name)).toEqual([
+      'Uje',
+    ]);
+  });
+
+  it('lines without ids (older phones) keep the earlier retry rule', async () => {
+    const a = await createTicketRequest(ask([{ name: 'Kafe', qty: 1 }]));
+    const b = await createTicketRequest(ask([{ name: 'Kafe', qty: 1 }]));
+    expect(b).toEqual({ id: a.id, created: false });
   });
 });

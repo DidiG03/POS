@@ -631,6 +631,13 @@ export interface ApiRequests {
     tableLabel: string,
   ): Promise<Array<{ id: number; items: any[]; note?: string | null }>>;
   markApplied(ids: number[]): Promise<boolean>;
+  /** The signed-in waiter's own requests for a table, newest first. */
+  listMine?(
+    area: string,
+    tableLabel: string,
+  ): Promise<
+    Array<{ id: number; status: string; lineIds: string[]; createdAt: string }>
+  >;
 }
 
 // Shifts
@@ -691,6 +698,18 @@ export interface ApiSettings {
       vendorId?: string;
       productId?: string;
     }[]
+  >;
+  /**
+   * Declare cash to the tax service: the counted opening float, cash put
+   * in or taken out (lekë). Admins only.
+   */
+  declareCash?(input: {
+    kind: 'opening' | 'deposit' | 'withdraw';
+    amount: number;
+    requestKey?: string;
+  }): Promise<
+    | { ok: true; kind: string; docId: string; fcdc?: string }
+    | { ok: false; error: string; docId?: string }
   >;
   /** Ping the configured fiscal middleware (easyPos local API). */
   testFiscalConnection?(): Promise<{
@@ -1010,6 +1029,8 @@ export interface KdsTicketDetailDTO {
 
 export interface ApiKds {
   openWindow(): Promise<boolean>;
+  /** Admins: who bumped, recalled and cleared what, newest first. */
+  actionLog?(limit?: number): Promise<unknown[]>;
   /** LAN kitchen displays only: pair with the till's pairing code. */
   pair?(pairingCode: string): Promise<boolean>;
   listTickets(input: {
@@ -1046,7 +1067,15 @@ export interface ApiKds {
   }): Promise<boolean>;
   clearDone(input: {
     station: 'KITCHEN' | 'BAR' | 'DESSERT';
-  }): Promise<{ ok: boolean; purgedDoneRows: number }>;
+    /** A manager's PIN: clearing needs a manager (QA round 6, #8). */
+    managerPin?: string;
+  }): Promise<{
+    ok: boolean;
+    purgedDoneRows: number;
+    /** `MANAGER_REQUIRED`: ask for a manager PIN and try again. */
+    code?: string;
+    error?: string;
+  }>;
   getTicketDetail(input: {
     ticketId: number;
   }): Promise<KdsTicketDetailDTO | null>;

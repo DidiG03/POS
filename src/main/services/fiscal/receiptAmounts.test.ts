@@ -8,7 +8,11 @@ import { roundMoney } from '@shared/pricing';
 import { saleCorrectionHttpStatus } from '@shared/saleCorrection';
 import { dualTotalsFromSettings } from '@shared/paymentDisplay';
 import { buildEasyPosCloudInvoiceDraft, filedLekTotal } from './mapInvoice';
-import { assertFiscalConfigured, fiscalBaseUrlProblem } from './config';
+import {
+  assertFiscalConfigured,
+  fiscalBaseUrlProblem,
+  operatorCodesProblem,
+} from './config';
 
 const euroVenue = (rate: number) =>
   ({
@@ -64,6 +68,91 @@ describe('F2b: the lekë total on the receipt is the filed one', () => {
     expect(
       filedLekTotal(sale([{ name: 'Kafe', qty: 1, unitPrice: 150 }]), settings),
     ).toBeNull();
+  });
+});
+
+describe('QA round 6, #3: three items at 3.333 € on a 10.00 € receipt', () => {
+  it('files 980.00 L at 98, the receipt total in lekë, not 979.89 or 980.87', () => {
+    const settings = euroVenue(98);
+    const payload = sale([
+      { name: 'Kafe', qty: 1, unitPrice: 3.333 },
+      { name: 'Kafe', qty: 1, unitPrice: 3.333 },
+      { name: 'Kafe', qty: 1, unitPrice: 3.333 },
+    ]);
+    expect(payload.meta.totalAfter).toBe(10);
+    const draft = buildEasyPosCloudInvoiceDraft(payload, settings, {
+      docId: 'doc-three-dp',
+    });
+    const filed = roundMoney(
+      draft.payment.reduce((t, p) => t + Number(p.amount), 0),
+    );
+    expect(filed).toBe(980);
+    // What the receipt prints in lekë is the filed amount.
+    expect(filedLekTotal(payload, settings)).toBe(980);
+    // Every filed unit price is the cent price converted.
+    for (const a of draft.articles.slice(0, 3)) expect(a.price).toBe(326.34);
+  });
+});
+
+describe('QA round 6: a gift card payment is filed as the venue maps it', () => {
+  it('SVOUCHER when mapped, OTHER when not', () => {
+    const payload = {
+      ...sale([{ name: 'Kafe', qty: 1, unitPrice: 2 }]),
+    };
+    payload.meta.method = 'GIFT_CARD';
+    const plain = buildEasyPosCloudInvoiceDraft(payload, euroVenue(100), {
+      docId: 'doc-gift-1',
+    });
+    expect(plain.payment.map((p) => p.type)).toEqual(['OTHER']);
+    const mapped = {
+      ...euroVenue(100),
+      fiscal: {
+        ...(euroVenue(100) as any).fiscal,
+        paymentTypeMap: { GIFT_CARD: 'SVOUCHER' },
+      },
+    } as SettingsDTO;
+    const draft = buildEasyPosCloudInvoiceDraft(payload, mapped, {
+      docId: 'doc-gift-2',
+    });
+    expect(draft.payment.map((p) => p.type)).toEqual(['SVOUCHER']);
+  });
+});
+
+describe('QA round 6: invoices filed under the paying staff member', () => {
+  const withCodes = {
+    ...euroVenue(100),
+    fiscal: {
+      ...(euroVenue(100) as any).fiscal,
+      operatorCodes: { '7': 'ab123cd456', '8': 'not-a-code' },
+    },
+  } as SettingsDTO;
+  const paidBy = (userId: number) => {
+    const p = sale([{ name: 'Kafe', qty: 1, unitPrice: 2 }]);
+    p.meta.userId = userId;
+    return p;
+  };
+
+  it('uses their own operator code', () => {
+    const d = buildEasyPosCloudInvoiceDraft(paidBy(7), withCodes, {
+      docId: 'doc-op-7',
+    });
+    expect(d.operatorCode).toBe('ab123cd456');
+  });
+
+  it('falls back to the default without one (or with a malformed one)', () => {
+    for (const id of [9, 8]) {
+      const d = buildEasyPosCloudInvoiceDraft(paidBy(id), withCodes, {
+        docId: `doc-op-${id}`,
+      });
+      expect(d.operatorCode).toBe('gh537ez280');
+    }
+  });
+
+  it('a malformed code is refused when saved', () => {
+    expect(operatorCodesProblem({ '7': 'ab123' })).toMatch(
+      /not an operator code/,
+    );
+    expect(operatorCodesProblem({ '7': 'ab123cd456', '8': '' })).toBeNull();
   });
 });
 
@@ -128,6 +217,6 @@ describe('LAN API wiring (QA round 5, F1b, F6b)', () => {
       'utf8',
     );
     expect(api).toContain('saleCorrectionHttpStatus(result)');
-    expect(api).toMatch(/INVALID_FISCAL_URL[\s\S]{0,200}400/);
+    expect(api).toMatch(/INVALID_FISCAL_URL[\s\S]{0,400}400/);
   });
 });

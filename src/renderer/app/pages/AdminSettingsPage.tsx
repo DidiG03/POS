@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { newIdempotencyKey } from '../../utils/idempotency';
 import type {
   FiscalReviewDTO,
   NetworkPrinterDTO,
@@ -1428,6 +1429,13 @@ function FiscalSettings() {
   const [authTokenConfigured, setAuthTokenConfigured] = useState(false);
   const [integrationApp, setIntegrationApp] = useState('');
   const [defaultOperatorId, setDefaultOperatorId] = useState('');
+  // Each staff member's own operator code (QA round 6); blank = default.
+  const [operatorCodes, setOperatorCodes] = useState<Record<string, string>>(
+    {},
+  );
+  const [operatorStaff, setOperatorStaff] = useState<
+    Array<{ id: number; displayName: string }>
+  >([]);
   const [nipt, setNipt] = useState('');
   const [defaultSoldIn, setDefaultSoldIn] = useState('XPP');
   const [cloudFallbackArticleId, setCloudFallbackArticleId] = useState('');
@@ -1473,6 +1481,24 @@ function FiscalSettings() {
         setAuthTokenConfigured(Boolean(fiscal.authTokenConfigured));
         setAuthToken('');
         setDefaultOperatorId(String(fiscal.defaultOperatorId || '').trim());
+        setOperatorCodes(
+          fiscal.operatorCodes && typeof fiscal.operatorCodes === 'object'
+            ? (fiscal.operatorCodes as Record<string, string>)
+            : {},
+        );
+        void window.api.auth
+          .listUsers()
+          .then((users: any[]) =>
+            setOperatorStaff(
+              (Array.isArray(users) ? users : [])
+                .filter((u) => u?.active !== false)
+                .map((u) => ({
+                  id: Number(u.id),
+                  displayName: String(u.displayName || ''),
+                })),
+            ),
+          )
+          .catch(() => undefined);
         setNipt(String(fiscal.nipt || '').trim());
         setIntegrationApp(String(fiscal.integrationApp || '').trim());
         setDefaultSoldIn(String(fiscal.defaultSoldIn || 'XPP').trim() || 'XPP');
@@ -1521,6 +1547,11 @@ function FiscalSettings() {
         : {}),
       integrationApp: String(integrationApp || '').trim() || undefined,
       defaultOperatorId: String(defaultOperatorId || '').trim() || undefined,
+      operatorCodes: Object.fromEntries(
+        Object.entries(operatorCodes)
+          .map(([id, code]) => [id, String(code || '').trim()])
+          .filter(([, code]) => code),
+      ),
       nipt: String(nipt || '').trim() || undefined,
       defaultSoldIn: String(defaultSoldIn || '').trim() || 'XPP',
       cloudFallbackArticleId:
@@ -1832,6 +1863,40 @@ function FiscalSettings() {
                 </div>
               </label>
 
+              {operatorStaff.length > 0 ? (
+                <div className="block">
+                  <div className="text-sm mb-1">
+                    {t('fiscal.staffOperatorCodes')}
+                  </div>
+                  <div className="text-[11px] opacity-60 mb-2">
+                    {t('fiscal.staffOperatorCodesHelp')}
+                  </div>
+                  <div className="space-y-1.5">
+                    {operatorStaff.map((u) => (
+                      <label
+                        key={u.id}
+                        className="flex items-center gap-3 text-sm"
+                      >
+                        <span className="w-40 truncate">{u.displayName}</span>
+                        <input
+                          className="bg-gray-700 rounded px-3 py-1.5 w-full max-w-[12rem]"
+                          value={operatorCodes[String(u.id)] || ''}
+                          onChange={(e) =>
+                            setOperatorCodes((prev) => ({
+                              ...prev,
+                              [String(u.id)]: e.target.value.trim(),
+                            }))
+                          }
+                          placeholder={defaultOperatorId || 'ab123cd456'}
+                          disabled={!enabled}
+                          aria-label={`${t('fiscal.staffOperatorCodes')}: ${u.displayName}`}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <label className="block">
                 <div className="text-sm mb-1">{t('fiscal.nipt')}</div>
                 <input
@@ -1889,6 +1954,8 @@ function FiscalSettings() {
                   {t('fiscal.openingFloatHelp')}
                 </div>
               </label>
+
+              {enabled ? <CashDeclarations /> : null}
             </div>
           </SettingsCard>
         </div>
@@ -4563,6 +4630,107 @@ function LanSettings() {
           </SettingsCard>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Cash declared to the tax service by hand (QA round 6, fiscal): the
+ * opening float as counted, and cash put in or taken out during the day.
+ */
+function CashDeclarations() {
+  const { t } = useTranslation();
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+  const declare = async (kind: 'opening' | 'deposit' | 'withdraw') => {
+    const n = Number(String(amount).replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0 || (kind !== 'opening' && n <= 0)) {
+      setStatus({ ok: false, text: t('fiscal.cashAmountInvalid') });
+      return;
+    }
+    const api = (window.api.settings as any).declareCash as
+      | ((input: any) => Promise<any>)
+      | undefined;
+    if (!api) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const r = await api({ kind, amount: n, requestKey: newIdempotencyKey() });
+      if (r?.ok) {
+        setStatus({
+          ok: true,
+          text:
+            r.kind === 'already-declared'
+              ? t('fiscal.cashAlreadyDeclared')
+              : t('fiscal.cashDeclared'),
+        });
+        setAmount('');
+      } else {
+        setStatus({
+          ok: false,
+          text: String(r?.error || t('fiscal.cashFailed')),
+        });
+      }
+    } catch (e: any) {
+      setStatus({
+        ok: false,
+        text: String(e?.message || t('fiscal.cashFailed')),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="block">
+      <div className="text-sm mb-1">{t('fiscal.cashDeclarations')}</div>
+      <div className="text-[11px] opacity-60 mb-2">
+        {t('fiscal.cashDeclarationsHelp')}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="bg-gray-700 rounded px-3 py-2 w-36"
+          inputMode="decimal"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="0 L"
+          aria-label={t('fiscal.cashDeclarations')}
+          disabled={busy}
+        />
+        <button
+          type="button"
+          className="pos-btn"
+          disabled={busy}
+          onClick={() => void declare('opening')}
+        >
+          {t('fiscal.cashOpening')}
+        </button>
+        <button
+          type="button"
+          className="pos-btn"
+          disabled={busy}
+          onClick={() => void declare('deposit')}
+        >
+          {t('fiscal.cashIn')}
+        </button>
+        <button
+          type="button"
+          className="pos-btn"
+          disabled={busy}
+          onClick={() => void declare('withdraw')}
+        >
+          {t('fiscal.cashOut')}
+        </button>
+      </div>
+      {status ? (
+        <div
+          className={`text-[12px] mt-1 ${status.ok ? 'text-emerald-300' : 'text-rose-300'}`}
+        >
+          {status.text}
+        </div>
+      ) : null}
     </div>
   );
 }

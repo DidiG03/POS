@@ -31,6 +31,7 @@ vi.mock('./printDispatcher', async () => {
     dispatchTicket: vi.fn(),
     enqueuePrintRetry: h.enqueue,
     isStationSlip: real.isStationSlip,
+    printJobIsWatched: real.printJobIsWatched,
     printRetryPlan: real.printRetryPlan,
     isTransientPrintError: (e?: string) => /timeout|refused/i.test(String(e)),
     loadDuePrintRetries: h.loadDue,
@@ -123,6 +124,34 @@ describe('printer station retry pass', () => {
       .find((a: any) => a.where.id === 1);
     expect(write.data.status).toBe('RETRY');
     expect(h.failedNotice).not.toHaveBeenCalled();
+  });
+
+  it('a guest receipt that never prints is marked failed and alerted (QA round 6, #9)', async () => {
+    h.loadDue.mockResolvedValueOnce([
+      {
+        ...row(1, 'receipt'),
+        // The last of the ~4 minutes of attempts.
+        attempts: 4,
+        createdAt: new Date(Date.now() - 4 * 60_000),
+        payloadJson: {
+          area: 'Salla',
+          tableLabel: 'T5',
+          items: [],
+          meta: { kind: 'PAYMENT', userId: 7 },
+        },
+      },
+    ]);
+    h.print.mockResolvedValueOnce({ ok: false, error: 'connection refused' });
+    await tick();
+    const write = h.update.mock.calls
+      .map((c: any) => c[0])
+      .find((a: any) => a.where.id === 1);
+    expect(write.data.status).toBe('FAILED');
+    // It used to give up here in silence.
+    expect(h.failedNotice).toHaveBeenCalledTimes(1);
+    expect((h.failedNotice.mock.calls[0] as any)[0].payload.meta.kind).toBe(
+      'PAYMENT',
+    );
   });
 
   it('gives up on a kitchen slip after the window, and tells people', async () => {

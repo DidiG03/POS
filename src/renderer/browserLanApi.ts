@@ -37,6 +37,14 @@ import {
 } from './utils/lanAuthToken';
 import { isPairingRejectedError } from './utils/lanLoginError';
 import {
+  KDS_DEVICE_TOKEN_KEY,
+  KDS_PAIRING_REQUIRED_EVENT,
+  clearKdsDeviceToken,
+  isKdsApp,
+  kdsPairingRequiredOn401,
+  readKdsDeviceToken,
+} from './utils/kdsPairing';
+import {
   APP_UPDATE_REQUIRED,
   APP_VERSION,
   APP_VERSION_HEADER,
@@ -175,15 +183,6 @@ export function installBrowserLanApi(): void {
       return localStorage.getItem('pos_pairing_code') || '';
     } catch {
       return '';
-    }
-  }
-
-  const KDS_DEVICE_TOKEN_KEY = 'pos.kdsDeviceToken';
-  function readKdsDeviceToken(): string | null {
-    try {
-      return localStorage.getItem(KDS_DEVICE_TOKEN_KEY) || null;
-    } catch {
-      return null;
     }
   }
 
@@ -868,6 +867,17 @@ export function installBrowserLanApi(): void {
     requestGeneration: number,
     path: string,
   ) {
+    // An unpaired (or un-paired by a new pairing code) kitchen display: ask
+    // it to pair. Signing it "out" sent it to the waiter Select Staff screen.
+    if (kdsPairingRequiredOn401(status, path, isKdsApp())) {
+      if (!getToken()) clearKdsDeviceToken();
+      try {
+        window.dispatchEvent(new CustomEvent(KDS_PAIRING_REQUIRED_EVENT));
+      } catch {
+        // ignore
+      }
+      return;
+    }
     if (
       shouldForceLogoutOn401(
         status,
@@ -1351,6 +1361,18 @@ export function installBrowserLanApi(): void {
       },
       async testFiscalConnection() {
         return await goLan('/settings/fiscal-test', { method: 'POST' });
+      },
+      async declareCash(input: any) {
+        try {
+          return await goLan('/fiscal/cash-declaration', {
+            method: 'POST',
+            body: JSON.stringify(input || {}),
+          });
+        } catch (e: any) {
+          // 400 carries the reason (fiscalization off, refused by easyPos).
+          if (e?.data?.error) return { ok: false, ...e.data };
+          throw e;
+        }
       },
       async testFiscalMinimalInvoice() {
         return await goLan('/settings/fiscal-test-minimal', { method: 'POST' });
@@ -1859,13 +1881,30 @@ export function installBrowserLanApi(): void {
       },
       async clearDone(input: any) {
         const station = String(input?.station || 'KITCHEN').toUpperCase();
-        const r = await goLan('/kds/clear-done', {
-          method: 'POST',
-          body: JSON.stringify({ station }),
-        });
+        let r: any;
+        try {
+          r = await goLan('/kds/clear-done', {
+            method: 'POST',
+            body: JSON.stringify({
+              station,
+              ...(input?.managerPin ? { managerPin: input.managerPin } : {}),
+            }),
+          });
+        } catch (e: any) {
+          // 403 MANAGER_REQUIRED: the display asks for a manager PIN.
+          if (e?.data?.code) {
+            return {
+              ok: false,
+              purgedDoneRows: 0,
+              code: String(e.data.code),
+              error: String(e.data.error || ''),
+            };
+          }
+          throw e;
+        }
         return {
-          ok: Boolean((r as any)?.ok),
-          purgedDoneRows: Number((r as any)?.purgedDoneRows || 0),
+          ok: Boolean(r?.ok),
+          purgedDoneRows: Number(r?.purgedDoneRows || 0),
         };
       },
       async bumpItem(input: any) {
@@ -2089,6 +2128,10 @@ export function installBrowserLanApi(): void {
           method: 'POST',
           body: JSON.stringify({ ids }),
         }).then(() => true),
+      listMine: async (area: string, tableLabel: string) =>
+        goLan(
+          `/requests/mine?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
+        ),
     },
   };
   (window as any).__BROWSER_CLIENT__ = true;

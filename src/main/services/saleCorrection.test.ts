@@ -1060,6 +1060,12 @@ describe('the slip of a filed correction (QA F7)', () => {
         iic: 'IIC-CORR',
         fic: 'NIVF-CORR',
         link: 'https://efiskalizimi-app-test.tatime.gov.al/invoice-check/#/verify?iic=IIC-CORR',
+        doc: {
+          invoiceNumber: '12/2026/qq038ml699',
+          tcrCode: 'qq038ml699',
+          softwareCode: 'ab123cd456',
+          sellerNuis: 'L12345678A',
+        },
       },
     } as never);
     await applySaleCorrection({
@@ -1082,6 +1088,14 @@ describe('the slip of a filed correction (QA F7)', () => {
     expect(slip.items).toEqual([{ name: 'Kafe', qty: 1, unitPrice: 500 }]);
     // QA round 5, F7b: the lekë taken back, as filed (printed negative).
     expect(slip.meta.fiscalTotalLek).toBe(-500);
+    // QA round 6: the corrective's own invoice number, NIPT, TCR and
+    // software code, as easyPos filed it (the slip lacked them).
+    expect(slip.meta.fiscalDoc).toMatchObject({
+      invoiceNumber: '12/2026/qq038ml699',
+      tcrCode: 'qq038ml699',
+      softwareCode: 'ab123cd456',
+    });
+    expect(slip.meta.fiscalTin).toBe('L12345678A');
     vi.mocked(coreServices.readSettings).mockResolvedValue({
       defaultVatRate: 0.2,
     } as any);

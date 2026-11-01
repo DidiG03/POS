@@ -5,6 +5,7 @@ import {
   RETRY_MAX_ATTEMPTS,
   dispatchTicket,
   isStationSlip,
+  printJobIsWatched,
   isTransientPrintError,
   loadDuePrintRetries,
   markPrinterResult,
@@ -172,7 +173,7 @@ async function processRetryRow(
         } as any,
       })
       .catch(() => {});
-    if (station) {
+    if (printJobIsWatched(stored)) {
       await notifyStationPrintFailed({
         payload: stored,
         printerName: profile.name,
@@ -209,7 +210,7 @@ async function processRetryRow(
             },
     } as any)
     .catch(() => {});
-  if (plan.status === 'FAILED' && station) {
+  if (plan.status === 'FAILED' && printJobIsWatched(stored)) {
     await notifyStationPrintFailed({
       payload: stored,
       printerName: profile.name,

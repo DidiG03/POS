@@ -240,7 +240,7 @@ beforeEach(async () => {
 });
 
 describe('a Send that arrives while the table is being paid', () => {
-  it('cannot put the paid Espresso back: the bill and the paid total hold', async () => {
+  it('cannot put the paid Espresso back: the Cappuccino goes on a new bill alone', async () => {
     const paidLine = bill()[0];
     // Pay the Espresso and, at the same moment, send a Cappuccino from a
     // phone whose copy of the bill still shows the Espresso unpaid.
@@ -261,32 +261,88 @@ describe('a Send that arrives while the table is being paid', () => {
     ]);
     expect(paid.ok).toBe(true);
     expect(h.sales.map((s) => s.total)).toEqual([1.6]);
-    // Refused, not written to the closed sitting or a new one with the
-    // Espresso on it; the waiter opens the table and sends again.
-    expect(sent).toMatchObject({ ok: false, code: 'TABLE_CLOSED' });
-    expect(h.open.has(`${T.area}:${T.tableLabel}`)).toBe(false);
-    expect(h.stock.get('CAP')).toBe(10);
-
-    // Sent again (same phone, same stale copy of the paid bill).
-    const again = await send({
-      key: 'k-cap-2',
-      items: [paidLine, { ...cappuccino, sendKey: 'k-cap-2' }],
-      added: [{ ...cappuccino, sendKey: 'k-cap-2' }],
-      capturedAt: now() + 5,
-    });
-    expect(again.written).toBe(true);
-    // QA: the new bill was 3.95 (Espresso + Cappuccino).
-    expect(bill().map((l) => l.name)).toEqual(['Cappuccino']);
+    // QA round 6, #1: written on a NEW bill with only the new line.
+    expect(sent.written).toBe(true);
+    expect(bill().map((l) => [l.name, l.paid === true])).toEqual([
+      ['Cappuccino', false],
+    ]);
     expect(unpaidTotal()).toBeCloseTo(2.35);
-    expect(h.sales.map((s) => s.total)).toEqual([1.6]);
-    // Each slip prints once, with only its own Send's line.
-    expect((await slipPrints('k-cap-2')).map((l: any) => l.name)).toEqual([
+    expect(bill()[0]).toBeDefined();
+    expect(h.rows.at(-1).sessionKey).not.toBe(h.rows[0].sessionKey);
+    // The slip prints the Cappuccino once; the paid Espresso is not re-cooked.
+    expect((await slipPrints('k-cap')).map((l: any) => l.name)).toEqual([
       'Cappuccino',
     ]);
-    expect(await slipPrints('k-cap')).toEqual([]);
     expect(await slipPrints('k-esp')).toEqual([]);
     expect(h.stock.get('ESP')).toBe(9);
     expect(h.stock.get('CAP')).toBe(9);
+  });
+
+  it('a reopen that lands between the payment and the Send cannot bring the paid line back', async () => {
+    const paidLine = bill()[0];
+    const tapped = Date.now();
+    await pay([{ ...espresso, lineId: paidLine.lineId }], {
+      closeTable: true,
+      key: 'pay-1',
+    });
+    // Something reopens the table (an older phone still opens before it
+    // sends) after the payment committed, before the Send lands.
+    await coreServices.setTableOpen(T.area, T.tableLabel, true);
+    // Its copy of the bill has the Espresso without its Send key or line
+    // id: nothing ties it to the paid sitting except that it is not one of
+    // this Send's lines.
+    const unkeyed = { ...paidLine };
+    delete unkeyed.sendKey;
+    delete unkeyed.lineId;
+    const sent = await send({
+      key: 'k-cap',
+      // A phone that lists no added lines (the whole cart is the Send).
+      items: [unkeyed, { ...cappuccino, sendKey: 'k-cap' }],
+      capturedAt: tapped,
+    });
+    expect(sent.written).toBe(true);
+    expect(bill().map((l) => l.name)).toEqual(['Cappuccino']);
+    expect(unpaidTotal()).toBeCloseTo(2.35);
+  });
+
+  it('pay with a slow fiscal filing and send at the same moment, many times: never charged twice', async () => {
+    for (let round = 0; round < 7; round++) {
+      // Reset to one Espresso on a fresh sitting.
+      const esp = await send({
+        key: `esp-${round}`,
+        items: [{ ...espresso, sendKey: `esp-${round}` }],
+        added: [{ ...espresso, sendKey: `esp-${round}` }],
+      });
+      expect(esp.ok).toBe(true);
+      const paidLine = bill().find((l) => l.sendKey === `esp-${round}`);
+      const tapped = Date.now();
+      const [paid, sent] = await Promise.all([
+        pay([{ ...espresso, lineId: paidLine.lineId }], {
+          closeTable: true,
+          key: `pay-${round}`,
+        }),
+        (async () => {
+          await sleep(round * 3);
+          return send({
+            key: `cap-${round}`,
+            items: [...bill(), { ...cappuccino, sendKey: `cap-${round}` }],
+            added: [{ ...cappuccino, sendKey: `cap-${round}` }],
+            capturedAt: tapped,
+          });
+        })(),
+      ]);
+      expect(paid.ok).toBe(true);
+      expect(sent.ok).toBe(true);
+      // Whatever bill is open now holds no unpaid Espresso.
+      expect(
+        bill().filter((l) => l.name === 'Espresso' && !l.paid && !l.voided),
+      ).toEqual([]);
+      // Close the Cappuccino's sitting for the next round.
+      await pay(
+        bill().map((l) => ({ ...l })),
+        { closeTable: true, key: `pay-cap-${round}` },
+      );
+    }
   });
 
   it('a Send without a capture time (scripts, older phones) is refused the same way', async () => {
