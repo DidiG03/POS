@@ -64,15 +64,22 @@ flowchart TB
   TLOG -. "settled into" .-> ORDER
   TLOG -. "new lines" .-> KTIX
 
-  classDef staff fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
-  classDef menu fill:#fff4e0,stroke:#d88a1d,color:#3d2400
-  classDef floor fill:#f1f3f5,stroke:#868e96,color:#212529
-  classDef ledger fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
-  classDef kitchen fill:#fdecec,stroke:#d64545,color:#4a0d0d
-  classDef sys fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
-  class USER,SHIFT,NOTIF staff
-  class CAT,ITEM,MODG,MOD,INV,RECIPE menu
-  class AREA,TABLE,OCC,TLOG,COV,REQ,RESV floor
-  class ORDER,OITEM,PAY,PJOB,CORR ledger
-  class KORD,KTIX,KST kitchen
-  class SYSS sys
+  WEAK["⚠ Open bills, covers and sales find their table by NAME (area + label text),<br/>not by a fixed ID. Renaming a table does not rename them: past sales keep<br/>the old name, and an open bill on that table would be left behind."]
+  LEDGER ~~~ WEAK
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class USER,SHIFT,NOTIF data
+  class CAT,ITEM,MODG,MOD,INV,RECIPE data
+  class AREA,TABLE,OCC,TLOG,COV,REQ,RESV data
+  class ORDER,OITEM,PAY,PJOB,CORR data
+  class KORD,KTIX,KST data
+  class SYSS data
+  class WEAK warn

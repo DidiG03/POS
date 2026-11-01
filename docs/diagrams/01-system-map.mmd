@@ -17,10 +17,12 @@ flowchart TB
     MDNS["mDNS<br/>announces the till<br/>so apps can find it"]
     HOST["Host (main process)<br/>ALL business rules run here<br/><i>src/main/index.ts + services/</i>"]
     DB[("Local database<br/>SQLite · plain or encrypted vault<br/><i>prisma/schema.prisma</i>")]
+    BAK[("Backups<br/>saved on this same computer<br/><i>services/dbBackups.ts</i>")]
     TILLUI -- "IPC" --> HOST
     RES -- "IPC" --> HOST
     LAN --> HOST
     HOST --> DB
+    DB -. "backup" .-> BAK
   end
 
   subgraph PRINT["Printers · ESC/POS over network, USB or serial"]
@@ -37,11 +39,11 @@ flowchart TB
     UPD["GitHub Releases<br/>auto-updates"]
   end
 
-  WAITER -- "PIN login · paired device" --> LAN
+  WAITER -- "paired device + PIN" --> LAN
   BROWSER --> LAN
   ADMIN -- "admin PIN" --> LAN
-  KDS -- "device pairing" --> LAN
-  MDNS -. "find the till" .-> APPS
+  KDS -- "device pairing<br/>or kitchen staff PIN" --> LAN
+  MDNS -. "Waiter, Admin and KDS<br/>find the till automatically" .-> APPS
 
   HOST -- "print jobs, retried<br/>if a printer is down" --> PRINT
   HOST -- "fiskalizimi" --> EASY
@@ -49,13 +51,22 @@ flowchart TB
   HOST -.-> SENTRY
   HOST -.-> UPD
 
-  classDef app fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
-  classDef core fill:#fff4e0,stroke:#d88a1d,color:#3d2400
-  classDef data fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  RISK["⚠ Single point of failure: every app needs this one till computer.<br/>If its disk fails, the backups on it are lost too: copy them elsewhere.<br/>Store edition (shop mode): same picture, a counter instead of tables."]
+  NET ~~~ RISK
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
   classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
-  classDef dev fill:#f1f3f5,stroke:#868e96,color:#212529
-  class WAITER,BROWSER,ADMIN,KDS,TILLUI,RES app
-  class HOST,LAN,MDNS core
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class WAITER,BROWSER,ADMIN,KDS,TILLUI,RES step
+  class HOST,LAN,MDNS logic
   class DB data
   class EASY,BILL,SENTRY,UPD ext
-  class RCPT,STATION dev
+  class RCPT,STATION device
+  class BAK data
+  class RISK warn

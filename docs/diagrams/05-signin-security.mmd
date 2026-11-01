@@ -37,12 +37,16 @@ flowchart TB
   L7 --> ROLES
 
   classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
-  classDef decide fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
   classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
   classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
-  classDef extra fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
   class T1,L1,L2,L3,R1,R2,R3,R4 step
-  class T2,L4 decide
+  class T2,L4 logic
   class T4,T5,L6,L7 good
   class T3,L5 bad
-  class M1,M2,M3 extra
+  class M1,M2,M3 logic

@@ -35,12 +35,16 @@ flowchart LR
   IN -- "end of shift" --> OUT
 
   classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
-  classDef decide fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
   classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
   classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
   classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
   class S1,S2,S4,W,O1,O4,O6,O7 step
-  class S0,S3,S5,O2 decide
-  class S7,O5 good
+  class S0,S3,S5,O2 logic
+  class S7,O5 data
   class S6,O3 bad
   class N0,FS note

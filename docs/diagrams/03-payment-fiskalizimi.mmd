@@ -4,8 +4,11 @@ config:
 ---
 %% 3. Payment and fiskalizimi: what happens when someone taps Pay.
 flowchart TB
-  P0["Pay tapped<br/>one idempotency key per tap<br/>(retries reuse it)"] --> P1["Lock this table's payments<br/>(two devices cannot pay it at once)"]
+  P0["Pay tapped<br/>one idempotency key per tap<br/>(retries reuse it)"] --> P00{"This payment<br/>already recorded?<br/>(same key)"}
+  P00 -- "yes (a retry)" --> X00["Return the earlier result,<br/>charge nothing again"]
+  P00 -- no --> P1["Lock this table's payments<br/>(two devices cannot pay it at once)"]
   P1 --> P2{"Checks pass?"}
+  P1 -.-> DA["Discount on the bill?<br/>admins get an alert"]
   P2 -- no --> X0["Refused, nothing charged<br/>• table not on the floor or already paid<br/>• not your table (owner, cashier or admin)<br/>• manager approval missing (discount)<br/>• bill changed since it was shown"]
   P2 -- yes --> Q1{"Fiskalizimi on<br/>for the venue AND<br/>the person paying?"}
 
@@ -38,12 +41,17 @@ flowchart TB
   F2 --> F3["Close the table · live update<br/>to all devices · notify the owner"]
 
   classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
-  classDef decide fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
   classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
   classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
   classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
-  class P0,P1,R0,G2,C1,C2,C3,C4,F1,F3,D1 step
-  class P2,Q1,G1 decide
-  class O1,F2 good
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class P0,P1,DA,R0,G2,C1,C2,C3,C4,F1,F3,D1 step
+  class P00,P2,Q1,G1 logic
+  class O1,F2,X00 good
   class O2,O3 warn
   class O4,O5,X0,X1,X2,X3,X4 bad
+  class F2 data

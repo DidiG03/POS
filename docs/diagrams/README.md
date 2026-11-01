@@ -5,6 +5,7 @@ How the POS works, drawn from the code. Made for reading on an iPad
 
 | # | Diagram | Answers |
 |---|---|---|
+| – | `00-key.html` | Key (colours, shapes, lines) and glossary. Read this first |
 | 1 | `01-system-map` | Which apps exist and how they connect (till, Waiter, Admin, KDS, printers, easyPos, billing) |
 | 2 | `02-order-lifecycle` | Sign in → order → Send → kitchen → pay → closed table |
 | 3 | `03-payment-fiskalizimi` | Everything that happens when someone taps Pay |
@@ -14,10 +15,19 @@ How the POS works, drawn from the code. Made for reading on an iPad
 | 7 | `07-reports` | Which report screen reads which data |
 | 8 | `08-live-offline` | Live updates, the phone's offline queue, slow Wi-Fi, no internet |
 
-- `*.mmd`: the sources (Mermaid). Edit these.
+- `*.mmd`: the sources (Mermaid). Edit these. `00-key.html` is the key page.
 - `export/onetap-pos-diagrams.pdf`: all diagrams, one page each (A3). Best for
   Freeform: it stays sharp when you zoom.
 - `export/*.png` / `export/*.svg`: one image per diagram.
+
+Every diagram uses the same colours (see the key page): blue = action, screen
+or app; orange = decision or till rule; teal = stored data; green / yellow /
+red = good / warning / problem; purple = outside the venue; grey = printers;
+dashed = note. Keep to these `classDef` names (`step`, `logic`, `data`,
+`good`, `warn`, `bad`, `ext`, `device`, `note`) when editing.
+
+Each page is stamped with the app version and the date of the last code
+change it was drawn from, so you can tell when a diagram may be out of date.
 
 Small grey italic text under a box (e.g. *fiscal/claims.ts*) is where that
 step lives in the code, under `src/main/services/` unless the path says

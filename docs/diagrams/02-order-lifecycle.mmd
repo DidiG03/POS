@@ -30,15 +30,15 @@ flowchart TB
   subgraph S4["4 · Kitchen (for the new lines)"]
     direction LR
     D1["Live event to every device<br/>(table shows occupied)"]
-    D4["Order slips to kitchen / bar printers<br/>(retried if a printer is down)"]
+    D4["Then the device sends a SEPARATE<br/>print request: order slips to kitchen /<br/>bar printers (retried if a printer is down)<br/>Bill saved even if the slip fails"]
     D2["KDS ticket<br/><i>kdsCreateTicket.ts</i>"] --> D3["Cook bumps<br/>items / ticket"]
     D1 ~~~ D2
     D3 ~~~ D4
   end
 
-  subgraph S5["5 · While the table is open (optional)"]
+  subgraph S5["5 · While the table is open: steps 3 → 4 → 5 repeat for every round"]
     direction LR
-    E1["More rounds<br/>→ Send again"]
+    E1["↺ More rounds:<br/>back to step 3 (Send)"]
     E2["Void item / ticket<br/>(manager PIN when required)"]
     E3["Move / merge<br/>table"]
     E4["Print the bill<br/>(pre-bill, per seat)"]
@@ -58,10 +58,15 @@ flowchart TB
   S1 --> S2 --> S3 --> S4 --> S5 --> S6
 
   classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
-  classDef rule fill:#fff4e0,stroke:#d88a1d,color:#3d2400
-  classDef data fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
   classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
   class A1,A3,A4,B1,B2,B3,C1,D1,D2,D3,D4,E1,E2,E3,E4,F1,F2,F4,F6,R1 step
-  class A2,C2,C3,F3 rule
+  class A2,C2,C3,F3 logic
   class C4,F5 data
   class OFF note
