@@ -87,6 +87,20 @@ export default function AppLayout() {
     user ? () => setFiscalDialogOpen(true) : undefined,
     FISCAL_HOLD_MS,
   );
+  // Fills under the name while it is held, so the hold is visibly working.
+  const nameHoldBar = (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute bottom-0 left-1.5 h-0.5 rounded-full bg-[var(--pos-accent)]"
+      style={{
+        width: nameHold.holding ? 'calc(100% - 0.75rem)' : 0,
+        opacity: nameHold.holding ? 1 : 0,
+        transition: nameHold.holding
+          ? `width ${FISCAL_HOLD_MS}ms linear`
+          : 'none',
+      }}
+    />
+  );
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -698,11 +712,11 @@ export default function AppLayout() {
               {hasOpen && captureClock ? (
                 <button
                   type="button"
-                  className="min-w-0 select-none truncate rounded-[var(--pos-btn-radius)] px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)] [-webkit-touch-callout:none]"
-                  style={{ minHeight: 0 }}
+                  className="relative min-w-0 truncate rounded-[var(--pos-btn-radius)] px-1.5 py-1 text-[13px] font-medium text-[color:var(--pos-fg)] transition-colors hover:bg-[var(--pos-hover)]"
                   title={t('layout.clockOut')}
                   aria-label={t('layout.clockOut')}
                   {...nameHold.handlers}
+                  style={{ ...nameHold.handlers.style, minHeight: 0 }}
                   onClick={() => {
                     if (nameHold.consumeClick()) return;
                     if (!clockOnly) {
@@ -726,14 +740,16 @@ export default function AppLayout() {
                   }}
                 >
                   {user.displayName}
+                  {nameHoldBar}
                 </button>
               ) : (
                 <div
-                  className="min-w-0 select-none truncate px-1.5 text-[13px] font-medium text-[color:var(--pos-fg-muted)] [-webkit-touch-callout:none]"
+                  className="relative min-w-0 truncate px-1.5 text-[13px] font-medium text-[color:var(--pos-fg-muted)]"
                   {...nameHold.handlers}
                   onClick={nameHold.consumeClick}
                 >
                   {user.displayName}
+                  {nameHoldBar}
                 </div>
               )}
             </>
