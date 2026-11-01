@@ -335,6 +335,10 @@ import {
   auditFiscalToggle,
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
+import {
+  fiscalSettingsForActor,
+  manageWaiterFiscal,
+} from './services/waiterFiscal';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
@@ -1843,6 +1847,22 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
   return null;
 });
 
+// Sign-in screen: hold a name for 5 s to switch fiskalizimi off or on for
+// that person (`waiterFiscal.ts`). Their own PIN is required.
+ipcHandle('auth:manageUserFiscal', async (_e, payload) => {
+  const result = await manageWaiterFiscal({
+    userId: (payload as any)?.userId,
+    pin: (payload as any)?.pin,
+    enabled: (payload as any)?.enabled,
+    source: 'till',
+  });
+  if (!result.ok && result.code === 'WRONG_PIN') {
+    await recordWrongPinAttempt(Number((payload as any)?.userId));
+    await throttleAfterPinFailure(_e.sender.id, 'auth:manageUserFiscal');
+  }
+  return result;
+});
+
 ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
   const result = await verifyManagerPin({
     pin: (payload as any)?.pin,
@@ -2915,8 +2935,13 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       }
       // A second Pay tap for this sitting gets a new docId, so an invoice
       // left behind by an interrupted attempt must be found here.
-      const sitting = await sittingFiscalGate({
+      // Fiskalizimi can be switched off for one waiter (`waiterFiscal.ts`).
+      const fiscalSettings = await fiscalSettingsForActor(
         settings,
+        Number(ctx?.session?.userId || 0) || Number(meta?.userId || 0) || null,
+      );
+      const sitting = await sittingFiscalGate({
+        settings: fiscalSettings,
         area,
         tableLabel,
         meta,
@@ -2938,10 +2963,14 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
           ...(sitting.retryable ? {} : { permanent: true }),
         };
       }
-      const outcome = await fiscalizePaymentOnce(payload, settings as any, {
-        idempotencyKey: idempotencyKey || undefined,
-        adoptDocId: sitting.adoptDocId,
-      });
+      const outcome = await fiscalizePaymentOnce(
+        payload,
+        fiscalSettings as any,
+        {
+          idempotencyKey: idempotencyKey || undefined,
+          adoptDocId: sitting.adoptDocId,
+        },
+      );
       if (outcome.kind === 'needs-review') {
         broadcastPrinterEvent({
           level: 'error',

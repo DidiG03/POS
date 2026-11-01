@@ -50,6 +50,10 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
     allow: 'public',
     note: 'staff picker; needs a paired device, a session or the till (lanPreAuth.ts)',
   },
+  'POST /auth/user-fiscal': {
+    allow: 'public',
+    note: 'per-waiter fiskalizimi switch on the sign-in screen; needs a paired device, a session or the till, plus that waiter PIN (waiterFiscal.ts)',
+  },
   'GET /events': {
     allow: 'session',
     note: 'SSE stream; verifies its own token',

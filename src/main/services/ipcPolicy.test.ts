@@ -57,6 +57,8 @@ describe('IPC policy shape', () => {
       'auth:listUsers',
       'auth:loginWithPin',
       'auth:logoutAdmin',
+      // Sign-in screen per-waiter fiskalizimi switch; checks the PIN itself.
+      'auth:manageUserFiscal',
       'auth:resumeSession',
       'billing:getStatus',
       'license:activateKey',

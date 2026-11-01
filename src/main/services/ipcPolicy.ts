@@ -101,6 +101,12 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
     rateLimit: { maxAttempts: 30, windowMs: 60 * 1000 },
   },
   'auth:logoutAdmin': { allow: 'public' },
+  // Sign-in screen per-waiter fiskalizimi switch; the handler checks that
+  // waiter's PIN, so it is rate-limited like a login.
+  'auth:manageUserFiscal': {
+    allow: 'public',
+    rateLimit: { maxAttempts: 30, windowMs: 60 * 1000 },
+  },
   // The token *is* the credential, so this is necessarily reachable before a
   // session exists. Rate-limited because it is the one channel where guessing
   // a token would be worth an attacker's time. Already-bound senders skip the

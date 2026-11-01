@@ -1212,6 +1212,28 @@ export function installBrowserLanApi(): void {
         setToken(null);
         return true;
       },
+      async manageUserFiscal(input: {
+        userId: number;
+        pin: string;
+        enabled?: boolean;
+      }) {
+        try {
+          return await goLan('/auth/user-fiscal', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+        } catch (e) {
+          if (e instanceof HttpError) {
+            if (e.code === 'WRONG_PIN') return { ok: false, code: 'WRONG_PIN' };
+            if (e.code === 'LOGIN_LOCKED') return { ok: false, code: 'LOCKED' };
+            const code = String((e.data as any)?.code || '');
+            if (code === 'NOT_FOUND' || code === 'INVALID') {
+              return { ok: false, code };
+            }
+          }
+          throw e;
+        }
+      },
       async listUsers(_input?: { includeAdmins?: boolean }) {
         if ((window as any).__ADMIN_APP__) {
           const token = getToken();

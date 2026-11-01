@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores/session';
@@ -20,6 +26,8 @@ import { SpinnerGlyph } from '../../components/SpinnerGlyph';
 import { resolveBackendHost } from '../../utils/backendHost';
 import { DocumentMeta } from '../../components/DocumentMeta';
 import { DevEditionSwitch } from '../components/DevEditionSwitch';
+import { WaiterFiscalDialog } from '../components/WaiterFiscalDialog';
+import { haptic } from '../../utils/haptics';
 import {
   Button,
   ConfirmDialog,
@@ -59,22 +67,87 @@ function staffInitials(name: string): string {
   return (first + second).toUpperCase() || '?';
 }
 
+/** Holding a staff name this long opens their fiskalizimi switch. */
+const FISCAL_HOLD_MS = 5_000;
+/** A finger that moves this far is scrolling the list, not holding. */
+const HOLD_MOVE_TOLERANCE_PX = 12;
+
 function StaffTile({
   name,
   selected,
   onShift,
   onClick,
+  onLongPress,
 }: {
   name: string;
   selected: boolean;
   onShift?: boolean;
   onClick: () => void;
+  /** Fired after the name is held for `FISCAL_HOLD_MS`. */
+  onLongPress?: () => void;
 }) {
+  const holdTimer = useRef<number | null>(null);
+  const holdStart = useRef<{ x: number; y: number } | null>(null);
+  const holdFired = useRef(false);
+
+  const cancelHold = () => {
+    if (holdTimer.current != null) window.clearTimeout(holdTimer.current);
+    holdTimer.current = null;
+    holdStart.current = null;
+  };
+
+  useEffect(() => cancelHold, []);
+
+  const holdHandlers = onLongPress
+    ? {
+        onPointerDown: (e: ReactPointerEvent) => {
+          if (e.button !== 0) return;
+          cancelHold();
+          holdFired.current = false;
+          holdStart.current = { x: e.clientX, y: e.clientY };
+          holdTimer.current = window.setTimeout(() => {
+            holdTimer.current = null;
+            holdStart.current = null;
+            holdFired.current = true;
+            haptic('heavy');
+            onLongPress();
+          }, FISCAL_HOLD_MS);
+        },
+        onPointerMove: (e: ReactPointerEvent) => {
+          const start = holdStart.current;
+          if (!start) return;
+          if (
+            Math.abs(e.clientX - start.x) > HOLD_MOVE_TOLERANCE_PX ||
+            Math.abs(e.clientY - start.y) > HOLD_MOVE_TOLERANCE_PX
+          ) {
+            cancelHold();
+          }
+        },
+        onPointerUp: cancelHold,
+        onPointerLeave: cancelHold,
+        onPointerCancel: cancelHold,
+        // A long touch would otherwise open the system context menu.
+        onContextMenu: (e: ReactMouseEvent) => e.preventDefault(),
+      }
+    : {};
+
   return (
     <button
       type="button"
-      className={cn('pos-staff-tile', selected && 'pos-staff-tile--active')}
-      onClick={onClick}
+      className={cn(
+        'pos-staff-tile',
+        selected && 'pos-staff-tile--active',
+        onLongPress && 'select-none [-webkit-touch-callout:none]',
+      )}
+      {...holdHandlers}
+      onClick={() => {
+        // The release that ends a completed hold is not a tap.
+        if (holdFired.current) {
+          holdFired.current = false;
+          return;
+        }
+        onClick();
+      }}
     >
       <span className="flex min-w-0 items-center gap-2.5">
         <span className="pos-avatar">{staffInitials(name)}</span>
@@ -520,6 +593,17 @@ export default function LoginPage() {
       })()
     : '';
 
+  // Waiter POS only: hold a name for 5 s to switch fiskalizimi for them.
+  const [fiscalStaff, setFiscalStaff] = useState<{
+    id: number;
+    displayName: string;
+  } | null>(null);
+  const fiscalHold = (s: {
+    id: number;
+    displayName: string;
+  }): (() => void) | undefined =>
+    isAdminContext || isKdsContext ? undefined : () => setFiscalStaff(s);
+
   const onShift = staff.filter((s) => openIds.includes(s.id));
   const offShift = staff.filter((s) => !openIds.includes(s.id));
   // Clock columns need open-shift ids before paint; otherwise everyone flashes
@@ -789,6 +873,7 @@ export default function LoginPage() {
                     key={s.id}
                     name={s.displayName}
                     selected={selectedId === s.id}
+                    onLongPress={fiscalHold(s)}
                     onClick={() => {
                       setSelectedId(s.id);
                       setPin('');
@@ -844,6 +929,7 @@ export default function LoginPage() {
                       key={s.id}
                       name={s.displayName}
                       selected={selectedId === s.id}
+                      onLongPress={fiscalHold(s)}
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
@@ -865,6 +951,7 @@ export default function LoginPage() {
                       name={s.displayName}
                       selected={selectedId === s.id}
                       onShift
+                      onLongPress={fiscalHold(s)}
                       onClick={() => {
                         setSelectedId(s.id);
                         setPin('');
@@ -945,6 +1032,11 @@ export default function LoginPage() {
           )}
         </div>
       </div>
+
+      <WaiterFiscalDialog
+        staff={fiscalStaff}
+        onClose={() => setFiscalStaff(null)}
+      />
 
       {!isAdminContext && pendingUser && (
         <ConfirmDialog
