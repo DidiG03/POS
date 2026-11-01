@@ -52,7 +52,7 @@ const FONT = 'Helvetica, Arial, sans-serif';
     .sort();
   const b = await chromium.launch();
   const page = await b.newPage({
-    deviceScaleFactor: 2.5,
+    deviceScaleFactor: 2.4,
     viewport: { width: 2400, height: 1600 },
   });
   await page.setContent('<html><body style="margin:0;background:#fff"></body></html>');
