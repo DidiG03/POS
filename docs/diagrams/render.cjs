@@ -12,7 +12,7 @@ const titles = {
   fs.mkdirSync(OUT, { recursive: true });
   const files = fs.readdirSync(SRC).filter(f => f.endsWith('.mmd')).sort();
   const b = await chromium.launch();
-  const page = await b.newPage({ deviceScaleFactor: 3, viewport: { width: 2400, height: 1600 } });
+  const page = await b.newPage({ deviceScaleFactor: 2.5, viewport: { width: 2400, height: 1600 } });
   await page.setContent('<html><body style="margin:0;background:#fff"></body></html>');
   await page.addScriptTag({ path: MERMAID });
   await page.evaluate(() => mermaid.initialize({
