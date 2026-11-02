@@ -4541,6 +4541,25 @@ ipcHandle('admin:printFiscalReceipt', async (_e, input) =>
   printFiscalReceiptForSale(Number((input as any)?.orderId)),
 );
 
+// Z report: the end-of-day close (`services/zReport.ts`).
+ipcHandle('admin:issueZReport', async (_e, _input, ctx) => {
+  const { issueZReport } = await import('./services/zReport');
+  const r = await issueZReport({ actorUserId: ctx?.session?.userId ?? null });
+  logSecurityEvent('z_report_issued', {
+    number: r.report.number,
+    userId: ctx?.session?.userId ?? null,
+  });
+  return { ok: true, ...r };
+});
+ipcHandle('admin:listZReports', async () => {
+  const { listZReports } = await import('./services/zReport');
+  return listZReports();
+});
+ipcHandle('admin:reprintZReport', async (_e, input) => {
+  const { reprintZReport } = await import('./services/zReport');
+  return reprintZReport(Number((input as any)?.number));
+});
+
 ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   return listAdminTicketsByUser(input);
 });

@@ -84,6 +84,10 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'admin:listFiscalSales': { allow: ADMIN },
   'admin:correctSale': { allow: ADMIN },
   'admin:printFiscalReceipt': { allow: ADMIN },
+  // End-of-day Z report: closes the period since the last one.
+  'admin:issueZReport': { allow: ADMIN, rateLimit: { maxAttempts: 10 } },
+  'admin:listZReports': { allow: ADMIN },
+  'admin:reprintZReport': { allow: ADMIN },
   'admin:markAllNotificationsRead': { allow: ADMIN },
 
   // ----------------------------------------------------------------- auth

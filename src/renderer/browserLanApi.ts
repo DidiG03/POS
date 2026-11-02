@@ -1766,6 +1766,19 @@ export function installBrowserLanApi(): void {
           body: JSON.stringify(input ?? {}),
         });
       },
+      async issueZReport() {
+        return await goLan('/admin/z-report', { method: 'POST', body: '{}' });
+      },
+      async listZReports() {
+        const rows = await goLan('/admin/z-reports');
+        return Array.isArray(rows) ? rows : [];
+      },
+      async reprintZReport(input: { number: number }) {
+        return await goLan('/admin/z-report/reprint', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
+      },
       async eraseTickets(input: { confirm: string }) {
         return await goLan('/admin/erase-tickets', {
           method: 'POST',

@@ -1233,6 +1233,14 @@ export interface ApiAdmin {
     /** One per correction form: a repeat answers with the first result. */
     idempotencyKey?: string;
   }): Promise<CorrectSaleResultDTO>;
+  /** Close the period since the last Z report: compute, store, print. */
+  issueZReport?(): Promise<{ ok: true; report: any; printed: boolean }>;
+  /** The latest Z reports, newest first. */
+  listZReports?(): Promise<any[]>;
+  /** Print a stored Z report again, marked KOPJE / COPY. */
+  reprintZReport?(input: {
+    number: number;
+  }): Promise<{ ok: boolean; printed?: boolean; error?: string }>;
   /** Print a filed sale's fiscal receipt again (late filings). */
   printFiscalReceipt?(input: {
     orderId: number;

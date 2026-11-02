@@ -4741,6 +4741,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         return send(res, 200, result, corsOrigin);
       }
+      // Z report: the end-of-day close (admins; `services/zReport.ts`).
+      if (req.method === 'POST' && pathname === '/admin/z-report') {
+        const { issueZReport } = await import('./services/zReport');
+        const r = await issueZReport({ actorUserId: auth?.userId ?? null });
+        logSecurityEvent('z_report_issued', {
+          number: r.report.number,
+          userId: auth?.userId ?? null,
+        });
+        return send(res, 200, { ok: true, ...r }, corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/admin/z-reports') {
+        const { listZReports } = await import('./services/zReport');
+        return send(res, 200, await listZReports(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/admin/z-report/reprint') {
+        const body = (await parseJson(req)) || {};
+        const { reprintZReport } = await import('./services/zReport');
+        return send(
+          res,
+          200,
+          await reprintZReport(Number(body?.number)),
+          corsOrigin,
+        );
+      }
       if (req.method === 'POST' && pathname === '/admin/correct-sale') {
         const body = await parseJson(req);
         const kind = String(body?.kind || '').toUpperCase();

@@ -826,3 +826,74 @@ describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
     expect(text).not.toContain('ab123cd456');
   });
 });
+
+describe('QR code on corrective slips (QA v0.2.103, fiscal compliance)', () => {
+  const settings = {
+    restaurantName: 'Test',
+    currency: 'ALL',
+    fiscal: { nipt: 'L12345678A' },
+  } as any;
+  const correction = (extra: Record<string, unknown> = {}) =>
+    ({
+      area: 'Salla',
+      tableLabel: 'T1',
+      items: [{ name: 'Kafe', qty: 1, unitPrice: 500 }],
+      meta: {
+        kind: 'CORRECTION',
+        correctionKind: 'CANCELLATION',
+        correctsNslf: 'IIC-ORIGINAL',
+        totalAfter: 500,
+        vatEnabled: true,
+        fiscalEnabled: true,
+        fiscalStatus: 'accepted',
+        fiscalNivf: 'NIVF-CORR',
+        fiscalNslf: 'ABCDEF0123456789ABCDEF0123456789',
+        fiscalTin: 'L12345678A',
+        paidAt: '2026-11-02T10:00:00.000Z',
+        ...extra,
+      },
+    }) as any;
+  const QR_CMD = Buffer.from([0x1d, 0x28, 0x6b]);
+
+  it('a thermal corrective slip prints the QR, with or without a link from easyPos', () => {
+    expect(buildEscposTicket(correction(), settings).includes(QR_CMD)).toBe(
+      true,
+    );
+    const link =
+      'https://efiskalizimi-app.tatime.gov.al/invoice-check/#/verify?iic=ABCDEF0123456789ABCDEF0123456789&tin=L12345678A&crtd=2026-11-02T11:00:00%2B01:00&prc=-500.00';
+    expect(
+      buildEscposTicket(correction({ fiscalLink: link }), settings).includes(
+        QR_CMD,
+      ),
+    ).toBe(true);
+  });
+
+  it('a corrective slip from a system printer draws a scannable QR, not only the address', () => {
+    const html = buildHtmlReceipt(correction(), settings);
+    expect(html).toMatch(/class="qr"[\s\S]*<svg/);
+    // The whole fiscal block, which the HTML slip used to drop entirely.
+    expect(html).toContain('NIVF: NIVF-CORR');
+    expect(html).toContain('IIC-ORIGINAL');
+    // Sale receipts get the same.
+    expect(buildHtmlReceipt(paidSale(), settings)).toMatch(/class="qr"/);
+  });
+
+  function paidSale() {
+    return {
+      area: 'Salla',
+      tableLabel: 'T1',
+      items: [{ name: 'Kafe', qty: 1, unitPrice: 500 }],
+      meta: {
+        kind: 'PAYMENT',
+        method: 'CASH',
+        totalAfter: 500,
+        fiscalEnabled: true,
+        fiscalStatus: 'accepted',
+        fiscalNivf: 'NIVF-1',
+        fiscalNslf: 'ABCDEF0123456789ABCDEF0123456789',
+        fiscalTin: 'L12345678A',
+        paidAt: '2026-11-02T10:00:00.000Z',
+      },
+    } as any;
+  }
+});

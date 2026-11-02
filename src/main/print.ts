@@ -1,3 +1,4 @@
+import { renderSVG } from 'uqr';
 import type { SettingsDTO, TicketPrintMeta } from '@shared/ipc';
 import { resolveVatEnabledFromMeta } from '@shared/vatFromFiscal';
 import { lineGross } from '@shared/ticketRevenue';
@@ -124,7 +125,23 @@ function receiptTime(payload: TicketPrintPayload, kind: string): Date {
   return new Date();
 }
 
-/** A customer receipt printed again: marked COPY - REPRINT on top. */
+/**
+ * The scannable verification QR for receipts printed through the system
+ * printer (HTML). Those printed only the address as text, so a corrective
+ * or cancellation slip from a system printer had no QR code to check it
+ * with (QA v0.2.103, fiscal compliance). Thermal printers draw it natively
+ * (`escposQrCode`).
+ */
+export function htmlFiscalQr(url: string): string {
+  try {
+    const svg = renderSVG(url, { border: 1, pixelSize: 4 });
+    return `<div class="qr" style="text-align:center;margin:6px 0"><div style="display:inline-block;width:34mm;height:34mm">${svg.replace('<svg', '<svg width="100%" height="100%"')}</div></div>`;
+  } catch {
+    return '';
+  }
+}
+
+/** A customer receipt printed again: marked KOPJE / COPY on top. */
 export function isReceiptCopy(kind: string, meta: any): boolean {
   return (
     (kind === 'PAYMENT' || kind === 'RECEIPT') &&
@@ -442,12 +459,246 @@ export function buildEscposShiftSummary(
   return Buffer.concat(lines);
 }
 
+type ZRow =
+  | { kind: 'title'; text: string }
+  | { kind: 'line'; text: string }
+  | { kind: 'sep' }
+  | { kind: 'pair'; label: string; value: string; bold?: boolean };
+
+/**
+ * The Z report as lines, shared by the thermal and HTML printouts so the
+ * two never say different things (`services/zReport.ts`).
+ */
+export function zReportRows(
+  z: any,
+  options: { copy: boolean; lang: 'en' | 'sq'; restaurant: string },
+): ZRow[] {
+  const sq = options.lang === 'sq';
+  const L = (en: string, al: string) => (sq ? al : en);
+  const m = (n: unknown) =>
+    n == null || !Number.isFinite(Number(n))
+      ? '—'
+      : formatMoneyEscpos(Number(n));
+  const when = (iso: string) => formatDateTime(new Date(iso));
+  const rows: ZRow[] = [
+    { kind: 'title', text: options.restaurant },
+    {
+      kind: 'title',
+      text: L('Z REPORT (END OF DAY)', 'RAPORTI Z (MBYLLJA E DITËS)'),
+    },
+  ];
+  if (options.copy) rows.push({ kind: 'title', text: '*** KOPJE / COPY ***' });
+  rows.push(
+    { kind: 'sep' },
+    {
+      kind: 'pair',
+      label: L('Z number', 'Nr. Z'),
+      value: String(z.number),
+      bold: true,
+    },
+    { kind: 'pair', label: L('From', 'Nga'), value: when(z.from) },
+    { kind: 'pair', label: L('To', 'Deri'), value: when(z.to) },
+    { kind: 'sep' },
+    {
+      kind: 'pair',
+      label: L('Sales', 'Shitje'),
+      value: String(z.sales?.count ?? 0),
+    },
+    { kind: 'pair', label: L('Net', 'Neto'), value: m(z.sales?.net) },
+  );
+  if (z.vatEnabled) {
+    rows.push({
+      kind: 'pair',
+      label: L('VAT', 'TVSH'),
+      value: m(z.sales?.vat),
+    });
+  }
+  rows.push({
+    kind: 'pair',
+    label: L('Total', 'Totali'),
+    value: `${m(z.sales?.gross)} ${String(z.currency || '').slice(0, 3)}`,
+    bold: true,
+  });
+  if (Array.isArray(z.byMethod) && z.byMethod.length) {
+    rows.push(
+      { kind: 'sep' },
+      { kind: 'line', text: L('By payment', 'Sipas pagesës') },
+    );
+    for (const r of z.byMethod) {
+      rows.push({
+        kind: 'pair',
+        label: `${r.method} (${r.count})`,
+        value: m(r.amount),
+      });
+    }
+  }
+  if (z.vatEnabled && Array.isArray(z.byVatRate) && z.byVatRate.length) {
+    rows.push(
+      { kind: 'sep' },
+      {
+        kind: 'line',
+        text: L('VAT by rate (items)', 'TVSH sipas normës (artikuj)'),
+      },
+    );
+    for (const r of z.byVatRate) {
+      const pct = `${Math.round(Number(r.rate) * 1000) / 10}%`;
+      rows.push({
+        kind: 'pair',
+        label: `${pct} ${L('base', 'baza')} ${m(r.net)}`,
+        value: m(r.vat),
+      });
+    }
+  }
+  if (z.fiscalEnabled) {
+    rows.push(
+      { kind: 'sep' },
+      { kind: 'line', text: L('Fiscalisation', 'Fiskalizimi') },
+      {
+        kind: 'pair',
+        label: L(
+          `Filed (${z.fiscal.filedCount})`,
+          `Fiskalizuar (${z.fiscal.filedCount})`,
+        ),
+        value: m(z.fiscal.filedAmount),
+      },
+      {
+        kind: 'pair',
+        label: L(
+          `Not yet filed (${z.fiscal.notFiledCount})`,
+          `Pa fiskalizuar ende (${z.fiscal.notFiledCount})`,
+        ),
+        value: m(z.fiscal.notFiledAmount),
+      },
+      {
+        kind: 'pair',
+        label: L('Queued (all days)', 'Në radhë (të gjitha ditët)'),
+        value: String(z.fiscal.queued),
+      },
+      {
+        kind: 'pair',
+        label: L('Waiting for review', 'Në pritje për kontroll'),
+        value: String(z.fiscal.waitingForReview),
+      },
+    );
+  }
+  rows.push(
+    { kind: 'sep' },
+    {
+      kind: 'pair',
+      label: L(
+        `Corrections (${z.corrections?.count ?? 0})`,
+        `Korrigjime (${z.corrections?.count ?? 0})`,
+      ),
+      value: m(z.corrections?.amount),
+    },
+    {
+      kind: 'pair',
+      label: L('Voided tickets', 'Fatura të anuluara'),
+      value: String(z.voidedTickets ?? 0),
+    },
+    { kind: 'sep' },
+    { kind: 'line', text: L('Cash drawer', 'Arka') },
+    {
+      kind: 'pair',
+      label: L('Opening float', 'Fondi fillestar'),
+      value: m(z.cash?.opening),
+    },
+    {
+      kind: 'pair',
+      label: L('Cash sales', 'Shitje me para në dorë'),
+      value: m(z.cash?.sales),
+    },
+    {
+      kind: 'pair',
+      label: L('Cash in', 'Futje parash'),
+      value: m(z.cash?.deposits),
+    },
+    {
+      kind: 'pair',
+      label: L('Cash out', 'Nxjerrje parash'),
+      value: m(z.cash?.withdrawals),
+    },
+    {
+      kind: 'pair',
+      label: L('Cash expected', 'Para të pritura'),
+      value: m(z.cash?.expected),
+      bold: true,
+    },
+    { kind: 'sep' },
+    { kind: 'line', text: `${L('Issued', 'Lëshuar')}: ${when(z.issuedAt)}` },
+  );
+  return rows;
+}
+
+function buildEscposZReport(meta: any, settings: SettingsDTO): Buffer {
+  const layout = layoutFromSettings(settings);
+  const copyText = printCopyFromSettings(settings);
+  const rows = zReportRows(meta.zReport, {
+    copy: meta.reprint === true,
+    lang: printLangFromSettings(settings),
+    restaurant: settings.restaurantName || copyText.restaurantFallback,
+  });
+  const lines: Buffer[] = [];
+  lines.push(...cmdPrinterInit());
+  for (const r of rows) {
+    if (r.kind === 'title') {
+      lines.push(cmdAlign('center'), cmdBold(true));
+      for (const ln of wrapEscposText(r.text, layout.cols)) {
+        lines.push(escposText(`${ln}\n`));
+      }
+      lines.push(cmdBold(false), cmdAlign('left'));
+    } else if (r.kind === 'sep') {
+      lines.push(escposText(`${layout.sep}\n`));
+    } else if (r.kind === 'line') {
+      for (const ln of wrapEscposText(r.text, layout.cols)) {
+        lines.push(escposText(`${ln}\n`));
+      }
+    } else {
+      if (r.bold) lines.push(cmdBold(true));
+      lines.push(...twoCol(r.label, r.value, layout));
+      if (r.bold) lines.push(cmdBold(false));
+    }
+  }
+  lines.push(escposText('\n\n'));
+  lines.push(GS, Buffer.from('V'), Buffer.from([0x41]), Buffer.from([0x10]));
+  return Buffer.concat(lines);
+}
+
+function buildHtmlZReport(meta: any, settings: SettingsDTO): string {
+  const copyText = printCopyFromSettings(settings);
+  const rows = zReportRows(meta.zReport, {
+    copy: meta.reprint === true,
+    lang: printLangFromSettings(settings),
+    restaurant: settings.restaurantName || copyText.restaurantFallback,
+  });
+  const safe = (v: unknown) =>
+    String(v ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  const body = rows
+    .map((r) =>
+      r.kind === 'title'
+        ? `<div style="text-align:center;font-weight:700">${safe(r.text)}</div>`
+        : r.kind === 'sep'
+          ? '<div style="border-top:1px dashed #000;margin:6px 0"></div>'
+          : r.kind === 'line'
+            ? `<div>${safe(r.text)}</div>`
+            : `<div style="display:flex;justify-content:space-between;gap:8px${r.bold ? ';font-weight:700' : ''}"><span>${safe(r.label)}</span><span>${safe(r.value)}</span></div>`,
+    )
+    .join('');
+  return `<!doctype html><html><head><meta charset="utf-8" /><style>@page { size: 80mm auto; margin: 2mm; } body { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; margin: 0; }</style></head><body>${body}</body></html>`;
+}
+
 export function buildEscposTicket(
   rawPayload: TicketPrintPayload,
   settings: SettingsDTO,
 ): Buffer {
   const metaEarly: any = rawPayload.meta || {};
   const kindEarly = String(metaEarly?.kind || '').toUpperCase();
+  if (kindEarly === 'Z_REPORT' && metaEarly?.zReport) {
+    return buildEscposZReport(metaEarly, settings);
+  }
   if (kindEarly === 'SHIFT_CLOSE' && metaEarly?.shiftSummary) {
     return buildEscposShiftSummary(
       metaEarly.shiftSummary as ShiftClosePrintSummary,
@@ -906,6 +1157,9 @@ export function buildHtmlReceipt(
 ): string {
   const metaEarly: any = rawPayload.meta || {};
   const kindEarly = String(metaEarly?.kind || '').toUpperCase();
+  if (kindEarly === 'Z_REPORT' && metaEarly?.zReport) {
+    return buildHtmlZReport(metaEarly, settings);
+  }
   const payload = isCustomerFacingPrintKind(kindEarly)
     ? withoutKitchenNotes(rawPayload)
     : rawPayload;
@@ -1014,16 +1268,22 @@ export function buildHtmlReceipt(
             .map((t) => `<div class="small">${safe(t)}</div>`)
             .join(
               '',
-            )}${fiscalQr ? `<div class="small"><a href="${safe(fiscalQr)}">${safe(fiscalQr)}</a></div>` : ''}`
+            )}${fiscalQr ? `${htmlFiscalQr(fiscalQr)}<div class="small"><a href="${safe(fiscalQr)}">${safe(fiscalQr)}</a></div>` : ''}`
         : '');
   const payMethod = printPaymentMethod(
     lang,
     String(meta?.method || meta?.paymentMethod || ''),
   );
+  // A corrective / cancellation slip carries its fiscal block too: its
+  // title, the invoice it corrects, its NIVF/NSLF and its QR. On system
+  // printers it used to be dropped, so the slip had no fiscal identity and
+  // no QR (QA v0.2.103, fiscal compliance).
   const paidBlock =
-    kind === 'PAYMENT'
-      ? `<div class="sep"></div><div class="paid">${safe(copy.paid)}</div>${payMethod ? `<div class="small">${safe(copy.method)}: ${safe(payMethod)}</div>` : ''}${fiscalBlock}`
-      : '';
+    kind === 'CORRECTION'
+      ? fiscalBlock
+      : kind === 'PAYMENT'
+        ? `<div class="sep"></div><div class="paid">${safe(copy.paid)}</div>${payMethod ? `<div class="small">${safe(copy.method)}: ${safe(payMethod)}</div>` : ''}${fiscalBlock}`
+        : '';
 
   const subtitleParts: string[] = [];
   if (bizAddress) {

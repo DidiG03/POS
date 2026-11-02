@@ -855,6 +855,18 @@
     "duplicateLabel": "Another table in this area is already called {{label}}. Give each table its own name.",
     "labelRequired": "Every table needs a name."
   },
+  "zReport": {
+    "title": "Z report (end of day)",
+    "help": "Closes the period since the last Z report: sales, VAT, payments, fiskalizimi and the cash drawer. Each Z is numbered and kept on the till; a reprint is marked KOPJE / COPY.",
+    "issue": "Print Z report",
+    "confirm": "Close the period since the last Z report and print the Z report now?",
+    "issued": "Z report {{number}} issued and printed.",
+    "issuedNotPrinted": "Z report {{number}} issued and saved, but it did not print. Print it again from the list.",
+    "reprinted": "Z report {{number}} printed again (copy).",
+    "reprint": "Print copy",
+    "salesCount": "{{count}} sales",
+    "failed": "Could not issue the Z report."
+  },
   "fiscal": {
     "loadFailed": "Could not load the fiscal settings, so nothing was saved. Reopen this page and try again.",
     "shopVoidAction": "Void sale",
