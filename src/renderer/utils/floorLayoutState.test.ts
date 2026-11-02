@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  TABLE_CHROME_PX,
   computeFloorViewTransform,
   FLOOR_VIEW_IDENTITY,
   isFloorCanvasFitReady,
@@ -76,26 +77,51 @@ describe('floorLayoutState', () => {
     expect(desktop.scaleX / desktop.scaleY).toBeCloseTo(1, 5);
   });
 
-  it('fills phone width instead of leaving empty side bands', () => {
-    // Tall layout on a portrait phone: old contain-fit letterboxed the
-    // sides. Width-first should use ~full canvas width (minus padX).
+  it('keeps every edge table on screen on a phone, chrome included (QA v0.2.103)', () => {
+    // Tall layout on a portrait phone: width-fill used to push the top and
+    // bottom rows past the canvas, where nothing could reach them.
     const nodes = [
       { x: 100, y: 80, w: 64, h: 64 },
       { x: 280, y: 80, w: 64, h: 64 },
       { x: 100, y: 520, w: 64, h: 64 },
       { x: 280, y: 520, w: 64, h: 64 },
     ];
-    const phone = computeFloorViewTransform({
+    const pad = { x: 8, y: 88 };
+    const W = 390;
+    const H = 720;
+    const view = computeFloorViewTransform({
+      canvasW: W,
+      canvasH: H,
+      nodes,
+      fitPadding: pad,
+    });
+    for (const n of nodes) {
+      const half = n.w / 2 + TABLE_CHROME_PX;
+      const left = view.tx + (n.x - half) * view.scale;
+      const right = view.tx + (n.x + half) * view.scale;
+      const top = view.ty + (n.y - half) * view.scale;
+      const bottom = view.ty + (n.y + half) * view.scale;
+      expect(left).toBeGreaterThanOrEqual(pad.x - 0.001);
+      expect(right).toBeLessThanOrEqual(W - pad.x + 0.001);
+      expect(top).toBeGreaterThanOrEqual(pad.y - 0.001);
+      expect(bottom).toBeLessThanOrEqual(H - pad.y + 0.001);
+    }
+  });
+
+  it('still fills the phone width when the plan fits', () => {
+    // A wide, short plan: width is the tighter side.
+    const nodes = [
+      { x: 0, y: 100, w: 64, h: 64 },
+      { x: 600, y: 100, w: 64, h: 64 },
+    ];
+    const view = computeFloorViewTransform({
       canvasW: 390,
       canvasH: 720,
       nodes,
       fitPadding: { x: 8, y: 88 },
     });
-    const contentW = 280 - 100 + 64; // maxX-minX with half extents ≈ 244
-    // Scale should be close to width-fill, not height-contain.
-    const widthFill = (390 - 16) / contentW;
-    expect(phone.scale).toBeGreaterThan(1.2);
-    expect(phone.scale).toBeCloseTo(Math.min(widthFill, 5), 1);
+    const contentW = 600 + 64 + 2 * TABLE_CHROME_PX;
+    expect(view.scale).toBeCloseTo((390 - 16) / contentW, 5);
   });
 
   it('returns identity when the canvas is not measured yet', () => {

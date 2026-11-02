@@ -1,0 +1,85 @@
+%% 4. Data model: the main tables in the till's database and how they relate.
+%% Source: prisma/schema.prisma. Dashed arrows = linked by area + table name
+%% (text), not by a database key.
+flowchart TB
+  subgraph STAFF["Staff & shifts"]
+    direction TB
+    USER["User<br/>name · role · PIN hash · active"]
+    SHIFT["DayShift<br/>opened/closed at + by<br/>totals at clock-out"]
+    NOTIF["Notification<br/>alerts per user"]
+  end
+
+  subgraph MENU["Menu & stock"]
+    direction TB
+    CAT["Category"] --> ITEM["MenuItem<br/>sku · price · VAT · station<br/>stock level · daily count · cost"]
+    MODG["ModifierGroup<br/>min / max"] --> MOD["Modifier<br/>price delta"]
+    INV["InventoryItem<br/>unit · qty on hand<br/>low-stock level"] --> RECIPE["RecipeComponent<br/>qty of stock per dish"]
+    ITEM --> RECIPE
+  end
+
+  subgraph FLOOR["Floor & open bills"]
+    direction TB
+    AREA["Area<br/>e.g. Salla, Terrace"]
+    TABLE["Table<br/>label · seats"]
+    OCC["TableOccupancy<br/>which tables are open, since when"]
+    TLOG["TicketLog<br/>snapshot of the bill at each Send<br/>items · owner · sitting key"]
+    COV["Covers<br/>guests per table"]
+    REQ["TicketRequest<br/>add to someone else's table"]
+    RESV["Reservation"]
+  end
+
+  subgraph LEDGER["Sales ledger (written at payment)"]
+    direction TB
+    ORDER["Order<br/>status PAID / VOID · totals · VAT<br/>discount · service · table · waiter"]
+    OITEM["OrderItem<br/>name · qty · price · VAT"]
+    PAY["Payment<br/>method · amount · change<br/>NSLF / NIVF / EIC"]
+    PJOB["PrintJob<br/>receipt payload · print status<br/>retries"]
+    CORR["SaleCorrection<br/>admin cancel / corrective<br/>+ its fiscal document"]
+    ORDER --> OITEM
+    ORDER --> PAY
+    PJOB --- ORDER
+    ORDER --> CORR
+  end
+
+  subgraph KITCHEN["Kitchen display"]
+    direction TB
+    KORD["KdsOrder<br/>order no. of the day"] --> KTIX["KdsTicket<br/>one per Send"] --> KST["KdsTicketStation<br/>per station: bumped by / at"]
+  end
+
+  subgraph SYS["SyncState: key → JSON"]
+    direction TB
+    SYSS["settings (restaurant, VAT, printers,<br/>fiskalizimi config, security)<br/>fiscal claims (one per invoice)<br/>floor layouts · per-waiter fiskalizimi<br/>fiskalizimi on/off log"]
+  end
+
+  USER --> SHIFT
+  USER --> NOTIF
+  USER -- "owns / sent" --> TLOG
+  USER -- "credited" --> ORDER
+  AREA --> TABLE
+  TABLE --> ORDER
+  ITEM --> OITEM
+  MOD --> OITEM
+  OCC -. "area + table" .- TLOG
+  COV -. "area + table" .- TLOG
+  TLOG -. "settled into" .-> ORDER
+  TLOG -. "new lines" .-> KTIX
+
+  WEAK["⚠ Open bills, covers and sales find their table by NAME (area + label text),<br/>not by a fixed ID. Renaming a table does not rename them: past sales keep<br/>the old name, and an open bill on that table would be left behind."]
+  LEDGER ~~~ WEAK
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class USER,SHIFT,NOTIF data
+  class CAT,ITEM,MODG,MOD,INV,RECIPE data
+  class AREA,TABLE,OCC,TLOG,COV,REQ,RESV data
+  class ORDER,OITEM,PAY,PJOB,CORR data
+  class KORD,KTIX,KST data
+  class SYSS data
+  class WEAK warn

@@ -14,7 +14,6 @@ describe('mapPaymentMethod', () => {
     expect(mapPaymentMethod('CHEQUE')).toBe('CHECK');
     expect(mapPaymentMethod('BANK_TRANSFER')).toBe('TRANSFER');
     expect(mapPaymentMethod('DEBIT_CARD')).toBe('CARD');
-    expect(mapPaymentMethod('svoucher')).toBe('SVOUCHER');
     expect(mapPaymentMethod('COMPANY')).toBe('COMPANY');
   });
 
@@ -23,10 +22,10 @@ describe('mapPaymentMethod', () => {
     expect(mapPaymentMethod('ROOM_CHARGE')).toBe('OTHER');
     const settings = {
       fiscal: {
-        paymentTypeMap: { GIFT_CARD: 'svoucher', ROOM_CHARGE: 'COMPANY' },
+        paymentTypeMap: { GIFT_CARD: 'other', ROOM_CHARGE: 'COMPANY' },
       },
     };
-    expect(mapPaymentMethod('GIFT_CARD', settings)).toBe('SVOUCHER');
+    expect(mapPaymentMethod('GIFT_CARD', settings)).toBe('OTHER');
     expect(mapPaymentMethod('room_charge', settings)).toBe('COMPANY');
     // A venue mapping that is not a type is ignored rather than filed.
     expect(
@@ -43,12 +42,35 @@ describe('mapPaymentMethod', () => {
     expect(paymentTypeMapProblem({ ROOM_CHARGE: 'ACCOUNT' })).toMatch(
       /not a payment type/,
     );
-    expect(paymentTypeMapProblem({ GIFT_CARD: 'VOUCHER' })).toBeNull();
+    expect(paymentTypeMapProblem({ GIFT_CARD: 'OTHER' })).toBeNull();
     expect(() =>
       assertSettingsPatch(
         { fiscal: { paymentTypeMap: { GIFT_CARD: 'GIFT' } } },
         {},
       ),
     ).toThrow(/not a payment type/);
+  });
+});
+
+describe('voucher payment types (QA v0.2.103 #4)', () => {
+  it('refuses a voucher mapping on save, saying why', () => {
+    for (const t of ['VOUCHER', 'svoucher']) {
+      expect(paymentTypeMapProblem({ GIFT_CARD: t })).toMatch(
+        /voucher numbers/,
+      );
+    }
+    expect(() =>
+      assertSettingsPatch(
+        { fiscal: { paymentTypeMap: { GIFT_CARD: 'SVOUCHER' } } },
+        {},
+      ),
+    ).toThrow(/voucher numbers/);
+  });
+
+  it('files a voucher mapping saved before this as OTHER, so the sale is accepted', () => {
+    const saved = { fiscal: { paymentTypeMap: { GIFT_CARD: 'SVOUCHER' } } };
+    expect(mapPaymentMethod('GIFT_CARD', saved)).toBe('OTHER');
+    expect(mapPaymentMethod('VOUCHER')).toBe('OTHER');
+    expect(mapPaymentMethod('SVOUCHER')).toBe('OTHER');
   });
 });

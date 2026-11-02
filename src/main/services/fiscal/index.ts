@@ -14,6 +14,7 @@ import {
   testEasyPosConnection,
 } from './easypos';
 import { backoffDelayMs } from './backoff';
+import { deferUnconfirmed } from './unconfirmed';
 import { docIdFromKey } from './docId';
 import {
   ensureDailyBalanceForCash,
@@ -76,7 +77,7 @@ export function warmFiscalConnection(settings: SettingsDTO): Promise<void> {
 }
 
 export type SittingGateResult =
-  | { kind: 'proceed'; adoptDocId?: string }
+  | { kind: 'proceed'; adoptDocId?: string; holdReason?: string }
   | {
       kind: 'blocked';
       code: 'FISCAL_SITTING_UNRESOLVED' | 'FISCAL_SITTING_BUSY';
@@ -134,8 +135,12 @@ export async function sittingFiscalGate(input: {
         tableLabel: input.tableLabel,
         nivf: check.nivf,
         actorUserId: Number(input.meta?.userId || 0) || undefined,
+        unconfirmed: check.unconfirmed,
       });
       return { kind: 'proceed', adoptDocId: check.docId };
+    }
+    if (check.kind === 'hold') {
+      return { kind: 'proceed', holdReason: check.message };
     }
     return { kind: 'proceed' };
   } catch (e: any) {
@@ -169,8 +174,17 @@ export type FiscalizeOutcome =
   /**
    * We cannot tell whether an invoice was filed. Retrying could register
    * the same sale twice, so a human must reconcile against easyPos first.
+   *
+   * The sale itself still completes: `payload` is marked "not yet
+   * fiscalised" and the claim stays on the review list. Refusing the
+   * payment instead is what left tables blocked after an outage (QA
+   * v0.2.103, H1).
    */
-  | { kind: 'needs-review'; message: string };
+  | { kind: 'needs-review'; message: string; payload: TicketPrintPayload };
+
+/** Receipt wording while an invoice waits for a person in the review list. */
+export const FISCAL_REVIEW_PENDING_WARNING =
+  'Not yet fiscalised. This sale is recorded; its invoice is waiting for a check in Settings › Fiskalizimi and will be filed from there.';
 
 /** A cent is rounding. More than that is a real disagreement. */
 const ADJUSTMENT_ALERT_THRESHOLD = 0.05;
@@ -335,6 +349,12 @@ export async function fiscalizePaymentOnce(
      * is REGISTERED, so this replays its identifiers and files nothing.
      */
     adoptDocId?: string;
+    /**
+     * Record the payment and queue its invoice, but do not send it until a
+     * person has looked (`checkSittingBeforePayment` found an invoice for
+     * this sitting that may already cover the sale).
+     */
+    holdReason?: string;
   },
 ): Promise<FiscalizeOutcome> {
   const kind = String(payload.meta?.kind || '').toUpperCase();
@@ -394,7 +414,15 @@ export async function fiscalizePaymentOnce(
         message,
       }).catch(() => undefined);
     }
-    return { kind: 'needs-review', message };
+    return {
+      kind: 'needs-review',
+      message,
+      payload: withFiscalMeta(
+        payload,
+        { status: 'pending', warning: FISCAL_REVIEW_PENDING_WARNING },
+        settings,
+      ),
+    };
   };
 
   // Pre-flight. None of this reaches the provider, so a failure here is
@@ -451,6 +479,7 @@ export async function fiscalizePaymentOnce(
         tableLabel,
         saleKey: idempotencyKey,
         review,
+        holdReason: options?.holdReason,
       }),
     );
   } catch (e: any) {
@@ -474,9 +503,12 @@ async function registerUnderClaim(input: {
     message: string,
     alreadyReported?: boolean,
   ) => Promise<FiscalizeOutcome>;
+  holdReason?: string;
 }): Promise<FiscalizeOutcome> {
   const { docId, draft, settings, payload, meta, area, tableLabel, review } =
     input;
+  const pendingPayload = (warning: string) =>
+    withFiscalMeta(payload, { status: 'pending', warning }, settings);
   let decision: Awaited<ReturnType<typeof claimFiscalRegistration>>;
   try {
     decision = await claimFiscalRegistration(docId, {
@@ -537,7 +569,44 @@ async function registerUnderClaim(input: {
     };
   }
   if (decision.outcome === 'needs-review') {
+    // The payment is recorded below; keep what is needed to file its
+    // invoice once a person has checked easyPos (we hold the claim lock).
+    await attachDraftForReview(docId, draft, input.saleKey);
     return review(decision.reason, decision.alreadyReported);
+  }
+
+  if (input.holdReason) {
+    const held = await commitDeferredFiscalClaim(
+      docId,
+      decision.attemptId,
+      input.holdReason,
+      JSON.parse(JSON.stringify(draft)),
+      new Date().toISOString(),
+      { holdReason: input.holdReason },
+    );
+    if (held) {
+      await notifyFiscalReviewNeeded({
+        idempotencyKey: docId,
+        area,
+        tableLabel,
+        actorUserId: Number(meta.userId || 0) || undefined,
+        message: input.holdReason,
+      }).catch(() => undefined);
+      return {
+        kind: 'deferred',
+        payload: pendingPayload(FISCAL_REVIEW_PENDING_WARNING),
+        message: input.holdReason,
+      };
+    }
+    await settleFiscalClaimFailed(
+      docId,
+      decision.attemptId,
+      input.holdReason,
+    ).catch(() => undefined);
+    return {
+      kind: 'retryable',
+      message: `This payment's invoice could not be queued for review, so the sale was not recorded. Try again. ${input.holdReason}`,
+    };
   }
 
   // A queued invoice whose earlier send could not be confirmed is checked
@@ -618,19 +687,22 @@ async function registerUnderClaim(input: {
           message,
         };
       }
-      // A manager chose to take the payment anyway (`fiscalRefusalDefer`,
-      // checked with the payment's approval): the sale is recorded, this
-      // exact invoice is queued to be sent again, and it is on the review
-      // list until it is filed. A refusal used to leave the table open with
-      // no way to take the money.
-      if (meta.fiscalRefusalDefer === true) {
+      // easyPos refused the invoice. The sale is still taken: this exact
+      // invoice is queued to be sent again, and admins are told to fix the
+      // cause. A refusal used to leave the table open with no way to take
+      // the money unless a manager approved `fiscalRefusalDefer`; the fiscal
+      // state must never block a payment (QA v0.2.103, H1).
+      {
+        const holdReason = `easyPos refused this invoice: ${message} Fix the cause in Settings › Fiskalizimi, then choose "Send again" here.`;
         const queued = await commitDeferredFiscalClaim(
           docId,
           decision.attemptId,
           message,
           JSON.parse(JSON.stringify(draft)),
           new Date(Date.now() + REFUSED_RETRY_AFTER_MS).toISOString(),
-          { releaseOnFailure: true },
+          // Refused identically until someone fixes the cause, so it waits
+          // on the review list instead of being re-sent on a timer.
+          { releaseOnFailure: true, holdReason },
         );
         if (queued) {
           await notifyFiscalReviewNeeded({
@@ -638,7 +710,7 @@ async function registerUnderClaim(input: {
             area,
             tableLabel,
             actorUserId: Number(meta.userId || 0) || undefined,
-            message: `Payment taken with a manager's approval although fiskalizimi refused the invoice: ${message} The invoice is queued and will be sent again; fix the cause in Settings › Fiskalizimi.`,
+            message: `Payment taken although fiskalizimi refused the invoice: ${message} The invoice is kept on the review list; fix the cause in Settings › Fiskalizimi and send it again from there.`,
           }).catch(() => undefined);
           return {
             kind: 'deferred',
@@ -667,10 +739,71 @@ async function registerUnderClaim(input: {
       }).catch(() => undefined);
       return { kind: 'rejected', message };
     }
+    // easyPos may or may not have filed it (a 5xx, a timeout, a dropped
+    // connection). Take the sale and queue this exact invoice; it is never
+    // sent again blind:
+    //   - cloud: the next send asks /invoice/status first and only files
+    //     when easyPos has never seen this docId, so it drains on its own;
+    //   - local middleware: it cannot be asked, so the invoice waits for a
+    //     person to check easyPos (re-sending is how S66/S67 got two
+    //     invoices each, QA v0.2.103 H2).
+    const deferred = await deferUnconfirmed({
+      docId,
+      attemptId: decision.attemptId,
+      message,
+      draft,
+      settings,
+      attempts: 1,
+    });
+    if (deferred) {
+      if (deferred.held) {
+        await notifyFiscalReviewNeeded({
+          idempotencyKey: docId,
+          area,
+          tableLabel,
+          actorUserId: Number(meta.userId || 0) || undefined,
+          message: deferred.reason,
+        }).catch(() => undefined);
+      }
+      return {
+        kind: 'deferred',
+        payload: pendingPayload(
+          deferred.held
+            ? FISCAL_REVIEW_PENDING_WARNING
+            : 'Not yet fiscalised. Fiskalizimi did not confirm this invoice; it is checked and sent automatically.',
+        ),
+        message,
+      };
+    }
     await settleFiscalClaimUnknown(docId, decision.attemptId, message).catch(
       () => undefined,
     );
     return review(message);
+  }
+}
+
+/**
+ * Keep the draft and the sale's key on a claim headed for review, so the
+ * review list can file the invoice later. Caller holds the claim lock.
+ */
+async function attachDraftForReview(
+  docId: string,
+  draft: unknown,
+  saleKey: string,
+): Promise<void> {
+  try {
+    const claim = await readFiscalClaim(docId);
+    if (!claim) return;
+    await annotateFiscalClaimUnlocked(docId, {
+      ...(claim.draft == null
+        ? { draft: JSON.parse(JSON.stringify(draft)) }
+        : {}),
+      // The sale is recorded under this payment's key. An adopted claim
+      // may name an earlier attempt that was refused and saved nothing.
+      saleKey,
+    });
+  } catch {
+    // The review entry still exists; only the one-tap "send again" is lost.
   }
 }
 

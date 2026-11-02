@@ -46,13 +46,12 @@ describe('syncTableAreasToDb', () => {
     });
   });
 
-  it('deactivates every Area row when the list is empty', async () => {
+  it('never deactivates every area: an empty or all-unnamed save does nothing (QA v0.2.103 #7)', async () => {
     await syncTableAreasToDb([]);
+    await syncTableAreasToDb([{ name: '', count: 8 }]);
+    await syncTableAreasToDb([{ name: '   ' }]);
     expect(upsert).not.toHaveBeenCalled();
-    expect(updateMany).toHaveBeenCalledWith({
-      where: { name: { notIn: [] } },
-      data: { active: false },
-    });
+    expect(updateMany).not.toHaveBeenCalled();
   });
 });
 

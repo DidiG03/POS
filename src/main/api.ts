@@ -251,6 +251,7 @@ import {
 import { app } from 'electron';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import {
+  KDS_LIST_MAX,
   formatKdsTicketListRows,
   getKdsTicketDetail,
   listWaiterFloorOrders,
@@ -2468,9 +2469,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           (parsed.query.status as any) || 'NEW',
         ).toUpperCase();
         const limit = Math.min(
-          200,
+          KDS_LIST_MAX,
           Math.max(1, Number((parsed.query.limit as any) || 100)),
         );
+        const withTotal = String(parsed.query.withTotal ?? '') === '1';
         const cooker = String(parsed.query.cooker ?? '') === '1';
         const cookerEnabled = await getCookerEnabledFromSettings();
         // The cooker screen always reads OPEN (NEW) tickets — its "Done" tab
@@ -2490,7 +2492,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           cooker,
           cookerEnabled,
         });
-        return send(res, 200, out, corsOrigin);
+        if (!withTotal) return send(res, 200, out, corsOrigin);
+        const total =
+          rows.length < limit
+            ? rows.length
+            : await (prisma as any).kdsTicketStation
+                .count({ where: kdsStationListWhere(station, queryStatus) })
+                .catch(() => rows.length);
+        return send(
+          res,
+          200,
+          { rows: out, total, fetched: rows.length },
+          corsOrigin,
+        );
       }
       if (req.method === 'GET' && pathname === '/kds/floor-orders') {
         const ok = await ensureKdsLocalSchema();
@@ -2864,7 +2878,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const body = (await parseJson(req)) || {};
         const settings = await coreServices.readSettings();
         const { declareCash } = await import('./services/fiscal/cashDrawer');
-        const result = await declareCash(settings as any, body);
+        const result = await declareCash(settings as any, {
+          ...body,
+          actorUserId: auth?.userId ?? null,
+        });
         return send(res, result.ok ? 200 : 400, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/settings/fiscal-test') {
@@ -3228,24 +3245,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               {
                 idempotencyKey: printIdempotencyKey || undefined,
                 adoptDocId: sitting.adoptDocId,
+                holdReason: sitting.holdReason,
               },
             );
-            if (outcome.kind === 'needs-review') {
-              // Retrying could file a second invoice with the tax service.
-              // `permanent` moves it to the tablet's failed-sync surface
-              // instead of the retry loop; admins were already notified.
-              return send(
-                res,
-                409,
-                {
-                  ok: false,
-                  code: 'FISCAL_NEEDS_REVIEW',
-                  error: outcome.message,
-                  permanent: true,
-                },
-                corsOrigin,
-              );
-            }
+            // 'needs-review': the invoice waits for a person, but the sale
+            // is taken and the table closes, as on the till (H1).
             if (outcome.kind === 'rejected') {
               // Refused, and it will be refused identically next time. Same
               // treatment as a review case so the tablet stops retrying.
@@ -3274,7 +3278,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 corsOrigin,
               );
             }
-            if (outcome.kind === 'deferred') {
+            if (
+              outcome.kind === 'deferred' ||
+              outcome.kind === 'needs-review'
+            ) {
               fiscalPending = {
                 fiscalPending: true,
                 fiscalMessage: outcome.message,
@@ -4747,6 +4754,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           });
         }
         return send(res, 200, result, corsOrigin);
+      }
+      // Z report: the end-of-day close (admins; `services/zReport.ts`).
+      if (req.method === 'POST' && pathname === '/admin/z-report') {
+        const { issueZReport } = await import('./services/zReport');
+        const r = await issueZReport({ actorUserId: auth?.userId ?? null });
+        logSecurityEvent('z_report_issued', {
+          number: r.report.number,
+          userId: auth?.userId ?? null,
+        });
+        return send(res, 200, { ok: true, ...r }, corsOrigin);
+      }
+      if (req.method === 'GET' && pathname === '/admin/z-reports') {
+        const { listZReports } = await import('./services/zReport');
+        return send(res, 200, await listZReports(), corsOrigin);
+      }
+      if (req.method === 'POST' && pathname === '/admin/z-report/reprint') {
+        const body = (await parseJson(req)) || {};
+        const { reprintZReport } = await import('./services/zReport');
+        return send(
+          res,
+          200,
+          await reprintZReport(Number(body?.number)),
+          corsOrigin,
+        );
       }
       if (req.method === 'POST' && pathname === '/admin/correct-sale') {
         const body = await parseJson(req);

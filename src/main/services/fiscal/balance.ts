@@ -360,6 +360,14 @@ export async function initiateDailyBalance(
   );
 }
 
+/** Today's (or `dayKey`'s) opening balance record on this device, if any. */
+export async function readDailyBalanceRecord(
+  settings: SettingsDTO,
+  dayKey = fiscalDayKey(),
+): Promise<BalanceRecord | null> {
+  return readRecord(initiateKey(deviceKeyOf(settings), dayKey));
+}
+
 /** Whether today's opening balance has been declared on this device. */
 export async function isDailyBalanceDeclared(
   settings: SettingsDTO,

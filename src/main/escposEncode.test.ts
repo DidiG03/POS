@@ -439,7 +439,7 @@ describe('fiscal receipt block', () => {
     expect(text).not.toContain('FISKALIZIMI NE PRITJE');
   });
 
-  it('states the invoice number, NIPT and fiscal codes', () => {
+  it('states the invoice number and NIPT, without the operator/unit/TCR/software codes', () => {
     const meta = {
       kind: 'PAYMENT',
       method: 'CARD',
@@ -467,11 +467,23 @@ describe('fiscal receipt block', () => {
     expect(text).toContain('Nr. i fatur');
     expect(text).toContain('283/2026/qq038ml699');
     expect(text).toContain('NIPT: L52101183A');
-    expect(text).toContain('Operatori: gh537ez280');
-    expect(text).toContain('TCR: qq038ml699');
+    for (const hidden of [
+      'Operatori',
+      'gh537ez280',
+      'kl749av758',
+      'TCR:',
+      'Softi',
+      'wc801oy838',
+    ]) {
+      expect(text).not.toContain(hidden);
+    }
     const html = buildHtmlReceipt(payload, settings);
     expect(html).toContain('Nr. i faturës: 283/2026/qq038ml699');
     expect(html).toContain('NIPT: L52101183A');
+    expect(html).not.toContain('Operatori');
+    expect(html).not.toContain('Njësia');
+    expect(html).not.toContain('TCR:');
+    expect(html).not.toContain('Softi');
   });
 
   it('does not claim fiskalizimi on a deferred sale', () => {
@@ -684,11 +696,11 @@ describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
     const original = buildEscposTicket(paid(), settings).toString('latin1');
     expect(original).not.toContain('COPY');
     const copy = buildEscposTicket(paid({ reprint: true }), settings);
-    expect(copy.toString('latin1')).toContain('*** COPY - REPRINT ***');
+    expect(copy.toString('latin1')).toContain('*** KOPJE / COPY ***');
     // ...and opens no drawer.
     expect(copy.includes(cmdOpenCashDrawer(0))).toBe(false);
     const html = buildHtmlReceipt(paid({ reprint: true }), settings);
-    expect(html).toContain('COPY - REPRINT');
+    expect(html).toContain('KOPJE / COPY');
   });
 
   it('F4b: a late-filed receipt shows the sale time and when it was filed', () => {
@@ -809,8 +821,79 @@ describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
     expect(text).toContain('12/2026/qq038ml699');
     // NIPT from the settings when the answer did not carry it.
     expect(text).toContain('NIPT: L12345678A');
-    expect(text).toContain('gh537ez280');
-    expect(text).toContain('TCR: qq038ml699');
-    expect(text).toContain('ab123cd456');
+    expect(text).not.toContain('gh537ez280');
+    expect(text).not.toContain('TCR:');
+    expect(text).not.toContain('ab123cd456');
   });
+});
+
+describe('QR code on corrective slips (QA v0.2.103, fiscal compliance)', () => {
+  const settings = {
+    restaurantName: 'Test',
+    currency: 'ALL',
+    fiscal: { nipt: 'L12345678A' },
+  } as any;
+  const correction = (extra: Record<string, unknown> = {}) =>
+    ({
+      area: 'Salla',
+      tableLabel: 'T1',
+      items: [{ name: 'Kafe', qty: 1, unitPrice: 500 }],
+      meta: {
+        kind: 'CORRECTION',
+        correctionKind: 'CANCELLATION',
+        correctsNslf: 'IIC-ORIGINAL',
+        totalAfter: 500,
+        vatEnabled: true,
+        fiscalEnabled: true,
+        fiscalStatus: 'accepted',
+        fiscalNivf: 'NIVF-CORR',
+        fiscalNslf: 'ABCDEF0123456789ABCDEF0123456789',
+        fiscalTin: 'L12345678A',
+        paidAt: '2026-11-02T10:00:00.000Z',
+        ...extra,
+      },
+    }) as any;
+  const QR_CMD = Buffer.from([0x1d, 0x28, 0x6b]);
+
+  it('a thermal corrective slip prints the QR, with or without a link from easyPos', () => {
+    expect(buildEscposTicket(correction(), settings).includes(QR_CMD)).toBe(
+      true,
+    );
+    const link =
+      'https://efiskalizimi-app.tatime.gov.al/invoice-check/#/verify?iic=ABCDEF0123456789ABCDEF0123456789&tin=L12345678A&crtd=2026-11-02T11:00:00%2B01:00&prc=-500.00';
+    expect(
+      buildEscposTicket(correction({ fiscalLink: link }), settings).includes(
+        QR_CMD,
+      ),
+    ).toBe(true);
+  });
+
+  it('a corrective slip from a system printer draws a scannable QR, not only the address', () => {
+    const html = buildHtmlReceipt(correction(), settings);
+    expect(html).toMatch(/class="qr"[\s\S]*<svg/);
+    // The whole fiscal block, which the HTML slip used to drop entirely.
+    expect(html).toContain('NIVF: NIVF-CORR');
+    expect(html).toContain('IIC-ORIGINAL');
+    // Sale receipts get the same.
+    expect(buildHtmlReceipt(paidSale(), settings)).toMatch(/class="qr"/);
+  });
+
+  function paidSale() {
+    return {
+      area: 'Salla',
+      tableLabel: 'T1',
+      items: [{ name: 'Kafe', qty: 1, unitPrice: 500 }],
+      meta: {
+        kind: 'PAYMENT',
+        method: 'CASH',
+        totalAfter: 500,
+        fiscalEnabled: true,
+        fiscalStatus: 'accepted',
+        fiscalNivf: 'NIVF-1',
+        fiscalNslf: 'ABCDEF0123456789ABCDEF0123456789',
+        fiscalTin: 'L12345678A',
+        paidAt: '2026-11-02T10:00:00.000Z',
+      },
+    } as any;
+  }
 });

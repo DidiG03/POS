@@ -94,8 +94,8 @@ describe('QA round 6, #3: three items at 3.333 € on a 10.00 € receipt', () =
   });
 });
 
-describe('QA round 6: a gift card payment is filed as the venue maps it', () => {
-  it('SVOUCHER when mapped, OTHER when not', () => {
+describe('a gift card payment is filed as the venue maps it', () => {
+  it('OTHER by default; never a voucher type, which needs voucher numbers (QA v0.2.103 #4)', () => {
     const payload = {
       ...sale([{ name: 'Kafe', qty: 1, unitPrice: 2 }]),
     };
@@ -104,17 +104,25 @@ describe('QA round 6: a gift card payment is filed as the venue maps it', () => 
       docId: 'doc-gift-1',
     });
     expect(plain.payment.map((p) => p.type)).toEqual(['OTHER']);
-    const mapped = {
-      ...euroVenue(100),
-      fiscal: {
-        ...(euroVenue(100) as any).fiscal,
-        paymentTypeMap: { GIFT_CARD: 'SVOUCHER' },
-      },
-    } as SettingsDTO;
-    const draft = buildEasyPosCloudInvoiceDraft(payload, mapped, {
-      docId: 'doc-gift-2',
-    });
-    expect(draft.payment.map((p) => p.type)).toEqual(['SVOUCHER']);
+    const mapped = (type: string) =>
+      ({
+        ...euroVenue(100),
+        fiscal: {
+          ...(euroVenue(100) as any).fiscal,
+          paymentTypeMap: { GIFT_CARD: type },
+        },
+      }) as SettingsDTO;
+    // A voucher mapping saved before this is not used: easyPos refused it.
+    expect(
+      buildEasyPosCloudInvoiceDraft(payload, mapped('SVOUCHER'), {
+        docId: 'doc-gift-2',
+      }).payment.map((p) => p.type),
+    ).toEqual(['OTHER']);
+    expect(
+      buildEasyPosCloudInvoiceDraft(payload, mapped('COMPANY'), {
+        docId: 'doc-gift-3',
+      }).payment.map((p) => p.type),
+    ).toEqual(['COMPANY']);
   });
 });
 

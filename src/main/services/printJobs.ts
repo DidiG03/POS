@@ -156,10 +156,19 @@ export async function reprintStationPrintJob(
   const p = row.payloadJson as any;
   const meta = { ...(p.meta || {}) };
   delete meta.lateSentAtIso;
-  // A receipt that never printed goes out as the receipt; a kitchen slip
-  // says it is a reprint and when it was first sent.
+  // A kitchen slip says it is a reprint and when it was first sent. A guest
+  // receipt that never printed goes out once as the receipt (the guest has
+  // none, QA round 6 #9); once one has printed (SENT, which a manager may
+  // still reprint, and which a failed job becomes after this), every
+  // reprint is marked KOPJE / COPY. It used to go out as a second original,
+  // fiscal codes and all (QA v0.2.103, #5). `reprint` on a PAYMENT also
+  // keeps it out of the sales ledger and fiskalizimi.
+  const sentAt = meta.sentAtIso || new Date(row.createdAt).toISOString();
   if (!isGuestReceipt(p)) {
-    meta.reprintOfIso = meta.sentAtIso || new Date(row.createdAt).toISOString();
+    meta.reprintOfIso = sentAt;
+  } else if (String(row.status) === 'SENT') {
+    meta.reprintOfIso = sentAt;
+    meta.reprint = true;
   }
   await prisma.printJob
     .update({

@@ -1,0 +1,55 @@
+---
+config:
+  layout: dagre
+---
+%% 8. Live updates & offline: how every screen stays in step with the till.
+flowchart TB
+  subgraph LIVE["Live updates · services/realtime.ts"]
+    direction LR
+    CH["A change on the till<br/>(Send, pay, void, table moved,<br/>settings, staff, printer error)"] --> BUS["Event bus in the host"]
+    BUS -- "IPC" --> WIN["Till windows<br/>POS · Reservations"]
+    BUS -- "SSE /events<br/>numbered events" --> DEV["Phones, tablets,<br/>Admin, KDS"]
+    DEV --> CU{"Missed an event?<br/>(reconnect after Wi-Fi drop)"}
+    CU -- yes --> CU2["'catchup' → the app reloads<br/>tables, staff, bills"]
+    CU -- no --> CU3["Screens update in place<br/><i>posRealtimeSync.ts</i>"]
+  end
+
+  subgraph OFF["Phone loses the till · utils/offlineQueue.ts"]
+    direction LR
+    A1["Waiter taps Send / Pay / Void /<br/>move table / covers"] --> A2{"Till reachable?"}
+    A2 -- yes --> A3["Done"]
+    A2 -- no --> A4[("Saved on the phone (IndexedDB)<br/>with its idempotency key")]
+    A4 --> A5["Retried with backoff (≤ 30 s apart,<br/>up to 12 tries); badge shows pending"]
+    A5 --> A6{"Accepted?"}
+    A6 -- yes --> A7["Till sees the SAME key:<br/>a repeat is ignored, never doubled"]
+    A6 -- "gave up" --> A8["Money actions are never dropped:<br/>moved to 'Failed sync' for a person<br/>to resolve"]
+  end
+
+  subgraph NETQ["Slow Wi-Fi · utils/netQuality.ts"]
+    direction LR
+    N1["Measures how the LAN is doing"] --> N2["Polls less on a congested network;<br/>keeps Send / Pay usable through<br/>a slow stretch"]
+  end
+
+  subgraph INTERNET["Till loses the internet"]
+    direction LR
+    I1["Service goes on: everything<br/>runs on the till's own database"] --> I2["Fiskalizimi: invoices deferred,<br/>resent automatically (diagram 3)"]
+  end
+
+  LIVE ~~~ OFF
+  OFF ~~~ NETQ
+  NETQ ~~~ INTERNET
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class CH,BUS,WIN,DEV,CU2,CU3,A1,A5,N1,N2,I1,I2 step
+  class CU,A2,A6 logic
+  class A3,A4,A7 good
+  class A8 bad
+  class A4 data

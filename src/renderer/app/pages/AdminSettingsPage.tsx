@@ -1426,6 +1426,10 @@ function FiscalSettings() {
   const [provider, setProvider] = useState<'easypos'>('easypos');
   const [baseUrl, setBaseUrl] = useState('http://127.0.0.1:8080');
   const [authToken, setAuthToken] = useState('');
+  // Which easyPos service a newly entered token is for (QA v0.2.103, #8).
+  const [tokenEnvironment, setTokenEnvironment] = useState<'' | 'dev' | 'prod'>(
+    '',
+  );
   const [authTokenConfigured, setAuthTokenConfigured] = useState(false);
   const [integrationApp, setIntegrationApp] = useState('');
   const [defaultOperatorId, setDefaultOperatorId] = useState('');
@@ -1543,7 +1547,10 @@ function FiscalSettings() {
       provider,
       baseUrl: url || 'http://127.0.0.1:8080',
       ...(options.withToken !== false && authToken.trim()
-        ? { authToken: authToken.trim() }
+        ? {
+            authToken: authToken.trim(),
+            ...(tokenEnvironment ? { tokenEnvironment } : {}),
+          }
         : {}),
       integrationApp: String(integrationApp || '').trim() || undefined,
       defaultOperatorId: String(defaultOperatorId || '').trim() || undefined,
@@ -1824,6 +1831,34 @@ function FiscalSettings() {
                     {t('fiscal.authTokenStored')}
                   </div>
                 ) : null}
+                {authToken.trim() && /easypos\.al/i.test(baseUrl) ? (
+                  <div className="mt-2">
+                    <div className="text-xs mb-1">
+                      {t('fiscal.tokenEnvironment')}
+                    </div>
+                    <select
+                      className="bg-gray-700 rounded px-3 py-2 w-full"
+                      value={tokenEnvironment}
+                      onChange={(e) =>
+                        setTokenEnvironment(e.target.value as 'dev' | 'prod')
+                      }
+                      disabled={!enabled}
+                    >
+                      <option value="" disabled>
+                        {t('fiscal.tokenEnvironmentChoose')}
+                      </option>
+                      <option value="dev">
+                        {t('fiscal.tokenEnvironmentDemo')}
+                      </option>
+                      <option value="prod">
+                        {t('fiscal.tokenEnvironmentProd')}
+                      </option>
+                    </select>
+                    <div className="text-[11px] opacity-60 mt-1">
+                      {t('fiscal.tokenEnvironmentHelp')}
+                    </div>
+                  </div>
+                ) : null}
                 {tokenHint?.configured ? (
                   <div className="text-xs opacity-70 mt-1">
                     {t('fiscal.tokenHint', {
@@ -1956,6 +1991,7 @@ function FiscalSettings() {
               </label>
 
               {enabled ? <CashDeclarations /> : null}
+              <ZReports />
             </div>
           </SettingsCard>
         </div>
@@ -2042,6 +2078,14 @@ function FiscalReviewPanel() {
     idempotencyKey: string,
     resolution: 'retry' | 'registered' | 'corrected',
   ) => {
+    // Sending again an invoice easyPos already filed files the sale twice
+    // (QA v0.2.103, H2): make the reviewer confirm they looked first.
+    if (
+      resolution === 'retry' &&
+      !window.confirm(t('fiscal.reviewRetryConfirm', { docId: idempotencyKey }))
+    ) {
+      return;
+    }
     setBusyKey(idempotencyKey);
     try {
       const r = await window.api.settings.resolveFiscalReview?.({
@@ -2050,9 +2094,15 @@ function FiscalReviewPanel() {
         ...(resolution === 'registered'
           ? { nslf: nslf.trim(), nivf: nivf.trim() }
           : {}),
+        ...(resolution === 'retry' ? { confirmedNotFiled: true } : {}),
       });
-      if (r?.ok) setStatus(t('fiscal.reviewResolved'));
-      else setStatus(t('fiscal.reviewFailed'), 'error');
+      if (r?.ok)
+        setStatus(
+          r.outcome === 'filed'
+            ? t('fiscal.reviewAlreadyFiled')
+            : t('fiscal.reviewResolved'),
+        );
+      else setStatus(r?.error || t('fiscal.reviewFailed'), 'error');
       setExpanded(null);
       setNslf('');
       setNivf('');
@@ -4638,6 +4688,109 @@ function LanSettings() {
  * Cash declared to the tax service by hand (QA round 6, fiscal): the
  * opening float as counted, and cash put in or taken out during the day.
  */
+/** End-of-day Z report: issue one, see the latest, print one again. */
+function ZReports() {
+  const { t } = useTranslation();
+  const api = (window.api as any).admin as
+    | {
+        issueZReport?: () => Promise<any>;
+        listZReports?: () => Promise<any[]>;
+        reprintZReport?: (i: { number: number }) => Promise<any>;
+      }
+    | undefined;
+  const [rows, setRows] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+  const load = useCallback(async () => {
+    try {
+      setRows((await api?.listZReports?.()) ?? []);
+    } catch {
+      setRows([]);
+    }
+  }, [api]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (!api?.issueZReport) return null;
+  const issue = async () => {
+    if (!window.confirm(t('zReport.confirm'))) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const r = await api.issueZReport!();
+      setStatus({
+        ok: true,
+        text: t(r?.printed ? 'zReport.issued' : 'zReport.issuedNotPrinted', {
+          number: r?.report?.number,
+        }),
+      });
+      await load();
+    } catch (e: any) {
+      setStatus({ ok: false, text: String(e?.message || t('zReport.failed')) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const reprint = async (number: number) => {
+    setBusy(true);
+    try {
+      const r = await api.reprintZReport?.({ number });
+      setStatus(
+        r?.ok
+          ? { ok: true, text: t('zReport.reprinted', { number }) }
+          : { ok: false, text: String(r?.error || t('zReport.failed')) },
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="block mt-4">
+      <div className="text-sm mb-1">{t('zReport.title')}</div>
+      <div className="text-[11px] opacity-60 mb-2">{t('zReport.help')}</div>
+      <button
+        type="button"
+        disabled={busy}
+        className="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-800 disabled:opacity-50"
+        onClick={() => void issue()}
+      >
+        {t('zReport.issue')}
+      </button>
+      {status ? (
+        <div
+          className={`text-xs mt-2 ${status.ok ? 'text-emerald-400' : 'text-red-400'}`}
+        >
+          {status.text}
+        </div>
+      ) : null}
+      {rows.length ? (
+        <ul className="mt-3 flex flex-col gap-1 text-xs">
+          {rows.map((z) => (
+            <li key={z.number} className="flex items-center gap-2">
+              <span className="font-medium">Z {z.number}</span>
+              <span className="opacity-70">
+                {new Date(z.issuedAt).toLocaleString()} ·{' '}
+                {t('zReport.salesCount', { count: z.sales?.count ?? 0 })} ·{' '}
+                {Number(z.sales?.gross ?? 0).toFixed(2)} {z.currency}
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                className="ml-auto px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                onClick={() => void reprint(Number(z.number))}
+              >
+                {t('zReport.reprint')}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function CashDeclarations() {
   const { t } = useTranslation();
   const [amount, setAmount] = useState('');

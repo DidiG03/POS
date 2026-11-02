@@ -88,7 +88,8 @@ const EN: PrintCopy = {
   correctionTitle: (kind) =>
     kind === 'CANCEL' ? 'CANCELLATION INVOICE' : 'CORRECTIVE INVOICE',
   correctsInvoice: 'Corrects NSLF',
-  receiptCopyBanner: '*** COPY - REPRINT ***',
+  // Bilingual on purpose: the tax inspector reads Albanian, guests may not.
+  receiptCopyBanner: '*** KOPJE / COPY ***',
   method: 'Method',
   approved: 'Approved',
   note: 'Note',
@@ -136,7 +137,7 @@ const SQ: PrintCopy = {
   correctionTitle: (kind) =>
     kind === 'CANCEL' ? 'FATURË ANULIMI' : 'FATURË KORRIGJUESE',
   correctsInvoice: 'Korrigjon NSLF',
-  receiptCopyBanner: '*** KOPJE - RIPRINTIM ***',
+  receiptCopyBanner: '*** KOPJE / COPY ***',
   method: 'Metoda',
   approved: 'Aprovuar',
   note: 'Shënim',

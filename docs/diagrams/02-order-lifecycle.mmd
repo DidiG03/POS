@@ -1,0 +1,72 @@
+---
+config:
+  layout: dagre
+---
+%% 2. Life of an order: from sign-in to a closed table.
+%% Each stage is a horizontal band; stages connect top to bottom.
+flowchart TB
+  subgraph S1["1 · Sign in"]
+    direction LR
+    A1["Waiter taps their name<br/>and types PIN"] --> A2{"Shifts on and<br/>not clocked in?"}
+    A2 -- yes --> A3["Start shift<br/>(clock in)"]
+    A2 -- no --> A4["Floor / Tables"]
+    A3 --> A4
+  end
+
+  subgraph S2["2 · Take the order"]
+    direction LR
+    B1["Pick a table<br/>(enter covers)"] --> B2["Add items, modifiers,<br/>seats, courses, notes"]
+    B2 --> B3["Lines wait on the device<br/>until Send"]
+  end
+
+  subgraph S3["3 · Send (one tap = one idempotency key)"]
+    direction LR
+    OFF["Phone offline?<br/>Sends and payments wait in an<br/>on-device queue and replay with<br/>the SAME key: nothing is sent twice<br/><i>offlineQueue.ts</i>"] -.-> C1
+    C1["Till: IPC tickets:log<br/>Phone: POST /tickets"] --> C2["recordTicketSend<br/>under the table lock<br/><i>services/ticketSend.ts</i>"]
+    C2 --> C3["• same key already saved? → nothing to do<br/>• order from a closed sitting? → refused<br/>• open the table if needed<br/>• someone else's table? → refused (unless admin)<br/>• price every line from the menu<br/>• add only the NEW lines to the bill<br/>• take counted stock"]
+    C3 --> C4[("TicketLog row<br/>= the current bill")]
+  end
+
+  subgraph S4["4 · Kitchen (for the new lines)"]
+    direction LR
+    D1["Live event to every device<br/>(table shows occupied)"]
+    D4["Then the device sends a SEPARATE<br/>print request: order slips to kitchen /<br/>bar printers (retried if a printer is down)<br/>Bill saved even if the slip fails"]
+    D2["KDS ticket<br/><i>kdsCreateTicket.ts</i>"] --> D3["Cook bumps<br/>items / ticket"]
+    D1 ~~~ D2
+    D3 ~~~ D4
+  end
+
+  subgraph S5["5 · While the table is open: steps 3 → 4 → 5 repeat for every round"]
+    direction LR
+    E1["↺ More rounds:<br/>back to step 3 (Send)"]
+    E2["Void item / ticket<br/>(manager PIN when required)"]
+    E3["Move / merge<br/>table"]
+    E4["Print the bill<br/>(pre-bill, per seat)"]
+    E1 ~~~ E2 ~~~ E3 ~~~ E4
+  end
+
+  subgraph S6["6 · Pay"]
+    direction LR
+    F1["Checkout: method,<br/>discount, service<br/>charge, split"] --> F2["Till: IPC tickets:print<br/>Phone: POST /print/ticket<br/>kind = PAYMENT"]
+    F2 --> F3["Payment & fiskalizimi<br/>(see diagram 3)"]
+    F3 --> F4["Receipt printed"]
+    F3 --> F5[("Sale saved:<br/>Order + Payment<br/>+ PrintJob")]
+    F3 --> F6["Table closed,<br/>owner notified"]
+    F5 --> R1["Reports, Admin,<br/>shift summary read<br/>the saved sales"]
+  end
+
+  S1 --> S2 --> S3 --> S4 --> S5 --> S6
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class A1,A3,A4,B1,B2,B3,C1,D1,D2,D3,D4,E1,E2,E3,E4,F1,F2,F4,F6,R1 step
+  class A2,C2,C3,F3 logic
+  class C4,F5 data
+  class OFF note

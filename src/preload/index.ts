@@ -102,6 +102,10 @@ const api: Api = {
     }) => ipcRenderer.invoke('admin:correctSale', input),
     printFiscalReceipt: (input: { orderId: number }) =>
       ipcRenderer.invoke('admin:printFiscalReceipt', input),
+    issueZReport: () => ipcRenderer.invoke('admin:issueZReport', {}),
+    listZReports: () => ipcRenderer.invoke('admin:listZReports', {}),
+    reprintZReport: (input: { number: number }) =>
+      ipcRenderer.invoke('admin:reprintZReport', input),
     listNotifications: (input?: {
       userId?: number;
       onlyUnread?: boolean;
@@ -125,6 +129,7 @@ const api: Api = {
       status: 'NEW' | 'DONE';
       limit?: number;
       cooker?: boolean;
+      withTotal?: boolean;
     }) => ipcRenderer.invoke('kds:listTickets', input),
     /** Waiter station: live kitchen tickets for the signed-in waiter. */
     listFloorOrders: () => ipcRenderer.invoke('kds:listFloorOrders'),

@@ -25,6 +25,7 @@ import {
   FiscalClaimBusyError,
 } from './claims';
 import { sweepFiscalClaims } from './sitting';
+import { deferUnconfirmed } from './unconfirmed';
 import {
   createEasyPosSale,
   fiscalNeedsStatusCheck,
@@ -331,6 +332,8 @@ async function transmitOne(
 ): Promise<'sent' | 'unreachable' | 'not-sent'> {
   const current = await readFiscalClaim(idempotencyKey);
   if (!current || current.state !== 'DEFERRED') return 'not-sent';
+  // Held for a person since it was listed (see `holdReason`).
+  if (current.holdReason) return 'not-sent';
 
   let decision: Awaited<ReturnType<typeof claimFiscalRegistration>>;
   try {
@@ -407,22 +410,55 @@ async function transmitOne(
       return 'unreachable';
     }
     if (fiscalOutcomeOf(e) === 'not-registered') {
-      await settleFiscalClaimFailed(
+      // Refused. The sale is recorded, so the invoice must not drop out of
+      // sight as FAILED: it waits on the review list until the cause is
+      // fixed and someone sends it again.
+      const held = await commitDeferredFiscalClaim(
         idempotencyKey,
         decision.attemptId,
         message,
-      ).catch(() => undefined);
+        cloneJson(draft),
+        new Date(now).toISOString(),
+        {
+          holdReason: `easyPos refused this queued invoice: ${message} Fix the cause in Settings › Fiskalizimi, then choose "Send again" here.`,
+        },
+      );
+      if (!held) {
+        await settleFiscalClaimFailed(
+          idempotencyKey,
+          decision.attemptId,
+          message,
+        ).catch(() => undefined);
+      }
       await notifyAdminsAndActor({
         message: `Deferred fiskalizimi is now refused${whereLabel(latest) ? ` on ${whereLabel(latest)}` : ''} · docId ${idempotencyKey}: ${message}`,
         type: 'SECURITY',
       }).catch(() => undefined);
       return 'not-sent';
     }
-    await settleFiscalClaimUnknown(
-      idempotencyKey,
-      decision.attemptId,
+    // Unknown outcome: back on the queue, checked before it is sent again
+    // (cloud), or held for a person (local middleware). Never UNKNOWN for a
+    // sale that is already recorded: that only parked it out of the loop.
+    const requeued = await deferUnconfirmed({
+      docId: idempotencyKey,
+      attemptId: decision.attemptId,
       message,
-    ).catch(() => undefined);
+      draft,
+      settings,
+      attempts: (latest.attempts || 1) + 1,
+      now,
+    });
+    if (!requeued) {
+      await settleFiscalClaimUnknown(
+        idempotencyKey,
+        decision.attemptId,
+        message,
+      ).catch(() => undefined);
+    }
+    if (requeued && !requeued.held) {
+      await noticeOutage(message);
+      return 'unreachable';
+    }
     return 'not-sent';
   }
 }

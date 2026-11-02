@@ -67,8 +67,13 @@ export async function getCurrentTableSessionKey(
  * the items disappeared.
  */
 export function pickLatestSessionTicket<
-  T extends { id: number; createdAt: unknown },
->(rowsNewestIdFirst: T[], sessionStartMs: number | null): T | null {
+  T extends { id: number; createdAt: unknown; sessionKey?: unknown },
+>(
+  rowsNewestIdFirst: T[],
+  sessionStartMs: number | null,
+  /** The current sitting's key (`buildTableSessionKey`), when known. */
+  currentSessionKey?: string | null,
+): T | null {
   if (rowsNewestIdFirst.length === 0) {
     return null;
   }
@@ -76,8 +81,22 @@ export function pickLatestSessionTicket<
   if (sessionStartMs == null) {
     return newest;
   }
-  const inSession = rowsNewestIdFirst.find((row) =>
-    rowIsInOpenSession(row.createdAt, sessionStartMs),
+  // The slack before the sitting start (clock skew, second-precision
+  // DateTime) must not pull in the previous sitting's bill. When a payment
+  // closed the table and a Send reopened it within those 2 s, the paid
+  // bill's last row was read as the new sitting's bill, and the merge put
+  // every paid line back on it: charged twice (QA v0.2.103, H3). A row
+  // stamped with another sitting's key is never this sitting's bill.
+  const fromEarlierSitting = (row: T): boolean => {
+    const key = String(row.sessionKey ?? '').trim();
+    if (!currentSessionKey || !key || key === currentSessionKey) return false;
+    const t = ticketLogCreatedAtMs(row.createdAt);
+    return Number.isFinite(t) && t < sessionStartMs;
+  };
+  const inSession = rowsNewestIdFirst.find(
+    (row) =>
+      rowIsInOpenSession(row.createdAt, sessionStartMs) &&
+      !fromEarlierSitting(row),
   );
   if (inSession) {
     return inSession;
@@ -108,8 +127,9 @@ export async function findLatestTicketLogSince(
   // Prisma client is typed as `any` in this process; pin the row through so
   // callers still see `itemsJson` / `note` / `userId`.
   const latest = pickLatestSessionTicket(
-    recent as Array<{ id: number; createdAt: unknown }>,
+    recent as Array<{ id: number; createdAt: unknown; sessionKey?: unknown }>,
     since ? since.getTime() : null,
+    since ? buildTableSessionKey(area, tableLabel, since.toISOString()) : null,
   ) as (typeof recent)[number] | null;
   // Every line of the bill is addressed by its id (`ticketLineIds.ts`);
   // rows written before ids existed get ones derived from the row.

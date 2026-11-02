@@ -38,6 +38,8 @@ import {
   kdsTimerUrgencyTextClass,
 } from '@shared/kdsTimerUrgency';
 import {
+  KDS_BOARD_LIMIT,
+  kdsBoardRows,
   COLUMN_GAP_PX,
   columnWidthForContainer,
   maxColumnsForWidth,
@@ -564,6 +566,7 @@ export default function KdsPage() {
    */
   const boardSeq = useRef(0);
   const claimBoardWrite = useCallback(() => ++boardSeq.current, []);
+  const [ticketsNotShown, setTicketsNotShown] = useState(0);
   const commitBoard = useCallback((seq: number, rows: KdsTicket[]) => {
     if (seq !== boardSeq.current) return;
     setTickets(rows);
@@ -842,14 +845,20 @@ export default function KdsPage() {
       if (errRef.current) setErr(null);
       const seq = claimBoardWrite();
       try {
-        const rows = (await window.api.kds.listTickets({
+        // Every open ticket up to KDS_BOARD_LIMIT, with how many there are
+        // in all: the board used to stop at the till's 200 and say nothing
+        // about the rest (QA v0.2.103).
+        const res = (await window.api.kds.listTickets({
           station,
           status: tab,
-          limit: tab === 'NEW' ? 120 : 80,
+          limit: tab === 'NEW' ? KDS_BOARD_LIMIT : 200,
           cooker,
+          withTotal: true,
         })) as any;
         if (!alive) return;
-        commitBoard(seq, Array.isArray(rows) ? (rows as KdsTicket[]) : []);
+        const { rows, notShown } = kdsBoardRows(res);
+        setTicketsNotShown(notShown);
+        commitBoard(seq, rows as KdsTicket[]);
         setLoading(false);
       } catch (e: any) {
         if (!alive) return;
@@ -1950,6 +1959,11 @@ export default function KdsPage() {
             </div>
           </div>
 
+          {totalPages <= 1 && ticketsNotShown > 0 ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 pb-2 text-center text-xs font-medium tabular-nums opacity-70">
+              {i18n.t('kds.moreNotShown', { count: ticketsNotShown })}
+            </div>
+          ) : null}
           {totalPages > 1 ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between px-1 pb-1">
               {listPage > 0 ? (
@@ -1972,6 +1986,9 @@ export default function KdsPage() {
 
               <div className="pointer-events-none mb-2 text-xs font-medium tabular-nums opacity-60">
                 {listPage + 1} / {totalPages}
+                {ticketsNotShown > 0
+                  ? ` · ${i18n.t('kds.moreNotShown', { count: ticketsNotShown })}`
+                  : ''}
               </div>
 
               {remainingTicketCount > 0 ? (

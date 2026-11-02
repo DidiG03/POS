@@ -1,0 +1,57 @@
+---
+config:
+  layout: dagre
+---
+%% 3. Payment and fiskalizimi: what happens when someone taps Pay.
+flowchart TB
+  P0["Pay tapped<br/>one idempotency key per tap<br/>(retries reuse it)"] --> P00{"This payment<br/>already recorded?<br/>(same key)"}
+  P00 -- "yes (a retry)" --> X00["Return the earlier result,<br/>charge nothing again"]
+  P00 -- no --> P1["Lock this table's payments<br/>(two devices cannot pay it at once)"]
+  P1 --> P2{"Checks pass?"}
+  P1 -.-> DA["Discount on the bill?<br/>admins get an alert"]
+  P2 -- no --> X0["Refused, nothing charged<br/>• table not on the floor or already paid<br/>• not your table (owner, cashier or admin)<br/>• manager approval missing (discount)<br/>• bill changed since it was shown"]
+  P2 -- yes --> Q1{"Fiskalizimi on<br/>for the venue AND<br/>the person paying?"}
+
+  Q1 -- "no" --> R0["Record only, no invoice<br/>(venue switch off, or this waiter's<br/>switch off · <i>waiterFiscal.ts</i>)"]
+  Q1 -- yes --> G1{"Invoice already<br/>filed for this<br/>sitting?"}
+  G1 -- "can't tell yet" --> X1["Payment held<br/>admin resolves, or try again<br/><i>fiscal/sitting.ts</i>"]
+  G1 -- "yes, this sale" --> G2["Reuse that invoice<br/>(no second filing)"]
+  G1 -- no --> C1
+  G2 --> C1
+
+  C1["Step 1 · Write a claim BEFORE sending<br/>survives crashes, stops doubles<br/><i>fiscal/claims.ts</i>"] --> C2["Step 2 · Build the invoice<br/>docId comes from the key<br/><i>fiscal/mapInvoice.ts</i>"]
+  C2 --> C3["Step 3 · Cash sale? Declare today's<br/>opening float (once a day)<br/><i>fiscal/balance.ts</i>"]
+  C3 --> C4["Step 4 · Send to easyPos → tax office<br/>register → check status → replay only<br/>if easyPos never saw it · <i>fiscal/recover.ts</i>"]
+
+  C4 --> O1["✔ OK<br/>NIVF + NSLF received"]
+  C4 --> O2["⏸ Deferred<br/>tax office unreachable"]
+  C4 --> O3["↻ Retryable<br/>nothing filed yet"]
+  C4 --> O4["✖ Rejected<br/>bad config or data"]
+  C4 --> O5["? Needs review<br/>unknown if it was filed"]
+
+  O2 -.-> D1["Background loop resends the<br/>SAME invoice; admins alerted<br/>after 48 h · <i>fiscal/deferred.ts</i>"]
+  O3 --> X2["Payment NOT taken<br/>waiter taps Pay again"]
+  O4 --> X3["Payment parked<br/>admin fixes settings"]
+  O5 --> X4["Payment parked<br/>admin checks easyPos first"]
+
+  O1 --> F1
+  O2 --> F1
+  R0 --> F1
+  F1["Print the receipt<br/>filed: FISKALIZUAR + NIVF/NSLF + QR<br/>deferred: 'pending' note<br/>(queued for retry if the printer is down)"] --> F2[("Save in one transaction<br/>PrintJob + Order + Payment<br/><i>salesLedger.ts</i>")]
+  F2 --> F3["Close the table · live update<br/>to all devices · notify the owner"]
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class P0,P1,DA,R0,G2,C1,C2,C3,C4,F1,F3,D1 step
+  class P00,P2,Q1,G1 logic
+  class O1,F2,X00 good
+  class O2,O3 warn
+  class O4,O5,X0,X1,X2,X3,X4 bad
+  class F2 data

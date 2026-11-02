@@ -10,8 +10,14 @@
  * are now filed as that type. What a gift card or a room charge is for the
  * tax service (a single- or multi-purpose voucher, a company invoice) is
  * the venue's accountant's call: it is set per venue in
- * `fiscal.paymentTypeMap` (e.g. `{ "GIFT_CARD": "SVOUCHER" }`) and stays
+ * `fiscal.paymentTypeMap` (e.g. `{ "ROOM_CHARGE": "COMPANY" }`) and stays
  * OTHER until set.
+ *
+ * Voucher types (VOUCHER, SVOUCHER) are not offered: the tax service wants
+ * the voucher numbers with them, and the till does not collect any, so
+ * every gift-card sale mapped to a voucher was refused by easyPos (QA
+ * v0.2.103, #4). Saving such a mapping is refused with that reason; one
+ * saved before this is ignored, and the sale is filed as OTHER.
  */
 import type { PaymentType } from './apiTypes';
 
@@ -21,8 +27,6 @@ export const MAPPABLE_PAYMENT_TYPES: readonly PaymentType[] = [
   'CARD',
   'CHECK',
   'COMPANY',
-  'SVOUCHER',
-  'VOUCHER',
   'FACTORING',
   'KIND',
   'TRANSFER',
@@ -41,8 +45,6 @@ const SYNONYMS: Readonly<Record<string, PaymentType>> = {
   TRANSFER: 'TRANSFER',
   BANK_TRANSFER: 'TRANSFER',
   COMPANY: 'COMPANY',
-  SVOUCHER: 'SVOUCHER',
-  VOUCHER: 'VOUCHER',
   FACTORING: 'FACTORING',
   KIND: 'KIND',
   WAIVER: 'WAIVER',
@@ -53,6 +55,12 @@ function venueMap(settings: unknown): Record<string, string> {
   return map && typeof map === 'object' ? map : {};
 }
 
+/** Need voucher numbers the till does not collect (see above). */
+export const VOUCHER_PAYMENT_TYPES: readonly PaymentType[] = [
+  'VOUCHER',
+  'SVOUCHER',
+];
+
 /** Why a venue mapping cannot be saved, or null. */
 export function paymentTypeMapProblem(map: unknown): string | null {
   if (map === null || map === undefined) return null;
@@ -61,6 +69,9 @@ export function paymentTypeMapProblem(map: unknown): string | null {
   }
   for (const [method, type] of Object.entries(map as object)) {
     const t = String(type ?? '').toUpperCase();
+    if ((VOUCHER_PAYMENT_TYPES as readonly string[]).includes(t)) {
+      return `${method} cannot be filed as ${t}: the tax service requires the voucher numbers with a voucher payment, and the till does not collect them, so easyPos would refuse every such sale. Map ${method} to OTHER (or COMPANY) instead.`;
+    }
     if (!(MAPPABLE_PAYMENT_TYPES as readonly string[]).includes(t)) {
       return `"${String(type)}" (for ${method}) is not a payment type the tax service accepts from the till (${MAPPABLE_PAYMENT_TYPES.join(', ')}).`;
     }

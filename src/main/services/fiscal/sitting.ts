@@ -73,14 +73,33 @@ export type SittingCheck =
    * sale was ever saved against. Reuse it: fiscalize under `docId` (which
    * replays the stored identifiers) and save the sale.
    */
-  | { kind: 'adopt'; docId: string; nivf?: string }
-  /** Hold the payment. `retryable` means waiting will resolve it. */
+  | {
+      kind: 'adopt';
+      docId: string;
+      nivf?: string;
+      /**
+       * The earlier invoice was never confirmed (UNKNOWN, or a send cut off
+       * mid-way). The payment is recorded under that docId, so it can never
+       * get a second invoice; the docId stays on the review list.
+       */
+      unconfirmed?: boolean;
+    }
+  /**
+   * A filed invoice for this sitting does not match this payment. Record
+   * the payment, but hold its own invoice for a person to decide (cancel
+   * the old one, then send this one), instead of refusing the payment.
+   */
+  | { kind: 'hold'; docId: string; message: string }
+  /**
+   * Another device is sending this sitting's invoice right now. Waiting a
+   * few seconds resolves it; it is the only case that holds the payment.
+   */
   | {
       kind: 'blocked';
-      code: 'FISCAL_SITTING_UNRESOLVED' | 'FISCAL_SITTING_BUSY';
+      code: 'FISCAL_SITTING_BUSY';
       message: string;
       docId: string;
-      retryable: boolean;
+      retryable: true;
     };
 
 /** Every key the sale behind a claim may be saved under. */
@@ -312,19 +331,24 @@ export async function checkSittingBeforePayment(input: {
   const label = where(area, tableLabel);
   const total = Number(input.total);
   let adoptable: ClaimRow | null = null;
-  let blocker: SittingCheck | null = null;
+  // The fiscal state never refuses a payment (QA v0.2.103, H1): an
+  // unconfirmed earlier invoice is adopted, a mismatching one holds only the
+  // new invoice. Only a send in flight right now makes the payment wait.
+  let busy: SittingCheck | null = null;
+  let unconfirmed: ClaimRow | null = null;
+  let hold: SittingCheck | null = null;
 
   for (const row of open) {
     const { record } = row;
     if (record.state === 'PENDING') {
       if (isDeadPendingClaim(record, now)) {
         await surfaceDeadPending(row);
-        blocker ??= unresolved(row, label);
-      } else if (!blocker) {
-        blocker = {
+        unconfirmed ??= row;
+      } else if (!busy) {
+        busy = {
           kind: 'blocked',
           code: 'FISCAL_SITTING_BUSY',
-          message: `An earlier payment for ${label} is being sent to fiskalizimi right now. Wait a minute and try again.`,
+          message: `An earlier payment for ${label} is being sent to fiskalizimi right now. Wait a moment and try again.`,
           docId: row.idempotencyKey,
           retryable: true,
         };
@@ -332,7 +356,7 @@ export async function checkSittingBeforePayment(input: {
       continue;
     }
     if (record.state === 'UNKNOWN') {
-      blocker ??= unresolved(row, label);
+      unconfirmed ??= row;
       continue;
     }
     // REGISTERED with no saved sale.
@@ -350,19 +374,25 @@ export async function checkSittingBeforePayment(input: {
       continue;
     }
     await flagOrphan(row, now).catch(() => undefined);
-    blocker ??= {
-      kind: 'blocked',
-      code: 'FISCAL_SITTING_UNRESOLVED',
+    hold ??= {
+      kind: 'hold',
       message:
-        `An invoice was already filed for ${label} (NIVF ${record.result?.nivf || '—'}, total ${money(filedTotal)}${filedMethod ? `, ${filedMethod}` : ''}) but the sale was never saved,` +
-        ` and it does not match this payment (${money(total)}${input.method ? `, ${input.method}` : ''}). To avoid a second invoice this payment is on hold:` +
-        ` cancel that invoice in easyPos, then mark it resolved in Settings › Fiskalizimi (docId ${row.idempotencyKey}).`,
+        `An invoice was already filed for ${label} (NIVF ${record.result?.nivf || '—'}, total ${money(filedTotal)}${filedMethod ? `, ${filedMethod}` : ''}, docId ${row.idempotencyKey}) but its sale was never saved,` +
+        ` and it does not match this payment (${money(total)}${input.method ? `, ${input.method}` : ''}). The payment is recorded; its invoice is held so the sale is not filed twice:` +
+        ' cancel the earlier invoice in easyPos if it is for this sale, then send this one from Settings › Fiskalizimi.',
       docId: row.idempotencyKey,
-      retryable: false,
     };
   }
 
-  if (blocker) return blocker;
+  if (busy) return busy;
+  if (unconfirmed) {
+    return {
+      kind: 'adopt',
+      docId: unconfirmed.idempotencyKey,
+      unconfirmed: true,
+    };
+  }
+  if (hold) return hold;
   if (adoptable) {
     return {
       kind: 'adopt',
@@ -371,18 +401,6 @@ export async function checkSittingBeforePayment(input: {
     };
   }
   return { kind: 'clear' };
-}
-
-function unresolved(row: ClaimRow, label: string): SittingCheck {
-  return {
-    kind: 'blocked',
-    code: 'FISCAL_SITTING_UNRESOLVED',
-    message:
-      `An earlier payment for ${label} may already have been reported to fiskalizimi, but easyPos never confirmed it (docId ${row.idempotencyKey}).` +
-      ' To avoid filing the sale twice this payment is on hold. An admin must check that docId in easyPos and resolve it in Settings › Fiskalizimi.',
-    docId: row.idempotencyKey,
-    retryable: false,
-  };
 }
 
 /**
@@ -396,7 +414,19 @@ export async function adoptFiscalInvoice(input: {
   tableLabel: string;
   nivf?: string;
   actorUserId?: number;
+  /** The adopted invoice was never confirmed (see `SittingCheck`). */
+  unconfirmed?: boolean;
 }): Promise<void> {
+  if (input.unconfirmed) {
+    await notifyAdminsAndActor({
+      message:
+        `Payment on ${where(input.area, input.tableLabel)} was recorded under docId ${input.docId},` +
+        ' whose earlier send was never confirmed by easyPos. No second invoice was filed; resolve that docId in Settings › Fiskalizimi.',
+      actorUserId: input.actorUserId,
+      type: 'SECURITY',
+    }).catch(() => undefined);
+    return;
+  }
   await withFiscalClaimLock(input.docId, () =>
     annotateFiscalClaimUnlocked(input.docId, {
       saleKey: input.saleKey,

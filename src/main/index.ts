@@ -276,6 +276,7 @@ import {
   stopPrintJobRetentionLoop,
 } from './services/printJobRetention';
 import {
+  KDS_LIST_MAX,
   formatKdsTicketListRows,
   getKdsTicketDetail,
   listWaiterFloorOrders,
@@ -2459,9 +2460,12 @@ ipcHandle('network:getIps', async () => {
 });
 
 // Cash declared to the tax service (see `/fiscal/cash-declaration`).
-ipcHandle('fiscal:declareCash', async (_e, input) => {
+ipcHandle('fiscal:declareCash', async (_e, input, ctx) => {
   const { declareCash } = await import('./services/fiscal/cashDrawer');
-  return declareCash((await readSettings()) as any, input || {});
+  return declareCash((await readSettings()) as any, {
+    ...(input || {}),
+    actorUserId: ctx?.session?.userId ?? null,
+  });
 });
 
 ipcHandle('settings:testFiscalConnection', async () => {
@@ -2969,25 +2973,21 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         {
           idempotencyKey: idempotencyKey || undefined,
           adoptDocId: sitting.adoptDocId,
+          holdReason: sitting.holdReason,
         },
       );
       if (outcome.kind === 'needs-review') {
+        // The invoice waits for a person in Settings › Fiskalizimi, but the
+        // sale is taken and the table closes: the fiscal state must never
+        // block a payment (QA v0.2.103, H1). Admins were already notified.
         broadcastPrinterEvent({
-          level: 'error',
+          level: 'warn',
           kind: 'fiscal',
           message: outcome.message,
           detail: outcome.message,
           at: Date.now(),
           context: { area, tableLabel, kind: 'PAYMENT' },
         });
-        // Admins were already notified by `fiscalizePaymentOnce`. Retrying
-        // could file a second invoice, so tell the caller to stop.
-        return {
-          ok: false,
-          code: 'FISCAL_NEEDS_REVIEW',
-          error: outcome.message,
-          permanent: true,
-        };
       }
       if (outcome.kind === 'rejected') {
         broadcastPrinterEvent({
@@ -3040,7 +3040,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         };
       }
       payload = outcome.payload;
-      if (outcome.kind === 'deferred') {
+      if (outcome.kind === 'deferred' || outcome.kind === 'needs-review') {
         fiscalExtra = {
           fiscalPending: true,
           fiscalMessage: outcome.message,
@@ -3833,9 +3833,10 @@ ipcHandle('kds:listTickets', async (_e, input) => {
   const status = String((input as any)?.status || 'NEW').toUpperCase();
   const cooker = Boolean((input as any)?.cooker);
   const limit = Math.min(
-    200,
+    KDS_LIST_MAX,
     Math.max(1, Number((input as any)?.limit || 100)),
   );
+  const withTotal = (input as any)?.withTotal === true;
   // IMPORTANT: KDS is always local (even when POS is in cloud mode).
 
   await ensureKdsLocalSchema();
@@ -3856,12 +3857,24 @@ ipcHandle('kds:listTickets', async (_e, input) => {
       take: limit,
     });
 
-    return await formatKdsTicketListRows(rows, station, status, {
+    const list = await formatKdsTicketListRows(rows, station, status, {
       cooker,
       cookerEnabled,
     });
+    if (!withTotal) return list;
+    // How many there are in all, so the board can say how many it is not
+    // showing. Older boards ask without `withTotal` and get the plain list.
+    const total =
+      rows.length < limit
+        ? rows.length
+        : await (prisma as any).kdsTicketStation
+            .count({ where: kdsStationListWhere(station, queryStatus) })
+            .catch(() => rows.length);
+    return { rows: list, total, fetched: rows.length };
   } catch {
-    return [];
+    return (input as any)?.withTotal === true
+      ? { rows: [], total: 0, fetched: 0 }
+      : [];
   }
 });
 
@@ -4541,6 +4554,25 @@ ipcHandle('admin:correctSale', async (_e, input, ctx) => {
 ipcHandle('admin:printFiscalReceipt', async (_e, input) =>
   printFiscalReceiptForSale(Number((input as any)?.orderId)),
 );
+
+// Z report: the end-of-day close (`services/zReport.ts`).
+ipcHandle('admin:issueZReport', async (_e, _input, ctx) => {
+  const { issueZReport } = await import('./services/zReport');
+  const r = await issueZReport({ actorUserId: ctx?.session?.userId ?? null });
+  logSecurityEvent('z_report_issued', {
+    number: r.report.number,
+    userId: ctx?.session?.userId ?? null,
+  });
+  return { ok: true, ...r };
+});
+ipcHandle('admin:listZReports', async () => {
+  const { listZReports } = await import('./services/zReport');
+  return listZReports();
+});
+ipcHandle('admin:reprintZReport', async (_e, input) => {
+  const { reprintZReport } = await import('./services/zReport');
+  return reprintZReport(Number((input as any)?.number));
+});
 
 ipcHandle('admin:listTicketsByUser', async (_e, input) => {
   return listAdminTicketsByUser(input);

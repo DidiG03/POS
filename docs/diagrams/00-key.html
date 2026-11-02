@@ -1,0 +1,63 @@
+<!-- Key & glossary page. Rendered by render.cjs as the first page. -->
+<style>
+  .k { font: 15px/1.45 Helvetica, Arial, sans-serif; color: #212529; width: 1500px; }
+  .k h2 { font-size: 20px; margin: 0 0 10px; color: #0b1f44 }
+  .k .cols { display: grid; grid-template-columns: 430px 1fr; gap: 40px }
+  .k .row { display: flex; align-items: center; gap: 12px; margin: 7px 0 }
+  .k .sw { width: 64px; height: 30px; border: 1.5px solid; flex: none; box-sizing: border-box }
+  .k .shape { width: 64px; height: 34px; flex: none; display: flex; align-items: center; justify-content: center }
+  .k table { border-collapse: collapse; width: 100% }
+  .k td { padding: 5px 10px; border-bottom: 1px solid #e9ecef; vertical-align: top }
+  .k td:first-child { font-weight: 700; white-space: nowrap; width: 210px }
+  .k .sec { margin-bottom: 26px }
+</style>
+<div class="k"><div class="cols"><div>
+  <div class="sec"><h2>Colours</h2>
+    <div class="row"><span class="sw" style="background:#e8f0fe;border-color:#3b6fd8"></span>An action, a screen or an app people use</div>
+    <div class="row"><span class="sw" style="background:#fff4e0;border-color:#d88a1d"></span>A decision, or a rule the till enforces</div>
+    <div class="row"><span class="sw" style="background:#e3f4f4;border-color:#178a8a"></span>Stored data (the till's database)</div>
+    <div class="row"><span class="sw" style="background:#e9f7ef;border-color:#2e9b5b"></span>Good outcome</div>
+    <div class="row"><span class="sw" style="background:#fff9db;border-color:#e0a800"></span>Warning: works, but needs attention</div>
+    <div class="row"><span class="sw" style="background:#fdecec;border-color:#d64545"></span>Problem: refused, held or failed</div>
+    <div class="row"><span class="sw" style="background:#f3e8fd;border-color:#8b4fd1"></span>Outside the venue (internet services)</div>
+    <div class="row"><span class="sw" style="background:#f1f3f5;border-color:#868e96"></span>Hardware (printers)</div>
+    <div class="row"><span class="sw" style="background:#f8f9fa;border-color:#adb5bd;border-style:dashed"></span>Note or explanation</div>
+  </div>
+  <div class="sec"><h2>Shapes and lines</h2>
+    <div class="row"><span class="shape"><svg width="60" height="30"><rect x="1" y="1" width="58" height="28" fill="#fff" stroke="#495057"/></svg></span>A step, screen or thing</div>
+    <div class="row"><span class="shape"><svg width="40" height="34"><polygon points="20,1 39,17 20,33 1,17" fill="#fff" stroke="#495057"/></svg></span>A question: follow the labelled arrow</div>
+    <div class="row"><span class="shape"><svg width="40" height="34"><ellipse cx="20" cy="6" rx="18" ry="5" fill="#fff" stroke="#495057"/><path d="M2 6 V28 A18 5 0 0 0 38 28 V6" fill="#fff" stroke="#495057"/></svg></span>Data saved in the database</div>
+    <div class="row"><span class="shape"><svg width="60" height="10"><line x1="0" y1="5" x2="52" y2="5" stroke="#495057" stroke-width="1.5"/><polygon points="52,1 60,5 52,9" fill="#495057"/></svg></span>What happens next</div>
+    <div class="row"><span class="shape"><svg width="60" height="10"><line x1="0" y1="5" x2="52" y2="5" stroke="#495057" stroke-width="1.5" stroke-dasharray="3 3"/><polygon points="52,1 60,5 52,9" fill="#495057"/></svg></span>Optional, in the background, or an indirect link</div>
+    <div class="row"><span class="shape"><svg width="60" height="22"><rect x="1" y="1" width="58" height="20" fill="#fafbfc" stroke="#ced4da"/></svg></span>A group (its title says what)</div>
+  </div>
+  <div class="sec"><h2>Small italic text</h2>
+    Where that part lives in the code: under <i>src/main/services/</i> unless the path says otherwise (e.g. <i>src/renderer</i> = the screens).
+  </div>
+</div><div>
+  <h2>Glossary</h2>
+  <table>
+    <tr><td>Till / host</td><td>The main OneTap POS computer. Holds the database and runs every business rule; all other apps talk to it.</td></tr>
+    <tr><td>IPC</td><td>How the till's own windows talk to the till program (inside the same computer).</td></tr>
+    <tr><td>LAN API</td><td>How phones, tablets, Admin and the kitchen display talk to the till over the venue Wi-Fi (HTTP).</td></tr>
+    <tr><td>Live events (SSE)</td><td>Messages the till pushes to every device the moment something changes, so screens update without refreshing.</td></tr>
+    <tr><td>Pairing / device token</td><td>A phone or tablet proves it belongs to the venue with the pairing code from Admin, and keeps a token for it.</td></tr>
+    <tr><td>Session / token</td><td>Proof that someone signed in with their PIN; lasts 12 hours.</td></tr>
+    <tr><td>Idempotency key</td><td>A unique ID created once per tap (Send, Pay). A retry carries the same ID, so the till can tell a repeat from a new action and never does it twice.</td></tr>
+    <tr><td>Sitting</td><td>One group of guests at a table, from opening the table to paying.</td></tr>
+    <tr><td>TicketLog</td><td>A snapshot of a table's bill, written at every Send. The latest one is the current bill.</td></tr>
+    <tr><td>Order + Payment</td><td>The saved sale, written once the table is paid. Reports read these.</td></tr>
+    <tr><td>PrintJob</td><td>A record of something sent to a printer, and its retries.</td></tr>
+    <tr><td>KDS</td><td>Kitchen display system: screens in the kitchen that show orders; cooks bump them when done.</td></tr>
+    <tr><td>Pre-bill</td><td>The bill printed for the guest before paying (not a fiscal receipt).</td></tr>
+    <tr><td>Covers</td><td>Number of guests at a table.</td></tr>
+    <tr><td>Fiskalizimi</td><td>Reporting every sale to the Albanian tax office as an invoice.</td></tr>
+    <tr><td>easyPos / CIS</td><td>easyPos is the service the POS sends invoices to; it files them with the tax office's system (CIS).</td></tr>
+    <tr><td>NSLF / NIVF / EIC</td><td>Codes on a fiscal invoice: NSLF is generated by the POS side, NIVF is the tax office's registration number, EIC is for electronic invoices.</td></tr>
+    <tr><td>docId / claim</td><td>The fixed ID of one invoice, and a record written before sending it, so a crash or retry can never file it twice.</td></tr>
+    <tr><td>Deferred</td><td>An invoice that could not reach the tax office yet; the sale went through and it is resent automatically.</td></tr>
+    <tr><td>Vault</td><td>The encrypted form of the till's database.</td></tr>
+    <tr><td>SyncState</td><td>A table of named settings and records (venue settings, fiscal claims, layouts…).</td></tr>
+    <tr><td>Clock-only roles</td><td>Staff who only clock in and out on the POS: kitchen, runners, bartender, barback, busser, cleaner, host.</td></tr>
+  </table>
+</div></div></div>

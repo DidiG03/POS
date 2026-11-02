@@ -103,9 +103,11 @@ export async function setTableOpenWithSideEffects(
 export async function ensureOccupiedForTicketWrite(
   area: string,
   label: string,
-): Promise<void> {
-  if (!area || !label) return;
+): Promise<boolean> {
+  if (!area || !label) return false;
   const open = await coreServices.isTableOpen(area, label);
-  if (open) return;
+  if (open) return false;
   await applyTableOpenState(area, label, true);
+  // Opened now: a new sitting started, so the caller's reads are stale.
+  return true;
 }

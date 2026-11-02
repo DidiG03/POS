@@ -750,7 +750,13 @@ export interface ApiSettings {
     resolution: 'retry' | 'registered' | 'corrected';
     nslf?: string;
     nivf?: string;
-  }): Promise<{ ok: boolean; error?: string }>;
+    /**
+     * `retry` only: the reviewer looked the docId up in easyPos and it is
+     * not there. Required when the till uses the local middleware, which
+     * cannot be asked; on the cloud API easyPos is asked anyway.
+     */
+    confirmedNotFiled?: boolean;
+  }): Promise<{ ok: boolean; error?: string; code?: string; outcome?: string }>;
 }
 
 export type TestPrintResult = { ok: boolean; error?: string };
@@ -1053,6 +1059,12 @@ export interface ApiKds {
     limit?: number;
     /** This screen is the cooker's display (first kitchen stage). */
     cooker?: boolean;
+    /**
+     * Answer `{ rows, total, fetched }` instead of the list, so the board
+     * can say how many it is not showing. A till too old for this answers
+     * the plain list; treat both.
+     */
+    withTotal?: boolean;
   }): Promise<KdsTicketDTO[]>;
   /** Waiter-station kitchen tickets. Empty when KDS is off or nothing is live. */
   listFloorOrders(): Promise<KdsFloorOrder[]>;
@@ -1227,6 +1239,14 @@ export interface ApiAdmin {
     /** One per correction form: a repeat answers with the first result. */
     idempotencyKey?: string;
   }): Promise<CorrectSaleResultDTO>;
+  /** Close the period since the last Z report: compute, store, print. */
+  issueZReport?(): Promise<{ ok: true; report: any; printed: boolean }>;
+  /** The latest Z reports, newest first. */
+  listZReports?(): Promise<any[]>;
+  /** Print a stored Z report again, marked KOPJE / COPY. */
+  reprintZReport?(input: {
+    number: number;
+  }): Promise<{ ok: boolean; printed?: boolean; error?: string }>;
   /** Print a filed sale's fiscal receipt again (late filings). */
   printFiscalReceipt?(input: {
     orderId: number;

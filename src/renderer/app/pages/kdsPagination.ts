@@ -96,3 +96,24 @@ export function paginateTicketBlocks(
   if (cur.length > 0) pages.push(cur);
   return pages;
 }
+
+/** Open tickets one board asks the till for (the till caps a list at 1000). */
+export const KDS_BOARD_LIMIT = 500;
+
+/**
+ * The board's tickets from a `listTickets({ withTotal: true })` answer, and
+ * how many exist beyond them. A till too old for `withTotal` answers the
+ * plain list: nothing is known to be missing then.
+ */
+export function kdsBoardRows<T>(res: unknown): { rows: T[]; notShown: number } {
+  if (Array.isArray(res)) return { rows: res as T[], notShown: 0 };
+  const r = (res || {}) as { rows?: unknown; total?: unknown; fetched?: unknown };
+  const rows = Array.isArray(r.rows) ? (r.rows as T[]) : [];
+  const total = Number(r.total);
+  const fetched = Number(r.fetched);
+  const shown = Number.isFinite(fetched) && fetched > 0 ? fetched : rows.length;
+  return {
+    rows,
+    notShown: Number.isFinite(total) ? Math.max(0, total - shown) : 0,
+  };
+}

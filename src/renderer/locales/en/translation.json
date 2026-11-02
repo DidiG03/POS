@@ -468,6 +468,7 @@
     "ready": "Ready"
   },
   "kds": {
+    "moreNotShown": "{{count}} more not shown",
     "bumpFailed": "That ticket could not be bumped. Check the connection to the POS host.",
     "recallFailed": "Could not recall the ticket.",
     "loadFailed": "Failed to load kitchen tickets.",
@@ -855,6 +856,18 @@
     "duplicateLabel": "Another table in this area is already called {{label}}. Give each table its own name.",
     "labelRequired": "Every table needs a name."
   },
+  "zReport": {
+    "title": "Z report (end of day)",
+    "help": "Closes the period since the last Z report: sales, VAT, payments, fiskalizimi and the cash drawer. Each Z is numbered and kept on the till; a reprint is marked KOPJE / COPY.",
+    "issue": "Print Z report",
+    "confirm": "Close the period since the last Z report and print the Z report now?",
+    "issued": "Z report {{number}} issued and printed.",
+    "issuedNotPrinted": "Z report {{number}} issued and saved, but it did not print. Print it again from the list.",
+    "reprinted": "Z report {{number}} printed again (copy).",
+    "reprint": "Print copy",
+    "salesCount": "{{count}} sales",
+    "failed": "Could not issue the Z report."
+  },
   "fiscal": {
     "loadFailed": "Could not load the fiscal settings, so nothing was saved. Reopen this page and try again.",
     "shopVoidAction": "Void sale",
@@ -988,6 +1001,13 @@
     "reviewAttempts": "Attempts: {{count}}",
     "reviewFound": "Found in easyPos",
     "reviewFoundHelp": "The invoice exists. The sale will be recorded with these numbers and never sent again.",
+    "tokenEnvironment": "This token is for",
+    "tokenEnvironmentChoose": "Choose…",
+    "tokenEnvironmentDemo": "easyPos DEMO (test)",
+    "tokenEnvironmentProd": "easyPos production (live)",
+    "tokenEnvironmentHelp": "Must match the address above. A DEMO token with the production address (or the reverse) is refused when you save.",
+    "reviewRetryConfirm": "Before sending again: look up docId {{docId}} in easyPos. If it is already there, choose \"Found in easyPos\" instead. Sending an invoice easyPos already filed files the sale twice. Is it NOT in easyPos?",
+    "reviewAlreadyFiled": "easyPos already had this invoice. Its codes were recorded and nothing was sent again.",
     "reviewNotFound": "Not in easyPos",
     "reviewNotFoundHelp": "No invoice exists. The payment will be sent again.",
     "reviewNslf": "NSLF (optional)",

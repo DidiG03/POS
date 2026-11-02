@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { paginateTicketBlocks } from './kdsPagination';
+import {
+  KDS_BOARD_LIMIT,
+  kdsBoardRows, paginateTicketBlocks } from './kdsPagination';
 
 describe('paginateTicketBlocks', () => {
   it('returns one page when everything fits in the columns', () => {
@@ -44,5 +46,28 @@ describe('paginateTicketBlocks', () => {
 
   it('handles empty input', () => {
     expect(paginateTicketBlocks([], 4, 1000)).toEqual([]);
+  });
+});
+
+describe('KDS board beyond 200 tickets (QA v0.2.103)', () => {
+  it('reads the rows and how many are not shown', () => {
+    expect(
+      kdsBoardRows({ rows: [1, 2, 3], total: 503, fetched: 500 }),
+    ).toEqual({ rows: [1, 2, 3], notShown: 3 });
+    expect(kdsBoardRows({ rows: [1, 2], total: 2, fetched: 2 })).toEqual({
+      rows: [1, 2],
+      notShown: 0,
+    });
+  });
+
+  it('a till too old for totals answers the plain list: nothing known missing', () => {
+    expect(kdsBoardRows([1, 2])).toEqual({ rows: [1, 2], notShown: 0 });
+    expect(kdsBoardRows(null)).toEqual({ rows: [], notShown: 0 });
+  });
+
+  it('asks for well over the old 200, within what the till allows', async () => {
+    const { KDS_LIST_MAX } = await import('../../../main/services/kdsList');
+    expect(KDS_BOARD_LIMIT).toBeGreaterThan(200);
+    expect(KDS_BOARD_LIMIT).toBeLessThanOrEqual(KDS_LIST_MAX);
   });
 });

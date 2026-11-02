@@ -110,19 +110,41 @@ export function licenseFilePath(): string {
   return path.join(app.getPath('userData'), 'license.json');
 }
 
+/**
+ * Edition checks run several times per request (every Send and payment
+ * asks whether the Store plan blocks the floor), and each used to read and
+ * parse the license file from disk (QA v0.2.103, performance). Kept for a
+ * moment; a write from this process clears it, and a change made to the
+ * file by hand is seen within `LICENSE_CACHE_MS`.
+ */
+const LICENSE_CACHE_MS = 2_000;
+let licenseCache: { at: number; value: StoredLicense | null } | null = null;
+
 export function readStoredLicense(): StoredLicense | null {
+  const now = Date.now();
+  if (licenseCache && now - licenseCache.at < LICENSE_CACHE_MS) {
+    return licenseCache.value;
+  }
+  let value: StoredLicense | null = null;
   try {
     const raw = fs.readFileSync(licenseFilePath(), 'utf8');
     const j = JSON.parse(raw) as StoredLicense;
-    if (!j?.key) return null;
-    return j;
+    value = j?.key ? j : null;
   } catch {
-    return null;
+    value = null;
   }
+  licenseCache = { at: now, value };
+  return value;
 }
 
 export function writeStoredLicense(next: StoredLicense): void {
+  licenseCache = null;
   fs.writeFileSync(licenseFilePath(), JSON.stringify(next, null, 2), 'utf8');
+}
+
+/** @internal tests */
+export function clearStoredLicenseCacheForTests(): void {
+  licenseCache = null;
 }
 
 async function billingFetch(url: string, init: RequestInit): Promise<Response> {

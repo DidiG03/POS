@@ -476,11 +476,15 @@ export async function recordTicketSend(
     // sent: they were paid, voided or moved with that sitting. Refusing the
     // whole Send instead left the table unusable from that phone — every
     // new order carried the old lines and was refused again.
+    let billBefore: unknown = null;
+    let sessionKeyBefore: string | null = null;
+    let sittingReadOk = true;
     {
       const current = await findLatestTicketLogForCurrentSession(
         area,
         tableLabel,
-      ).catch(() => null);
+      ).catch(() => ((sittingReadOk = false), null));
+      billBefore = current;
       const closed = await closedSittingLines({
         area,
         tableLabel,
@@ -489,9 +493,10 @@ export async function recordTicketSend(
         latestItems: current
           ? (asTicketLogItems((current as any).itemsJson) as MergeLine[])
           : [],
-        sessionKey: await getCurrentTableSessionKey(area, tableLabel).catch(
-          () => null,
-        ),
+        sessionKey: (sessionKeyBefore = await getCurrentTableSessionKey(
+          area,
+          tableLabel,
+        ).catch(() => ((sittingReadOk = false), null))),
       });
       if (closed.sendKeys.size || closed.lineIds.size) {
         const fromOpenSitting = (raw: unknown) =>
@@ -549,12 +554,47 @@ export async function recordTicketSend(
       }
     }
 
+    // 2c. This Send starts the sitting's bill (the table is free, or was
+    // just opened and has no bill yet). A new bill has nothing to carry
+    // over. Lines keyed to a closed sitting were dropped in 2a; a fired line
+    // with no key at all cannot be from this Send (current clients key what
+    // they fire) nor from one still queued on the phone (also keyed), so it
+    // is a stale copy of a bill that was paid, voided or moved (older
+    // bills, lines a phone restored from its cache). Putting it on the new
+    // bill charged it twice (QA v0.2.103, H3). Only for a Send that marks
+    // its own lines: an older client marks none and must still get through.
+    const all = Array.isArray(input.items) ? input.items : [];
+    const marksOwnLines = all.some(
+      (l) => String((l as MergeLine)?.sendKey || '').trim() === idempotencyKey,
+    );
+    if (!billBefore && idempotencyKey && marksOwnLines) {
+      const carried = (raw: unknown) => {
+        const l = (raw || {}) as MergeLine;
+        return !String(l.sendKey || '').trim() && l.fired !== false;
+      };
+      const kept = all.filter((l) => !carried(l));
+      if (kept.length < all.length) {
+        console.warn(
+          `[tickets] ${area} ${tableLabel}: new bill drops ${all.length - kept.length} unkeyed line(s) carried from an earlier bill`,
+        );
+        input.items = kept;
+      }
+    }
+
     // 3.
-    await ensureOccupiedForTicketWrite(area, tableLabel);
+    const openedNow = await ensureOccupiedForTicketWrite(area, tableLabel);
+    // The table was already open and nothing was written since step 2a (we
+    // hold the table lock): the sitting read there is still current, so it
+    // is not read again (perf, QA v0.2.103: each read is several queries).
+    const sameSitting = openedNow === false && sittingReadOk;
 
     // 4. Scoped to the current sitting: tables are reused, and the last
     // writer of a previous party must not block the next one.
-    const ownerId = await getCurrentSessionOwnerId(area, tableLabel);
+    const ownerId = sameSitting
+      ? billBefore
+        ? Number((billBefore as any).userId)
+        : null
+      : await getCurrentSessionOwnerId(area, tableLabel);
     if (ownerId !== null && ownerId !== Number(input.userId)) {
       if (!(await isAdminUser(input.userId))) {
         const owner = await prisma.user
@@ -572,10 +612,11 @@ export async function recordTicketSend(
     }
 
     // 5.
-    const latest = await findLatestTicketLogForCurrentSession(
-      area,
-      tableLabel,
-    ).catch(() => null);
+    const latest = sameSitting
+      ? (billBefore as any)
+      : await findLatestTicketLogForCurrentSession(area, tableLabel).catch(
+          () => null,
+        );
     const latestItems = latest
       ? (asTicketLogItems((latest as any).itemsJson) as MergeLine[])
       : [];
@@ -623,9 +664,9 @@ export async function recordTicketSend(
     merged.items = withLineIds(merged.items);
     const firedNow = linesNewToBill(merged.items, latestItems);
 
-    const sessionKey = await getCurrentTableSessionKey(area, tableLabel).catch(
-      () => null,
-    );
+    const sessionKey = sameSitting
+      ? sessionKeyBefore
+      : await getCurrentTableSessionKey(area, tableLabel).catch(() => null);
     let outcome: 'written' | 'duplicate';
     try {
       outcome = await writeTicketSnapshot({

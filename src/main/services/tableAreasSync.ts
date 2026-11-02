@@ -17,6 +17,13 @@ export async function tableAreasFromDb(
  *  (which prefers live Area rows) matches what Admin just saved. */
 export async function syncTableAreasToDb(raw: unknown): Promise<void> {
   const areas = saneTableAreas(raw);
+  // Never a bulk delete: an empty (or all-unnamed) list used to deactivate
+  // every area on the floor (QA v0.2.103, #7). Saves are validated first
+  // (`tableAreasProblem`); this guard holds for anything that gets past.
+  if (areas.length === 0) {
+    console.warn('[areas] ignored a save with no named area');
+    return;
+  }
   for (let i = 0; i < areas.length; i++) {
     const a = areas[i];
     await prisma.area.upsert({

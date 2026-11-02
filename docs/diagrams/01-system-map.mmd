@@ -1,0 +1,72 @@
+%% 1. System map: which apps exist and how they connect.
+%% Layers: apps on the venue network → the till → printers and internet services.
+flowchart TB
+  subgraph APPS["Apps on the venue Wi-Fi / LAN"]
+    direction LR
+    WAITER["OneTap Waiter<br/>iPhone / Android"]
+    BROWSER["Tablet in a browser<br/>(Allow web access)"]
+    ADMIN["OneTap Admin<br/>desktop + iPad"]
+    KDS["OneTap KDS<br/>kitchen display + bump bar"]
+  end
+
+  subgraph TILL["OneTap POS: the till computer (Windows / Mac)"]
+    direction LR
+    TILLUI["Till screens<br/>tables · orders · pay · reports<br/><i>src/renderer</i>"]
+    RES["Reservations window<br/>(Host role)"]
+    LAN["LAN API server<br/>HTTP + live events (SSE)<br/><i>src/main/api.ts</i>"]
+    MDNS["mDNS<br/>announces the till<br/>so apps can find it"]
+    HOST["Host (main process)<br/>ALL business rules run here<br/><i>src/main/index.ts + services/</i>"]
+    DB[("Local database<br/>SQLite · plain or encrypted vault<br/><i>prisma/schema.prisma</i>")]
+    BAK[("Backups<br/>saved on this same computer<br/><i>services/dbBackups.ts</i>")]
+    TILLUI -- "IPC" --> HOST
+    RES -- "IPC" --> HOST
+    LAN --> HOST
+    HOST --> DB
+    DB -. "backup" .-> BAK
+  end
+
+  subgraph PRINT["Printers · ESC/POS over network, USB or serial"]
+    direction LR
+    RCPT["Receipt printer<br/>bills + fiscal receipts"]
+    STATION["Kitchen / bar printers<br/>order slips per station"]
+  end
+
+  subgraph NET["Internet services"]
+    direction LR
+    EASY["easyPos → tax office (CIS)<br/>fiskalizimi: invoices, cash balance<br/><i>src/main/services/fiscal</i>"]
+    BILL["Billing server<br/>Stripe + license keys<br/><i>server/</i>"]
+    SENTRY["Sentry<br/>error reports"]
+    UPD["GitHub Releases<br/>auto-updates"]
+  end
+
+  WAITER -- "paired device + PIN" --> LAN
+  BROWSER --> LAN
+  ADMIN -- "admin PIN" --> LAN
+  KDS -- "device pairing<br/>or kitchen staff PIN" --> LAN
+  MDNS -. "Waiter, Admin and KDS<br/>find the till automatically" .-> APPS
+
+  HOST -- "print jobs, retried<br/>if a printer is down" --> PRINT
+  HOST -- "fiskalizimi" --> EASY
+  HOST -- "license check" --> BILL
+  HOST -.-> SENTRY
+  HOST -.-> UPD
+
+  RISK["⚠ Single point of failure: every app needs this one till computer.<br/>If its disk fails, the backups on it are lost too: copy them elsewhere.<br/>Store edition (shop mode): same picture, a counter instead of tables."]
+  NET ~~~ RISK
+
+  classDef step fill:#e8f0fe,stroke:#3b6fd8,color:#0b1f44
+  classDef logic fill:#fff4e0,stroke:#d88a1d,color:#3d2400
+  classDef data fill:#e3f4f4,stroke:#178a8a,color:#06393a
+  classDef good fill:#e9f7ef,stroke:#2e9b5b,color:#0d3320
+  classDef warn fill:#fff9db,stroke:#e0a800,color:#3d2e00
+  classDef bad fill:#fdecec,stroke:#d64545,color:#4a0d0d
+  classDef ext fill:#f3e8fd,stroke:#8b4fd1,color:#2a0d4a
+  classDef device fill:#f1f3f5,stroke:#868e96,color:#212529
+  classDef note fill:#f8f9fa,stroke:#adb5bd,color:#343a40,stroke-dasharray:4 3
+  class WAITER,BROWSER,ADMIN,KDS,TILLUI,RES step
+  class HOST,LAN,MDNS logic
+  class DB data
+  class EASY,BILL,SENTRY,UPD ext
+  class RCPT,STATION device
+  class BAK data
+  class RISK warn

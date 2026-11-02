@@ -468,6 +468,7 @@
     "ready": "Gati"
   },
   "kds": {
+    "moreNotShown": "{{count}} të tjera nuk shfaqen",
     "bumpFailed": "Bileta nuk u hoq. Kontrollo lidhjen me POS.",
     "recallFailed": "Nuk u kthye bileta.",
     "loadFailed": "Nuk u ngarkuan biletat e kuzhinës.",
@@ -855,6 +856,18 @@
     "duplicateLabel": "Një tavolinë tjetër në këtë zonë quhet tashmë {{label}}. Jepini secilës tavolinë emrin e vet.",
     "labelRequired": "Çdo tavolinë duhet të ketë një emër."
   },
+  "zReport": {
+    "title": "Raporti Z (mbyllja e ditës)",
+    "help": "Mbyll periudhën që nga raporti Z i fundit: shitjet, TVSH, pagesat, fiskalizimi dhe arka. Çdo raport Z numërohet dhe ruhet në arkë; një riprintim shënohet KOPJE / COPY.",
+    "issue": "Printo raportin Z",
+    "confirm": "Të mbyllet periudha që nga raporti Z i fundit dhe të printohet raporti Z tani?",
+    "issued": "Raporti Z {{number}} u lëshua dhe u printua.",
+    "issuedNotPrinted": "Raporti Z {{number}} u lëshua dhe u ruajt, por nuk u printua. Printojeni përsëri nga lista.",
+    "reprinted": "Raporti Z {{number}} u printua përsëri (kopje).",
+    "reprint": "Printo kopje",
+    "salesCount": "{{count}} shitje",
+    "failed": "Raporti Z nuk u lëshua."
+  },
   "fiscal": {
     "loadFailed": "Cilësimet e fiskalizimit nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
     "shopVoidAction": "Anulo shitjen",
@@ -988,6 +1001,13 @@
     "reviewAttempts": "Përpjekje: {{count}}",
     "reviewFound": "U gjet në easyPos",
     "reviewFoundHelp": "Fatura ekziston. Shitja regjistrohet me këta numra dhe nuk dërgohet më.",
+    "tokenEnvironment": "Ky token është për",
+    "tokenEnvironmentChoose": "Zgjidhni…",
+    "tokenEnvironmentDemo": "easyPos DEMO (test)",
+    "tokenEnvironmentProd": "easyPos prodhim (live)",
+    "tokenEnvironmentHelp": "Duhet të përputhet me adresën më sipër. Një token DEMO me adresën e prodhimit (ose anasjelltas) refuzohet kur ruani.",
+    "reviewRetryConfirm": "Para se ta dërgoni përsëri: kërkoni docId {{docId}} në easyPos. Nëse është aty, zgjidhni \"U gjet në easyPos\". Dërgimi i një fature që easyPos e ka regjistruar e fiskalizon shitjen dy herë. A NUK është në easyPos?",
+    "reviewAlreadyFiled": "easyPos e kishte këtë faturë. Kodet u ruajtën dhe asgjë nuk u dërgua përsëri.",
     "reviewNotFound": "Nuk është në easyPos",
     "reviewNotFoundHelp": "Nuk ekziston faturë. Pagesa do të dërgohet përsëri.",
     "reviewNslf": "NSLF (opsionale)",

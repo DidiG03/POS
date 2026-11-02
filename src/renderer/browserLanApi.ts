@@ -1766,6 +1766,19 @@ export function installBrowserLanApi(): void {
           body: JSON.stringify(input ?? {}),
         });
       },
+      async issueZReport() {
+        return await goLan('/admin/z-report', { method: 'POST', body: '{}' });
+      },
+      async listZReports() {
+        const rows = await goLan('/admin/z-reports');
+        return Array.isArray(rows) ? rows : [];
+      },
+      async reprintZReport(input: { number: number }) {
+        return await goLan('/admin/z-report/reprint', {
+          method: 'POST',
+          body: JSON.stringify(input ?? {}),
+        });
+      },
       async eraseTickets(input: { confirm: string }) {
         return await goLan('/admin/erase-tickets', {
           method: 'POST',
@@ -1862,6 +1875,7 @@ export function installBrowserLanApi(): void {
           limit: String(limit),
         });
         if (input?.cooker) q.set('cooker', '1');
+        if (input?.withTotal) q.set('withTotal', '1');
         return await goLan(`/kds/tickets?${q.toString()}`);
       },
       async listFloorOrders() {
