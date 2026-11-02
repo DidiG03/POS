@@ -25,6 +25,7 @@ vi.mock('electron', () => ({
 import {
   LICENSE_REVALIDATE_MS,
   getLicenseStatus,
+  clearStoredLicenseCacheForTests,
   readStoredLicense,
   writeStoredLicense,
   type StoredLicense,
@@ -55,6 +56,8 @@ function billingAnswers(body: Record<string, unknown>) {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  // The file is deleted behind the 2s read cache, which the app never does.
+  clearStoredLicenseCacheForTests();
   try {
     fs.unlinkSync(path.join(dir, 'license.json'));
   } catch {
