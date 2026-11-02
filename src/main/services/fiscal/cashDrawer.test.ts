@@ -5,16 +5,31 @@ const h = vi.hoisted(() => ({
   initiate: vi.fn(),
   deposit: vi.fn(),
   withdraw: vi.fn(),
+  opening: vi.fn(async (): Promise<any> => null),
   enabled: true,
+  store: new Map<string, any>(),
 }));
 vi.mock('./balance', () => ({
   initiateDailyBalance: h.initiate,
   depositCash: h.deposit,
   withdrawCash: h.withdraw,
+  readDailyBalanceRecord: h.opening,
 }));
 vi.mock('./index', () => ({ isFiscalEnabled: () => h.enabled }));
+vi.mock('@db/client', () => ({
+  prisma: {
+    syncState: {
+      findUnique: async ({ where }: any) =>
+        h.store.has(where.key) ? { valueJson: h.store.get(where.key) } : null,
+      upsert: async ({ where, update }: any) => {
+        h.store.set(where.key, update.valueJson);
+        return {};
+      },
+    },
+  },
+}));
 
-import { declareCash } from './cashDrawer';
+import { declareCash, listCashDeclarations } from './cashDrawer';
 
 const settings = {} as any;
 
@@ -22,6 +37,8 @@ describe('declareCash', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.enabled = true;
+    h.store.clear();
+    h.opening.mockResolvedValue(null);
     h.initiate.mockResolvedValue({ kind: 'complete', docId: 'd1', fcdc: 'F1' });
     h.deposit.mockResolvedValue({ kind: 'complete', docId: 'd2', fcdc: 'F2' });
     h.withdraw.mockResolvedValue({ kind: 'complete', docId: 'd3', fcdc: 'F3' });
@@ -43,8 +60,15 @@ describe('declareCash', () => {
       amount: 5000,
       docId: 'cash-abc-123-key',
     });
-    await declareCash(settings, { kind: 'withdraw', amount: 2000 });
-    expect(h.withdraw).toHaveBeenCalledWith(settings, { amount: 2000 });
+    await declareCash(settings, {
+      kind: 'withdraw',
+      amount: 2000,
+      requestKey: 'def-456-key',
+    });
+    expect(h.withdraw).toHaveBeenCalledWith(settings, {
+      amount: 2000,
+      docId: 'cash-def-456-key',
+    });
   });
 
   it('refuses bad amounts and a till that does not fiscalise', async () => {
@@ -69,11 +93,94 @@ describe('declareCash', () => {
       message: 'Balanca ditore nuk është deklaruar',
     });
     expect(
-      await declareCash(settings, { kind: 'deposit', amount: 100 }),
+      await declareCash(settings, {
+        kind: 'deposit',
+        amount: 100,
+        requestKey: 'ghi-789-key',
+      }),
     ).toEqual({
       ok: false,
       error: 'Balanca ditore nuk është deklaruar',
       docId: 'd9',
     });
+  });
+});
+
+describe('cash declarations (QA v0.2.103 #9)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.enabled = true;
+    h.store.clear();
+    h.opening.mockResolvedValue(null);
+    h.deposit.mockResolvedValue({ kind: 'complete', docId: 'd2', fcdc: 'F2' });
+    h.initiate.mockResolvedValue({ kind: 'complete', docId: 'd1', fcdc: 'F1' });
+  });
+
+  it('refuses cash in/out without a request key, so a retry cannot declare it twice', async () => {
+    for (const kind of ['deposit', 'withdraw'] as const) {
+      const r = await declareCash(settings, { kind, amount: 500 });
+      expect(r).toMatchObject({ ok: false });
+      expect((r as any).error).toMatch(/request key/);
+    }
+    expect(h.deposit).not.toHaveBeenCalled();
+    expect(h.withdraw).not.toHaveBeenCalled();
+  });
+
+  it('a retried declaration uses the same document', async () => {
+    const ask = { kind: 'deposit', amount: 500, requestKey: 'same-key-1' };
+    await declareCash(settings, ask);
+    await declareCash(settings, ask);
+    expect(h.deposit.mock.calls.map((c) => c[1].docId)).toEqual([
+      'cash-same-key-1',
+      'cash-same-key-1',
+    ]);
+  });
+
+  it('says so when the opening float was already declared for another amount', async () => {
+    h.opening.mockResolvedValue({
+      state: 'COMPLETE',
+      amount: 0,
+      docId: 'auto-1',
+      updatedAt: new Date().toISOString(),
+    });
+    const r = await declareCash(settings, { kind: 'opening', amount: 15_000 });
+    expect(r).toMatchObject({ ok: false, docId: 'auto-1' });
+    expect((r as any).error).toMatch(/already declared: 0\.00 lekë/);
+    expect((r as any).error).toMatch(/cash in \(15000\.00 lekë\)/);
+    // Nothing is sent: easyPos takes one opening float a day.
+    expect(h.initiate).not.toHaveBeenCalled();
+  });
+
+  it('the same float entered again is fine', async () => {
+    h.opening.mockResolvedValue({ state: 'COMPLETE', amount: 15_000 });
+    h.initiate.mockResolvedValue({ kind: 'already-declared', docId: 'd1' });
+    const r = await declareCash(settings, { kind: 'opening', amount: 15_000 });
+    expect(r).toMatchObject({ ok: true, kind: 'already-declared' });
+  });
+
+  it('keeps a local record of every declaration, refused ones included', async () => {
+    await declareCash(settings, {
+      kind: 'deposit',
+      amount: 500,
+      requestKey: 'rec-key-1',
+      actorUserId: 4,
+    });
+    await declareCash(settings, { kind: 'withdraw', amount: 200 });
+    await declareCash(settings, { kind: 'opening', amount: 1000 });
+    const log = await listCashDeclarations();
+    expect(log).toHaveLength(3);
+    expect(log[0]).toMatchObject({
+      kind: 'deposit',
+      amount: 500,
+      requestKey: 'rec-key-1',
+      actorUserId: 4,
+      ok: true,
+      outcome: 'complete',
+      docId: 'd2',
+      fcdc: 'F2',
+    });
+    expect(log[1]).toMatchObject({ kind: 'withdraw', ok: false });
+    expect(log[1].error).toMatch(/request key/);
+    expect(log[2]).toMatchObject({ kind: 'opening', ok: true });
   });
 });

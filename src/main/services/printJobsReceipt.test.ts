@@ -96,6 +96,22 @@ describe('a guest receipt that never printed', () => {
     expect(h.rows[0].status).toBe('SENT');
   });
 
+  it('once it has printed, every reprint is a marked copy, never a second original (QA v0.2.103 #5)', async () => {
+    // First reprint: it never printed, so it goes out as the receipt.
+    await reprintStationPrintJob(41, { userId: 7, role: 'WAITER' });
+    expect(h.rows[0].status).toBe('SENT');
+    // A manager reprints the printed job again.
+    const r = await reprintStationPrintJob(41, { userId: 1, role: 'ADMIN' });
+    expect(r.ok).toBe(true);
+    expect(h.dispatched).toHaveLength(2);
+    const second = h.dispatched[1];
+    expect(second.meta.reprint).toBe(true);
+    expect(second.meta.reprintOfIso).toBeTruthy();
+    // Marked on paper as KOPJE / COPY.
+    const { isReceiptCopy } = await import('../print');
+    expect(isReceiptCopy('PAYMENT', second.meta)).toBe(true);
+  });
+
   it('alerts the waiter and the till with what did not print', async () => {
     await notifyStationPrintFailed({
       payload: receipt.payloadJson,

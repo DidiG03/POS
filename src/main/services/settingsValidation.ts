@@ -33,6 +33,8 @@ export const INVALID_SETTINGS = 'INVALID_SETTINGS';
 export const FISCAL_ADDRESS_REQUIRED = 'FISCAL_ADDRESS_REQUIRED';
 export const FISCAL_TOKEN_ENVIRONMENT_MISMATCH =
   'FISCAL_TOKEN_ENVIRONMENT_MISMATCH';
+export const FISCAL_TOKEN_ENVIRONMENT_REQUIRED =
+  'FISCAL_TOKEN_ENVIRONMENT_REQUIRED';
 
 function refuse(message: string, code = INVALID_SETTINGS): never {
   throw Object.assign(new Error(message), { code, statusCode: 400 });
@@ -42,6 +44,31 @@ const has = (o: unknown, k: string) =>
   Boolean(o) &&
   typeof o === 'object' &&
   Object.prototype.hasOwnProperty.call(o, k);
+
+/**
+ * Why a list of table areas cannot be saved, or null.
+ *
+ * An area with an empty name used to be dropped silently on save; when that
+ * left no area at all, every area on the floor was deactivated (QA v0.2.103,
+ * #7). A name is required, names are unique, and a save never empties the
+ * list: an area is removed by saving the list without it.
+ */
+export function tableAreasProblem(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) return 'Table areas must be a list.';
+  if (raw.length === 0) {
+    return 'Keep at least one table area. Remove an area by saving the list without it.';
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < raw.length; i++) {
+    const name = String((raw[i] as any)?.name ?? '').trim();
+    if (!name) return `Table area ${i + 1} has no name. Enter a name for it.`;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return `There are two table areas called "${name}".`;
+    seen.add(key);
+  }
+  return null;
+}
 
 /** Why `rate` is not a usable exchange rate, or null (unset is fine). */
 export function exchangeRateProblem(rate: unknown): string | null {
@@ -159,6 +186,11 @@ export function assertSettingsPatch(
     }
   }
 
+  if (has(input, 'tableAreas')) {
+    const problem = tableAreasProblem(input.tableAreas);
+    if (problem) refuse(problem);
+  }
+
   if (input.fiscal && has(input.fiscal, 'operatorCodes')) {
     const problem = operatorCodesProblem(input.fiscal.operatorCodes);
     if (problem) refuse(problem);
@@ -190,18 +222,47 @@ export function assertSettingsPatch(
     prevEnv !== 'local'
       ? prevEnv
       : null;
+  const label = (e: string) => (e === 'dev' ? 'DEMO (test)' : 'production');
+  // A new token for easyPos Cloud must say which service it is for: its
+  // own claims, or the environment chosen with it in the save. It used to
+  // be assumed to belong to whatever address it was saved with, so a DEMO
+  // token could be saved next to the production address and every invoice
+  // was then refused (QA v0.2.103, #8).
+  const stated = String(input.fiscal.tokenEnvironment ?? '')
+    .trim()
+    .toLowerCase();
+  if (stated && stated !== 'dev' && stated !== 'prod') {
+    refuse(
+      'The fiscal token environment must be DEMO (test) or production.',
+      FISCAL_TOKEN_ENVIRONMENT_REQUIRED,
+    );
+  }
+  const claimed = tokenClaimedEnvironment(newToken || fiscalNow.authToken);
+  if (newToken) {
+    if (claimed && stated && claimed !== stated) {
+      refuse(
+        `The token itself is for the easyPos ${label(claimed)} service, not ${label(stated)}.`,
+        FISCAL_TOKEN_ENVIRONMENT_MISMATCH,
+      );
+    }
+    if (!claimed && !stated) {
+      refuse(
+        `Choose which easyPos service this token is for (DEMO (test) or production). The address is the ${label(urlEnv)} one.`,
+        FISCAL_TOKEN_ENVIRONMENT_REQUIRED,
+      );
+    }
+  }
   const tokenEnv =
-    tokenClaimedEnvironment(newToken || fiscalNow.authToken) ??
+    claimed ??
     (newToken
-      ? null
+      ? ((stated || null) as Exclude<FiscalEnvironment, 'local'> | null)
       : (fiscalNow.tokenEnvironment ?? keptFromPrevious ?? null));
   if (tokenEnv && tokenEnv !== 'local' && tokenEnv !== urlEnv) {
-    const label = (e: string) => (e === 'dev' ? 'DEMO (test)' : 'production');
     refuse(
       `The fiscal token is for the easyPos ${label(tokenEnv)} service, but the address is the ${label(urlEnv)} one. Enter the ${label(urlEnv)} token with the ${label(urlEnv)} address.`,
       FISCAL_TOKEN_ENVIRONMENT_MISMATCH,
     );
   }
-  // A new token is taken to be for the address it is saved with.
+  // Matches the address (checked above): recorded for later saves.
   return newToken ? urlEnv : (tokenEnv ?? fiscalNow.tokenEnvironment);
 }

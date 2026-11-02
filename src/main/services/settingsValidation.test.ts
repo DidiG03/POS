@@ -93,7 +93,13 @@ describe('fiscal address and token', () => {
     const saved = { fiscal: { baseUrl: DEMO, authToken: 'demo-token' } };
     expect(
       assertSettingsPatch(
-        { fiscal: { baseUrl: PROD, authToken: 'live-token' } },
+        {
+          fiscal: {
+            baseUrl: PROD,
+            authToken: 'live-token',
+            tokenEnvironment: 'prod',
+          },
+        },
         saved,
       ),
     ).toBe('prod');
@@ -167,6 +173,133 @@ describe('seller address for fiscal receipts', () => {
         { fiscal: { enabled: true, defaultSoldIn: 'XPP' } },
         { fiscal: { enabled: true } },
       ),
+    ).not.toThrow();
+  });
+});
+
+describe('a new fiscal token says which easyPos service it is for (QA v0.2.103 #8)', () => {
+  it('refuses a new token with no environment next to an easyPos Cloud address', () => {
+    for (const url of [PROD, DEMO]) {
+      expect(() =>
+        assertSettingsPatch({ fiscal: { baseUrl: url, authToken: 't' } }, {}),
+      ).toThrow(
+        expect.objectContaining({ code: 'FISCAL_TOKEN_ENVIRONMENT_REQUIRED' }),
+      );
+    }
+  });
+
+  it('refuses a stated environment that does not match the address host', () => {
+    expect(() =>
+      assertSettingsPatch(
+        { fiscal: { baseUrl: PROD, authToken: 't', tokenEnvironment: 'dev' } },
+        {},
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'FISCAL_TOKEN_ENVIRONMENT_MISMATCH',
+        message: expect.stringMatching(/DEMO \(test\).*production/),
+      }),
+    );
+    expect(() =>
+      assertSettingsPatch(
+        { fiscal: { baseUrl: DEMO, authToken: 't', tokenEnvironment: 'x' } },
+        {},
+      ),
+    ).toThrow(/DEMO \(test\) or production/);
+  });
+
+  it('refuses a stated environment that contradicts the token itself', () => {
+    const demoJwt = jwt({ iss: 'https://api.dev.easypos.al' });
+    expect(() =>
+      assertSettingsPatch(
+        {
+          fiscal: {
+            baseUrl: PROD,
+            authToken: demoJwt,
+            tokenEnvironment: 'prod',
+          },
+        },
+        {},
+      ),
+    ).toThrow(/DEMO/);
+  });
+
+  it('saves a matching token and records its environment', () => {
+    expect(
+      assertSettingsPatch(
+        { fiscal: { baseUrl: DEMO, authToken: 't', tokenEnvironment: 'dev' } },
+        {},
+      ),
+    ).toBe('dev');
+    // A token that names its environment needs nothing more.
+    expect(
+      assertSettingsPatch(
+        { fiscal: { baseUrl: PROD, authToken: jwt({ env: 'production' }) } },
+        {},
+      ),
+    ).toBe('prod');
+  });
+
+  it('leaves the local middleware and saves without a new token alone', () => {
+    expect(
+      assertSettingsPatch(
+        { fiscal: { baseUrl: 'http://127.0.0.1:8080', authToken: 't' } },
+        {},
+      ),
+    ).toBe('local');
+    expect(() =>
+      assertSettingsPatch(
+        { fiscal: { baseUrl: PROD, defaultSoldIn: 'XPP' } },
+        {
+          fiscal: { baseUrl: PROD, authToken: 't', tokenEnvironment: 'prod' },
+        },
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe('table areas on save (QA v0.2.103 #7)', () => {
+  it('refuses an area with an empty name, instead of deleting areas', () => {
+    expect(() =>
+      assertSettingsPatch(
+        {
+          tableAreas: [
+            { name: 'Salla', count: 8 },
+            { name: '  ', count: 4 },
+          ],
+        },
+        {},
+      ),
+    ).toThrow(/Table area 2 has no name/);
+    expect(() =>
+      assertSettingsPatch({ tableAreas: [{ name: '', count: 8 }] }, {}),
+    ).toThrow(/has no name/);
+  });
+
+  it('refuses an empty list and duplicate names', () => {
+    expect(() => assertSettingsPatch({ tableAreas: [] }, {})).toThrow(
+      /at least one table area/,
+    );
+    expect(() =>
+      assertSettingsPatch(
+        { tableAreas: [{ name: 'Salla' }, { name: 'salla ' }] },
+        {},
+      ),
+    ).toThrow(/two table areas called/);
+    expect(() => assertSettingsPatch({ tableAreas: 'Salla' }, {})).toThrow(
+      /must be a list/,
+    );
+  });
+
+  it('saves a proper list, and saves that do not touch areas', () => {
+    expect(() =>
+      assertSettingsPatch(
+        { tableAreas: [{ name: 'Salla', count: 8 }, { name: 'Ballkoni' }] },
+        {},
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSettingsPatch({ restaurantName: 'X' }, {}),
     ).not.toThrow();
   });
 });

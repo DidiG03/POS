@@ -228,3 +228,55 @@ describe('the same requested line twice (QA round 6, #6)', () => {
     expect(b).toEqual({ id: a.id, created: false });
   });
 });
+
+describe('several identical requests at the same moment (QA v0.2.103 #6)', () => {
+  const ask = {
+    requesterId: 3,
+    ownerId: 5,
+    area: 'Salla',
+    tableLabel: '4',
+    items: [{ name: 'Kafe', qty: 2 }],
+    note: null,
+  };
+
+  beforeEach(() => {
+    requests.clear();
+    notifications.length = 0;
+  });
+
+  it('creates one request, not one per arrival', async () => {
+    // A write takes a moment, as it does on disk: every arrival has read
+    // "nothing yet" before the first write lands.
+    const prisma = (await import('@db/client')).prisma as any;
+    const realCreate = prisma.ticketRequest.create.getMockImplementation();
+    let writes = 0;
+    prisma.ticketRequest.create.mockImplementation(async (args: any) => {
+      writes += 1;
+      await new Promise((r) => setTimeout(r, 5));
+      return realCreate(args);
+    });
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () => createTicketRequest(ask)),
+      );
+      expect(writes).toBe(1);
+      expect(results.filter((r) => r.created)).toHaveLength(1);
+      expect(new Set(results.map((r) => r.id)).size).toBe(1);
+      expect(notifications).toHaveLength(1);
+
+      // The same for the per-line ids the phone sends.
+      requests.clear();
+      writes = 0;
+      const withIds = {
+        ...ask,
+        items: [{ requestLineId: 'l9', name: 'Uje', qty: 1 }],
+      };
+      await Promise.all(
+        Array.from({ length: 5 }, () => createTicketRequest(withIds)),
+      );
+      expect(writes).toBe(1);
+    } finally {
+      prisma.ticketRequest.create.mockImplementation(realCreate);
+    }
+  });
+});

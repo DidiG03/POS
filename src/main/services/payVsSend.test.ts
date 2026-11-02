@@ -24,7 +24,9 @@ vi.hoisted(() => {
   const dir = require('node:fs').mkdtempSync(
     require('node:path').join(require('node:os').tmpdir(), 'pay-vs-send-'),
   );
-  process.env.DATABASE_URL = `file:${dir}/pos.db`;
+  // One connection: the migrator's BEGIN and COMMIT must share it (under a
+  // busy parallel run the pool split them: "no transaction is active").
+  process.env.DATABASE_URL = `file:${dir}/pos.db?connection_limit=1`;
   (globalThis as any).__payVsSendDir = dir;
 });
 
@@ -65,7 +67,7 @@ beforeAll(async () => {
   const res = await runPendingMigrations(
     path.join(__dirname, '..', '..', '..', 'prisma', 'migrations'),
   );
-  expect(res.failed).toBeNull();
+  expect(res.failed, JSON.stringify(res.failed)).toBeNull();
   const cat = await prisma.category.create({ data: { name: 'Salads' } });
   for (const [sku, name, price] of [
     ['ULL', 'Sallatë Ullishtja', 600],

@@ -1426,6 +1426,10 @@ function FiscalSettings() {
   const [provider, setProvider] = useState<'easypos'>('easypos');
   const [baseUrl, setBaseUrl] = useState('http://127.0.0.1:8080');
   const [authToken, setAuthToken] = useState('');
+  // Which easyPos service a newly entered token is for (QA v0.2.103, #8).
+  const [tokenEnvironment, setTokenEnvironment] = useState<'' | 'dev' | 'prod'>(
+    '',
+  );
   const [authTokenConfigured, setAuthTokenConfigured] = useState(false);
   const [integrationApp, setIntegrationApp] = useState('');
   const [defaultOperatorId, setDefaultOperatorId] = useState('');
@@ -1543,7 +1547,10 @@ function FiscalSettings() {
       provider,
       baseUrl: url || 'http://127.0.0.1:8080',
       ...(options.withToken !== false && authToken.trim()
-        ? { authToken: authToken.trim() }
+        ? {
+            authToken: authToken.trim(),
+            ...(tokenEnvironment ? { tokenEnvironment } : {}),
+          }
         : {}),
       integrationApp: String(integrationApp || '').trim() || undefined,
       defaultOperatorId: String(defaultOperatorId || '').trim() || undefined,
@@ -1822,6 +1829,34 @@ function FiscalSettings() {
                 {authTokenConfigured && !authToken.trim() ? (
                   <div className="text-xs text-emerald-400 mt-1">
                     {t('fiscal.authTokenStored')}
+                  </div>
+                ) : null}
+                {authToken.trim() && /easypos\.al/i.test(baseUrl) ? (
+                  <div className="mt-2">
+                    <div className="text-xs mb-1">
+                      {t('fiscal.tokenEnvironment')}
+                    </div>
+                    <select
+                      className="bg-gray-700 rounded px-3 py-2 w-full"
+                      value={tokenEnvironment}
+                      onChange={(e) =>
+                        setTokenEnvironment(e.target.value as 'dev' | 'prod')
+                      }
+                      disabled={!enabled}
+                    >
+                      <option value="" disabled>
+                        {t('fiscal.tokenEnvironmentChoose')}
+                      </option>
+                      <option value="dev">
+                        {t('fiscal.tokenEnvironmentDemo')}
+                      </option>
+                      <option value="prod">
+                        {t('fiscal.tokenEnvironmentProd')}
+                      </option>
+                    </select>
+                    <div className="text-[11px] opacity-60 mt-1">
+                      {t('fiscal.tokenEnvironmentHelp')}
+                    </div>
                   </div>
                 ) : null}
                 {tokenHint?.configured ? (

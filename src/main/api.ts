@@ -2864,7 +2864,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const body = (await parseJson(req)) || {};
         const settings = await coreServices.readSettings();
         const { declareCash } = await import('./services/fiscal/cashDrawer');
-        const result = await declareCash(settings as any, body);
+        const result = await declareCash(settings as any, {
+          ...body,
+          actorUserId: auth?.userId ?? null,
+        });
         return send(res, result.ok ? 200 : 400, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/settings/fiscal-test') {

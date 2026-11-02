@@ -696,11 +696,11 @@ describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
     const original = buildEscposTicket(paid(), settings).toString('latin1');
     expect(original).not.toContain('COPY');
     const copy = buildEscposTicket(paid({ reprint: true }), settings);
-    expect(copy.toString('latin1')).toContain('*** COPY - REPRINT ***');
+    expect(copy.toString('latin1')).toContain('*** KOPJE / COPY ***');
     // ...and opens no drawer.
     expect(copy.includes(cmdOpenCashDrawer(0))).toBe(false);
     const html = buildHtmlReceipt(paid({ reprint: true }), settings);
-    expect(html).toContain('COPY - REPRINT');
+    expect(html).toContain('KOPJE / COPY');
   });
 
   it('F4b: a late-filed receipt shows the sale time and when it was filed', () => {

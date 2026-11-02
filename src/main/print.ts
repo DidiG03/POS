@@ -816,6 +816,11 @@ export function buildEscposTicket(
       lines.push(cmdAlign('center'));
       lines.push(cmdBold(true));
       lines.push(escposText(`${copy.fiscalRegistered}\n`));
+      // A copy says so at the fiscal block too, so the block on its own
+      // (or a torn-off bottom) never passes for a second original.
+      if (isReceiptCopy(kind, meta)) {
+        lines.push(escposText(`${copy.receiptCopyBanner}\n`));
+      }
       lines.push(cmdBold(false));
       if (fiscalNivf) {
         for (const ln of wrapEscposText(
@@ -1002,7 +1007,7 @@ export function buildHtmlReceipt(
       : fiscalKind === 'PAYMENT' &&
           meta?.fiscalEnabled &&
           isFiscalRegistered(meta as any)
-        ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalRegistered)}</div>${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalDocLines(
+        ? `<div class="sep"></div><div class="paid">${safe(copy.fiscalRegistered)}</div>${isReceiptCopy(kind, meta) ? `<div class="paid">${safe(copy.receiptCopyBanner)}</div>` : ''}${fiscalNivf ? `<div class="small">NIVF: ${safe(fiscalNivf)}</div>` : ''}${fiscalNslf ? `<div class="small">NSLF: ${safe(fiscalNslf)}</div>` : ''}${fiscalDocLines(
             meta,
             settings,
           )

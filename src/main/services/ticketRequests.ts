@@ -13,6 +13,7 @@
  * did that, so both now share this one implementation.
  */
 import { prisma } from '@db/client';
+import { KeyedAsyncMutex } from '@shared/asyncMutex';
 
 export type TicketRequestDecision = 'APPROVED' | 'REJECTED';
 
@@ -122,7 +123,33 @@ export const REQUEST_RETRY_WINDOW_MS = 60_000;
  * added the items twice. An identical PENDING request from the same waiter
  * within {@link REQUEST_RETRY_WINDOW_MS} is now treated as that retry.
  */
+/**
+ * One request decision at a time per requester and table. The duplicate
+ * checks below read and then create; several identical requests arriving
+ * together (a double tap, the phone's retry overlapping the first POST,
+ * the till and the phone) all passed the read before any of them wrote,
+ * and each created its own request (QA v0.2.103, #6). The till is the only
+ * process writing this database, so serialising here makes check-and-
+ * create atomic.
+ */
+const requestLocks = new KeyedAsyncMutex();
+
 export async function createTicketRequest(input: {
+  requesterId: number;
+  ownerId: number;
+  area: string;
+  tableLabel: string;
+  items: unknown[];
+  note?: string | null;
+  now?: number;
+}): Promise<{ id: number; created: boolean }> {
+  const lockKey = `${Number(input.requesterId)}\u001f${String(input.area)}\u001f${String(input.tableLabel)}`;
+  return requestLocks.runExclusive(lockKey, () =>
+    createTicketRequestUnlocked(input),
+  );
+}
+
+async function createTicketRequestUnlocked(input: {
   requesterId: number;
   ownerId: number;
   area: string;

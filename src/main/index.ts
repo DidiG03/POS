@@ -2459,9 +2459,12 @@ ipcHandle('network:getIps', async () => {
 });
 
 // Cash declared to the tax service (see `/fiscal/cash-declaration`).
-ipcHandle('fiscal:declareCash', async (_e, input) => {
+ipcHandle('fiscal:declareCash', async (_e, input, ctx) => {
   const { declareCash } = await import('./services/fiscal/cashDrawer');
-  return declareCash((await readSettings()) as any, input || {});
+  return declareCash((await readSettings()) as any, {
+    ...(input || {}),
+    actorUserId: ctx?.session?.userId ?? null,
+  });
 });
 
 ipcHandle('settings:testFiscalConnection', async () => {
