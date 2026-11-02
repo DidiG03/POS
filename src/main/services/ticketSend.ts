@@ -476,11 +476,13 @@ export async function recordTicketSend(
     // sent: they were paid, voided or moved with that sitting. Refusing the
     // whole Send instead left the table unusable from that phone — every
     // new order carried the old lines and was refused again.
+    let billBefore: unknown = null;
     {
       const current = await findLatestTicketLogForCurrentSession(
         area,
         tableLabel,
       ).catch(() => null);
+      billBefore = current;
       const closed = await closedSittingLines({
         area,
         tableLabel,
@@ -546,6 +548,33 @@ export async function recordTicketSend(
           error: ORDER_AFTER_CLOSE_MESSAGE,
           code: 'TABLE_CLOSED' as const,
         };
+      }
+    }
+
+    // 2c. This Send starts the sitting's bill (the table is free, or was
+    // just opened and has no bill yet). A new bill has nothing to carry
+    // over. Lines keyed to a closed sitting were dropped in 2a; a fired line
+    // with no key at all cannot be from this Send (current clients key what
+    // they fire) nor from one still queued on the phone (also keyed), so it
+    // is a stale copy of a bill that was paid, voided or moved (older
+    // bills, lines a phone restored from its cache). Putting it on the new
+    // bill charged it twice (QA v0.2.103, H3). Only for a Send that marks
+    // its own lines: an older client marks none and must still get through.
+    const all = Array.isArray(input.items) ? input.items : [];
+    const marksOwnLines = all.some(
+      (l) => String((l as MergeLine)?.sendKey || '').trim() === idempotencyKey,
+    );
+    if (!billBefore && idempotencyKey && marksOwnLines) {
+      const carried = (raw: unknown) => {
+        const l = (raw || {}) as MergeLine;
+        return !String(l.sendKey || '').trim() && l.fired !== false;
+      };
+      const kept = all.filter((l) => !carried(l));
+      if (kept.length < all.length) {
+        console.warn(
+          `[tickets] ${area} ${tableLabel}: new bill drops ${all.length - kept.length} unkeyed line(s) carried from an earlier bill`,
+        );
+        input.items = kept;
       }
     }
 

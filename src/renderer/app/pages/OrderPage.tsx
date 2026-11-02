@@ -4978,48 +4978,54 @@ export default function OrderPage() {
                     suppressFreeOnEmptyRef.current = true;
                     setCoversKnown(num);
                     setOpen(selectedTable.area, selectedTable.label, true);
-                    // IMPORTANT: when opening a table in cloud mode,
-                    // set "open" first so the cloud "openAt" timestamp
-                    // exists BEFORE we write covers/tickets (tooltip
-                    // uses openAt as the session start).
-                    // PR 4a: route through the queue so an offline
-                    // open-and-send still records the table-open and
-                    // covers (the ticket itself is already covered by
-                    // logTicket → 'tickets.log'). Live attempts are
-                    // budgeted so a slow host cannot hold this lock
-                    // for the native 15s×2 window.
-                    await tryOrQueue(
-                      'tables.setOpen',
-                      {
-                        area: selectedTable.area,
-                        label: selectedTable.label,
-                        open: true,
-                      },
-                      {
-                        dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
-                      },
-                    ).catch((e: unknown) => {
-                      reportAppError(e, {
-                        fallback: t('order.toastTryAgain'),
-                        key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                    // The till opens the table itself, inside the Send and
+                    // under the table lock. Opening it from here first raced
+                    // a payment on another device: this open started a new
+                    // sitting just after that payment, and the Send that
+                    // followed landed on it with the phone's copy of the
+                    // paid bill (QA v0.2.103, H3). So with lines to send,
+                    // the Send opens the table and the guest count is saved
+                    // after it, inside the new sitting. Only "open with
+                    // guests, nothing ordered yet" still opens it here.
+                    const willSend = useTicketStore
+                      .getState()
+                      .lines.some((l) => l.staged && !l.voided);
+                    const saveCovers = () =>
+                      tryOrQueue(
+                        'covers.save',
+                        {
+                          area: selectedTable.area,
+                          label: selectedTable.label,
+                          covers: num,
+                        },
+                        {
+                          dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                        },
+                      ).catch((e: unknown) => {
+                        reportAppError(e, {
+                          fallback: t('order.toastTryAgain'),
+                          key: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                        });
                       });
-                    });
-                    await tryOrQueue(
-                      'covers.save',
-                      {
-                        area: selectedTable.area,
-                        label: selectedTable.label,
-                        covers: num,
-                      },
-                      {
-                        dedupeKey: `covers.save:${selectedTable.area}:${selectedTable.label}`,
-                      },
-                    ).catch((e: unknown) => {
-                      reportAppError(e, {
-                        fallback: t('order.toastTryAgain'),
-                        key: `covers.save:${selectedTable.area}:${selectedTable.label}`,
+                    if (!willSend) {
+                      await tryOrQueue(
+                        'tables.setOpen',
+                        {
+                          area: selectedTable.area,
+                          label: selectedTable.label,
+                          open: true,
+                        },
+                        {
+                          dedupeKey: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                        },
+                      ).catch((e: unknown) => {
+                        reportAppError(e, {
+                          fallback: t('order.toastTryAgain'),
+                          key: `tables.setOpen:${selectedTable.area}:${selectedTable.label}`,
+                        });
                       });
-                    });
+                      await saveCovers();
+                    }
                     setCoversKnown(num);
                     setShowCovers(false);
                     if (!user?.id) return;
@@ -5029,6 +5035,7 @@ export default function OrderPage() {
                       printKitchen: printStationTickets,
                     });
                     if (!fired.ok) return;
+                    if (willSend) await saveCovers();
                     // The host opened the table inside the ticket write.
                     // Drop any handed-off `open: true` so it cannot replay
                     // after this sitting is paid and paint an empty red table.
