@@ -988,6 +988,8 @@
     "reviewAttempts": "Attempts: {{count}}",
     "reviewFound": "Found in easyPos",
     "reviewFoundHelp": "The invoice exists. The sale will be recorded with these numbers and never sent again.",
+    "reviewRetryConfirm": "Before sending again: look up docId {{docId}} in easyPos. If it is already there, choose \"Found in easyPos\" instead. Sending an invoice easyPos already filed files the sale twice. Is it NOT in easyPos?",
+    "reviewAlreadyFiled": "easyPos already had this invoice. Its codes were recorded and nothing was sent again.",
     "reviewNotFound": "Not in easyPos",
     "reviewNotFoundHelp": "No invoice exists. The payment will be sent again.",
     "reviewNslf": "NSLF (optional)",

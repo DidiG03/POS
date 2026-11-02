@@ -176,6 +176,14 @@ export interface FiscalClaimRecord {
    * was never confirmed. The next send asks `/invoice/status` first.
    */
   checkStatusFirst?: boolean;
+  /**
+   * On a DEFERRED claim: queued, but not to be sent until a person has
+   * looked. Set when an earlier send may have been filed and easyPos cannot
+   * be asked (the local middleware), or when easyPos refused the invoice.
+   * The sale itself is recorded; only the filing waits. Listed for review;
+   * the transmit loop skips it. Cleared by "Send again" in the review list.
+   */
+  holdReason?: string;
 }
 
 export type FiscalClaimDecision =
@@ -237,6 +245,7 @@ function parseRecord(valueJson: unknown): FiscalClaimRecord | null {
       : undefined,
     replacedBy: raw.replacedBy ? String(raw.replacedBy) : undefined,
     checkStatusFirst: raw.checkStatusFirst === true ? true : undefined,
+    holdReason: raw.holdReason ? String(raw.holdReason) : undefined,
   };
 }
 
@@ -467,6 +476,16 @@ export async function claimFiscalRegistration(
     };
   }
 
+  // Queued but waiting for a person (an earlier send may have been filed,
+  // or easyPos refused it): a replay of the payment must not send it.
+  if (existing.state === 'DEFERRED' && existing.holdReason) {
+    return {
+      outcome: 'needs-review',
+      reason: existing.holdReason,
+      alreadyReported: true,
+    };
+  }
+
   // FAILED / DEFERRED: nothing was filed, so a retry is safe.
   // Take ownership with a new attempt id, then confirm we won the race —
   // if another attempt wrote after us, let that one proceed instead.
@@ -538,7 +557,7 @@ export async function settleFiscalClaimDeferred(
   error: string,
   draft: unknown,
   nextAttemptAt: string,
-  options?: { checkStatusFirst?: boolean },
+  options?: { checkStatusFirst?: boolean; holdReason?: string },
 ): Promise<void> {
   const existing = await readFiscalClaim(idempotencyKey);
   // Once set, the flag stays until the docId is confirmed one way or the
@@ -551,6 +570,8 @@ export async function settleFiscalClaimDeferred(
     draft: draft ?? existing?.draft,
     nextAttemptAt,
     ...(checkStatusFirst ? { checkStatusFirst: true } : {}),
+    // Each deferral decides afresh whether a person must look first.
+    holdReason: options?.holdReason || undefined,
   });
 }
 
@@ -729,6 +750,8 @@ export async function commitDeferredFiscalClaim(
     releaseOnFailure?: boolean;
     /** An earlier send may have reached easyPos; check status before resending. */
     checkStatusFirst?: boolean;
+    /** Queue it, but leave it for a person before sending (see `holdReason`). */
+    holdReason?: string;
   },
 ): Promise<boolean> {
   const sleep = options?.sleep ?? pause;
@@ -741,7 +764,10 @@ export async function commitDeferredFiscalClaim(
         error,
         draft,
         nextAttemptAt,
-        { checkStatusFirst: options?.checkStatusFirst },
+        {
+          checkStatusFirst: options?.checkStatusFirst,
+          holdReason: options?.holdReason,
+        },
       );
     } catch {
       // The read-back is the proof, not the absence of a throw.
@@ -892,7 +918,9 @@ export async function parkUnconfirmedClaimUnlocked(
 /** Record extra context on a claim without changing its state. */
 export async function annotateFiscalClaimUnlocked(
   idempotencyKey: string,
-  patch: Partial<Pick<FiscalClaimRecord, 'lastError' | 'orphanDetectedAt'>> & {
+  patch: Partial<
+    Pick<FiscalClaimRecord, 'lastError' | 'orphanDetectedAt' | 'draft'>
+  > & {
     saleKey?: string;
   },
 ): Promise<void> {
@@ -905,6 +933,52 @@ export async function annotateFiscalClaimUnlocked(
     ...(saleKey ? { context: { ...(existing.context || {}), saleKey } } : {}),
     updatedAt: nowIso(),
   });
+}
+
+/**
+ * Put a reviewed claim back on the transmit queue (its draft is kept), due
+ * now, with any hold cleared. Caller holds the claim lock and has
+ * established that easyPos does not have this docId.
+ */
+export async function requeueReviewedClaimUnlocked(
+  idempotencyKey: string,
+  options: { checkStatusFirst: boolean; note: string },
+): Promise<boolean> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing || existing.draft == null) return false;
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    state: 'DEFERRED',
+    nextAttemptAt: nowIso(),
+    updatedAt: nowIso(),
+    lastError: options.note,
+    holdReason: undefined,
+    checkStatusFirst: options.checkStatusFirst ? true : undefined,
+  });
+  const saved = await readFiscalClaim(idempotencyKey);
+  return saved?.state === 'DEFERRED' && !saved.holdReason;
+}
+
+/**
+ * A reviewed claim with no stored draft (written before drafts were kept on
+ * review claims): release it so the parked payment can be sent again under
+ * the same docId. Caller holds the claim lock.
+ */
+export async function releaseReviewedClaimUnlocked(
+  idempotencyKey: string,
+  options: { checkStatusFirst: boolean; note: string },
+): Promise<boolean> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing) return false;
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    state: 'FAILED',
+    updatedAt: nowIso(),
+    lastError: options.note,
+    holdReason: undefined,
+    checkStatusFirst: options.checkStatusFirst ? true : undefined,
+  });
+  return true;
 }
 
 /** Write a brand-new claim (a restated invoice replacing an unsent one). */
@@ -1285,9 +1359,10 @@ export async function listFiscalClaimsNeedingReview(): Promise<
   Array<{ idempotencyKey: string; record: FiscalClaimRecord }>
 > {
   return listClaimsWhere(
-    [...REVIEW_STATES],
+    [...REVIEW_STATES, 'DEFERRED'],
     (record) =>
       REVIEW_STATES.has(record.state) ||
+      (record.state === 'DEFERRED' && Boolean(record.holdReason)) ||
       (record.state === 'REGISTERED' && Boolean(record.orphanDetectedAt)),
     { orphanedRegistered: true },
   );
@@ -1324,9 +1399,10 @@ export async function listFiscalClaimsDeferred(): Promise<
   Array<{ idempotencyKey: string; record: FiscalClaimRecord }>
 > {
   const writesBefore = deferredWrites;
+  // Held claims wait for a person (they are on the review list instead).
   const out = await listClaimsWhere(
     ['DEFERRED'],
-    (record) => record.state === 'DEFERRED',
+    (record) => record.state === 'DEFERRED' && !record.holdReason,
   );
   // A claim deferred while this query ran may not be in `out`; only note
   // "nothing waiting" when no such write happened.

@@ -54,20 +54,47 @@ describe('sittingFiscalGate', () => {
     });
   });
 
-  it('passes a hold through unchanged', async () => {
+  it('makes the payment wait only while another send is in flight', async () => {
     check.mockResolvedValue({
       kind: 'blocked',
-      code: 'FISCAL_SITTING_UNRESOLVED',
-      message: 'on hold',
+      code: 'FISCAL_SITTING_BUSY',
+      message: 'being sent',
       docId: 'pay-x',
-      retryable: false,
+      retryable: true,
     });
     expect(await sittingFiscalGate(base)).toEqual({
       kind: 'blocked',
-      code: 'FISCAL_SITTING_UNRESOLVED',
-      message: 'on hold',
-      retryable: false,
+      code: 'FISCAL_SITTING_BUSY',
+      message: 'being sent',
+      retryable: true,
     });
+  });
+
+  it('takes the payment and holds only its invoice when the sitting needs a look (QA H1)', async () => {
+    check.mockResolvedValue({
+      kind: 'hold',
+      docId: 'pay-lost',
+      message: 'mismatch',
+    });
+    expect(await sittingFiscalGate(base)).toEqual({
+      kind: 'proceed',
+      holdReason: 'mismatch',
+    });
+  });
+
+  it('records the payment under an unconfirmed docId instead of refusing it (QA H1)', async () => {
+    check.mockResolvedValue({
+      kind: 'adopt',
+      docId: 'pay-unknown',
+      unconfirmed: true,
+    });
+    expect(await sittingFiscalGate(base)).toEqual({
+      kind: 'proceed',
+      adoptDocId: 'pay-unknown',
+    });
+    expect(adopt).toHaveBeenCalledWith(
+      expect.objectContaining({ docId: 'pay-unknown', unconfirmed: true }),
+    );
   });
 
   it('links and reuses a lost invoice', async () => {
@@ -104,6 +131,9 @@ describe('wiring', () => {
       expect(fiscalize, file).toBeGreaterThan(gate);
       expect(src.slice(fiscalize, fiscalize + 400), file).toContain(
         'adoptDocId: sitting.adoptDocId',
+      );
+      expect(src.slice(fiscalize, fiscalize + 400), file).toContain(
+        'holdReason: sitting.holdReason',
       );
     }
   });

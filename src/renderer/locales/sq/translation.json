@@ -988,6 +988,8 @@
     "reviewAttempts": "Përpjekje: {{count}}",
     "reviewFound": "U gjet në easyPos",
     "reviewFoundHelp": "Fatura ekziston. Shitja regjistrohet me këta numra dhe nuk dërgohet më.",
+    "reviewRetryConfirm": "Para se ta dërgoni përsëri: kërkoni docId {{docId}} në easyPos. Nëse është aty, zgjidhni \"U gjet në easyPos\". Dërgimi i një fature që easyPos e ka regjistruar e fiskalizon shitjen dy herë. A NUK është në easyPos?",
+    "reviewAlreadyFiled": "easyPos e kishte këtë faturë. Kodet u ruajtën dhe asgjë nuk u dërgua përsëri.",
     "reviewNotFound": "Nuk është në easyPos",
     "reviewNotFoundHelp": "Nuk ekziston faturë. Pagesa do të dërgohet përsëri.",
     "reviewNslf": "NSLF (opsionale)",

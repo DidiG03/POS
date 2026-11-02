@@ -2969,25 +2969,21 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         {
           idempotencyKey: idempotencyKey || undefined,
           adoptDocId: sitting.adoptDocId,
+          holdReason: sitting.holdReason,
         },
       );
       if (outcome.kind === 'needs-review') {
+        // The invoice waits for a person in Settings › Fiskalizimi, but the
+        // sale is taken and the table closes: the fiscal state must never
+        // block a payment (QA v0.2.103, H1). Admins were already notified.
         broadcastPrinterEvent({
-          level: 'error',
+          level: 'warn',
           kind: 'fiscal',
           message: outcome.message,
           detail: outcome.message,
           at: Date.now(),
           context: { area, tableLabel, kind: 'PAYMENT' },
         });
-        // Admins were already notified by `fiscalizePaymentOnce`. Retrying
-        // could file a second invoice, so tell the caller to stop.
-        return {
-          ok: false,
-          code: 'FISCAL_NEEDS_REVIEW',
-          error: outcome.message,
-          permanent: true,
-        };
       }
       if (outcome.kind === 'rejected') {
         broadcastPrinterEvent({
@@ -3040,7 +3036,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         };
       }
       payload = outcome.payload;
-      if (outcome.kind === 'deferred') {
+      if (outcome.kind === 'deferred' || outcome.kind === 'needs-review') {
         fiscalExtra = {
           fiscalPending: true,
           fiscalMessage: outcome.message,

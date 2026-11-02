@@ -237,7 +237,7 @@ describe('fiscalizePaymentOnce', () => {
     expect(createSale).toHaveBeenCalledTimes(2);
   });
 
-  it('sends an indeterminate outcome to review instead of retrying it', async () => {
+  it('takes the sale and holds an unconfirmed invoice for a person on the local middleware (QA H1/H2)', async () => {
     // A timeout: we stopped listening, but easyPos may have filed it.
     createSale.mockRejectedValue(
       taggedError('Fiscal middleware timed out.', 'unknown'),
@@ -247,10 +247,18 @@ describe('fiscalizePaymentOnce', () => {
       idempotencyKey: KEY,
     });
 
-    expect(out.kind).toBe('needs-review');
-    expect((await readFiscalClaim(KEY))?.state).toBe('UNKNOWN');
-    expect(notifications.length).toBeGreaterThan(0);
-    expect(notifications[0].message).toContain(KEY);
+    // The payment is never refused because of the fiscal state...
+    expect(out.kind).toBe('deferred');
+    if (out.kind !== 'deferred') throw new Error('unreachable');
+    expect(out.payload.meta?.fiscalStatus).toBe('pending');
+    // ...but the invoice is not sent again blind: the middleware cannot be
+    // asked whether it filed it, so it waits on the review list.
+    const claim = await readFiscalClaim(KEY);
+    expect(claim?.state).toBe('DEFERRED');
+    expect(claim?.holdReason).toContain(KEY);
+    expect(claim?.checkStatusFirst).toBe(true);
+    expect(claim?.draft).toBeTruthy();
+    expect(notifications.some((n) => n.message.includes(KEY))).toBe(true);
   });
 
   it('does not call easyPos again once an outcome is unknown', async () => {
@@ -265,11 +273,38 @@ describe('fiscalizePaymentOnce', () => {
       idempotencyKey: KEY,
     });
 
+    // Recorded, not refused, and still waiting for a person.
     expect(replay.kind).toBe('needs-review');
+    if (replay.kind !== 'needs-review') throw new Error('unreachable');
+    expect(replay.payload.meta?.fiscalStatus).toBe('pending');
     // The whole point: a replay must not risk a second real invoice.
     expect(createSale).toHaveBeenCalledTimes(attemptsAfterFirst);
     // ...and it must not re-alert every admin each time.
     expect(notifications).toHaveLength(0);
+  });
+
+  it('queues an unconfirmed cloud invoice to be checked and sent automatically', async () => {
+    createSale.mockRejectedValue(
+      taggedError('easyPos did not answer (HTTP 502).', 'unknown'),
+    );
+    const cloud = {
+      ...settings,
+      fiscal: {
+        ...(settings as any).fiscal,
+        baseUrl: 'https://api.dev.easypos.al',
+      },
+    } as unknown as SettingsDTO;
+
+    const out = await fiscalizePaymentOnce(payment(), cloud, {
+      idempotencyKey: KEY,
+    });
+
+    expect(out.kind).toBe('deferred');
+    const claim = await readFiscalClaim(KEY);
+    expect(claim?.state).toBe('DEFERRED');
+    // No person needed: the loop asks /invoice/status before sending.
+    expect(claim?.holdReason).toBeUndefined();
+    expect(claim?.checkStatusFirst).toBe(true);
   });
 
   it('treats an untagged provider error as indeterminate', async () => {
@@ -277,7 +312,8 @@ describe('fiscalizePaymentOnce', () => {
     const out = await fiscalizePaymentOnce(payment(), settings, {
       idempotencyKey: KEY,
     });
-    expect(out.kind).toBe('needs-review');
+    expect(out.kind).toBe('deferred');
+    expect((await readFiscalClaim(KEY))?.holdReason).toBeTruthy();
   });
 
   it('fails pre-flight without consuming a claim', async () => {
@@ -291,7 +327,7 @@ describe('fiscalizePaymentOnce', () => {
     expect(await readFiscalClaim(KEY)).toBeNull();
   });
 
-  it('takes a refused payment when a manager approved it, invoice queued for review (QA F2)', async () => {
+  it('takes a refused payment and holds its invoice for review (QA H1, was F2)', async () => {
     const err = taggedError(
       'HTTP 400 · totals differ 7285.23/7285.22',
       'not-registered',
@@ -299,34 +335,20 @@ describe('fiscalizePaymentOnce', () => {
     err.fiscalRetryable = false;
     createSale.mockRejectedValue(err);
 
-    // First the plain refusal: the table stays open.
-    const refused = await fiscalizePaymentOnce(payment(), settings, {
+    // No manager approval needed any more: the fiscal state never refuses
+    // a payment.
+    const taken = await fiscalizePaymentOnce(payment(), settings, {
       idempotencyKey: KEY,
     });
-    expect(refused.kind).toBe('rejected');
-
-    // Pay again under the same key with the manager's go-ahead.
-    const taken = await fiscalizePaymentOnce(
-      payment({
-        meta: {
-          kind: 'PAYMENT',
-          method: 'CARD',
-          totalAfter: 300,
-          userId: 7,
-          fiscalRefusalDefer: true,
-        },
-      }),
-      settings,
-      { idempotencyKey: KEY },
-    );
     expect(taken.kind).toBe('deferred');
     if (taken.kind !== 'deferred') throw new Error('unreachable');
     expect(taken.payload.meta?.fiscalStatus).toBe('pending');
     const claim = await readFiscalClaim(KEY);
-    // Queued with its exact draft, to be sent again once the cause is fixed.
+    // Kept with its exact draft, on the review list until the cause is fixed.
     expect(claim?.state).toBe('DEFERRED');
     expect(claim?.draft).toBeTruthy();
-    expect(notifications.some((n) => n.message.includes('manager'))).toBe(true);
+    expect(claim?.holdReason).toContain('refused');
+    expect(notifications.some((n) => n.message.includes('refused'))).toBe(true);
   });
 
   it('does not retry a rejection that can never succeed', async () => {
@@ -337,11 +359,14 @@ describe('fiscalizePaymentOnce', () => {
     const out = await fiscalizePaymentOnce(payment(), settings, {
       idempotencyKey: KEY,
     });
+    expect(out.kind).toBe('deferred');
 
-    expect(out.kind).toBe('rejected');
-    // Still FAILED, not UNKNOWN: nothing was filed, so once someone fixes
-    // the article mapping this exact payment can be released and retried.
-    expect((await readFiscalClaim(KEY))?.state).toBe('FAILED');
+    // A replay of the same payment does not send it again on its own.
+    const replay = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(replay.kind).toBe('needs-review');
+    expect(createSale).toHaveBeenCalledTimes(1);
     // And somebody has to be told, or the payment just sits there.
     expect(notifications.length).toBeGreaterThan(0);
   });

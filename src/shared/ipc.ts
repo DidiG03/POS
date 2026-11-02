@@ -750,7 +750,13 @@ export interface ApiSettings {
     resolution: 'retry' | 'registered' | 'corrected';
     nslf?: string;
     nivf?: string;
-  }): Promise<{ ok: boolean; error?: string }>;
+    /**
+     * `retry` only: the reviewer looked the docId up in easyPos and it is
+     * not there. Required when the till uses the local middleware, which
+     * cannot be asked; on the cloud API easyPos is asked anyway.
+     */
+    confirmedNotFiled?: boolean;
+  }): Promise<{ ok: boolean; error?: string; code?: string; outcome?: string }>;
 }
 
 export type TestPrintResult = { ok: boolean; error?: string };

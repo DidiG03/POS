@@ -2042,6 +2042,14 @@ function FiscalReviewPanel() {
     idempotencyKey: string,
     resolution: 'retry' | 'registered' | 'corrected',
   ) => {
+    // Sending again an invoice easyPos already filed files the sale twice
+    // (QA v0.2.103, H2): make the reviewer confirm they looked first.
+    if (
+      resolution === 'retry' &&
+      !window.confirm(t('fiscal.reviewRetryConfirm', { docId: idempotencyKey }))
+    ) {
+      return;
+    }
     setBusyKey(idempotencyKey);
     try {
       const r = await window.api.settings.resolveFiscalReview?.({
@@ -2050,9 +2058,15 @@ function FiscalReviewPanel() {
         ...(resolution === 'registered'
           ? { nslf: nslf.trim(), nivf: nivf.trim() }
           : {}),
+        ...(resolution === 'retry' ? { confirmedNotFiled: true } : {}),
       });
-      if (r?.ok) setStatus(t('fiscal.reviewResolved'));
-      else setStatus(t('fiscal.reviewFailed'), 'error');
+      if (r?.ok)
+        setStatus(
+          r.outcome === 'filed'
+            ? t('fiscal.reviewAlreadyFiled')
+            : t('fiscal.reviewResolved'),
+        );
+      else setStatus(r?.error || t('fiscal.reviewFailed'), 'error');
       setExpanded(null);
       setNslf('');
       setNivf('');

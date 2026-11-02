@@ -283,6 +283,23 @@ function isConnectionTestValidationError(
   ].some((token) => lower.includes(token));
 }
 
+/**
+ * What an HTTP error from easyPos says about whether the invoice was filed.
+ *
+ * - 4xx: the payload was refused, nothing was filed.
+ * - 503: the service declined to process the request at all ("Service
+ *   Unavailable": the middleware is up but its backend is not). Nothing was
+ *   filed, so the invoice is queued and sent again automatically. Treating
+ *   it as unknown is what sent every sale of a fiscal outage to manual
+ *   review and blocked those tables (QA v0.2.103, H1).
+ * - other 5xx: the request may have been processed before the error, so the
+ *   outcome is unknown and a resend must be checked first.
+ */
+export function fiscalHttpOutcome(status: number): FiscalOutcome {
+  if (status === 503) return 'not-registered';
+  return status >= 500 ? 'unknown' : 'not-registered';
+}
+
 async function easyPosRequest(
   settings: SettingsDTO,
   path: string,
@@ -337,9 +354,7 @@ async function easyPosRequest(
             cloud,
             purpose: 'payment',
           }),
-          // A 4xx is the provider refusing the payload, so nothing was
-          // filed. A 5xx may have filed it and then failed to tell us.
-          res.status >= 500 ? 'unknown' : 'not-registered',
+          fiscalHttpOutcome(res.status),
           // A refused payload (bad article, unknown operator, bad token)
           // will be refused identically every time until it is corrected.
           res.status >= 500,

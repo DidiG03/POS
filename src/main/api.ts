@@ -3228,24 +3228,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               {
                 idempotencyKey: printIdempotencyKey || undefined,
                 adoptDocId: sitting.adoptDocId,
+                holdReason: sitting.holdReason,
               },
             );
-            if (outcome.kind === 'needs-review') {
-              // Retrying could file a second invoice with the tax service.
-              // `permanent` moves it to the tablet's failed-sync surface
-              // instead of the retry loop; admins were already notified.
-              return send(
-                res,
-                409,
-                {
-                  ok: false,
-                  code: 'FISCAL_NEEDS_REVIEW',
-                  error: outcome.message,
-                  permanent: true,
-                },
-                corsOrigin,
-              );
-            }
+            // 'needs-review': the invoice waits for a person, but the sale
+            // is taken and the table closes, as on the till (H1).
             if (outcome.kind === 'rejected') {
               // Refused, and it will be refused identically next time. Same
               // treatment as a review case so the tablet stops retrying.
@@ -3274,7 +3261,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 corsOrigin,
               );
             }
-            if (outcome.kind === 'deferred') {
+            if (
+              outcome.kind === 'deferred' ||
+              outcome.kind === 'needs-review'
+            ) {
               fiscalPending = {
                 fiscalPending: true,
                 fiscalMessage: outcome.message,

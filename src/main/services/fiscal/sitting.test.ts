@@ -174,18 +174,15 @@ describe('checkSittingBeforePayment', () => {
     });
   });
 
-  it('holds the payment when the unsaved invoice is for a different amount', async () => {
+  it('takes the payment but holds its invoice when the unsaved one is for a different amount (QA H1)', async () => {
     putClaim('pay-lost', {
       state: 'REGISTERED',
       result: { nslf: 'IIC1', nivf: 'FIC1' },
     });
     const r = await check(31.5);
-    expect(r).toMatchObject({
-      kind: 'blocked',
-      code: 'FISCAL_SITTING_UNRESOLVED',
-      retryable: false,
-      docId: 'pay-lost',
-    });
+    // Never refused: the payment is recorded and only its invoice waits.
+    expect(r).toMatchObject({ kind: 'hold', docId: 'pay-lost' });
+    expect((r as any).message).toContain('pay-lost');
     // It is now on the admin review list, and admins were told once.
     expect((await readFiscalClaim('pay-lost'))?.orphanDetectedAt).toBeTruthy();
     expect(
@@ -210,10 +207,7 @@ describe('checkSittingBeforePayment', () => {
       idempotencyKey: 'pay-new',
       now: NOW,
     });
-    expect(card).toMatchObject({
-      kind: 'blocked',
-      code: 'FISCAL_SITTING_UNRESOLVED',
-    });
+    expect(card).toMatchObject({ kind: 'hold', docId: 'pay-lost' });
     expect((card as any).message).toContain('CASH');
     const cash = await checkSittingBeforePayment({
       area: 'Salla',
@@ -243,12 +237,14 @@ describe('checkSittingBeforePayment', () => {
     expect(await check()).toEqual({ kind: 'clear' });
   });
 
-  it('holds the payment while an earlier one is unconfirmed', async () => {
+  it('records the payment under an earlier unconfirmed docId instead of refusing it (QA H1)', async () => {
     putClaim('pay-unknown', { state: 'UNKNOWN', lastError: 'timeout' });
-    expect(await check()).toMatchObject({
-      kind: 'blocked',
-      code: 'FISCAL_SITTING_UNRESOLVED',
-      retryable: false,
+    // Adopting the unconfirmed docId means the sale can never get a second
+    // invoice, and the table is never blocked.
+    expect(await check()).toEqual({
+      kind: 'adopt',
+      docId: 'pay-unknown',
+      unconfirmed: true,
     });
   });
 
@@ -261,8 +257,9 @@ describe('checkSittingBeforePayment', () => {
     );
     session.startedAt = new Date(beforeStart - 60_000);
     expect(await check()).toMatchObject({
-      kind: 'blocked',
-      code: 'FISCAL_SITTING_UNRESOLVED',
+      kind: 'adopt',
+      docId: 'pay-crash',
+      unconfirmed: true,
     });
     expect((await readFiscalClaim('pay-crash'))?.state).toBe('UNKNOWN');
     expect(alerts.some((a) => a.message.includes('pay-crash'))).toBe(true);
@@ -301,7 +298,7 @@ describe('checkSittingBeforePayment', () => {
   it('never adopts when the sitting start is unknown', async () => {
     session.startedAt = null;
     putClaim('pay-lost', { state: 'REGISTERED', result: { nivf: 'F' } });
-    expect((await check(25)).kind).toBe('blocked');
+    expect((await check(25)).kind).toBe('hold');
   });
 
   it('links an adopted invoice to the new payment', async () => {
