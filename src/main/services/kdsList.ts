@@ -27,6 +27,14 @@ import { broadcastTicketsChanged } from './realtime';
 import { getTableSessionStartedAt } from './tableSession';
 import { getFloorSnapshot } from './floorSnapshot';
 
+/**
+ * Most tickets one board list returns. It was 200, and a busy service had
+ * more open tickets than that: the rest silently never reached the board
+ * (QA v0.2.103). The board pages through what it gets and shows how many
+ * are not shown (`withTotal`).
+ */
+export const KDS_LIST_MAX = 1000;
+
 export type KdsListOptions = {
   /** This screen is the cooker's display (first of the two kitchen stages). */
   cooker?: boolean;

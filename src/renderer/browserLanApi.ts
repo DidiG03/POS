@@ -1875,6 +1875,7 @@ export function installBrowserLanApi(): void {
           limit: String(limit),
         });
         if (input?.cooker) q.set('cooker', '1');
+        if (input?.withTotal) q.set('withTotal', '1');
         return await goLan(`/kds/tickets?${q.toString()}`);
       },
       async listFloorOrders() {

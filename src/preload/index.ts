@@ -129,6 +129,7 @@ const api: Api = {
       status: 'NEW' | 'DONE';
       limit?: number;
       cooker?: boolean;
+      withTotal?: boolean;
     }) => ipcRenderer.invoke('kds:listTickets', input),
     /** Waiter station: live kitchen tickets for the signed-in waiter. */
     listFloorOrders: () => ipcRenderer.invoke('kds:listFloorOrders'),

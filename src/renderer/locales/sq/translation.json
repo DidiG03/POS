@@ -468,6 +468,7 @@
     "ready": "Gati"
   },
   "kds": {
+    "moreNotShown": "{{count}} të tjera nuk shfaqen",
     "bumpFailed": "Bileta nuk u hoq. Kontrollo lidhjen me POS.",
     "recallFailed": "Nuk u kthye bileta.",
     "loadFailed": "Nuk u ngarkuan biletat e kuzhinës.",

@@ -184,6 +184,34 @@ describe('recordTicketSend', () => {
     ).toMatchObject({ ok: true, written: true });
   });
 
+  it('reads the sitting once when the table was already open (perf)', async () => {
+    const ts = await import('./tableSession');
+    const to = await import('./tableOpen');
+    vi.mocked(to.ensureOccupiedForTicketWrite).mockResolvedValueOnce(false);
+    vi.mocked(ts.findLatestTicketLogForCurrentSession).mockClear();
+    vi.mocked(ts.getCurrentTableSessionKey).mockClear();
+    vi.mocked(ts.getCurrentSessionOwnerId).mockClear();
+    h.latest = { userId: 8, createdAt: new Date(), itemsJson: [kafe] };
+    // The owner comes from the bill already read: Ben's sitting.
+    expect(
+      await recordTicketSend({ ...base, items: [kafe, birre] }),
+    ).toMatchObject({ ok: false, code: 'TABLE_OWNED_BY_OTHER' });
+    expect(ts.findLatestTicketLogForCurrentSession).toHaveBeenCalledTimes(1);
+    expect(ts.getCurrentTableSessionKey).toHaveBeenCalledTimes(1);
+    expect(ts.getCurrentSessionOwnerId).not.toHaveBeenCalled();
+  });
+
+  it('reads the sitting again when the Send opened the table', async () => {
+    const ts = await import('./tableSession');
+    const to = await import('./tableOpen');
+    vi.mocked(to.ensureOccupiedForTicketWrite).mockResolvedValueOnce(true);
+    vi.mocked(ts.findLatestTicketLogForCurrentSession).mockClear();
+    const r = await recordTicketSend({ ...base, items: [kafe] });
+    expect(r).toMatchObject({ ok: true, written: true });
+    expect(ts.findLatestTicketLogForCurrentSession).toHaveBeenCalledTimes(2);
+    expect(h.written[0].sessionKey).toBe(h.sessionKey);
+  });
+
   it('a late Send adds only its lines to the newer bill', async () => {
     h.latest = {
       createdAt: new Date(Date.now() - 1_000),

@@ -276,6 +276,7 @@ import {
   stopPrintJobRetentionLoop,
 } from './services/printJobRetention';
 import {
+  KDS_LIST_MAX,
   formatKdsTicketListRows,
   getKdsTicketDetail,
   listWaiterFloorOrders,
@@ -3832,9 +3833,10 @@ ipcHandle('kds:listTickets', async (_e, input) => {
   const status = String((input as any)?.status || 'NEW').toUpperCase();
   const cooker = Boolean((input as any)?.cooker);
   const limit = Math.min(
-    200,
+    KDS_LIST_MAX,
     Math.max(1, Number((input as any)?.limit || 100)),
   );
+  const withTotal = (input as any)?.withTotal === true;
   // IMPORTANT: KDS is always local (even when POS is in cloud mode).
 
   await ensureKdsLocalSchema();
@@ -3855,12 +3857,24 @@ ipcHandle('kds:listTickets', async (_e, input) => {
       take: limit,
     });
 
-    return await formatKdsTicketListRows(rows, station, status, {
+    const list = await formatKdsTicketListRows(rows, station, status, {
       cooker,
       cookerEnabled,
     });
+    if (!withTotal) return list;
+    // How many there are in all, so the board can say how many it is not
+    // showing. Older boards ask without `withTotal` and get the plain list.
+    const total =
+      rows.length < limit
+        ? rows.length
+        : await (prisma as any).kdsTicketStation
+            .count({ where: kdsStationListWhere(station, queryStatus) })
+            .catch(() => rows.length);
+    return { rows: list, total, fetched: rows.length };
   } catch {
-    return [];
+    return (input as any)?.withTotal === true
+      ? { rows: [], total: 0, fetched: 0 }
+      : [];
   }
 });
 

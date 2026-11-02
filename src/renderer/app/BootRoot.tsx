@@ -1,3 +1,4 @@
+import { watchForBackend } from '../utils/bootRecovery';
 import React, { useEffect, useState } from 'react';
 import { RouterProvider, createHashRouter } from 'react-router-dom';
 import { I18nextProvider, useTranslation } from 'react-i18next';
@@ -188,6 +189,27 @@ function Root() {
 
   useEffect(() => {
     if (ready || backendUnreachable) void hideMobileSplash();
+  }, [ready, backendUnreachable]);
+
+  // "Cannot reach POS backend" at cold start used to be final: keep probing
+  // the configured till and boot again when it answers (`bootRecovery.ts`).
+  useEffect(() => {
+    if (ready || !backendUnreachable || !hasConfiguredBackendHost()) return;
+    return watchForBackend({
+      probe: () => (window as any).api.settings.get(),
+      onBack: () => setHostEpoch((n) => n + 1),
+      subscribeWake: (wake) => {
+        const onVisible = () => {
+          if (document.visibilityState === 'visible') wake();
+        };
+        window.addEventListener('online', wake);
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+          window.removeEventListener('online', wake);
+          document.removeEventListener('visibilitychange', onVisible);
+        };
+      },
+    });
   }, [ready, backendUnreachable]);
 
   useEffect(() => {

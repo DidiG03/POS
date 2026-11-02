@@ -68,6 +68,9 @@ export const MAX_FIT_TABLE_PX = 180;
  * wide desktops. On narrow (phone) canvases we prefer filling the width
  * so tables are not tiny with empty bands on the sides.
  */
+/** Room around a table for its card's shadow and status badges. */
+export const TABLE_CHROME_PX = 10;
+
 export function computeFloorViewTransform(args: {
   canvasW: number;
   canvasH: number;
@@ -93,12 +96,14 @@ export function computeFloorViewTransform(args: {
     const x = Number(n.x || 0);
     const y = Number(n.y || 0);
     const isArea = String(n.kind || 'TABLE') === 'AREA';
+    // A table's card is drawn with a shadow and status badges past its
+    // own box; edge tables lost them to the canvas edge.
     const halfW = isArea
       ? Math.max(0, Number(n.w || 0)) / 2
-      : Math.max(32, Number(n.w || 64) / 2);
+      : Math.max(32, Number(n.w || 64) / 2) + TABLE_CHROME_PX;
     const halfH = isArea
       ? Math.max(0, Number(n.h || 0)) / 2
-      : Math.max(32, Number(n.h || 64) / 2);
+      : Math.max(32, Number(n.h || 64) / 2) + TABLE_CHROME_PX;
     if (!isArea) largestTable = Math.max(largestTable, halfW * 2, halfH * 2);
     minX = Math.min(minX, x - halfW);
     minY = Math.min(minY, y - halfH);
@@ -126,17 +131,12 @@ export function computeFloorViewTransform(args: {
   const clamp = (raw: number, lo: number, hi: number) =>
     Math.max(lo, Math.min(hi, raw));
 
-  let fit: number;
-  if (cw <= 700) {
-    // Prefer filling the screen width. Mild vertical overflow is OK —
-    // overlays already reserve padY, and pinch-pan covers the rest.
-    // Only fall back to contain when width-fill would clip height a lot.
-    const widthFirst = scaleW;
-    const heightOverflow = (widthFirst * bh) / availH;
-    fit = heightOverflow > 1.45 ? Math.min(scaleW, scaleH) : widthFirst;
-  } else {
-    fit = Math.min(scaleW, scaleH);
-  }
+  // Every table on screen. Phones used to fill the width and accept up to
+  // 45 % vertical overflow, "pinch-pan covers the rest" — but panning only
+  // works once zoomed in, so tables at the top and bottom edges were cut
+  // off and could not be reached (QA v0.2.103). A plan that fits still
+  // fills the width; pinch-zoom is there for a closer look.
+  let fit = Math.min(scaleW, scaleH);
   // A floor with one or two tables fit-to-screen blew a single table up
   // to fill the whole view. No table grows past a large touch target.
   const tableCap =

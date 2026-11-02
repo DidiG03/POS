@@ -251,6 +251,7 @@ import {
 import { app } from 'electron';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import {
+  KDS_LIST_MAX,
   formatKdsTicketListRows,
   getKdsTicketDetail,
   listWaiterFloorOrders,
@@ -2468,9 +2469,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           (parsed.query.status as any) || 'NEW',
         ).toUpperCase();
         const limit = Math.min(
-          200,
+          KDS_LIST_MAX,
           Math.max(1, Number((parsed.query.limit as any) || 100)),
         );
+        const withTotal = String(parsed.query.withTotal ?? '') === '1';
         const cooker = String(parsed.query.cooker ?? '') === '1';
         const cookerEnabled = await getCookerEnabledFromSettings();
         // The cooker screen always reads OPEN (NEW) tickets — its "Done" tab
@@ -2490,7 +2492,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           cooker,
           cookerEnabled,
         });
-        return send(res, 200, out, corsOrigin);
+        if (!withTotal) return send(res, 200, out, corsOrigin);
+        const total =
+          rows.length < limit
+            ? rows.length
+            : await (prisma as any).kdsTicketStation
+                .count({ where: kdsStationListWhere(station, queryStatus) })
+                .catch(() => rows.length);
+        return send(
+          res,
+          200,
+          { rows: out, total, fetched: rows.length },
+          corsOrigin,
+        );
       }
       if (req.method === 'GET' && pathname === '/kds/floor-orders') {
         const ok = await ensureKdsLocalSchema();

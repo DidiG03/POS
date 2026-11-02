@@ -1059,6 +1059,12 @@ export interface ApiKds {
     limit?: number;
     /** This screen is the cooker's display (first kitchen stage). */
     cooker?: boolean;
+    /**
+     * Answer `{ rows, total, fetched }` instead of the list, so the board
+     * can say how many it is not showing. A till too old for this answers
+     * the plain list; treat both.
+     */
+    withTotal?: boolean;
   }): Promise<KdsTicketDTO[]>;
   /** Waiter-station kitchen tickets. Empty when KDS is off or nothing is live. */
   listFloorOrders(): Promise<KdsFloorOrder[]>;

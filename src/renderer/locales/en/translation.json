@@ -468,6 +468,7 @@
     "ready": "Ready"
   },
   "kds": {
+    "moreNotShown": "{{count}} more not shown",
     "bumpFailed": "That ticket could not be bumped. Check the connection to the POS host.",
     "recallFailed": "Could not recall the ticket.",
     "loadFailed": "Failed to load kitchen tickets.",
