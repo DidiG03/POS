@@ -267,6 +267,7 @@ import {
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
+  type CurrentSitting,
 } from './services/tableSession';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
@@ -3085,21 +3086,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                   st.serviceRemovalCount += 1;
                 payAdjustByUser.set(userId, st);
 
-                const actor = await prisma.user
-                  .findUnique({ where: { id: userId } })
-                  .catch(() => null as any);
-                const actorName = actor?.displayName
-                  ? String(actor.displayName)
-                  : `User #${userId}`;
-                const admins = await prisma.user
-                  .findMany({
-                    where: { role: 'ADMIN', active: true } as any,
-                    take: 50,
-                  })
-                  .catch(() => []);
                 const canAlert =
                   !st.lastAlertAt ||
                   now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
+                // Looked up only when an alert goes out: they ran on every
+                // payment (perf, QA v0.2.103).
+                const alerting =
+                  canAlert &&
+                  (st.discountCount >= 5 || st.serviceRemovalCount >= 3);
+                const actor = alerting
+                  ? await prisma.user
+                      .findUnique({ where: { id: userId } })
+                      .catch(() => null as any)
+                  : null;
+                const actorName = actor?.displayName
+                  ? String(actor.displayName)
+                  : `User #${userId}`;
+                const admins = alerting
+                  ? await prisma.user
+                      .findMany({
+                        where: { role: 'ADMIN', active: true } as any,
+                        take: 50,
+                      })
+                      .catch(() => [])
+                  : [];
 
                 if (canAlert && st.discountCount >= 5) {
                   const msg =
@@ -3144,6 +3154,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
           let fiscalPayload = payload;
           let payOwnerId: number | null = null;
+          let paySitting: CurrentSitting | undefined;
           let fiscalPending:
             | { fiscalPending: true; fiscalMessage?: string }
             | undefined;
@@ -3185,6 +3196,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               });
               if (!owns.ok) return send(res, 409, owns, corsOrigin);
               payOwnerId = owns.ownerId;
+              paySitting = owns.sitting;
             }
             const approvalRefused = await checkPaymentApproval({
               settings,
@@ -3206,7 +3218,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
             if (payload?.meta) delete payload.meta.managerApprovalToken;
             if (paymentShouldCloseTable(payload?.meta)) {
-              const stale = await findStaleBillPayment(payload);
+              const stale = await findStaleBillPayment({
+                ...payload,
+                sitting: paySitting,
+              });
               if (stale) return send(res, 409, stale, corsOrigin);
             }
             // Same guard as the till: an invoice left by an interrupted

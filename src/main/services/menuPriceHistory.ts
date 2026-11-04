@@ -48,11 +48,27 @@ function asEntries(raw: unknown): MenuPriceHistoryEntry[] {
   return out;
 }
 
+// Read on every Send and payment to price lines; written only by
+// `recordMenuPriceChange` below, which clears it. The short life covers a
+// database swapped underneath (backup restore). Perf, QA v0.2.103.
+const READ_CACHE_MS = 2_000;
+let readCache: { at: number; entries: MenuPriceHistoryEntry[] } | null = null;
+
 async function readAll(): Promise<MenuPriceHistoryEntry[]> {
+  const now = Date.now();
+  if (readCache && now - readCache.at < READ_CACHE_MS) {
+    return readCache.entries.slice();
+  }
   const row = await prisma.syncState.findUnique({
     where: { key: MENU_PRICE_HISTORY_KEY },
   });
-  return asEntries(row?.valueJson);
+  const entries = asEntries(row?.valueJson);
+  readCache = { at: now, entries };
+  return entries.slice();
+}
+
+export function clearMenuPriceHistoryCacheForTests(): void {
+  readCache = null;
 }
 
 /**
@@ -75,6 +91,7 @@ export async function recordMenuPriceChange(
   if (unchanged) return;
 
   try {
+    readCache = null;
     const cutoff = now.getTime() - MENU_PRICE_HISTORY_KEEP_MS;
     const kept = (await readAll()).filter((e) => Date.parse(e.until) >= cutoff);
     kept.push({ sku, price, vatRate, until: now.toISOString() });
@@ -84,6 +101,7 @@ export async function recordMenuPriceChange(
       create: { key: MENU_PRICE_HISTORY_KEY, valueJson },
       update: { valueJson },
     });
+    readCache = null;
   } catch (e) {
     console.warn('[menuPriceHistory] could not record a price change', e);
   }

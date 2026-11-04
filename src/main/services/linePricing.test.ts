@@ -58,8 +58,11 @@ import {
 } from './linePricing';
 import {
   MENU_PRICE_HISTORY_KEY,
+  clearMenuPriceHistoryCacheForTests,
+  readMenuPriceHistorySince,
   recordMenuPriceChange,
 } from './menuPriceHistory';
+import { prisma } from '@db/client';
 
 const ESPRESSO = { sku: 'ESP', name: 'Espresso', price: 100, vatRate: 0.2 };
 const STEAK = { sku: 'STK', name: 'Steak', price: 1500, vatRate: 0.2 };
@@ -71,7 +74,30 @@ beforeEach(() => {
   menu.length = 0;
   menu.push({ ...ESPRESSO }, { ...STEAK });
   store.clear();
+  clearMenuPriceHistoryCacheForTests();
   seatedAt.value = minutesAgo(60);
+});
+
+describe('menu price history read cache (perf)', () => {
+  it('is read once per moment, and a price change is seen at once', async () => {
+    const read = vi.mocked(prisma.syncState.findUnique);
+    read.mockClear();
+    const since = new Date(0);
+    expect(await readMenuPriceHistorySince(since)).toEqual([]);
+    expect(await readMenuPriceHistorySince(since)).toEqual([]);
+    expect(read).toHaveBeenCalledTimes(1);
+    // An admin edits the price: the next Send must see the old one.
+    await recordMenuPriceChange(ESPRESSO, { ...ESPRESSO, price: 150 });
+    const after = await readMenuPriceHistorySince(since);
+    expect(after.map((e) => [e.sku, e.price])).toEqual([['ESP', 100]]);
+  });
+
+  it('hands out copies, so a caller cannot change the cached list', async () => {
+    await recordMenuPriceChange(ESPRESSO, { ...ESPRESSO, price: 150 });
+    const a = await readMenuPriceHistorySince(new Date(0));
+    a.length = 0;
+    expect(await readMenuPriceHistorySince(new Date(0))).toHaveLength(1);
+  });
 });
 
 describe('repriceLines', () => {

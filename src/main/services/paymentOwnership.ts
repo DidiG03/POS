@@ -12,7 +12,7 @@
  * When a cashier or admin pays another waiter's table, that waiter is told.
  */
 import { prisma } from '@db/client';
-import { getCurrentSessionOwnerId } from './tableSession';
+import { readCurrentSitting, type CurrentSitting } from './tableSession';
 
 const PAYS_ANY_TABLE = new Set(['ADMIN', 'CASHIER']);
 
@@ -30,7 +30,9 @@ export function paymentBlockedByOtherOwner(input: {
 }
 
 export type PaymentOwnership =
-  | { ok: true; ownerId: number | null }
+  // `sitting`: what was read to decide, so the stale-bill check that runs
+  // next under the same lock does not read it again (perf, QA v0.2.103).
+  | { ok: true; ownerId: number | null; sitting?: CurrentSitting }
   | {
       ok: false;
       code: 'TABLE_OWNED_BY_OTHER';
@@ -45,10 +47,10 @@ export async function checkPaymentOwnership(input: {
   actorUserId: number;
   actorRole: string | null | undefined;
 }): Promise<PaymentOwnership> {
-  const ownerId = await getCurrentSessionOwnerId(
-    input.area,
-    input.tableLabel,
-  ).catch(() => null);
+  const sitting = await readCurrentSitting(input.area, input.tableLabel).catch(
+    () => null,
+  );
+  const ownerId = sitting?.latest ? Number(sitting.latest.userId) : null;
   if (
     !paymentBlockedByOtherOwner({
       actorRole: input.actorRole,
@@ -56,7 +58,7 @@ export async function checkPaymentOwnership(input: {
       ownerId,
     })
   ) {
-    return { ok: true, ownerId };
+    return { ok: true, ownerId, ...(sitting ? { sitting } : {}) };
   }
   const owner = await prisma.user
     .findUnique({ where: { id: Number(ownerId) } })

@@ -330,6 +330,7 @@ dotenv.config();
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
+  type CurrentSitting,
 } from './services/tableSession';
 import { notifyAutoVoidedTable } from './services/autoVoidAlert';
 import {
@@ -2889,6 +2890,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
 
     const kind = String(meta?.kind || '').toUpperCase();
     let payOwnerId: number | null = null;
+    let paySitting: CurrentSitting | undefined;
     if (kind === 'PAYMENT' && !isPaymentReprint(meta)) {
       const exists = await checkFloorTable(area, tableLabel);
       if (!exists.ok) {
@@ -2912,6 +2914,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         });
         if (!owns.ok) return owns as any;
         payOwnerId = owns.ownerId;
+        paySitting = owns.sitting;
       }
       const approvalRefused = await checkPaymentApproval({
         settings,
@@ -2934,6 +2937,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
           area,
           tableLabel,
           items: payload.items,
+          sitting: paySitting,
         });
         if (stale) return stale;
       }
