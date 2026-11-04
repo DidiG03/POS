@@ -3241,6 +3241,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 idempotencyKey: printIdempotencyKey || undefined,
                 adoptDocId: sitting.adoptDocId,
                 holdReason: sitting.holdReason ?? waiterHold,
+                ...(!sitting.holdReason && waiterHold
+                  ? { holdKind: 'fiscal-off' as const }
+                  : {}),
               },
             );
             // 'needs-review': the invoice waits for a person, but the sale
@@ -4578,12 +4581,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
           return send(res, 200, result, corsOrigin);
         } catch (e: any) {
-          if (
-            e?.code === 'INVALID_FISCAL_URL' ||
-            e?.code === 'INVALID_SETTINGS' ||
-            e?.code === 'FISCAL_TOKEN_ENVIRONMENT_MISMATCH' ||
-            e?.code === 'FISCAL_ADDRESS_REQUIRED'
-          ) {
+          const { settingsSaveErrorStatus } = await import(
+            './services/settingsValidation'
+          );
+          if (settingsSaveErrorStatus(e) === 400) {
             return send(
               res,
               400,

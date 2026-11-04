@@ -2981,6 +2981,9 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
           idempotencyKey: idempotencyKey || undefined,
           adoptDocId: sitting.adoptDocId,
           holdReason: sitting.holdReason ?? waiterHold,
+          ...(!sitting.holdReason && waiterHold
+            ? { holdKind: 'fiscal-off' as const }
+            : {}),
         },
       );
       if (outcome.kind === 'needs-review') {

@@ -1016,7 +1016,9 @@
     "reviewConfirmFound": "Shëno si të regjistruar",
     "reviewConfirmNotFound": "Lejo riprovimin",
     "reviewResolved": "U zgjidh.",
-    "reviewFailed": "Nuk u zgjidh kjo pagesë."
+    "reviewFailed": "Nuk u zgjidh kjo pagesë.",
+    "reviewKindRejected": "Refuzuar nga easyPos",
+    "reviewKindNotSent": "Pa dërguar (fiskalizimi i fikur)"
   },
   "kdsSettings": {
     "title": "Ekrani i kuzhinës (KDS)",

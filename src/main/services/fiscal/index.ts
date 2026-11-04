@@ -15,6 +15,10 @@ import {
 } from './easypos';
 import { backoffDelayMs } from './backoff';
 import { deferUnconfirmed } from './unconfirmed';
+import { fiscalBreakerOpen } from './circuit';
+
+const FISCAL_BREAKER_MESSAGE =
+  'Not yet fiscalised. Fiskalizimi is not answering, so this sale was recorded without waiting; its invoice is sent automatically when the connection is back.';
 import { docIdFromKey } from './docId';
 import {
   ensureDailyBalanceForCash,
@@ -46,6 +50,7 @@ import {
   withFiscalClaimLock,
   FiscalClaimBusyError,
   type StoredFiscalResult,
+  type FiscalHoldKind,
 } from './claims';
 
 export {
@@ -355,6 +360,8 @@ export async function fiscalizePaymentOnce(
      * this sitting that may already cover the sale).
      */
     holdReason?: string;
+    /** Why it is held, when certain (`FiscalClaimRecord.holdKind`). */
+    holdKind?: FiscalHoldKind;
   },
 ): Promise<FiscalizeOutcome> {
   const kind = String(payload.meta?.kind || '').toUpperCase();
@@ -480,6 +487,7 @@ export async function fiscalizePaymentOnce(
         saleKey: idempotencyKey,
         review,
         holdReason: options?.holdReason,
+        holdKind: options?.holdReason ? options?.holdKind : undefined,
       }),
     );
   } catch (e: any) {
@@ -504,6 +512,7 @@ async function registerUnderClaim(input: {
     alreadyReported?: boolean,
   ) => Promise<FiscalizeOutcome>;
   holdReason?: string;
+  holdKind?: FiscalHoldKind;
 }): Promise<FiscalizeOutcome> {
   const { docId, draft, settings, payload, meta, area, tableLabel, review } =
     input;
@@ -582,7 +591,7 @@ async function registerUnderClaim(input: {
       input.holdReason,
       JSON.parse(JSON.stringify(draft)),
       new Date().toISOString(),
-      { holdReason: input.holdReason },
+      { holdReason: input.holdReason, holdKind: input.holdKind },
     );
     if (held) {
       await notifyFiscalReviewNeeded({
@@ -607,6 +616,28 @@ async function registerUnderClaim(input: {
       kind: 'retryable',
       message: `This payment's invoice could not be queued for review, so the sale was not recorded. Try again. ${input.holdReason}`,
     };
+  }
+
+  // easyPos has been timing out (`circuit.ts`): do not make this payment
+  // wait 20 s for it too. Nothing is sent, so nothing can be filed twice;
+  // the background loop sends it once easyPos answers.
+  if (fiscalBreakerOpen()) {
+    const queued = await commitDeferredFiscalClaim(
+      docId,
+      decision.attemptId,
+      FISCAL_BREAKER_MESSAGE,
+      JSON.parse(JSON.stringify(draft)),
+      new Date().toISOString(),
+      { releaseOnFailure: true },
+    );
+    if (queued) {
+      return {
+        kind: 'deferred',
+        payload: pendingPayload(FISCAL_BREAKER_MESSAGE),
+        message: FISCAL_BREAKER_MESSAGE,
+      };
+    }
+    // Could not queue: try to send as usual rather than lose the sale.
   }
 
   // A queued invoice whose earlier send could not be confirmed is checked
@@ -702,7 +733,7 @@ async function registerUnderClaim(input: {
           new Date(Date.now() + REFUSED_RETRY_AFTER_MS).toISOString(),
           // Refused identically until someone fixes the cause, so it waits
           // on the review list instead of being re-sent on a timer.
-          { releaseOnFailure: true, holdReason },
+          { releaseOnFailure: true, holdReason, holdKind: 'rejected' },
         );
         if (queued) {
           await notifyFiscalReviewNeeded({

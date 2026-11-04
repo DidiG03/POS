@@ -19,6 +19,7 @@
 import type { SettingsDTO } from '@shared/ipc';
 import {
   FiscalClaimBusyError,
+  heldClaimIsDefinitelyNotFiled,
   readFiscalClaim,
   releaseReviewedClaimUnlocked,
   requeueReviewedClaimUnlocked,
@@ -93,6 +94,31 @@ export async function retryFiscalReview(input: {
           };
         }
         const cloud = fiscalConfig(input.settings).cloud;
+        // easyPos refused it, or it was never sent: certainly not filed, so
+        // no lookup and no "I checked easyPos" (QA v0.2.104, #11).
+        if (heldClaimIsDefinitelyNotFiled(claim)) {
+          const note =
+            claim.holdKind === 'rejected'
+              ? 'easyPos had refused this invoice; queued to be sent again after the cause was fixed.'
+              : 'Not sent while fiskalizimi was off for this staff member; queued to be filed now.';
+          if (claim.draft != null) {
+            const queued = await requeueReviewedClaimUnlocked(key, {
+              checkStatusFirst: false,
+              note,
+            });
+            if (queued) return { ok: true, outcome: 'queued' };
+            return {
+              ok: false,
+              code: 'NOT_RETRYABLE',
+              error: `docId ${key} could not be put back on the queue. Try again.`,
+            };
+          }
+          await releaseReviewedClaimUnlocked(key, {
+            checkStatusFirst: false,
+            note,
+          });
+          return { ok: true, outcome: 'released' };
+        }
         if (cloud) {
           const status = await checkStatus(input.settings, key, claim.draft);
           if (status.kind === 'filed') {

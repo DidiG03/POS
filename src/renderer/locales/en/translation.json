@@ -1016,7 +1016,9 @@
     "reviewConfirmFound": "Mark as registered",
     "reviewConfirmNotFound": "Release for retry",
     "reviewResolved": "Resolved.",
-    "reviewFailed": "Could not resolve this payment."
+    "reviewFailed": "Could not resolve this payment.",
+    "reviewKindRejected": "Rejected by easyPos",
+    "reviewKindNotSent": "Not sent (fiskalizimi off)"
   },
   "kdsSettings": {
     "title": "Kitchen Display (KDS)",

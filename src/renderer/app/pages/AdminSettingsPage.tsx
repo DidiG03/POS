@@ -2077,11 +2077,16 @@ function FiscalReviewPanel() {
   const resolve = async (
     idempotencyKey: string,
     resolution: 'retry' | 'registered' | 'corrected',
+    kind?: string,
   ) => {
     // Sending again an invoice easyPos already filed files the sale twice
-    // (QA v0.2.103, H2): make the reviewer confirm they looked first.
+    // (QA v0.2.103, H2): make the reviewer confirm they looked first. Not
+    // for one easyPos refused or that was never sent: it cannot be filed
+    // (QA v0.2.104, #11; the till checks this itself too).
+    const definite = kind === 'rejected' || kind === 'not-sent';
     if (
       resolution === 'retry' &&
+      !definite &&
       !window.confirm(t('fiscal.reviewRetryConfirm', { docId: idempotencyKey }))
     ) {
       return;
@@ -2152,7 +2157,11 @@ function FiscalReviewPanel() {
                       ? t('fiscal.reviewKindDeferred')
                       : row.kind === 'unrecorded'
                         ? t('fiscal.reviewKindUnrecorded')
-                        : t('fiscal.reviewKindUnknown')}
+                        : row.kind === 'rejected'
+                          ? t('fiscal.reviewKindRejected')
+                          : row.kind === 'not-sent'
+                            ? t('fiscal.reviewKindNotSent')
+                            : t('fiscal.reviewKindUnknown')}
                 </span>
                 {row.total != null ? (
                   <span className="tabular-nums">
@@ -2302,7 +2311,9 @@ function FiscalReviewPanel() {
                     disabled={busy}
                     className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
                     title={t('fiscal.reviewNotFoundHelp')}
-                    onClick={() => void resolve(row.idempotencyKey, 'retry')}
+                    onClick={() =>
+                      void resolve(row.idempotencyKey, 'retry', row.kind)
+                    }
                   >
                     {t('fiscal.reviewNotFound')}
                   </button>

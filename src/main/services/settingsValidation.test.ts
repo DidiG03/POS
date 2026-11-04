@@ -5,6 +5,8 @@ import {
   assertSettingsPatch,
   currencyProblem,
   exchangeRateProblem,
+  settingsSaveErrorStatus,
+  TABLE_AREA_COUNT_MAX,
   tokenClaimedEnvironment,
 } from './settingsValidation';
 
@@ -301,5 +303,59 @@ describe('table areas on save (QA v0.2.103 #7)', () => {
     expect(() =>
       assertSettingsPatch({ restaurantName: 'X' }, {}),
     ).not.toThrow();
+  });
+});
+
+describe('table area counts (QA v0.2.104 #7)', () => {
+  it('refuses negative, fractional, huge and non-numeric counts', () => {
+    for (const count of [
+      -1,
+      2.5,
+      100_000,
+      TABLE_AREA_COUNT_MAX + 1,
+      '8',
+      NaN,
+    ]) {
+      expect(() =>
+        assertSettingsPatch({ tableAreas: [{ name: 'Salla', count }] }, {}),
+      ).toThrow(/whole number of tables from 0 to 500/);
+    }
+  });
+
+  it('takes whole numbers in range', () => {
+    for (const count of [0, 1, 8, TABLE_AREA_COUNT_MAX]) {
+      expect(() =>
+        assertSettingsPatch({ tableAreas: [{ name: 'Salla', count }] }, {}),
+      ).not.toThrow();
+    }
+  });
+});
+
+describe('a refused settings save is a 400, not a 500 (QA v0.2.104 #6)', () => {
+  const thrown = (input: Record<string, unknown>) => {
+    try {
+      assertSettingsPatch(input, {});
+    } catch (e) {
+      return e;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  it('a new token with no environment', () => {
+    const e: any = thrown({ fiscal: { baseUrl: PROD, authToken: 't' } });
+    expect(e.code).toBe('FISCAL_TOKEN_ENVIRONMENT_REQUIRED');
+    expect(settingsSaveErrorStatus(e)).toBe(400);
+    expect(String(e.message)).toMatch(/environment|demo|production/i);
+  });
+
+  it('every other refusal too, and only real failures are 500', () => {
+    expect(
+      settingsSaveErrorStatus(
+        thrown({ tableAreas: [{ name: 'S', count: -1 }] }),
+      ),
+    ).toBe(400);
+    expect(settingsSaveErrorStatus(thrown({ currency: 'XXX' }))).toBe(400);
+    expect(settingsSaveErrorStatus(new Error('disk full'))).toBe(500);
+    expect(settingsSaveErrorStatus(null)).toBe(500);
   });
 });

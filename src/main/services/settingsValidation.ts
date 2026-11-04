@@ -66,8 +66,45 @@ export function tableAreasProblem(raw: unknown): string | null {
     const key = name.toLowerCase();
     if (seen.has(key)) return `There are two table areas called "${name}".`;
     seen.add(key);
+    // How many tables the area has: a whole number in a range a floor can
+    // hold. -1, 2.5 and 100000 were saved (QA v0.2.104, #7).
+    const count = (raw[i] as any)?.count;
+    if (count !== undefined && count !== null) {
+      const n = typeof count === 'number' ? count : Number.NaN;
+      if (
+        !Number.isInteger(n) ||
+        n < TABLE_AREA_COUNT_MIN ||
+        n > TABLE_AREA_COUNT_MAX
+      ) {
+        return `"${name}" needs a whole number of tables from ${TABLE_AREA_COUNT_MIN} to ${TABLE_AREA_COUNT_MAX}.`;
+      }
+    }
   }
   return null;
+}
+
+export const TABLE_AREA_COUNT_MIN = 0;
+export const TABLE_AREA_COUNT_MAX = 500;
+
+/**
+ * HTTP status for an error thrown while saving settings. Every refusal
+ * here carries `statusCode: 400`; the LAN route listed codes one by one and
+ * answered 500 for the ones it missed, a token saved with no environment
+ * among them (QA v0.2.104, #6).
+ */
+export function settingsSaveErrorStatus(e: unknown): 400 | 500 {
+  const err = e as { statusCode?: unknown; code?: unknown } | null;
+  if (Number(err?.statusCode) === 400) return 400;
+  const code = String(err?.code || '');
+  return [
+    INVALID_SETTINGS,
+    FISCAL_ADDRESS_REQUIRED,
+    FISCAL_TOKEN_ENVIRONMENT_MISMATCH,
+    FISCAL_TOKEN_ENVIRONMENT_REQUIRED,
+    'INVALID_FISCAL_URL',
+  ].includes(code)
+    ? 400
+    : 500;
 }
 
 /** Why `rate` is not a usable exchange rate, or null (unset is fine). */

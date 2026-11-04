@@ -184,6 +184,34 @@ export interface FiscalClaimRecord {
    * the transmit loop skips it. Cleared by "Send again" in the review list.
    */
   holdReason?: string;
+  /**
+   * Why it is held, when that is known for certain (QA v0.2.104, #11):
+   *   - `rejected`: easyPos answered with a refusal (4xx validation), so it
+   *     was not filed;
+   *   - `fiscal-off`: never sent (fiskalizimi off for that staff member).
+   * Either way the invoice is definitely not filed (unless an earlier send
+   * is unconfirmed, `checkStatusFirst`), so "Send again" needs no lookup.
+   * Unset: the outcome of a send is unknown, or a sitting may be covered.
+   */
+  holdKind?: FiscalHoldKind;
+}
+
+export type FiscalHoldKind = 'rejected' | 'fiscal-off';
+
+/** Held, and certainly not filed: no "I checked easyPos" needed. */
+export function heldClaimIsDefinitelyNotFiled(
+  record: Pick<
+    FiscalClaimRecord,
+    'state' | 'holdReason' | 'holdKind' | 'checkStatusFirst' | 'result'
+  >,
+): boolean {
+  return (
+    record.state === 'DEFERRED' &&
+    Boolean(record.holdReason) &&
+    (record.holdKind === 'rejected' || record.holdKind === 'fiscal-off') &&
+    record.checkStatusFirst !== true &&
+    !String(record.result?.nivf || '').trim()
+  );
 }
 
 export type FiscalClaimDecision =
@@ -246,6 +274,10 @@ function parseRecord(valueJson: unknown): FiscalClaimRecord | null {
     replacedBy: raw.replacedBy ? String(raw.replacedBy) : undefined,
     checkStatusFirst: raw.checkStatusFirst === true ? true : undefined,
     holdReason: raw.holdReason ? String(raw.holdReason) : undefined,
+    holdKind:
+      raw.holdKind === 'rejected' || raw.holdKind === 'fiscal-off'
+        ? raw.holdKind
+        : undefined,
   };
 }
 
@@ -557,7 +589,11 @@ export async function settleFiscalClaimDeferred(
   error: string,
   draft: unknown,
   nextAttemptAt: string,
-  options?: { checkStatusFirst?: boolean; holdReason?: string },
+  options?: {
+    checkStatusFirst?: boolean;
+    holdReason?: string;
+    holdKind?: FiscalHoldKind;
+  },
 ): Promise<void> {
   const existing = await readFiscalClaim(idempotencyKey);
   // Once set, the flag stays until the docId is confirmed one way or the
@@ -572,6 +608,7 @@ export async function settleFiscalClaimDeferred(
     ...(checkStatusFirst ? { checkStatusFirst: true } : {}),
     // Each deferral decides afresh whether a person must look first.
     holdReason: options?.holdReason || undefined,
+    holdKind: options?.holdReason ? options?.holdKind : undefined,
   });
 }
 
@@ -752,6 +789,7 @@ export async function commitDeferredFiscalClaim(
     checkStatusFirst?: boolean;
     /** Queue it, but leave it for a person before sending (see `holdReason`). */
     holdReason?: string;
+    holdKind?: FiscalHoldKind;
   },
 ): Promise<boolean> {
   const sleep = options?.sleep ?? pause;
@@ -767,6 +805,7 @@ export async function commitDeferredFiscalClaim(
         {
           checkStatusFirst: options?.checkStatusFirst,
           holdReason: options?.holdReason,
+          holdKind: options?.holdKind,
         },
       );
     } catch {
@@ -953,6 +992,7 @@ export async function requeueReviewedClaimUnlocked(
     updatedAt: nowIso(),
     lastError: options.note,
     holdReason: undefined,
+    holdKind: undefined,
     checkStatusFirst: options.checkStatusFirst ? true : undefined,
   });
   const saved = await readFiscalClaim(idempotencyKey);
@@ -976,6 +1016,7 @@ export async function releaseReviewedClaimUnlocked(
     updatedAt: nowIso(),
     lastError: options.note,
     holdReason: undefined,
+    holdKind: undefined,
     checkStatusFirst: options.checkStatusFirst ? true : undefined,
   });
   return true;
