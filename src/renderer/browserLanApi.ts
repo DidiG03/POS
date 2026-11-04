@@ -37,12 +37,12 @@ import {
 } from './utils/lanAuthToken';
 import { isPairingRejectedError } from './utils/lanLoginError';
 import {
-  KDS_DEVICE_TOKEN_KEY,
   KDS_PAIRING_REQUIRED_EVENT,
   clearKdsDeviceToken,
   isKdsApp,
   kdsPairingRequiredOn401,
   readKdsDeviceToken,
+  writeKdsDeviceToken,
 } from './utils/kdsPairing';
 import {
   APP_UPDATE_REQUIRED,
@@ -1848,11 +1848,8 @@ export function installBrowserLanApi(): void {
         })) as any;
         const token = typeof r?.token === 'string' ? r.token : '';
         if (!token) return false;
-        try {
-          localStorage.setItem(KDS_DEVICE_TOKEN_KEY, token);
-        } catch {
-          // ignore: the display asks again next launch
-        }
+        // Kept on disk by the KDS app too, so an update cannot un-pair it.
+        writeKdsDeviceToken(token);
         return true;
       },
       async listTickets(input: any) {

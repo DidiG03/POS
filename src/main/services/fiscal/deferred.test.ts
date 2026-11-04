@@ -28,6 +28,12 @@ vi.mock('@db/client', () => ({
           .filter(([key, row]) => {
             if (!(key >= from && key < to)) return false;
             const v = row.valueJson || {};
+            // One table's claims (`tableClaimsQuery`): area, table.
+            if (sql.includes('$.context.area'))
+              return (
+                v.context?.area === states[0] &&
+                v.context?.tableLabel === states[1]
+              );
             return (
               states.includes(v.state) ||
               (sql.includes('orphanDetectedAt') &&
@@ -38,6 +44,7 @@ vi.mock('@db/client', () => ({
           .map(([key, row]) => ({
             key,
             valueJson: JSON.stringify(row.valueJson),
+            updatedAt: row.updatedAt,
           })),
     ),
     syncState: {

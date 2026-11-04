@@ -36,6 +36,7 @@ import {
   annotateFiscalClaimUnlocked,
   isDeadPendingClaim,
   isFiscalClaimLocked,
+  listFiscalClaimsForTableSince,
   listFiscalClaimsUpdatedSince,
   markDeadPendingUnknownUnlocked,
   notifyFiscalReviewNeeded,
@@ -297,11 +298,15 @@ export async function checkSittingBeforePayment(input: {
     ? docIdFromKey(input.idempotencyKey, 'invoice')
     : '';
 
-  const rows = (await listFiscalClaimsUpdatedSince(new Date(sinceMs))).filter(
+  const rows = (
+    await listFiscalClaimsForTableSince({
+      area,
+      tableLabel,
+      since: new Date(sinceMs),
+    })
+  ).filter(
     (row) =>
       row.idempotencyKey !== currentDocId &&
-      row.record.context?.area === area &&
-      row.record.context?.tableLabel === tableLabel &&
       createdAtMs(row.record) >= sinceMs &&
       (row.record.state === 'PENDING' ||
         row.record.state === 'UNKNOWN' ||

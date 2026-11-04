@@ -5,6 +5,7 @@
 // (window.api.layout.{get,save}) are identical to TablesPage so a layout
 // saved here is forward-compatible with future refactors.
 
+import { seatBadgeInset } from '../../utils/floorSeatBadge';
 import {
   memo,
   useCallback,
@@ -2832,7 +2833,10 @@ function Circle({
         {/* Capacity badge — bottom-right, hidden when a status badge
             is overriding it. */}
         {seatsText && !badgeText && !(usageCount != null && usageCount > 0) && (
-          <span className="absolute bottom-0.5 right-1 text-[10px] font-semibold opacity-80">
+          <span
+            className="absolute text-[10px] font-semibold leading-none opacity-80"
+            style={seatBadgeInset(shape, w, h)}
+          >
             {seatsText}
           </span>
         )}

@@ -1078,6 +1078,81 @@ export async function listFiscalClaimsUpdatedSince(
   return out;
 }
 
+/** SQL for the claims of one table (`listFiscalClaimsForTableSince`). */
+export function tableClaimsQuery(
+  area: string,
+  tableLabel: string,
+): { sql: string; args: string[] } {
+  const ctx = (field: string) =>
+    `(CASE WHEN json_valid("valueJson") THEN json_extract("valueJson", '$.context.${field}') END)`;
+  return {
+    sql:
+      `SELECT "key", "valueJson", "updatedAt" FROM "SyncState" ` +
+      `WHERE "key" >= ? AND "key" < ? AND ${ctx('area')} = ? AND ${ctx('tableLabel')} = ?`,
+    args: [KEY_PREFIX, KEY_END, area, tableLabel],
+  };
+}
+
+function updatedAtMs(row: any, record: FiscalClaimRecord): number {
+  const raw = row?.updatedAt;
+  const fromRow =
+    raw instanceof Date
+      ? raw.getTime()
+      : typeof raw === 'number'
+        ? raw
+        : Date.parse(String(raw ?? ''));
+  if (Number.isFinite(fromRow)) return fromRow;
+  return Date.parse(record.updatedAt) || 0;
+}
+
+/**
+ * This table's claims updated since `since`. Every payment looks here
+ * (the sitting check, H1) and so does every void. They used to load every
+ * claim of every table updated since then, parse them all and keep this
+ * table's: the work per payment grew with the day's sales, which is how
+ * CPU and memory rose under load (QA v0.2.104, #16). The table is matched
+ * in SQL; the time in JS (SQLite DateTime is stored in mixed formats).
+ */
+export async function listFiscalClaimsForTableSince(input: {
+  area: string;
+  tableLabel: string;
+  since: Date;
+}): Promise<Array<{ idempotencyKey: string; record: FiscalClaimRecord }>> {
+  const sinceMs = input.since.getTime();
+  let rows: any[];
+  try {
+    const { sql, args } = tableClaimsQuery(input.area, input.tableLabel);
+    rows = (await prisma.$queryRawUnsafe(sql, ...args)) as any[];
+  } catch {
+    // Never miss an invoice over a query: the old scan still works.
+    return (await listFiscalClaimsUpdatedSince(input.since)).filter(
+      (r) =>
+        r.record.context?.area === input.area &&
+        r.record.context?.tableLabel === input.tableLabel,
+    );
+  }
+  const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
+  for (const row of rows) {
+    const key = String(row?.key || '');
+    if (!key.startsWith(KEY_PREFIX)) continue;
+    let value = row?.valueJson;
+    if (typeof value === 'string') {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        continue;
+      }
+    }
+    const record = parseRecord(value);
+    if (!record) continue;
+    if (record.context?.area !== input.area) continue;
+    if (record.context?.tableLabel !== input.tableLabel) continue;
+    if (updatedAtMs(row, record) < sinceMs) continue;
+    out.push({ idempotencyKey: key.slice(KEY_PREFIX.length), record });
+  }
+  return out;
+}
+
 /** We cannot tell whether the invoice registered. Block automatic retries. */
 export async function settleFiscalClaimUnknown(
   idempotencyKey: string,
@@ -1258,27 +1333,10 @@ export async function findRegisteredClaimForTable(input: {
   tableLabel: string;
   since: Date;
 }): Promise<{ idempotencyKey: string; record: FiscalClaimRecord } | null> {
-  const rows = await prisma.syncState
-    .findMany({
-      where: {
-        key: { startsWith: KEY_PREFIX },
-        updatedAt: { gte: input.since },
-      },
-    })
-    .catch(() => [] as any[]);
   let best: { idempotencyKey: string; record: FiscalClaimRecord } | null = null;
-  for (const row of rows as any[]) {
-    const record = parseRecord(row?.valueJson);
-    if (!record) continue;
-    if (record.state !== 'REGISTERED') continue;
-    if (record.context?.area !== input.area) continue;
-    if (record.context?.tableLabel !== input.tableLabel) continue;
-    if (!best || record.updatedAt > best.record.updatedAt) {
-      best = {
-        idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
-        record,
-      };
-    }
+  for (const row of await listFiscalClaimsForTableSince(input)) {
+    if (row.record.state !== 'REGISTERED') continue;
+    if (!best || row.record.updatedAt > best.record.updatedAt) best = row;
   }
   return best;
 }
@@ -1295,26 +1353,10 @@ export async function findUnsentClaimForTable(input: {
   tableLabel: string;
   since: Date;
 }): Promise<{ idempotencyKey: string; record: FiscalClaimRecord } | null> {
-  const rows = await prisma.syncState
-    .findMany({
-      where: {
-        key: { startsWith: KEY_PREFIX },
-        updatedAt: { gte: input.since },
-      },
-    })
-    .catch(() => [] as any[]);
   let best: { idempotencyKey: string; record: FiscalClaimRecord } | null = null;
-  for (const row of rows as any[]) {
-    const record = parseRecord(row?.valueJson);
-    if (!record || !UNSENT_STATES.has(record.state)) continue;
-    if (record.context?.area !== input.area) continue;
-    if (record.context?.tableLabel !== input.tableLabel) continue;
-    if (!best || record.updatedAt > best.record.updatedAt) {
-      best = {
-        idempotencyKey: String(row.key).slice(KEY_PREFIX.length),
-        record,
-      };
-    }
+  for (const row of await listFiscalClaimsForTableSince(input)) {
+    if (!UNSENT_STATES.has(row.record.state)) continue;
+    if (!best || row.record.updatedAt > best.record.updatedAt) best = row;
   }
   return best;
 }

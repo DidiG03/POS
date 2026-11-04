@@ -377,3 +377,34 @@ describe('sold by weight', () => {
     expect(r.items.map((i: any) => i.soldByKg)).toEqual([true, undefined]);
   });
 });
+
+describe('legacy prices with more than 2 decimals (QA v0.2.104 #14)', () => {
+  it('charges 3 × 3.33 = 9.99, not 3 × 3.333 printed as 10.00', () => {
+    const legacy = { sku: 'OLD', name: 'Legacy', price: 3.333, vatRate: 0.2 };
+    const r = repriceLines(
+      [{ sku: 'OLD', name: 'Legacy', qty: 3, unitPrice: 3.333, vatRate: 0.2 }],
+      [legacy],
+      [],
+    );
+    expect(r.issues).toEqual([]);
+    expect(r.items[0].unitPrice).toBe(3.33);
+    expect(r.items[0].qty * r.items[0].unitPrice).toBeCloseTo(9.99, 10);
+    // A phone that already sends 3.33 is the same price, not a correction.
+    const sent = repriceLines(
+      [{ sku: 'OLD', name: 'Legacy', qty: 3, unitPrice: 3.33, vatRate: 0.2 }],
+      [legacy],
+      [],
+    );
+    expect(sent.issues).toEqual([]);
+    expect(sent.items[0].unitPrice).toBe(3.33);
+  });
+
+  it('a line repriced from such a menu gets the rounded price too', () => {
+    const r = repriceLines(
+      [{ sku: 'OLD', name: 'Legacy', qty: 1, unitPrice: 1, vatRate: 0.2 }],
+      [{ sku: 'OLD', name: 'Legacy', price: 3.333, vatRate: 0.2 }],
+      [],
+    );
+    expect(r.items[0].unitPrice).toBe(3.33);
+  });
+});

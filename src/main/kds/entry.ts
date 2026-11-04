@@ -32,6 +32,10 @@ import {
   setupAutoUpdater,
   updaterHandlers,
 } from '../updater';
+import {
+  readKdsDeviceTokenFile,
+  writeKdsDeviceTokenFile,
+} from './deviceTokenFile';
 import { registerCompanionLanIpc } from '../services/companionLanProxy';
 
 app.setName('OneTap KDS');
@@ -123,6 +127,10 @@ function clearConfig(): void {
   } catch {
     // ignore
   }
+}
+
+function deviceTokenPath(): string {
+  return join(app.getPath('userData'), 'kds.device.json');
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -284,6 +292,18 @@ ipcMain.on('kdsApp:getConfigSync', (event) => {
   event.returnValue = readConfig();
 });
 
+ipcMain.on('kdsApp:getDeviceTokenSync', (event) => {
+  event.returnValue = readKdsDeviceTokenFile(deviceTokenPath());
+});
+
+ipcMain.handle('kdsApp:saveDeviceToken', (_e, token) => {
+  writeKdsDeviceTokenFile(
+    typeof token === 'string' && token.length >= 10 ? token : null,
+    deviceTokenPath(),
+  );
+  return true;
+});
+
 ipcMain.handle('kdsApp:saveConfig', async (_e, payload) => {
   const existing = readConfig();
   const host = String(payload?.host ?? existing?.host ?? '').trim();
@@ -344,6 +364,8 @@ ipcMain.handle('kdsApp:saveDisplayCooker', async (_e, payload) => {
 
 ipcMain.handle('kdsApp:resetConfig', () => {
   clearConfig();
+  // A new host means a new pairing.
+  writeKdsDeviceTokenFile(null, deviceTokenPath());
   if (mainWindow && !mainWindow.isDestroyed())
     loadHash(mainWindow, '/kds-setup', { bustCache: true });
   return true;

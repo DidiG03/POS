@@ -56,6 +56,7 @@ import { findStaleBillPayment } from './staleBill';
 import { writeSettledSale } from './salesLedger';
 import { findLatestTicketLogForCurrentSession } from './tableSession';
 import { coreServices } from './core';
+import { listFiscalClaimsForTableSince } from './fiscal/claims';
 
 const AREA = 'Salla';
 let TABLE = 'T7';
@@ -240,5 +241,60 @@ describe('pay vs send on one table (QA H3)', () => {
     );
     expect(r.ok).toBe(true);
     expect((await currentBill()).map((l) => l.sku)).toEqual(['RRA']);
+  });
+});
+
+describe("one table's fiscal claims, on real SQLite (QA v0.2.104 #16)", () => {
+  it('reads only that table, in SQL, and only since the given time', async () => {
+    const at = new Date().toISOString();
+    const claim = (area: string, tableLabel: string, state = 'REGISTERED') => ({
+      state,
+      attemptId: 'a',
+      attempts: 1,
+      createdAt: at,
+      updatedAt: at,
+      context: { area, tableLabel },
+    });
+    await prisma.syncState.create({
+      data: {
+        key: 'fiscal:claim:pv-1',
+        valueJson: claim('Salla', 'Q1') as any,
+      },
+    });
+    await prisma.syncState.create({
+      data: {
+        key: 'fiscal:claim:pv-2',
+        valueJson: claim('Salla', 'Q2') as any,
+      },
+    });
+    await prisma.syncState.create({
+      data: {
+        key: 'fiscal:claim:pv-3',
+        valueJson: claim('Tarraca', 'Q1') as any,
+      },
+    });
+    // Not a claim, though it looks like one.
+    await prisma.syncState.create({
+      data: { key: 'fiscal:other', valueJson: claim('Salla', 'Q1') as any },
+    });
+    const since = new Date(Date.now() - 60_000);
+    // The SQL path, not the old scan of every claim.
+    const scan = vi.spyOn(prisma.syncState, 'findMany');
+    const rows = await listFiscalClaimsForTableSince({
+      area: 'Salla',
+      tableLabel: 'Q1',
+      since,
+    });
+    expect(rows.map((r) => r.idempotencyKey)).toEqual(['pv-1']);
+    expect(scan).not.toHaveBeenCalled();
+    scan.mockRestore();
+    // Updated before `since`: left out.
+    expect(
+      await listFiscalClaimsForTableSince({
+        area: 'Salla',
+        tableLabel: 'Q1',
+        since: new Date(Date.now() + 60_000),
+      }),
+    ).toEqual([]);
   });
 });

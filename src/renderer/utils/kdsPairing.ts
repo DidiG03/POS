@@ -18,12 +18,46 @@ export function isKdsApp(): boolean {
   return typeof window !== 'undefined' && Boolean((window as any).__KDS_APP__);
 }
 
+type KdsTokenStore = {
+  getDeviceTokenSync?: () => string | null;
+  saveDeviceToken?: (token: string | null) => Promise<boolean>;
+};
+const appStore = (): KdsTokenStore | null =>
+  typeof window !== 'undefined' ? ((window as any).kdsApp ?? null) : null;
+
+/**
+ * The display's pairing token. The KDS app keeps it on disk as well
+ * (QA v0.2.104, #13): localStorage alone lost it across an auto-update.
+ * Read from either; the file wins when the page lost its copy.
+ */
 export function readKdsDeviceToken(): string | null {
+  let local: string | null = null;
   try {
-    return localStorage.getItem(KDS_DEVICE_TOKEN_KEY) || null;
+    local = localStorage.getItem(KDS_DEVICE_TOKEN_KEY) || null;
   } catch {
-    return null;
+    local = null;
   }
+  if (local) return local;
+  const saved = appStore()?.getDeviceTokenSync?.() ?? null;
+  if (saved) {
+    try {
+      localStorage.setItem(KDS_DEVICE_TOKEN_KEY, saved);
+    } catch {
+      // the file still has it
+    }
+  }
+  return saved;
+}
+
+export function writeKdsDeviceToken(token: string): void {
+  try {
+    localStorage.setItem(KDS_DEVICE_TOKEN_KEY, token);
+  } catch {
+    // the file below still has it
+  }
+  void appStore()
+    ?.saveDeviceToken?.(token)
+    ?.catch(() => undefined);
 }
 
 export function clearKdsDeviceToken(): void {
@@ -32,6 +66,9 @@ export function clearKdsDeviceToken(): void {
   } catch {
     // ignore
   }
+  void appStore()
+    ?.saveDeviceToken?.(null)
+    ?.catch(() => undefined);
 }
 
 /** A kitchen route (`/kds/...`), except the open reachability probe. */

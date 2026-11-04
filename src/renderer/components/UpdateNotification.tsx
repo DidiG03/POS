@@ -12,6 +12,9 @@ interface UpdateEvent {
   data?: any;
 }
 
+const CHECK_POLL_MS = 10_000;
+const CHECK_GIVE_UP_MS = 2 * 60_000;
+
 export function UpdateNotification() {
   const [status, setStatus] = useState<UpdateStatusDTO | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
@@ -43,6 +46,7 @@ export function UpdateNotification() {
           loadStatus();
           break;
         case 'update-not-available':
+        case 'check-finished':
           setIsChecking(false);
           loadStatus();
           break;
@@ -78,6 +82,21 @@ export function UpdateNotification() {
       window.removeEventListener('updater:event', handleEvent as EventListener);
   }, []);
 
+  // While "checking", ask the updater now and then: a check never runs for
+  // minutes, and after CHECK_GIVE_UP_MS the spinner goes whatever it says.
+  useEffect(() => {
+    if (!isChecking) return;
+    const started = Date.now();
+    const id = window.setInterval(() => {
+      if (Date.now() - started >= CHECK_GIVE_UP_MS) {
+        setIsChecking(false);
+        return;
+      }
+      void loadStatus();
+    }, CHECK_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [isChecking]);
+
   // Tick the kiosk countdown once per second while an auto-install is pending.
   useEffect(() => {
     if (!autoInstall) {
@@ -106,6 +125,11 @@ export function UpdateNotification() {
     try {
       const s = await window.api.updater.getUpdateStatus();
       setStatus(s);
+      // The updater says whether a check is running; an event missed or
+      // never sent no longer leaves the spinner up (QA v0.2.104, #13).
+      if (s && typeof (s as any).checking === 'boolean') {
+        setIsChecking((s as any).checking);
+      }
     } catch {
       // Ignore errors (updater might not be available)
     }
