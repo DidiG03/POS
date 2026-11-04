@@ -866,7 +866,8 @@
     "reprinted": "Z report {{number}} printed again (copy).",
     "reprint": "Print copy",
     "salesCount": "{{count}} sales",
-    "failed": "Could not issue the Z report."
+    "failed": "Could not issue the Z report.",
+    "confirmEmpty": "Nothing was sold, corrected, voided or declared since the last Z report. Issue an empty Z report anyway?"
   },
   "fiscal": {
     "loadFailed": "Could not load the fiscal settings, so nothing was saved. Reopen this page and try again.",

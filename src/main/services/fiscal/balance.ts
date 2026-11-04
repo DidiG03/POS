@@ -144,7 +144,13 @@ export type BalanceOutcome =
   /** Already declared today. No request was sent. */
   | { kind: 'already-declared'; docId: string; fcdc?: string }
   | { kind: 'rejected'; docId: string; message: string }
-  | { kind: 'unresolved'; docId: string; message: string };
+  | { kind: 'unresolved'; docId: string; message: string }
+  /**
+   * The key was already used for a different movement (another amount or
+   * direction). Nothing was sent: answering "already declared" hid that
+   * the second amount was never declared (QA v0.2.104, #10).
+   */
+  | { kind: 'conflict'; docId: string; message: string };
 
 export interface BalanceOptions {
   maxAttempts?: number;
@@ -603,6 +609,17 @@ async function movement(
   const storageKey = movementKey(docId);
 
   const existing = await readRecord(storageKey);
+  if (
+    existing &&
+    (existing.operation !== operation ||
+      Math.abs(Number(existing.amount) - amount) >= 0.005)
+  ) {
+    return {
+      kind: 'conflict',
+      docId,
+      message: `This request key was already used for a cash ${existing.operation === 'withdraw' ? 'out' : 'in'} of ${roundMoney(Number(existing.amount)).toFixed(2)} lekë, so ${operation === 'withdraw' ? 'cash out' : 'cash in'} of ${amount.toFixed(2)} lekë was not declared. Declare it again as a new entry.`,
+    };
+  }
   if (existing?.state === 'COMPLETE') {
     return { kind: 'already-declared', docId, fcdc: existing.fcdc };
   }

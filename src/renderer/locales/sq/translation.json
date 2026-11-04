@@ -866,7 +866,8 @@
     "reprinted": "Raporti Z {{number}} u printua përsëri (kopje).",
     "reprint": "Printo kopje",
     "salesCount": "{{count}} shitje",
-    "failed": "Raporti Z nuk u lëshua."
+    "failed": "Raporti Z nuk u lëshua.",
+    "confirmEmpty": "Nuk ka shitje, korrigjime, anulime apo deklarime që nga raporti i fundit Z. Të nxirret gjithsesi një raport Z bosh?"
   },
   "fiscal": {
     "loadFailed": "Cilësimet e fiskalizimit nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",

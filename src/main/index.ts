@@ -4560,9 +4560,20 @@ ipcHandle('admin:printFiscalReceipt', async (_e, input) =>
 );
 
 // Z report: the end-of-day close (`services/zReport.ts`).
-ipcHandle('admin:issueZReport', async (_e, _input, ctx) => {
+ipcHandle('admin:issueZReport', async (_e, input, ctx) => {
   const { issueZReport } = await import('./services/zReport');
-  const r = await issueZReport({ actorUserId: ctx?.session?.userId ?? null });
+  const r = await issueZReport({
+    actorUserId: ctx?.session?.userId ?? null,
+    confirmEmpty: (input as any)?.confirmEmpty === true,
+  });
+  if ('empty' in r) {
+    return {
+      ok: false,
+      code: 'Z_EMPTY',
+      from: r.from,
+      lastNumber: r.lastNumber,
+    };
+  }
   logSecurityEvent('z_report_issued', {
     number: r.report.number,
     userId: ctx?.session?.userId ?? null,

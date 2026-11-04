@@ -1766,8 +1766,18 @@ export function installBrowserLanApi(): void {
           body: JSON.stringify(input ?? {}),
         });
       },
-      async issueZReport() {
-        return await goLan('/admin/z-report', { method: 'POST', body: '{}' });
+      async issueZReport(input?: { confirmEmpty?: boolean }) {
+        try {
+          return await goLan('/admin/z-report', {
+            method: 'POST',
+            body: JSON.stringify(input ?? {}),
+          });
+        } catch (e: any) {
+          // 409 Z_EMPTY: answered like the till's IPC, so the page can ask.
+          if (e?.code === 'Z_EMPTY' || /Z_EMPTY/.test(String(e?.message || '')))
+            return { ok: false, code: 'Z_EMPTY' };
+          throw e;
+        }
       },
       async listZReports() {
         const rows = await goLan('/admin/z-reports');

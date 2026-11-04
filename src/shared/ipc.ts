@@ -1240,7 +1240,12 @@ export interface ApiAdmin {
     idempotencyKey?: string;
   }): Promise<CorrectSaleResultDTO>;
   /** Close the period since the last Z report: compute, store, print. */
-  issueZReport?(): Promise<{ ok: true; report: any; printed: boolean }>;
+  issueZReport?(input?: {
+    confirmEmpty?: boolean;
+  }): Promise<
+    | { ok: true; report: any; printed: boolean }
+    | { ok: false; code: 'Z_EMPTY'; from: string; lastNumber: number }
+  >;
   /** The latest Z reports, newest first. */
   listZReports?(): Promise<any[]>;
   /** Print a stored Z report again, marked KOPJE / COPY. */

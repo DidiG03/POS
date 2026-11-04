@@ -355,6 +355,31 @@ describe('deposit and withdraw', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('refuse a key reused for another amount or direction (QA v0.2.104 #10)', async () => {
+    fetchMock.mockResolvedValue(json(200, { fcdc: 'C9' }));
+    await depositCash(settings, { amount: 2.01, docId: 'cash-k-1' }, fast);
+    const otherAmount = await depositCash(
+      settings,
+      { amount: 4, docId: 'cash-k-1' },
+      fast,
+    );
+    expect(otherAmount).toMatchObject({ kind: 'conflict', docId: 'cash-k-1' });
+    expect((otherAmount as any).message).toMatch(/2\.01.*4\.00.*not declared/);
+    const otherWay = await withdrawCash(
+      settings,
+      { amount: 2.01, docId: 'cash-k-1' },
+      fast,
+    );
+    expect(otherWay.kind).toBe('conflict');
+    // Nothing more was sent.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The same amount again is still the same declaration.
+    expect(
+      (await depositCash(settings, { amount: 2.01, docId: 'cash-k-1' }, fast))
+        .kind,
+    ).toBe('already-declared');
+  });
+
   it('send the amount as given, in ALL', async () => {
     fetchMock.mockResolvedValue(json(200, { fcdc: 'C9' }));
     await depositCash(settings, { amount: 5000.456 }, fast);

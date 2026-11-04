@@ -102,7 +102,8 @@ const api: Api = {
     }) => ipcRenderer.invoke('admin:correctSale', input),
     printFiscalReceipt: (input: { orderId: number }) =>
       ipcRenderer.invoke('admin:printFiscalReceipt', input),
-    issueZReport: () => ipcRenderer.invoke('admin:issueZReport', {}),
+    issueZReport: (input?: { confirmEmpty?: boolean }) =>
+      ipcRenderer.invoke('admin:issueZReport', input ?? {}),
     listZReports: () => ipcRenderer.invoke('admin:listZReports', {}),
     reprintZReport: (input: { number: number }) =>
       ipcRenderer.invoke('admin:reprintZReport', input),

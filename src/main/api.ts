@@ -2878,12 +2878,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/fiscal/cash-declaration') {
         const body = (await parseJson(req)) || {};
         const settings = await coreServices.readSettings();
-        const { declareCash } = await import('./services/fiscal/cashDrawer');
+        const { declareCash, cashDeclarationStatus } = await import(
+          './services/fiscal/cashDrawer'
+        );
         const result = await declareCash(settings as any, {
           ...body,
           actorUserId: auth?.userId ?? null,
         });
-        return send(res, result.ok ? 200 : 400, result, corsOrigin);
+        return send(res, cashDeclarationStatus(result), result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/settings/fiscal-test') {
         const settings = await coreServices.readSettings();
@@ -4773,7 +4775,24 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // Z report: the end-of-day close (admins; `services/zReport.ts`).
       if (req.method === 'POST' && pathname === '/admin/z-report') {
         const { issueZReport } = await import('./services/zReport');
-        const r = await issueZReport({ actorUserId: auth?.userId ?? null });
+        const zBody = (await parseJson(req).catch(() => null)) || {};
+        const r = await issueZReport({
+          actorUserId: auth?.userId ?? null,
+          confirmEmpty: (zBody as any)?.confirmEmpty === true,
+        });
+        if ('empty' in r) {
+          return send(
+            res,
+            409,
+            {
+              ok: false,
+              code: 'Z_EMPTY',
+              from: r.from,
+              lastNumber: r.lastNumber,
+            },
+            corsOrigin,
+          );
+        }
         logSecurityEvent('z_report_issued', {
           number: r.report.number,
           userId: auth?.userId ?? null,

@@ -4693,7 +4693,7 @@ function ZReports() {
   const { t } = useTranslation();
   const api = (window.api as any).admin as
     | {
-        issueZReport?: () => Promise<any>;
+        issueZReport?: (i?: { confirmEmpty?: boolean }) => Promise<any>;
         listZReports?: () => Promise<any[]>;
         reprintZReport?: (i: { number: number }) => Promise<any>;
       }
@@ -4719,7 +4719,12 @@ function ZReports() {
     setBusy(true);
     setStatus(null);
     try {
-      const r = await api.issueZReport!();
+      let r = await api.issueZReport!();
+      // Nothing since the last Z: issue an empty one only if asked to.
+      if (r?.code === 'Z_EMPTY') {
+        if (!window.confirm(t('zReport.confirmEmpty'))) return;
+        r = await api.issueZReport!({ confirmEmpty: true });
+      }
       setStatus({
         ok: true,
         text: t(r?.printed ? 'zReport.issued' : 'zReport.issuedNotPrinted', {
