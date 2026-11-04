@@ -80,11 +80,13 @@ const NotificationsInbox = lazy(() =>
 export default function AppLayout() {
   const { t } = useTranslation();
   const { user, setUser } = useSessionStore();
-  // Hold your name in the header for 5 s to switch fiskalizimi on or off
-  // for your own payments (`WaiterFiscalDialog`, `waiterFiscal.ts`).
+  // On the till, hold the name in the header for 5 s to switch fiskalizimi
+  // on or off for that person, with an admin's PIN (`WaiterFiscalDialog`,
+  // `waiterFiscal.ts`). Phones do not have it (QA v0.2.104, #4).
   const [fiscalDialogOpen, setFiscalDialogOpen] = useState(false);
+  const canSwitchFiscal = Boolean((window as any).api?.auth?.manageUserFiscal);
   const nameHold = useLongPress(
-    user ? () => setFiscalDialogOpen(true) : undefined,
+    user && canSwitchFiscal ? () => setFiscalDialogOpen(true) : undefined,
     FISCAL_HOLD_MS,
   );
   // Fills under the name while it is held, so the hold is visibly working.

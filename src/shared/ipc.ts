@@ -567,7 +567,12 @@ export interface ApiMenu {
 
 export type UserFiscalResult =
   | { ok: true; enabled: boolean; changed: boolean }
-  | { ok: false; code: 'WRONG_PIN' | 'NOT_FOUND' | 'INVALID' | 'LOCKED' };
+  | {
+      ok: false;
+      code: 'WRONG_PIN' | 'NOT_FOUND' | 'INVALID' | 'LOCKED';
+      lockedForMs?: number;
+      attemptsLeft?: number;
+    };
 
 export interface ApiAuth {
   loginWithPin(
@@ -577,18 +582,20 @@ export interface ApiAuth {
   ): Promise<UserDTO | null>;
   /**
    * Read (no `enabled`) or set fiskalizimi for one staff member's payments.
-   * Needs that staff member's PIN. Opened from the waiter POS header by
-   * holding your name for five seconds.
+   * Needs an admin's PIN, checked by the till. Till only: opened from its
+   * header by holding the name for five seconds.
    */
   manageUserFiscal?(input: {
     userId: number;
-    pin: string;
+    managerPin: string;
     enabled?: boolean;
   }): Promise<UserFiscalResult>;
   verifyManagerPin(pin: string): Promise<{
     ok: boolean;
     userId?: number;
     userName?: string;
+    /** Approvals at this till are locked for this long (many wrong PINs). */
+    lockedForMs?: number;
     // Short-lived token proving manager/admin approval.
     approvalToken?: string;
   }>;

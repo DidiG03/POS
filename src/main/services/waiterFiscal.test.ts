@@ -25,16 +25,24 @@ vi.mock('@db/client', () => ({
         const u = users.get(where.id);
         return u && u.active === where.active ? u : null;
       }),
+      findMany: vi.fn(async ({ where }: any) =>
+        [...users.values()].filter(
+          (u) => u.role === where.role && u.active === where.active,
+        ),
+      ),
     },
+    notification: { create: vi.fn(async () => ({})) },
   },
 }));
 vi.mock('./adminAlerts', () => ({ notifyAdminsAndActor: notify }));
 vi.mock('./security', () => ({ logSecurityEvent: vi.fn() }));
 
+import { __resetManagerPinForTests } from './managerPin';
 import {
-  fiscalSettingsForActor,
   isFiscalEnabledForUser,
+  listWaiterFiscalLog,
   manageWaiterFiscal,
+  waiterFiscalHold,
 } from './waiterFiscal';
 
 const settings = { fiscal: { enabled: true, provider: 'easypos' } };
@@ -43,87 +51,136 @@ beforeEach(() => {
   store.clear();
   users.clear();
   notify.mockClear();
+  __resetManagerPinForTests();
   users.set(7, {
     id: 7,
     displayName: 'Ana',
+    role: 'WAITER',
     active: true,
     pinHash: bcrypt.hashSync('2580', 4),
   });
+  users.set(1, {
+    id: 1,
+    displayName: 'Boss',
+    role: 'ADMIN',
+    active: true,
+    pinHash: bcrypt.hashSync('9147', 4),
+  });
 });
 
-describe('waiter fiskalizimi switch', () => {
+describe('waiter fiskalizimi switch (QA v0.2.104 #4)', () => {
   it('is on for everyone by default', async () => {
     expect(await isFiscalEnabledForUser(7)).toBe(true);
-    expect(await fiscalSettingsForActor(settings, 7)).toBe(settings);
+    expect(await waiterFiscalHold(settings, 7)).toBeUndefined();
   });
 
-  it('refuses a wrong PIN and changes nothing', async () => {
+  it("refuses the waiter's own PIN: an admin's is needed", async () => {
     const r = await manageWaiterFiscal({
       userId: 7,
-      pin: '1111',
+      managerPin: '2580',
       enabled: false,
       source: 'till',
     });
-    expect(r).toEqual({ ok: false, code: 'WRONG_PIN' });
+    expect(r).toMatchObject({ ok: false, code: 'WRONG_PIN' });
     expect(await isFiscalEnabledForUser(7)).toBe(true);
     expect(notify).not.toHaveBeenCalled();
+    expect(await listWaiterFiscalLog()).toEqual([]);
   });
 
-  it('reads the state with the PIN alone', async () => {
-    const r = await manageWaiterFiscal({
-      userId: 7,
-      pin: '2580',
-      source: 'lan',
-    });
-    expect(r).toEqual({ ok: true, enabled: true, changed: false });
-  });
+  it('locks a phone out after repeated wrong PINs, without checking them', async () => {
+    let last: any;
+    for (let i = 0; i < 8; i++) {
+      last = await manageWaiterFiscal({
+        userId: 7,
+        managerPin: '0000',
+        enabled: false,
+        source: 'lan',
+        requester: '10.0.0.9',
+      });
+    }
+    expect(last).toMatchObject({ ok: false, code: 'LOCKED' });
+    // Even the right PIN now waits out the lock.
+    expect(
+      await manageWaiterFiscal({
+        userId: 7,
+        managerPin: '9147',
+        enabled: false,
+        source: 'lan',
+        requester: '10.0.0.9',
+      }),
+    ).toMatchObject({ ok: false, code: 'LOCKED' });
+    expect(await isFiscalEnabledForUser(7)).toBe(true);
+  }, 20_000);
 
-  it('turns fiskalizimi off for one waiter only, and back on', async () => {
+  it('turns it off for one waiter with an admin PIN: logged, and their sales held', async () => {
     const off = await manageWaiterFiscal({
       userId: 7,
-      pin: '2580',
+      managerPin: '9147',
       enabled: false,
       source: 'till',
     });
     expect(off).toEqual({ ok: true, enabled: false, changed: true });
     expect(notify).toHaveBeenCalledTimes(1);
+    expect(String((notify.mock.calls[0][0] as any).message)).toMatch(
+      /approved by Boss/,
+    );
+    const [entry] = await listWaiterFiscalLog();
+    expect(entry).toMatchObject({
+      userId: 7,
+      userName: 'Ana',
+      enabled: false,
+      approvedByAdminId: 1,
+      approvedByName: 'Boss',
+      source: 'till',
+    });
 
-    const forAna = await fiscalSettingsForActor(settings, 7);
-    expect((forAna as any).fiscal.enabled).toBe(false);
-    expect((forAna as any).fiscal.provider).toBe('easypos');
+    // Ana's sales are not sent, but they are not dropped either: held.
+    const hold = await waiterFiscalHold(settings, 7);
+    expect(hold).toMatch(/switched off for this staff member/);
+    expect(await waiterFiscalHold(settings, 8)).toBeUndefined();
+    // The venue still fiscalises (the settings are not changed).
     expect(settings.fiscal.enabled).toBe(true);
-    expect(await fiscalSettingsForActor(settings, 8)).toBe(settings);
 
     const on = await manageWaiterFiscal({
       userId: 7,
-      pin: '2580',
+      managerPin: '9147',
       enabled: true,
-      source: 'lan',
+      source: 'till',
     });
     expect(on).toEqual({ ok: true, enabled: true, changed: true });
-    expect(await fiscalSettingsForActor(settings, 7)).toBe(settings);
+    expect(await waiterFiscalHold(settings, 7)).toBeUndefined();
+    expect(await listWaiterFiscalLog()).toHaveLength(2);
   });
 
-  it('leaves venue-wide fiskalizimi off alone', async () => {
+  it('holds nothing when the venue does not fiscalise at all', async () => {
     store.set('fiscal:waiterOff', { userIds: [7] });
-    const off = { fiscal: { enabled: false } };
-    expect(await fiscalSettingsForActor(off, 7)).toBe(off);
+    expect(
+      await waiterFiscalHold({ fiscal: { enabled: false } }, 7),
+    ).toBeUndefined();
   });
 
   it('rejects malformed input', async () => {
     expect(
-      await manageWaiterFiscal({ userId: 'x', pin: '2580', source: 'till' }),
+      await manageWaiterFiscal({
+        userId: 'x',
+        managerPin: '9147',
+        source: 'till',
+      }),
     ).toEqual({ ok: false, code: 'INVALID' });
     expect(
       await manageWaiterFiscal({
         userId: 7,
-        pin: '2580',
+        managerPin: '9147',
         enabled: 'no',
         source: 'till',
       }),
     ).toEqual({ ok: false, code: 'INVALID' });
     expect(
-      await manageWaiterFiscal({ userId: 99, pin: '2580', source: 'till' }),
+      await manageWaiterFiscal({
+        userId: 99,
+        managerPin: '9147',
+        source: 'till',
+      }),
     ).toEqual({ ok: false, code: 'NOT_FOUND' });
   });
 });

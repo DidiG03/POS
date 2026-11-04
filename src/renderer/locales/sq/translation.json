@@ -371,10 +371,10 @@
     "pinPlaceholder": "PIN",
     "waiterFiscal": {
       "title": "Fiskalizimi për {{name}}",
-      "enterPin": "Vendosni PIN-in e {{name}} për të ndryshuar fiskalizimin për këtë kamarier.",
+      "enterPin": "Duhet PIN-i i një administratori për të ndryshuar fiskalizimin për {{name}}.",
       "label": "Fiskalizimi",
       "onHint": "Pagesat e këtij kamarieri raportohen në tatime.",
-      "offHint": "Pagesat e këtij kamarieri NUK raportohen në tatime.",
+      "offHint": "Pagesat e këtij kamarieri NUK dërgohen menjëherë në tatime: secila mbetet e pafiskalizuar, për kontroll dhe fiskalizim.",
       "turnedOn": "Fiskalizimi u aktivizua për {{name}}",
       "turnedOff": "Fiskalizimi u çaktivizua për {{name}}",
       "done": "U krye",

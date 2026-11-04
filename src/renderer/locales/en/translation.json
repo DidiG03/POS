@@ -371,10 +371,10 @@
     "pinPlaceholder": "PIN",
     "waiterFiscal": {
       "title": "Fiskalizimi for {{name}}",
-      "enterPin": "Enter {{name}}'s PIN to change fiskalizimi for this waiter.",
+      "enterPin": "An admin's PIN is needed to change fiskalizimi for {{name}}.",
       "label": "Fiskalizimi",
       "onHint": "Payments taken by this waiter are reported to the tax office.",
-      "offHint": "Payments taken by this waiter are NOT reported to the tax office.",
+      "offHint": "Payments taken by this waiter are NOT sent to the tax office at once: each is kept as not yet fiscalised, for review and filing.",
       "turnedOn": "Fiskalizimi activated for {{name}}",
       "turnedOff": "Fiskalizimi deactivated for {{name}}",
       "done": "Done",

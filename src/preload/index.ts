@@ -8,7 +8,7 @@ const api: Api = {
       ipcRenderer.invoke('auth:loginWithPin', { pin, userId, pairingCode }),
     manageUserFiscal: (input: {
       userId: number;
-      pin: string;
+      managerPin: string;
       enabled?: boolean;
     }) => ipcRenderer.invoke('auth:manageUserFiscal', input),
     verifyManagerPin: (pin: string) =>

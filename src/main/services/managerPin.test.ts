@@ -24,6 +24,8 @@ import {
   LAN_LOCK_AFTER_FAILURES,
   LOCK_AFTER_FAILURES,
   SOURCE_LOCK_MS,
+  TILL_LOCK_AFTER_FAILURES,
+  TILL_LOCK_MS,
   verifyManagerPin,
 } from './managerPin';
 
@@ -98,13 +100,32 @@ describe('verifyManagerPin', () => {
     expect(await tryPin('4826', 'till:1', false)).toMatchObject({ ok: true });
   });
 
-  it('never locks the till, but alerts admins', async () => {
+  it('alerts admins on misses at the till, before any lock', async () => {
     for (let i = 0; i < ALERT_AFTER_FAILURES; i++) {
       await tryPin('0000', 'till:1', false);
     }
     expect(await tryPin('4826', 'till:1', false)).toMatchObject({ ok: true });
     expect(h.notes).toHaveLength(1);
     expect(h.notes[0]).toContain('Unusual activity');
+  });
+
+  it('locks the till briefly after many misses (QA v0.2.104 #14)', async () => {
+    for (let i = 0; i < TILL_LOCK_AFTER_FAILURES - 1; i++) {
+      expect(await tryPin('0000', 'till:1', false)).toEqual({ ok: false });
+    }
+    expect(await tryPin('0000', 'till:1', false)).toMatchObject({
+      ok: false,
+      lockedForMs: TILL_LOCK_MS,
+    });
+    // Locked: the right PIN is not even checked.
+    expect(await tryPin('4826', 'till:1', false)).toMatchObject({
+      ok: false,
+      lockedForMs: expect.any(Number),
+    });
+    // Phones are not locked by the till, nor the till by phones.
+    expect(await tryPin('4826', '10.0.0.7')).toMatchObject({ ok: true });
+    clock += TILL_LOCK_MS + 1;
+    expect(await tryPin('4826', 'till:1', false)).toMatchObject({ ok: true });
   });
 
   it('a malformed PIN counts as a miss', async () => {

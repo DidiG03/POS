@@ -149,10 +149,7 @@ import {
   auditFiscalToggle,
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
-import {
-  fiscalSettingsForActor,
-  manageWaiterFiscal,
-} from './services/waiterFiscal';
+import { waiterFiscalHold, manageWaiterFiscal } from './services/waiterFiscal';
 import { authorizeLanRoute } from './services/lanPolicy';
 import {
   authorizeCreateUser,
@@ -1815,10 +1812,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
-      // Waiter POS header: hold your name for 5 s to switch fiskalizimi off or on
-      // for that person (`waiterFiscal.ts`). Same reach as the staff list
-      // (paired device, session, or the till) plus that person's PIN, on
-      // the login attempt budget.
+      // Switch fiskalizimi off or on for one person (`waiterFiscal.ts`).
+      // Same reach as the staff list (paired device, session, or the till)
+      // plus an admin's PIN, checked there with the manager-PIN lockouts.
       if (req.method === 'POST' && pathname === '/auth/user-fiscal') {
         const remoteIp = String((req.socket as any)?.remoteAddress || '');
         const loopback = isLoopback(remoteIp);
@@ -1839,44 +1835,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
         }
         const body = (await parseJson(req)) || {};
-        const targetId = Number(body.userId) || 0;
-        const attempt = loopback
-          ? null
-          : beginLanLoginAttempt(remoteIp, targetId);
-        if (attempt && !attempt.ok) {
-          return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+        const result = await manageWaiterFiscal({
+          userId: body.userId,
+          managerPin: body.managerPin,
+          enabled: body.enabled,
+          source: loopback ? 'till' : 'lan',
+          requester: remoteIp,
+        });
+        if (
+          !result.ok &&
+          (result.code === 'WRONG_PIN' || result.code === 'LOCKED')
+        ) {
+          return send(
+            res,
+            result.code === 'LOCKED' ? 429 : 403,
+            result,
+            corsOrigin,
+          );
         }
-        try {
-          const result = await manageWaiterFiscal({
-            userId: body.userId,
-            pin: body.pin,
-            enabled: body.enabled,
-            source: 'lan',
-          });
-          if (!result.ok && result.code === 'WRONG_PIN') {
-            await recordWrongPinAttempt(targetId);
-            let attemptsLeft: number | undefined;
-            if (attempt?.ok) {
-              const outcome = attempt.fail();
-              attemptsLeft = outcome.attemptsLeft;
-              await failLanLogin(remoteIp, outcome, {
-                reason: 'pin',
-                userId: targetId,
-              });
-            }
-            return sendWrongPin(
-              res,
-              {
-                attemptsLeft,
-                lockedForMs: lanLoginDeviceLockedFor(remoteIp, targetId),
-              },
-              corsOrigin,
-            );
-          }
-          return send(res, result.ok ? 200 : 400, result, corsOrigin);
-        } finally {
-          if (attempt?.ok) attempt.release();
-        }
+        return send(res, result.ok ? 200 : 400, result, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/auth/users') {
         // Local-first: always use local DB for users
@@ -3228,9 +3205,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
             // Same guard as the till: an invoice left by an interrupted
             // attempt for this sitting must not get a sibling.
-            // Fiskalizimi can be switched off for one waiter
-            // (`waiterFiscal.ts`).
-            const fiscalSettings = await fiscalSettingsForActor(
+            // Fiskalizimi can be switched off for one waiter: the sale is
+            // then held as not yet fiscalised (`waiterFiscal.ts`).
+            const fiscalSettings = settings;
+            const waiterHold = await waiterFiscalHold(
               settings,
               Number(auth?.userId || 0) ||
                 Number(payload?.meta?.userId || 0) ||
@@ -3262,7 +3240,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               {
                 idempotencyKey: printIdempotencyKey || undefined,
                 adoptDocId: sitting.adoptDocId,
-                holdReason: sitting.holdReason,
+                holdReason: sitting.holdReason ?? waiterHold,
               },
             );
             // 'needs-review': the invoice waits for a person, but the sale

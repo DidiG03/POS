@@ -346,10 +346,10 @@ export type TicketPrintPayload = {
 
 /**
  * What a fiscal receipt states besides NIVF / NSLF: the invoice number and
- * the seller's NIPT, as the tax service registered them. In Albanian — it
- * is the line an inspector reads. The operator, business unit, register
- * (TCR) and software codes are left off the printed receipt on purpose;
- * they stay in the stored fiscal record (`meta.fiscalDoc`).
+ * the seller's NIPT, operator, business unit, register (TCR) and software
+ * codes, as the tax service registered them. In Albanian — it is the line
+ * an inspector reads. The four codes were taken off once and are back: an
+ * Albanian fiscal receipt is expected to carry them (QA v0.2.104, #3).
  */
 export function fiscalDocLines(meta: any, settings?: any): string[] {
   const doc = (meta?.fiscalDoc || {}) as Record<string, unknown>;
@@ -365,6 +365,10 @@ export function fiscalDocLines(meta: any, settings?: any): string[] {
   return [
     val(doc.invoiceNumber) && `Nr. i faturës: ${val(doc.invoiceNumber)}`,
     nipt && `NIPT: ${nipt}`,
+    val(doc.operatorCode) && `Operatori: ${val(doc.operatorCode)}`,
+    val(doc.businessUnitCode) && `Njësia: ${val(doc.businessUnitCode)}`,
+    val(doc.tcrCode) && `TCR: ${val(doc.tcrCode)}`,
+    val(doc.softwareCode) && `Softi: ${val(doc.softwareCode)}`,
     // Filed after the sale (an outage): the receipt shows the sale's time
     // above, and when the tax service registered it here.
     filedLate && `Fiskalizuar me vonesë: ${filedLate}`,

@@ -337,10 +337,7 @@ import {
   auditFiscalToggle,
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
-import {
-  fiscalSettingsForActor,
-  manageWaiterFiscal,
-} from './services/waiterFiscal';
+import { waiterFiscalHold, manageWaiterFiscal } from './services/waiterFiscal';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
@@ -1849,17 +1846,17 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
   return null;
 });
 
-// Waiter POS header: hold your name for 5 s to switch fiskalizimi off or on for
-// that person (`waiterFiscal.ts`). Their own PIN is required.
+// Till header: hold a name for 5 s to switch fiskalizimi off or on for that
+// person (`waiterFiscal.ts`). An admin's PIN is required, checked there.
 ipcHandle('auth:manageUserFiscal', async (_e, payload) => {
   const result = await manageWaiterFiscal({
     userId: (payload as any)?.userId,
-    pin: (payload as any)?.pin,
+    managerPin: (payload as any)?.managerPin,
     enabled: (payload as any)?.enabled,
     source: 'till',
+    requester: `till:${Number(_e.sender.id || 0)}`,
   });
   if (!result.ok && result.code === 'WRONG_PIN') {
-    await recordWrongPinAttempt(Number((payload as any)?.userId));
     await throttleAfterPinFailure(_e.sender.id, 'auth:manageUserFiscal');
   }
   return result;
@@ -1871,7 +1868,11 @@ ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
     source: `till:${Number(_e.sender.id || 0)}`,
     lan: false,
   });
-  if (!result.ok) return { ok: false };
+  // Locked after many misses (`managerPin.ts`): say for how long.
+  if (!result.ok)
+    return result.lockedForMs
+      ? { ok: false, lockedForMs: result.lockedForMs }
+      : { ok: false };
   // Local-only short-lived approval token to prevent spoofing approvals.
   return {
     ok: true,
@@ -2943,8 +2944,10 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       }
       // A second Pay tap for this sitting gets a new docId, so an invoice
       // left behind by an interrupted attempt must be found here.
-      // Fiskalizimi can be switched off for one waiter (`waiterFiscal.ts`).
-      const fiscalSettings = await fiscalSettingsForActor(
+      // Fiskalizimi can be switched off for one waiter: the sale is then
+      // held as not yet fiscalised (`waiterFiscal.ts`).
+      const fiscalSettings = settings;
+      const waiterHold = await waiterFiscalHold(
         settings,
         Number(ctx?.session?.userId || 0) || Number(meta?.userId || 0) || null,
       );
@@ -2977,7 +2980,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         {
           idempotencyKey: idempotencyKey || undefined,
           adoptDocId: sitting.adoptDocId,
-          holdReason: sitting.holdReason,
+          holdReason: sitting.holdReason ?? waiterHold,
         },
       );
       if (outcome.kind === 'needs-review') {
