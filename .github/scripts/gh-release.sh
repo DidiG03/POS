@@ -27,9 +27,29 @@ gh_ensure_release() {
   fi
 }
 
+# The release this run may write to: v<package.json version>, and, on a tag
+# push, the pushed tag itself. Uploading under a tag derived from the version
+# while another tag was pushed is how v0.2.105 overwrote the files of the
+# v0.2.104 release (QA v0.2.104, #5). `--clobber` below then only ever
+# replaces this release's own files (a re-run), never another release's.
+gh_assert_own_release() {
+  local tag="$1"
+  local version
+  version=$(node -p "require('./package.json').version")
+  if [[ "$tag" != "v${version}" ]]; then
+    echo "::error::Refusing to upload to $tag: this build is version ${version} (release v${version})."
+    return 1
+  fi
+  if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* && "$tag" != "${GITHUB_REF_NAME}" ]]; then
+    echo "::error::Refusing to upload to $tag: this run was started by tag ${GITHUB_REF_NAME}."
+    return 1
+  fi
+}
+
 gh_upload_with_retry() {
   local tag="$1"
   shift
+  gh_assert_own_release "$tag" || return 1
   local n=0
   local delay
   while true; do
