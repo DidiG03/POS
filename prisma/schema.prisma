@@ -184,6 +184,7 @@ model Order {
 
   @@index([userId, closedAt])
   @@index([area, tableLabel, closedAt])
+  @@index([area, tableLabel, status, id])
   @@index([closedAt])
   @@index([status, closedAt])
 }
@@ -454,6 +455,7 @@ model Covers {
   createdAt DateTime @default(now())
 
   @@index([area, label, createdAt])
+  @@index([area, label, id])
   @@index([createdAt])
 }
 
@@ -474,6 +476,7 @@ model TicketLog {
   createdAt  DateTime @default(now())
 
   @@index([area, tableLabel, createdAt])
+  @@index([area, tableLabel, id])
   @@index([sessionKey])
   @@index([userId, createdAt])
   @@index([createdAt])

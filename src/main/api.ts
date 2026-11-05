@@ -6,6 +6,11 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { prisma } from '@db/client';
+import {
+  decodeLanSessionToken,
+  issueLanSessionToken,
+  issueManagerApprovalToken,
+} from './services/lanSessionToken';
 import bcrypt from 'bcryptjs';
 import {
   CreateMenuCategoryInputSchema,
@@ -852,53 +857,17 @@ function createCorsPolicy(): CorsPolicy {
   };
 }
 
-async function issueToken(
+// Issued in `lanSessionToken.ts`, with the check that tells them apart.
+const issueToken = async (
   secret: string,
   ctx: { userId: number; role?: string },
-  ttlSeconds = 12 * 60 * 60,
-) {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const nowMs = Date.now();
-  const now = Math.floor(nowMs / 1000);
-  const payload = base64url(
-    JSON.stringify({
-      sub: ctx.userId,
-      role: ctx.role,
-      iat: now,
-      // Millisecond issue time so a revocation in the same second as a
-      // fresh sign-in does not reject the new token.
-      iatMs: nowMs,
-      exp: now + ttlSeconds,
-    }),
-  );
-  const body = `${header}.${payload}`;
-  const sig = base64url(hmacSha256(secret, body));
-  return `${body}.${sig}`;
-}
-
-async function issueApprovalToken(
+  ttlSeconds?: number,
+) => issueLanSessionToken(secret, ctx, ttlSeconds);
+const issueApprovalToken = async (
   secret: string,
   ctx: { userId: number; role?: string },
-  ttlSeconds = 5 * 60,
-) {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const now = Math.floor(Date.now() / 1000);
-  const payload = base64url(
-    JSON.stringify({
-      sub: ctx.userId,
-      role: ctx.role,
-      purpose: 'manager_approval',
-      // Two approvals in the same second must still be two tokens: each
-      // covers one action (see `approvalUse.ts`).
-      nonce: base64url(crypto.randomBytes(9)),
-      iat: now,
-      exp: now + ttlSeconds,
-    }),
-  );
-  const body = `${header}.${payload}`;
-  const sig = base64url(hmacSha256(secret, body));
-  return `${body}.${sig}`;
-}
+  ttlSeconds?: number,
+) => issueManagerApprovalToken(secret, ctx, ttlSeconds);
 
 type ApprovalContext = {
   userId: number;
@@ -1006,31 +975,13 @@ async function verifyToken(
   secret: string,
   token: string,
 ): Promise<AuthContext> {
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  const [h, p, s] = parts;
-  const expected = base64url(hmacSha256(secret, `${h}.${p}`));
-  if (s.length !== expected.length) return null;
-  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(s)))
-    return null;
-  let payload: any;
-  try {
-    const b64 = p.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
-    payload = JSON.parse(Buffer.from(b64 + pad, 'base64').toString('utf8'));
-  } catch {
-    return null;
-  }
-  const now = Math.floor(Date.now() / 1000);
-  const userId = Number(payload.sub);
-  if (!Number.isFinite(userId) || userId <= 0) return null;
-  if (typeof payload.exp === 'number' && payload.exp < now) return null;
+  // Signature, expiry, and that it is a session token at all: an approval
+  // or device token is refused (`lanSessionToken.ts`).
+  const claims = decodeLanSessionToken(secret, token);
+  if (!claims) return null;
   // The signature proves the till issued this token, not that the user is
   // still allowed in. Role and active state come from the database now.
-  const issuedAtMs = Number.isFinite(Number(payload.iatMs))
-    ? Number(payload.iatMs)
-    : Number(payload.iat) * 1000;
-  return resolveLanTokenSubject({ userId, issuedAtMs });
+  return resolveLanTokenSubject(claims);
 }
 
 /**
@@ -1238,12 +1189,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ) => {
+    // Outside the try: error replies need it too, or a browser client
+    // cannot read them and sees a network failure (audit 2026-11, M4).
+    let corsOrigin: ReturnType<typeof cors.allowOrigin> = null;
     try {
       const parsed = url.parse(req.url || '', true);
       const pathname = parsed.pathname || '';
       const origin =
         typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-      const corsOrigin = cors.allowOrigin(
+      corsOrigin = cors.allowOrigin(
         origin,
         typeof req.headers.host === 'string' ? req.headers.host : undefined,
       );
@@ -5387,40 +5341,69 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // Fallback
       return send(res, 404, 'not found', corsOrigin);
     } catch (e: any) {
+      // A reply already started (a stream) cannot be replaced.
+      if (res.headersSent) {
+        try {
+          res.end();
+        } catch {
+          // ignore
+        }
+        return;
+      }
       const code = Number(e?.statusCode || 0);
       // Neither can succeed on retry; `permanent` stops the phone's queue.
       if (code === 413) {
-        return send(res, 413, {
-          ok: false,
-          code: 'PAYLOAD_TOO_LARGE',
-          error: 'This request is too large for the till.',
-          permanent: true,
-        });
+        return send(
+          res,
+          413,
+          {
+            ok: false,
+            code: 'PAYLOAD_TOO_LARGE',
+            error: 'This request is too large for the till.',
+            permanent: true,
+          },
+          corsOrigin,
+        );
       }
       if (code === 400) {
-        return send(res, 400, {
-          ok: false,
-          code: 'INVALID_REQUEST',
-          error: 'The till could not read this request.',
-          permanent: true,
-        });
+        return send(
+          res,
+          400,
+          {
+            ok: false,
+            code: 'INVALID_REQUEST',
+            error: 'The till could not read this request.',
+            permanent: true,
+          },
+          corsOrigin,
+        );
       }
       // Another request held this table past the lock wait (e.g. a payment
       // waiting on a printer). Retryable: not `permanent`, so the tablet
       // queues it and the replay is deduped by its idempotency key.
       if (e?.code === 'TABLE_BUSY') {
-        return send(res, 409, {
-          ok: false,
-          code: 'TABLE_BUSY',
-          error: 'This table is busy. Try again in a moment.',
-        });
+        return send(
+          res,
+          409,
+          {
+            ok: false,
+            code: 'TABLE_BUSY',
+            error: 'This table is busy. Try again in a moment.',
+          },
+          corsOrigin,
+        );
       }
       // Service-level errors (e.g. reservations service) attach `statusCode`
       // so we can map them to the right HTTP status without leaking internals.
       if (code === 401 || code === 403 || code === 404 || code === 409) {
         const message = String(e?.message || 'error');
         const errCode = String(e?.code || '');
-        return send(res, code, { error: message, code: errCode || undefined });
+        return send(
+          res,
+          code,
+          { error: message, code: errCode || undefined },
+          corsOrigin,
+        );
       }
       console.error('API error', e);
       // These are the failures LAN clients (waiter tablets, KDS, Admin
@@ -5433,7 +5416,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         method: req.method,
         path: String(req.url || '').split('?')[0],
       });
-      return send(res, 500, 'error');
+      return send(res, 500, 'error', corsOrigin);
     }
   };
 

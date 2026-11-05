@@ -23,6 +23,7 @@ import { coreServices } from './core';
 import { countVoidedTickets, fetchPaidSales } from './paidAnalytics';
 import { listCashDeclarations } from './fiscal/cashDrawer';
 import { readDailyBalanceRecord } from './fiscal/balance';
+import { fiscalDayKeysBetween, startOfFiscalDay } from './fiscal/clock';
 import {
   listFiscalClaimsDeferred,
   listFiscalClaimsNeedingReview,
@@ -78,6 +79,8 @@ export type ZReport = {
     declared: {
       currency: 'ALL';
       opening: number | null;
+      /** The fiscal day (YYYY-MM-DD, Tirana) whose float `opening` is. */
+      openingDay?: string | null;
       deposits: number;
       withdrawals: number;
       /** ALL per 1 unit of `currency`; 1 on a lek till; null when missing. */
@@ -166,8 +169,31 @@ async function writeJson(key: string, valueJson: unknown): Promise<void> {
   });
 }
 
-function startOfLocalDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+/**
+ * The opening float that starts this period's drawer: the one declared for
+ * the fiscal day the period starts on, or else the first day in the period
+ * that has one. It used to be today's, whatever the period: a Z issued
+ * after midnight showed no float and no expected cash, and a Z covering
+ * several days took the last day's (audit 2026-11, H2). Counted once: over
+ * several days the cash carries over in the drawer.
+ */
+async function openingFloatForPeriod(
+  settings: any,
+  from: Date,
+  to: Date,
+): Promise<{ amount: number; dayKey: string } | null> {
+  for (const dayKey of fiscalDayKeysBetween(from.getTime(), to.getTime())) {
+    const record = await readDailyBalanceRecord(settings, dayKey).catch(
+      () => null,
+    );
+    if (
+      record?.state === 'COMPLETE' &&
+      Number.isFinite(Number(record.amount))
+    ) {
+      return { amount: Number(record.amount), dayKey };
+    }
+  }
+  return null;
 }
 
 function chunks<T>(list: T[], size: number): T[][] {
@@ -309,7 +335,7 @@ export async function computeZReport(input: {
         : Promise.resolve(0),
       listCashDeclarations().catch(() => []),
       fiscalEnabled
-        ? readDailyBalanceRecord(settings).catch(() => null)
+        ? openingFloatForPeriod(settings, from, to).catch(() => null)
         : Promise.resolve(null),
     ]);
   const inPeriod = uniqueDeclarations(declarations).filter((d) => {
@@ -327,8 +353,7 @@ export async function computeZReport(input: {
     currency === 'ALL' || (currency === 'EUR' && rate != null);
   const toTill = (allCents: number) =>
     convertible ? Math.round(allCents / Number(rate)) : null;
-  const openingAll =
-    opening?.state === 'COMPLETE' ? cents(opening.amount) : null;
+  const openingAll = opening ? cents(opening.amount) : null;
   const depositsAll = sumCents('deposit');
   const withdrawalsAll = sumCents('withdraw');
   const cashSalesCents = methods.get('CASH')?.amount ?? 0;
@@ -396,6 +421,7 @@ export async function computeZReport(input: {
       declared: {
         currency: 'ALL',
         opening: openingAll == null ? null : fromCents(openingAll),
+        openingDay: opening?.dayKey ?? null,
         deposits: fromCents(depositsAll),
         withdrawals: fromCents(withdrawalsAll),
         rate: convertible ? Number(rate) : null,
@@ -444,7 +470,7 @@ export async function issueZReport(input: {
     // the day again.
     const from = hasLast
       ? new Date(lastTo!.getTime() + 1)
-      : startOfLocalDay(input.now ?? new Date());
+      : startOfFiscalDay((input.now ?? new Date()).getTime());
     const asked = input.now ?? new Date();
     const now = asked.getTime() >= from.getTime() ? asked : from;
     const figures = await computeZReport({ from, to: now });

@@ -298,3 +298,23 @@ describe("one table's fiscal claims, on real SQLite (QA v0.2.104 #16)", () => {
     ).toEqual([]);
   });
 });
+
+describe('table history lookups use an index, not a sort (audit 2026-11, H1)', () => {
+  it('latest bill, covers and paid orders read newest-id first without sorting', async () => {
+    const queries = [
+      `SELECT * FROM "TicketLog" WHERE "area" = ? AND "tableLabel" = ? ORDER BY "id" DESC LIMIT 40`,
+      `SELECT * FROM "Covers" WHERE "area" = ? AND "label" = ? ORDER BY "id" DESC LIMIT 20`,
+      `SELECT * FROM "Order" WHERE "area" = ? AND "tableLabel" = ? AND "status" = 'PAID' ORDER BY "id" DESC LIMIT 20`,
+    ];
+    for (const sql of queries) {
+      const plan = (await prisma.$queryRawUnsafe(
+        `EXPLAIN QUERY PLAN ${sql}`,
+        'Salla',
+        'T1',
+      )) as Array<{ detail?: string }>;
+      const text = plan.map((r) => String(r.detail ?? '')).join(' | ');
+      expect(text, sql).not.toMatch(/TEMP B-TREE/);
+      expect(text, sql).toMatch(/USING (COVERING )?INDEX/);
+    }
+  });
+});
