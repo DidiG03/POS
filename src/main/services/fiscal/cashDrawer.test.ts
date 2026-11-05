@@ -29,7 +29,11 @@ vi.mock('@db/client', () => ({
   },
 }));
 
-import { declareCash, listCashDeclarations } from './cashDrawer';
+import {
+  cashDeclarationStatus,
+  declareCash,
+  listCashDeclarations,
+} from './cashDrawer';
 
 const settings = {} as any;
 
@@ -182,5 +186,56 @@ describe('cash declarations (QA v0.2.103 #9)', () => {
     expect(log[1]).toMatchObject({ kind: 'withdraw', ok: false });
     expect(log[1].error).toMatch(/request key/);
     expect(log[2]).toMatchObject({ kind: 'opening', ok: true });
+  });
+});
+
+describe('cash declarations (QA v0.2.104 #10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.enabled = true;
+    h.store.clear();
+    h.deposit.mockResolvedValue({ kind: 'complete', docId: 'd2', fcdc: 'F2' });
+  });
+
+  it('a key reused with another amount is a 409 conflict, not "already declared"', async () => {
+    h.deposit.mockResolvedValueOnce({
+      kind: 'conflict',
+      docId: 'cash-key-12345',
+      message: 'This request key was already used for a cash in of 2.01 lekë',
+    });
+    const r = await declareCash(settings, {
+      kind: 'deposit',
+      amount: 4,
+      requestKey: 'key-12345',
+    });
+    expect(r).toMatchObject({ ok: false, code: 'CASH_KEY_CONFLICT' });
+    expect(cashDeclarationStatus(r)).toBe(409);
+    expect((await listCashDeclarations())[0]).toMatchObject({
+      ok: false,
+      outcome: 'conflict',
+    });
+  });
+
+  it('refuses more than 2 decimal places (400), before anything is sent', async () => {
+    for (const amount of [2.005, 0.001, 10.123]) {
+      const r = await declareCash(settings, {
+        kind: 'deposit',
+        amount,
+        requestKey: 'key-dec-1',
+      });
+      expect(r).toMatchObject({ ok: false, code: 'INVALID_AMOUNT' });
+      expect(cashDeclarationStatus(r)).toBe(400);
+    }
+    expect(h.deposit).not.toHaveBeenCalled();
+    // Whole cents are fine, float noise included.
+    for (const amount of [2.01, 0.1 + 0.2, 1999.99]) {
+      expect(
+        await declareCash(settings, {
+          kind: 'deposit',
+          amount,
+          requestKey: 'key-ok-1',
+        }),
+      ).toMatchObject({ ok: true });
+    }
   });
 });

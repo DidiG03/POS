@@ -149,10 +149,7 @@ import {
   auditFiscalToggle,
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
-import {
-  fiscalSettingsForActor,
-  manageWaiterFiscal,
-} from './services/waiterFiscal';
+import { waiterFiscalHold, manageWaiterFiscal } from './services/waiterFiscal';
 import { authorizeLanRoute } from './services/lanPolicy';
 import {
   authorizeCreateUser,
@@ -267,6 +264,7 @@ import {
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
+  type CurrentSitting,
 } from './services/tableSession';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
@@ -1814,10 +1812,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
-      // Waiter POS header: hold your name for 5 s to switch fiskalizimi off or on
-      // for that person (`waiterFiscal.ts`). Same reach as the staff list
-      // (paired device, session, or the till) plus that person's PIN, on
-      // the login attempt budget.
+      // Switch fiskalizimi off or on for one person (`waiterFiscal.ts`).
+      // Same reach as the staff list (paired device, session, or the till)
+      // plus an admin's PIN, checked there with the manager-PIN lockouts.
       if (req.method === 'POST' && pathname === '/auth/user-fiscal') {
         const remoteIp = String((req.socket as any)?.remoteAddress || '');
         const loopback = isLoopback(remoteIp);
@@ -1838,44 +1835,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
         }
         const body = (await parseJson(req)) || {};
-        const targetId = Number(body.userId) || 0;
-        const attempt = loopback
-          ? null
-          : beginLanLoginAttempt(remoteIp, targetId);
-        if (attempt && !attempt.ok) {
-          return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+        const result = await manageWaiterFiscal({
+          userId: body.userId,
+          managerPin: body.managerPin,
+          enabled: body.enabled,
+          source: loopback ? 'till' : 'lan',
+          requester: remoteIp,
+        });
+        if (
+          !result.ok &&
+          (result.code === 'WRONG_PIN' || result.code === 'LOCKED')
+        ) {
+          return send(
+            res,
+            result.code === 'LOCKED' ? 429 : 403,
+            result,
+            corsOrigin,
+          );
         }
-        try {
-          const result = await manageWaiterFiscal({
-            userId: body.userId,
-            pin: body.pin,
-            enabled: body.enabled,
-            source: 'lan',
-          });
-          if (!result.ok && result.code === 'WRONG_PIN') {
-            await recordWrongPinAttempt(targetId);
-            let attemptsLeft: number | undefined;
-            if (attempt?.ok) {
-              const outcome = attempt.fail();
-              attemptsLeft = outcome.attemptsLeft;
-              await failLanLogin(remoteIp, outcome, {
-                reason: 'pin',
-                userId: targetId,
-              });
-            }
-            return sendWrongPin(
-              res,
-              {
-                attemptsLeft,
-                lockedForMs: lanLoginDeviceLockedFor(remoteIp, targetId),
-              },
-              corsOrigin,
-            );
-          }
-          return send(res, result.ok ? 200 : 400, result, corsOrigin);
-        } finally {
-          if (attempt?.ok) attempt.release();
-        }
+        return send(res, result.ok ? 200 : 400, result, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/auth/users') {
         // Local-first: always use local DB for users
@@ -2877,12 +2855,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/fiscal/cash-declaration') {
         const body = (await parseJson(req)) || {};
         const settings = await coreServices.readSettings();
-        const { declareCash } = await import('./services/fiscal/cashDrawer');
+        const { declareCash, cashDeclarationStatus } = await import(
+          './services/fiscal/cashDrawer'
+        );
         const result = await declareCash(settings as any, {
           ...body,
           actorUserId: auth?.userId ?? null,
         });
-        return send(res, result.ok ? 200 : 400, result, corsOrigin);
+        return send(res, cashDeclarationStatus(result), result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/settings/fiscal-test') {
         const settings = await coreServices.readSettings();
@@ -3085,21 +3065,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                   st.serviceRemovalCount += 1;
                 payAdjustByUser.set(userId, st);
 
-                const actor = await prisma.user
-                  .findUnique({ where: { id: userId } })
-                  .catch(() => null as any);
-                const actorName = actor?.displayName
-                  ? String(actor.displayName)
-                  : `User #${userId}`;
-                const admins = await prisma.user
-                  .findMany({
-                    where: { role: 'ADMIN', active: true } as any,
-                    take: 50,
-                  })
-                  .catch(() => []);
                 const canAlert =
                   !st.lastAlertAt ||
                   now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
+                // Looked up only when an alert goes out: they ran on every
+                // payment (perf, QA v0.2.103).
+                const alerting =
+                  canAlert &&
+                  (st.discountCount >= 5 || st.serviceRemovalCount >= 3);
+                const actor = alerting
+                  ? await prisma.user
+                      .findUnique({ where: { id: userId } })
+                      .catch(() => null as any)
+                  : null;
+                const actorName = actor?.displayName
+                  ? String(actor.displayName)
+                  : `User #${userId}`;
+                const admins = alerting
+                  ? await prisma.user
+                      .findMany({
+                        where: { role: 'ADMIN', active: true } as any,
+                        take: 50,
+                      })
+                      .catch(() => [])
+                  : [];
 
                 if (canAlert && st.discountCount >= 5) {
                   const msg =
@@ -3144,6 +3133,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
 
           let fiscalPayload = payload;
           let payOwnerId: number | null = null;
+          let paySitting: CurrentSitting | undefined;
           let fiscalPending:
             | { fiscalPending: true; fiscalMessage?: string }
             | undefined;
@@ -3185,6 +3175,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               });
               if (!owns.ok) return send(res, 409, owns, corsOrigin);
               payOwnerId = owns.ownerId;
+              paySitting = owns.sitting;
             }
             const approvalRefused = await checkPaymentApproval({
               settings,
@@ -3206,14 +3197,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
             if (payload?.meta) delete payload.meta.managerApprovalToken;
             if (paymentShouldCloseTable(payload?.meta)) {
-              const stale = await findStaleBillPayment(payload);
+              const stale = await findStaleBillPayment({
+                ...payload,
+                sitting: paySitting,
+              });
               if (stale) return send(res, 409, stale, corsOrigin);
             }
             // Same guard as the till: an invoice left by an interrupted
             // attempt for this sitting must not get a sibling.
-            // Fiskalizimi can be switched off for one waiter
-            // (`waiterFiscal.ts`).
-            const fiscalSettings = await fiscalSettingsForActor(
+            // Fiskalizimi can be switched off for one waiter: the sale is
+            // then held as not yet fiscalised (`waiterFiscal.ts`).
+            const fiscalSettings = settings;
+            const waiterHold = await waiterFiscalHold(
               settings,
               Number(auth?.userId || 0) ||
                 Number(payload?.meta?.userId || 0) ||
@@ -3245,7 +3240,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               {
                 idempotencyKey: printIdempotencyKey || undefined,
                 adoptDocId: sitting.adoptDocId,
-                holdReason: sitting.holdReason,
+                holdReason: sitting.holdReason ?? waiterHold,
+                ...(!sitting.holdReason && waiterHold
+                  ? { holdKind: 'fiscal-off' as const }
+                  : {}),
               },
             );
             // 'needs-review': the invoice waits for a person, but the sale
@@ -4583,12 +4581,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           }
           return send(res, 200, result, corsOrigin);
         } catch (e: any) {
-          if (
-            e?.code === 'INVALID_FISCAL_URL' ||
-            e?.code === 'INVALID_SETTINGS' ||
-            e?.code === 'FISCAL_TOKEN_ENVIRONMENT_MISMATCH' ||
-            e?.code === 'FISCAL_ADDRESS_REQUIRED'
-          ) {
+          const { settingsSaveErrorStatus } = await import(
+            './services/settingsValidation'
+          );
+          if (settingsSaveErrorStatus(e) === 400) {
             return send(
               res,
               400,
@@ -4758,7 +4754,24 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // Z report: the end-of-day close (admins; `services/zReport.ts`).
       if (req.method === 'POST' && pathname === '/admin/z-report') {
         const { issueZReport } = await import('./services/zReport');
-        const r = await issueZReport({ actorUserId: auth?.userId ?? null });
+        const zBody = (await parseJson(req).catch(() => null)) || {};
+        const r = await issueZReport({
+          actorUserId: auth?.userId ?? null,
+          confirmEmpty: (zBody as any)?.confirmEmpty === true,
+        });
+        if ('empty' in r) {
+          return send(
+            res,
+            409,
+            {
+              ok: false,
+              code: 'Z_EMPTY',
+              from: r.from,
+              lastNumber: r.lastNumber,
+            },
+            corsOrigin,
+          );
+        }
         logSecurityEvent('z_report_issued', {
           number: r.report.number,
           userId: auth?.userId ?? null,

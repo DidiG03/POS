@@ -4,6 +4,9 @@ name: CI
 on:
   push:
     branches: [main, master, develop]
+    # A release tag is checked against package.json here too, so a
+    # mismatched tag shows red in CI as well as in every release workflow.
+    tags: ['v*']
   pull_request:
     branches: [main, master, develop]
 
@@ -15,6 +18,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # package.json, Android and iOS must carry one version, and a pushed
+      # tag must be v<that version> (`scripts/checkReleaseVersion.mjs`).
+      - name: Check release version
+        run: node scripts/checkReleaseVersion.mjs
       
       - name: Setup Node.js
         uses: actions/setup-node@v4

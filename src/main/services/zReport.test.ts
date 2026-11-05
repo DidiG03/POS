@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
   corrections: [] as any[],
   declarations: [] as any[],
   fetchArgs: [] as Array<{ from: Date; to: Date }>,
+  settings: {} as any,
+  voided: 2,
 }));
 
 vi.mock('@db/client', () => ({
@@ -28,12 +30,7 @@ vi.mock('@db/client', () => ({
 }));
 vi.mock('./core', () => ({
   coreServices: {
-    readSettings: async () => ({
-      currency: 'ALL',
-      defaultVatRate: 0.2,
-      restaurantName: 'Bast',
-      fiscal: { enabled: true, vat: {} },
-    }),
+    readSettings: async () => h.settings,
   },
 }));
 vi.mock('./paidAnalytics', () => ({
@@ -41,7 +38,7 @@ vi.mock('./paidAnalytics', () => ({
     h.fetchArgs.push(args);
     return h.sales;
   },
-  countVoidedTickets: async () => 2,
+  countVoidedTickets: async () => h.voided,
 }));
 vi.mock('./fiscal/cashDrawer', () => ({
   listCashDeclarations: async () => h.declarations,
@@ -55,11 +52,19 @@ vi.mock('./fiscal/claims', () => ({
 }));
 
 import {
-  issueZReport,
+  allocateCents,
+  issueZReport as issueAny,
   listZReports,
   reprintZReport,
   type ZReport,
 } from './zReport';
+
+/** Issued (not refused as empty). */
+async function issueZReport(input: Parameters<typeof issueAny>[0]) {
+  const r = await issueAny(input);
+  if ('empty' in r) throw new Error('refused as empty');
+  return r;
+}
 import { buildEscposTicket, buildHtmlReceipt, zReportRows } from '../print';
 
 const sale = (orderId: number, total: number, method: string) => ({
@@ -72,6 +77,13 @@ const sale = (orderId: number, total: number, method: string) => ({
 });
 
 beforeEach(() => {
+  h.settings = {
+    currency: 'ALL',
+    defaultVatRate: 0.2,
+    restaurantName: 'Bast',
+    fiscal: { enabled: true, vat: {} },
+  };
+  h.voided = 2;
   h.store.clear();
   h.fetchArgs = [];
   h.sales = [sale(1, 600, 'CASH'), sale(2, 1200, 'CARD'), sale(3, 300, 'CASH')];
@@ -81,15 +93,16 @@ beforeEach(() => {
     { orderId: 3, fiscalNivf: null },
   ];
   h.items = [
-    { qty: 1, unitPrice: 600, vatRate: 0.2 },
-    { qty: 2, unitPrice: 600, vatRate: 0.2 },
-    { qty: 1, unitPrice: 300, vatRate: 0.06 },
+    { orderId: 1, qty: 1, unitPrice: 600, vatRate: 0.2 },
+    { orderId: 2, qty: 2, unitPrice: 600, vatRate: 0.2 },
+    { orderId: 3, qty: 1, unitPrice: 300, vatRate: 0.06 },
   ];
   h.corrections = [{ kind: 'CANCEL', amountDelta: -500 }];
+  const at = new Date().toISOString();
   h.declarations = [
-    { at: new Date().toISOString(), kind: 'deposit', amount: 2000, ok: true },
-    { at: new Date().toISOString(), kind: 'withdraw', amount: 500, ok: true },
-    { at: new Date().toISOString(), kind: 'deposit', amount: 9999, ok: false },
+    { at, kind: 'deposit', amount: 2000, ok: true, docId: 'cash-a' },
+    { at, kind: 'withdraw', amount: 500, ok: true, docId: 'cash-b' },
+    { at, kind: 'deposit', amount: 9999, ok: false, docId: 'cash-c' },
   ];
 });
 
@@ -109,9 +122,11 @@ describe('Z report', () => {
       { method: 'CARD', count: 1, amount: 1200 },
       { method: 'CASH', count: 2, amount: 900 },
     ]);
-    expect(report.byVatRate.map((r) => [r.rate, r.gross])).toEqual([
-      [0.2, 1800],
-      [0.06, 300],
+    expect(
+      report.byVatRate.map((r) => [r.rate, r.net, r.vat, r.gross]),
+    ).toEqual([
+      [0.2, 1500, 300, 1800],
+      [0.06, 250, 50, 300],
     ]);
     expect(report.fiscal).toEqual({
       filedCount: 2,
@@ -129,14 +144,239 @@ describe('Z report', () => {
     expect(report.voidedTickets).toBe(2);
     // Refused declarations do not count: 10000 + 900 + 2000 - 500.
     expect(report.cash).toEqual({
+      currency: 'ALL',
       opening: 10_000,
       sales: 900,
       deposits: 2000,
       withdrawals: 500,
       expected: 12_400,
+      declared: {
+        currency: 'ALL',
+        opening: 10_000,
+        deposits: 2000,
+        withdrawals: 500,
+        rate: 1,
+      },
     });
   });
 
+  it('reconciles exactly with the sales and the cash declared', async () => {
+    // Odd amounts, mixed rates, a discount (gross below the items): the
+    // rounding QA saw drift by 7 cents (#9).
+    const odd = [
+      { id: 1, total: 3.33, vat: 0.56, method: 'CASH', items: [[3.333, 0.2]] },
+      {
+        id: 2,
+        total: 10.01,
+        vat: 1.07,
+        method: 'CARD',
+        items: [
+          [5.55, 0.2],
+          [4.46, 0.06],
+        ],
+      },
+      {
+        id: 3,
+        total: 7.77,
+        vat: 0.88,
+        method: 'CASH',
+        items: [
+          [4, 0.2],
+          [4, 0.06],
+        ],
+      },
+      { id: 4, total: 0.99, vat: 0.17, method: 'CASH', items: [[0.99, 0.2]] },
+    ];
+    h.sales = odd.map((o) => ({
+      orderId: o.id,
+      closedAt: new Date(),
+      subtotal: o.total - o.vat,
+      vatAmount: o.vat,
+      total: o.total,
+      paymentMethod: o.method,
+    }));
+    h.items = odd.flatMap((o) =>
+      o.items.map(([unitPrice, vatRate]) => ({
+        orderId: o.id,
+        qty: 1,
+        unitPrice,
+        vatRate,
+      })),
+    );
+    const at = new Date().toISOString();
+    h.declarations = [
+      { at, kind: 'deposit', amount: 2.01, ok: true, docId: 'cash-x' },
+      { at, kind: 'withdraw', amount: 0.5, ok: true, docId: 'cash-y' },
+    ];
+    const { report: z } = await issueZReport({ print: noPrint });
+    const c = (n: number) => Math.round(n * 100);
+    const sum = (rows: any[], k: string) =>
+      rows.reduce((a, r) => a + c(r[k]), 0);
+    // Sales are what was charged, to the cent.
+    expect(c(z.sales.gross)).toBe(sum(h.sales, 'total'));
+    expect(c(z.sales.vat)).toBe(sum(h.sales, 'vatAmount'));
+    expect(c(z.sales.net)).toBe(c(z.sales.gross) - c(z.sales.vat));
+    // Every breakdown adds up to them, with no cent left over.
+    for (const k of ['net', 'vat', 'gross']) {
+      expect(sum(z.byVatRate, k)).toBe(c((z.sales as any)[k]));
+    }
+    expect(sum(z.byMethod, 'amount')).toBe(c(z.sales.gross));
+    expect(c(z.fiscal.filedAmount) + c(z.fiscal.notFiledAmount)).toBe(
+      c(z.sales.gross),
+    );
+    // The drawer: float + cash sales + in - out.
+    expect(z.cash.sales).toBe(12.09);
+    expect(c(z.cash.expected!)).toBe(c(10_000) + c(12.09) + c(2.01) - c(0.5));
+  });
+
+  it('counts a repeated declaration once (QA #1)', async () => {
+    const t = new Date().toISOString();
+    // One cash-in of 2.01 retried twice: the till logs each answer.
+    h.declarations = [
+      {
+        at: t,
+        kind: 'deposit',
+        amount: 2.01,
+        ok: true,
+        docId: 'cash-k1',
+        outcome: 'complete',
+      },
+      {
+        at: t,
+        kind: 'deposit',
+        amount: 2.01,
+        ok: true,
+        docId: 'cash-k1',
+        outcome: 'already-declared',
+      },
+      {
+        at: t,
+        kind: 'deposit',
+        amount: 2.01,
+        ok: true,
+        docId: 'cash-k1',
+        outcome: 'already-declared',
+      },
+    ];
+    const { report } = await issueZReport({ print: noPrint });
+    expect(report.cash.deposits).toBe(2.01);
+  });
+
+  it('does not count, in a later Z, a repeat of a declaration already counted', async () => {
+    const first = new Date('2026-11-02T10:00:00');
+    h.declarations = [
+      {
+        at: first.toISOString(),
+        kind: 'deposit',
+        amount: 5,
+        ok: true,
+        docId: 'cash-k2',
+      },
+    ];
+    const a = await issueZReport({
+      now: new Date('2026-11-02T12:00:00'),
+      print: noPrint,
+    });
+    expect(a.report.cash.deposits).toBe(5);
+    h.declarations.push({
+      at: new Date('2026-11-02T13:00:00').toISOString(),
+      kind: 'deposit',
+      amount: 5,
+      ok: true,
+      docId: 'cash-k2',
+    });
+    const b = await issueZReport({
+      now: new Date('2026-11-02T14:00:00'),
+      print: noPrint,
+    });
+    expect(b.report.cash.deposits).toBe(0);
+  });
+
+  it('never adds lekë to euros: converts with Kursi EUR, labelled (QA #2)', async () => {
+    h.settings = {
+      ...h.settings,
+      currency: 'EUR',
+      fiscal: { ...h.settings.fiscal, eurExchangeRate: 100 },
+    };
+    // 10000 ALL float, 2000 ALL in, 500 ALL out; 900 EUR cash sales.
+    const { report } = await issueZReport({ print: noPrint });
+    expect(report.cash).toMatchObject({
+      currency: 'EUR',
+      opening: 100,
+      sales: 900,
+      deposits: 20,
+      withdrawals: 5,
+      expected: 1015,
+      declared: {
+        currency: 'ALL',
+        opening: 10_000,
+        deposits: 2000,
+        withdrawals: 500,
+        rate: 100,
+      },
+    });
+  });
+
+  it('without a rate shows lekë apart and no expected cash (QA #2)', async () => {
+    h.settings = { ...h.settings, currency: 'EUR' };
+    const { report } = await issueZReport({ print: noPrint });
+    expect(report.cash).toMatchObject({
+      currency: 'EUR',
+      opening: null,
+      sales: 900,
+      deposits: null,
+      withdrawals: null,
+      expected: null,
+      declared: {
+        currency: 'ALL',
+        opening: 10_000,
+        deposits: 2000,
+        rate: null,
+      },
+    });
+    const rows = zReportRows(report, {
+      copy: false,
+      lang: 'en',
+      restaurant: 'B',
+    });
+    const text = rows
+      .map((r: any) => `${r.label ?? ''} ${r.value ?? r.text ?? ''}`)
+      .join('\n');
+    expect(text).toMatch(/Cash in.*2[ ,.]?000[.,]00 ALL/);
+    expect(text).not.toMatch(/Cash expected.*\d/);
+  });
+
+  it('asks before issuing an empty Z right after another (QA #8)', async () => {
+    const first = await issueZReport({ print: noPrint });
+    h.sales = [];
+    h.corrections = [];
+    h.declarations = [];
+    h.voided = 0;
+    const again = await issueAny({ print: noPrint });
+    expect(again).toMatchObject({
+      empty: true,
+      lastNumber: first.report.number,
+    });
+    expect((await listZReports()).length).toBe(1);
+    const forced = await issueZReport({ print: noPrint, confirmEmpty: true });
+    expect(forced.report.number).toBe(2);
+  });
+});
+
+describe('allocateCents', () => {
+  it('shares out every cent, in proportion', () => {
+    const m = allocateCents(100, [
+      [0.2, 1],
+      [0.06, 1],
+      [0.1, 1],
+    ]);
+    expect([...m.values()].reduce((a, b) => a + b, 0)).toBe(100);
+    expect([...m.values()].sort()).toEqual([33, 33, 34]);
+    expect(allocateCents(5, [])).toEqual(new Map());
+  });
+});
+
+describe('Z report numbering and printing', () => {
   it('numbers in sequence, and each Z starts where the last one ended', async () => {
     const t1 = new Date('2026-11-02T22:00:00');
     const t2 = new Date('2026-11-03T22:30:00');

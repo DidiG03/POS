@@ -346,10 +346,10 @@ export type TicketPrintPayload = {
 
 /**
  * What a fiscal receipt states besides NIVF / NSLF: the invoice number and
- * the seller's NIPT, as the tax service registered them. In Albanian — it
- * is the line an inspector reads. The operator, business unit, register
- * (TCR) and software codes are left off the printed receipt on purpose;
- * they stay in the stored fiscal record (`meta.fiscalDoc`).
+ * the seller's NIPT, operator, business unit, register (TCR) and software
+ * codes, as the tax service registered them. In Albanian — it is the line
+ * an inspector reads. The four codes were taken off once and are back: an
+ * Albanian fiscal receipt is expected to carry them (QA v0.2.104, #3).
  */
 export function fiscalDocLines(meta: any, settings?: any): string[] {
   const doc = (meta?.fiscalDoc || {}) as Record<string, unknown>;
@@ -365,6 +365,10 @@ export function fiscalDocLines(meta: any, settings?: any): string[] {
   return [
     val(doc.invoiceNumber) && `Nr. i faturës: ${val(doc.invoiceNumber)}`,
     nipt && `NIPT: ${nipt}`,
+    val(doc.operatorCode) && `Operatori: ${val(doc.operatorCode)}`,
+    val(doc.businessUnitCode) && `Njësia: ${val(doc.businessUnitCode)}`,
+    val(doc.tcrCode) && `TCR: ${val(doc.tcrCode)}`,
+    val(doc.softwareCode) && `Softi: ${val(doc.softwareCode)}`,
     // Filed after the sale (an outage): the receipt shows the sale's time
     // above, and when the tax service registered it here.
     filedLate && `Fiskalizuar me vonesë: ${filedLate}`,
@@ -597,33 +601,76 @@ export function zReportRows(
       value: String(z.voidedTickets ?? 0),
     },
     { kind: 'sep' },
+  );
+  // The drawer, every amount with its currency (QA v0.2.104, #2): float
+  // and cash in/out are declared in lekë, sales are in the till's currency.
+  const cash = z.cash || {};
+  const tillCur = String(cash.currency || z.currency || '').slice(0, 3);
+  const mc = (n: unknown, cur: string) =>
+    n == null || !Number.isFinite(Number(n)) ? '—' : `${m(n)} ${cur}`;
+  rows.push(
     { kind: 'line', text: L('Cash drawer', 'Arka') },
     {
       kind: 'pair',
       label: L('Opening float', 'Fondi fillestar'),
-      value: m(z.cash?.opening),
+      value: mc(cash.opening, tillCur),
     },
     {
       kind: 'pair',
       label: L('Cash sales', 'Shitje me para në dorë'),
-      value: m(z.cash?.sales),
+      value: mc(cash.sales, tillCur),
     },
     {
       kind: 'pair',
       label: L('Cash in', 'Futje parash'),
-      value: m(z.cash?.deposits),
+      value: mc(cash.deposits, tillCur),
     },
     {
       kind: 'pair',
       label: L('Cash out', 'Nxjerrje parash'),
-      value: m(z.cash?.withdrawals),
+      value: mc(cash.withdrawals, tillCur),
     },
     {
       kind: 'pair',
       label: L('Cash expected', 'Para të pritura'),
-      value: m(z.cash?.expected),
+      value: mc(cash.expected, tillCur),
       bold: true,
     },
+  );
+  const declared = cash.declared;
+  if (declared && tillCur !== 'ALL') {
+    rows.push(
+      {
+        kind: 'line',
+        text:
+          declared.rate != null
+            ? L(
+                `Declared in ALL (1 ${tillCur} = ${declared.rate} ALL)`,
+                `Deklaruar në ALL (1 ${tillCur} = ${declared.rate} ALL)`,
+              )
+            : L(
+                `Declared in ALL (no ${tillCur} rate set: not converted)`,
+                `Deklaruar në ALL (pa kurs ${tillCur}: pa konvertuar)`,
+              ),
+      },
+      {
+        kind: 'pair',
+        label: L('Opening float', 'Fondi fillestar'),
+        value: mc(declared.opening, 'ALL'),
+      },
+      {
+        kind: 'pair',
+        label: L('Cash in', 'Futje parash'),
+        value: mc(declared.deposits, 'ALL'),
+      },
+      {
+        kind: 'pair',
+        label: L('Cash out', 'Nxjerrje parash'),
+        value: mc(declared.withdrawals, 'ALL'),
+      },
+    );
+  }
+  rows.push(
     { kind: 'sep' },
     { kind: 'line', text: `${L('Issued', 'Lëshuar')}: ${when(z.issuedAt)}` },
   );

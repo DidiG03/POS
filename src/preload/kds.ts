@@ -62,6 +62,16 @@ const kdsApp = {
   saveDisplayCooker: (cooker: boolean): Promise<boolean> =>
     ipcRenderer.invoke('kdsApp:saveDisplayCooker', cooker),
   resetConfig: (): Promise<boolean> => ipcRenderer.invoke('kdsApp:resetConfig'),
+  /** The pairing token, kept on disk by the KDS app (survives updates). */
+  getDeviceTokenSync: (): string | null => {
+    try {
+      return ipcRenderer.sendSync('kdsApp:getDeviceTokenSync') ?? null;
+    } catch {
+      return null;
+    }
+  },
+  saveDeviceToken: (token: string | null): Promise<boolean> =>
+    ipcRenderer.invoke('kdsApp:saveDeviceToken', token),
   quit: (): Promise<boolean> => ipcRenderer.invoke('kdsApp:quit'),
   discover: (): Promise<DiscoveredHost[]> =>
     ipcRenderer.invoke('kdsApp:discover'),

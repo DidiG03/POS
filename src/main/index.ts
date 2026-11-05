@@ -330,16 +330,14 @@ dotenv.config();
 import {
   findLatestTicketLogForCurrentSession,
   getCurrentSessionOwnerId,
+  type CurrentSitting,
 } from './services/tableSession';
 import { notifyAutoVoidedTable } from './services/autoVoidAlert';
 import {
   auditFiscalToggle,
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
-import {
-  fiscalSettingsForActor,
-  manageWaiterFiscal,
-} from './services/waiterFiscal';
+import { waiterFiscalHold, manageWaiterFiscal } from './services/waiterFiscal';
 import { voidBlockedByOtherOwner } from './services/voidOwnership';
 import {
   createTicketRequest,
@@ -1848,17 +1846,17 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
   return null;
 });
 
-// Waiter POS header: hold your name for 5 s to switch fiskalizimi off or on for
-// that person (`waiterFiscal.ts`). Their own PIN is required.
+// Till header: hold a name for 5 s to switch fiskalizimi off or on for that
+// person (`waiterFiscal.ts`). An admin's PIN is required, checked there.
 ipcHandle('auth:manageUserFiscal', async (_e, payload) => {
   const result = await manageWaiterFiscal({
     userId: (payload as any)?.userId,
-    pin: (payload as any)?.pin,
+    managerPin: (payload as any)?.managerPin,
     enabled: (payload as any)?.enabled,
     source: 'till',
+    requester: `till:${Number(_e.sender.id || 0)}`,
   });
   if (!result.ok && result.code === 'WRONG_PIN') {
-    await recordWrongPinAttempt(Number((payload as any)?.userId));
     await throttleAfterPinFailure(_e.sender.id, 'auth:manageUserFiscal');
   }
   return result;
@@ -1870,7 +1868,11 @@ ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
     source: `till:${Number(_e.sender.id || 0)}`,
     lan: false,
   });
-  if (!result.ok) return { ok: false };
+  // Locked after many misses (`managerPin.ts`): say for how long.
+  if (!result.ok)
+    return result.lockedForMs
+      ? { ok: false, lockedForMs: result.lockedForMs }
+      : { ok: false };
   // Local-only short-lived approval token to prevent spoofing approvals.
   return {
     ok: true,
@@ -2889,6 +2891,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
 
     const kind = String(meta?.kind || '').toUpperCase();
     let payOwnerId: number | null = null;
+    let paySitting: CurrentSitting | undefined;
     if (kind === 'PAYMENT' && !isPaymentReprint(meta)) {
       const exists = await checkFloorTable(area, tableLabel);
       if (!exists.ok) {
@@ -2912,6 +2915,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         });
         if (!owns.ok) return owns as any;
         payOwnerId = owns.ownerId;
+        paySitting = owns.sitting;
       }
       const approvalRefused = await checkPaymentApproval({
         settings,
@@ -2934,13 +2938,16 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
           area,
           tableLabel,
           items: payload.items,
+          sitting: paySitting,
         });
         if (stale) return stale;
       }
       // A second Pay tap for this sitting gets a new docId, so an invoice
       // left behind by an interrupted attempt must be found here.
-      // Fiskalizimi can be switched off for one waiter (`waiterFiscal.ts`).
-      const fiscalSettings = await fiscalSettingsForActor(
+      // Fiskalizimi can be switched off for one waiter: the sale is then
+      // held as not yet fiscalised (`waiterFiscal.ts`).
+      const fiscalSettings = settings;
+      const waiterHold = await waiterFiscalHold(
         settings,
         Number(ctx?.session?.userId || 0) || Number(meta?.userId || 0) || null,
       );
@@ -2973,7 +2980,10 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         {
           idempotencyKey: idempotencyKey || undefined,
           adoptDocId: sitting.adoptDocId,
-          holdReason: sitting.holdReason,
+          holdReason: sitting.holdReason ?? waiterHold,
+          ...(!sitting.holdReason && waiterHold
+            ? { holdKind: 'fiscal-off' as const }
+            : {}),
         },
       );
       if (outcome.kind === 'needs-review') {
@@ -4556,9 +4566,20 @@ ipcHandle('admin:printFiscalReceipt', async (_e, input) =>
 );
 
 // Z report: the end-of-day close (`services/zReport.ts`).
-ipcHandle('admin:issueZReport', async (_e, _input, ctx) => {
+ipcHandle('admin:issueZReport', async (_e, input, ctx) => {
   const { issueZReport } = await import('./services/zReport');
-  const r = await issueZReport({ actorUserId: ctx?.session?.userId ?? null });
+  const r = await issueZReport({
+    actorUserId: ctx?.session?.userId ?? null,
+    confirmEmpty: (input as any)?.confirmEmpty === true,
+  });
+  if ('empty' in r) {
+    return {
+      ok: false,
+      code: 'Z_EMPTY',
+      from: r.from,
+      lastNumber: r.lastNumber,
+    };
+  }
   logSecurityEvent('z_report_issued', {
     number: r.report.number,
     userId: ctx?.session?.userId ?? null,

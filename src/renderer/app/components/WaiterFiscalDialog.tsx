@@ -6,9 +6,10 @@ import { Button, Modal, Switch } from '../../components/ui';
 import { toast } from '../../stores/toasts';
 
 /**
- * Per-waiter fiskalizimi switch, opened by holding your name in the top-left
- * corner of the waiter POS header for five seconds. The waiter's PIN unlocks it; the switch then
- * turns fiskalizimi off or on for the payments that waiter takes.
+ * Per-waiter fiskalizimi switch on the till, opened by holding the name in
+ * the header for five seconds. An admin's PIN unlocks it (checked by the
+ * till); the switch then turns fiskalizimi off or on for the payments that
+ * person takes. Their sales with it off are kept as not yet fiscalised.
  */
 export function WaiterFiscalDialog({
   staff,
@@ -47,7 +48,7 @@ export function WaiterFiscalDialog({
     try {
       return await manage({
         userId: staff.id,
-        pin: pinValue,
+        managerPin: pinValue,
         ...(next === undefined ? {} : { enabled: next }),
       });
     } catch (e: any) {

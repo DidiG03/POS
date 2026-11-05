@@ -439,7 +439,7 @@ describe('fiscal receipt block', () => {
     expect(text).not.toContain('FISKALIZIMI NE PRITJE');
   });
 
-  it('states the invoice number and NIPT, without the operator/unit/TCR/software codes', () => {
+  it('states the invoice number, NIPT and the operator/unit/TCR/software codes (QA v0.2.104 #3)', () => {
     const meta = {
       kind: 'PAYMENT',
       method: 'CARD',
@@ -467,23 +467,17 @@ describe('fiscal receipt block', () => {
     expect(text).toContain('Nr. i fatur');
     expect(text).toContain('283/2026/qq038ml699');
     expect(text).toContain('NIPT: L52101183A');
-    for (const hidden of [
-      'Operatori',
-      'gh537ez280',
-      'kl749av758',
-      'TCR:',
-      'Softi',
-      'wc801oy838',
-    ]) {
-      expect(text).not.toContain(hidden);
-    }
+    expect(text).toContain('Operatori: gh537ez280');
+    expect(text).toContain('kl749av758');
+    expect(text).toContain('TCR: qq038ml699');
+    expect(text).toContain('Softi: wc801oy838');
     const html = buildHtmlReceipt(payload, settings);
     expect(html).toContain('Nr. i faturës: 283/2026/qq038ml699');
     expect(html).toContain('NIPT: L52101183A');
-    expect(html).not.toContain('Operatori');
-    expect(html).not.toContain('Njësia');
-    expect(html).not.toContain('TCR:');
-    expect(html).not.toContain('Softi');
+    expect(html).toContain('Operatori: gh537ez280');
+    expect(html).toContain('Njësia: kl749av758');
+    expect(html).toContain('TCR: qq038ml699');
+    expect(html).toContain('Softi: wc801oy838');
   });
 
   it('does not claim fiskalizimi on a deferred sale', () => {
@@ -821,9 +815,9 @@ describe('fiscal receipts, QA round 5 (F4a, F4b, F2b, F7b)', () => {
     expect(text).toContain('12/2026/qq038ml699');
     // NIPT from the settings when the answer did not carry it.
     expect(text).toContain('NIPT: L12345678A');
-    expect(text).not.toContain('gh537ez280');
-    expect(text).not.toContain('TCR:');
-    expect(text).not.toContain('ab123cd456');
+    expect(text).toContain('gh537ez280');
+    expect(text).toContain('TCR: qq038ml699');
+    expect(text).toContain('ab123cd456');
   });
 });
 

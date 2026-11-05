@@ -142,6 +142,24 @@ export async function findLatestTicketLogSince(
   return latest;
 }
 
+/** The current sitting's start and its latest bill, read once. */
+export type CurrentSitting = {
+  since: Date | null;
+  latest: Awaited<ReturnType<typeof findLatestTicketLogSince>> | null;
+};
+
+export async function readCurrentSitting(
+  area: string,
+  tableLabel: string,
+): Promise<CurrentSitting> {
+  const since = await getTableSessionStartedAt(area, tableLabel);
+  if (!since) return { since: null, latest: null };
+  return {
+    since,
+    latest: await findLatestTicketLogSince(area, tableLabel, since),
+  };
+}
+
 /**
  * Latest TicketLog for the current sitting only. Returns null when the
  * table is not open (no occupancy row) so callers cannot mutate the

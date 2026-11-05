@@ -316,6 +316,26 @@ describe('fiscalizePaymentOnce', () => {
     expect((await readFiscalClaim(KEY))?.holdReason).toBeTruthy();
   });
 
+  it('a sale by a waiter with fiskalizimi off is kept as not fiscalised, for review (QA v0.2.104 #4)', async () => {
+    const reason =
+      'Fiskalizimi is switched off for this staff member (#7), so this sale was not sent to the tax office.';
+    const out = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+      holdReason: reason,
+    });
+    // Taken, marked not yet fiscalised, never sent.
+    expect(out.kind).toBe('deferred');
+    if (out.kind !== 'deferred') throw new Error('unreachable');
+    expect(out.payload.meta?.fiscalStatus).toBe('pending');
+    expect(createSale).not.toHaveBeenCalled();
+    // Held DEFERRED with a reason: what the review list shows
+    // (`listFiscalClaimsNeedingReview`), with the draft to file it later.
+    const claim = await readFiscalClaim(KEY);
+    expect(claim?.state).toBe('DEFERRED');
+    expect(claim?.holdReason).toBe(reason);
+    expect(claim?.draft).toBeTruthy();
+  });
+
   it('fails pre-flight without consuming a claim', async () => {
     const out = await fiscalizePaymentOnce(payment({ items: [] }), settings, {
       idempotencyKey: KEY,

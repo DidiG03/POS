@@ -26,7 +26,19 @@ export type CashDeclaration = 'opening' | 'deposit' | 'withdraw';
 
 export type CashDeclarationResult =
   | { ok: true; kind: BalanceOutcome['kind']; docId: string; fcdc?: string }
-  | { ok: false; error: string; docId?: string };
+  | {
+      ok: false;
+      error: string;
+      docId?: string;
+      /** CASH_KEY_CONFLICT: the key was used for another amount (409). */
+      code?: 'CASH_KEY_CONFLICT' | 'INVALID_AMOUNT';
+    };
+
+/** HTTP status for a declaration answer. */
+export function cashDeclarationStatus(r: CashDeclarationResult): number {
+  if (r.ok) return 200;
+  return r.code === 'CASH_KEY_CONFLICT' ? 409 : 400;
+}
 
 /** A key the screen sends once per declaration, so a retry declares once. */
 function docIdFrom(requestKey: unknown): string | undefined {
@@ -106,7 +118,11 @@ export async function declareCash(
     requestKey: String(input.requestKey ?? '').trim() || null,
     actorUserId: Number(input.actorUserId || 0) || null,
     ok: result.ok,
-    outcome: result.ok ? result.kind : 'refused',
+    outcome: result.ok
+      ? result.kind
+      : result.code === 'CASH_KEY_CONFLICT'
+        ? 'conflict'
+        : 'refused',
     ...(result.docId ? { docId: result.docId } : {}),
     ...(result.ok && result.fcdc ? { fcdc: result.fcdc } : {}),
     ...(!result.ok ? { error: result.error } : {}),
@@ -124,7 +140,20 @@ async function declareCashUnrecorded(
   const kind = String(input.kind || '') as CashDeclaration;
   const amount = Number(input.amount);
   if (!Number.isFinite(amount) || amount < 0 || amount > 10_000_000) {
-    return { ok: false, error: 'Enter the amount in lekë.' };
+    return {
+      ok: false,
+      code: 'INVALID_AMOUNT',
+      error: 'Enter the amount in lekë.',
+    };
+  }
+  // Lekë have two decimals at most; 2.005 was rounded to 2.01 on the way to
+  // easyPos, so the till and the tax office disagreed (QA v0.2.104, #10).
+  if (Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-6) {
+    return {
+      ok: false,
+      code: 'INVALID_AMOUNT',
+      error: 'Enter the amount with at most 2 decimal places.',
+    };
   }
   if (kind !== 'opening' && amount <= 0) {
     return { ok: false, error: 'The amount must be more than 0.' };
@@ -185,5 +214,12 @@ async function declareCashUnrecorded(
       ...(outcome.fcdc ? { fcdc: outcome.fcdc } : {}),
     };
   }
-  return { ok: false, error: outcome.message, docId: outcome.docId };
+  return {
+    ok: false,
+    error: outcome.message,
+    docId: outcome.docId,
+    ...(outcome.kind === 'conflict'
+      ? { code: 'CASH_KEY_CONFLICT' as const }
+      : {}),
+  };
 }

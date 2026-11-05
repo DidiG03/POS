@@ -8,7 +8,7 @@ const api: Api = {
       ipcRenderer.invoke('auth:loginWithPin', { pin, userId, pairingCode }),
     manageUserFiscal: (input: {
       userId: number;
-      pin: string;
+      managerPin: string;
       enabled?: boolean;
     }) => ipcRenderer.invoke('auth:manageUserFiscal', input),
     verifyManagerPin: (pin: string) =>
@@ -102,7 +102,8 @@ const api: Api = {
     }) => ipcRenderer.invoke('admin:correctSale', input),
     printFiscalReceipt: (input: { orderId: number }) =>
       ipcRenderer.invoke('admin:printFiscalReceipt', input),
-    issueZReport: () => ipcRenderer.invoke('admin:issueZReport', {}),
+    issueZReport: (input?: { confirmEmpty?: boolean }) =>
+      ipcRenderer.invoke('admin:issueZReport', input ?? {}),
     listZReports: () => ipcRenderer.invoke('admin:listZReports', {}),
     reprintZReport: (input: { number: number }) =>
       ipcRenderer.invoke('admin:reprintZReport', input),

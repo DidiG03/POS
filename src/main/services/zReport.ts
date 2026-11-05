@@ -16,7 +16,8 @@
 import { prisma } from '@db/client';
 import { KeyedAsyncMutex } from '@shared/asyncMutex';
 import { roundMoney } from '@shared/money';
-import { effectiveVatRate, splitGrossVat } from '@shared/ticketRevenue';
+import { effectiveVatRate } from '@shared/ticketRevenue';
+import { eurExchangeRateFromSettings } from '@shared/paymentDisplay';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { coreServices } from './core';
 import { countVoidedTickets, fetchPaidSales } from './paidAnalytics';
@@ -43,7 +44,11 @@ export type ZReport = {
   fiscalEnabled: boolean;
   sales: { count: number; net: number; vat: number; gross: number };
   byMethod: Array<{ method: string; count: number; amount: number }>;
-  /** Items by VAT rate, before bill-level discounts and service. */
+  /**
+   * By VAT rate, of what was charged. Each sale's net and VAT are shared
+   * out over its rates in whole cents, so the rows add up to `sales`
+   * exactly (QA v0.2.104, #9).
+   */
   byVatRate: Array<{ rate: number; net: number; vat: number; gross: number }>;
   fiscal: {
     filedCount: number;
@@ -56,14 +61,93 @@ export type ZReport = {
   };
   corrections: { count: number; cancellations: number; amount: number };
   voidedTickets: number;
+  /**
+   * The drawer, in the till's currency (`currency`). Opening float and cash
+   * in/out are declared to easyPos in lekë (`declared`); on a till that
+   * does not sell in lekë they are converted with Kursi EUR, and when there
+   * is no rate they are shown in lekë only and `expected` is null: lekë
+   * were added to euros before (QA v0.2.104, #2).
+   */
   cash: {
+    currency: string;
     opening: number | null;
     sales: number;
-    deposits: number;
-    withdrawals: number;
+    deposits: number | null;
+    withdrawals: number | null;
     expected: number | null;
+    declared: {
+      currency: 'ALL';
+      opening: number | null;
+      deposits: number;
+      withdrawals: number;
+      /** ALL per 1 unit of `currency`; 1 on a lek till; null when missing. */
+      rate: number | null;
+    };
   };
 };
+
+/** Cents, so sums never drift. */
+const cents = (n: unknown) => Math.round(Number(n || 0) * 100);
+const fromCents = (c: number) => c / 100;
+
+/**
+ * Split `total` cents over `weights` in proportion, in whole cents, the
+ * remainder going to the largest fractions (ties: first key). Sums to
+ * `total` exactly.
+ */
+export function allocateCents(
+  total: number,
+  weights: Array<[number, number]>,
+): Map<number, number> {
+  const out = new Map<number, number>();
+  const positive = weights.filter(([, w]) => Number.isFinite(w) && w > 0);
+  if (!positive.length) return out;
+  const sumW = positive.reduce((a, [, w]) => a + w, 0);
+  let given = 0;
+  const fracs: Array<{ key: number; frac: number; i: number }> = [];
+  positive.forEach(([key, w], i) => {
+    const exact = (total * w) / sumW;
+    const whole = Math.floor(exact);
+    out.set(key, (out.get(key) ?? 0) + whole);
+    given += whole;
+    fracs.push({ key, frac: exact - whole, i });
+  });
+  fracs.sort((a, b) => b.frac - a.frac || a.i - b.i);
+  for (let k = 0; k < total - given; k++) {
+    const f = fracs[k % fracs.length];
+    out.set(f.key, (out.get(f.key) ?? 0) + 1);
+  }
+  return out;
+}
+
+/**
+ * Each declaration once (QA v0.2.104, #1). A retry with the same key is
+ * logged again ("already declared") and was summed again: 2.01 of real cash
+ * in showed as 6.01. Keyed on the easyPos document id (one per request
+ * key), counted at its first accepted entry, so a repeat in a later period
+ * is not counted there either.
+ */
+export function uniqueDeclarations<
+  T extends {
+    at: string;
+    ok: boolean;
+    docId?: string;
+    requestKey?: string | null;
+    kind: string;
+  },
+>(entries: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  entries.forEach((d, i) => {
+    if (!d.ok) return;
+    const id = String(d.docId || d.requestKey || '').trim();
+    const key = id ? `${d.kind}:${id}` : `entry:${i}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(d);
+  });
+  return out;
+}
 
 type Stored = { number: number; to: string };
 
@@ -106,15 +190,16 @@ export async function computeZReport(input: {
   const { from, to } = input;
 
   const sales = await fetchPaidSales({ from, to });
-  const totals = { count: sales.length, net: 0, vat: 0, gross: 0 };
+  // One strategy everywhere: each sale in whole cents (its gross and VAT as
+  // charged), net = gross - VAT, everything else sums those cents.
+  const totals = { count: sales.length, vat: 0, gross: 0 };
   const methods = new Map<string, { count: number; amount: number }>();
   for (const s of sales) {
-    totals.net += s.subtotal;
-    totals.vat += s.vatAmount;
-    totals.gross += s.total;
+    totals.vat += cents(vatEnabled ? s.vatAmount : 0);
+    totals.gross += cents(s.total);
     const m = methods.get(s.paymentMethod) ?? { count: 0, amount: 0 };
     m.count += 1;
-    m.amount += s.total;
+    m.amount += cents(s.total);
     methods.set(s.paymentMethod, m);
   }
 
@@ -122,7 +207,8 @@ export async function computeZReport(input: {
     .map((s) => Number(s.orderId))
     .filter((n) => Number.isInteger(n) && n > 0);
   const filedOrders = new Set<number>();
-  const rates = new Map<number, number>();
+  /** Item gross per VAT rate, per order. */
+  const lineRates = new Map<number, Map<number, number>>();
   for (const ids of chunks(orderIds, 500)) {
     const payments = (await prisma.payment
       .findMany({
@@ -137,9 +223,15 @@ export async function computeZReport(input: {
       const lines = (await prisma.orderItem
         .findMany({
           where: { orderId: { in: ids }, voidedAt: null } as any,
-          select: { qty: true, unitPrice: true, vatRate: true } as any,
+          select: {
+            orderId: true,
+            qty: true,
+            unitPrice: true,
+            vatRate: true,
+          } as any,
         })
         .catch(() => [])) as Array<{
+        orderId?: unknown;
         qty: unknown;
         unitPrice: unknown;
         vatRate: unknown;
@@ -148,7 +240,10 @@ export async function computeZReport(input: {
         const gross = Number(l.qty) * Number(l.unitPrice);
         if (!Number.isFinite(gross)) continue;
         const rate = effectiveVatRate(l.vatRate, defaultVatRate);
-        rates.set(rate, (rates.get(rate) ?? 0) + gross);
+        const id = Number(l.orderId);
+        const m = lineRates.get(id) ?? new Map<number, number>();
+        m.set(rate, (m.get(rate) ?? 0) + gross);
+        lineRates.set(id, m);
       }
     }
   }
@@ -158,9 +253,37 @@ export async function computeZReport(input: {
   for (const s of sales) {
     if (s.orderId && filedOrders.has(Number(s.orderId))) {
       filedCount += 1;
-      filedAmount += s.total;
+      filedAmount += cents(s.total);
     } else {
-      notFiledAmount += s.total;
+      notFiledAmount += cents(s.total);
+    }
+  }
+
+  // VAT by rate: each sale's gross shared over its items' rates, and its
+  // VAT over their VAT content, in cents. A sale with no item rows counts
+  // at the default rate.
+  const byRate = new Map<number, { gross: number; vat: number }>();
+  if (vatEnabled) {
+    for (const s of sales) {
+      const own = lineRates.get(Number(s.orderId));
+      const weights: Array<[number, number]> = own?.size
+        ? [...own.entries()]
+        : [[effectiveVatRate(undefined, defaultVatRate), 1]];
+      const gross = allocateCents(cents(s.total), weights);
+      const vat = allocateCents(
+        cents(s.vatAmount),
+        weights.map(([r, w]) => [r, (w * r) / (1 + r)]),
+      );
+      // All of a sale's VAT on 0% lines (no VAT content to weigh by).
+      if (!vat.size && cents(s.vatAmount)) {
+        vat.set(weights[0][0], cents(s.vatAmount));
+      }
+      for (const [r] of weights) {
+        const row = byRate.get(r) ?? { gross: 0, vat: 0 };
+        row.gross += gross.get(r) ?? 0;
+        row.vat += vat.get(r) ?? 0;
+        byRate.set(r, row);
+      }
     }
   }
 
@@ -189,21 +312,29 @@ export async function computeZReport(input: {
         ? readDailyBalanceRecord(settings).catch(() => null)
         : Promise.resolve(null),
     ]);
-  const inPeriod = declarations.filter((d) => {
+  const inPeriod = uniqueDeclarations(declarations).filter((d) => {
     const at = Date.parse(d.at);
-    return d.ok && at >= from.getTime() && at <= to.getTime();
+    return at >= from.getTime() && at <= to.getTime();
   });
-  const sum = (kind: string) =>
-    roundMoney(
-      inPeriod
-        .filter((d) => d.kind === kind)
-        .reduce((a, d) => a + Number(d.amount || 0), 0),
-    );
-  const declaredOpening =
-    opening?.state === 'COMPLETE' ? Number(opening.amount) : null;
-  const cashSales = roundMoney(methods.get('CASH')?.amount ?? 0);
-  const deposits = sum('deposit');
-  const withdrawals = sum('withdraw');
+  const sumCents = (kind: string) =>
+    inPeriod
+      .filter((d) => d.kind === kind)
+      .reduce((a, d) => a + cents(d.amount), 0);
+  const currency = String(settings?.currency || 'EUR').toUpperCase();
+  // Declared amounts are lekë (`balance.ts`).
+  const rate = currency === 'ALL' ? 1 : eurExchangeRateFromSettings(settings);
+  const convertible =
+    currency === 'ALL' || (currency === 'EUR' && rate != null);
+  const toTill = (allCents: number) =>
+    convertible ? Math.round(allCents / Number(rate)) : null;
+  const openingAll =
+    opening?.state === 'COMPLETE' ? cents(opening.amount) : null;
+  const depositsAll = sumCents('deposit');
+  const withdrawalsAll = sumCents('withdraw');
+  const cashSalesCents = methods.get('CASH')?.amount ?? 0;
+  const openingTill = openingAll == null ? null : toTill(openingAll);
+  const depositsTill = toTill(depositsAll);
+  const withdrawalsTill = toTill(withdrawalsAll);
 
   return {
     from: from.toISOString(),
@@ -213,33 +344,30 @@ export async function computeZReport(input: {
     fiscalEnabled,
     sales: {
       count: totals.count,
-      net: roundMoney(totals.net),
-      vat: roundMoney(totals.vat),
-      gross: roundMoney(totals.gross),
+      net: fromCents(totals.gross - totals.vat),
+      vat: fromCents(totals.vat),
+      gross: fromCents(totals.gross),
     },
     byMethod: [...methods.entries()]
       .map(([method, m]) => ({
         method,
         count: m.count,
-        amount: roundMoney(m.amount),
+        amount: fromCents(m.amount),
       }))
       .sort((a, b) => b.amount - a.amount),
-    byVatRate: [...rates.entries()]
-      .map(([rate, gross]) => {
-        const split = splitGrossVat(gross, rate);
-        return {
-          rate,
-          net: roundMoney(split.net),
-          vat: roundMoney(split.vat),
-          gross: roundMoney(gross),
-        };
-      })
+    byVatRate: [...byRate.entries()]
+      .map(([r, row]) => ({
+        rate: r,
+        net: fromCents(row.gross - row.vat),
+        vat: fromCents(row.vat),
+        gross: fromCents(row.gross),
+      }))
       .sort((a, b) => b.rate - a.rate),
     fiscal: {
       filedCount,
-      filedAmount: roundMoney(filedAmount),
+      filedAmount: fromCents(filedAmount),
       notFiledCount: fiscalEnabled ? totals.count - filedCount : 0,
-      notFiledAmount: fiscalEnabled ? roundMoney(notFiledAmount) : 0,
+      notFiledAmount: fiscalEnabled ? fromCents(notFiledAmount) : 0,
       queued,
       waitingForReview: review,
     },
@@ -254,14 +382,24 @@ export async function computeZReport(input: {
     },
     voidedTickets,
     cash: {
-      opening: declaredOpening,
-      sales: cashSales,
-      deposits,
-      withdrawals,
+      currency,
+      opening: openingTill == null ? null : fromCents(openingTill),
+      sales: fromCents(cashSalesCents),
+      deposits: depositsTill == null ? null : fromCents(depositsTill),
+      withdrawals: withdrawalsTill == null ? null : fromCents(withdrawalsTill),
       expected:
-        declaredOpening == null
+        openingTill == null || depositsTill == null || withdrawalsTill == null
           ? null
-          : roundMoney(declaredOpening + cashSales + deposits - withdrawals),
+          : fromCents(
+              openingTill + cashSalesCents + depositsTill - withdrawalsTill,
+            ),
+      declared: {
+        currency: 'ALL',
+        opening: openingAll == null ? null : fromCents(openingAll),
+        deposits: fromCents(depositsAll),
+        withdrawals: fromCents(withdrawalsAll),
+        rate: convertible ? Number(rate) : null,
+      },
     },
   };
 }
@@ -272,11 +410,31 @@ const zLock = new KeyedAsyncMutex();
  * Close the period since the last Z: compute, number, store and print it.
  * One at a time, so two presses never make two reports for one period.
  */
+/** Nothing happened since the last Z (QA v0.2.104, #8). */
+export function zReportIsEmpty(
+  z: Pick<ZReport, 'sales' | 'corrections' | 'voidedTickets' | 'cash'>,
+): boolean {
+  return (
+    z.sales.count === 0 &&
+    z.corrections.count === 0 &&
+    !z.voidedTickets &&
+    !z.cash.declared.deposits &&
+    !z.cash.declared.withdrawals
+  );
+}
+
+export type IssueZResult =
+  | { report: ZReport; printed: boolean }
+  /** Not issued: no activity since `from`. Ask, then pass `confirmEmpty`. */
+  | { empty: true; from: string; lastNumber: number };
+
 export async function issueZReport(input: {
   actorUserId?: number | null;
   now?: Date;
   print?: (z: ZReport, copy: boolean) => Promise<boolean>;
-}): Promise<{ report: ZReport; printed: boolean }> {
+  /** Issue it even with nothing in the period. */
+  confirmEmpty?: boolean;
+}): Promise<IssueZResult> {
   return zLock.runExclusive('z', async () => {
     const last = await readJson<Stored>(LAST_KEY);
     const lastTo = last?.to ? new Date(last.to) : null;
@@ -290,6 +448,14 @@ export async function issueZReport(input: {
     const asked = input.now ?? new Date();
     const now = asked.getTime() >= from.getTime() ? asked : from;
     const figures = await computeZReport({ from, to: now });
+    // An empty Z right after another closed nothing and used a number.
+    if (!input.confirmEmpty && zReportIsEmpty(figures)) {
+      return {
+        empty: true as const,
+        from: figures.from,
+        lastNumber: last?.number ?? 0,
+      };
+    }
     const report: ZReport = {
       ...figures,
       number: (last?.number ?? 0) + 1,

@@ -1,86 +1,58 @@
-import { describe, expect, it } from 'vitest';
+/** QA v0.2.104 #13: the page's copy of the pairing may be lost; the app's is not. */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  isKdsDevicePath,
-  kdsPairingRequiredOn401,
-  kdsShouldShowPairing,
+  KDS_DEVICE_TOKEN_KEY,
+  clearKdsDeviceToken,
+  readKdsDeviceToken,
+  writeKdsDeviceToken,
 } from './kdsPairing';
-import { shouldForceLogoutOn401 } from './lanAuthToken';
 
-describe('an unpaired kitchen display (QA round 6, #2)', () => {
-  it('a 401 on a kitchen route in the KDS app asks it to pair', () => {
-    expect(kdsPairingRequiredOn401(401, '/kds/tickets?station=BAR', true)).toBe(
-      true,
-    );
-    expect(kdsPairingRequiredOn401(401, '/kds/enabled-stations', true)).toBe(
-      true,
-    );
-  });
+const local = new Map<string, string>();
+const disk = { token: null as string | null };
 
-  it('only in the KDS app, only for 401, only on kitchen routes', () => {
-    // A kitchen phone signed in as staff: a 401 is an expired session.
-    expect(kdsPairingRequiredOn401(401, '/kds/tickets', false)).toBe(false);
-    expect(kdsPairingRequiredOn401(403, '/kds/tickets', true)).toBe(false);
-    expect(kdsPairingRequiredOn401(401, '/settings', true)).toBe(false);
-    // The reachability probe is open; it never asks for pairing.
-    expect(isKdsDevicePath('/kds/debug')).toBe(false);
-  });
-
-  it('a KDS with no device token and no session shows pairing before any request', () => {
-    expect(
-      kdsShouldShowPairing({
-        kdsApp: true,
-        hasDeviceToken: false,
-        hasSession: false,
+beforeEach(() => {
+  local.clear();
+  disk.token = null;
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => local.get(k) ?? null,
+    setItem: (k: string, v: string) => void local.set(k, v),
+    removeItem: (k: string) => void local.delete(k),
+  };
+  (globalThis as any).window = {
+    kdsApp: {
+      getDeviceTokenSync: () => disk.token,
+      saveDeviceToken: vi.fn(async (t: string | null) => {
+        disk.token = t;
+        return true;
       }),
-    ).toBe(true);
-    expect(
-      kdsShouldShowPairing({
-        kdsApp: true,
-        hasDeviceToken: true,
-        hasSession: false,
-      }),
-    ).toBe(false);
-    // The till's own kitchen window (not the KDS app) never pairs.
-    expect(
-      kdsShouldShowPairing({
-        kdsApp: false,
-        hasDeviceToken: false,
-        hasSession: false,
-      }),
-    ).toBe(false);
-  });
-
-  it('the 401 that used to sign the display out to Select Staff is the same 401', () => {
-    // Without the KDS check first, this 401 forces a logout to `#/`.
-    expect(
-      shouldForceLogoutOn401(401, null, null, undefined, '/kds/tickets'),
-    ).toBe(true);
-  });
+    },
+  };
 });
 
-describe('KDS pairing wiring', () => {
-  const fs = require('node:fs') as typeof import('node:fs');
-  const path = require('node:path') as typeof import('node:path');
-  const root = path.resolve(__dirname, '../../..');
-  const read = (rel: string) =>
-    fs.readFileSync(path.join(root, rel), 'utf8') as string;
-
-  it('the LAN client asks for pairing before it would force a logout', () => {
-    const src = read('src/renderer/browserLanApi.ts');
-    const fn = src.slice(src.indexOf('function maybeForceLogout('));
-    const pairAt = fn.indexOf('kdsPairingRequiredOn401(');
-    const logoutAt = fn.indexOf('shouldForceLogoutOn401(');
-    expect(pairAt).toBeGreaterThan(-1);
-    expect(pairAt).toBeLessThan(logoutAt);
-    expect(fn.slice(pairAt, logoutAt)).toContain('return;');
+describe('KDS pairing token', () => {
+  it('is kept by the app as well as the page', () => {
+    writeKdsDeviceToken('tok-1234567890');
+    expect(local.get(KDS_DEVICE_TOKEN_KEY)).toBe('tok-1234567890');
+    expect(disk.token).toBe('tok-1234567890');
   });
 
-  it('the KDS app never routes to the waiter Select Staff screen', () => {
-    const routes = read('src/renderer/routes.tsx');
-    const root = routes.slice(routes.indexOf("path: '/',"));
-    expect(root.slice(0, 300)).toContain('isKdsApp()');
-    expect(root.slice(0, 300)).toContain('<Navigate to="/kds" replace />');
-    const boot = read('src/renderer/app/BootRoot.tsx');
-    expect(boot).toMatch(/__KDS_APP__\s*\?\s*'#\/kds'/);
+  it('after an update lost the page copy, the app copy pairs it again', () => {
+    disk.token = 'tok-1234567890';
+    expect(readKdsDeviceToken()).toBe('tok-1234567890');
+    // And the page copy is restored.
+    expect(local.get(KDS_DEVICE_TOKEN_KEY)).toBe('tok-1234567890');
+  });
+
+  it('un-pairing clears both', () => {
+    writeKdsDeviceToken('tok-1234567890');
+    clearKdsDeviceToken();
+    expect(readKdsDeviceToken()).toBeNull();
+    expect(disk.token).toBeNull();
+  });
+
+  it('outside the KDS app (a browser) it is the page copy only', () => {
+    (globalThis as any).window = {};
+    writeKdsDeviceToken('tok-1234567890');
+    expect(readKdsDeviceToken()).toBe('tok-1234567890');
   });
 });

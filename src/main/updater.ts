@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { autoUpdater, UpdateInfo } from 'electron-updater';
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, session } from 'electron';
 import { captureException, addBreadcrumb } from './services/sentry';
 import { allowNextQuit } from './services/hostRuntime';
 import { isUnpackagedElectron } from './services/electronDev';
@@ -231,6 +231,14 @@ function downloadedMacZip(): string | null {
 
 function prepareToQuit(): void {
   allowNextQuit();
+  // Chromium writes localStorage to disk lazily; quitting to install could
+  // lose what a screen saved moments before, such as a kitchen display's
+  // pairing (QA v0.2.104, #13).
+  try {
+    session.defaultSession?.flushStorageData();
+  } catch {
+    // ignore
+  }
   try {
     app.releaseSingleInstanceLock();
   } catch {
@@ -321,10 +329,16 @@ async function performCheck(): Promise<UpdateCheckResult> {
         { context: 'updater:checkForUpdates' },
       );
     }
+    // Screens showing "Checking for updates…" wait for an event; a check
+    // that failed without electron-updater emitting one left the kitchen
+    // display on it for good (QA v0.2.104, #13).
+    notifyListeners('error', { message: userFacingUpdaterError(error) });
     return { error: userFacingUpdaterError(error), currentVersion: version };
   } finally {
     checking = false;
     emitStatusChange();
+    // Whatever happened, the check is over: screens reload the status.
+    notifyListeners('check-finished');
   }
 }
 

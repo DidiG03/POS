@@ -37,12 +37,12 @@ import {
 } from './utils/lanAuthToken';
 import { isPairingRejectedError } from './utils/lanLoginError';
 import {
-  KDS_DEVICE_TOKEN_KEY,
   KDS_PAIRING_REQUIRED_EVENT,
   clearKdsDeviceToken,
   isKdsApp,
   kdsPairingRequiredOn401,
   readKdsDeviceToken,
+  writeKdsDeviceToken,
 } from './utils/kdsPairing';
 import {
   APP_UPDATE_REQUIRED,
@@ -1212,28 +1212,8 @@ export function installBrowserLanApi(): void {
         setToken(null);
         return true;
       },
-      async manageUserFiscal(input: {
-        userId: number;
-        pin: string;
-        enabled?: boolean;
-      }) {
-        try {
-          return await goLan('/auth/user-fiscal', {
-            method: 'POST',
-            body: JSON.stringify(input),
-          });
-        } catch (e) {
-          if (e instanceof HttpError) {
-            if (e.code === 'WRONG_PIN') return { ok: false, code: 'WRONG_PIN' };
-            if (e.code === 'LOGIN_LOCKED') return { ok: false, code: 'LOCKED' };
-            const code = String((e.data as any)?.code || '');
-            if (code === 'NOT_FOUND' || code === 'INVALID') {
-              return { ok: false, code };
-            }
-          }
-          throw e;
-        }
-      },
+      // No per-waiter fiskalizimi switch on phones and browsers (QA v0.2.104
+      // #4): it is on the till only, behind an admin's PIN.
       async listUsers(_input?: { includeAdmins?: boolean }) {
         if ((window as any).__ADMIN_APP__) {
           const token = getToken();
@@ -1766,8 +1746,18 @@ export function installBrowserLanApi(): void {
           body: JSON.stringify(input ?? {}),
         });
       },
-      async issueZReport() {
-        return await goLan('/admin/z-report', { method: 'POST', body: '{}' });
+      async issueZReport(input?: { confirmEmpty?: boolean }) {
+        try {
+          return await goLan('/admin/z-report', {
+            method: 'POST',
+            body: JSON.stringify(input ?? {}),
+          });
+        } catch (e: any) {
+          // 409 Z_EMPTY: answered like the till's IPC, so the page can ask.
+          if (e?.code === 'Z_EMPTY' || /Z_EMPTY/.test(String(e?.message || '')))
+            return { ok: false, code: 'Z_EMPTY' };
+          throw e;
+        }
       },
       async listZReports() {
         const rows = await goLan('/admin/z-reports');
@@ -1858,11 +1848,8 @@ export function installBrowserLanApi(): void {
         })) as any;
         const token = typeof r?.token === 'string' ? r.token : '';
         if (!token) return false;
-        try {
-          localStorage.setItem(KDS_DEVICE_TOKEN_KEY, token);
-        } catch {
-          // ignore: the display asks again next launch
-        }
+        // Kept on disk by the KDS app too, so an update cannot un-pair it.
+        writeKdsDeviceToken(token);
         return true;
       },
       async listTickets(input: any) {

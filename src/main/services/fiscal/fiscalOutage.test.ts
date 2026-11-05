@@ -32,6 +32,12 @@ vi.mock('@db/client', () => ({
           .filter(([key, row]) => {
             if (!(key >= from && key < to)) return false;
             const v = row.valueJson || {};
+            // One table's claims (`tableClaimsQuery`): area, table.
+            if (sql.includes('$.context.area'))
+              return (
+                v.context?.area === states[0] &&
+                v.context?.tableLabel === states[1]
+              );
             return (
               states.includes(v.state) ||
               (sql.includes('orphanDetectedAt') &&
@@ -42,6 +48,7 @@ vi.mock('@db/client', () => ({
           .map(([key, row]) => ({
             key,
             valueJson: JSON.stringify(row.valueJson),
+            updatedAt: row.updatedAt,
           })),
     ),
     syncState: {
@@ -120,6 +127,13 @@ import {
 } from './claims';
 import { fiscalHttpOutcome } from './easypos';
 import { retryFiscalReview } from './reviewRetry';
+import { heldClaimIsDefinitelyNotFiled } from './claims';
+import {
+  FISCAL_BREAKER_TRIP_AFTER,
+  __resetFiscalBreakerForTests,
+  recordFiscalAnswer,
+  recordFiscalTimeout,
+} from './circuit';
 
 const LOCAL = {
   currency: 'ALL',
@@ -426,5 +440,125 @@ describe('retrying from the review list (H2)', () => {
       confirmedNotFiled: true,
     });
     expect(r).toMatchObject({ ok: false, code: 'NOT_RETRYABLE' });
+  });
+});
+
+describe('a definite easyPos rejection (QA v0.2.104 #11)', () => {
+  const refuse400 = () =>
+    fiscalErr('HTTP 400 · totals differ', 'not-registered', false);
+
+  it('is held as rejected and sent again without "I checked easyPos"', async () => {
+    createSale.mockRejectedValue(refuse400());
+    const out = await fiscalizePaymentOnce(sale('T80'), LOCAL, {
+      idempotencyKey: 'pay-x1',
+    });
+    // The sale is taken; the invoice waits, labelled as refused.
+    expect(out.kind).toBe('deferred');
+    const claim = await readFiscalClaim('pay-x1');
+    expect(claim).toMatchObject({ state: 'DEFERRED', holdKind: 'rejected' });
+    expect(heldClaimIsDefinitelyNotFiled(claim!)).toBe(true);
+
+    // The local middleware cannot be asked, yet no confirmation is needed:
+    // easyPos said no, so it was not filed.
+    const checkStatus = vi.fn();
+    const r = await retryFiscalReview({
+      idempotencyKey: 'pay-x1',
+      settings: LOCAL,
+      checkStatus: checkStatus as any,
+    });
+    expect(r).toEqual({ ok: true, outcome: 'queued' });
+    expect(checkStatus).not.toHaveBeenCalled();
+    const queued = await readFiscalClaim('pay-x1');
+    expect(queued?.holdKind).toBeUndefined();
+    expect(queued?.checkStatusFirst).toBeUndefined();
+
+    createSale.mockReset();
+    createSale.mockResolvedValue(filed(81));
+    makeAllDue();
+    await transmitDueDeferredInvoices(LOCAL);
+    expect(createSale).toHaveBeenCalledTimes(1);
+    expect((await readFiscalClaim('pay-x1'))?.state).toBe('REGISTERED');
+  });
+
+  it('a queued invoice refused by the loop is labelled rejected too', async () => {
+    createSale.mockRejectedValue(outage503());
+    await fiscalizePaymentOnce(sale('T82'), LOCAL, {
+      idempotencyKey: 'pay-x2',
+    });
+    createSale.mockReset();
+    createSale.mockRejectedValue(refuse400());
+    makeAllDue();
+    await transmitDueDeferredInvoices(LOCAL);
+    expect((await readFiscalClaim('pay-x2'))?.holdKind).toBe('rejected');
+    expect(
+      (await retryFiscalReview({ idempotencyKey: 'pay-x2', settings: LOCAL }))
+        .ok,
+    ).toBe(true);
+  });
+
+  it('still asks when an earlier send of the same invoice is unconfirmed', async () => {
+    // A timeout first (may be filed), then a refusal of the resend.
+    createSale.mockRejectedValue(
+      fiscalErr('Fiscal middleware timed out.', 'unknown'),
+    );
+    await fiscalizePaymentOnce(sale('T84'), CLOUD, {
+      idempotencyKey: 'pay-x3',
+    });
+    createSale.mockReset();
+    createSale.mockRejectedValue(refuse400());
+    makeAllDue();
+    await transmitDueDeferredInvoices(CLOUD);
+    const claim = await readFiscalClaim('pay-x3');
+    if (claim?.holdKind === 'rejected') {
+      expect(claim.checkStatusFirst).toBe(true);
+    }
+    expect(heldClaimIsDefinitelyNotFiled(claim!)).toBe(false);
+  });
+});
+
+describe('a hanging fiscal service (QA v0.2.104 #12)', () => {
+  beforeEach(() => __resetFiscalBreakerForTests());
+
+  it('after repeated timeouts, new sales are queued at once without calling easyPos', async () => {
+    for (let i = 0; i < FISCAL_BREAKER_TRIP_AFTER; i++) recordFiscalTimeout();
+    const started = Date.now();
+    const outs = [];
+    for (let i = 0; i < 5; i++) {
+      outs.push(
+        await fiscalizePaymentOnce(sale(`T9${i}`), LOCAL, {
+          idempotencyKey: `pay-cb${i}`,
+        }),
+      );
+    }
+    // Nobody waited on easyPos, and nothing was sent.
+    expect(createSale).not.toHaveBeenCalled();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    for (const out of outs) {
+      expect(out.kind).toBe('deferred');
+      if (out.kind !== 'deferred') throw new Error('unreachable');
+      expect(out.payload.meta?.fiscalStatus).toBe('pending');
+    }
+    // Queued, not held: never sent, so nothing to check before sending.
+    const claim = await readFiscalClaim('pay-cb0');
+    expect(claim?.state).toBe('DEFERRED');
+    expect(claim?.holdReason).toBeUndefined();
+    expect(claim?.checkStatusFirst).toBeUndefined();
+
+    // easyPos answers again: the queue drains, each sale filed once.
+    recordFiscalAnswer();
+    createSale.mockImplementation(async () => filed(Math.random()));
+    makeAllDue();
+    for (let i = 0; i < 5; i++) await transmitDueDeferredInvoices(LOCAL);
+    expect(createSale).toHaveBeenCalledTimes(5);
+    for (let i = 0; i < 5; i++) {
+      expect((await readFiscalClaim(`pay-cb${i}`))?.state).toBe('REGISTERED');
+    }
+    // And a new sale is sent at once again.
+    createSale.mockClear();
+    const live = await fiscalizePaymentOnce(sale('T99'), LOCAL, {
+      idempotencyKey: 'pay-cb-live',
+    });
+    expect(live.kind).toBe('ok');
+    expect(createSale).toHaveBeenCalledTimes(1);
   });
 });

@@ -567,7 +567,12 @@ export interface ApiMenu {
 
 export type UserFiscalResult =
   | { ok: true; enabled: boolean; changed: boolean }
-  | { ok: false; code: 'WRONG_PIN' | 'NOT_FOUND' | 'INVALID' | 'LOCKED' };
+  | {
+      ok: false;
+      code: 'WRONG_PIN' | 'NOT_FOUND' | 'INVALID' | 'LOCKED';
+      lockedForMs?: number;
+      attemptsLeft?: number;
+    };
 
 export interface ApiAuth {
   loginWithPin(
@@ -577,18 +582,20 @@ export interface ApiAuth {
   ): Promise<UserDTO | null>;
   /**
    * Read (no `enabled`) or set fiskalizimi for one staff member's payments.
-   * Needs that staff member's PIN. Opened from the waiter POS header by
-   * holding your name for five seconds.
+   * Needs an admin's PIN, checked by the till. Till only: opened from its
+   * header by holding the name for five seconds.
    */
   manageUserFiscal?(input: {
     userId: number;
-    pin: string;
+    managerPin: string;
     enabled?: boolean;
   }): Promise<UserFiscalResult>;
   verifyManagerPin(pin: string): Promise<{
     ok: boolean;
     userId?: number;
     userName?: string;
+    /** Approvals at this till are locked for this long (many wrong PINs). */
+    lockedForMs?: number;
     // Short-lived token proving manager/admin approval.
     approvalToken?: string;
   }>;
@@ -1240,7 +1247,12 @@ export interface ApiAdmin {
     idempotencyKey?: string;
   }): Promise<CorrectSaleResultDTO>;
   /** Close the period since the last Z report: compute, store, print. */
-  issueZReport?(): Promise<{ ok: true; report: any; printed: boolean }>;
+  issueZReport?(input?: {
+    confirmEmpty?: boolean;
+  }): Promise<
+    | { ok: true; report: any; printed: boolean }
+    | { ok: false; code: 'Z_EMPTY'; from: string; lastNumber: number }
+  >;
   /** The latest Z reports, newest first. */
   listZReports?(): Promise<any[]>;
   /** Print a stored Z report again, marked KOPJE / COPY. */
@@ -1863,13 +1875,21 @@ export interface FiscalReviewDTO {
   idempotencyKey: string;
   /**
    * `unknown-outcome`: we never learned whether the invoice was filed.
+   * `rejected`: easyPos refused it (validation); certainly not filed.
+   * `not-sent`: never sent (fiskalizimi off for that staff member).
    * `correction-required`: it was filed, then the ticket was voided.
    * `deferred`: sale taken offline; host is still transmitting (48h window).
    * `unrecorded`: filed with the tax service, but the till never saved the
    *   sale (it closed mid-payment). A payment of the same amount on that
    *   table reuses it; otherwise it must be cancelled in easyPos.
    */
-  kind: 'unknown-outcome' | 'correction-required' | 'deferred' | 'unrecorded';
+  kind:
+    | 'unknown-outcome'
+    | 'rejected'
+    | 'not-sent'
+    | 'correction-required'
+    | 'deferred'
+    | 'unrecorded';
   area: string | null;
   tableLabel: string | null;
   total: number | null;

@@ -421,6 +421,7 @@ async function transmitOne(
         new Date(now).toISOString(),
         {
           holdReason: `easyPos refused this queued invoice: ${message} Fix the cause in Settings › Fiskalizimi, then choose "Send again" here.`,
+          holdKind: 'rejected',
         },
       );
       if (!held) {
@@ -481,6 +482,13 @@ export function startFiscalDeferLoop(): void {
         .readSettings()
         .catch(() => null)) as SettingsDTO | null;
       if (!settings || (settings as any)?.fiscal?.enabled !== true) return;
+      // easyPos has been timing out: see whether it answers again
+      // (`circuit.ts`), so live payments go back to being sent at once.
+      const { probeFiscalHealthIfOpen } = await import('./circuit');
+      await probeFiscalHealthIfOpen(async () => {
+        const { testEasyPosConnection } = await import('./easypos');
+        return (await testEasyPosConnection(settings)).ok === true;
+      });
       await transmitDueDeferredInvoices(settings);
       // Cancellations / correctives that hit an outage. Imported lazily:
       // saleCorrection depends on this module's neighbours.

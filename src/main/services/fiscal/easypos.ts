@@ -1,4 +1,5 @@
 import type { SettingsDTO } from '@shared/ipc';
+import { recordFiscalAnswer, recordFiscalTimeout } from './circuit';
 import type {
   EasyPosCloudInvoiceDraft,
   EasyPosInvoiceDraft,
@@ -336,6 +337,8 @@ async function easyPosRequest(
         signal: ac.signal,
       } as any);
       const data = await res.json().catch(() => null);
+      // easyPos answered: whatever it said, it is not hanging (`circuit.ts`).
+      recordFiscalAnswer();
       if (!res.ok) {
         if (
           retryGateway &&
@@ -368,6 +371,7 @@ async function easyPosRequest(
           .includes('abort')
       ) {
         // We stopped listening; the provider may still have filed it.
+        recordFiscalTimeout();
         lastError = fiscalError('Fiscal middleware timed out.', 'unknown');
       } else if (e instanceof Error && e.message.includes('→ HTTP')) {
         lastError = e;

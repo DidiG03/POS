@@ -1,4 +1,5 @@
 import { FISCAL_TRANSMIT_WINDOW_MS } from '@shared/fiscalDefer';
+import { heldClaimIsDefinitelyNotFiled } from './fiscal/claims';
 import {
   listFiscalClaimsDeferred,
   listFiscalClaimsNeedingReview,
@@ -21,8 +22,14 @@ export async function listFiscalReviewsForAdmin() {
         ? ('correction-required' as const)
         : record.state === 'REGISTERED'
           ? ('unrecorded' as const)
-          : // UNKNOWN, or DEFERRED held for a person (`holdReason`).
-            ('unknown-outcome' as const),
+          : // Held and certainly not filed: refused by easyPos, or never
+            // sent (QA v0.2.104, #11). "Send again" needs no lookup.
+            heldClaimIsDefinitelyNotFiled(record)
+            ? record.holdKind === 'rejected'
+              ? ('rejected' as const)
+              : ('not-sent' as const)
+            : // UNKNOWN, or held because a send may have been filed.
+              ('unknown-outcome' as const),
     area: record.context?.area ?? null,
     tableLabel: record.context?.tableLabel ?? null,
     total: record.context?.total ?? null,

@@ -172,14 +172,22 @@ export function repriceLines(
     if (item.isKg === true) line.soldByKg = true;
     else delete line.soldByKg;
 
+    // Prices are charged in whole cents. A legacy menu price of 3.333
+    // printed "3 × 3.33 = 10.00": the unit was shown rounded, the line
+    // computed from 3.333 (QA v0.2.104, #14). The line now carries the
+    // price rounded, so the receipt, the totals and the invoice agree.
     if (priceOk && vatOk) {
-      out.push(line);
+      out.push(
+        claimedPrice !== null && roundMoney(claimedPrice) !== claimedPrice
+          ? { ...line, unitPrice: roundMoney(claimedPrice) }
+          : line,
+      );
       continue;
     }
 
     out.push({
       ...line,
-      unitPrice: priceOk ? claimedPrice : item.price,
+      unitPrice: roundMoney(priceOk ? claimedPrice : item.price),
       vatRate: vatOk ? claimedVat : item.vatRate,
     });
     issues.push({

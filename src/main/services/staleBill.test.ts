@@ -144,3 +144,35 @@ describe('findStaleBillPayment', () => {
     ).toBeNull();
   });
 });
+
+describe('findStaleBillPayment with the sitting already read (perf)', () => {
+  beforeEach(() => {
+    h.since.mockClear();
+    h.latest.mockClear();
+  });
+
+  it('uses it instead of reading the table again', async () => {
+    const since = new Date(Date.now() - 60_000);
+    const r = await findStaleBillPayment({
+      area: 'Salla',
+      tableLabel: '4',
+      items: [fries],
+      sitting: { since, latest: { itemsJson: [fries, cola] } },
+    });
+    expect(r).toMatchObject({ ok: false, code: 'BILL_CHANGED' });
+    expect(h.since).not.toHaveBeenCalled();
+    expect(h.latest).not.toHaveBeenCalled();
+  });
+
+  it('a sitting read as closed or empty is not stale', async () => {
+    expect(
+      await findStaleBillPayment({
+        area: 'Salla',
+        tableLabel: '4',
+        items: [fries],
+        sitting: { since: null, latest: null },
+      }),
+    ).toBeNull();
+    expect(h.since).not.toHaveBeenCalled();
+  });
+});

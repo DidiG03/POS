@@ -371,10 +371,10 @@
     "pinPlaceholder": "PIN",
     "waiterFiscal": {
       "title": "Fiskalizimi for {{name}}",
-      "enterPin": "Enter {{name}}'s PIN to change fiskalizimi for this waiter.",
+      "enterPin": "An admin's PIN is needed to change fiskalizimi for {{name}}.",
       "label": "Fiskalizimi",
       "onHint": "Payments taken by this waiter are reported to the tax office.",
-      "offHint": "Payments taken by this waiter are NOT reported to the tax office.",
+      "offHint": "Payments taken by this waiter are NOT sent to the tax office at once: each is kept as not yet fiscalised, for review and filing.",
       "turnedOn": "Fiskalizimi activated for {{name}}",
       "turnedOff": "Fiskalizimi deactivated for {{name}}",
       "done": "Done",
@@ -866,7 +866,8 @@
     "reprinted": "Z report {{number}} printed again (copy).",
     "reprint": "Print copy",
     "salesCount": "{{count}} sales",
-    "failed": "Could not issue the Z report."
+    "failed": "Could not issue the Z report.",
+    "confirmEmpty": "Nothing was sold, corrected, voided or declared since the last Z report. Issue an empty Z report anyway?"
   },
   "fiscal": {
     "loadFailed": "Could not load the fiscal settings, so nothing was saved. Reopen this page and try again.",
@@ -1015,7 +1016,9 @@
     "reviewConfirmFound": "Mark as registered",
     "reviewConfirmNotFound": "Release for retry",
     "reviewResolved": "Resolved.",
-    "reviewFailed": "Could not resolve this payment."
+    "reviewFailed": "Could not resolve this payment.",
+    "reviewKindRejected": "Rejected by easyPos",
+    "reviewKindNotSent": "Not sent (fiskalizimi off)"
   },
   "kdsSettings": {
     "title": "Kitchen Display (KDS)",

@@ -98,13 +98,19 @@ export async function findStaleBillPayment(input: {
   area: string;
   tableLabel: string;
   items: LineLike[];
+  /** The sitting already read under this same lock (`paymentOwnership.ts`). */
+  sitting?: { since: Date | null; latest: unknown };
 }): Promise<PrintTicketErr | null> {
   const area = String(input.area || '');
   const tableLabel = String(input.tableLabel || '');
   if (!area || !tableLabel || isStoreCounterArea(area)) return null;
-  const since = await getTableSessionStartedAt(area, tableLabel);
+  const since = input.sitting
+    ? input.sitting.since
+    : await getTableSessionStartedAt(area, tableLabel);
   if (!since) return null;
-  const latest = await findLatestTicketLogSince(area, tableLabel, since);
+  const latest = input.sitting
+    ? input.sitting.latest
+    : await findLatestTicketLogSince(area, tableLabel, since);
   if (!latest) return null;
   const bill = asTicketLogItems((latest as any).itemsJson) as LineLike[];
   if (!bill.length) return null;

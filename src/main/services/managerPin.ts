@@ -10,8 +10,12 @@
  *     the window lock that source out of approvals for `SOURCE_LOCK_MS`, and
  *     `LAN_LOCK_AFTER_FAILURES` misses from all phones together lock phone
  *     approvals for `LAN_LOCK_MS`, so rotating addresses does not reset the
- *     budget. The till itself is never locked: a manager standing at the
- *     counter can always approve.
+ *     budget.
+ *   - At the till, `TILL_LOCK_AFTER_FAILURES` misses lock that window for
+ *     `TILL_LOCK_MS` (QA v0.2.104, #14): it had no lockout at all, so the
+ *     admin PINs could be walked at an unattended till. The lock is short
+ *     and later than a phone's, so a manager who mistypes a few times is
+ *     not kept out, and phones' locks never reach the till.
  *   - `ALERT_AFTER_FAILURES` misses from one source notify every admin, at
  *     most once per `ALERT_COOLDOWN_MS`.
  *
@@ -27,6 +31,8 @@ export const SOURCE_LOCK_MS = 5 * 60_000;
 export const LAN_LOCK_AFTER_FAILURES = 30;
 export const LAN_LOCK_MS = 15 * 60_000;
 export const ALERT_AFTER_FAILURES = 10;
+export const TILL_LOCK_AFTER_FAILURES = 12;
+export const TILL_LOCK_MS = 2 * 60_000;
 export const ALERT_COOLDOWN_MS = 60 * 60_000;
 export const DELAY_STEP_MS = 250;
 export const DELAY_MAX_MS = 2_000;
@@ -107,8 +113,8 @@ export function managerPinLockedFor(
   lan: boolean,
   now = Date.now(),
 ): number {
-  if (!lan) return 0;
   const own = bySource.get(source);
+  if (!lan) return own && own.lockedUntil > now ? own.lockedUntil - now : 0;
   return Math.max(
     own && own.lockedUntil > now ? own.lockedUntil - now : 0,
     lanWide.lockedUntil > now ? lanWide.lockedUntil - now : 0,
@@ -174,6 +180,13 @@ export async function verifyManagerPin(
   c.failures += 1;
   if (input.lan && c.failures >= LOCK_AFTER_FAILURES && c.lockedUntil <= now) {
     c.lockedUntil = now + SOURCE_LOCK_MS;
+  }
+  if (
+    !input.lan &&
+    c.failures >= TILL_LOCK_AFTER_FAILURES &&
+    c.lockedUntil <= now
+  ) {
+    c.lockedUntil = now + TILL_LOCK_MS;
   }
   if (input.lan) {
     fresh(lanWide, now);

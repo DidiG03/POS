@@ -225,6 +225,10 @@ describe('LAN API wiring (QA round 5, F1b, F6b)', () => {
       'utf8',
     );
     expect(api).toContain('saleCorrectionHttpStatus(result)');
-    expect(api).toMatch(/INVALID_FISCAL_URL[\s\S]{0,400}400/);
+    // Every settings refusal, a bad fiscal URL included, is a 400
+    // (`settingsSaveErrorStatus`, QA v0.2.104 #6).
+    expect(api).toMatch(/settingsSaveErrorStatus\(e\) === 400[\s\S]{0,200}400/);
+    const { settingsSaveErrorStatus } = await import('../settingsValidation');
+    expect(settingsSaveErrorStatus({ code: 'INVALID_FISCAL_URL' })).toBe(400);
   });
 });
