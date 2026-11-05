@@ -541,7 +541,8 @@ export function zReportRows(
       { kind: 'sep' },
       {
         kind: 'line',
-        text: L('VAT by rate (items)', 'TVSH sipas normës (artikuj)'),
+        // What was charged, after discounts (since v0.2.104 #9).
+        text: L('VAT by rate', 'TVSH sipas normës'),
       },
     );
     for (const r of z.byVatRate) {
@@ -608,11 +609,15 @@ export function zReportRows(
   const tillCur = String(cash.currency || z.currency || '').slice(0, 3);
   const mc = (n: unknown, cur: string) =>
     n == null || !Number.isFinite(Number(n)) ? '—' : `${m(n)} ${cur}`;
+  // Whose float it is: the period can start on an earlier day.
+  const floatDay = cash.declared?.openingDay
+    ? ` (${String(cash.declared.openingDay)})`
+    : '';
   rows.push(
     { kind: 'line', text: L('Cash drawer', 'Arka') },
     {
       kind: 'pair',
-      label: L('Opening float', 'Fondi fillestar'),
+      label: L(`Opening float${floatDay}`, `Fondi fillestar${floatDay}`),
       value: mc(cash.opening, tillCur),
     },
     {

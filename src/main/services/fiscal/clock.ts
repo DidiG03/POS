@@ -94,3 +94,40 @@ export function __resetFiscalClock(): void {
   sampledAt = 0;
   lastDriftAlertAt = 0;
 }
+
+/**
+ * Midnight, Tirana time, of the fiscal day `at` falls in: where an
+ * end-of-day period starts. Local midnight is a different instant on a till
+ * whose clock is set to another zone (audit 2026-11, H2).
+ */
+export function startOfFiscalDay(at: number = fiscalNow()): Date {
+  const key = fiscalDayKey(at);
+  const [y, m, d] = key.split('-').map(Number);
+  const utcMidnight = Date.UTC(y, m - 1, d);
+  // Tirana is UTC+1 or UTC+2 (summer time): its midnight is one of these.
+  for (const hours of [2, 1, 0, 3]) {
+    const t = utcMidnight - hours * 3_600_000;
+    if (fiscalDayKey(t) === key && fiscalDayKey(t - 1) !== key) {
+      return new Date(t);
+    }
+  }
+  return new Date(utcMidnight);
+}
+
+/** The fiscal days from `from` to `to`, oldest first (at most `max`). */
+export function fiscalDayKeysBetween(
+  from: number,
+  to: number,
+  max = 62,
+): string[] {
+  const out: string[] = [];
+  let t = startOfFiscalDay(from).getTime();
+  while (t <= to && out.length < max) {
+    const key = fiscalDayKey(t);
+    if (out[out.length - 1] !== key) out.push(key);
+    // Noon of the next day, so a summer-time change never skips a day.
+    t = startOfFiscalDay(t).getTime() + 36 * 3_600_000;
+    t = startOfFiscalDay(t).getTime();
+  }
+  return out;
+}

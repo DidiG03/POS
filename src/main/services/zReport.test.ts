@@ -11,6 +11,8 @@ const h = vi.hoisted(() => ({
   fetchArgs: [] as Array<{ from: Date; to: Date }>,
   settings: {} as any,
   voided: 2,
+  /** Declared opening floats by fiscal day; `*` answers for any day. */
+  floats: new Map<string, number>(),
 }));
 
 vi.mock('@db/client', () => ({
@@ -44,7 +46,10 @@ vi.mock('./fiscal/cashDrawer', () => ({
   listCashDeclarations: async () => h.declarations,
 }));
 vi.mock('./fiscal/balance', () => ({
-  readDailyBalanceRecord: async () => ({ state: 'COMPLETE', amount: 10_000 }),
+  readDailyBalanceRecord: async (_settings: unknown, dayKey: string) => {
+    const amount = h.floats.get(dayKey) ?? h.floats.get('*');
+    return amount == null ? null : { state: 'COMPLETE', amount };
+  },
 }));
 vi.mock('./fiscal/claims', () => ({
   listFiscalClaimsDeferred: async () => [{}, {}],
@@ -66,6 +71,7 @@ async function issueZReport(input: Parameters<typeof issueAny>[0]) {
   return r;
 }
 import { buildEscposTicket, buildHtmlReceipt, zReportRows } from '../print';
+import { fiscalDayKey, startOfFiscalDay } from './fiscal/clock';
 
 const sale = (orderId: number, total: number, method: string) => ({
   orderId,
@@ -84,6 +90,7 @@ beforeEach(() => {
     fiscal: { enabled: true, vat: {} },
   };
   h.voided = 2;
+  h.floats = new Map([['*', 10_000]]);
   h.store.clear();
   h.fetchArgs = [];
   h.sales = [sale(1, 600, 'CASH'), sale(2, 1200, 'CARD'), sale(3, 300, 'CASH')];
@@ -153,6 +160,7 @@ describe('Z report', () => {
       declared: {
         currency: 'ALL',
         opening: 10_000,
+        openingDay: fiscalDayKey(Date.parse(report.from)),
         deposits: 2000,
         withdrawals: 500,
         rate: 1,
@@ -383,8 +391,8 @@ describe('Z report numbering and printing', () => {
     const a = await issueZReport({ now: t1, print: noPrint });
     const b = await issueZReport({ now: t2, print: noPrint });
     expect([a.report.number, b.report.number]).toEqual([1, 2]);
-    // The first one starts at the start of its day.
-    expect(new Date(a.report.from).getHours()).toBe(0);
+    // The first one starts at midnight, Tirana time, of its fiscal day.
+    expect(a.report.from).toBe(startOfFiscalDay(t1.getTime()).toISOString());
     // No gap and no overlap between them.
     expect(Date.parse(b.report.from)).toBe(Date.parse(a.report.to) + 1);
     expect(h.fetchArgs[1].from.getTime()).toBe(Date.parse(a.report.to) + 1);
@@ -459,5 +467,70 @@ describe('Z report numbering and printing', () => {
     const html = buildHtmlReceipt(payload(true), settings);
     expect(html).toContain('RAPORTI Z');
     expect(html).toContain('KOPJE / COPY');
+  });
+});
+
+describe('opening float of the period (audit 2026-11, H2)', () => {
+  it('a Z issued after midnight uses the float of the day it closes', async () => {
+    // 4 Nov declared 8,000; 5 Nov (today, after midnight) not yet.
+    h.floats = new Map([['2026-11-04', 8_000]]);
+    h.store.set('z:last', {
+      number: 3,
+      to: new Date('2026-11-04T06:00:00Z').toISOString(),
+    });
+    const { report } = await issueZReport({
+      now: new Date('2026-11-04T23:40:00Z'), // 00:40 on 5 Nov in Tirana
+      print: noPrint,
+    });
+    expect(fiscalDayKey(Date.parse(report.issuedAt))).toBe('2026-11-05');
+    expect(report.cash.opening).toBe(8_000);
+    expect(report.cash.declared.openingDay).toBe('2026-11-04');
+    // Float + cash sales (no cash in/out in this past period).
+    expect(report.cash.expected).toBe(8_000 + 900);
+    const rows = zReportRows(report, {
+      copy: false,
+      lang: 'en',
+      restaurant: 'B',
+    });
+    expect(
+      rows.some((r: any) => /Opening float \(2026-11-04\)/.test(r.label ?? '')),
+    ).toBe(true);
+  });
+
+  it('over several days, the float of the first day is counted once', async () => {
+    h.floats = new Map([
+      ['2026-11-02', 5_000],
+      ['2026-11-03', 7_000],
+    ]);
+    h.store.set('z:last', {
+      number: 1,
+      to: new Date('2026-11-02T05:00:00Z').toISOString(),
+    });
+    const { report } = await issueZReport({
+      now: new Date('2026-11-03T21:00:00Z'),
+      print: noPrint,
+    });
+    expect(report.cash.opening).toBe(5_000);
+    expect(report.cash.declared.openingDay).toBe('2026-11-02');
+  });
+
+  it('no float declared in the period: no opening and no expected cash', async () => {
+    h.floats = new Map();
+    const { report } = await issueZReport({ print: noPrint });
+    expect(report.cash.opening).toBeNull();
+    expect(report.cash.expected).toBeNull();
+  });
+});
+
+describe('fiscal day boundaries', () => {
+  it('starts the fiscal day at midnight in Tirana, summer and winter', () => {
+    // Winter (UTC+1): 5 Nov starts 4 Nov 23:00 UTC.
+    expect(
+      startOfFiscalDay(Date.parse('2026-11-05T10:00:00Z')).toISOString(),
+    ).toBe('2026-11-04T23:00:00.000Z');
+    // Summer (UTC+2): 1 Jul starts 30 Jun 22:00 UTC.
+    expect(
+      startOfFiscalDay(Date.parse('2026-07-01T10:00:00Z')).toISOString(),
+    ).toBe('2026-06-30T22:00:00.000Z');
   });
 });
