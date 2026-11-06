@@ -463,7 +463,10 @@ export async function fiscalizePaymentOnce(
   // queues this invoice anyway) it is skipped: it would make the payment
   // wait out another timeout, and the background loop declares the float
   // before it sends the queued invoice (`deferred.ts`).
-  if (!fiscalBreakerOpen()) {
+  // If the invoice is then sent live after all (the breaker closed, or it
+  // could not be queued), the float is declared just before that send.
+  const floatDeclared = !fiscalBreakerOpen();
+  if (floatDeclared) {
     await ensureCashBalanceDeclared(payload, settings, meta);
   }
 
@@ -491,6 +494,7 @@ export async function fiscalizePaymentOnce(
         tableLabel,
         saleKey: idempotencyKey,
         review,
+        floatDeclared,
         holdReason: options?.holdReason,
         holdKind: options?.holdReason ? options?.holdKind : undefined,
       }),
@@ -516,6 +520,8 @@ async function registerUnderClaim(input: {
     message: string,
     alreadyReported?: boolean,
   ) => Promise<FiscalizeOutcome>;
+  /** False when the opening float was skipped (breaker open at the start). */
+  floatDeclared?: boolean;
   holdReason?: string;
   holdKind?: FiscalHoldKind;
 }): Promise<FiscalizeOutcome> {
@@ -643,6 +649,12 @@ async function registerUnderClaim(input: {
       };
     }
     // Could not queue: try to send as usual rather than lose the sale.
+  }
+
+  // About to send live: a cash invoice needs the day's opening float, which
+  // was skipped above if easyPos looked down then (Bugbot, PR #20).
+  if (input.floatDeclared === false) {
+    await ensureCashBalanceDeclared(input.payload, input.settings, input.meta);
   }
 
   // A queued invoice whose earlier send could not be confirmed is checked

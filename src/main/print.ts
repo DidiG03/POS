@@ -1490,14 +1490,19 @@ function acquirePrintWindow(): BrowserWindow {
   if (!printWindowHooked) {
     printWindowHooked = true;
     try {
-      app.on('browser-window-created', (_e, created) => {
-        created.on('closed', () => {
+      const watchClose = (w: BrowserWindow) => {
+        if (w === win) return;
+        w.on('closed', () => {
           const others = BrowserWindow.getAllWindows().filter(
-            (w) => w !== printWindow && !w.isDestroyed(),
+            (o) => o !== printWindow && !o.isDestroyed(),
           );
           if (others.length === 0) disposePrintWindow();
         });
-      });
+      };
+      // The till window is usually open before the first print, so it is
+      // watched here, not only windows created later (Bugbot, PR #20).
+      for (const w of BrowserWindow.getAllWindows()) watchClose(w);
+      app.on('browser-window-created', (_e, created) => watchClose(created));
       app.on('before-quit', disposePrintWindow);
     } catch {
       // not running inside Electron (tests)

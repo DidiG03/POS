@@ -53,9 +53,21 @@ vi.mock('electron', () => {
   };
 });
 
+import { BrowserWindow } from 'electron';
 import { printHtmlToSystemPrinter } from './print';
 
 describe('system printer window', () => {
+  it('closes when the till window open before the first print is closed (Bugbot PR #20)', async () => {
+    const till = new (BrowserWindow as any)({});
+    await printHtmlToSystemPrinter({ html: '<p>0</p>' });
+    const printWin = h.created[1];
+    expect(printWin.destroyed).toBe(false);
+    till.destroy();
+    expect(printWin.destroyed).toBe(true);
+    // Fresh state for the cases below.
+    h.created.length = 0;
+  });
+
   it('reuses one locked-down window across jobs', async () => {
     const a = printHtmlToSystemPrinter({ html: '<p>1</p>' });
     const b = printHtmlToSystemPrinter({ html: '<p>2</p>' });
