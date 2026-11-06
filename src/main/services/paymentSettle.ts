@@ -62,6 +62,40 @@ export async function withPaymentLock<T>(
   return withTableLock(area, label, fn);
 }
 
+/**
+ * Work a payment hands back to run once the table lock is released.
+ *
+ * The lock used to be held through the receipt print as well, so a slow or
+ * unreachable printer kept every other device off that table ("table is
+ * busy", Audit M3). The sale is recorded and the table settled under the
+ * lock; printing then runs outside it.
+ */
+export class AfterPaymentLock<T> {
+  constructor(readonly run: () => Promise<T>) {}
+}
+
+export function afterPaymentLock<T>(
+  run: () => Promise<T>,
+): AfterPaymentLock<T> {
+  return new AfterPaymentLock(run);
+}
+
+/** Run what a payment step returned: its result, or its after-lock work. */
+export async function finishAfterPaymentLock<T>(
+  out: T | AfterPaymentLock<T>,
+): Promise<T> {
+  return out instanceof AfterPaymentLock ? await out.run() : out;
+}
+
+/** `withPaymentLock`, then any after-lock work outside the lock. */
+export async function withPaymentLockThen<T>(
+  area: string,
+  label: string,
+  fn: () => Promise<T | AfterPaymentLock<T>>,
+): Promise<T> {
+  return finishAfterPaymentLock(await withPaymentLock(area, label, fn));
+}
+
 export async function tableIsOpenForPayment(
   area: string,
   label: string,

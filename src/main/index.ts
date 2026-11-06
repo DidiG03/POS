@@ -253,7 +253,9 @@ import {
   isPaymentReprint,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
-  withPaymentLock,
+  afterPaymentLock,
+  finishAfterPaymentLock,
+  withPaymentLockThen,
 } from './services/paymentSettle';
 import { findStaleBillPayment } from './services/staleBill';
 import { getFloorSnapshot } from './services/floorSnapshot';
@@ -297,6 +299,7 @@ import { runPendingMigrations } from './services/migrator';
 import {
   backfillSalesLedgerFromPrintJobs,
   ensureSettledSaleFromPrintJob,
+  markReceiptPrintFailed,
   persistReceiptAudit,
 } from './services/salesLedger';
 import {
@@ -359,6 +362,7 @@ import {
 } from './services/ticketVoid';
 import { asTicketLogItems, ticketCreatedAtIso } from '@shared/ticketLogItems';
 import { splitTableKey } from '@shared/utils/tableKey';
+import { installWindowGuards } from './services/windowGuards';
 
 const MAIN_FILE = fileURLToPath(import.meta.url);
 const MAIN_DIR = dirname(MAIN_FILE);
@@ -368,6 +372,11 @@ const MAIN_RUNTIME_DIR =
   basename(MAIN_DIR) === 'chunks' ? resolvePath(MAIN_DIR, '..') : MAIN_DIR;
 const PRELOAD_PATH = join(MAIN_RUNTIME_DIR, '../preload/index.cjs');
 const RENDERER_INDEX_HTML = join(MAIN_RUNTIME_DIR, '../renderer/index.html');
+// Windows stay on the app's own page; links open in the browser (M5).
+installWindowGuards(app, {
+  rendererIndexHtml: RENDERER_INDEX_HTML,
+  devUrl: process.env.ELECTRON_RENDERER_URL,
+});
 // App icon: resolve from project root (dev) or packaged resources
 const APP_ICON_PATH = (() => {
   // In dev: project root / build-resources / icon.png
@@ -3015,18 +3024,22 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       }
     };
 
-    const persistAudit = async (status: 'SENT' | 'FAILED') => {
+    /** The receipt job's id when this call created it (not a replay). */
+    const persistAudit = async (
+      status: 'SENT' | 'FAILED',
+    ): Promise<number | null> => {
       try {
-        await persistReceiptAudit({
+        const saved = await persistReceiptAudit({
           payload,
           idempotencyKey: idempotencyKey || undefined,
           status,
           settings,
         });
+        return saved?.duplicate ? null : (saved?.printJobId ?? null);
       } catch (e: any) {
         if (e?.code === 'P2002' && idempotencyKey) {
           // Concurrent identical payment — treat as success (other call won).
-          return;
+          return null;
         }
         // This row is the receipt PrintJob and the Order/Payment ledger.
         // Losing it silently used to mean a payment that existed only on
@@ -3046,6 +3059,7 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
           actorUserId: Number((payload as any)?.meta?.userId || 0) || undefined,
           error: detail,
         });
+        return null;
       }
     };
 
@@ -3060,13 +3074,10 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
           actorUserId: Number(ctx.session.userId),
         });
       }
-      const result: DispatchResult = await dispatchTicket(
-        payload,
-        settings as any,
-        { ...dispatchOpts, skipIfPrinterDown: true },
-      );
-      await reportDispatchFailure(result);
-      await persistAudit(result.ok ? 'SENT' : 'FAILED');
+      // Record the sale and settle the table under the table lock, then
+      // print once it is released (Audit M3): a slow printer no longer
+      // keeps waiters' phones off this table.
+      const printJobId = await persistAudit('SENT');
       const closeTable = paymentShouldCloseTable(payload?.meta);
       if (kind === 'PAYMENT' && !isPaymentReprint(meta)) {
         await settleTableAfterPayment({
@@ -3078,7 +3089,16 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
           paymentKey: idempotencyKey,
         });
       }
-      return paymentPrintAccepted(result.ok, closeTable, fiscalExtra);
+      return afterPaymentLock(async () => {
+        const result: DispatchResult = await dispatchTicket(
+          payload,
+          settings as any,
+          { ...dispatchOpts, skipIfPrinterDown: true },
+        );
+        await reportDispatchFailure(result);
+        if (!result.ok) await markReceiptPrintFailed(printJobId);
+        return paymentPrintAccepted(result.ok, closeTable, fiscalExtra);
+      });
     }
 
     // Kitchen / station chits: claim the idempotency key, then print
@@ -3093,9 +3113,9 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
   };
 
   if (kindHint === 'PAYMENT') {
-    return withPaymentLock(area, tableLabel, runPrint);
+    return withPaymentLockThen(area, tableLabel, runPrint);
   }
-  return runPrint();
+  return finishAfterPaymentLock(await runPrint());
 });
 
 // Waiter-facing ticket lists (receipt-style) - Local-first: always use local DB
@@ -4771,9 +4791,9 @@ ipcHandle('layout:getMerges', async (_e, { area }) => {
   return await readTableMerges(String(area || ''));
 });
 
-ipcHandle('layout:setMerges', async (_e, { area, groups }) => {
+ipcHandle('layout:setMerges', async (_e, { area, groups, base }) => {
   assertDiningFloorEnabled();
-  return await writeTableMerges(String(area || ''), groups);
+  return await writeTableMerges(String(area || ''), groups, base);
 });
 
 ipcHandle('layout:save', async (_e, { area, nodes }) => {

@@ -226,6 +226,8 @@ export default function ReservationsFloorPage() {
     y: number;
   } | null>(null);
   const [mergeGroups, setMergeGroups] = useState<TableMergeGroup[]>([]);
+  const mergeGroupsRef = useRef<TableMergeGroup[]>([]);
+  mergeGroupsRef.current = mergeGroups;
   const [sheetTicket, setSheetTicket] = useState<{
     covers: number | null;
     firstAt: string | null;
@@ -380,9 +382,12 @@ export default function ReservationsFloorPage() {
   const commitMerges = useCallback(
     async (next: TableMergeGroup[]) => {
       const sanitized = sanitizeMergeGroups(next);
+      // What this screen showed before the edit: the till applies only the
+      // difference, so other hosts' merges made meanwhile are kept.
+      const base = mergeGroupsRef.current;
       setMergeGroups(sanitized);
       try {
-        const saved = await window.api.layout.setMerges(area, sanitized);
+        const saved = await window.api.layout.setMerges(area, sanitized, base);
         setMergeGroups(sanitizeMergeGroups(saved));
       } catch (e) {
         const msg = cleanIpcMessage(e, t('reservations.somethingWrong'));

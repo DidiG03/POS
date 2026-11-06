@@ -80,3 +80,13 @@ export function eventStreamsToClose<T extends EventStreamClient>(
   const excess = same.length + 1 - Math.max(1, max);
   return excess > 0 ? same.slice(0, excess) : [];
 }
+
+/**
+ * Routes that may carry the session token in the address (`?token=`).
+ * Only the live-update stream: EventSource cannot set headers.
+ */
+export function tokenAllowedInQuery(
+  pathname: string | null | undefined,
+): boolean {
+  return pathname === '/events';
+}

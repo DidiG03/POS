@@ -148,3 +148,52 @@ export function tablesTouching(
   const thresh = (Math.max(aw, ah) + Math.max(bw, bh)) * 0.38;
   return dx * dx + dy * dy <= thresh * thresh;
 }
+
+function mergeKey(g: TableMergeGroup): string {
+  return [...g.labels].sort(compareTableLabels).join('\u001f');
+}
+
+/**
+ * Apply one device's merge edit onto the merges saved now.
+ *
+ * Saving used to send the whole list, so the last device to save won: two
+ * hosts merging different tables at once lost one merge, and a screen that
+ * loaded before someone else's merge undid it. The device now also sends
+ * `base`, the list it started from. Only what it changed is applied:
+ *   - groups in `base` but not in `next` are removed from `current`;
+ *   - groups in `next` but not in `base` are added, replacing any current
+ *     group that shares one of their tables (the newest edit wins there);
+ *   - groups in both but moved get the new position.
+ * Everything else in `current` (other devices' edits) is kept.
+ */
+export function rebaseMergeEdit(
+  current: unknown,
+  base: unknown,
+  next: unknown,
+): TableMergeGroup[] {
+  const cur = sanitizeMergeGroups(current);
+  const before = sanitizeMergeGroups(base);
+  const after = sanitizeMergeGroups(next);
+  const beforeByKey = new Map(before.map((g) => [mergeKey(g), g]));
+  const afterByKey = new Map(after.map((g) => [mergeKey(g), g]));
+
+  const removed = new Set(
+    before.filter((g) => !afterByKey.has(mergeKey(g))).map(mergeKey),
+  );
+  const added = after.filter((g) => !beforeByKey.has(mergeKey(g)));
+  const moved = new Map<string, TableMergeGroup>();
+  for (const g of after) {
+    const old = beforeByKey.get(mergeKey(g));
+    if (old && (old.x !== g.x || old.y !== g.y)) moved.set(mergeKey(g), g);
+  }
+  const addedLabels = new Set(added.flatMap((g) => g.labels));
+
+  const kept = cur
+    .filter((g) => !removed.has(mergeKey(g)))
+    .filter((g) => !g.labels.some((l) => addedLabels.has(l)))
+    .map((g) => {
+      const m = moved.get(mergeKey(g));
+      return m ? { ...g, x: m.x, y: m.y } : g;
+    });
+  return sanitizeMergeGroups([...kept, ...added]);
+}

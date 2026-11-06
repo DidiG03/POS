@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  rebaseMergeEdit,
   clientToFloorLayout,
   formatMergeLabel,
   mergeMembersFor,
@@ -128,5 +129,52 @@ describe('clientToFloorLayout', () => {
     const out = clientToFloorLayout(clientX, clientY, outer, zoom, view);
     expect(out.x).toBeCloseTo(p.x);
     expect(out.y).toBeCloseTo(p.y);
+  });
+});
+
+describe('rebaseMergeEdit', () => {
+  const g = (labels: string[], x = 0, y = 0, id = labels.join('+')) => ({
+    id,
+    labels,
+    x,
+    y,
+  });
+  const keys = (gs: Array<{ labels: string[] }>) =>
+    gs.map((x) => x.labels.join('+')).sort();
+
+  it('keeps a merge another device saved meanwhile', () => {
+    // Host A loaded [], merged T1+T2; host B meanwhile saved T5+T6.
+    const out = rebaseMergeEdit([g(['T5', 'T6'])], [], [g(['T1', 'T2'])]);
+    expect(keys(out)).toEqual(['T1+T2', 'T5+T6']);
+  });
+
+  it('a stale screen does not undo merges made since it loaded', () => {
+    // Loaded [T1+T2], unmerged it; meanwhile T3+T4 was added elsewhere.
+    const out = rebaseMergeEdit(
+      [g(['T1', 'T2']), g(['T3', 'T4'])],
+      [g(['T1', 'T2'])],
+      [],
+    );
+    expect(keys(out)).toEqual(['T3+T4']);
+  });
+
+  it('a new merge replaces a current one sharing a table', () => {
+    const out = rebaseMergeEdit([g(['T2', 'T3'])], [], [g(['T1', 'T2'])]);
+    expect(keys(out)).toEqual(['T1+T2']);
+  });
+
+  it('moves a group without touching the others', () => {
+    const out = rebaseMergeEdit(
+      [g(['T1', 'T2'], 0, 0), g(['T5', 'T6'], 1, 1)],
+      [g(['T1', 'T2'], 0, 0)],
+      [g(['T1', 'T2'], 40, 50)],
+    );
+    const moved = out.find((x) => x.labels.includes('T1'));
+    expect(moved).toMatchObject({ x: 40, y: 50 });
+    expect(keys(out)).toEqual(['T1+T2', 'T5+T6']);
+  });
+
+  it('removing a merge someone else already removed is a no-op', () => {
+    expect(rebaseMergeEdit([], [g(['T1', 'T2'])], [])).toEqual([]);
   });
 });

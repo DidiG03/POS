@@ -13,7 +13,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SettingsDTO } from '@shared/ipc';
 
-const { store, payments, createSale, ensureFloat } = vi.hoisted(() => ({
+const { store, payments, createSale, ensureFloat, hooks } = vi.hoisted(() => ({
+  hooks: { onClaimCreate: null as null | (() => void) },
   store: new Map<string, { valueJson: any; updatedAt: Date }>(),
   payments: new Map<string, any>(),
   createSale: vi.fn(),
@@ -53,6 +54,9 @@ vi.mock('@db/client', () => ({
     ),
     syncState: {
       create: vi.fn(async ({ data }: any) => {
+        const hook = hooks.onClaimCreate;
+        hooks.onClaimCreate = null;
+        hook?.();
         if (store.has(data.key)) {
           const err: any = new Error('Unique constraint failed');
           err.code = 'P2002';
@@ -560,5 +564,34 @@ describe('a hanging fiscal service (QA v0.2.104 #12)', () => {
     });
     expect(live.kind).toBe('ok');
     expect(createSale).toHaveBeenCalledTimes(1);
+  });
+  it('does not wait on the opening-float declaration while easyPos is down (Audit M3)', async () => {
+    for (let i = 0; i < FISCAL_BREAKER_TRIP_AFTER; i++) recordFiscalTimeout();
+    ensureFloat.mockClear();
+    const out = await fiscalizePaymentOnce(sale('T80'), CLOUD, {
+      idempotencyKey: 'pay-cb-float',
+    });
+    expect(out.kind).toBe('deferred');
+    expect(ensureFloat).not.toHaveBeenCalled();
+    expect(createSale).not.toHaveBeenCalled();
+  });
+
+  it('declares the float before a live send when easyPos recovers mid-payment (Bugbot PR #20)', async () => {
+    for (let i = 0; i < FISCAL_BREAKER_TRIP_AFTER; i++) recordFiscalTimeout();
+    ensureFloat.mockClear();
+    createSale.mockReset();
+    createSale.mockImplementation(async () => {
+      // The float must already be declared when the invoice goes out.
+      expect(ensureFloat).toHaveBeenCalled();
+      return filed(1);
+    });
+    // easyPos answers again just as this payment claims its invoice.
+    hooks.onClaimCreate = () => recordFiscalAnswer();
+    const out = await fiscalizePaymentOnce(sale('T81'), CLOUD, {
+      idempotencyKey: 'pay-cb-recovered',
+    });
+    expect(out.kind).toBe('ok');
+    expect(createSale).toHaveBeenCalledTimes(1);
+    expect(ensureFloat).toHaveBeenCalledTimes(1);
   });
 });

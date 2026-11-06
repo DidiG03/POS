@@ -5,6 +5,7 @@ import {
   isWriteMethod,
   MAX_EVENT_STREAMS_PER_DEVICE,
   parseOptionalIsoDate,
+  tokenAllowedInQuery,
 } from './lanRequestGuards';
 
 describe('isJsonContentType', () => {
@@ -82,5 +83,15 @@ describe('eventStreamsToClose', () => {
       ...mk(MAX_EVENT_STREAMS_PER_DEVICE, 7, '10.0.0.6'),
     ];
     expect(eventStreamsToClose(open, 7, '10.0.0.5')).toEqual([]);
+  });
+});
+
+describe('tokenAllowedInQuery', () => {
+  it('allows the address token only on the live-update stream', () => {
+    expect(tokenAllowedInQuery('/events')).toBe(true);
+    expect(tokenAllowedInQuery('/admin/users')).toBe(false);
+    expect(tokenAllowedInQuery('/events/login')).toBe(false);
+    expect(tokenAllowedInQuery('/notifications')).toBe(false);
+    expect(tokenAllowedInQuery(null)).toBe(false);
   });
 });

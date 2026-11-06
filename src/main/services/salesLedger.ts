@@ -254,6 +254,24 @@ export async function writeSettledSale(
 }
 
 /**
+ * The receipt was recorded as SENT before printing (the sale is saved under
+ * the table lock and printed after it). Printing then failed: say so on the
+ * job, as when the status used to be decided before the record.
+ */
+export async function markReceiptPrintFailed(
+  printJobId: number | null | undefined,
+): Promise<void> {
+  const id = Number(printJobId);
+  if (!Number.isInteger(id) || id <= 0) return;
+  await (prisma as any).printJob
+    .updateMany({
+      where: { id, status: 'SENT' },
+      data: { status: 'FAILED' },
+    })
+    .catch(() => undefined);
+}
+
+/**
  * Persist the receipt PrintJob and, for PAYMENT, the sales ledger row
  * in one transaction so a printer retry cannot create a second sale.
  */
