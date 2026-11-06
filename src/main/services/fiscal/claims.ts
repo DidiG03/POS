@@ -1386,19 +1386,69 @@ export async function markFiscalDeferAlert(
  */
 export function claimStateQuery(
   states: readonly FiscalClaimState[],
-  options?: { orphanedRegistered?: boolean },
+  options?: { orphanedRegistered?: boolean; withStateAndTime?: boolean },
 ): { sql: string; args: string[] } {
   const state = `(CASE WHEN json_valid("valueJson") THEN json_extract("valueJson", '$.state') END)`;
   const orphaned = options?.orphanedRegistered
     ? ` OR (${state} = 'REGISTERED' AND json_extract("valueJson", '$.orphanDetectedAt') IS NOT NULL)`
     : '';
+  const extra = options?.withStateAndTime
+    ? `, "updatedAt", ${state} AS "state"`
+    : '';
   return {
     sql:
-      `SELECT "key", "valueJson" FROM "SyncState" ` +
+      `SELECT "key", "valueJson"${extra} FROM "SyncState" ` +
       `WHERE "key" >= ? AND "key" < ? ` +
       `AND (${state} IN (${states.map(() => '?').join(', ')})${orphaned})`,
     args: [KEY_PREFIX, KEY_END, ...states],
   };
+}
+
+/**
+ * The claims the 5-minute sweep (`sweepFiscalClaims`) looks at: PENDING and
+ * REGISTERED ones updated since `since`. It used to load and parse every
+ * claim of the last three days, whatever its state, every five minutes.
+ * The state is matched in SQL; the time in JS (SQLite DateTime is stored
+ * in mixed formats). REGISTERED claims in `skipRegistered` (already matched
+ * to a saved sale) are dropped before their JSON is parsed.
+ */
+export async function listFiscalClaimsForSweep(
+  since: Date,
+  skipRegistered?: ReadonlySet<string>,
+): Promise<Array<{ idempotencyKey: string; record: FiscalClaimRecord }>> {
+  const sinceMs = since.getTime();
+  let rows: any[];
+  try {
+    const { sql, args } = claimStateQuery(['PENDING', 'REGISTERED'], {
+      withStateAndTime: true,
+    });
+    rows = (await prisma.$queryRawUnsafe(sql, ...args)) as any[];
+  } catch {
+    // Never miss a stuck invoice over a query: the old scan still works.
+    return listFiscalClaimsUpdatedSince(since);
+  }
+  const out: Array<{ idempotencyKey: string; record: FiscalClaimRecord }> = [];
+  for (const row of rows) {
+    const key = String(row?.key || '');
+    if (!key.startsWith(KEY_PREFIX)) continue;
+    const idempotencyKey = key.slice(KEY_PREFIX.length);
+    if (row?.state === 'REGISTERED' && skipRegistered?.has(idempotencyKey)) {
+      continue;
+    }
+    let value = row?.valueJson;
+    if (typeof value === 'string') {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        continue;
+      }
+    }
+    const record = parseRecord(value);
+    if (!record) continue;
+    if (updatedAtMs(row, record) < sinceMs) continue;
+    out.push({ idempotencyKey, record });
+  }
+  return out;
 }
 
 async function listClaimsWhere(

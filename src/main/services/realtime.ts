@@ -60,7 +60,9 @@ let sseKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
 export function ensureSseKeepAlive(): void {
   if (sseKeepAliveTimer) return;
   sseKeepAliveTimer = setInterval(() => {
-    broadcastSse('ping', { t: Date.now() });
+    // `n: 1`: this till sends `notifications` events, so apps can poll
+    // their notification badge less often.
+    broadcastSse('ping', { t: Date.now(), n: 1 });
     broadcastLoginSse('ping', { t: Date.now() });
   }, 15_000);
   try {
@@ -294,4 +296,25 @@ export type PrinterEventPayload = {
 export function broadcastPrinterEvent(payload: PrinterEventPayload): void {
   broadcastIpc('printer:event', payload);
   broadcastSse('printer', payload);
+}
+
+let notificationsTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Notifications changed (a new alert, a request, one marked read). Phones
+ * polled for these every 20 s because nothing told them; now one event goes
+ * out, a moment after a burst of writes settles.
+ */
+export function broadcastNotificationsChanged(delayMs = 300): void {
+  if (notificationsTimer) return;
+  notificationsTimer = setTimeout(() => {
+    notificationsTimer = null;
+    broadcastIpc('notifications:changed', {});
+    broadcastSse('notifications', {});
+  }, delayMs);
+  try {
+    notificationsTimer.unref?.();
+  } catch {
+    // ignore
+  }
 }

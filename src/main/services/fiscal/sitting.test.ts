@@ -43,6 +43,9 @@ vi.mock('@db/client', () => ({
             key,
             valueJson: JSON.stringify(row.valueJson),
             updatedAt: row.updatedAt,
+            ...(sql.includes('AS "state"')
+              ? { state: row.valueJson?.state }
+              : {}),
           })),
     ),
     syncState: {
@@ -422,6 +425,31 @@ describe('sweepFiscalClaims', () => {
     expect(
       (await listFiscalClaimsNeedingReview()).map((r) => r.idempotencyKey),
     ).not.toContain('pay-queued');
+  });
+
+  it('stops re-reading invoices already matched to a saved sale', async () => {
+    putClaim(
+      'pay-ok',
+      { state: 'REGISTERED', result: { nivf: 'F' } },
+      { createdAt: NOW - ORPHAN_GRACE_MS - 1_000 },
+    );
+    printJobs.add('pay-ok');
+    await sweepFiscalClaims({ force: true, now: NOW });
+    const { prisma } = (await import('@db/client')) as any;
+    const parse = vi.spyOn(JSON, 'parse');
+    await sweepFiscalClaims({ force: true, now: NOW + 1_000 });
+    const parsedOk = parse.mock.calls.some((c) =>
+      String(c[0]).includes('"REGISTERED"'),
+    );
+    parse.mockRestore();
+    expect(parsedOk).toBe(false);
+    // The state filter is in SQL: only the states the sweep acts on.
+    const sql = String(prisma.$queryRawUnsafe.mock.calls.at(-1)?.[0] || '');
+    expect(sql).toContain('AS "state"');
+    expect(prisma.$queryRawUnsafe.mock.calls.at(-1)?.slice(3)).toEqual([
+      'PENDING',
+      'REGISTERED',
+    ]);
   });
 
   it('is throttled between runs', async () => {

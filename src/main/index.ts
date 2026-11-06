@@ -34,6 +34,8 @@ import { resolveHostIntent } from '@shared/tableIntent';
 import { coreServices } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
+import { parseOptionalIsoDate } from './services/lanRequestGuards';
+import { repairLocalSchema } from './services/localSchemaRepair';
 import { syncTableAreasToDb } from './services/tableAreasSync';
 import { presentSettingsForClient } from './services/settingsPresent';
 import {
@@ -550,137 +552,11 @@ function resolveMigrationsDir(): string {
 }
 
 /**
- * Self-heal local-only columns on upgrade.
- *
- * A FRESH install ships a fully migrated `seed.db` (buildSeedDb runs
- * `prisma migrate deploy`). But on an UPGRADE we reuse the customer's
- * existing SQLite DB in userData, and the app does NOT run migrations on
- * boot — so columns added by recent migrations are missing, and queries
- * like `category.findMany()` crash with "no such column".
- *
- * SQLite's `ADD COLUMN` is idempotent enough for our needs: it throws
- * "duplicate column name" if it already exists, which we swallow. Each
- * statement mirrors a real migration so an old DB converges to the current
- * schema without a full migration engine in the packaged app.
+ * Last-resort schema repair after the migrations (`localSchemaRepair.ts`).
  */
 async function ensureLocalDbColumns(): Promise<void> {
   if (__localColumnsReady) return;
-  const statements = [
-    // 20260526165000_category_kds_station
-    `ALTER TABLE "Category" ADD COLUMN "kdsStation" TEXT;`,
-    // 20260430235907_add_category_color
-    `ALTER TABLE "Category" ADD COLUMN "color" TEXT;`,
-    // 20260204... MenuItem prep-station routing
-    `ALTER TABLE "MenuItem" ADD COLUMN "station" TEXT NOT NULL DEFAULT 'KITCHEN';`,
-    // 20260501000025_add_menuitem_iskg
-    `ALTER TABLE "MenuItem" ADD COLUMN "isKg" BOOLEAN NOT NULL DEFAULT false;`,
-    // 20260517174500_add_menuitem_stock_level
-    `ALTER TABLE "MenuItem" ADD COLUMN "stockLevel" TEXT NOT NULL DEFAULT 'OK';`,
-    // 20260517190000_menuitem_stock_qty_day
-    `ALTER TABLE "MenuItem" ADD COLUMN "stockRemaining" INTEGER;`,
-    `ALTER TABLE "MenuItem" ADD COLUMN "stockDay" TEXT;`,
-    // 20260910170000_menuitem_cost
-    `ALTER TABLE "MenuItem" ADD COLUMN "costPrice" DECIMAL;`,
-    `ALTER TABLE "MenuItem" ADD COLUMN "costBreakdown" JSONB;`,
-    // 20260613190000_reservation_external_sync
-    `ALTER TABLE "Reservation" ADD COLUMN "externalSource" TEXT;`,
-    `ALTER TABLE "Reservation" ADD COLUMN "externalId" TEXT;`,
-    // 20260902120000_ticket_log_session_key
-    `ALTER TABLE "TicketLog" ADD COLUMN "sessionKey" TEXT;`,
-  ];
-  for (const sql of statements) {
-    try {
-      await (prisma as any).$executeRawUnsafe(sql);
-    } catch {
-      // Column already exists (duplicate column name) — expected on
-      // already-migrated DBs; ignore and continue.
-    }
-  }
-  try {
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE UNIQUE INDEX IF NOT EXISTS "Reservation_externalSource_externalId_key" ON "Reservation"("externalSource", "externalId");`,
-    );
-  } catch {
-    // ignore
-  }
-  try {
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "TicketLog_sessionKey_idx" ON "TicketLog"("sessionKey");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "TicketLog_userId_createdAt_idx" ON "TicketLog"("userId", "createdAt");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "TicketLog_createdAt_idx" ON "TicketLog"("createdAt");`,
-    );
-  } catch {
-    // ignore
-  }
-  try {
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "Notification_userId_readAt_createdAt_idx" ON "Notification"("userId", "readAt", "createdAt");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "Notification_createdAt_idx" ON "Notification"("createdAt");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "DayShift_closedAt_openedById_idx" ON "DayShift"("closedAt", "openedById");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "TicketRequest_ownerId_status_idx" ON "TicketRequest"("ownerId", "status");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "Covers_createdAt_idx" ON "Covers"("createdAt");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "MenuItem_categoryId_idx" ON "MenuItem"("categoryId");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "Modifier_groupId_idx" ON "Modifier"("groupId");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "RecipeComponent_menuItemId_idx" ON "RecipeComponent"("menuItemId");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "RecipeComponent_inventoryItemId_idx" ON "RecipeComponent"("inventoryItemId");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "OrderItem_menuItemId_idx" ON "OrderItem"("menuItemId");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "OrderItemModifier_orderItemId_idx" ON "OrderItemModifier"("orderItemId");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "OrderItemModifier_modifierId_idx" ON "OrderItemModifier"("modifierId");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "Order_status_closedAt_idx" ON "Order"("status", "closedAt");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "TicketRequest_requesterId_idx" ON "TicketRequest"("requesterId");`,
-    );
-  } catch {
-    // ignore
-  }
-  try {
-    await (prisma as any).$executeRawUnsafe(`
-CREATE TABLE IF NOT EXISTS "TableOccupancy" (
-    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "area" TEXT NOT NULL,
-    "label" TEXT NOT NULL,
-    "openedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);`);
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE UNIQUE INDEX IF NOT EXISTS "TableOccupancy_area_label_key" ON "TableOccupancy"("area", "label");`,
-    );
-    await (prisma as any).$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "TableOccupancy_area_idx" ON "TableOccupancy"("area");`,
-    );
-  } catch {
-    // ignore
-  }
+  await repairLocalSchema((sql) => (prisma as any).$executeRawUnsafe(sql));
   __localColumnsReady = true;
 }
 
@@ -1819,8 +1695,10 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
     throw new Error(pinValidation.error || 'Invalid PIN format');
   }
 
-  // Local-first: try local DB for auth
-  const where: any = userId ? { id: userId, active: true } : { active: true };
+  // Local-first: try local DB for auth. The sign-in screen always picks a
+  // person; without one the PIN was checked against the first active user.
+  if (!userId) return null;
+  const where: any = { id: userId, active: true };
   const user = await prisma.user.findFirst({ where });
   if (user) {
     const ok = await bcrypt.compare(normalizePin(pin), user.pinHash);
@@ -4647,10 +4525,14 @@ ipcHandle('admin:eraseTickets', async (_e, input, ctx) => {
 
 ipcHandle('admin:listShifts', async (_e, input) => {
   const where: any = {};
-  if (input?.startIso || input?.endIso) {
+  const start = parseOptionalIsoDate(input?.startIso, 'startIso');
+  const end = parseOptionalIsoDate(input?.endIso, 'endIso');
+  if (!start.ok) throw new Error(start.error);
+  if (!end.ok) throw new Error(end.error);
+  if (start.date || end.date) {
     where.openedAt = {};
-    if (input?.startIso) where.openedAt.gte = new Date(input.startIso);
-    if (input?.endIso) where.openedAt.lte = new Date(input.endIso);
+    if (start.date) where.openedAt.gte = start.date;
+    if (end.date) where.openedAt.lte = end.date;
   }
   const rows = await prisma.dayShift
     .findMany({

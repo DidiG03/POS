@@ -413,11 +413,30 @@ export function installBrowserLanApi(): void {
     }
   };
 
+  const markSseFeature = (name: string) => {
+    try {
+      const w = window as any;
+      w.__POS_SSE_FEATURES__ = {
+        ...(w.__POS_SSE_FEATURES__ || {}),
+        [name]: true,
+      };
+    } catch {
+      // ignore
+    }
+  };
+
   const applySseNamedEvent = (eventName: string, rawData: string) => {
     if (eventName === 'ping') {
       lastSseEventAt = Date.now();
       lastSseDataAt = lastSseEventAt;
       noteSseEvent();
+      // A till that sends `notifications` events says so in its ping.
+      if (rawData.includes('"n":1')) markSseFeature('notifications');
+      return;
+    }
+    if (eventName === 'notifications') {
+      markSseFeature('notifications');
+      handleSseEvent('pos:notificationsChanged', {});
       return;
     }
     if (eventName === 'catchup') {
@@ -613,6 +632,9 @@ export function installBrowserLanApi(): void {
           // by the next health tick, the watchdog will force a reconnect.
         });
 
+        es.addEventListener('notifications', (ev: any) => {
+          applySseNamedEvent('notifications', ev?.data || '{}');
+        });
         es.addEventListener('ping', (ev: any) => {
           applySseNamedEvent('ping', ev?.data || '{}');
         });

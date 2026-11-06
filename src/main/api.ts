@@ -5,12 +5,18 @@ import url from 'url';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import { prisma } from '@db/client';
+import { onModelWrite, prisma } from '@db/client';
 import {
   decodeLanSessionToken,
   issueLanSessionToken,
   issueManagerApprovalToken,
 } from './services/lanSessionToken';
+import {
+  eventStreamsToClose,
+  isJsonContentType,
+  isWriteMethod,
+  parseOptionalIsoDate,
+} from './services/lanRequestGuards';
 import bcrypt from 'bcryptjs';
 import {
   CreateMenuCategoryInputSchema,
@@ -100,6 +106,7 @@ import {
   broadcastSettingsChanged,
   broadcastUsersChanged,
   broadcastPrinterEvent,
+  broadcastNotificationsChanged,
   ensureSseKeepAlive,
   sseCatchupIfMissed,
 } from './services/realtime';
@@ -1156,6 +1163,11 @@ export function readTlsMaterial(): { key: Buffer; cert: Buffer } | null {
 }
 
 export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
+  // Phones refresh their notification badge on this event instead of
+  // polling every 20 s (any writer of a Notification row triggers it).
+  onModelWrite((model) => {
+    if (model === 'Notification') broadcastNotificationsChanged();
+  });
   const CURRENT_FILE = fileURLToPath(import.meta.url);
   const CURRENT_DIR = dirname(CURRENT_FILE);
   // When bundled, api runs from dist/main/chunks/* — renderer is at dist/renderer
@@ -1211,6 +1223,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
         return;
+      }
+
+      // The till's own machine is trusted more than the network (kitchen
+      // routes without a token, unthrottled PIN sign-in). A web page open in
+      // a browser there can POST "simple" text/plain bodies to 127.0.0.1
+      // without a CORS preflight, and every body here is parsed as JSON
+      // whatever its type. Writes from this machine must declare JSON (all
+      // OneTap apps do), which makes a browser ask first, and CORS refuses
+      // foreign pages.
+      if (
+        isWriteMethod(req.method) &&
+        !isJsonContentType(req.headers['content-type']) &&
+        isLoopback(String((req.socket as any)?.remoteAddress || ''))
+      ) {
+        return send(
+          res,
+          415,
+          { error: 'Content-Type must be application/json' },
+          corsOrigin,
+        );
       }
 
       // An app too old for this till is told to update, not served half a
@@ -1455,10 +1487,30 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const catchup = sseCatchupIfMissed(lastEventId);
         if (catchup) res.write(catchup);
         // `userId` lets a revocation close this stream (see `lanAuth`).
-        const client = { res, userId: auth.userId } as any;
+        const streamIp = String((req.socket as any)?.remoteAddress || '');
+        const client = {
+          res,
+          userId: auth.userId,
+          remoteIp: streamIp,
+        } as any;
         (globalThis as any).__SSE_CLIENTS__ =
           (globalThis as any).__SSE_CLIENTS__ || new Set();
         const clients: Set<any> = (globalThis as any).__SSE_CLIENTS__;
+        // A stream per reconnect with no limit let one device (or a leaked
+        // token) pile up open sockets on the till. Close the oldest streams
+        // of this user on this address instead.
+        for (const stale of eventStreamsToClose(
+          clients,
+          auth.userId,
+          streamIp,
+        )) {
+          clients.delete(stale);
+          try {
+            stale.res.end();
+          } catch {
+            // already closed
+          }
+        }
         clients.add(client);
         ensureSseKeepAlive();
         req.on('close', () => clients.delete(client));
@@ -1648,10 +1700,14 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             );
           }
         }
-        // Local auth
-        const where: any = userId
-          ? { id: Number(userId), active: true }
-          : { active: true };
+        // Local auth. Every sign-in screen picks a person first. Without an
+        // id this used to check the PIN against whichever active user came
+        // first, so a guessed PIN landed on an account nobody chose.
+        const loginId = Number(userId);
+        if (!Number.isInteger(loginId) || loginId <= 0) {
+          return send(res, 400, { error: 'userId required' }, corsOrigin);
+        }
+        const where: any = { id: loginId, active: true };
         const user = await prisma.user.findFirst({ where });
         if (!user) {
           let attemptsLeft: number | undefined;
@@ -4655,12 +4711,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       }
       if (req.method === 'GET' && pathname === '/admin/shifts') {
         const where: any = {};
-        if (parsed.query.startIso || parsed.query.endIso) {
+        const start = parseOptionalIsoDate(parsed.query.startIso, 'startIso');
+        const end = parseOptionalIsoDate(parsed.query.endIso, 'endIso');
+        if (!start.ok || !end.ok) {
+          const error = !start.ok ? start.error : !end.ok ? end.error : '';
+          return send(res, 400, { error }, corsOrigin);
+        }
+        if (start.date || end.date) {
           where.openedAt = {};
-          if (parsed.query.startIso)
-            where.openedAt.gte = new Date(String(parsed.query.startIso));
-          if (parsed.query.endIso)
-            where.openedAt.lte = new Date(String(parsed.query.endIso));
+          if (start.date) where.openedAt.gte = start.date;
+          if (end.date) where.openedAt.lte = end.date;
         }
         const rows = await prisma.dayShift
           .findMany({

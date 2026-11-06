@@ -37,7 +37,7 @@ import {
   isDeadPendingClaim,
   isFiscalClaimLocked,
   listFiscalClaimsForTableSince,
-  listFiscalClaimsUpdatedSince,
+  listFiscalClaimsForSweep,
   markDeadPendingUnknownUnlocked,
   notifyFiscalReviewNeeded,
   readFiscalClaim,
@@ -60,6 +60,15 @@ export const ORPHAN_GRACE_MS = 10 * 60_000;
 /** The sweep looks this far back; older problems were already surfaced. */
 const SWEEP_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Filed invoices already matched to a saved sale. A saved sale stays saved
+ * (an erase of the ledger is handled by `erasedAt`), so the sweep stops
+ * re-reading them every five minutes for three days. In memory only: a
+ * restart checks each once more.
+ */
+const confirmedRecorded = new Set<string>();
+const MAX_CONFIRMED_RECORDED = 50_000;
 
 /** Totals within half a cent are the same amount. */
 const SAME_TOTAL_EPSILON = 0.005;
@@ -472,8 +481,14 @@ export async function sweepFiscalClaims(options?: {
   lastSweepAt = now;
 
   const erasedAt = await readLedgerErasedAt(prisma as any).catch(() => null);
+  if (confirmedRecorded.size > MAX_CONFIRMED_RECORDED) {
+    confirmedRecorded.clear();
+  }
   const rows = (
-    await listFiscalClaimsUpdatedSince(new Date(now - SWEEP_WINDOW_MS))
+    await listFiscalClaimsForSweep(
+      new Date(now - SWEEP_WINDOW_MS),
+      confirmedRecorded,
+    )
   ).filter((row) => !erasedAt || createdAtMs(row.record) >= erasedAt.getTime());
 
   let interrupted = 0;
@@ -506,11 +521,17 @@ export async function sweepFiscalClaims(options?: {
   for (const row of filed) {
     if (isRecorded(row, recorded)) {
       if (row.record.orphanDetectedAt) {
-        await withFiscalClaimLock(row.idempotencyKey, () =>
+        const cleared = await withFiscalClaimLock(row.idempotencyKey, () =>
           annotateFiscalClaimUnlocked(row.idempotencyKey, {
             orphanDetectedAt: undefined,
           }),
-        ).catch(() => undefined);
+        ).then(
+          () => true,
+          () => false,
+        );
+        if (cleared) confirmedRecorded.add(row.idempotencyKey);
+      } else {
+        confirmedRecorded.add(row.idempotencyKey);
       }
       continue;
     }
@@ -526,4 +547,5 @@ export async function sweepFiscalClaims(options?: {
 /** Test seam. */
 export function __resetFiscalSweepForTests(): void {
   lastSweepAt = 0;
+  confirmedRecorded.clear();
 }

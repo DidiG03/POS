@@ -40,6 +40,10 @@ import { StatusChip } from '../components/ui/Badge';
 import { cn } from '../components/ui/cn';
 import { loadPosRealtimeSync } from '../utils/loadPosRealtimeSync';
 import { useLongPress } from '../utils/useLongPress';
+import {
+  NOTIFICATION_SLOW_POLL_MS,
+  notificationPollIsSlow,
+} from '../utils/notificationPoll';
 import { WaiterFiscalDialog } from './components/WaiterFiscalDialog';
 
 /** Holding your name in the header this long opens the fiskalizimi switch. */
@@ -371,6 +375,11 @@ export default function AppLayout() {
     if (!isBrowserClient) return;
     let cancelled = false;
     const refresh = () => {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      )
+        return;
       void getOfflineQueueCount()
         .then((n) => {
           if (!cancelled) setQueuedCount(Number(n) || 0);
@@ -422,8 +431,19 @@ export default function AppLayout() {
     let cancelled = false;
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
-    const tick = async () => {
+    let lastFetchAt = 0;
+    const tick = async (force = false) => {
       if (isHidden()) return;
+      // A till that sends live `notifications` events only needs a slow
+      // safety poll; an older till is still polled every 20 s.
+      if (
+        !force &&
+        notificationPollIsSlow() &&
+        Date.now() - lastFetchAt < NOTIFICATION_SLOW_POLL_MS
+      ) {
+        return;
+      }
+      lastFetchAt = Date.now();
       let notifs: unknown;
       let pending: unknown;
       try {
@@ -449,11 +469,21 @@ export default function AppLayout() {
         setUnreadStale(false);
       }
     };
-    void tick();
-    const t = window.setInterval(tick, 20000);
+    void tick(true);
+    const t = window.setInterval(() => void tick(), 20000);
+    const onChanged = () => void tick(true);
+    const onVisible = () => {
+      if (!isHidden()) void tick(true);
+    };
+    window.addEventListener('pos:notificationsChanged', onChanged);
+    window.addEventListener('pos:syncCatchup', onChanged);
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(t);
+      window.removeEventListener('pos:notificationsChanged', onChanged);
+      window.removeEventListener('pos:syncCatchup', onChanged);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [user?.id]);
 
