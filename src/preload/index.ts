@@ -240,8 +240,8 @@ const api: Api = {
       ipcRenderer.invoke('layout:save', { userId, area, nodes, scope }),
     getMerges: (area: string) =>
       ipcRenderer.invoke('layout:getMerges', { area }),
-    setMerges: (area: string, groups) =>
-      ipcRenderer.invoke('layout:setMerges', { area, groups }),
+    setMerges: (area: string, groups, base?) =>
+      ipcRenderer.invoke('layout:setMerges', { area, groups, base }),
   },
   covers: {
     save: (area: string, label: string, covers: number) =>

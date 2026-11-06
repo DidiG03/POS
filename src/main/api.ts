@@ -13,6 +13,7 @@ import {
 } from './services/lanSessionToken';
 import {
   eventStreamsToClose,
+  tokenAllowedInQuery,
   isJsonContentType,
   isWriteMethod,
   parseOptionalIsoDate,
@@ -139,7 +140,9 @@ import {
   paymentShouldCloseTable,
   tableAlreadyPaidResult,
   tableIsOpenForPayment,
-  withPaymentLock,
+  afterPaymentLock,
+  finishAfterPaymentLock,
+  withPaymentLockThen,
 } from './services/paymentSettle';
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
@@ -246,6 +249,7 @@ import {
 } from './services/lastAdmin';
 import {
   ensureSettledSaleFromPrintJob,
+  markReceiptPrintFailed,
   persistReceiptAudit,
 } from './services/salesLedger';
 import {
@@ -847,6 +851,10 @@ function pickBearerToken(
   const auth = String(req.headers.authorization || '');
   if (auth.toLowerCase().startsWith('bearer '))
     return auth.slice(7).trim() || null;
+  // EventSource can't send headers, so the live-update stream takes its
+  // token from the address. Nothing else may: an address ends up in logs,
+  // history and proxies, and every other client sends the header.
+  if (!tokenAllowedInQuery(parsedUrl.pathname)) return null;
   const q = (parsedUrl.query as any) || {};
   const t = typeof q.token === 'string' ? q.token : null;
   return t || null;
@@ -3304,14 +3312,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // the iOS routing gap (this HTTP route now respects per-station
           // / per-category printer assignments, just like the Electron
           // path does).
-          const persistLanAudit = async (status: 'SENT' | 'FAILED') => {
+          /** The receipt job's id when this call created it (not a replay). */
+          const persistLanAudit = async (
+            status: 'SENT' | 'FAILED',
+          ): Promise<number | null> => {
             try {
-              await persistReceiptAudit({
+              const saved = await persistReceiptAudit({
                 payload: fiscalPayload,
                 idempotencyKey: printIdempotencyKey || undefined,
                 status,
                 settings,
               });
+              return saved?.duplicate ? null : (saved?.printJobId ?? null);
             } catch (e: any) {
               // P2002 = a concurrent identical payment won the race; its row
               // is the audit record and this one is a duplicate.
@@ -3326,6 +3338,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                   error: String(e?.message || e),
                 });
               }
+              return null;
             }
           };
 
@@ -3340,11 +3353,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 actorUserId: Number(auth?.userId || 0),
               });
             }
-            const r = await dispatchTicket(fiscalPayload, settings as any, {
-              ...dispatchOpts,
-              skipIfPrinterDown: true,
-            });
-            await persistLanAudit(r.ok ? 'SENT' : 'FAILED');
+            // Record the sale and settle the table while holding the table
+            // lock, then print once it is released (Audit M3): a slow or
+            // unreachable printer no longer keeps other devices off the
+            // table. The phone still gets its answer after the print.
+            const printJobId = await persistLanAudit('SENT');
             const closeTable = paymentShouldCloseTable(payload?.meta);
             if (payKind === 'PAYMENT' && !isPaymentReprint(payload?.meta)) {
               await settleTableAfterPayment({
@@ -3356,12 +3369,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 paymentKey: printIdempotencyKey,
               });
             }
-            return send(
-              res,
-              200,
-              paymentPrintAccepted(r.ok, closeTable, fiscalPending),
-              corsOrigin,
-            );
+            return afterPaymentLock(async () => {
+              const r = await dispatchTicket(fiscalPayload, settings as any, {
+                ...dispatchOpts,
+                skipIfPrinterDown: true,
+              });
+              if (!r.ok) await markReceiptPrintFailed(printJobId);
+              return send(
+                res,
+                200,
+                paymentPrintAccepted(r.ok, closeTable, fiscalPending),
+                corsOrigin,
+              );
+            });
           }
 
           // Kitchen Send must not sit on TCP to every printer before the
@@ -3422,13 +3442,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // Awaited so a TABLE_BUSY (or any) rejection reaches the catch
           // below; returned bare it escaped as an unhandled rejection and
           // the tablet's request never got an answer.
-          return await withPaymentLock(
+          return await withPaymentLockThen(
             requested.area,
             requested.tableLabel,
             runLanPrint,
           );
         }
-        return await runLanPrint();
+        return await finishAfterPaymentLock(await runLanPrint());
       }
       if (req.method === 'POST' && pathname === '/tickets/void-item') {
         const {
@@ -4253,9 +4273,9 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, groups, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/layout/merges') {
-        const { area, groups } = await parseJson(req);
+        const { area, groups, base } = await parseJson(req);
         if (!area) return send(res, 400, 'invalid', corsOrigin);
-        const next = await writeTableMerges(String(area), groups);
+        const next = await writeTableMerges(String(area), groups, base);
         return send(res, 200, next, corsOrigin);
       }
 
@@ -5347,7 +5367,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, groups, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/reservations/merges') {
-        const { area, groups } = await parseJson(req);
+        const { area, groups, base } = await parseJson(req);
         if (!area) return send(res, 400, 'invalid', corsOrigin);
         console.info('[lan] save table merges', {
           area: String(area),
@@ -5355,7 +5375,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           userId: auth?.userId ?? null,
           groups: Array.isArray(groups) ? groups.length : 0,
         });
-        const next = await writeTableMerges(String(area), groups);
+        const next = await writeTableMerges(String(area), groups, base);
         return send(res, 200, next, corsOrigin);
       }
 

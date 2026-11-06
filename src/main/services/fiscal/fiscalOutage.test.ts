@@ -561,4 +561,14 @@ describe('a hanging fiscal service (QA v0.2.104 #12)', () => {
     expect(live.kind).toBe('ok');
     expect(createSale).toHaveBeenCalledTimes(1);
   });
+  it('does not wait on the opening-float declaration while easyPos is down (Audit M3)', async () => {
+    for (let i = 0; i < FISCAL_BREAKER_TRIP_AFTER; i++) recordFiscalTimeout();
+    ensureFloat.mockClear();
+    const out = await fiscalizePaymentOnce(sale('T80'), CLOUD, {
+      idempotencyKey: 'pay-cb-float',
+    });
+    expect(out.kind).toBe('deferred');
+    expect(ensureFloat).not.toHaveBeenCalled();
+    expect(createSale).not.toHaveBeenCalled();
+  });
 });

@@ -153,7 +153,7 @@ describe('authorizeLanRoute', () => {
     expect(authorizeLanRoute('POST', '/reservations', 'HOST')).toBe('allow');
   });
 
-  it('lets any logged-in role merge tables (host floor tokens are often waiter JWTs)', () => {
+  it('lets floor staff merge tables (host floor tokens are often waiter JWTs)', () => {
     expect(authorizeLanRoute('GET', '/layout/merges', 'HOST')).toBe('allow');
     expect(authorizeLanRoute('POST', '/layout/merges', 'HOST')).toBe('allow');
     expect(authorizeLanRoute('GET', '/reservations/merges', 'HOST')).toBe(
@@ -169,6 +169,20 @@ describe('authorizeLanRoute', () => {
     expect(authorizeLanRoute('POST', '/reservations/merges', null)).toBe(
       'unauthenticated',
     );
+  });
+
+  it('keeps kitchen and clock-only accounts from rewriting merges', () => {
+    for (const role of ['KDS', 'KP', 'CHEF', 'CLEANER']) {
+      expect(authorizeLanRoute('POST', '/layout/merges', role)).toBe(
+        'forbidden',
+      );
+      expect(authorizeLanRoute('POST', '/reservations/merges', role)).toBe(
+        'forbidden',
+      );
+      expect(authorizeLanRoute('GET', '/reservations/merges', role)).toBe(
+        'allow',
+      );
+    }
   });
 
   it('lets a host read open POS tickets without opening or transferring them', () => {

@@ -459,8 +459,13 @@ export async function fiscalizePaymentOnce(
 
   // The tax service refuses a cash invoice until the day's opening float
   // has been declared, so this has to happen before the register call and
-  // not after it fails.
-  await ensureCashBalanceDeclared(payload, settings, meta);
+  // not after it fails. While easyPos is timing out (the breaker below
+  // queues this invoice anyway) it is skipped: it would make the payment
+  // wait out another timeout, and the background loop declares the float
+  // before it sends the queued invoice (`deferred.ts`).
+  if (!fiscalBreakerOpen()) {
+    await ensureCashBalanceDeclared(payload, settings, meta);
+  }
 
   /**
    * The draft is frozen here and reused for every attempt, including a

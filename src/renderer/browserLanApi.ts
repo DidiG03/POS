@@ -2068,10 +2068,10 @@ export function installBrowserLanApi(): void {
         const q = new URLSearchParams({ area: String(area) });
         return await goLan(`/reservations/merges?${q.toString()}`);
       },
-      async setMerges(area: string, groups: any[]) {
+      async setMerges(area: string, groups: any[], base?: any[]) {
         return await goLan('/reservations/merges', {
           method: 'POST',
-          body: JSON.stringify({ area, groups }),
+          body: JSON.stringify({ area, groups, ...(base ? { base } : {}) }),
         });
       },
     },

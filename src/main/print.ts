@@ -24,7 +24,8 @@ import {
 import { dualTotalsFromSettings } from '@shared/paymentDisplay';
 import { getActiveLicenseEdition } from './services/license';
 import os from 'node:os';
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
+import { AsyncMutex } from '@shared/asyncMutex';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -1438,22 +1439,112 @@ export function buildHtmlReceipt(
 /** Upper bound on rendering and handing a receipt to the OS print spooler. */
 const SYSTEM_PRINT_TIMEOUT_MS = 20_000;
 
-export async function printHtmlToSystemPrinter(opts: {
-  html: string;
-  deviceName?: string;
-  silent?: boolean;
-}): Promise<{ ok: boolean; error?: string }> {
-  const silent = opts.silent !== false;
+/** A reused print window closes itself after this long without a job. */
+const PRINT_WINDOW_IDLE_MS = 15_000;
+
+let printWindow: BrowserWindow | null = null;
+let printWindowIdle: ReturnType<typeof setTimeout> | null = null;
+let printWindowHooked = false;
+
+function disposePrintWindow(): void {
+  if (printWindowIdle) clearTimeout(printWindowIdle);
+  printWindowIdle = null;
+  const w = printWindow;
+  printWindow = null;
+  try {
+    if (w && !w.isDestroyed()) w.destroy();
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * One hidden window for system-printer jobs. A new BrowserWindow (a whole
+ * renderer process) was created and destroyed for every receipt. The print
+ * queue runs one job at a time, so one window is enough. It renders receipt
+ * HTML only: no JavaScript, sandboxed, and it cannot navigate or open
+ * windows. It closes after a short idle, and at once when it is the only
+ * window left, so it never keeps the app running after the till is closed.
+ */
+function acquirePrintWindow(): BrowserWindow {
+  if (printWindowIdle) clearTimeout(printWindowIdle);
+  printWindowIdle = null;
+  if (printWindow && !printWindow.isDestroyed()) return printWindow;
   const win = new BrowserWindow({
     show: false,
     width: 420,
     height: 800,
     webPreferences: {
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      javascript: false,
     },
   });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.on('closed', () => {
+    if (printWindow === win) printWindow = null;
+  });
+  printWindow = win;
+  if (!printWindowHooked) {
+    printWindowHooked = true;
+    try {
+      app.on('browser-window-created', (_e, created) => {
+        created.on('closed', () => {
+          const others = BrowserWindow.getAllWindows().filter(
+            (w) => w !== printWindow && !w.isDestroyed(),
+          );
+          if (others.length === 0) disposePrintWindow();
+        });
+      });
+      app.on('before-quit', disposePrintWindow);
+    } catch {
+      // not running inside Electron (tests)
+    }
+  }
+  return win;
+}
+
+function releasePrintWindow(healthy: boolean): void {
+  if (!healthy) {
+    // A stalled driver or failed render: start the next job on a fresh one.
+    disposePrintWindow();
+    return;
+  }
+  if (printWindowIdle) clearTimeout(printWindowIdle);
+  printWindowIdle = setTimeout(disposePrintWindow, PRINT_WINDOW_IDLE_MS);
+  try {
+    printWindowIdle.unref?.();
+  } catch {
+    // ignore
+  }
+}
+
+/** Jobs share one window, so they take turns even if two callers overlap. */
+const printWindowMutex = new AsyncMutex();
+
+export async function printHtmlToSystemPrinter(opts: {
+  html: string;
+  deviceName?: string;
+  silent?: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  return printWindowMutex.runExclusive(() => printHtmlOnce(opts));
+}
+
+async function printHtmlOnce(opts: {
+  html: string;
+  deviceName?: string;
+  silent?: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  const silent = opts.silent !== false;
+  let healthy = false;
+  let win: BrowserWindow;
+  try {
+    win = acquirePrintWindow();
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e || 'Print failed') };
+  }
   try {
     const url = `data:text/html;charset=utf-8,${encodeURIComponent(opts.html)}`;
     await withTimeout(
@@ -1462,8 +1553,8 @@ export async function printHtmlToSystemPrinter(opts: {
       'Print render',
     );
     // A stalled driver can leave this callback unfired forever, which would
-    // wedge the single print queue behind it. The window is destroyed in the
-    // `finally` below, which abandons the job.
+    // wedge the single print queue behind it. The window is then destroyed
+    // (`releasePrintWindow(false)`), which abandons the job.
     const result = await withTimeout(
       new Promise<{ ok: boolean; error?: string }>((resolve) => {
         win.webContents.print(
@@ -1480,15 +1571,13 @@ export async function printHtmlToSystemPrinter(opts: {
       SYSTEM_PRINT_TIMEOUT_MS,
       'System print',
     );
+    // A printer that said no (offline, out of paper) leaves the window fine.
+    healthy = true;
     return result;
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Print failed') };
   } finally {
-    try {
-      win.destroy();
-    } catch (e) {
-      void e;
-    }
+    releasePrintWindow(healthy);
   }
 }
 
@@ -1733,7 +1822,8 @@ export async function sendToPrinterVerbose(
  * (timeout / refused / NACK / write error) instead of a generic
  * "LPR send failed".
  */
-async function sendViaLpr(
+/** @internal exported for tests */
+export async function sendViaLpr(
   ip: string,
   port: number,
   queue: string,
@@ -1755,33 +1845,27 @@ async function sendViaLpr(
   );
 
   const socket = new Socket();
-  // Persistent error promise: if the socket errors at any point — even
-  // during a `socket.write` we're not awaiting — every step below will
-  // reject promptly via Promise.race.
+  // One error promise for the socket's life: every step below races it, so
+  // an error at any point (even during a write we aren't awaiting) rejects
+  // the current step at once. It used to be noticed by polling every 10 ms.
   let socketErr: Error | null = null;
-  socket.on('error', (e) => {
-    socketErr = e instanceof Error ? e : new Error(String(e));
+  const errored = new Promise<never>((_resolve, reject) => {
+    socket.on('error', (e) => {
+      socketErr = e instanceof Error ? e : new Error(String(e));
+      reject(socketErr);
+    });
+    // A printer that hangs up mid-job closes without an error; that used
+    // to sit out the 5 s ack timeout.
+    socket.on('close', () => {
+      socketErr = socketErr || new Error('LPR connection closed by printer');
+      reject(socketErr);
+    });
   });
+  // Nobody may be racing it when the error fires; that is not unhandled.
+  errored.catch(() => undefined);
 
   const guard = <T>(p: Promise<T>): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      const check = setInterval(() => {
-        if (socketErr) {
-          clearInterval(check);
-          reject(socketErr);
-        }
-      }, 10);
-      p.then(
-        (v) => {
-          clearInterval(check);
-          resolve(v);
-        },
-        (e) => {
-          clearInterval(check);
-          reject(e);
-        },
-      );
-    });
+    socketErr ? Promise.reject(socketErr) : Promise.race([p, errored]);
 
   const connect = () =>
     guard(

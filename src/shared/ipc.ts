@@ -1727,9 +1727,11 @@ export interface ApiLayout {
     scope?: string,
   ): Promise<boolean>;
   getMerges(area: string): Promise<TableMergeGroup[]>;
+  /** `base`: the merges the screen started from (see `rebaseMergeEdit`). */
   setMerges(
     area: string,
     groups: TableMergeGroup[],
+    base?: TableMergeGroup[],
   ): Promise<TableMergeGroup[]>;
 }
 

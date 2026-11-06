@@ -37,6 +37,7 @@ import {
   writeKdsDeviceTokenFile,
 } from './deviceTokenFile';
 import { registerCompanionLanIpc } from '../services/companionLanProxy';
+import { installWindowGuards } from '../services/windowGuards';
 
 app.setName('OneTap KDS');
 initSentry();
@@ -64,6 +65,11 @@ const MAIN_RUNTIME_DIR =
   basename(MAIN_DIR) === 'chunks' ? resolvePath(MAIN_DIR, '..') : MAIN_DIR;
 const PRELOAD_PATH = join(MAIN_RUNTIME_DIR, '../preload/kds.cjs');
 const RENDERER_INDEX_HTML = join(MAIN_RUNTIME_DIR, '../../renderer/index.html');
+// Windows stay on the app's own page; links open in the browser (M5).
+installWindowGuards(app, {
+  rendererIndexHtml: RENDERER_INDEX_HTML,
+  devUrl: process.env.ELECTRON_RENDERER_URL,
+});
 
 type KdsTheme = 'dark' | 'light';
 
